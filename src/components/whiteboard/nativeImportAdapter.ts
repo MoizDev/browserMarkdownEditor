@@ -24,10 +24,19 @@ export function createNativeImportAdapter(binding: NativeClipboardBinding, runti
         current.onchange = () => {
             if (picker !== current || disposed) return;
             const files = Array.from(current.files ?? []); closePicker();
-            if (!currentOwner() || runtime.session.isReadOnly || runtime.session.doc.rev !== revision || runtime.selection.getSnapshot() !== selection) {
+            if (!files.length) return;
+            // Every outcome of a chosen file is reported: a silent drop here is what made a picked image vanish.
+            if (!currentOwner() || runtime.session.isReadOnly) {
+                onError(new Error('The board is read-only, so the chosen media was not inserted.')); return;
+            }
+            // The rev and sheet decide whether the target still exists; the selection object changes on any tool's cleanup.
+            if (runtime.session.doc.rev !== revision || runtime.selection.getSnapshot().sheet !== selection.sheet) {
                 onError(new Error('The board changed while choosing media; choose the files again.')); return;
             }
-            void binding.controller.importFiles(files, point).catch(onError);
+            binding.controller.importFiles(files, point).catch(error => {
+                onError(error instanceof DOMException && error.name === 'AbortError'
+                    ? new Error('The chosen media was not inserted: the import was interrupted. Choose the files again.') : error);
+            });
         };
         try { current.click(); } catch (error) { closePicker(); onError(error); }
     };

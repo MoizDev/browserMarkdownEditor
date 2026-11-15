@@ -45,7 +45,9 @@ export function createNativeViewPlatform(options: {
         readAppearance: () => viewer.getSnapshot().appearance,
         currentToken: () => host.isCurrent(identity) && (options.currentSource?.() ?? true) ? token : null,
         readCamera: () => camera.camera,
-        revision: () => JSON.stringify([viewer.getSnapshot().sceneRevision, options.readSheetId()]),
+        // The theme is part of what a frame shows: a dark and a light frame of one scene revision are different
+        // pictures, so a theme flip must change the revision every presentation and mirror check compares.
+        revision: () => JSON.stringify([viewer.getSnapshot().sceneRevision, options.readSheetId(), viewer.getView().theme]),
         consumeInput: timestamp => ports.consumeInput(timestamp),
         isInteracting: () => ports.isInteracting(),
         setInputEnabled: enabled => ports.setInputEnabled(enabled),

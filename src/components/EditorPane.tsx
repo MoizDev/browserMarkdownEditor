@@ -101,7 +101,6 @@ interface EditorPaneProps {
     reading: ReaderIntegration;
     /** Every open document, flat. */
     tabs: OpenTab[];
-    closingDocumentIds: ReadonlySet<string>;
     /** The columns, each with its own tabs, and which column has focus. */
     layout: TabLayout;
     theme: Theme;
@@ -142,8 +141,6 @@ interface EditorPaneProps {
      *  (OpenTab.disk). Stable, for DocumentPane's memo. */
     onDiskAction: (path: string, action: DiskAction) => Promise<void>;
     onAnnotationPreflight: NonNullable<React.ComponentProps<PdfPaneComponent>['onAnnotationPreflight']>;
-    /** Buffer content and write it immediately, skipping the save debounce. */
-    onFlushNow: (path: string, content: string) => Promise<void>;
     onPreparePdfPrint: (path: string) => Promise<{ bytes: Uint8Array; valid: () => boolean; validate: () => Promise<boolean> }>;
     onUnsignedPdfCopy: NonNullable<React.ComponentProps<PdfPaneComponent>['onUnsignedPdfCopy']>;
     /** Turn a PDF's pages a quarter and write the file (App.rotatePdf). */
@@ -574,13 +571,12 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
     const countable = !!activeFile && !isCanvas && !unreadable && !isCode;
     const statusShown = backlinksAvailable || countable || !!saveStatus;
     /* The pill sits over the RIGHTMOST column, whichever pane is focused — and
-       a PDF or a notebook there draws its page/zoom pills in that same corner.
-       Lifted above them rather than hidden: it may be carrying counts for a
-       markdown pane to the left, or a message. A drawing draws nothing there
-       (tldraw's help button is off in this build), so it is not lifted. */
+       a PDF, a notebook or a whiteboard there draws its page, zoom and minimap
+       controls in that same corner. Lifted above them rather than hidden: it
+       may be carrying counts for a markdown pane to the left, or a message. */
     const cornerTab = paneTabs.length ? paneTabs[paneTabs.length - 1] : null;
     const liftStatus = !!cornerTab && !cornerTab.file.isHelp && !cornerTab.readError
-        && (isPdfFile(cornerTab.file.name) || isNotebookFile(cornerTab.file.name));
+        && (isPdfFile(cornerTab.file.name) || isCanvasFile(cornerTab.file.name));
     const countPath = countable ? activeFile!.path : null;
     const wordCountRef = useRef<HTMLSpanElement>(null);
     const charCountRef = useRef<HTMLSpanElement>(null);

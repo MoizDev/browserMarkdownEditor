@@ -30,7 +30,8 @@ import type { BoardSpellClient } from '../text/spell/client';
 import { SpellingMenuRequest, type Misspelling, type SpellMenuRows } from '../text/spell/menu';
 import { validUserWord } from '../text/spell/dictionary';
 import { spellingAtOffset, visibleSpellingPaths } from '../text/spell/visible';
-import { EMPTY_RICH_TEXT, sliceRichText, spliceRichText, type RichText } from '../text/richText';
+import { EMPTY_RICH_TEXT, sliceRichText, spliceRichText, type RichFragment, type RichText } from '../text/richText';
+import type { FragmentSnapshotOptions } from '../text/fragmentSnapshot';
 import { insertionFragment, linkRangeAt, plain } from '../text/richOperations';
 import type { ViewerEngine } from './types';
 import type { BoardPreview } from './preview';
@@ -511,7 +512,11 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
                 || selection.anchor !== context.selection.anchor || selection.focus !== context.selection.focus) return false;
             return editor.applyLink(href, context.target ?? context.selection);
         },
-        pasteText(fragment: RichText) { return manager.current?.editor.replaceSelection(fragment) ?? false; },
+        /** Paste is one canonical whole-value set, prepared cooperatively from the captured value. */
+        pasteText(fragment: RichFragment, options: FragmentSnapshotOptions): Promise<boolean> {
+            const editor = manager.current?.editor;
+            return editor ? editor.pasteCooperative(fragment, options) : Promise.resolve(false);
+        },
         prepareTextCut(node: NodeId, revision: number, selection: EditSelection) {
             const editor = manager.current?.editor, current = editor?.getSelection();
             if (!editor || active !== node || doc.rev !== revision || !current || current.anchor !== selection.anchor || current.focus !== selection.focus)

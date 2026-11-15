@@ -494,7 +494,7 @@ export default function App() {
       classifyLoadedTabs(typeof action === 'function' ? action(previous) : action, previous, classificationSourceRef.current),
     [],
   );
-  const [closingDocumentIds, setClosingDocumentIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [, setClosingDocumentIds] = useState<ReadonlySet<string>>(() => new Set());
   const closingRef = useRef(new Set<string>());
   const reopenedClosingRef = useRef(new Set<string>());
   // How those documents are arranged on screen: a row of panes — columns, all
@@ -3327,23 +3327,6 @@ export default function App() {
     const tab = tabsRef.current.find(t => t.id === id);
     if (tab) updateTabContent(tab.file.path, source, options);
   };
-
-  /**
-   * Buffer an edit and write it NOW, skipping the save debounce.
-   *
-   * For the moment a PDF leaves annotate mode: the viewer is about to re-read
-   * the file, so waiting out the 1s debounce would show the pre-annotation PDF
-   * and only correct itself a second later.
-   *
-   * The content is passed explicitly rather than read back from the tab — the
-   * setTabs above hasn't committed yet when flushTab runs.
-   */
-  const flushTabNow = useCallback(async (path: string, content: string) => {
-    const target = tabsRef.current.find(t => t.file.path === path);
-    if (!target || !canUpdateTabContent(target, 'annotation')) return;
-    updateTabContent(path, content);
-    await flushTab(path, true, false, undefined, false, true);
-  }, [flushTab, updateTabContent]);
 
   const checkpointRef = useRef<Promise<void> | null>(null);
   const checkpointAgainRef = useRef(false);
@@ -7036,7 +7019,6 @@ export default function App() {
           <EditorPane
             contentOf={contentOf}
             documentBuffers={documentBuffers}
-            closingDocumentIds={closingDocumentIds}
             reading={readerIntegration}
             tabs={tabs}
             layout={layout}
@@ -7062,7 +7044,6 @@ export default function App() {
             attachCanvasSession={attachNativeCanvasSession}
             onDiskAction={handleDiskAction}
             onAnnotationPreflight={onAnnotationPreflight}
-            onFlushNow={flushTabNow}
             onPreparePdfPrint={preparePdfPrint}
             onRotatePdf={rotatePdf}
             onRetryRead={retryUnreadTab}

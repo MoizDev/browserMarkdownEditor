@@ -152,7 +152,7 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
     useEffect(() => { if (!isVisible || !isFocused) cancelPrint(); }, [isVisible, isFocused, cancelPrint]);
     // A pane can be reused for another document without losing focus. Retire
     // the old handoff before a pending validation can navigate its reserved tab.
-    useLayoutEffect(() => { cancelPrint(); }, [file.path, file.handle, reading?.identity.vaultId, reading?.identity.vaultEpoch, reading?.identity.documentId, reading?.identity.diskRev, cancelPrint]);
+    useLayoutEffect(() => { cancelPrint(); }, [file.path, file.handle, mode, reading?.identity.vaultId, reading?.identity.vaultEpoch, reading?.identity.documentId, reading?.identity.diskRev, cancelPrint]);
     useEffect(() => () => { ++printEpoch.current; if (printExpiry.current !== null) window.clearTimeout(printExpiry.current); printPopup.current?.close(); if (printReady.current) URL.revokeObjectURL(printReady.current.url); }, []);
     const preparePrint = async () => {
         if (print === 'preparing' || printPending.current !== null || printPopup.current) return;
@@ -824,7 +824,9 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
                 }
             }}
         >
-            <button className="pdf-pane-print" onClick={() => setPrint(value => value === 'closed' ? 'confirm' : value)}>Print…</button>
+            {/* The reader's own print route. Annotate mode prints from its Original view (see preparePrint),
+                so this pill must not float over the native board's page there. */}
+            {mode === 'read' && <button className="pdf-pane-print" onClick={() => setPrint(value => value === 'closed' ? 'confirm' : value)}>Print…</button>}
             {print !== 'closed' && <ConfirmDialog title="Open PDF for printing" confirmLabel={print === 'ready' ? 'Open PDF' : print === 'preparing' ? 'Preparing…' : 'Prepare PDF'}
                 onCancel={cancelPrint} onConfirm={() => { if (print === 'ready') void openPrint(); else void preparePrint(); }}>
                 {print === 'ready' ? 'Open the saved PDF in a new tab, then print from the browser’s PDF viewer. An encrypted PDF may ask for its password again.' : 'Any pending annotations will be saved first. The saved PDF opens in the browser’s PDF viewer for printing.'}

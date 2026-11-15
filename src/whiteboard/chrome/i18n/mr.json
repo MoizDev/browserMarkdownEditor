@@ -149,6 +149,7 @@
     "chrome.toggleMinimap": "मिनीमॅप टॉगल करा",
     "chrome.debugMode": "डीबग मोड",
     "chrome.sheet": "पत्रक",
+    "chrome.annotationSheets": "भाष्य शीट",
     "chrome.newSheet": "नवीन पत्रक",
     "chrome.renameSheet": "पत्रक पुनर्नामित करा",
     "chrome.deleteSheet": "पत्रक हटवा",

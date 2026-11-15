@@ -149,6 +149,7 @@
     "chrome.toggleMinimap": "مینیمپ را تغییر دهید",
     "chrome.debugMode": "حالت اشکال زدایی",
     "chrome.sheet": "ورق",
+    "chrome.annotationSheets": "برگه‌های یادداشت",
     "chrome.newSheet": "ورق جدید",
     "chrome.renameSheet": "تغییر نام برگه",
     "chrome.deleteSheet": "برگه را حذف کنید",

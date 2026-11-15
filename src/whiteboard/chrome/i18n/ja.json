@@ -149,6 +149,7 @@
     "chrome.toggleMinimap": "ミニマップの切り替え",
     "chrome.debugMode": "デバッグモード",
     "chrome.sheet": "シート",
+    "chrome.annotationSheets": "注釈シート",
     "chrome.newSheet": "新しいシート",
     "chrome.renameSheet": "シートの名前を変更",
     "chrome.deleteSheet": "シートの削除",

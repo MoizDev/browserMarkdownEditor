@@ -5,7 +5,7 @@ import { arcBounds, transformBox } from '../geom/bounds';
 import { connectorBody } from '../geom/connectors';
 import type { BoardDoc } from '../model/doc';
 import type { NodeId } from '../model/ids';
-import type { ConnectorNode } from '../model/nodes';
+import type { ConnectorNode, Node } from '../model/nodes';
 import type { LocalGeometryBounds, Box } from '../scene/bounds';
 import type { BoardTextGeometry } from './textGeometry';
 import { prepareBoardVectorGeometryNow } from './vectorGeometry';
@@ -17,14 +17,26 @@ function matrix(doc: BoardDoc, id: NodeId): Affine {
 /** Cold native-record hint only, never exact Scene/pick/page-placement geometry.
  * The untrimmed path encloses every terminal-connected trim; head/gap and label
  * envelopes are added before the captured world-to-local projection. */
-export function conservativeConnectorBounds(node: ConnectorNode, doc: BoardDoc, text: BoardTextGeometry): LocalGeometryBounds | undefined {
+export function conservativeConnectorBounds(node: ConnectorNode, doc: BoardDoc, text: BoardTextGeometry,
+    attachBox?: (target: Readonly<Node>) => Box | undefined): LocalGeometryBounds | undefined {
     const world = matrix(doc, node.id), local = inverse(world, 1e12);
     if (!local) return undefined;
     const boxes: Box[] = [];
+    // The half-diagonal of a target box whose precise anchor is not known: every point of the box lies within it.
+    let approximate = 0;
     const aim = (end: typeof node.start) => {
         if (!end.attach) return transformPoint(world, end);
         const target = doc.nodes.get(end.attach.target);
-        if (!target || target.kind === 'stroke' || target.kind === 'polyline' || target.kind === 'opaque' || target.kind === 'group' || target.kind === 'connector') return null;
+        if (!target || target.kind === 'opaque' || target.kind === 'connector') return null;
+        if (target.kind === 'stroke' || target.kind === 'polyline' || target.kind === 'group') {
+            // No vector anchor exists for these: the attach rule's midpoint is the point, and a precise anchor
+            // is only known to lie somewhere in the box, so the envelope is widened to cover it.
+            const box = attachBox?.(target);
+            if (!box) return null;
+            boxes.push(box);
+            if (end.attach.precise || end.attach.exact) approximate = Math.max(approximate, Math.hypot(box[2] - box[0], box[3] - box[1]) / 2);
+            return { x: (box[0] + box[2]) / 2, y: (box[1] + box[3]) / 2 };
+        }
         const geometry = prepareBoardVectorGeometryNow(target, { text, revision: `hint:${target.id}`, zoom: 1 });
         const box = geometry.attachments?.logicalBox;
         if (!box) return null;
@@ -44,7 +56,7 @@ export function conservativeConnectorBounds(node: ConnectorNode, doc: BoardDoc, 
         const escape = Math.max(12, node.width * 6);
         bounds = [bounds[0] - escape, bounds[1] - escape, bounds[2] + escape, bounds[3] + escape];
     }
-    let xPad = node.width * 6, yPad = xPad;
+    let xPad = node.width * 6 + approximate, yPad = xPad;
     if (node.label) {
         const length = body.length + (node.route === 'elbow' ? 2 * ((bounds[2] - bounds[0]) + (bounds[3] - bounds[1])) : 0);
         const label = text.prepareNow(node, { revision: `hint:${node.id}`, connectorLength: length, anchor: a });

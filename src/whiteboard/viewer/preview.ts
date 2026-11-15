@@ -1,4 +1,5 @@
 import type { Affine, PathCommand } from '../../platform/types';
+import { yieldToHost } from '../text/cooperative';
 import { worldPose } from '../change/coordinates';
 import type { Op } from '../change/ops';
 import { sheetOf, type BoardDoc } from '../model/doc';
@@ -93,7 +94,7 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
     let disposed = false, generation = 0, pin: SceneSnapshot | null = null, document: Promise<BoardDoc> | null = null;
     let controller: AbortController | null = null, pendingRelease: (() => void) | null = null, pair: BoardLayerPair | null = null;
     let frames: ReturnType<typeof createPaintFrameAssembler> | null = null;
-    let requestedIds: ReadonlySet<string> | null = null, requestedGeneration = -1;
+    let requestedIds: ReadonlySet<string> | null = null, requestedGeneration = -1, handedOffGeneration = -1;
     let commitRevision: number | null = null, commitRelease: (() => void) | null = null;
     const frameIds = new WeakMap<PaintSource, ReadonlySet<string>>(), frameGenerations = new WeakMap<PaintSource, number>();
     const waiters = new Set<{ generation: number; resolve(): void; reject(error: unknown): void; signal: AbortSignal; abort(): void }>();
@@ -113,8 +114,32 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
     const held = new Set<{ release(): void }>();
     const report = (error: unknown) => { try { options.onError(error); } catch { /* reporting must not prevent release */ } };
     const release = (lease: { release(): void }) => { if (held.delete(lease)) { try { lease.release(); } catch (error) { report(error); } } };
+    // A gesture's preview arrives while the Scene is still absorbing the previous edit (each
+    // keystroke/composition step bumps doc.rev). Rather than failing the preview, the latest
+    // request waits for the Scene to catch up, driven cooperatively like pointQuery/frameDrop.
+    type StartArgs = Parameters<typeof start>;
+    let deferred: StartArgs | null = null, driving = false, resuming = false;
+    const driveScene = async () => {
+        if (driving) return;
+        driving = true;
+        try {
+            while (!disposed && deferred) {
+                const scene = runtime.scene;
+                if (!scene) { deferred = null; break; }
+                if (scene.ready && scene.revision === runtime.session.doc.rev) {
+                    const args = deferred; deferred = null;
+                    resuming = true;
+                    try { start(...args); } catch (error) { clear(); report(error); } finally { resuming = false; }
+                    break;
+                }
+                scene.step(64, performance.now() + 3);
+                await yieldToHost();
+            }
+        } catch (error) { deferred = null; report(error); } finally { driving = false; }
+    };
     const clearNow = () => {
-        generation++; settle(interrupted()); controller?.abort(); controller = null; pendingRelease?.(); pendingRelease = null;
+        deferred = null;
+        generation++; if (!resuming) settle(interrupted()); controller?.abort(); controller = null; pendingRelease?.(); pendingRelease = null;
         const releaseCommit = commitRelease; commitRelease = null; commitRevision = null;
         const oldFrames = frames; frames = null; pair = null; requestedIds = null;
         try { oldFrames?.dispose(); } catch (error) { report(error); }
@@ -139,7 +164,9 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
             const existing = live.nodes.get(node.id);
             if (existing && existing.kind !== node.kind) throw new Error('Preview cannot replace a node kind');
         }
-        if (!scene || !scene.ready || scene.revision !== live.rev) throw new Error('Preview scene is not ready');
+        if (!scene) throw new Error('Preview scene is not available');
+        if (!scene.ready || scene.revision !== live.rev) { deferred = [changes, textOverlay, paper]; void driveScene(); return; }
+        deferred = null;
         if (pin && pin.revision !== live.rev) clear();
         if (!pin) { pin = scene.pin(); document = pin.readDocument(); }
         // Captured before any await: this job's overlay uses the paint binding of its own start,
@@ -148,7 +175,7 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
         const view = engine.getView(), selection = runtime.selection.getSnapshot();
         const sheet = view.sheetId ?? selection.sheet;
         const job = new AbortController(), seq = ++generation;
-        settle(interrupted()); controller?.abort(); pendingRelease?.(); pendingRelease = null; controller = job;
+        if (!resuming) settle(interrupted()); controller?.abort(); pendingRelease?.(); pendingRelease = null; controller = job;
         const leases: { release(): void }[] = [];
         try {
             for (const node of changes.values()) { const lease = render.retainNode(node); held.add(lease); leases.push(lease); }
@@ -279,7 +306,8 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
                             frameIds.set(frame, requestedIds); frameGenerations.set(frame, requestedGeneration);
                         }
                     } };
-                    const layers = createBoardLayers({ frames: assembler, images: options.images, onError: report, requestedRevision: () => pinned.revision });
+                    const layers = createBoardLayers({ frames: assembler, images: options.images, onError: report, requestedRevision: () => pinned.revision,
+                        optional: true });
                     frames = assembler; pair = layers;
                     engine.setPreviewLayers({ underlay: { ...layers[0], id: 'board-preview-underlay' },
                         content: { ...layers[1], id: 'board-preview-content' } }, () => {
@@ -294,6 +322,9 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
                 }
                 requestedIds = candidates; requestedGeneration = seq;
                 frames.request({ source: guarded, release: releaseLeases }); handedOff = true;
+                // Ready means this generation's source is handed to its layer. Drawing it is the platform's
+                // later step, and the commit must not wait on a compositor cycle that a gesture may not trigger.
+                handedOffGeneration = seq; settle();
                 if (pendingRelease === releaseLeases) pendingRelease = null;
             } catch (error) {
                 if (!job.signal.aborted && generation === seq) {
@@ -316,9 +347,8 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
         },
         showOps(ops) { try { const projected = operationNodes(runtime.session.doc, ops); start(projected.changes, undefined, projected.paper); } catch (error) { clear(); report(error); } },
         waitUntilReady(signal) {
-            if (disposed || signal.aborted || !pin || !controller) return Promise.reject(interrupted());
-            const frame = pair?.readyFrame();
-            if (frame && frames?.isCurrent(frame) && frameGenerations.get(frame) === generation) return Promise.resolve();
+            if (disposed || signal.aborted || ((!pin || !controller) && !deferred)) return Promise.reject(interrupted());
+            if (handedOffGeneration === generation && frames) return Promise.resolve();
             return new Promise<void>((resolve, reject) => {
                 const waiter = { generation, resolve, reject, signal, abort: () => {} };
                 waiter.abort = () => { if (waiters.delete(waiter)) reject(interrupted()); };

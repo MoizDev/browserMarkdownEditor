@@ -141,6 +141,12 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
         if (!source || !current()) throw new Error('The PDF ink source is unavailable');
         return source;
     };
+    // A PDF page's exports and print carry the document's own PDF backdrop, retained for the one capture.
+    const retainPdfSource = identity.kind !== 'pdfInk' ? undefined : () => {
+        const source = pdfSource();
+        if (source.getSnapshot().status !== 'ready') throw new Error('The PDF source is updating');
+        return source.retainSource();
+    };
     const readMedia = async (entry: MediaEntry, signal: AbortSignal) => {
         signal.throwIfAborted();
         if (identity.kind !== 'pdfInk') return (await ports.read(entry, signal))?.blob ?? null;
@@ -167,11 +173,7 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
     const prepareExport = (route: Parameters<typeof prepareNativeExport>[0]['route'], signal: AbortSignal) => prepareNativeExport({ runtime, route, signal,
         boardName: host.identity(identity.documentId)?.name ?? identity.name, theme: active?.theme() ?? 'light',
         transparent: runtime.session.doc.view.transparent, current, notice: report, onError: fail,
-        ...(identity.kind === 'pdfInk' ? { retainPdfSource: () => {
-            const source = pdfSource();
-            if (source.getSnapshot().status !== 'ready') throw new Error('The PDF source is updating');
-            return source.retainSource();
-        } } : {}) });
+        ...(retainPdfSource ? { retainPdfSource } : {}) });
     let commands: ReturnType<typeof createNativeClipboardCommands>;
     try {
         commands = createNativeClipboardCommands({ runtime, token, memory, cache: host.clipboard, current,

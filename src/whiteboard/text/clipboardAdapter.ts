@@ -9,6 +9,7 @@ import type { createBoardTextEditor } from '../viewer/textEditor';
 import { classifyTextPaste } from './clipboardPaste';
 import { readPrivateClipboardText } from './clipboardPrivate';
 import { snapshotCopiedTextRange, type TextCopySnapshotHost } from './clipboardSnapshot';
+import { yieldToHost } from './cooperative';
 
 export type TextPasteIntent = 'paste' | 'paste-inverted' | 'paste-plain' | 'paste-plain-inverted';
 export interface TextClipboardAdapterOptions {
@@ -95,7 +96,7 @@ export function createTextClipboardAdapter(options: TextClipboardAdapterOptions)
                 if (disposed || generation !== serial || !options.isCurrent(identity) || !after || after.node.id !== owner.node
                     || after.revision !== owner.revision || after.selection.anchor !== owner.selection.anchor || after.selection.focus !== owner.selection.focus) return false;
                 if (content.kind === 'empty') return false;
-                if (content.kind === 'text') return options.editor.pasteText(content.fragment);
+                if (content.kind === 'text') return options.editor.pasteText(content.fragment, { signal: combined, cooperate: yieldToHost });
                 // The board paste takes ownership before ending this editor; closing it may dispose this adapter.
                 if (pending === controller) pending = null;
                 const boardSignal = AbortSignal.any([signal, controller.signal]);

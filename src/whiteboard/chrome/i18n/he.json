@@ -149,6 +149,7 @@
     "chrome.toggleMinimap": "החלף מינימפה",
     "chrome.debugMode": "מצב ניפוי באגים",
     "chrome.sheet": "גיליון",
+    "chrome.annotationSheets": "גיליונות הערות",
     "chrome.newSheet": "גיליון חדש",
     "chrome.renameSheet": "שנה את שם הגיליון",
     "chrome.deleteSheet": "מחק גיליון",

@@ -626,6 +626,20 @@ async function menuVaults(list: StoredVault[], root?: FileSystemDirectoryHandle 
  * change check. These are the primitives; App owns the baselines.
  * ─────────────────────────────────────────────────────────────────────────── */
 
+/**
+ * A caller of a serial queue stops waiting when its own signal aborts. The queue itself stays ordered (the next
+ * job still waits for this one to settle), and the abandoned job exits at its next guard. Without this, one hung
+ * write froze every later board asset request until its own deadline, and the caller saw no failure at all.
+ */
+function untilAborted<T>(job: Promise<T>, signal: AbortSignal): Promise<T> {
+    if (signal.aborted) return Promise.reject(signal.reason ?? new DOMException('Board asset request cancelled', 'AbortError'));
+    return new Promise<T>((resolve, reject) => {
+        const abort = () => reject(signal.reason ?? new DOMException('Board asset request cancelled', 'AbortError'));
+        signal.addEventListener('abort', abort, { once: true });
+        job.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+    });
+}
+
 function isNotFound(err: unknown): boolean {
     return (err as DOMException | undefined)?.name === 'NotFoundError';
 }
@@ -1787,7 +1801,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             }
         }));
         boardAssetQueueRef.current = job.then(() => {}, () => {});
-        return job;
+        return untilAborted(job, request.signal);
     }, [boardAssetGuard, findBoardAsset, withMutation]);
 
     const keepConversionBackup = useCallback((request: BoardAssetAccess & { blob: Blob }): Promise<TrashItem> => {
@@ -1869,7 +1883,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             return name;
         }));
         boardAssetQueueRef.current = job.then(() => {}, () => {});
-        return job;
+        return untilAborted(job, request.signal);
     }, [boardAssetGuard, withMutation, patchTreeDirs]);
 
     const copyTrashFile = useCallback((item: TrashItem, root: FileSystemDirectoryHandle, isCurrent: () => boolean) => {

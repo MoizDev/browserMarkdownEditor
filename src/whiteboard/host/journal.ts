@@ -43,7 +43,11 @@ export function createBoardJournal(options: BoardJournalOptions): BoardJournalPo
             if (barrier) await barrier.catch(() => {});
             await options.append(snapshot, source);
         });
-        tail = task.then(() => {}, error => { failure ??= error; report(error); });
+        // A superseded or cancelled append is not a failure: a later dirty batch journals the same content again.
+        tail = task.then(() => {}, error => {
+            if (error instanceof DOMException && error.name === 'AbortError') return;
+            failure ??= error; report(error);
+        });
         void tail.finally(() => { inFlight--; releaseWhenIdle(); });
         return task;
     };

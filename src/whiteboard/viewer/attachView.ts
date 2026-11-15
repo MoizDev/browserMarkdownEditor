@@ -239,7 +239,7 @@ export const attachView: AttachView = options => {
                 return;
             }
             frames.requestStream({ stream, isCurrent: () => pin.isCurrent(), release: () => pin.release(), ...(dense ? { liveOnly: true as const } : {}),
-                open: (apron, signal) => open.call(pin, { ...identity, world: apron }, signal) });
+                open: (apron, signal, resolved) => open.call(pin, { ...identity, world: apron }, signal, resolved) });
             paintJob = null; publish();
         }, error => { pin.release(); if (!controller.signal.aborted) report(error); });
     }

@@ -1,6 +1,7 @@
 import type { Affine, Rect } from '../../platform/types';
 import type { RenderToken } from '../../platform/render/types';
 import type { MemoryCacheHandle } from '../../platform/render/memoryGovernor';
+import type { ByteLease } from '../../platform/render/gfx/api';
 import { worldPose } from '../change/coordinates';
 import { ApplyFailed } from '../change/errors';
 import { createBoardChangeGeometry } from '../geom/changeGeometry';
@@ -38,12 +39,26 @@ import { chooseTileScale } from './tileHierarchy';
 import { createBoardTextGeometry, type PreparedBoardText } from './textGeometry';
 import type { BoardFonts } from '../text/fonts';
 import { prepareBoardVectorGeometry, prepareBoardVectorGeometryNow, prepareOpaqueGeometry, type BoardVectorGeometry } from './vectorGeometry';
+import { connectorBytes, inkChunkBytes, vectorBytes } from './residentBytes';
+import type { ResolvedNodeCache } from './resolvedNodeCache';
 /** A link card's stored preview picture and favicon, as the document holds them; other nodes have none. */
 function previewMediaOf(doc: Pick<BoardDoc, 'media'>, node: Readonly<Node>): PreviewMedia | undefined {
     if (node.kind !== 'linkcard' || !node.preview) return undefined;
     return { image: node.preview.image ? doc.media.get(node.preview.image) : undefined,
         favicon: node.preview.favicon ? doc.media.get(node.preview.favicon) : undefined };
 }
+/** The idle geometry budget: about 16 MB of the 32 MB CPU grant, so a few thousand strokes' geometry stays cached. */
+const IDLE_GEOMETRY_BYTES = 16 * 1024 * 1024;
+/** Resident size of one prepared geometry, estimated from its typed arrays and records (see residentBytes). */
+function preparedBytes(prepared: Prepared): number {
+    let bytes = 512 + prepared.key.length * 2 + prepared.signature.length * 16;
+    for (const chunk of prepared.ink ?? []) bytes += inkChunkBytes(chunk);
+    if (prepared.vector) bytes += vectorBytes(prepared.vector);
+    if (prepared.connector) bytes += connectorBytes(prepared.connector);
+    return bytes;
+}
+/** A dense plan's resolved nodes, valid for one variant of the paint inputs that resolution reads. */
+interface SharedResolution { readonly cache: ResolvedNodeCache; readonly variant: string }
 
 
 interface Prepared {
@@ -125,8 +140,8 @@ export function createBoardRenderServices(options: {
     /** Main-window transport only; worker-hosted admission reuses its own cooperative canonical job. */
     readonly coverageWorker?: boolean;
     readonly fonts?: BoardFonts;
-    /** The session's cache allocator for stroke LOD levels. Absent, strokes stay on their fine samples. */
-    readonly inkLodMemory?: (evict: (bytes: number) => void) => Pick<MemoryCacheHandle, 'reserve' | 'release' | 'close'>;
+    /** The session's cache allocator for derived residency: idle geometry and stroke LOD levels. Absent, nothing is charged. */
+    readonly derivedMemory?: (evict: (bytes: number) => void) => Pick<MemoryCacheHandle, 'reserve' | 'release' | 'close'>;
     cooperate?(): Promise<void>;
 }) {
     const cached = new Map<NodeId, Prepared>(), listeners = new Set<(ids: ReadonlySet<NodeId>) => void>();
@@ -145,26 +160,66 @@ export function createBoardRenderServices(options: {
         let freed = 0;
         for (const { ladder } of inkLadders.values()) { if (freed >= bytes) break; freed += ladder.evict(bytes - freed); }
     };
-    const inkMemory = options.inkLodMemory?.(evictInkLadders);
+    // Idle entries are bounded by bytes, and each lease is charged to the derived handle, so the governor reclaims them first.
+    const idle = new Map<NodeId, { readonly bytes: number; readonly lease: ByteLease | null }>();
+    let idleBytes = 0;
     const dropInkLadder = (id: NodeId) => {
         const entry = inkLadders.get(id);
         if (entry) { entry.ladder.dispose(); inkLadders.delete(id); }
     };
+    // Replacing or releasing an entry keeps its ladder, which the caller may have just rebuilt for the new signature.
+    const forgetIdle = (id: NodeId) => {
+        cached.delete(id);
+        const entry = idle.get(id);
+        if (!entry) return;
+        idle.delete(id); idleBytes -= entry.bytes;
+        if (entry.lease) derived?.release(entry.lease);
+    };
+    // Least recently used first; a budget eviction also drops the entry's ladder, which no longer has a geometry to serve.
+    const evictOldestIdle = (): { readonly bytes: number; readonly charged: number } => {
+        const gone = cached.keys().next().value!, entry = idle.get(gone);
+        forgetIdle(gone); dropInkLadder(gone);
+        return { bytes: entry?.bytes ?? 0, charged: entry?.lease?.bytes ?? 0 };
+    };
+    // The governor's request: idle geometry first (rebuildable from the document), then stroke ladders.
+    const evictDerived = (bytes: number) => {
+        let freed = 0;
+        while (freed < bytes && cached.size) freed += evictOldestIdle().charged;
+        if (freed < bytes) evictInkLadders(bytes - freed);
+    };
+    const derived = options.derivedMemory?.(evictDerived);
     const inkLadder = (id: NodeId, signature: readonly unknown[]): InkLodLadder | undefined => {
-        if (!inkMemory || disposed) return undefined;
+        if (!derived || disposed) return undefined;
         const entry = inkLadders.get(id);
         if (entry && sameGeometrySignature(entry.signature, signature)) return entry.ladder;
         dropInkLadder(id);
-        const ladder = new InkLodLadder(inkMemory);
+        const ladder = new InkLodLadder(derived);
         inkLadders.set(id, { signature, ladder });
         return ladder;
     };
-    const trimCached = () => {
-        while (cached.size > 256) { const gone = cached.keys().next().value!; cached.delete(gone); dropInkLadder(gone); }
+    const admit = (charged: number): { readonly lease: ByteLease | null } | null => {
+        if (!derived) return { lease: null };
+        const lease = derived.reserve(charged);
+        return lease ? { lease } : null;
+    };
+    /** Stores a prepared geometry as the newest idle entry. Its stroke ladder counts toward the budget too. A charge the
+     * governor still denies after idle bytes are freed leaves the entry out: the cache only ever saves a rebuild. */
+    const storeIdle = (id: NodeId, prepared: Prepared): void => {
+        forgetIdle(id);
+        const ladder = inkLadders.get(id), charged = preparedBytes(prepared);
+        const bytes = charged + (ladder && sameGeometrySignature(ladder.signature, prepared.signature) ? ladder.ladder.bytes : 0);
+        if (bytes > IDLE_GEOMETRY_BYTES) return;
+        while (idleBytes + bytes > IDLE_GEOMETRY_BYTES && cached.size) evictOldestIdle();
+        let admitted = admit(charged);
+        if (!admitted && cached.size) { evictDerived(charged); admitted = admit(charged); }
+        if (!admitted) return;
+        cached.set(id, prepared);
+        idle.set(id, { bytes, lease: admitted.lease });
+        idleBytes += bytes;
     };
     const palettes = options.palettes ?? DEFAULT_BOARD_PALETTES;
     const text = createBoardTextGeometry({ fonts: options.fonts, cooperate: options.cooperate, onFontEpoch() {
-        for (const id of textIds) cached.delete(id);
+        for (const id of textIds) forgetIdle(id);
         const ids = new Set(textIds);
         for (const listener of listeners) listener(ids);
     } });
@@ -174,9 +229,9 @@ export function createBoardRenderServices(options: {
     };
     const releaseHolder = () => {
         if (--holders !== 0) return;
-        disposed = true; text.dispose(); cached.clear(); textIds.clear(); listeners.clear(); sessionRasters.dispose();
+        disposed = true; text.dispose(); for (const id of [...cached.keys()]) forgetIdle(id); textIds.clear(); listeners.clear(); sessionRasters.dispose();
         for (const id of [...inkLadders.keys()]) dropInkLadder(id);
-        inkMemory?.close();
+        derived?.close();
     };
     const signature = (node: Readonly<Node>, doc: BoardDoc): readonly unknown[] => {
         const local = localGeometrySignature(node, text.fonts.epoch, 1);
@@ -263,10 +318,8 @@ export function createBoardRenderServices(options: {
         check(signal);
         const prepared: Prepared = { ...result, signature: before,
             ...(precision ? { inkPrecision: precision.key, inkLod: precision.lod } : {}) };
-        cached.delete(node.id); cached.set(node.id, prepared);
         // Retained source items own their geometry by reference after eviction.
-        // The v1 default bounds idle local-geometry residency to 256 nodes.
-        trimCached();
+        storeIdle(node.id, prepared);
         return prepared;
     };
     // A native copy event cannot await fonts, images, or a worker. These are the
@@ -313,8 +366,7 @@ export function createBoardRenderServices(options: {
         check(signal);
         const prepared: Prepared = { ...result, signature: before,
             ...(precision ? { inkPrecision: precision.key, inkLod: false } : {}) };
-        cached.delete(node.id); cached.set(node.id, prepared);
-        trimCached();
+        storeIdle(node.id, prepared);
         return prepared;
     };
     const bounds: BoundsProvider = {
@@ -329,7 +381,7 @@ export function createBoardRenderServices(options: {
             return { minX: x, minY: y, maxX: x + w, maxY: y + h, maxPressure: summary.maxPressure };
         },
     };
-    const asyncPaintPorts = (doc: BoardDoc, request: ScenePaintRequest, orderedIds?: PaintNodeOrder): ScenePaintPorts => {
+    const asyncPaintPorts = (doc: BoardDoc, request: ScenePaintRequest, orderedIds?: PaintNodeOrder, shared?: SharedResolution): ScenePaintPorts => {
         const palette = palettes[doc.kind === 'whiteboard' ? request.theme : 'light'];
         return {
             cooperate: options.cooperate, ...(orderedIds ? { orderedIds } : {}),
@@ -338,13 +390,19 @@ export function createBoardRenderServices(options: {
             intersectsPage: () => true,
             async resolve(node, context, itemSignal) {
                 if (node.kind === 'group') return { content: [] };
+                // A picture's tiles depend on the stream's own world, so only world-independent resolutions are shared.
+                const reuse = shared && node.kind !== 'picture' ? shared : undefined;
+                const known = reuse?.cache.get(reuse.variant, node.id, context.sensitive);
+                if (known) return known;
                 const geometry = await prepare(node, doc, itemSignal, context);
                 const paint = node.kind === 'stroke' ? paintStrokeNode(node, geometry.ink!, geometry.key, context, palette)
                     : node.kind === 'connector' ? paintConnector(node, geometry.connector!, context, palette, text.faces)
                     : await paintVectorNode(node, geometry.vector!, context, palette, text.faces,
                         { signal: itemSignal, cooperate: options.cooperate, media: node.kind === 'picture' || node.kind === 'clip' ? doc.media.get(node.media!) : undefined,
                             preview: previewMediaOf(doc, node), tiles: { deviceScale: request.deviceScale, world: request.world } });
-                return withAllocation(paint, geometry, context);
+                const resolved = withAllocation(paint, geometry, context);
+                if (reuse) reuse.cache.set(reuse.variant, node.id, context.sensitive, resolved);
+                return resolved;
             },
         };
     };
@@ -359,12 +417,20 @@ export function createBoardRenderServices(options: {
         return { ...source, sessionRasters, sourceWorld: world,
             ...(text.fonts.epoch === epoch ? { rasterVariant: variant } : {}) };
     };
+    // What resolution reads beyond the node itself: a shared resolution is reused only while every one of these holds.
+    const resolutionVariant = (doc: BoardDoc, request: ScenePaintRequest, sourceToken: RenderToken) => JSON.stringify([
+        doc.rev, sourceToken.vaultEpoch, sourceToken.documentId, sourceToken.bytesGeneration, sourceToken.session,
+        request.sheetId, request.theme, request.deviceScale ?? null, !!request.allowInkLod,
+        palettes[doc.kind === 'whiteboard' ? request.theme : 'light'].revision, text.fonts.epoch,
+    ]);
     // Frame identity matches `paint`: the variant is withdrawn if the font epoch moved while the
     // stream was being consumed, so a frame never claims a raster from a superseded face set.
-    const paintStream = (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder, sourceToken: RenderToken = options.token): ScenePaintNodeStream => {
+    const paintStream = (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder,
+        sourceToken: RenderToken = options.token, resolved?: ResolvedNodeCache): ScenePaintNodeStream => {
         const epoch = text.fonts.epoch, variant = rasterVariant(doc, request, epoch, sourceToken);
         const world = request.world ? Object.freeze({ ...request.world }) : undefined;
-        const stream = createScenePaintNodeStream(doc, sourceToken, request, asyncPaintPorts(doc, request, orderedIds), signal);
+        const shared = resolved ? { cache: resolved, variant: resolutionVariant(doc, request, sourceToken) } : undefined;
+        const stream = createScenePaintNodeStream(doc, sourceToken, request, asyncPaintPorts(doc, request, orderedIds, shared), signal);
         return {
             token: stream.token, theme: request.theme, sceneRevision: stream.sceneRevision, sourceDoc: stream.sourceDoc, sensitiveNodes: stream.sensitiveNodes,
             sessionRasters, sourceWorld: world,
@@ -550,8 +616,7 @@ export function createBoardRenderServices(options: {
         const vector = prepareBoardVectorGeometryNow(node, { text, revision: key, zoom: 1 });
         const box = geometrySceneBounds(vector), value = { ink: box.ink, hit: box.hit };
         if (vector.text.length) textIds.add(node.id);
-        cached.set(node.id, { key, vector, bounds: value, signature: signature(node, options.doc) });
-        trimCached();
+        storeIdle(node.id, { key, vector, bounds: value, signature: signature(node, options.doc) });
         return value;
     };
     // A connector's conservative envelope may name an attach target the connector hint cannot box alone (a stroke,
@@ -592,7 +657,8 @@ export function createBoardRenderServices(options: {
                 || captured.bytesGeneration < options.token.bytesGeneration) throw new TypeError('Paint binding is not the same document source');
             return Object.freeze({
                 token: captured, retainRenderer,
-                preparePaintStream: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, order?: PaintNodeOrder) => paintStream(doc, request, signal, order, captured),
+                preparePaintStream: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, order?: PaintNodeOrder, resolved?: ResolvedNodeCache) =>
+                    paintStream(doc, request, signal, order, captured, resolved),
                 preparePaint: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, order?: PaintNodeOrder) => paint(doc, request, signal, order, captured),
                 prepareOverlay: (doc: BoardDoc, request: ScenePaintRequest, ids: Iterable<NodeId> | undefined, signal: AbortSignal) => paint(doc, request, signal, ids, captured),
                 prepareOverlayNow: (doc: BoardDoc, request: ScenePaintRequest, ids: Iterable<NodeId> | undefined, signal: AbortSignal) => {
@@ -662,7 +728,8 @@ export function createBoardRenderServices(options: {
         encoderLocal: localEnvelope,
         retainNode: (node: Readonly<Node>) => retainPaintNodeResources(node, options.samples, options.media),
         async realize(node: Readonly<Node>, signal: AbortSignal) { return (await prepare(node, options.doc, signal)).bounds; },
-        preparePaint: paint, preparePaintStream: paintStream,
+        preparePaint: paint, preparePaintStream: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, order?: PaintNodeOrder, resolved?: ResolvedNodeCache) =>
+            paintStream(doc, request, signal, order, undefined, resolved),
         prepareOverlay(doc: BoardDoc, request: ScenePaintRequest, ids: Iterable<NodeId>, signal: AbortSignal) {
             return paint(doc, request, signal, ids);
         },

@@ -22,6 +22,9 @@ export class InkLodLadder {
 
     constructor(private readonly memory: MemoryAllocator) {}
 
+    /** Bytes of the levels currently held, as charged to the allocator. */
+    get bytes(): number { return this.#levels.reduce((sum, level) => sum + level.lease.bytes, 0); }
+
     /** The coarsest held level whose cumulative centre error fits the budget, or null. A hit becomes most recent. */
     coarsest(budget: number): InkCoverageReply | null {
         let best = -1;

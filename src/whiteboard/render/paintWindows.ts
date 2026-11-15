@@ -42,11 +42,12 @@ export class PaintWindowBuilder {
     }
 }
 
-/** The windows of a canonical frame's two bands, in canonical order. */
-export function windowsOf(frame: PaintFrame): readonly PaintWindow[] {
+/** The windows of a canonical frame's two bands, in canonical order. An excluded item is skipped in place:
+ * the windows then hold only what the consumer prepares, never a whole-frame copy of the excluded items. */
+export function windowsOf(frame: PaintFrame, include?: (item: PaintItem) => boolean): readonly PaintWindow[] {
     const builder = new PaintWindowBuilder();
-    for (const item of frame.underlay) builder.push('underlay', item);
-    for (const item of frame.content) builder.push('content', item);
+    for (const item of frame.underlay) if (!include || include(item)) builder.push('underlay', item);
+    for (const item of frame.content) if (!include || include(item)) builder.push('content', item);
     return builder.finish();
 }
 

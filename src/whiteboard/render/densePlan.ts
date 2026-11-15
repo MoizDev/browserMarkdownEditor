@@ -4,7 +4,7 @@ import type { ByteLease } from '../../platform/render/gfx/api';
 import type { FrameBudget, GpuReleaseReason } from '../../platform/render/types';
 import type { Blend } from './colour';
 import type { PaintBand } from './material';
-import { inkCoverageChunks, type PaintFrame, type PaintImageItem, type PaintItem } from './paintStream';
+import type { PaintFrame, PaintImageItem, PaintItem } from './paintStream';
 import type { PaintLayerResources } from './resources';
 import { chooseTileScale, DENSE_TILE_PIXELS, tileRectWorld, tileScale, type TilePyramid, type TileAddress, type TileScale } from './tileHierarchy';
 import type { DenseRasterBorrow, DenseRasterTicket, SessionDenseRasters } from './sessionDenseRasters';
@@ -15,6 +15,8 @@ import { PaintWindowBuilder, rootOf, type PaintRoot } from './paintWindows';
 import { paintItem2d } from './reference/paint2d';
 
 const EDGE = 512, BLOCK = 65_536;
+/** Granularity of the direct phase's CPU reservation: the adapter grows one chunk at a time, never by a whole-set estimate. */
+const DIRECT_CHUNK = 64 * 1024;
 const NO_LIVE: ReadonlySet<string> = new Set();
 const BANDS: readonly PaintBand[] = ['underlay', 'content'];
 
@@ -82,8 +84,9 @@ type Plan = {
     owned: TileBitmap[];
     bitmaps: Map<string, TileBitmap>;
     bitmapBytes: number;
-    directAdapter: CanvasPaintAdapter | null; directLease: ByteLease | null; directEstimate: number;
-    estimateBand: PaintBand; estimateItem: number; estimateClip: number; estimateChunk: number;
+    directAdapter: CanvasPaintAdapter | null;
+    /** CPU leases that cover the direct adapter as it grows, one chunk at a time; `directLeased` is their sum. */
+    directLeases: ByteLease[]; directLeased: number;
     pending: number;
     lease: ByteLease | null;
     retired: boolean; blocked: boolean; prepared: PreparedPaint2d | null; resources: PaintLayerResources;
@@ -109,7 +112,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
     // A plan whose stream failed is not restarted each frame: its frame is refused until a newer one arrives.
     let failedFrame: PaintFrame | null = null;
     const plans = new Set<Plan>();
-    const working = (p: Plan) => p.bitmapBytes + (p.job?.memoryBytes ?? 0) + (p.lease?.bytes ?? 0) + (p.directLease?.bytes ?? 0);
+    const working = (p: Plan) => p.bitmapBytes + (p.job?.memoryBytes ?? 0) + (p.lease?.bytes ?? 0) + p.directLeased;
     const finishRetirement = (p: Plan) => { if (p.retired && !p.pending) plans.delete(p); };
     // Retiring a plan stops its work at once; the resources a retainPrepared borrow reads outlive it.
     const drop = (p: Plan | null) => {
@@ -138,7 +141,8 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         p.directAdapter?.dispose(); p.directAdapter = null; p.prepared = null;
         for (const bitmap of p.owned.splice(0)) bitmap.release();
         p.bitmaps.clear(); p.bitmapBytes = 0;
-        if (p.directLease) { host.allocator.cpu.release(p.directLease); p.directLease = null; }
+        for (const lease of p.directLeases.splice(0)) host.allocator.cpu.release(lease);
+        p.directLeased = 0;
         if (p.lease) { host.allocator.cpu.release(p.lease); p.lease = null; }
         finishRetirement(p);
     };
@@ -162,7 +166,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                 summaries: null, summaryIndex: 0, summaryCache: null,
                 target: { band: 'underlay', x: x0, y: y0, slot: null }, refine: [], refineIndex: 0,
                 job: null, cache: null, entries: { underlay: [], content: [] }, standins: 0, owned: [], bitmaps: new Map(), bitmapBytes: 0,
-                directAdapter: null, directLease: null, directEstimate: 0, estimateBand: 'underlay', estimateItem: 0, estimateClip: 0, estimateChunk: 0,
+                directAdapter: null, directLeases: [], directLeased: 0,
                 pending: 0, lease, retired: false, blocked: false, prepared: null, resources, borrows: 0, closing: false, freed: false };
             p.resources = { ...resources, images: { acquire(key, token, signal) {
                 p.pending++;
@@ -383,25 +387,6 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         if (pending) pending.cache.cancel(pending.ticket);
         settle(p, parts.map(part => ({ end: part.end, blend: part.blend, bitmap: toTileBitmap(part) })));
     };
-    const estimateDirect = (p: Plan): boolean => {
-        const items = p.source[p.estimateBand];
-        if (p.estimateItem === items.length) {
-            if (p.estimateBand === 'underlay') { p.estimateBand = 'content'; p.estimateItem = 0; return false; }
-            return true;
-        }
-        const item = items[p.estimateItem];
-        if (!p.live?.has(item.nodeId)) { p.estimateItem++; p.estimateClip = p.estimateChunk = 0; return false; }
-        if (p.estimateClip < item.clips.length) { p.directEstimate += item.clips[p.estimateClip++].d.length * 80; return false; }
-        if (item.kind === 'ink') {
-            const chunks = inkCoverageChunks(item.coverage);
-            if (p.estimateChunk < chunks.length) {
-                const c = chunks[p.estimateChunk++];
-                p.directEstimate += (c.segments.length / 6 + c.discs.length / 3) * 40 * 80; return false;
-            }
-        } else if (item.kind === 'path') p.directEstimate += item.d.length * 80;
-        if (!Number.isSafeInteger(p.directEstimate)) throw new RangeError('Dense live path estimate overflows');
-        p.estimateItem++; p.estimateClip = p.estimateChunk = 0; return false;
-    };
     /** The band's frame in canonical order, with each barrier's tile parts placed before its live items, pushed
      * into the window builder as it goes. One walk over the frame's own items: buckets follow the parts, never a
      * per-live-node structure, and no whole-band array is built. */
@@ -493,10 +478,6 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                         if (p.job && !p.job.needsFrame()) return;
                     } else if (p.phase === 'direct') {
                         if (!p.directAdapter) {
-                            if (!estimateDirect(p)) continue;
-                            const lease = host.allocator.cpu.reserve(Math.max(1, p.directEstimate));
-                            if (!lease) { p.blocked = true; return; }
-                            p.directLease = lease;
                             // Only live items are prepared: the adapter skips the rest in place, with no filtered copy.
                             const source = p.source;
                             p.directAdapter = createCanvasPaintAdapter({ ...p.resources, frames: {
@@ -504,9 +485,21 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                                 isCurrent: candidate => candidate === source && resources.frames.isCurrent(source),
                             } }, (_ctx, _view, paint) => paint(), report, item => !!p.live?.has(item.nodeId));
                         }
-                        p.directAdapter.prepare(view, budget);
-                        if (!p.directAdapter.borrowPrepared()) return;
-                        publish(p); return;
+                        const adapter = p.directAdapter;
+                        // The adapter's native bytes are covered one chunk at a time: a denied chunk blocks the plan
+                        // until memory frees, and a huge live set streams through the adapter instead of reserving
+                        // an up-front estimate of every item.
+                        while (adapter.memory().cpuBytes + DIRECT_CHUNK > p.directLeased) {
+                            const lease = host.allocator.cpu.reserve(DIRECT_CHUNK);
+                            if (!lease) { p.blocked = true; return; }
+                            p.directLeases.push(lease); p.directLeased += lease.bytes;
+                        }
+                        // Stops at the covered boundary; the next frame reserves the following chunk before it resumes.
+                        const directBudget = Object.create(budget, { shouldYield: { value: (): boolean =>
+                            budget.shouldYield() || adapter.memory().cpuBytes + DIRECT_CHUNK > p.directLeased } }) as FrameBudget;
+                        adapter.prepare(view, directBudget);
+                        if (adapter.borrowPrepared()) publish(p);
+                        return;
                     } else return;
                     if (p.blocked) return;
                 }

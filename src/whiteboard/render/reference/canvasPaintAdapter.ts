@@ -207,7 +207,7 @@ export function createCanvasPaintAdapter(
         s.clipIndex = 0;
     }
     function preparedOf(s: Snapshot): PreparedPaint2d {
-        s.prepared ??= { sourceFrame: s.frame, root: rootOf(s.frame), windows: windowsOf(s.frame), resources: {
+        s.prepared ??= { sourceFrame: s.frame, root: rootOf(s.frame), windows: windowsOf(s.frame, include), resources: {
             path: item => { const path = s.paths.get(item); if (!path) throw new Error('Missing prepared path'); return path; },
             clip: key => { const path = s.clips.get(key); if (!path) throw new Error('Missing prepared clip'); return path; },
             image: key => { const image = s.images.get(key); if (!image) throw new Error('Missing prepared image'); return image.source; },

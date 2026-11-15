@@ -28,7 +28,7 @@ function requireVector(node: Readonly<Node>, zoom: number): asserts node is Read
 }
 function needsText(node: Readonly<VectorNode>): boolean {
     return node.kind === 'text' || node.kind === 'sticky' || node.kind === 'frame' || node.kind === 'embed'
-        || (node.kind === 'figure' && !!node.label);
+        || node.kind === 'linkcard' || (node.kind === 'figure' && !!node.label);
 }
 function positioned(prepared: ReturnType<BoardTextGeometry['prepareNow']>): PositionedFigureText {
     if (!prepared) throw new Error('Text-bearing node has no prepared text');

@@ -2,6 +2,7 @@ import { surfaceToWorld, worldToSurface } from '../../platform/render/camera';
 import type { ScheduledFrame } from '../../platform/render/scheduler';
 import type { ViewState } from '../../platform/types';
 import { worldPose } from '../change/coordinates';
+import { forEachNodeInZOrder } from '../model/doc';
 import type { Vec2 } from '../geom/path';
 import type { BoardRuntime } from '../host/runtime';
 import { PresentedHistory } from '../input/presentedHistory';
@@ -60,12 +61,10 @@ export function createCardControls(options: CardControlOptions) {
     const presented = new PresentedHistory<ViewState['camera']>();
     const current = () => !disposed && options.current();
     const report = (error: unknown) => { if (!(error instanceof DOMException && error.name === 'AbortError')) options.error(error); };
-    const cardsOnSheet = (actions: BoardCardActions): CardNode[] => {
+    /** The sheet's cards in paint order: the last is the topmost, and a press reaches it first, as it reaches selection. */
+    const cardsOnSheet = (): CardNode[] => {
         const out: CardNode[] = [];
-        for (const id of session.doc.bySheet.get(runtime.selection.getSnapshot().sheet) ?? []) {
-            const node = session.doc.nodes.get(id);
-            if (node?.kind === 'embed' || node?.kind === 'linkcard') out.push(node);
-        }
+        forEachNodeInZOrder(session.doc, runtime.selection.getSnapshot().sheet, node => { if (node.kind === 'embed' || node.kind === 'linkcard') out.push(node); });
         return out;
     };
     const chipsFor = (node: Readonly<CardNode>, actions: BoardCardActions): Chip[] => {
@@ -128,7 +127,9 @@ export function createCardControls(options: CardControlOptions) {
         begin(surface: Vec2, sample: RealSample, accel: boolean): GestureOwner | null {
             const actions = options.actions, camera = presented.at(sample.time);
             if (!actions || !camera || !current() || ![surface.x, surface.y].every(Number.isFinite)) return null;
-            for (const node of cardsOnSheet(actions)) {
+            const cards = cardsOnSheet();
+            for (let i = cards.length - 1; i >= 0; i--) {
+                const node = cards[i];
                 for (const chip of layout(node, actions, camera)) {
                     if (chip.action === null || surface.x < chip.x || surface.x > chip.x + chip.w || surface.y < chip.y || surface.y > chip.y + chip.h) continue;
                     return gesture(sample, surface, actionFor(node, chip.action, actions));
@@ -144,7 +145,7 @@ export function createCardControls(options: CardControlOptions) {
         },
         write(frame: ScheduledFrame) {
             const actions = options.actions;
-            const cards = actions ? cardsOnSheet(actions) : [];
+            const cards = actions ? cardsOnSheet() : [];
             if (!actions || !cards.length) { clear(); return; }
             presented.present(frame.timestamp, { ...frame.view.camera });
             if (!svg) {

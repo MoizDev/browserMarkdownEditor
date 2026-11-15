@@ -198,6 +198,11 @@ export class MemoryGovernor {
     private readonly ceilings: Readonly<{ gpuBytes: number; cpuRasterBytes: number }>;
     private panes: readonly PaneMemoryDemand[] = [];
     private grants = new Map<string, PaneMemoryGrant>();
+    /** GPU bytes a pane asked for and was refused at its own grant while the pool had room. Demand is reported from what
+     * layers already hold, so without this a pane's grant never left room for its next tile: a live stroke's wet tiles held
+     * the grant, the committed board layers were refused the dry frame, and the wet tiles retire only after that frame
+     * presents (measured: 101 wet refusals in one stroke with the pool 57% full, then a stalled tail). */
+    private refusedGpu = new Map<string, number>();
     private nextLease = 1;
     private trimming = false;
     // A run of refused reservations in one pool is one episode: it degrades the governor once, and its retries only wait.
@@ -526,10 +531,15 @@ export class MemoryGovernor {
                 // pane's back-pressure: degrading the whole app for it held the GPU quality at 0.51-0.8 for good,
                 // so no webgl2 PDF frame was ever sharp and its editing cover never dropped.
                 if (this.charged[pool] + bytes > this.target[pool]) this.refuseReservation(pool);
+                else if (pool === 'gpu' && cache.registration.paneId !== undefined) {
+                    const paneId = cache.registration.paneId, before = this.refusedGpu.get(paneId) ?? 0;
+                    if (bytes > before) { this.refusedGpu.set(paneId, bytes); this.replan(); }
+                }
                 return null;
             }
         }
         this.refusing[pool] = false;
+        if (pool === 'gpu' && cache.registration.paneId !== undefined) this.refusedGpu.delete(cache.registration.paneId);
         if (!Number.isSafeInteger(this.nextLease)) throw new MemoryAdmissionError('invalid-input');
         const lease = Object.freeze({ id: this.nextLease++, bytes });
         this.leases.set(lease, { cache, bytes, returned: false });
@@ -752,7 +762,7 @@ export class MemoryGovernor {
         Math.floor(surfaceBytes / POLICY.surfaceReserveBytesPerPixel));
         const assignedSurface = [...pixels.values()].reduce((sum, value) => sum + value, 0) * POLICY.surfaceReserveBytesPerPixel;
         const cache = waterFill(supported.map(pane => ({ id: pane.paneId, weight: weight(pane),
-            need: Math.max(0, pane.gpuNeedBytes - minimum) })), Math.max(0, remaining - assignedSurface));
+            need: Math.max(0, pane.gpuNeedBytes + (this.refusedGpu.get(pane.paneId) ?? 0) - minimum) })), Math.max(0, remaining - assignedSurface));
         const cpu = waterFill(visible.map(pane => ({ id: pane.paneId, weight: weight(pane),
             need: pane.cpuMandatoryBytes ?? pane.cpuNeedBytes })), this.target.cpu);
         const mandatoryAssigned = [...cpu.values()].reduce((sum, value) => sum + value, 0);

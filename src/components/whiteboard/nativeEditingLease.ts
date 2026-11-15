@@ -62,12 +62,14 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
     let embed: NativeEmbedInfrastructure | null = null;
     // Exists exactly while `embed` does: the two-phase presentation producer that feeds the port.
     let producer: NativeEmbedPresentationProducer | null = null;
+    let toolSurface: HTMLElement | null = null, toolOverlay: HTMLElement | null = null;
     const closeSpelling = () => { if (spellingMenu && getContextMenu() === spellingMenu) closeContextMenu(); spellingMenu = null; };
     const closeTextMenu = () => { if (textMenu && getContextMenu() === textMenu) closeContextMenu(); textMenu = null; };
     const disposeTools = () => {
         closeSpelling(); closeTextMenu();
         const text = textClipboard, old = tools, clip = binding, media = importer, a11y = accessible, previousEmbed = embed, previousProducer = producer;
         textClipboard = null; tools = null; binding = null; importer = null; accessible = null; embed = null; producer = null;
+        toolSurface = null; toolOverlay = null;
         // The producer goes first: no further frame can reach a port that is about to be retired.
         previousProducer?.dispose();
         if (previousEmbed) {
@@ -93,7 +95,12 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
             keyboardCursor(point, gesture) { accessible?.a11y.keyboardCursor?.(point, gesture); },
         },
         services(surface, overlay) {
+            // Layer attachment briefly pauses platform input. Recreating the embed
+            // layer on that pause caused an attach/remove/render loop in the real app.
+            // These services belong to the DOM view, not each enable/disable pulse.
+            if (tools && toolSurface === surface && toolOverlay === overlay) return tools.services;
             disposeTools();
+            toolSurface = surface; toolOverlay = overlay;
             binding = options.bindClipboard(surface);
             try {
                 const port = createEmbedPresentationPort({ overlay, onError: options.onError });
@@ -208,7 +215,7 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
         repeatAnnouncement: () => accessible?.repeat() ?? false,
         setInputEnabled(enabled: boolean) {
             input.setInputEnabled(enabled);
-            if (!enabled || !input.isAttached()) disposeTools();
+            if (!options.visible()) disposeTools();
         },
         cancelViewWork(reason: string) {
             input.cancelViewWork(reason);

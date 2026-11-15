@@ -10,7 +10,7 @@ import { chooseTileScale, DENSE_TILE_PIXELS, tileRectWorld, tileScale, type Tile
 import type { DenseRasterBorrow, DenseRasterTicket, SessionDenseRasters } from './sessionDenseRasters';
 import { createStreamingDenseTileJob, releaseDenseTilePart, type DenseTilePart, type StreamingDenseTileJob } from './streamingDenseTile';
 import { FilteredInk } from './nodeSets';
-import { createCanvasPaintAdapter, type CanvasPaintAdapter, type PreparedPaint2d } from './reference/canvasPaintAdapter';
+import { createCanvasPaintAdapter, type CanvasPaintAdapter, type PreparedPaint2d, type PreparedRetain } from './reference/canvasPaintAdapter';
 import { paintItem2d } from './reference/paint2d';
 
 const EDGE = 512, BLOCK = 65_536;
@@ -107,6 +107,16 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         p.entries.underlay = []; p.entries.content = [];
         if (p.borrows) { p.closing = true; return; }
         free(p);
+    };
+    // Same contract as the 2D adapter: a further borrow comes only from an open one, and the last release frees a closing plan.
+    const borrowPlan = (p: Plan, prepared: PreparedPaint2d): PreparedRetain => {
+        p.borrows++;
+        let open = true;
+        return { prepared, retain: () => open ? borrowPlan(p, prepared) : null, release() {
+            if (!open) return;
+            open = false;
+            if (--p.borrows === 0 && p.closing) free(p);
+        } };
     };
     const free = (p: Plan) => {
         if (p.freed) return;
@@ -362,6 +372,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         p.prepared = { frame, sourceFrame: p.source, sharp: p.sharp && p.standins === 0, resources: {
             path: item => direct.resources.path(item), clip: key => direct.resources.clip(key),
             image: key => p.bitmaps.get(key)?.bitmap ?? direct.resources.image(key),
+            imageCrop: key => p.bitmaps.get(key)?.crop ?? null,
         } };
         p.phase = 'complete'; drop(ready); ready = p; staged = null; resources.invalidate();
     };
@@ -424,13 +435,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         retainPrepared() {
             const p = ready, prepared = p?.prepared;
             if (disposed || !p || !prepared || p.retired) return null;
-            p.borrows++;
-            let released = false;
-            return { prepared, release() {
-                if (released) return;
-                released = true;
-                if (--p.borrows === 0 && p.closing) free(p);
-            } };
+            return borrowPlan(p, prepared);
         },
         draw2d(ctx, view, band, omitNodes) {
             const p = ready, prepared = p?.prepared;

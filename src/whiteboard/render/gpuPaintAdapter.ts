@@ -9,13 +9,13 @@ import type { PaintBand } from './material';
 import { PaintBoundsJob } from './paintBounds';
 import { paintContributions } from './paintContributions';
 import { analyticInkPaint, type AnalyticInkPaint } from './analyticInk';
-import { texturedQuad } from './imageSampling';
+import { isGutterQuadTile, texturedQuad, TILE_EDGE, TILE_GUTTER, TILE_SIZE } from './imageSampling';
 import { createAnalyticInkBatch, type PreparedAnalyticInkBatch } from './analyticInkBatch';
 import type { PaintFrame, PaintItem, PaintPathItem } from './paintStream';
 import type { CanvasPaintAdapter } from './reference/canvasPaintAdapter';
 import { paintItem2d } from './reference/paint2d';
 
-const EDGE = 512, GUTTER = 2, SIZE = EDGE + GUTTER * 2;
+const EDGE = TILE_EDGE, GUTTER = TILE_GUTTER, SIZE = TILE_SIZE;
 const GPU_BYTES = SIZE * SIZE * 4, CPU_BYTES = GPU_BYTES * 2;
 interface CachedTile { texture: TextureHandle; device: GfxDevice; refs: number; key: string; bytes: number }
 type Tile = { item: PaintItem; x: number; y: number; cached: CachedTile; multiply: boolean; worldRect?: Readonly<Rect>; analytic?: never; path?: never }
@@ -296,11 +296,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                     const item = p.part;
                     const multiply = (original.kind === 'image' ? original.blend : original.material.blend) === 'multiply';
                     p.hasMultiply ||= multiply;
-                    if (item.kind === 'image' && item.retainedTile && !multiply && item.blend === 'normal' && item.opacity === 1 &&
-                        !item.inverted && !item.clips.length && item.localToWorld.every((v, i) => v === [1, 0, 0, 1, 0, 0][i]) &&
-                        item.sourceRect?.x === GUTTER && item.sourceRect.y === GUTTER && item.sourceRect.width === EDGE && item.sourceRect.height === EDGE &&
-                        [item.rect.x, item.rect.y, item.rect.width, item.rect.height].every(Number.isFinite) &&
-                        item.rect.width > 0 && item.rect.width === item.rect.height) {
+                    if (item.kind === 'image' && !multiply && isGutterQuadTile(item)) {
                         const image = prepared.resources.image(item.imageKey);
                         if (typeof ImageBitmap !== 'undefined' && image instanceof ImageBitmap && image.width === SIZE && image.height === SIZE) {
                             if (!ensurePlanCapacity(p)) return;

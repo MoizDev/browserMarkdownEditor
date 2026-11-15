@@ -8,7 +8,7 @@ import type { PaintFrameAssembler } from './frameTypes';
 import type { PaintBand } from './material';
 import { inkCoverageChunks, type PaintFrame, type PaintItem } from './paintStream';
 import type { PaintImageProvider } from './resources';
-import { createCanvasPaintAdapter, type CanvasPaintAdapter } from './reference/canvasPaintAdapter';
+import { createCanvasPaintAdapter, type CanvasPaintAdapter, type PreparedRetain } from './reference/canvasPaintAdapter';
 import { createGpuPaintAdapter } from './gpuPaintAdapter';
 import { createDensePaintAdapter } from './densePlan';
 import { DensityController, type DensityMode } from './density';
@@ -156,7 +156,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     let ackFrame: PaintFrame | null = null, ackOmit: ReadonlySet<string> | null = null, ackInk: ReadonlySet<string> | null = null, ackMask = 0;
     let ackToken: RenderToken | null = null, ackContext: ViewerPaintPresentation | null = null;
     let presentedContext: ViewerPaintPresentation | null = null;
-    type Drawn = { frame: PaintFrame; omit: ReadonlySet<string> | null; ink: ReadonlySet<string>; context: ViewerPaintPresentation };
+    type Drawn = { frame: PaintFrame; omit: ReadonlySet<string> | null; ink: ReadonlySet<string>; context: ViewerPaintPresentation; hold: DrawHold | null };
     const drawn = new Map<PaintBand, Drawn>();
     let drawSource: PaintFrame | null = null, prepareToken: FrameToken | null = null, prepareFrameId = -1;
     let drawTokens = new WeakMap<RenderToken, Map<PaintBand, Drawn>>();
@@ -164,9 +164,10 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     const recordDraw = (band: PaintBand, value: Drawn) => {
         // Accepted acknowledgements retain this exact frozen budget token. Revision alone cannot
         // distinguish a coarse summary from its fine replacement of the SAME immutable source.
-        if (drawSource !== value.frame) { drawTokens = new WeakMap(); drawSource = value.frame; }
+        if (drawSource !== value.frame) { discardPending(); drawTokens = new WeakMap(); drawSource = value.frame; }
         drawn.set(band, value);
-        if (!prepareToken) return;
+        if (!prepareToken) { if (value.hold) releaseHold(value.hold); return; }
+        if (value.hold) pushPending(value.hold);
         let bands = drawTokens.get(prepareToken);
         if (!bands) { bands = new Map(); drawTokens.set(prepareToken, bands); }
         bands.set(band, value);
@@ -205,9 +206,38 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         reservations.delete(frame);
         for (const lease of leases) { allocatorHost!.allocator.cpu.release(lease); reserved -= lease.bytes; }
     };
-    // Facts borrow the exact prepared plan this draw read, never the raw provider: the 2D snapshot
-    // or dense plan keeps its image leases and bitmaps alive until the lease is released.
-    const presentedImages = (frame: PaintFrame, omit: ReadonlySet<string> | null) => (): PresentedImageLease | null => {
+    // A draw's exact image backings, borrowed AT the draw: no later prepare, ack or retirement can free the
+    // snapshot this draw read. A hold is released when an accepted presentation supersedes it, when its draw is
+    // discarded (new source, clearResources, dispose), or when the bounded pending queue drops it.
+    interface DrawHold { readonly frame: PaintFrame; readonly images: readonly PresentedImage[]; borrow: PreparedRetain | null }
+    let pendingHolds: DrawHold[] = [], presentedHolds: DrawHold[] = [];
+    // Two frames of two bands. Acknowledgements arrive in draw order, so an older unacknowledged draw is dead
+    // anyway; a host that never acknowledges therefore cannot pin backings. The dropped draw's facts stay unknown.
+    const MAX_PENDING_HOLDS = 4;
+    const releaseHold = (hold: DrawHold) => { const borrow = hold.borrow; if (!borrow) return; hold.borrow = null; borrow.release(); };
+    const pushPending = (hold: DrawHold) => {
+        pendingHolds.push(hold);
+        while (pendingHolds.length > MAX_PENDING_HOLDS) releaseHold(pendingHolds.shift()!);
+    };
+    const discardPending = () => { const old = pendingHolds; pendingHolds = []; for (const hold of old) releaseHold(hold); };
+    const discardHolds = () => {
+        discardPending();
+        const old = presentedHolds; presentedHolds = [];
+        for (const hold of old) releaseHold(hold);
+    };
+    // The accepted draw's holds become the presented backings. Earlier pending draws can no longer be accepted.
+    const acceptHolds = (accepted: readonly (DrawHold | null)[]) => {
+        const kept = accepted.filter((hold): hold is DrawHold => hold !== null);
+        const last = Math.max(-1, ...kept.map(hold => pendingHolds.indexOf(hold)));
+        const pending = pendingHolds;
+        pendingHolds = pending.filter((_, index) => index > last);
+        for (const hold of pending.slice(0, last + 1)) if (!kept.includes(hold)) releaseHold(hold);
+        const old = presentedHolds; presentedHolds = kept;
+        for (const hold of old) if (!kept.includes(hold)) releaseHold(hold);
+    };
+    // Takes the draw's borrow right after the draw read its snapshot. A draw whose images cannot be proven (the
+    // frame has moved on, or a drawn image is not a live ImageBitmap) has no hold, so its facts stay unknown.
+    const captureDraw = (frame: PaintFrame, omit: ReadonlySet<string> | null): DrawHold | null => {
         const borrow = adapter?.retainPrepared() ?? null;
         if (!borrow) return null;
         const { prepared } = borrow;
@@ -218,6 +248,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 for (const band of ['underlay', 'content'] as const) {
                     for (const item of prepared.frame[band]) {
                         if (item.kind !== 'image' || omit?.has(item.nodeId)) continue;
+                        // A standin draws a crop with no quad to classify: it gets no facts, so the embed keeps its poster.
+                        if (prepared.resources.imageCrop?.(item.imageKey)) continue;
                         const source = prepared.resources.image(item.imageKey);
                         if (!(source instanceof ImageBitmap)) { usable = false; break; }
                         images.push({ nodeId: item.nodeId, item, source });
@@ -227,8 +259,15 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             } catch { usable = false; }
         }
         if (!usable) { borrow.release(); return null; }
+        return { frame: prepared.frame, images: Object.freeze(images), borrow };
+    };
+    // Each consumer lease is its own borrow of the same snapshot, so releasing it cannot free the draw's backing.
+    const leaseOf = (hold: DrawHold | null): PresentedImageLease | null => {
+        const borrow = hold?.borrow?.retain() ?? null;
+        if (!hold || !borrow) return null;
+        const { frame, images } = hold;
         let released = false;
-        return Object.freeze({ frame: prepared.frame, images: Object.freeze(images), release() { if (!released) { released = true; borrow.release(); } } });
+        return Object.freeze({ frame, images, release() { if (!released) { released = true; borrow.release(); } } });
     };
     const retainedByDense = (): ReadonlySet<PaintFrame> => {
         const retained = new Set(dense?.retainedFrames());
@@ -245,6 +284,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         }
     };
     const clearResources = (reason: GpuReleaseReason) => {
+        discardHolds();
         // The reference adapter keeps CPU paths on context loss; this owner must
         // explicitly evict them before returning its CPU leases for any release.
         gpu?.release(reason);
@@ -383,6 +423,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         }
         try {
             options.frames.presented(frame);
+            acceptHolds([...(drawTokens.get(token)?.values() ?? [])].map(drawn => drawn.hold));
             const previous = presented; presented = frame; presentedOmit = omit; presentedInk = ink; presentedContext = context;
             ackFrame = null; ackOmit = null; ackInk = null; ackMask = 0; ackToken = null; ackContext = null; drawTokens.delete(token);
             if (previous && previous !== frame && !retainedByDense().has(previous)) {
@@ -406,12 +447,14 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     const ink = gpu!.readyInkNodeIds() ?? frame.inkNodeIds;
                     if (!prepareToken) return;
                     const actualView = copyView(view);
+                    gpu!.drawGpu(pass, view, band, omit ?? undefined);
+                    // Borrowed right after the draw read its snapshot, before anything else can move the adapter on.
+                    const hold = captureDraw(frame, omit);
                     const context = Object.freeze({ view: actualView, frameId: prepareFrameId,
                         paneTransform: host.paneTransform(actualView, prepareFrameId),
                         token: Object.freeze({ ...prepareToken }), omittedNodeIds: omit ? new OmittedSnapshot(omit) : null,
-                        retain: () => options.frames.retain(frame), retainImages: presentedImages(frame, omit) });
-                    gpu!.drawGpu(pass, view, band, omit ?? undefined);
-                    recordDraw(band, { frame, omit, ink, context });
+                        retain: () => options.frames.retain(frame), retainImages: () => leaseOf(hold) });
+                    recordDraw(band, { frame, omit, ink, context, hold });
                 },
                 draw2d(ctx, view) {
                     const frame = adapter?.readyFrame();
@@ -420,12 +463,14 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     const ink = adapter!.borrowPrepared()?.frame.inkNodeIds ?? frame.inkNodeIds;
                     if (!prepareToken) return;
                     const actualView = copyView(view);
+                    adapter!.draw2d(ctx, view, band, omit ?? undefined);
+                    // Borrowed right after the draw read its snapshot, before anything else can move the adapter on.
+                    const hold = captureDraw(frame, omit);
                     const context = Object.freeze({ view: actualView, frameId: prepareFrameId,
                         paneTransform: host.paneTransform(actualView, prepareFrameId),
                         token: Object.freeze({ ...prepareToken }), omittedNodeIds: omit ? new OmittedSnapshot(omit) : null,
-                        retain: () => options.frames.retain(frame), retainImages: presentedImages(frame, omit) });
-                    adapter!.draw2d(ctx, view, band, omit ?? undefined);
-                    recordDraw(band, { frame, omit, ink, context });
+                        retain: () => options.frames.retain(frame), retainImages: () => leaseOf(hold) });
+                    recordDraw(band, { frame, omit, ink, context, hold });
                 },
                 releaseGpu(reason) { clearResources(reason); },
                 memory() {
@@ -444,7 +489,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     if (allocatorHost === host) { clearResources('pressure'); allocatorHost = null; }
                     hosts.delete(band);
                     if (!hosts.size) {
-                        disposed = true; gpu?.dispose(); gpu = null; adapter?.dispose(); adapter = null;
+                        disposed = true; discardHolds(); gpu?.dispose(); gpu = null; adapter?.dispose(); adapter = null;
                         deferredClear = true; collectRetired(); presented = null;
                     } else if (!allocatorHost) {
                         allocatorHost = activeHost()!;

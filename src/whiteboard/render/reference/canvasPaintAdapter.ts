@@ -36,6 +36,8 @@ export interface PreparedPaint2d {
 
 export interface PreparedRetain {
     readonly prepared: PreparedPaint2d;
+    /** A further borrow of the same resources, taken only while this one is open; null once released. */
+    retain(): PreparedRetain | null;
     release(): void;
 }
 
@@ -202,6 +204,16 @@ export function createCanvasPaintAdapter(
         if (disposed || !s || s.closing) return null;
         return preparedOf(s);
     }
+    // A borrow pins the snapshot's resources until its own release; a further borrow comes only from an open one.
+    function borrowSnapshot(s: Snapshot): PreparedRetain {
+        s.borrows++; borrowed.add(s);
+        let open = true;
+        return { prepared: preparedOf(s), retain: () => open ? borrowSnapshot(s) : null, release() {
+            if (!open) return;
+            open = false;
+            if (--s.borrows === 0) { borrowed.delete(s); if (s.closing) finishSnapshot(s); }
+        } };
+    }
     return {
         prepare(view, budget) {
             if (disposed || budget.frameId === lastFrameId) return;
@@ -234,14 +246,7 @@ export function createCanvasPaintAdapter(
         retainPrepared() {
             const s = presented;
             if (disposed || !s || s.closing) return null;
-            const prepared = preparedOf(s);
-            s.borrows++; borrowed.add(s);
-            let released = false;
-            return { prepared, release() {
-                if (released) return;
-                released = true;
-                if (--s.borrows === 0) { borrowed.delete(s); if (s.closing) finishSnapshot(s); }
-            } };
+            return borrowSnapshot(s);
         },
         draw2d(ctx, view, band, omitNodes) {
             const prepared = borrowPrepared();

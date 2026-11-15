@@ -11,7 +11,7 @@ import { gridRectangle } from '../input/gridCreation';
 import { notebookGrowthOp } from '../commands/pagesAndSheets';
 import { styleGeometryMetrics } from '../geom/styleMetrics';
 import type { BoardRuntime } from '../host/runtime';
-import { sampleSurface, type CancelReason, type FinishReason, type GestureOwner, type Modifiers, type RealSample, type Tool } from '../input/tool';
+import { CLICK_SLOP_CSS, sampleSurface, type CancelReason, type FinishReason, type GestureOwner, type Modifiers, type RealSample, type Tool } from '../input/tool';
 import { hasOpaqueDescendant, isSheetParent, sheetOf } from '../model/doc';
 import { polylineHandleGesture } from '../input/polylineHandles';
 import { createAddedBoardDoc } from '../model/overlayDoc';
@@ -103,13 +103,13 @@ class CreationGesture implements GestureOwner {
     }
     private isClick(): boolean {
         const surface = sampleSurface(this.sample, this.context.sampleToSurface);
-        return Math.hypot(surface.x - this.downSurface.x, surface.y - this.downSurface.y) < 4;
+        return Math.hypot(surface.x - this.downSurface.x, surface.y - this.downSurface.y) < CLICK_SLOP_CSS;
     }
     private node(sample = this.sample, modifiers = this.modifiers): Node {
         const p = this.local(sample), style = this.style;
         let dx = p.x - this.base.x, dy = p.y - this.base.y;
         const surface = sampleSurface(sample, this.context.sampleToSurface);
-        const moved = Math.hypot(surface.x - this.downSurface.x, surface.y - this.downSurface.y) >= 4;
+        const moved = Math.hypot(surface.x - this.downSurface.x, surface.y - this.downSurface.y) >= CLICK_SLOP_CSS;
         if (modifiers.shift) {
             if (this.context.kind === 'connector' || this.context.kind === 'polyline') {
                 const length = Math.hypot(dx, dy), step = Math.PI / 12, angle = Math.round(Math.atan2(dy, dx) / step) * step;
@@ -155,13 +155,13 @@ class CreationGesture implements GestureOwner {
     }
     private async snapped(sample: RealSample, modifiers: Modifiers, signal: AbortSignal): Promise<Node> {
         const node = this.node(sample, modifiers), surface = sampleSurface(sample, this.context.sampleToSurface);
-        const moved = Math.hypot(surface.x - this.downSurface.x, surface.y - this.downSurface.y) >= 4;
+        const moved = Math.hypot(surface.x - this.downSurface.x, surface.y - this.downSurface.y) >= CLICK_SLOP_CSS;
         if (moved && this.context.runtime.session.doc.view.grid && node.kind === 'figure' && node.shape === 'rectangle' && this.parentPose.rotation === 0) {
             this.context.guides?.([]); return gridRectangle(node, this.parentPose);
         }
         // Default: creation snapping is off unless Always Snap is inverted by the accelerator.
         if ((this.context.alwaysSnap?.() ?? false) === modifiers.accel
-            || Math.hypot(surface.x - this.downSurface.x, surface.y - this.downSurface.y) < 4) {
+            || Math.hypot(surface.x - this.downSurface.x, surface.y - this.downSurface.y) < CLICK_SLOP_CSS) {
             this.context.guides?.([]); return node;
         }
         const { runtime } = this.context;

@@ -1,4 +1,4 @@
-// F-INPUT-001/004/005: tools receive normalized real input, never browser predictions.
+// F-INPUT-001/004/005: tools receive normalized real input only.
 export interface InputToken {
   readonly vaultEpoch: number
   readonly tabId: string

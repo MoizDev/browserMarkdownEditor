@@ -5,7 +5,6 @@ import type { ByteLease } from '../../platform/render/gfx/api';
 import type { FrameBudget, FrameToken, Layer, RenderToken } from '../../platform/render/types';
 import { InkCoverageJob, InkOutlineJob, type InkCoverage } from '../ink/outline';
 import { materializeCurveRange, type CurveGeometry } from '../ink/curve';
-import type { SampleSequence } from '../ink/samples';
 import { DOT_METRIC_PROVISIONAL, type InkDot, type InkWidth } from '../ink/width';
 import type { BoardWetLayer } from '../input/attach';
 import type { DryInkIdentity, WetInkHandover, WetInkSnapshot } from '../input/liveInk';
@@ -24,7 +23,7 @@ const CHUNK = 256, TEMP_BYTES = 4 * 1024 * 1024, PATH_BLOCK = 256 * 1024;
 type Bounds = { x: number; y: number; w: number; h: number };
 type Prepared = { readonly snapshot: WetInkSnapshot; readonly path: Path2D; readonly origin: readonly [number, number]; readonly leases: ByteLease[]; readonly scale: number; readonly bounds: Bounds | null; readonly coverageChunks: readonly InkCoverage[]; readonly serial: number };
 type Work = { snapshot: WetInkSnapshot; path: Path2D; origin: readonly [number, number]; leases: ByteLease[]; capacity: number; commands: number;
-    temp: ByteLease | null; scan: number; dot: boolean; offset: number; prediction: boolean; geometry: CurveGeometry | null;
+    temp: ByteLease | null; scan: number; dot: boolean; offset: number; geometry: CurveGeometry | null;
     coverage: InkCoverageJob | null; outline: InkOutlineJob | null; scale: number; bounds: Bounds | null; coverageChunks: InkCoverage[];
     buffers: Set<ArrayBufferLike>; retained: { coverage: InkCoverage; buffers: ArrayBufferLike[]; bytes: number; outlined: boolean } | null };
 export interface BoardWetOptions {
@@ -63,12 +62,6 @@ function retainedBuffers(coverage: InkCoverage, known: ReadonlySet<ArrayBufferLi
     const buffers = [...unique], bytes = buffers.reduce((sum, buffer) => sum + buffer.byteLength, 0);
     if (!Number.isSafeInteger(bytes)) throw new RangeError('Wet coverage accounting overflow');
     return { buffers, bytes };
-}
-function predictionSamples(g: CurveGeometry): SampleSequence {
-    return { count: g.spanCount + 1,
-        x: i => g.originX + g.cubics[i ? (i - 1) * 8 + 6 : 0],
-        y: i => g.originY + g.cubics[i ? (i - 1) * 8 + 7 : 1],
-        pressure: () => undefined, segmentKind: () => 'freehand' };
 }
 class ImmutableIds implements ReadonlySet<string> {
     readonly [Symbol.toStringTag] = 'ImmutableIds';
@@ -127,7 +120,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         const scale = Math.max(Number.MIN_VALUE, view.camera.z * view.viewport.dpr * Math.hypot(matrix[0], matrix[1], matrix[2], matrix[3]));
         const samples = snapshot.curve.samples;
         work = { snapshot, path: new Path2D(), origin: [samples.x(0), samples.y(0)], leases: [base], capacity: base.bytes,
-            commands: 0, temp: null, scan: 1, dot: true, offset: 0, prediction: false, geometry: null, coverage: null, outline: null, scale, bounds: null, coverageChunks: [], buffers: new Set(), retained: null };
+            commands: 0, temp: null, scan: 1, dot: true, offset: 0, geometry: null, coverage: null, outline: null, scale, bounds: null, coverageChunks: [], buffers: new Set(), retained: null };
         return true;
     };
     const step = (): boolean => {
@@ -171,8 +164,10 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
             }
             return false;
         }
+        // Only sealed real samples are drawn. A predicted tail (browser getPredictedEvents) was tried
+        // and removed: measured, predicted tails were retracted on 7/186 frames and read as recoil.
         const spans = real.count - 1;
-        if (!w.prediction && (w.offset < spans || (spans === 0 && w.offset === 0))) {
+        if (w.offset < spans || (spans === 0 && w.offset === 0)) {
             const count = Math.min(CHUNK, spans - w.offset), first = w.offset;
             const temp = reserve(TEMP_BYTES); if (!temp) { denied = true; return false; } w.temp = temp;
             const geometry = materializeCurveRange(real, { firstSpan: first, spanCount: count }, publication.parameters);
@@ -182,18 +177,6 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
             w.geometry = geometry;
             w.coverage = new InkCoverageJob(real, geometry, style, { deviceScale: w.scale, dot: first === 0 ? dot : null, maxPrimitives: 4096 });
             return false;
-        }
-        if (!w.prediction) {
-            w.prediction = true;
-            const geometry = publication.prediction?.geometry;
-            if (geometry?.spanCount) {
-                const temp = reserve(TEMP_BYTES); if (!temp) { w.prediction = false; denied = true; return false; } w.temp = temp;
-                w.geometry = geometry;
-                w.coverage = new InkCoverageJob(predictionSamples(geometry), geometry,
-                    { width: w.snapshot.presentation.width, model: { id: 'uniform' }, pressure: 'none' },
-                    { deviceScale: w.scale, dot: null, maxPrimitives: 4096 });
-                return false;
-            }
         }
         const prior = prepared.get(w.snapshot.identity.gestureSequence);
         if (prior) dropPrepared(prior);

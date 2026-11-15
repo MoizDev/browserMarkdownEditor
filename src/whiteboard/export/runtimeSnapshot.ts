@@ -36,7 +36,7 @@ function sameToken(a: RenderToken, b: RenderToken): boolean {
 }
 function sameRequest(a: CaptureRequest, b: CaptureRequest): boolean {
     const x = a.worldRect, y = b.worldRect, av = a.view, bv = b.view;
-    return a.theme === b.theme && a.inverted === b.inverted && a.policy === b.policy && a.predictions === b.predictions
+    return a.theme === b.theme && a.inverted === b.inverted && a.policy === b.policy
         && a.chrome === b.chrome && a.unsealedInput === b.unsealedInput && a.layers.length === b.layers.length
         && a.layers.every((id, i) => id === b.layers[i]) && x.x === y.x && x.y === y.y && x.width === y.width && x.height === y.height
         && av.camera.x === bv.camera.x && av.camera.y === bv.camera.y && av.camera.z === bv.camera.z
@@ -60,7 +60,7 @@ export function createBoardCaptureSnapshot(options: BoardCaptureSnapshotOptions)
     }
     if (selected.has(PAPER) && (options.pin?.metadataNow().host.kind ?? doc.host.kind) !== 'notebook') throw new Error('Notebook paper is unavailable for this board');
     const { worldRect: r, view } = request;
-    if (request.theme !== 'light' || request.inverted || request.predictions || request.chrome || request.unsealedInput
+    if (request.theme !== 'light' || request.inverted || request.chrome || request.unsealedInput
         || ![r.x, r.y, r.width, r.height, view.camera.x, view.camera.y, view.camera.z,
             view.viewport.width, view.viewport.height, view.viewport.dpr].every(Number.isFinite)
         || r.width <= 0 || r.height <= 0 || view.camera.z <= 0 || view.viewport.width <= 0 || view.viewport.height <= 0 || view.viewport.dpr <= 0) {

@@ -7,7 +7,7 @@ export interface ToolStateView {
     setTool(id: string, variant?: string): void;
 }
 
-export interface ConnectedBoardChromeProps extends Omit<BoardChromeProps, 'selectedTool' | 'lastFigure' | 'selectTool'> {
+export interface ConnectedBoardChromeProps extends Omit<BoardChromeProps, 'selectedTool' | 'selectTool'> {
     readonly toolState: ToolStateView;
     readonly openMedia: () => void;
 }
@@ -16,7 +16,6 @@ export function ConnectedBoardChrome({ toolState, openMedia, ...props }: Connect
     const snapshot = useSyncExternalStore(toolState.subscribe, toolState.getSnapshot, toolState.getSnapshot);
     return <BoardChrome {...props}
         selectedTool={{ id: snapshot.active.id, figure: snapshot.active.variant, label: '' }}
-        lastFigure={snapshot.lastFigure ?? 'rectangle'}
         selectTool={choice => {
             if (choice.id === 'media') openMedia();
             else toolState.setTool(choice.id, choice.figure);

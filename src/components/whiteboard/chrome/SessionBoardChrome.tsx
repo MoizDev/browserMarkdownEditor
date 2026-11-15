@@ -78,7 +78,7 @@ export function SessionBoardChrome(props: SessionBoardChromeProps) {
     }, colorScheme => updateBoardPreferences({ colorScheme }));
     const language = boardLanguageMenu(labels.text('language'), props.locale, props.languages,
         props.selectLanguage, props.reportError);
-    const preferences = preferenceEntries({ local: props.localPreferences, label: labels.preferenceLabel, theme, language });
+    const preferences = preferenceEntries({ local: props.localPreferences, label: labels.preferenceLabel, theme });
     const editAction = (id: MainAction) => id === 'uploadMedia' || id === 'insertEmbed' || id === 'unlockAll'
         || id === 'convertToBookmark' || id === 'convertToEmbed';
     const actionState = (id: MainAction): CommandState => {
@@ -95,7 +95,7 @@ export function SessionBoardChrome(props: SessionBoardChromeProps) {
     const actions = { actionLabel: labels.actionLabel, actionShortcut: (id: MainAction) => props.actionShortcut(id),
         actionState, runAction };
     const menu: MainMenuSource = {
-        ...commandSource, ...actions, sectionLabel: labels.mainSectionLabel, preferences,
+        ...commandSource, ...actions, sectionLabel: labels.mainSectionLabel, preferences, language,
         copyAsLabel: labels.contextSectionLabel('copyAs'), transparentLabel: labels.text('transparent'),
         transparent: props.localPreferences.view.transparent, debugMode: props.localPreferences.view.debugMode,
         toggleTransparent: () => props.localPreferences.setView('transparent', !props.localPreferences.view.transparent),

@@ -7,7 +7,7 @@ import { CurveFlag } from './curve';
 // A compositor keeps its generation alive until it has finished; callers never recycle/mutate them.
 export type InkRenderPacket = Readonly<{
     geometryKey: string; nodeId: string; nodeRevision: number;
-    gestureSequence: number; phase: 'wet-real' | 'prediction' | 'dry';
+    gestureSequence: number; phase: 'wet-real' | 'dry';
     localToWorld: readonly [number, number, number, number, number, number]; // Float64
     boundsWorld: Readonly<{ x: number; y: number; w: number; h: number; }>;
     chunks: readonly Readonly<{

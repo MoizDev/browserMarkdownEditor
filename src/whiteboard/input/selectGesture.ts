@@ -7,6 +7,8 @@ import { sampleSurface, type CancelReason, type FinishReason, type GestureOwner,
 export interface BoardSelectGestureContext extends SelectToolContext {
     readonly sampleToSurface: (sample: RealSample) => Vec2;
     beginHandle(sample: RealSample, modifiers: Modifiers): GestureOwner | null;
+    /** The press lies inside the drawn selection frame (world point at the frame presented at its time). */
+    insideSelection(sample: RealSample): boolean;
 }
 
 /** A selection contact owns its hit preflight, optional exact sweep and final
@@ -24,6 +26,9 @@ class BoardSelectGesture implements GestureOwner {
     private last: RealSample;
     private keys: Modifiers;
     private hit: NodeId | null | undefined;
+    /** Empty space inside the selection frame: a drag moves the whole selection, as a person expects
+     * after a marquee over handwriting (measured: a press between strokes started a second marquee). */
+    private body = false;
     private dragging = false;
     private ended = false;
     private finishing = false;
@@ -54,6 +59,8 @@ class BoardSelectGesture implements GestureOwner {
             void context.hit(down, this.controller.signal).then(id => {
                 if (!this.valid()) { this.cancel('invalidated'); return; }
                 this.hit = id;
+                this.body = id === null && !this.startKeys.shift && !this.startKeys.alt && this.initial.length > 0
+                    && context.insideSelection(down);
                 if (id !== null && this.sweep) { this.sweep.cancel(); this.sweep = null; this.points.length = 1; }
                 if (this.dragging) this.activateDrag();
                 if (this.ended) this.complete();
@@ -88,7 +95,10 @@ class BoardSelectGesture implements GestureOwner {
     }
     private activateDrag(): void {
         if (!this.valid() || this.hit === undefined || this.transform) return;
-        if (this.hit !== null) {
+        if (this.body) {
+            this.transform = this.context.beginTransform(this.down, this.initial[0], this.startKeys);
+            this.transform.update([this.last], this.keys);
+        } else if (this.hit !== null) {
             if (!this.context.selection.getSnapshot().selected.includes(this.hit)) {
                 // Default: Shift-drag adds the hit before moving; Shift-click still toggles on release.
                 this.context.selection.replace(this.startKeys.shift ? [...this.initial, this.hit] : [this.hit]);

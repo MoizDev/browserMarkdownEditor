@@ -1,8 +1,7 @@
 import { LocalCurveBuilder, type CurvePublication } from '../ink/curve'
 import { StraightInkBuilder } from './straightInk'
-import type { SampleBuilder, SampleBuilderOptions, SampleSequence } from '../ink/samples'
+import type { SampleBuilder, SampleBuilderOptions } from '../ink/samples'
 import type { FinishReason, GestureOwner, Modifiers, RealSample, Tool } from './tool'
-import type { PredictedPoint } from './prediction'
 import type { PaintClip } from '../render/paintStream'
 
 export interface InkIdentity {
@@ -91,14 +90,12 @@ export class LiveInk implements GestureOwner {
   private dirty = true
   private dry: DryInkIdentity | null = null
   private snapshot: CurvePublication | null = null
-  // Translucent prediction is withheld until its two-band composition is certified.
-  get allowsPrediction(): boolean { return this.context.presentation.tool === 'pen' }
   get delegatedState(): Readonly<{ identity: InkIdentity; presentation: InkPresentation; sample: RealSample }> | null {
     return !this.ended && this.last ? { identity: this.context.identity, presentation: this.context.presentation, sample: this.last } : null
   }
-  get delegatedCandidate(): Readonly<{ identity: InkIdentity; presentation: InkPresentation; sample: RealSample; curveSequence: number; predicted: boolean }> | null {
+  get delegatedCandidate(): Readonly<{ identity: InkIdentity; presentation: InkPresentation; sample: RealSample; curveSequence: number }> | null {
     return !this.ended && this.last && this.snapshot ? { identity: this.context.identity, presentation: this.context.presentation,
-      sample: this.last, curveSequence: this.snapshot.sequence, predicted: this.snapshot.prediction !== null } : null
+      sample: this.last, curveSequence: this.snapshot.sequence } : null
   }
 
   constructor(first: RealSample, modifiers: Modifiers, private readonly context: LiveInkContext, private readonly handover: WetInkHandover) {
@@ -122,27 +119,15 @@ export class LiveInk implements GestureOwner {
     }
   }
 
-  // Called by the shared scheduler, not per input sample.
-  publish(predicted?: SampleSequence | null): void {
-    if ((!this.dirty && predicted === undefined) || this.ended) return
-    this.snapshot = this.builder.publish(predicted ?? undefined)
+  // Called by the shared scheduler, not per input sample. `force` republishes a clean stroke.
+  publish(force = false): void {
+    if ((!this.dirty && !force) || this.ended) return
+    this.snapshot = this.builder.publish()
     this.dirty = false
     this.handover.publish({ identity: this.context.identity, presentation: this.context.presentation, curve: this.snapshot, dry: null })
   }
 
-  suspend(): void { this.publish(null) }
-
-  publishPrediction(points: readonly PredictedPoint[]): void {
-    if (this.ended || !this.last || !this.allowsPrediction) return
-    if (!points.length) { this.publish(null); return }
-    const last = this.last
-    const local = points.map(point => this.context.toLocal({ ...last, x: point.x, y: point.y, time: point.time }))
-    const predicted: SampleSequence = {
-      count: local.length, x: i => local[i].x, y: i => local[i].y,
-      pressure: () => undefined, segmentKind: () => 'freehand',
-    }
-    this.publish(predicted)
-  }
+  suspend(): void { this.publish(true) }
 
   finish(reason: FinishReason): void {
     if (this.ended) return

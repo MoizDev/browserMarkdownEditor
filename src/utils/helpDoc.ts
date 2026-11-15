@@ -412,6 +412,8 @@ navigate; with the minimap focused, arrow keys move a quarter viewport (a full
 viewport with Shift), and Home / End go to the artwork's upper-left / lower-right.
 An empty board has no invented overview.
 
+The tool bar sits at the bottom centre: select, hand, pen, eraser, arrow, text, sticky note, image and rectangle, in that order. The chevron at its end opens the rest: the other shapes, line, highlighter, laser and frame. While one of those is the active tool, the chevron shows it filled in blue.
+
 A native board is editable when its file can be written and the emergency
 read-only switch is off. Then the toolbar's pen, highlighter, eraser, shapes,
 text, sticky notes and frames change the sheet, **Cmd/Ctrl+X** cuts, **Cmd/Ctrl+C**
@@ -441,6 +443,8 @@ run now stays on the menu and says why, such as a locked picture or a read-only
 canvas.
 
 The board's main menu has an **Export** section with **PNG**, **SVG**, **PDF** and **JSON**. **PDF** saves the board as a PDF: a whiteboard's sheet as one page, and a notebook or a PDF-backed board every page. **JSON** saves the sheet's native records, with media referenced by hash rather than bundled. A selection's **Export as** menu offers **JSON** for just the selected items. **Print** (**Cmd/Ctrl+P** with the board focused) prints the open board the same way.
+
+The strip in the board's top-left corner holds the **menu** (**Edit**, **View**, **Export**, **Insert embed** (\`Cmd + I\`), **Upload media** (\`Cmd + U\`), then **Preferences**, **Language** and **Keyboard shortcuts**), the sheet's name with its drop-down, **Undo**, **Redo**, **Delete** (the bin), **Duplicate** and **Actions** (the three dots). Undo, Redo, Delete and Duplicate are dimmed when they cannot act. **Actions** opens a grid of icon buttons for the selection: align, stretch, distribute and stack; send backward or forward; rotate; **Edit link**; and **Group**, which becomes **Ungroup** when the selection is a group. Hover any button for its name.
 
 **Embeds.** **Menu → Insert embed** places a web embed (for example a video link) on the board as an inert poster. Nothing loads until you ask: press **Load** on the card (or right-click and choose **Load embed**); **Stop** on the card, or **Unload embed**, puts the card back. A loaded embed plays in place. If something drawn on top of it is see-through, the board keeps showing its true picture and the embed opens in a panel of its own above the board instead, with an **Unload** button; **Escape** closes it too. Closing the tab or switching documents always unloads it.
 

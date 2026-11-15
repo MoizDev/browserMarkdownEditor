@@ -63,7 +63,7 @@ export function createBoardInkServices(options: BoardInkServicesOptions): Pick<B
                 localToWorld: point => [1, 0, 0, 1, point.x + offset.x, point.y + offset.y],
                 planStroke(node, summary) {
                     if (session.doc.host.kind !== 'notebook' || !summary) return [];
-                    // Use only the sealed real-sample prefix: prediction never grows a page.
+                    // Use only the sealed real-sample prefix, so a page grows only for sealed ink.
                     const [, y, , height] = summary.localBounds;
                     const deepest = offset.y + node.y + y + height + node.width + node.fairTol;
                     const growth = notebookGrowthOp(session.doc, deepest);

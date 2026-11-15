@@ -5,6 +5,7 @@ import type { PageStack } from '../../platform/render/pageStack';
 import type { RenderToken } from '../../platform/render/types';
 import type { SheetId } from '../model/ids';
 import type { PaintImageProvider } from '../render/resources';
+import type { PaintProgress } from '../render/boardLayers';
 import type { PaintSource } from '../render/paintStream';
 import type { VideoFrameOverlay } from '../media/videoFrames';
 import type { ViewerPaintPresentation } from '../render/paintPresentation';
@@ -15,6 +16,7 @@ import type { BoardSession } from '../session/BoardSession';
 import type { HistoryStepInfo, TextSelectionSnapshot } from '../change/historyTypes';
 
 export type ViewerReadiness = 'loading' | 'ready' | 'read-only' | 'failed';
+export type ViewerPaintProgress = PaintProgress;
 export interface ViewerPageSize { readonly width: number; readonly height: number }
 export interface ViewerViewParams {
     readonly visible: boolean;
@@ -42,6 +44,8 @@ export interface ViewerAccessibilitySource {
 }
 export interface ViewerSnapshot {
     readonly state: ViewerReadiness;
+    /** The renderer's progress for the current revision; pending keeps the last coherent pixels on screen. */
+    readonly paint: ViewerPaintProgress;
     readonly readOnlyReason: string | null;
     readonly sceneRevision: number;
     readonly layout: Readonly<PageStack> | null;

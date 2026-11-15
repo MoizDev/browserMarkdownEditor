@@ -235,6 +235,8 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
         staging = work;
         invalidate();
     };
+    // A denied block waits for a real capacity change; the wake only re-runs the staged build, it never polls.
+    const wakeStaged = () => { if (!disposed && staging && blocked) { blocked = false; invalidate(); } };
     const publish = (work: Staging) => {
         const o = work.owner, staged = work.items;
         const root = { token: o.token, sceneRevision: o.sceneRevision,
@@ -273,7 +275,7 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
                     if (needsBlock(work)) {
                         if (!allocator) { blocked = true; return; }
                         const lease = allocator.reserve(BLOCK_BYTES);
-                        if (!lease) { blocked = true; return; }
+                        if (!lease) { blocked = true; allocator.whenAvailable?.(wakeStaged); return; }
                         work.blocks.push({ owner: allocator, lease }); heldBytes += lease.bytes;
                     }
                     const status = work.feed.step();
@@ -298,6 +300,7 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
             };
         },
         needsFrame: () => !disposed && staging !== null && !blocked && !staging.feed.waiting,
+        blocked: () => !disposed && blocked && staging !== null,
         presented(frame) {
             if (!retained.has(frame)) throw new Error('Cannot present an unowned paint frame');
         },

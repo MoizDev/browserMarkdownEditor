@@ -10,12 +10,15 @@ import { chooseTileScale, DENSE_TILE_PIXELS, tileRectWorld, tileScale, type Tile
 import type { DenseRasterBorrow, DenseRasterTicket, SessionDenseRasters } from './sessionDenseRasters';
 import { createStreamingDenseTileJob, releaseDenseTilePart, type DenseTilePart, type StreamingDenseTileJob } from './streamingDenseTile';
 import { ResolvedNodeCache } from './resolvedNodeCache';
+import { MemoryRetryGate } from './memoryRetryGate';
 import { FilteredInk } from './nodeSets';
 import { createCanvasPaintAdapter, type CanvasPaintAdapter, type PreparedPaint2d, type PreparedRetain } from './reference/canvasPaintAdapter';
 import { bandItemsOf, PaintWindowBuilder, refBytesOf, rootOf, windowsOfSource, type PaintRoot, type PaintWindow } from './paintWindows';
 import { paintItem2d } from './reference/paint2d';
 
 const EDGE = 512, BLOCK = 65_536;
+/** One streamed tile's bitmap (its apron included): the unit a tile run reserves. */
+const TILE_RUN_BYTES = 516 * 516 * 4;
 /** Granularity of the direct phase's CPU reservation: the adapter grows one chunk at a time, never by a whole-set estimate. */
 const DIRECT_CHUNK = 64 * 1024;
 const NO_LIVE: ReadonlySet<string> = new Set();
@@ -154,7 +157,8 @@ const supportsLive = (plan: Plan, live?: ReadonlySet<string>): boolean => {
  * and the live items are drawn as prepared items at their canonical positions between those parts.
  * Coverage is always complete before the frame is published: a tile with no exact content is drawn from
  * its nearest cached ancestor, and the exact tile replaces that standin later, in place. */
-export function createDensePaintAdapter(resources: PaintLayerResources, host: LayerHost, report: (error: unknown) => void) {
+export function createDensePaintAdapter(resources: PaintLayerResources, host: LayerHost, report: (error: unknown) => void,
+    gate: MemoryRetryGate = new MemoryRetryGate()) {
     let staged: Plan | null = null, ready: Plan | null = null, disposed = false, denied = false, serial = 0;
     // The view last prepared: what a reclaim must keep is what this view can draw.
     let lastView: ViewState | null = null;
@@ -226,7 +230,8 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         if (![x0, y0, x1, y1].every(Number.isSafeInteger)) throw new RangeError('Dense viewport grid overflows');
         const lease = host.allocator.cpu.reserve(BLOCK);
         // A denied plan start waits for a real capacity change: the wake re-runs the frame, nothing polls.
-        if (!lease) { denied = true; host.allocator.cpu.whenAvailable?.(() => resources.invalidate()); return null; }
+        if (!lease) { denied = true; gate.refused(); host.allocator.cpu.whenAvailable?.(() => resources.invalidate()); return null; }
+        gate.admitted();
         try {
             const summarized = !!frame.occupiedRoot && !!frame.sessionRasters && !!frame.rasterVariant;
             const p: Plan = { source: frame, windows: windowsOfSource(frame), view: projection(view), scale, sharp: scale >= demand, live,
@@ -373,6 +378,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                     images: p.resources.images, host, onError: report });
             }
             p.job.prepare(view, budget);
+            if (p.job.blocked) gate.refused();
             if (p.job.failed) { failedFrame = p.source; retire(p); staged = null; return; }
             if (p.job.stopped) { retire(p); staged = null; return; }
             if (!p.job.isComplete && !p.job.isEmpty) return;
@@ -426,7 +432,8 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                 } else own?.release();
                 const ticket = cache.begin(interval, address, p.source.sceneRevision);
                 // Memory denied this tile and nothing coarser exists: the plan waits for memory.
-                if (!ticket) { p.blocked = true; host.allocator.cpu.whenAvailable?.(() => resources.invalidate()); return; }
+                if (!ticket) { p.blocked = true; gate.refused(); host.allocator.cpu.whenAvailable?.(() => resources.invalidate()); return; }
+                gate.admitted();
                 p.cache = { cache, ticket };
             }
         }
@@ -435,6 +442,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
             isCurrent: () => !p.retired && resources.frames.isCurrent(p.source), images: p.resources.images,
             host, onError: report });
         p.job.prepare(view, budget);
+        if (p.job.blocked) gate.refused();
         if (p.job.failed) { failedFrame = p.source; retire(p); staged = null; return; }
         if (p.job.stopped) { retire(p); staged = null; return; }
         if (!p.job.isComplete && !p.job.isEmpty) return;
@@ -504,7 +512,8 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         if (windowBytes > (p.windowLease?.bytes ?? 0)) {
             // A denied reservation keeps the current picture and waits for a real capacity change.
             const lease = host.allocator.cpu.reserve(windowBytes);
-            if (!lease) { p.blocked = true; host.allocator.cpu.whenAvailable?.(() => resources.invalidate()); return; }
+            if (!lease) { p.blocked = true; gate.refused(); host.allocator.cpu.whenAvailable?.(() => resources.invalidate()); return; }
+            gate.admitted();
             if (p.windowLease) host.allocator.cpu.release(p.windowLease);
             p.windowLease = lease;
         }
@@ -537,6 +546,8 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         prepare(view, budget, liveNodes?: ReadonlySet<string>) {
             if (disposed || lastFrame === budget.frameId) return;
             lastFrame = budget.frameId; denied = false; lastView = view;
+            // A refused run waits out its back-off before any reservation, whichever frame re-ran this one.
+            if (gate.closed()) { denied = true; return; }
             const frame = resources.frames.readFrame();
             if (!frame || !resources.frames.isCurrent(frame)) { retire(staged); staged = null; return; }
             if (frame !== failedFrame) failedFrame = null;
@@ -583,7 +594,8 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                         // an up-front estimate of every item.
                         while (adapter.memory().cpuBytes + DIRECT_CHUNK > p.directLeased) {
                             const lease = host.allocator.cpu.reserve(DIRECT_CHUNK);
-                            if (!lease) { p.blocked = true; host.allocator.cpu.whenAvailable?.(() => resources.invalidate()); return; }
+                            if (!lease) { p.blocked = true; gate.refused(); host.allocator.cpu.whenAvailable?.(() => resources.invalidate()); return; }
+                            gate.admitted();
                             p.directLeases.push(lease); p.directLeased += lease.bytes;
                         }
                         // Stops at the covered boundary; the next frame reserves the following chunk before it resumes.
@@ -644,10 +656,15 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         pending: () => !disposed && (!!staged || (!!ready && !ready.sharp)),
         cpuWorkingSet(nativePathUpperBound = 0) {
             let held = 0; for (const p of plans) held += working(p);
+            // The session bitmaps the view keeps are its working set, and two tile runs are the next ones it reserves.
+            // Declared, the pane grant rises above its floor; a grant still below this is the governor's cap, which
+            // refuses the runs past it and reclaims what the view cannot draw.
+            const session = resources.frames.readFrame()?.sessionRasters;
             const pending = !!staged || !ready || !ready.sharp || ready.source !== resources.frames.readFrame() || !resources.frames.isCurrent(ready.source);
-            if (!pending) return held;
-            return held + (staged?.job ? staged.job.cpuWorkingSet : 2 * 516 * 516 * 4) + BLOCK + nativePathUpperBound
-                + (resources.frames.readFrame()?.sessionRasters ? 4096 : 0);
+            // The next runs are the staged job's own bound, or two runs when no job is staged; a settled view still keeps them.
+            const next = pending && staged?.job ? staged.job.cpuWorkingSet : 2 * TILE_RUN_BYTES;
+            if (!pending) return held + (session?.memoryBytes ?? 0) + next;
+            return held + (session?.memoryBytes ?? 0) + next + BLOCK + nativePathUpperBound + (session ? 4096 : 0);
         },
         memory() { let cpuBytes = 0; for (const p of plans) cpuBytes += working(p); return { gpuBytes: 0, cpuBytes }; },
         needsFrame() {

@@ -283,8 +283,7 @@ export class MemoryGovernor {
             POLICY.gpuGrantBaseBytes + POLICY.gpuGrantPerVisiblePaneBytes * visible + POLICY.gpuGrantPerVisiblePixelBytes * pixels));
         this.target.cpu = Math.min(this.ceilings.cpuRasterBytes, Math.max(POLICY.cpuGrantMinBytes,
             POLICY.cpuGrantPerVisiblePaneBytes * visible + POLICY.cpuGrantPerVisiblePixelBytes * pixels));
-        this.plan();
-        this.notifyCapacity();
+        this.replan();
         this.trimHiddenMirrors();
         for (const pool of ['gpu', 'cpu'] as const) {
             if (this.charged[pool] > this.target[pool]) this.trimPool(pool, this.target[pool]);
@@ -419,8 +418,7 @@ export class MemoryGovernor {
             this.state = this.qualityLimit < 1 ? 'degraded' : 'normal';
             if (this.state === 'normal') this.lastTrouble = null;
             this.belowRecoverySince = now;
-            this.plan();
-            this.notifyCapacity();
+            this.replan();
         }
     }
 
@@ -609,6 +607,20 @@ export class MemoryGovernor {
         this.lastTrouble = 'allocation';
         this.degrade();
         this.onPressureChange?.();
+    }
+
+    /** Re-grants after a demand or quality change. Waiters wake only when some pane's grant rose: a steady demand
+     * re-run each frame (the pane refresh runs before every prepare) must not wake the owners it just refused. */
+    private replan(): void {
+        const before = this.grants;
+        this.plan();
+        for (const [id, grant] of this.grants) {
+            const old = before.get(id);
+            if (!old || grant.cpuBytes > old.cpuBytes || grant.gpuCacheBytes > old.gpuCacheBytes || grant.pixelGrant > old.pixelGrant) {
+                this.notifyCapacity();
+                return;
+            }
+        }
     }
 
     private notifyCapacity(): void {

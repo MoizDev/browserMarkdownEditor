@@ -827,6 +827,10 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         this.#healthy();
         this.#paused = width === 0 || height === 0;
         this.#reset();
+        // A zero-size canvas still reports a 1x1 drawing buffer, but it holds no backing. Reporting 1x1 failed
+        // every shrink, which zeroes first and checks for 0x0 (measured: a notebook's 936x728 -> 748x582 resize
+        // returned 1x1 'buffer-mismatch', and the pane fell back to canvas2d for good).
+        if (this.#paused) return { width: 0, height: 0, complete, generation: this.generation };
         return { width: gl.drawingBufferWidth, height: gl.drawingBufferHeight, complete, generation: this.generation };
     }
 

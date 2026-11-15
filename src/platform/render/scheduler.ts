@@ -201,6 +201,14 @@ const PREPARE_FLOOR_FRACTION = 0.25;
  * "Loading drawing…" has nothing on screen to protect. */
 const URGENT_PREPARE_INTERVAL_SHARE = 0.8;
 const progressTileBytes = (RENDER_CONSTANTS.tileInteriorPixels + 2 * RENDER_CONSTANTS.tileGutterTexels) ** 2 * RENDER_CONSTANTS.decodedRgbaBytesPerPixel;
+/** The progress grant admits one real tile per frame, and a layer's gutter may be wider than the platform's one-texel
+ * minimum: the board's tiles are 516² (2-texel gutters), 8,240 bytes over the 514² tile, so on the GPU backend every
+ * board, paper and wet tile was refused forever and the pane never presented (measured: 284 of 284 claims refused). */
+const PROGRESS_GUTTER_TEXELS = 4;
+const progressUploadBytes = (RENDER_CONSTANTS.tileInteriorPixels + 2 * PROGRESS_GUTTER_TEXELS) ** 2 * RENDER_CONSTANTS.decodedRgbaBytesPerPixel;
+/** Uniform-ring and other small mandatory writes land before optional preparation; 48 such bytes already in a frame
+ * must not cancel its one-tile progress guarantee (measured: every refused claim followed 48 admitted bytes). */
+const PROGRESS_SMALL_BYTES = 64 * 1024;
 const clamp = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value));
 
 /** Ordinary cap, including the one-tile warmup; oversize progress is accounted separately (§5.6:549–555). */
@@ -651,7 +659,7 @@ export class FrameScheduler {
             const optionalMs = Math.max(0, prepareDeadline - performance.now()) / Math.max(1, work.length);
             for (const item of optionalOrder) {
                 if (!item.platformPrepared) continue;
-                item.entry.optionalBytes = Math.min(Math.max(meter.allowance, progressTileBytes),
+                item.entry.optionalBytes = Math.min(Math.max(meter.allowance, progressUploadBytes),
                     item.entry.optionalBytes + meter.allowance / Math.max(1, work.length));
                 const deadline = Math.min(prepareDeadline, performance.now() + optionalMs);
                 for (const meta of item.frame.layers) {
@@ -768,8 +776,8 @@ export class FrameScheduler {
             // The nominal cap stays in the frame meter and any use beyond it is reported as an overrun.
             const availableBytes = () => {
                 let remaining = Math.max(0, meter.allowance - Math.max(meter.admittedBytes, meter.reportedBytes));
-                if (!meter.progressUsed && meter.admittedBytes === 0 && meter.reportedBytes === 0 && (critical || !criticalPending())) {
-                    remaining = Math.max(remaining, progressTileBytes);
+                if (!meter.progressUsed && Math.max(meter.admittedBytes, meter.reportedBytes) < PROGRESS_SMALL_BYTES && (critical || !criticalPending())) {
+                    remaining = Math.max(remaining, progressUploadBytes);
                 }
                 return Math.floor(critical ? remaining : Math.min(remaining, item.entry.optionalBytes));
             };
@@ -784,8 +792,8 @@ export class FrameScheduler {
                     if (!critical && bytes > item.entry.optionalBytes) return false;
                     // §5.6 progress guarantee, vr-lead: optional too after all critical work drains.
                     // At 240Hz ~1MiB is smaller than a 1,056,784-byte tile; DRR alone cannot fix that.
-                    const progress = bytes > remaining && !meter.progressUsed && meter.admittedBytes === 0 && meter.reportedBytes === 0 &&
-                        bytes <= progressTileBytes && (critical || !criticalPending());
+                    const progress = bytes > remaining && !meter.progressUsed && Math.max(meter.admittedBytes, meter.reportedBytes) < PROGRESS_SMALL_BYTES &&
+                        bytes <= progressUploadBytes && (critical || !criticalPending());
                     if (bytes > remaining && !progress) return false;
                     meter.progressUsed ||= progress;
                     meter.admittedBytes += bytes;

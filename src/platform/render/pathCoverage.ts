@@ -16,6 +16,11 @@ export type PathCoverageRule = 'nonzero' | 'evenodd' | 'union';
 export const PATH_COVERAGE_STENCIL_MAX_EDGES = 255;
 /** Multisample storage is required for the boundary coverage; the display surface is never used. */
 export const PATH_COVERAGE_SAMPLES: Samples = 4;
+/** Largest coverage target one path item may take. A target costs ~52 bytes per pixel (resolve, 4x colour, stencil), so a
+ * notebook page's clip mask asked 13-33 MB, which a pane's GPU share never grants: 'denied' meant waiting forever and the
+ * paper never drew on the GPU (measured: 54 of 54 page-mask admissions refused). Larger items take the exact canonical
+ * raster route, which tiles within any budget. */
+const PATH_COVERAGE_MAX_TARGET_BYTES = 8 * 2 ** 20;
 
 /** Origin-relative triangles, six values per triangle. `positive` adds +1 winding and `negative`
  * adds -1; for `union` every triangle is in `positive` and `negative` is empty. */
@@ -244,6 +249,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
             if (vertexCount === 0) return { status: 'empty' };
             const vertexBytes = vertexCount * 8;
             const targetBytes = coverageTargetBytes(bounds.width, bounds.height, PATH_COVERAGE_SAMPLES);
+            if (targetBytes > PATH_COVERAGE_MAX_TARGET_BYTES) return { status: 'unsupported' };
             const staging = host.allocator.cpu.reserve(vertexBytes);
             if (!staging) return { status: 'denied' };
             let data: Float32Array;

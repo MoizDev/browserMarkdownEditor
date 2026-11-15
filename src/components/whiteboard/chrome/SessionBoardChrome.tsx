@@ -4,12 +4,14 @@ import type { BoardCommand, BoardCommandSource, CommandState } from './boardComm
 import { ConnectedBoardChrome, type ToolStateView } from './ConnectedBoardChrome';
 import type { ConnectedPenPanelProps } from './ConnectedPenPanel';
 import type { DebugOverlayProps } from './DebugOverlay';
+import { getBoardDebugStats, subscribeBoardDebugStats } from '../debugStats';
 import { boardLanguageMenu, type LanguageOption } from './languageMenu';
 import { localizeBoardChrome, localizeShortcutGroups, type BoardTranslate } from './localize';
 import { mainMenuEntries, type MainAction, type MainMenuSource } from './mainMenu';
 import { preferenceEntries, type LocalPreferencesView } from './preferencesMenu';
 import { ShortcutsDialog, type ShortcutGroup } from './ShortcutsDialog';
 import { boardThemeMenu } from './themeMenu';
+import { setEnhancedBoardTooltips } from '../../../utils/tooltip';
 
 /** Values come from the owning session and viewer; the chrome does not invent capability state. */
 export interface SessionBoardChromeProps {
@@ -39,13 +41,17 @@ export interface SessionBoardChromeProps {
     readonly zoom: number;
     readonly minimapVisible: boolean;
     readonly penPanel?: ConnectedPenPanelProps;
-    readonly debug?: DebugOverlayProps;
     /** The paged host's paper controls, rendered inside the chrome column under the header. */
     readonly pageControls?: ReactNode;
 }
 
 export function SessionBoardChrome(props: SessionBoardChromeProps) {
     const global = useSyncExternalStore(subscribeBoardPreferences, getBoardPreferences, getBoardPreferences);
+    useEffect(() => {
+        setEnhancedBoardTooltips(global.enhancedA11yMode);
+        return () => setEnhancedBoardTooltips(false);
+    }, [global.enhancedA11yMode]);
+    const debugStats = useSyncExternalStore(subscribeBoardDebugStats, getBoardDebugStats, getBoardDebugStats);
     const [shortcutsOpen, setShortcutsOpen] = useState(false);
     const [returnFocus, setReturnFocus] = useState<HTMLElement | null>(null);
     const closeShortcuts = useCallback(() => setShortcutsOpen(false), []);
@@ -94,6 +100,17 @@ export function SessionBoardChrome(props: SessionBoardChromeProps) {
         transparent: props.localPreferences.view.transparent, debugMode: props.localPreferences.view.debugMode,
         toggleTransparent: () => props.localPreferences.setView('transparent', !props.localPreferences.view.transparent),
     };
+    // Debug mode's overlay shows the board's own diagnostics: the tool, the counts and the frame time are live (debugStats).
+    const active = props.toolState.getSnapshot().active;
+    const debugOverlay: DebugOverlayProps | undefined = props.localPreferences.view.debugMode ? {
+        label: labels.text('debugOverlay'), locale: props.locale, direction: props.direction,
+        toolLabel: labels.text('debugTool'), selectionLabel: labels.text('debugSelection'), sheetLabel: labels.text('debugSheet'),
+        zoomLabel: labels.text('debugZoom'), frameTimeLabel: labels.text('debugFrameTime'), nodeCountLabel: labels.text('debugNodes'),
+        visibleCountLabel: labels.text('debugVisibleNodes'), backendLabel: labels.text('debugBackend'),
+        tool: active.id, toolState: active.variant ?? 'active', selectionCount: debugStats.selectionCount,
+        sheet: props.sheetName, zoom: props.zoom, frameTimeMs: debugStats.frameTimeMs, nodeCount: debugStats.nodeCount,
+        visibleCount: debugStats.visibleCount, backend: debugStats.backend, outlines: debugStats.outlines,
+    } : undefined;
     if (!props.isVisible) return null;
     return <>
         <ConnectedBoardChrome toolState={props.toolState} openMedia={props.openMedia}
@@ -110,7 +127,7 @@ export function SessionBoardChrome(props: SessionBoardChromeProps) {
                 return state.enabled ? undefined : state.reason;
             }} focusMode={props.localPreferences.view.focusMode}
             penPanel={props.penPanel ? { ...props.penPanel, disabled: props.readOnly || props.penPanel.disabled } : undefined}
-            debug={props.debug} pageControls={props.pageControls}
+            debug={debugOverlay} pageControls={props.pageControls}
             zoomControls={{ zoom: props.zoom, locale: props.locale, direction: props.direction,
                 zoomLabel: labels.text('zoom'), minimapLabel: labels.text('minimap'),
                 minimapVisible: props.minimapVisible, commands: actions }} />

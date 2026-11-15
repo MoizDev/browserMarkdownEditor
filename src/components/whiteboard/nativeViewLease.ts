@@ -1,4 +1,5 @@
 import { getBoardPreferences, mouseZoomInverted } from '../../utils/boardPreferences';
+import { recordBoardPresentation } from './debugStats';
 import type { PlatformLayerDefinition, PlatformPane, PlatformPresentation } from '../../platform/render/attachPlatformPane.types';
 import { cameraForPagedPosition, pagedPosition, surfaceToWorld, type CameraController, type ViewportInsets, type ZoomLimits } from '../../platform/render/camera';
 import type { Rect, ViewState } from '../../platform/types';
@@ -446,6 +447,7 @@ export function createNativeViewLease(options: {
                 navigation.onPresentation(presentation);
                 viewer.presentationAccepted(presentation && certifyPresentation(presentation) ? presentation : null);
                 if (presentation && certifyPresentation(presentation)) backdrop?.notePresentation?.();
+                if (presentation && certifyPresentation(presentation)) recordBoardPresentation(performance.now(), presentation.backend);
             }, onError: options.onError, onNotice: options.onNotice } });
     // The platform receives the same controller as pointer input, including its
     // actual constraints and measured viewport; motion never uses a second pose.

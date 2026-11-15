@@ -24,6 +24,9 @@ const SHOW_DELAY_MS = 400;
 // Sliding from one control to the next along a toolbar shows the next bubble at
 // once, the way Obsidian's does, instead of making the reader wait again.
 const WARM_MS = 300;
+// Enhanced board tooltips (the board's accessibility preference): the bubble stays up this long after the pointer leaves
+// its target, so the pointer can cross the gap onto it and read it there.
+const ENHANCED_LEAVE_GRACE_MS = 300;
 // Bubble body to target edge; the arrow sits inside this gap.
 const GAP_PX = 8;
 // Nearest the bubble may come to a viewport edge.
@@ -47,6 +50,8 @@ let dismissed = false;
 let showTimer = 0;
 let hiddenAt = -Infinity;
 let observer: MutationObserver | null = null;
+let enhanced = false;
+let leaveTimer = 0;
 
 function tooltipText(el: Element): string {
     return el.getAttribute('data-tooltip')?.trim() ?? '';
@@ -131,6 +136,8 @@ function show(): void {
     const rect = el.getBoundingClientRect();
     if (rect.width === 0 && rect.height === 0) { reset(); return; }
     const box = ensureBubble();
+    // Enhanced board tooltips take the pointer so it can move onto them; every other bubble stays click-through.
+    box.style.pointerEvents = promptFor(el) ? 'auto' : '';
     // textContent ONLY. File names, paths and pdf.js link titles are untrusted
     // text, and AGENTS.md allows exactly two note-text → innerHTML sinks
     // (tableWidget's renderCellContent, mermaidWidget's renderInto) — this
@@ -188,16 +195,33 @@ function dismiss(): void {
     dismissed = true;
 }
 
+/** Enhanced accessibility mode (a board preference, F-A11Y-004): board tooltips show at once and stay hoverable. */
+export function setEnhancedBoardTooltips(on: boolean): void {
+    enhanced = on;
+    if (!on) cancelLeave();
+}
+
+function promptFor(el: Element): boolean {
+    return enhanced && el.closest('.board-chrome-overlay') !== null;
+}
+
+function cancelLeave(): void {
+    if (leaveTimer) { clearTimeout(leaveTimer); leaveTimer = 0; }
+}
+
 function onPointerOver(e: PointerEvent): void {
     if (e.pointerType === 'touch') return;
+    // The pointer is on the bubble or back on its target: an enhanced bubble that was leaving stays up.
+    if (e.target instanceof Node && bubble?.contains(e.target)) { cancelLeave(); return; }
     const el = e.target instanceof Element ? e.target.closest('[data-tooltip]') : null;
-    if (el === target) return;
+    if (el === target) { cancelLeave(); return; }
+    cancelLeave();
     if (!el || !tooltipText(el)) { reset(); return; }
     const warm = shown || performance.now() - hiddenAt < WARM_MS;
     hideBubble();
     target = el;
     dismissed = false;
-    if (warm) show();
+    if (warm || promptFor(el)) show();
     else showTimer = window.setTimeout(show, SHOW_DELAY_MS);
 }
 
@@ -205,6 +229,12 @@ function onPointerOut(e: PointerEvent): void {
     if (!target) return;
     const to = e.relatedTarget;
     if (to instanceof Node && target.contains(to)) return;
+    if (to instanceof Node && bubble?.contains(to)) return;
+    if (!dismissed && shown && promptFor(target)) {
+        cancelLeave();
+        leaveTimer = window.setTimeout(() => { leaveTimer = 0; leave(); }, ENHANCED_LEAVE_GRACE_MS);
+        return;
+    }
     if (dismissed) reset();
     else leave();
 }
@@ -229,6 +259,7 @@ export function installTooltips(): () => void {
         for (const type of DISMISSERS) document.removeEventListener(type, dismiss, opts);
         document.removeEventListener('visibilitychange', onHidden);
         window.removeEventListener('blur', reset);
+        cancelLeave();
         reset();
         observer = null;
         bubble?.remove();

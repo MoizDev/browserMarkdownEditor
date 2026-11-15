@@ -4,6 +4,7 @@ import { getContextMenu } from '../../utils/contextMenu';
 import { translateBoard } from '../../whiteboard/chrome/language';
 import type { BoardPreferenceState } from '../../whiteboard/chrome/preferences';
 import { localizeBoardChrome } from './chrome/localize';
+import { useBoardDebugSampler } from './useBoardDebugSampler';
 import type { CommandState } from './chrome/boardCommands';
 import type { createBoardStyleControls } from '../../whiteboard/host/styleControls';
 import type { EmbedPresentationPort } from '../../platform/render/embedPresentation.types';
@@ -153,6 +154,7 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
     readonly styleRef: RefObject<Styles | null>;
 }) {
     const runtime = lease.runtime, host = props.nativeCanvasHost, identity = props.identity;
+    useBoardDebugSampler(runtime, lease);
     const current = useCallback(() => ownerCurrent() && lease.isCurrent(), [ownerCurrent, lease]);
     const mac = /Mac|iPhone|iPad/.test(navigator.platform);
     const shortcutRef = useRef<(() => void) | null>(null);

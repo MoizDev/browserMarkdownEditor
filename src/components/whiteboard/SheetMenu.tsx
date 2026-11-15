@@ -47,19 +47,20 @@ export function SheetMenu({ anchor, sheets, current, readOnly, dir, t, close, se
         cancelled.current = false;
         setEditing(null);
     };
-    return <div ref={panel} className="board-sheet-menu" role="dialog" dir={dir} aria-label={t('sheet.menu')}
+    return <div ref={panel} className="board-sheet-menu" role="menu" dir={dir} aria-label={t('sheet.menu')}
         style={{ left: Math.max(8, Math.min(rect.left, window.innerWidth - 288)), top: Math.min(rect.bottom + 6, window.innerHeight - 80) }}
         onContextMenu={event => event.preventDefault()} onDragOver={event => event.preventDefault()} onDrop={event => event.preventDefault()}>
-        <div className="board-sheet-menu-label">{t('sheet.goToPage')}</div>
-        {sheets.map((sheet, index) => <div className="board-sheet-row" key={sheet.id}>
+        <div className="board-sheet-menu-label">{t('sheet.menu')}</div>
+        {sheets.map((sheet, index) => <div className="board-sheet-row" role="none" key={sheet.id}>
             {editing === sheet.id ? <input ref={input} aria-label={t('sheet.rename')} value={name} maxLength={200}
                 onChange={event => setName(event.currentTarget.value)} onBlur={() => finishRename(sheet)}
                 onKeyDown={event => {
                     if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); cancelled.current = true; event.currentTarget.blur(); }
                     else if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur(); }
-                }} /> : <button type="button" className="board-sheet-select" aria-current={sheet.id === current ? 'page' : undefined}
-                onClick={() => { select(sheet.id); close(); }}>{sheet.name}</button>}
-            <button type="button" aria-label={`${t('sheet.menu')}: ${sheet.name}`} data-tooltip={t('sheet.menu')} disabled={readOnly}
+                }} /> : <button type="button" role="menuitemradio" className="board-sheet-select" aria-checked={sheet.id === current}
+                aria-current={sheet.id === current ? 'page' : undefined} onClick={() => { select(sheet.id); close(); }}>{sheet.name}</button>}
+            <button type="button" className="board-sheet-more" role="menuitem" aria-haspopup="menu"
+                aria-label={`${t('sheet.menu')}: ${sheet.name}`} data-tooltip={t('sheet.menu')} disabled={readOnly}
                 onClick={event => {
                     const button = event.currentTarget, box = button.getBoundingClientRect();
                     const entries: ContextMenuEntry[] = [
@@ -72,7 +73,8 @@ export function SheetMenu({ anchor, sheets, current, readOnly, dir, t, close, se
                     openContextMenu({ x: box.left, y: box.bottom, entries, label: t('sheet.menu'), opener: button, anchor: button });
                 }}>⋯</button>
         </div>)}
-        {sheets.length < 40 ? <button type="button" disabled={readOnly} onClick={() => { create(); close(); }}>{t('sheet.create')}</button>
+        {sheets.length < 40 ? <button type="button" className="board-sheet-create" role="menuitem" disabled={readOnly}
+            onClick={() => { create(); close(); }}>{t('sheet.create')}</button>
             : <div className="board-sheet-menu-label">{t('sheet.limit', { count: 40 })}</div>}
     </div>;
 }

@@ -1,3 +1,5 @@
+/* The app's context-menu surface and rows (index.css .context-menu, .context-menu-item), so the sheet
+   menu reads as one of the app's menus in both themes. Only position and width are its own. */
 .board-sheet-menu {
     position: fixed;
     z-index: 100;
@@ -5,22 +7,95 @@
     max-width: calc(100vw - 16px);
     max-height: min(70vh, 480px);
     overflow: auto;
-    padding: 6px;
+    padding: 4px;
     border: 1px solid var(--background-modifier-border);
     border-radius: 8px;
-    background: var(--background-primary);
+    background: var(--background-primary-alt);
     color: var(--text-normal);
-    box-shadow: 0 6px 24px #0003;
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+}
+
+:root[data-theme="light"] .board-sheet-menu {
+    background: var(--background-primary);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
 }
 
 .board-sheet-menu-label {
     padding: 6px 8px;
     color: var(--text-muted);
-    font-size: 0.85em;
+    font-size: var(--nav-item-size);
 }
 
-.board-sheet-row { display: flex; align-items: center; }
-.board-sheet-row input, .board-sheet-select { flex: 1; min-width: 0; }
-.board-sheet-menu button { color: inherit; }
-.board-sheet-select { overflow: hidden; text-align: start; text-overflow: ellipsis; white-space: nowrap; }
-.board-sheet-select[aria-current='page'] { font-weight: 700; }
+.board-sheet-row { display: flex; align-items: center; gap: 2px; }
+
+.board-sheet-select,
+.board-sheet-create {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    min-width: 0;
+    padding: 6px 8px;
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-s);
+    color: var(--text-muted);
+    font-family: inherit;
+    font-size: var(--nav-item-size);
+    text-align: start;
+    cursor: pointer;
+}
+
+.board-sheet-select { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.board-sheet-select[aria-checked='true'] { color: var(--text-normal); font-weight: 600; }
+
+.board-sheet-more {
+    flex: none;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-s);
+    color: var(--text-muted);
+    font-size: var(--nav-item-size);
+    cursor: pointer;
+}
+
+.board-sheet-select:hover:not(:disabled),
+.board-sheet-create:hover:not(:disabled),
+.board-sheet-more:hover:not(:disabled) {
+    background: var(--background-modifier-hover);
+    color: var(--text-normal);
+}
+
+.board-sheet-select:focus-visible,
+.board-sheet-create:focus-visible,
+.board-sheet-more:focus-visible {
+    background: var(--background-modifier-hover);
+    color: var(--text-normal);
+    outline: 1px solid var(--interactive-accent);
+    outline-offset: -1px;
+}
+
+.board-sheet-more:disabled,
+.board-sheet-create:disabled {
+    color: var(--text-faint);
+    cursor: default;
+}
+
+.board-sheet-row input {
+    flex: 1;
+    min-width: 0;
+    padding: 5px 8px;
+    background: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-s);
+    color: var(--text-normal);
+    font-family: inherit;
+    font-size: var(--nav-item-size);
+}
+
+.board-sheet-row input:focus-visible {
+    outline: 1px solid var(--interactive-accent);
+    outline-offset: -1px;
+}

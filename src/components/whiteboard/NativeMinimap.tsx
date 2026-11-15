@@ -19,9 +19,13 @@ export interface NativeMinimapProps {
     readonly onFocus: () => void;
 }
 
+/** The map's fixed box, in CSS pixels, excluding its 1px border. */
+const BOX_WIDTH = 200, BOX_HEIGHT = 140;
+
 /** Presents an engine-produced scene capture; it never creates a preview of its own. */
 export default function NativeMinimap({ thumbnail, currentCamera, viewport, isVisible, currentOwner, onNavigate, onFocus }: NativeMinimapProps) {
     const element = useRef<HTMLDivElement | null>(null);
+    const frameElement = useRef<HTMLDivElement | null>(null);
     const drag = useRef<number | null>(null);
     const blob = useRef(thumbnail?.blob);
     const [image, setImage] = useState<{ key: string; url: string } | null>(null);
@@ -55,18 +59,26 @@ export default function NativeMinimap({ thumbnail, currentCamera, viewport, isVi
         || currentCamera.z <= 0 || !Number.isFinite(viewport.width) || !Number.isFinite(viewport.height)
         || viewport.width <= 0 || viewport.height <= 0) return null;
 
-    const width = Math.min(200, 140 * bounds.width / bounds.height);
-    const visibleWidth = viewport.width / currentCamera.z, visibleHeight = viewport.height / currentCamera.z;
-    const left = Math.max(bounds.x, currentCamera.x), top = Math.max(bounds.y, currentCamera.y);
-    const right = Math.min(bounds.x + bounds.width, currentCamera.x + visibleWidth);
-    const bottom = Math.min(bounds.y + bounds.height, currentCamera.y + visibleHeight);
+    // The map shows the whole board AND the visible window, so the viewport rectangle is always
+    // inside it: a board smaller than the window shows small, with the window drawn around it.
+    const viewWidth = viewport.width / currentCamera.z, viewHeight = viewport.height / currentCamera.z;
+    const view = { x: currentCamera.x, y: currentCamera.y, width: viewWidth, height: viewHeight };
+    const left = Math.min(bounds.x, view.x), top = Math.min(bounds.y, view.y);
+    const right = Math.max(bounds.x + bounds.width, view.x + viewWidth), bottom = Math.max(bounds.y + bounds.height, view.y + viewHeight);
+    const margin = Math.max(right - left, bottom - top) * 0.05;
+    const frame = { x: left - margin, y: top - margin, width: right - left + 2 * margin, height: bottom - top + 2 * margin };
+    // The frame is fitted into the fixed box, keeping its aspect and centring the spare space.
+    const fit = Math.min(BOX_WIDTH / frame.width, BOX_HEIGHT / frame.height);
+    const frameWidth = frame.width * fit, frameHeight = frame.height * fit;
+    const percent = (value: number, total: number) => `${value / total * 100}%`;
+
     const navigate = (clientX: number, clientY: number) => {
         if (!currentOwner()) return;
-        const rect = element.current?.getBoundingClientRect();
+        const rect = frameElement.current?.getBoundingClientRect();
         if (!rect || rect.width <= 0 || rect.height <= 0) return;
         const x = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
         const y = Math.max(0, Math.min(1, (clientY - rect.top) / rect.height));
-        onNavigate({ x: bounds.x + x * bounds.width, y: bounds.y + y * bounds.height });
+        onNavigate({ x: frame.x + x * frame.width, y: frame.y + y * frame.height });
     };
     const pointerDown = (event: PointerEvent<HTMLDivElement>) => {
         if (event.button !== 0 || drag.current !== null || !currentOwner()) return;
@@ -90,13 +102,13 @@ export default function NativeMinimap({ thumbnail, currentCamera, viewport, isVi
     };
     const keyDown = (event: KeyboardEvent<HTMLDivElement>) => {
         if (!currentOwner()) return;
-        const centre = { x: currentCamera.x + visibleWidth / 2, y: currentCamera.y + visibleHeight / 2 };
+        const centre = { x: currentCamera.x + viewWidth / 2, y: currentCamera.y + viewHeight / 2 };
         const factor = event.shiftKey ? 1 : 0.25;
         switch (event.key) {
-            case 'ArrowLeft': centre.x -= visibleWidth * factor; break;
-            case 'ArrowRight': centre.x += visibleWidth * factor; break;
-            case 'ArrowUp': centre.y -= visibleHeight * factor; break;
-            case 'ArrowDown': centre.y += visibleHeight * factor; break;
+            case 'ArrowLeft': centre.x -= viewWidth * factor; break;
+            case 'ArrowRight': centre.x += viewWidth * factor; break;
+            case 'ArrowUp': centre.y -= viewHeight * factor; break;
+            case 'ArrowDown': centre.y += viewHeight * factor; break;
             case 'Home': centre.x = bounds.x; centre.y = bounds.y; break;
             case 'End': centre.x = bounds.x + bounds.width; centre.y = bounds.y + bounds.height; break;
             default: return;
@@ -107,13 +119,20 @@ export default function NativeMinimap({ thumbnail, currentCamera, viewport, isVi
     return <div ref={element} className="native-minimap" role="region" tabIndex={0}
         aria-label="Board minimap. Drag to navigate; use arrow keys, Home or End."
         data-tooltip="Drag or use arrow keys to navigate" data-tooltip-position="top"
-        style={{ width, aspectRatio: `${bounds.width} / ${bounds.height}` }}
+        style={{ width: BOX_WIDTH, height: BOX_HEIGHT }}
         onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerEnd}
         onPointerCancel={pointerEnd} onLostPointerCapture={pointerEnd} onKeyDown={keyDown}>
-        <img src={image.url} alt="" draggable={false} />
-        {right > left && bottom > top && <div className="native-minimap-viewport" aria-hidden="true" style={{
-            left: `${(left - bounds.x) / bounds.width * 100}%`, top: `${(top - bounds.y) / bounds.height * 100}%`,
-            width: `${(right - left) / bounds.width * 100}%`, height: `${(bottom - top) / bounds.height * 100}%`,
-        }} />}
+        <div ref={frameElement} className="native-minimap-frame" style={{
+            left: (BOX_WIDTH - frameWidth) / 2, top: (BOX_HEIGHT - frameHeight) / 2, width: frameWidth, height: frameHeight,
+        }}>
+            <img src={image.url} alt="" draggable={false} style={{
+                left: percent(bounds.x - frame.x, frame.width), top: percent(bounds.y - frame.y, frame.height),
+                width: percent(bounds.width, frame.width), height: percent(bounds.height, frame.height),
+            }} />
+            <div className="native-minimap-viewport" aria-hidden="true" style={{
+                left: percent(view.x - frame.x, frame.width), top: percent(view.y - frame.y, frame.height),
+                width: percent(view.width, frame.width), height: percent(view.height, frame.height),
+            }} />
+        </div>
     </div>;
 }

@@ -1,7 +1,9 @@
+/* Above the board's bottom row (zoom and minimap toggles), which is 54px up from the pane's
+   bottom; 62px leaves an 8px gap. Its outer box is 142px tall, so it tops out at 204px. */
 .native-minimap {
     position: absolute;
     right: 16px;
-    bottom: 16px;
+    bottom: 62px;
     z-index: 2;
     overflow: hidden;
     box-sizing: content-box;
@@ -20,10 +22,14 @@
     outline-offset: 2px;
 }
 
+/* The board and the visible window, fitted into the box (see NativeMinimap). */
+.native-minimap-frame {
+    position: absolute;
+}
+
 .native-minimap img {
+    position: absolute;
     display: block;
-    width: 100%;
-    height: 100%;
     pointer-events: none;
 }
 

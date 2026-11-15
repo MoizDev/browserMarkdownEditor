@@ -784,7 +784,6 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
     return <div className={`pdf-viewer pdf-tiled-view${thumbs ? ' has-thumbs' : ''}`}>
         {find.bar}
         {outline.panel}
-        <PdfCapabilitiesNotice capabilities={capabilities} nativeFontPolicy />
         {visibleNotice && <div className="pdf-tiled-notice" role="status">
             <div>{visibleNotice}</div>
             <div className="pdf-tiled-notice-actions">
@@ -803,6 +802,7 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
                 <PdfInvertToggle />
                 {onRotate && <PdfTiledRotateControls path={filePath} page={page} onRotate={rotate}
                     disabledReason={capabilities.encrypted ? PDF_ENCRYPTED_READ_ONLY : undefined} />}
+                <PdfCapabilitiesNotice capabilities={capabilities} nativeFontPolicy />
             </div>
             <PdfTiledPageField page={page} pageCount={pdf.pages.length} onNavigate={goPage} />
             <div className="pdf-viewer-pill"><button aria-label="Zoom out" onClick={() => zoomBy(1 / 1.2)}>−</button><span>{Math.round(zoom * 100)}%</span><button aria-label="Zoom in" onClick={() => zoomBy(1.2)}>+</button></div>

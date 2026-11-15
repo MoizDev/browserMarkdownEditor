@@ -1,7 +1,9 @@
 import { PDF_COPY_RESTRICTED, PDF_COPY_UNKNOWN, PDF_ENCRYPTED_READ_ONLY, PDF_PRINT_LOW_QUALITY_ONLY, PDF_PRINT_RESTRICTED, PDF_PRINT_UNKNOWN, PDF_XFA_UNSUPPORTED, type PdfCapabilities } from '../utils/pdfCapabilities';
+import { useEffect, useRef, useState } from 'react';
 import './PdfCapabilitiesNotice.css';
 
-/** Persistent disclosure: a blank XFA page must not look like a clean rendering. */
+/** Persistent disclosure: a blank XFA page must not look like a clean rendering. Collapsed to its
+ * control so it never covers the page unasked; a click opens it, Escape or an outside click closes it. */
 export default function PdfCapabilitiesNotice({ capabilities, nativeFontPolicy = false }: { capabilities: PdfCapabilities; nativeFontPolicy?: boolean }) {
     const messages: string[] = [];
     if (nativeFontPolicy) messages.push('When non-embedded fonts are substituted, this reader uses bundled Noto faces where supported. Ambiguous Chinese uses Simplified Chinese (SC); a known character set takes precedence over a conflicting language hint.');
@@ -28,8 +30,30 @@ export default function PdfCapabilitiesNotice({ capabilities, nativeFontPolicy =
         : capabilities.javascript === 'unknown' || !capabilities.actions || capabilities.actions === 'unknown'
             ? 'Whether this PDF contains scripts or actions is unknown.' : 'No PDF scripts or actions were reported.';
     messages.push(`${active} Scripts, form submission, embedded-file launches and remote resources do not run in this viewer.`);
-    return <div className="pdf-capabilities-notice" role="status" aria-label="PDF feature limitations">
-        <strong>PDF feature limitations</strong>
-        {messages.map(message => <div key={message}>{message}</div>)}
+    return <CapabilitiesDisclosure messages={messages} />;
+}
+
+function CapabilitiesDisclosure({ messages }: { messages: string[] }) {
+    const [open, setOpen] = useState(false);
+    const root = useRef<HTMLDivElement>(null);
+    useEffect(() => {
+        if (!open) return;
+        const key = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.stopPropagation(); setOpen(false); } };
+        const down = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node)) setOpen(false); };
+        window.addEventListener('keydown', key, true);
+        window.addEventListener('pointerdown', down, true);
+        return () => { window.removeEventListener('keydown', key, true); window.removeEventListener('pointerdown', down, true); };
+    }, [open]);
+    return <div className="pdf-capabilities" ref={root}>
+        <button type="button" className={`pdf-capabilities-toggle${open ? ' is-on' : ''}`} aria-expanded={open}
+            aria-label="PDF feature limitations" data-tooltip={open ? undefined : 'PDF feature limitations'} onClick={() => setOpen(value => !value)}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="10" /><path d="M12 16v-4" /><path d="M12 8h.01" />
+            </svg>
+        </button>
+        {open && <div className="pdf-capabilities-notice" role="status">
+            <strong>PDF feature limitations</strong>
+            {messages.map(message => <div key={message}>{message}</div>)}
+        </div>}
     </div>;
 }

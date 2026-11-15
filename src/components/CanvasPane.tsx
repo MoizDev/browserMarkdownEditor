@@ -69,6 +69,7 @@ function CanvasPane({ file, documentId, nativeCanvasHost, representation, onNati
     const route = routes.canvas[isNotebook ? 'notebook' : 'drawing'];
     const label = isNotebook ? 'Loading notebook…' : 'Loading whiteboard…';
     return <div className={`canvas-pane${isVisible ? '' : ' canvas-pane-hidden'}`} style={slotStyle}
+        data-board-theme={loadedKind === 'drawing' ? boardTheme : undefined}
         onPointerDownCapture={() => { if (isVisible) onFocusPane(file.path); }}>
         {disk && <DiskBar name={file.name} state={disk} path={file.path} onAction={onDiskAction} />}
         <div className="canvas-pane-body">

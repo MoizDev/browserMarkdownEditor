@@ -141,6 +141,70 @@
   --tab-text-color: #5c5c5c;
   --tab-text-color-active: #222222;
 }
+/* A whiteboard pane draws in its own board theme (F-THEME-002, R-26: Preferences > Theme and Mod+/ keep today's
+   behaviour, where the board's Dark/Light recolours its toolbars and panels too). Only the colour variables the
+   light theme overrides are re-scoped; accent and settings-driven variables stay the app's. */
+.canvas-pane[data-board-theme="dark"] {
+  --canvas-surround: var(--background-primary);
+  --canvas-chrome-bg: var(--background-secondary);
+  --canvas-chrome-border: var(--background-modifier-border);
+  --canvas-chrome-text: var(--text-normal);
+  --canvas-chrome-muted: var(--text-muted);
+  --canvas-chrome-hover: var(--background-modifier-hover);
+  --background-primary: #1e1e1e;
+  --background-primary-alt: #252525;
+  --background-secondary: #202020;
+  --background-secondary-alt: #1a1a1a;
+  --background-modifier-border: #363636;
+  --background-modifier-hover: #2a2d2e;
+  --background-modifier-active: #353535;
+  --text-normal: #dcddde;
+  --text-muted: #999;
+  --text-faint: #666;
+  --text-highlight-bg: rgba(255, 208, 0, 0.4);
+  --interactive-normal: #2a2a2a;
+  --interactive-hover: #353535;
+  --scrollbar-bg: transparent;
+  --scrollbar-thumb-bg: rgba(255, 255, 255, 0.1);
+  --scrollbar-active-thumb: rgba(255, 255, 255, 0.18);
+  --tab-container-background: #333333;
+  --tab-background-hover: rgba(255, 255, 255, 0.075);
+  --tab-outline-color: transparent;
+  --tab-divider-color: #3f3f3f;
+  --tab-text-color: #b3b3b3;
+  --tab-text-color-active: #dadada;
+}
+.canvas-pane[data-board-theme="light"] {
+  --canvas-surround: #f7f7f9;
+  --canvas-chrome-bg: #ffffff;
+  --canvas-chrome-border: #e4e4e7;
+  --canvas-chrome-text: #1d1d1d;
+  --canvas-chrome-muted: #6b6b70;
+  --canvas-chrome-hover: #f1f1f3;
+  --background-primary: #ffffff;
+  --background-primary-alt: #f2f3f5;
+  --background-secondary: #f2f3f5;
+  --background-secondary-alt: #e3e5e8;
+  --background-modifier-border: #dadce0;
+  --background-modifier-hover: rgba(0, 0, 0, 0.04);
+  --background-modifier-active: rgba(0, 0, 0, 0.08);
+  --text-normal: #2e3338;
+  --text-muted: #5c5f66;
+  --text-faint: #999999;
+  --text-highlight-bg: rgba(255, 208, 0, 0.4);
+  --interactive-normal: #e3e5e8;
+  --interactive-hover: #dadce0;
+  --scrollbar-bg: transparent;
+  --scrollbar-thumb-bg: rgba(0, 0, 0, 0.1);
+  --scrollbar-active-thumb: rgba(0, 0, 0, 0.2);
+  --tab-container-background: #fcfcfc;
+  --tab-background-hover: rgba(0, 0, 0, 0.075);
+  --tab-outline-color: #dadce0;
+  --tab-divider-color: #dadada;
+  --tab-text-color: #5c5c5c;
+  --tab-text-color-active: #222222;
+}
+
 
 /* ── Reset ── */
 *,

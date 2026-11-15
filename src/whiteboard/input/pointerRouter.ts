@@ -25,7 +25,6 @@ export interface PointerRouterOptions<Context> {
   resolve(sample: RealSample, modifiers: Modifiers, event: PointerEvent): PointerRoute<Context> | null
   ended(reason: FinishReason): void
   hover?(event: PointerEvent): void
-  prediction?(id: number, event: PointerEvent | null): void
   contextMenu?(event: MouseEvent): void
   error?(error: unknown, id: number): void
 }
@@ -110,7 +109,6 @@ export class PointerRouter<Context> {
         try { options.router.interrupt(options.token, 'os-cancel') } finally { options.releaseClaim(); options.ended(end) }
       },
       hover: event => options.hover?.(event),
-      prediction: (id, event) => options.prediction?.(id, event),
       contextMenu: options.contextMenu,
       error: (error, id) => options.error?.(error, id),
     }

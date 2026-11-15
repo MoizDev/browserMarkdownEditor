@@ -24,8 +24,8 @@ export class StraightInkBuilder {
         this.pending = null;
         return true;
     }
-    publish(predicted?: SampleSequence): CurvePublication {
-        const endpoint = this.pending, base = this.builder.publish(endpoint ? undefined : predicted);
+    publish(): CurvePublication {
+        const endpoint = this.pending, base = this.builder.publish();
         if (!endpoint) return base;
         const prefix = base.samples, count = prefix.count + 1;
         const samples: SampleSequence = Object.freeze({
@@ -41,7 +41,7 @@ export class StraightInkBuilder {
         return Object.freeze({ ...base, samples, finalizedSpanCount,
             replaceableTail: materializeCurveRange(samples, { firstSpan: finalizedSpanCount,
                 spanCount: count - 1 - finalizedSpanCount }, base.parameters),
-            endpointX: endpoint.x, endpointY: endpoint.y, prediction: null });
+            endpointX: endpoint.x, endpointY: endpoint.y });
     }
     finish(): Readonly<{ samples: SampleBuilder; publication: CurvePublication }> {
         this.flush(); return this.builder.finish();

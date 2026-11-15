@@ -125,7 +125,7 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
             if (![point.x, point.y].every(Number.isFinite) || !['mouse', 'pen', 'touch'].includes(input)) throw new RangeError('Invalid point query');
             const { runtime } = options, doc = runtime.session.doc, revision = doc.rev, selection = runtime.selection.getSnapshot();
             const view = options.camera(), font = options.fontEpoch(), token = runtime.session.owner;
-            const camera = { ...view.camera }, viewport = { ...view.viewport }, epoch = view.epoch;
+            const camera = { ...view.camera }, viewport = { ...view.viewport };
             const controller = new AbortController(); jobs.add(controller);
             const combined = AbortSignal.any([signal, controller.signal]);
             let cursor: ReturnType<NonNullable<typeof runtime.scene>['spatialCursor']> | undefined;
@@ -134,7 +134,8 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                 const now = options.camera(), state = runtime.selection.getSnapshot();
                 if (disposed || !options.current() || runtime.session.doc !== doc || runtime.session.owner !== token || doc.rev !== revision
                     || options.fontEpoch() !== font || state.sheet !== selection.sheet || state.focus !== selection.focus
-                    || now.epoch !== epoch || now.camera.x !== camera.x || now.camera.y !== camera.y || now.camera.z !== camera.z
+                    // Geometry, not the view epoch: a motion flag ticks it with an unchanged camera (killed every drag hit).
+                    || now.camera.x !== camera.x || now.camera.y !== camera.y || now.camera.z !== camera.z
                     || now.viewport.width !== viewport.width || now.viewport.height !== viewport.height || now.viewport.dpr !== viewport.dpr) throw cancelled();
             };
             const tick = async () => { check(); await cooperate(); check(); };

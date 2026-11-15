@@ -104,6 +104,7 @@
     "commands.bringFront": "Vigye előtérbe",
     "commands.rotateCounterclockwise": "Forgassa el az óramutató járásával ellentétes irányba",
     "commands.rotateClockwise": "Forgassa el az óramutató járásával megegyező irányba",
+    "commands.toggleAutoSize": "Automatikus méret be/ki",
     "commands.copyAsPng": "PNG",
     "commands.copyAsSvg": "SVG",
     "commands.copyAsJson": "JSON",

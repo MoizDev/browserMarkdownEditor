@@ -104,6 +104,7 @@
     "commands.bringFront": "સામે લાવો",
     "commands.rotateCounterclockwise": "ઘડિયાળની વિરુદ્ધ દિશામાં ફેરવો",
     "commands.rotateClockwise": "ઘડિયાળની દિશામાં ફેરવો",
+    "commands.toggleAutoSize": "ઓટો સાઇઝ ટૉગલ કરો",
     "commands.copyAsPng": "PNG",
     "commands.copyAsSvg": "SVG",
     "commands.copyAsJson": "JSON",

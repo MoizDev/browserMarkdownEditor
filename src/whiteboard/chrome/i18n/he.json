@@ -104,6 +104,7 @@
     "commands.bringFront": "הביאו לחזית",
     "commands.rotateCounterclockwise": "סובב נגד כיוון השעון",
     "commands.rotateClockwise": "סובב עם כיוון השעון",
+    "commands.toggleAutoSize": "החלפת גודל אוטומטי",
     "commands.copyAsPng": "PNG",
     "commands.copyAsSvg": "SVG",
     "commands.copyAsJson": "JSON",

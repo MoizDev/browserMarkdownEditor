@@ -95,7 +95,7 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
     let currentWorld: Affine | null = null, handles = false, scroll: { x: number; y: number } | null = null;
     let scheduled: (() => void) | null = null, editingEpoch = 0, ownBaseRevision = -1;
     const metrics = new Map<NodeId, { revision: number; font: number; value: ConnectorMetrics }>();
-    let svg: SVGSVGElement | null = null, lastZoom = camera.camera.z;
+    let svg: SVGSVGElement | null = null, toolbar: HTMLElement | null = null, lastZoom = camera.camera.z;
     let spell: BoardSpellClient | null = null, spellLoad: Promise<BoardSpellClient> | null = null;
     let misspellings: readonly Misspelling[] = [], spellGeneration = 0;
     let spellSource: RichText | null = null, spellNode: NodeId | null = null;
@@ -388,9 +388,43 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
         item.setAttribute('x', String(value.x)); item.setAttribute('y', String(value.y)); item.setAttribute('width', String(Math.max(0, value.width)));
         item.setAttribute('height', String(Math.max(0, value.height))); item.setAttribute('fill', fill); if (stroke) item.setAttribute('stroke', stroke); parent.append(item);
     };
+    /** The floating "Text formatting" toolbar (F-TEXT-011/012). Its buttons run the same command bridge as the
+     * text menu and the shortcuts; pointerdown is kept from the editor so the selection survives the click. */
+    const formatToolbar = (): HTMLElement => {
+        if (toolbar) return toolbar;
+        const bar = document.createElement('div');
+        bar.setAttribute('role', 'toolbar'); bar.setAttribute('aria-label', 'Text formatting'); bar.hidden = true;
+        bar.style.cssText = 'position:absolute;left:0;top:0;display:flex;gap:2px;padding:3px;z-index:2;pointer-events:auto;'
+            + 'background:var(--background-primary);border:1px solid var(--background-modifier-border);border-radius:6px;'
+            + 'box-shadow:0 2px 8px rgba(0,0,0,0.25);white-space:nowrap;transform:translate(-50%,-100%);';
+        const items: readonly (readonly [string, string])[] = [['bold', 'Bold'], ['italic', 'Italic'], ['code', 'Code'], ['link', 'Link'],
+            ['bullet-list', 'Bulleted list'], ['highlight', 'Highlight']];
+        for (const [name, label] of items) {
+            const button = document.createElement('button');
+            button.type = 'button'; button.textContent = label; button.dataset.command = name;
+            button.style.cssText = 'font:inherit;font-size:12px;padding:3px 7px;border:0;border-radius:4px;cursor:pointer;'
+                + 'background:transparent;color:var(--text-normal);';
+            button.addEventListener('pointerdown', event => { event.preventDefault(); event.stopPropagation(); });
+            button.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); command(name); });
+            bar.append(button);
+        }
+        overlay.append(bar); toolbar = bar;
+        return bar;
+    };
+    const placeToolbar = (matrix: Affine, viewport: { readonly width: number; readonly height: number }, selection: { readonly anchor: number; readonly focus: number }) => {
+        const active_ = manager.current, from = Math.min(selection.anchor, selection.focus), to = Math.max(selection.anchor, selection.focus);
+        const rects = active_ && from !== to && !session.isReadOnly ? active_.editor.rangeRects(from, to) : [];
+        if (!rects.length) { if (toolbar) toolbar.hidden = true; return; }
+        const top = rects.reduce((best, rect) => (rect.y < best.y ? rect : best));
+        const point = transformPoint(matrix, { x: top.x + top.width / 2, y: top.y });
+        const bounds = overlay.getBoundingClientRect(), bar = formatToolbar();
+        if (!(bounds.width > 0 && viewport.width > 0)) { bar.hidden = true; return; }
+        const scale = bounds.width / viewport.width;
+        bar.style.left = `${point.x * scale}px`; bar.style.top = `${point.y * scale - 8}px`; bar.hidden = false;
+    };
     const writeOverlays = (frame: ScheduledFrame) => {
         if (!current() || frame.token.documentId !== session.owner.documentId || frame.token.session !== session.owner.session
-            || !manager.current || !paint || !faces || !currentWorld) { svg?.remove(); svg = null; return; }
+            || !manager.current || !paint || !faces || !currentWorld) { svg?.remove(); svg = null; if (toolbar) toolbar.hidden = true; return; }
         if (lastZoom !== frame.view.camera.z) { lastZoom = frame.view.camera.z; manager.refresh(); }
         const matrix = compose(cameraTransform(frame.view.camera), currentWorld), back = inverse(matrix, 1e12);
         const viewport = frame.view.viewport;
@@ -413,6 +447,7 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
             path.setAttribute('stroke-width', String(spellingStroke)); group.append(path);
         }
         const selection = manager.current.editor.getSelection(), edited = active && doc.nodes.get(active);
+        placeToolbar(matrix, viewport, selection);
         const fallbackSwatch = edited?.kind === 'text' ? edited.color
             : edited?.kind === 'sticky' || edited?.kind === 'figure' || edited?.kind === 'connector' ? edited.labelColor
                 : edited?.kind === 'frame' ? edited.color ?? 'black' : 'black';
@@ -455,15 +490,15 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
         if (!active || !manager.current) return undefined;
         const selection = manager.current.editor.getSelection(); return { node: active, anchor: selection.anchor, head: selection.focus };
     };
-    return { manager, input, editText, writeOverlays, captureText,
-        command(id: string): boolean {
-            const editor = manager.current?.editor;
-            if (!current() || !editor || !active || !doc.nodes.has(active) || session.isReadOnly) return false;
-            const handled = editor.command(id);
-            if (handled && manager.current?.editor === editor && current()
-                && id !== 'link' && id !== 'finish' && !id.startsWith('paste-')) editor.focus();
-            return handled;
-        },
+    const command = (id: string): boolean => {
+        const editor = manager.current?.editor;
+        if (!current() || !editor || !active || !doc.nodes.has(active) || session.isReadOnly) return false;
+        const handled = editor.command(id);
+        if (handled && manager.current?.editor === editor && current()
+            && id !== 'link' && id !== 'finish' && !id.startsWith('paste-')) editor.focus();
+        return handled;
+    };
+    return { manager, input, editText, writeOverlays, captureText, command,
         selectAll(): boolean {
             const editor = manager.current?.editor;
             if (!current() || !editor || !active || !doc.nodes.has(active)) return false;
@@ -544,6 +579,6 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
             return true;
         },
         cancelPending() { editingEpoch++; return input.cancelPending(); },
-        dispose() { if (disposed) return; editingEpoch++; controller.abort(); stopFonts(); stopSession(); stopDictionary(); input.flush(); manager.dispose(); stopScroll(); disposed = true; spell?.dispose(); svg?.remove(); live.remove(); },
+        dispose() { if (disposed) return; editingEpoch++; controller.abort(); stopFonts(); stopSession(); stopDictionary(); input.flush(); manager.dispose(); stopScroll(); disposed = true; spell?.dispose(); svg?.remove(); toolbar?.remove(); live.remove(); },
     };
 }

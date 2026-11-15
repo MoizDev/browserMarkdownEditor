@@ -104,6 +104,7 @@
     "commands.bringFront": "Đưa ra phía trước",
     "commands.rotateCounterclockwise": "Xoay ngược chiều kim đồng hồ",
     "commands.rotateClockwise": "Xoay theo chiều kim đồng hồ",
+    "commands.toggleAutoSize": "Bật/tắt cỡ tự động",
     "commands.copyAsPng": "PNG",
     "commands.copyAsSvg": "SVG",
     "commands.copyAsJson": "JSON",

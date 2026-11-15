@@ -104,6 +104,7 @@
     "commands.bringFront": "সামনে আনুন",
     "commands.rotateCounterclockwise": "ঘড়ির কাঁটার বিপরীত দিকে ঘোরান",
     "commands.rotateClockwise": "ঘড়ির কাঁটার দিকে ঘোরান",
+    "commands.toggleAutoSize": "স্বয়ংক্রিয় আকার টগল করুন",
     "commands.copyAsPng": "PNG",
     "commands.copyAsSvg": "SVG",
     "commands.copyAsJson": "JSON",

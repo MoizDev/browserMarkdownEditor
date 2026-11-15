@@ -104,6 +104,7 @@
     "commands.bringFront": "Bring foran",
     "commands.rotateCounterclockwise": "Drej mod uret",
     "commands.rotateClockwise": "Drej med uret",
+    "commands.toggleAutoSize": "Skift automatisk størrelse",
     "commands.copyAsPng": "PNG",
     "commands.copyAsSvg": "SVG",
     "commands.copyAsJson": "JSON",

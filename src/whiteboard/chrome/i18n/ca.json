@@ -104,6 +104,7 @@
     "commands.bringFront": "Porta al davant",
     "commands.rotateCounterclockwise": "Gira en sentit contrari a les agulles del rellotge",
     "commands.rotateClockwise": "Gira en sentit horari",
+    "commands.toggleAutoSize": "Canvia la mida automàtica",
     "commands.copyAsPng": "PNG",
     "commands.copyAsSvg": "SVG",
     "commands.copyAsJson": "JSON",

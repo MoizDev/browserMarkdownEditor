@@ -164,7 +164,7 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
     const openShortcuts = useCallback(() => { if (!shortcutRef.current) throw new Error('Shortcuts are unavailable'); shortcutRef.current(); }, []);
     const canWrite = useCallback(() => canMutateView() && host.canWrite(identity), [canMutateView, host, identity]);
     const link = useMemo(() => createNativeLinkOperations({ runtime, lease, current, canWrite,
-        requestText: dialogs.requestText, notice: setNotice }), [runtime, lease, current, canWrite, dialogs.requestText, setNotice]);
+        requestText: dialogs.requestText, requestTextChoice: dialogs.requestTextChoice, notice: setNotice }), [runtime, lease, current, canWrite, dialogs.requestText, dialogs.requestTextChoice, setNotice]);
     useLayoutEffect(() => { linksRef.current = link; return () => { if (linksRef.current === link) linksRef.current = null; }; }, [linksRef, link]);
     // Print and PDF export belong to the clipboard service that owns this board's focused print pin.
     const runPrint = useCallback(() => clipboard.print(), [clipboard]);

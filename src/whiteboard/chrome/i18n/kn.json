@@ -104,6 +104,7 @@
     "commands.bringFront": "ಮುಂದೆ ತನ್ನಿ",
     "commands.rotateCounterclockwise": "ಅಪ್ರದಕ್ಷಿಣಾಕಾರವಾಗಿ ತಿರುಗಿಸಿ",
     "commands.rotateClockwise": "ಪ್ರದಕ್ಷಿಣಾಕಾರವಾಗಿ ತಿರುಗಿಸಿ",
+    "commands.toggleAutoSize": "ಸ್ವಯಂ ಗಾತ್ರವನ್ನು ಟಾಗಲ್ ಮಾಡಿ",
     "commands.copyAsPng": "PNG",
     "commands.copyAsSvg": "SVG",
     "commands.copyAsJson": "JSON",

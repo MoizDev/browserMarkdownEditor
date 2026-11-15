@@ -104,6 +104,7 @@
     "commands.bringFront": "سامنے لاؤ",
     "commands.rotateCounterclockwise": "گھڑی کی مخالف سمت میں گھمائیں۔",
     "commands.rotateClockwise": "گھڑی کی سمت گھمائیں۔",
+    "commands.toggleAutoSize": "خودکار سائز ٹوگل کریں",
     "commands.copyAsPng": "PNG",
     "commands.copyAsSvg": "SVG",
     "commands.copyAsJson": "JSON",

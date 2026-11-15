@@ -60,7 +60,7 @@ export function createNativeKeyCommands(source: BoardCommandSource, other: (id: 
 
 const commandMutates: Record<BoardCommand, boolean> = {
     undo: true, redo: true, delete: true, duplicate: true, cut: true, copy: false, paste: true, selectAll: false,
-    group: true, ungroup: true, flatten: true, editLink: true, frameSelection: true, toggleLocked: true,
+    group: true, ungroup: true, flatten: true, editLink: true, frameSelection: true, toggleLocked: true, toggleAutoSize: true,
     alignLeft: true, alignHorizontal: true, alignRight: true, alignTop: true, alignVertical: true, alignBottom: true,
     stretchHorizontal: true, stretchVertical: true, distributeHorizontal: true, distributeVertical: true,
     stackHorizontal: true, stackVertical: true, pack: true, sendBack: true, sendBackward: true,

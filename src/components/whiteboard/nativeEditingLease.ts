@@ -159,10 +159,15 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
                                         ...(['bold', 'italic', 'underline', 'strike', 'code', 'highlight'] as const).map(name => ({
                                             kind: 'command' as const, id: `text-${name}`, label: name[0].toUpperCase() + name.slice(1), disabled: readOnly || !context,
                                             ...(readOnly ? { reason: 'Board is read-only.' } : {}), run: guarded(() => { editor?.command(name); }) })),
+                                        { kind: 'command', id: 'text-bullet-list', label: 'Bulleted list', disabled: readOnly || !context,
+                                            ...(readOnly ? { reason: 'Board is read-only.' } : {}), run: guarded(() => { editor?.command('bullet-list'); }) },
                                         { kind: 'command', id: 'text-link', label: link?.href ? 'Edit link' : 'Add link',
                                             disabled: readOnly || !link || (!selected && !link.href),
                                             ...(readOnly || !link || (!selected && !link.href) ? { reason: readOnly ? 'Board is read-only.' : reason } : {}),
                                             run: guarded(() => { if (link) options.toolOptions.ui.text.command('link', link.selection); }) },
+                                        { kind: 'command', id: 'text-visit-link', label: 'Visit link', disabled: !link?.href,
+                                            ...(!link?.href ? { reason: 'The text has no link.' } : {}),
+                                            run: guarded(() => { if (link?.href) options.toolOptions.ui.text.openLink(link.href); }) },
                                     ], onClose() { if (textMenu === request) textMenu = null; } };
                                 textMenu = request; openContextMenu(request);
                             },

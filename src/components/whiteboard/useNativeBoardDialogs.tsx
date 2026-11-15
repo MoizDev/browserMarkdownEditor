@@ -8,6 +8,8 @@ export interface BoardQuestion {
     readonly danger?: boolean;
 }
 export interface BoardTextQuestion extends BoardQuestion {
+    /** A second answer drawn beside the confirm button (for example Remove link), reported as `alt`. */
+    readonly altLabel?: string;
     readonly input: {
         readonly label: string;
         readonly initialValue: string;
@@ -15,8 +17,8 @@ export interface BoardTextQuestion extends BoardQuestion {
         readonly validate?: (value: string) => string | null;
     };
 }
-type Answer = { accepted: boolean; value?: string };
-type Question = BoardQuestion & { id: number; kind: 'confirm' | 'text' | 'info'; input?: BoardTextQuestion['input'] };
+type Answer = { accepted: boolean; value?: string; alt?: boolean };
+type Question = BoardQuestion & { id: number; kind: 'confirm' | 'text' | 'info'; input?: BoardTextQuestion['input']; altLabel?: string };
 type Pending = { question: Question; documentId: string; session: number; resolve(answer: Answer): void };
 
 /** Dialog answers belong to the view and owner which asked. A hidden/replaced view
@@ -69,14 +71,21 @@ export function useNativeBoardDialogs(options: {
     const confirm = useCallback(async (value: BoardQuestion): Promise<boolean> => (await ask({ ...value, kind: 'confirm' })).accepted, [ask]);
     const requestText = useCallback(async (value: BoardTextQuestion): Promise<string | null> => {
         const answer = await ask({ ...value, kind: 'text' });
-        return answer.accepted ? answer.value ?? '' : null;
+        return answer.accepted && !answer.alt ? answer.value ?? '' : null;
+    }, [ask]);
+    /** The typed answer, or `alt` when the second button was chosen; null when backed out. */
+    const requestTextChoice = useCallback(async (value: BoardTextQuestion): Promise<{ readonly value: string } | 'alt' | null> => {
+        const answer = await ask({ ...value, kind: 'text' });
+        if (!answer.accepted) return null;
+        return answer.alt ? 'alt' : { value: answer.value ?? '' };
     }, [ask]);
     const inform = useCallback(async (value: BoardQuestion): Promise<void> => { await ask({ ...value, kind: 'info' }); }, [ask]);
     const dialogs = question && <ConfirmDialog questionId={question.id} title={question.title}
         confirmLabel={question.confirmLabel} danger={question.danger} input={question.input}
         onConfirm={value => finish(question.id, { accepted: true, value })}
-        onCancel={question.kind === 'info' ? undefined : () => finish(question.id, { accepted: false })}>
+        onCancel={question.kind === 'info' ? undefined : () => finish(question.id, { accepted: false })}
+        altLabel={question.altLabel} onAlt={question.altLabel ? () => finish(question.id, { accepted: true, alt: true }) : undefined}>
         {question.body}
     </ConfirmDialog>;
-    return { confirm, requestText, inform, cancel, dialogs };
+    return { confirm, requestText, requestTextChoice, inform, cancel, dialogs };
 }

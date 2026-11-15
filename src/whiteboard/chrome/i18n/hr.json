@@ -104,6 +104,7 @@
     "commands.bringFront": "Dovedite naprijed",
     "commands.rotateCounterclockwise": "Rotirajte u smjeru suprotnom od kazaljke na satu",
     "commands.rotateClockwise": "Rotirajte u smjeru kazaljke na satu",
+    "commands.toggleAutoSize": "Uključi ili isključi automatsku veličinu",
     "commands.copyAsPng": "PNG",
     "commands.copyAsSvg": "SVG",
     "commands.copyAsJson": "JSON",

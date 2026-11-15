@@ -104,6 +104,7 @@
     "commands.bringFront": "Bring frem",
     "commands.rotateCounterclockwise": "Roter mot klokken",
     "commands.rotateClockwise": "Roter med klokken",
+    "commands.toggleAutoSize": "Slå automatisk størrelse av/på",
     "commands.copyAsPng": "PNG",
     "commands.copyAsSvg": "SVG",
     "commands.copyAsJson": "JSON",

@@ -104,6 +104,7 @@
     "commands.bringFront": "முன்னால் கொண்டு வாருங்கள்",
     "commands.rotateCounterclockwise": "எதிரெதிர் திசையில் சுழற்று",
     "commands.rotateClockwise": "கடிகார திசையில் சுழற்று",
+    "commands.toggleAutoSize": "தானியங்கு அளவை மாற்று",
     "commands.copyAsPng": "PNG",
     "commands.copyAsSvg": "SVG",
     "commands.copyAsJson": "JSON",

@@ -104,6 +104,7 @@
     "commands.bringFront": "手前に持ってくる",
     "commands.rotateCounterclockwise": "反時計回りに回転",
     "commands.rotateClockwise": "時計回りに回転",
+    "commands.toggleAutoSize": "自動サイズを切り替え",
     "commands.copyAsPng": "PNG",
     "commands.copyAsSvg": "SVG",
     "commands.copyAsJson": "JSON",

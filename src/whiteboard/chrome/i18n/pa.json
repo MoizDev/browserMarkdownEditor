@@ -104,6 +104,7 @@
     "commands.bringFront": "ਸਾਹਮਣੇ ਲਿਆਓ",
     "commands.rotateCounterclockwise": "ਘੜੀ ਦੇ ਉਲਟ ਦਿਸ਼ਾ ਵਿੱਚ ਘੁੰਮਾਓ",
     "commands.rotateClockwise": "ਘੜੀ ਦੀ ਦਿਸ਼ਾ ਵਿੱਚ ਘੁੰਮਾਓ",
+    "commands.toggleAutoSize": "ਆਟੋ ਸਾਈਜ਼ ਟੌਗਲ ਕਰੋ",
     "commands.copyAsPng": "PNG",
     "commands.copyAsSvg": "SVG",
     "commands.copyAsJson": "JSON",

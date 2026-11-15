@@ -104,6 +104,7 @@
     "commands.bringFront": "Φέρτε μπροστά",
     "commands.rotateCounterclockwise": "Περιστρέψτε αριστερόστροφα",
     "commands.rotateClockwise": "Περιστρέψτε δεξιόστροφα",
+    "commands.toggleAutoSize": "Εναλλαγή αυτόματου μεγέθους",
     "commands.copyAsPng": "PNG",
     "commands.copyAsSvg": "SVG",
     "commands.copyAsJson": "JSON",

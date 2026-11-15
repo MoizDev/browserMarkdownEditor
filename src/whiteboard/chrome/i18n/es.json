@@ -104,6 +104,7 @@
     "commands.bringFront": "traer al frente",
     "commands.rotateCounterclockwise": "Girar en sentido antihorario",
     "commands.rotateClockwise": "Girar en el sentido de las agujas del reloj",
+    "commands.toggleAutoSize": "Alternar tamaño automático",
     "commands.copyAsPng": "PNG",
     "commands.copyAsSvg": "SVG",
     "commands.copyAsJson": "JSON",

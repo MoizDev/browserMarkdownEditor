@@ -104,6 +104,7 @@
     "commands.bringFront": "Tuo eteen",
     "commands.rotateCounterclockwise": "Kierrä vastapäivään",
     "commands.rotateClockwise": "Kierrä myötäpäivään",
+    "commands.toggleAutoSize": "Vaihda automaattinen koko",
     "commands.copyAsPng": "PNG",
     "commands.copyAsSvg": "SVG",
     "commands.copyAsJson": "JSON",

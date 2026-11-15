@@ -104,6 +104,7 @@
     "commands.bringFront": "به جلو بیاورید",
     "commands.rotateCounterclockwise": "در خلاف جهت عقربه های ساعت بچرخانید",
     "commands.rotateClockwise": "در جهت عقربه های ساعت بچرخانید",
+    "commands.toggleAutoSize": "تغییر اندازه خودکار",
     "commands.copyAsPng": "PNG",
     "commands.copyAsSvg": "SVG",
     "commands.copyAsJson": "JSON",

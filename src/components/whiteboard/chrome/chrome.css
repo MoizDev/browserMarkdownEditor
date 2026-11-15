@@ -203,15 +203,16 @@
     color: var(--text-normal);
 }
 
+/* The same blue whichever pane hosts the bar, so a notebook's active tool matches a drawing's. */
 .board-chrome-tool-strip .board-chrome-tool-icon[aria-pressed='true'],
 .board-chrome-tool-strip .board-chrome-tool-more[data-current] {
-    background: var(--board-tool-active, var(--interactive-accent));
+    background: var(--board-tool-active, #4a7fe8);
     color: var(--board-tool-active-fg, #fff);
 }
 
 .board-chrome-tool-strip .board-chrome-tool-icon[aria-pressed='true']:hover,
 .board-chrome-tool-strip .board-chrome-tool-more[data-current]:hover {
-    background: var(--board-tool-active, var(--interactive-accent));
+    background: var(--board-tool-active, #4a7fe8);
 }
 
 /* Native select and text input, dressed as the chrome's own controls. Options carry their own

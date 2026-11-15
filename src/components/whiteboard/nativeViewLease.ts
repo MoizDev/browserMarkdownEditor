@@ -132,7 +132,7 @@ export function createNativeViewLease(options: {
     onNotice(message: string): void;
 }): NativeViewLease {
     const { board, host, identity, limits, insets } = options;
-    if (options.parameters.mode === 'edit' && (!options.editing || board.doc.kind === 'pdf-ink')) {
+    if (options.parameters.mode === 'edit' && !options.editing) {
         throw new Error('This canvas does not have an authorized editing host');
     }
     if (board.doc.kind === 'pdf-ink' && (!options.pdfBackdrop || !options.readPdfMedia)) {

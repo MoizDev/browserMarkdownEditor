@@ -506,6 +506,10 @@ export class MemoryGovernor {
         const { kind, pool } = cache.registration;
         if (kind === 'context' && bytes !== POLICY.keptContextReserveBytes) throw new MemoryAdmissionError('invalid-input');
         if (kind === 'surface' && bytes % POLICY.surfaceReserveBytesPerPixel !== 0) throw new MemoryAdmissionError('invalid-input');
+        // A request larger than the whole pool can never fit, so it is no sign of pressure: refusing it must not trim
+        // others or degrade the app. Seen: a board's 81 MB direct estimate against the 32 MB CPU target, asked on each
+        // return to a 1% overview of ~5,400 items, degraded the governor before the board fell back to dense tiles.
+        if (bytes > this.target[pool]) return null;
         const allowed = () => this.fits(cache, bytes);
         if (!allowed()) {
             this.state = 'trimming';

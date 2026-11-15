@@ -92,6 +92,8 @@ export interface LayerHost {
     readonly generation: number;
     invalidate(reason: string, damage?: DamageRecord): void;
     wakeAt(deadlineMs: number | null): void;
+    /** A layer's declared CPU working set changed: the owner re-collects this pane's demand, once per tick. */
+    demandChanged?(): void;
     readonly allocator: LayerAllocators;
     reserveIsolation(reservation: IsolationReservation): void;
     paintIsolation(ctx: CanvasRenderingContext2D, bounds: Readonly<RectI>, options: IsolationPaintOptions, paint: (isolatedCtx: CanvasRenderingContext2D) => void): void;
@@ -164,6 +166,8 @@ export interface PaneCompositor {
     readonly backend: CompositorBackend;
     readonly surface: HTMLCanvasElement;
     readonly resources: CompositorResources;
+    /** CPU bytes of this compositor's working cache, which the pane's grant covers. */
+    cpuWorkingBytes?(): number;
     readonly surfaceGeneration: number;
     /** A detached CPU resize bridge is working scratch until the old GPU display is zeroed. */
     promoteSurface?(): boolean;

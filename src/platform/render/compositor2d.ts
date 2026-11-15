@@ -628,6 +628,8 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             owner, id: `${id}:surface`, canvas: this.surface, displayed: true, now });
         return true;
     }
+    /** The CPU bytes this canvas's working cache holds: charged to the pane, so the pane's demand must declare them. */
+    cpuWorkingBytes(): number { return this.cpuBytes; }
     private reserveGpu(bytes: number): ByteLease | null {
         const lease = this.working?.reserve(bytes) ?? null;
         if (lease) { this.gpuLeases.add(lease); this.gpuBytes += lease.bytes; }

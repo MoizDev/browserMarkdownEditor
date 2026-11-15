@@ -114,6 +114,8 @@ type Plan = {
     phase: 'summary' | 'tiles' | 'direct' | 'refine' | 'complete';
     /** Summaries are decided once, when the summary phase starts; null until then. */
     summaries: SummaryTarget[] | null; summaryIndex: number; summaryCache: { cache: SessionDenseRasters; ticket: DenseRasterTicket } | null;
+    /** Set on a sharp plan once its idle ancestor pass has been asked for, and on that pass itself: one pass per plan. */
+    ancestorsTried: boolean;
     band: PaintBand; tileX: number; tileY: number; x0: number; x1: number; y0: number; y1: number;
     /** The tile the raster step works on: the cursor in the tile phase, or a queued refinement (`slot`). */
     target: { band: PaintBand; x: number; y: number; slot: number | null };
@@ -222,7 +224,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         if (p.windowLease) { host.allocator.cpu.release(p.windowLease); p.windowLease = null; }
         finishRetirement(p);
     };
-    const start = (frame: PaintSource, view: ViewState, live: ReadonlySet<string> | undefined, fine: boolean): Plan | null => {
+    const start = (frame: PaintSource, view: ViewState, live: ReadonlySet<string> | undefined, fine: boolean, idle: boolean): Plan | null => {
         // Without a reopenable stream there is no tile content to build; the caller keeps its direct path.
         if (!frame.openTile) return null;
         const demand = view.camera.z * view.viewport.dpr, target = chooseTileScale(demand).scale;
@@ -242,8 +244,9 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         try {
             const summarized = !!frame.occupiedRoot && !!frame.sessionRasters && !!frame.rasterVariant;
             const p: Plan = { source: frame, windows: windowsOfSource(frame), view: projection(view), scale, sharp: scale >= demand, live,
-                phase: summarized ? 'summary' : 'tiles', band: 'underlay', tileX: x0, tileY: y0, x0, x1, y0, y1,
-                summaries: null, summaryIndex: 0, summaryCache: null,
+                // The view's own tiles come first; ancestors are built only by an idle pass, once the view is sharp.
+                phase: summarized && idle ? 'summary' : 'tiles', band: 'underlay', tileX: x0, tileY: y0, x0, x1, y0, y1,
+                summaries: null, summaryIndex: 0, summaryCache: null, ancestorsTried: idle,
                 target: { band: 'underlay', x: x0, y: y0, slot: null }, refine: [], refineIndex: 0,
                 job: null, cache: null, entries: { underlay: [], content: [] }, standins: 0, owned: [], bitmaps: new Map(), bitmapBytes: 0, windowLease: null,
                 directAdapter: null, directLeases: [], directLeased: 0,
@@ -327,20 +330,6 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         const viewport = chooseTileScale(p.scale);
         return { pyramid: viewport.pyramid, level: viewport.level, x0: p.x0, x1: p.x1, y0: p.y0, y1: p.y1 };
     };
-    /** Whether any grid tile lacks an exact cache entry in some band: summaries are only needed then. */
-    const uncached = (cache: SessionDenseRasters, variant: string, grid: ViewGrid): boolean => {
-        for (const band of BANDS) {
-            const interval = bandInterval(variant, band);
-            for (let y = grid.y0; y < grid.y1; y++) for (let x = grid.x0; x < grid.x1; x++) {
-                const address: TileAddress = { pyramid: grid.pyramid, level: grid.level, x, y };
-                const held = cache.borrowAncestor(interval, address);
-                const exact = !!held && sameAddress(held.address, address);
-                held?.release();
-                if (!exact) return true;
-            }
-        }
-        return false;
-    };
     /** Streams each missing summary once per revision, one at a time, and publishes it to its own interval. A
      * summary is never drawn here: it exists so that a tile with no exact content has a coarser standin. */
     const summarize = (p: Plan, view: ViewState, budget: FrameBudget): void => {
@@ -353,9 +342,8 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
             cache.bindMemory(host.allocator.cpu);
             const grid = summaryGrid(p);
             const floor = rootFloorLevel(root, chooseTileScale(p.scale));
-            // Only the ancestors of this view's own tiles are built here, and only when a tile lacks exact content. The
-            // whole occupied root at its coarse levels is not: each root tile streams every node, so a fresh plan at
-            // a new zoom spent tens of seconds on it before its visible tiles. Those levels fill in on demand.
+            // The view's ancestors, coarse first: standins for a later zoom-out. Only an idle pass builds them (after the
+            // view is sharp); a pass skips every ancestor already current, so a finished one is never opened again.
             const top = fullRootTop(root, grid.pyramid, floor, grid.level);
             const targets: SummaryTarget[] = p.summaries;
             const add = (address: TileAddress) => {
@@ -363,7 +351,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                 if (p.source.mayPaint?.(rect) === false) return;
                 for (const band of BANDS) targets.push({ band, address, rect, scale: tileScale(address.pyramid, address.level) });
             };
-            if (uncached(cache, variant, grid)) for (const address of summaryAddresses(grid, top)) add(address);
+            for (const address of summaryAddresses(grid, top)) add(address);
         }
         while (p.summaryIndex < p.summaries.length) {
             if (!p.job) {
@@ -564,9 +552,15 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
             const key = projection(view);
             if (staged && (staged.source !== frame || staged.view !== key || !supportsLive(staged, liveNodes))) { retire(staged); staged = null; }
             const matches = ready?.source === frame && ready.view === key && supportsLive(ready, liveNodes);
-            if (matches && ready?.sharp) return;
+            // A sharp plan asks for its idle ancestor pass once; a pass already staged keeps running.
+            let idle = false;
+            if (matches && ready?.sharp) {
+                if (staged?.ancestorsTried) { /* the idle pass continues below */ }
+                else if (staged || ready.ancestorsTried || !frame.occupiedRoot || !frame.sessionRasters || !frame.rasterVariant) return;
+                else { ready.ancestorsTried = true; idle = true; }
+            }
             try {
-                staged ??= start(frame, view, liveNodes, matches);
+                staged ??= start(frame, view, liveNodes, matches, idle);
                 const p = staged; if (!p) return;
                 p.blocked = false;
                 while (!budget.shouldYield() && !p.retired) {

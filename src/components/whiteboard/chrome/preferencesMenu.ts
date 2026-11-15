@@ -20,10 +20,9 @@ export interface PreferenceMenuOptions {
     readonly local: LocalPreferencesView;
     readonly label: (key: PreferenceLabel) => string;
     readonly theme?: ContextMenuSubmenu | null;
-    readonly language?: ContextMenuSubmenu | null;
 }
 
-export function preferenceEntries({ local, label, theme, language }: PreferenceMenuOptions): ContextMenuSubmenu['entries'] {
+export function preferenceEntries({ local, label, theme }: PreferenceMenuOptions): ContextMenuSubmenu['entries'] {
     const global = getBoardPreferences();
     const toggle = (id: PreferenceLabel, checked: boolean, run: () => void, disabled = false,
         reason?: string): ContextMenuCommand => ({ kind: 'command', id, label: label(id), checked, run, disabled, reason });
@@ -55,6 +54,6 @@ export function preferenceEntries({ local, label, theme, language }: PreferenceM
         toggle('dynamicSize', global.isDynamicResizeMode,
             () => updateBoardPreferences({ isDynamicResizeMode: !global.isDynamicResizeMode })),
         session('pasteAtCursor', 'pasteAtCursor'), input, accessibility,
-        ...(theme ? [theme] : []), ...(language ? [language] : []), view('debugMode', 'debugMode'),
+        ...(theme ? [theme] : []), view('debugMode', 'debugMode'),
     ];
 }

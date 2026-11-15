@@ -43,7 +43,7 @@ export function nativeCommandShortcut(command: BoardCommand, mac: boolean): stri
     return bindingShortcut(key, mac);
 }
 export function nativeActionShortcut(action: MainAction, mac: boolean): string | undefined {
-    return bindingShortcut(({ uploadMedia: 'media.insert', zoomIn: 'camera.zoomIn', zoomOut: 'camera.zoomOut',
+    return bindingShortcut(({ uploadMedia: 'media.insert', insertEmbed: 'embed.insert', zoomIn: 'camera.zoomIn', zoomOut: 'camera.zoomOut',
         zoomTo100: 'camera.reset', zoomToFit: 'camera.fit', zoomToSelection: 'camera.selection',
         keyboardShortcuts: 'help.shortcuts' } as Partial<Record<MainAction, string>>)[action], mac);
 }

@@ -13,6 +13,8 @@ export interface MainMenuSource extends BoardCommandSource {
     runAction(id: MainAction): void | Promise<void>;
     sectionLabel(id: MainSection): string;
     readonly preferences: ContextMenuSubmenu['entries'];
+    /** Top level, not under Preferences. */
+    readonly language?: ContextMenuSubmenu | null;
     readonly copyAsLabel: string;
     readonly transparentLabel: string;
     readonly transparent: boolean;
@@ -35,7 +37,6 @@ export function mainMenuEntries(source: MainMenuSource): ContextMenuEntry[] {
     const copyAs: ContextMenuSubmenu = { kind: 'submenu', id: 'copyAs', label: source.copyAsLabel,
         entries: [command('copyAsPng'), command('copyAsSvg'), ...(source.debugMode ? [command('copyAsJson')] : []), transparent] };
     return [
-        action('uploadMedia'), action('insertEmbed'),
         section('edit', [command('undo'), command('redo'), command('cut'), command('copy'), command('paste'),
             command('duplicate'), command('delete'), command('selectAll'), copyAs, command('group'), command('ungroup'),
             command('flatten'), command('frameSelection'), command('removeFrame'), command('fitFrame'), command('toggleLocked'), action('unlockAll'),
@@ -43,7 +44,10 @@ export function mainMenuEntries(source: MainMenuSource): ContextMenuEntry[] {
         section('view', [action('zoomIn'), action('zoomOut'), action('zoomToFit'), action('zoomToSelection'),
             action('zoomTo100'), action('toggleMinimap')]),
         section('export', [action('exportPng'), action('exportSvg'), action('exportPdf'), action('exportJson'), action('print'), transparent]),
+        action('insertEmbed'), action('uploadMedia'),
+        { kind: 'separator', id: 'main-divider' },
         section('preferences', source.preferences),
+        ...(source.language ? [source.language] : []),
         action('keyboardShortcuts'),
     ];
 }

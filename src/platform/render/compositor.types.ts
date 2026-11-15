@@ -94,6 +94,8 @@ export interface LayerHost {
     wakeAt(deadlineMs: number | null): void;
     /** A layer's declared CPU working set changed: the owner re-collects this pane's demand, once per tick. */
     demandChanged?(): void;
+    /** Re-collects this pane's demand now, for a refusal that the current grant may be the cause of. */
+    refreshDemandNow?(): void;
     readonly allocator: LayerAllocators;
     reserveIsolation(reservation: IsolationReservation): void;
     paintIsolation(ctx: CanvasRenderingContext2D, bounds: Readonly<RectI>, options: IsolationPaintOptions, paint: (isolatedCtx: CanvasRenderingContext2D) => void): void;

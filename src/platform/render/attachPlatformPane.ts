@@ -147,6 +147,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             invalidate: (reason, damage) => lifecycle?.invalidate(reason, damage),
             wakeAt: deadline => { const layer = current(); if (layer) frameLease?.wakeAt(layer, deadline); },
             demandChanged: requestDemand,
+            refreshDemandNow: () => { if (!disposed) runtime.refresh(); },
         });
     });
     try { layerSet.replace(options.layers); }

@@ -15,6 +15,7 @@ export interface LayerHostBindings {
     invalidate(reason: string, damage?: DamageRecord): void;
     wakeAt(deadlineMs: number | null): void;
     demandChanged?(): void;
+    refreshDemandNow?(): void;
 }
 
 /** One stable host per layer. Accessors consult the live qualified generation, never the
@@ -51,6 +52,7 @@ export function createLayerHost(bindings: LayerHostBindings): LayerHost {
         invalidate: (reason, damage) => bindings.invalidate(reason, damage),
         wakeAt: deadline => bindings.wakeAt(deadline),
         demandChanged: () => bindings.demandChanged?.(),
+        refreshDemandNow: () => bindings.refreshDemandNow?.(),
         paintWorld: (ctx: CanvasRenderingContext2D, view: ViewState, paint: () => void) => compositor().paintWorld(ctx, view, paint),
         paintPage: (ctx: CanvasRenderingContext2D, view: ViewState, index: number, paint: () => void) => compositor().paintPage(ctx, view, index, paint),
         paneTransform: (view, frameId) => bindings.compositor()?.paneTransform(view, frameId) ?? null,

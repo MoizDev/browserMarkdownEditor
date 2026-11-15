@@ -80,17 +80,6 @@ function fullRootTop(root: Readonly<Rect>, pyramid: TilePyramid, floor: number, 
     while (level < limit && rootTileCount(root, pyramid, level) <= FULL_SUMMARY_TILES) level++;
     return level;
 }
-/** Every tile of the occupied root at levels `[from, to)`, coarse first. */
-function rootAddresses(root: Readonly<Rect>, pyramid: TilePyramid, from: number, to: number): TileAddress[] {
-    const out: TileAddress[] = [];
-    for (let level = from; level < to; level++) {
-        const side = DENSE_TILE_PIXELS / tileScale(pyramid, level);
-        const x0 = Math.floor(root.x / side), y0 = Math.floor(root.y / side);
-        const x1 = Math.floor((root.x + root.width) / side), y1 = Math.floor((root.y + root.height) / side);
-        for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) out.push({ pyramid, level, x, y });
-    }
-    return out;
-}
 /** The viewport's tile grid at its own level and pyramid. Tiles are `[x0, x1) × [y0, y1)`. */
 interface ViewGrid { readonly pyramid: TilePyramid; readonly level: number; readonly x0: number; readonly x1: number; readonly y0: number; readonly y1: number }
 /** Every ancestor of the grid's tiles from `floor` up to one level below the grid, coarse first. The ancestors
@@ -364,8 +353,9 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
             cache.bindMemory(host.allocator.cpu);
             const grid = summaryGrid(p);
             const floor = rootFloorLevel(root, chooseTileScale(p.scale));
-            // The coarse levels whose whole root is a few tiles are session-maintained: every one is kept current
-            // for every viewport, whichever viewport built it. Only finer summary levels follow the viewport.
+            // Only the ancestors of this view's own tiles are built here, and only when a tile lacks exact content. The
+            // whole occupied root at its coarse levels is not: each root tile streams every node, so a fresh plan at
+            // a new zoom spent tens of seconds on it before its visible tiles. Those levels fill in on demand.
             const top = fullRootTop(root, grid.pyramid, floor, grid.level);
             const targets: SummaryTarget[] = p.summaries;
             const add = (address: TileAddress) => {
@@ -373,7 +363,6 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                 if (p.source.mayPaint?.(rect) === false) return;
                 for (const band of BANDS) targets.push({ band, address, rect, scale: tileScale(address.pyramid, address.level) });
             };
-            for (const address of rootAddresses(root, grid.pyramid, floor, top)) add(address);
             if (uncached(cache, variant, grid)) for (const address of summaryAddresses(grid, top)) add(address);
         }
         while (p.summaryIndex < p.summaries.length) {

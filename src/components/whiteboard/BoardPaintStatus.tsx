@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 /** The renderer's readiness as the board host shows it; structurally the whiteboard viewer's own readiness. */
 export type BoardReadiness = 'loading' | 'ready' | 'read-only' | 'failed';
 /** What the renderer holds for the current revision. Structurally the whiteboard viewer's own progress. */
-export type BoardPaintProgress = { readonly kind: 'current' } | { readonly kind: 'pending'; readonly reason: 'building' | 'waiting-memory' }
+export type BoardPaintProgress = { readonly kind: 'current' } | { readonly kind: 'pending'; readonly reason: 'building' | 'waiting-memory'; readonly drawn?: boolean }
     | { readonly kind: 'failed'; readonly message: string };
 
 export interface BoardPaintStatusProps {

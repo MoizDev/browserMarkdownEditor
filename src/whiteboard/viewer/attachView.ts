@@ -189,7 +189,8 @@ export const attachView: AttachView = options => {
         const definitions = snapshot?.layers.length === nextLayers.length && nextLayers.every((layer, i) => snapshot.layers[i] === layer)
             ? snapshot.layers : Object.freeze(nextLayers);
         const paint = layers.paintProgress();
-        if (paint.kind === 'current') paintEverCurrent = true;
+        // A presented frame of the current revision is drawn: refinement still pending is 'Updating…', not loading.
+        if (paint.kind === 'current' || (paint.kind === 'pending' && paint.drawn)) paintEverCurrent = true;
         const state: ViewerReadiness = failed ? 'failed' : !runtime.scene ? 'loading'
             : !paintEverCurrent ? (paint.kind === 'failed' ? 'failed' : 'loading')
             : options.session.isReadOnly ? 'read-only' : 'ready';

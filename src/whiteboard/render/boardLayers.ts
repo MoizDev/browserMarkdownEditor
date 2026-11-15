@@ -22,7 +22,7 @@ import type { PresentedImage, PresentedImageLease, ViewerPaintPresentation } fro
 export const BOARD_BACKEND_PREFERENCE = 'auto' as const;
 /** What the renderer holds for the current revision. `pending` keeps the last coherent presented pixels on screen;
  * `current` needs a presented frame of the requested revision with nothing outstanding; `failed` is a real error. */
-export type PaintProgress = { readonly kind: 'current' } | { readonly kind: 'pending'; readonly reason: 'building' | 'waiting-memory' }
+export type PaintProgress = { readonly kind: 'current' } | { readonly kind: 'pending'; readonly reason: 'building' | 'waiting-memory'; readonly drawn: boolean }
     | { readonly kind: 'failed'; readonly message: string };
 function sameProgress(a: PaintProgress, b: PaintProgress): boolean { return JSON.stringify(a) === JSON.stringify(b); }
 function messageOf(error: unknown): string { return error instanceof Error ? error.message : String(error); }
@@ -250,7 +250,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         const working = !!options.frames.needsFrame() || (!!estimate && !estimate.done) || !!adapter?.needsFrame()
             || (!!activeHost()?.device() && !!gpu?.needsFrame()) || !!dense?.pending();
         if (!blocked && !working && presented && presented.sceneRevision === options.requestedRevision() && options.frames.isCurrent(presented)) return { kind: 'current' };
-        return { kind: 'pending', reason: blocked ? 'waiting-memory' : 'building' };
+        const drawn = !!presented && presented.sceneRevision === options.requestedRevision() && options.frames.isCurrent(presented);
+        return { kind: 'pending', reason: blocked ? 'waiting-memory' : 'building', drawn };
     };
     // A refused reservation is retried on a bounded cadence while it is outstanding. A capacity wake alone can wait
     // forever: the governor notifies only on a release or a plan, and a stale grant is refreshed only by a prepare.
@@ -418,7 +419,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         deferredClear = false;
         try {
             options.beforePrepare?.(view, budget);
-            if (returnedFromHide && dense?.dropUnused(view)) returnedFromHide = false;
+            if (returnedFromHide && dense?.dropUnused(view)) { returnedFromHide = false; deniedDirectSegments = null; }
             options.frames.prepare(withFirstUnit(budget));
             const frame = options.frames.readFrame();
             if (!frame || !options.frames.isCurrent(frame) || !sameToken(frame.token, budget.token)) return;
@@ -481,7 +482,10 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 if (bytes) {
                     // Inside a refusal's back-off the whole-frame estimate is not asked again.
                     if (memoryGate.closed()) { denied = true; return; }
-                    const lease = allocatorHost!.allocator.cpu.reserve(bytes);
+                    // The pane's grant may still be the floor from before this estimate was known (the demand is collected
+                    // on refresh). Re-collect it now and retry once; only a refusal against the refreshed grant latches.
+                    let lease = allocatorHost!.allocator.cpu.reserve(bytes);
+                    if (!lease) { allocatorHost!.refreshDemandNow?.(); lease = allocatorHost!.allocator.cpu.reserve(bytes); }
                     if (!lease) {
                         memoryGate.refused();
                         allocatorHost!.demandChanged?.();

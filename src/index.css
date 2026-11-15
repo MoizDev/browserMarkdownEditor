@@ -2129,7 +2129,7 @@ body.is-resizing-panes * {
 }
 
 .editor-pane:has(.native-minimap) .status-bar.is-lifted {
-  bottom: 166px;
+  bottom: 212px;
 }
 
 .status-bar-item {

@@ -26,3 +26,33 @@
     background: var(--background-secondary);
     color: var(--text-normal);
 }
+
+/* Renderer status: display only, so it never takes pointer events from the board or its input. */
+.board-paint-status { position: absolute; z-index: 2; pointer-events: none; }
+.board-paint-status-loading {
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--background-primary);
+    color: var(--text-muted);
+}
+.board-paint-status-pending {
+    right: 12px;
+    bottom: 12px;
+    padding: 4px 8px;
+    border-radius: 6px;
+    background: var(--background-secondary);
+    color: var(--text-muted);
+    font-size: 12px;
+}
+.board-paint-status-failed {
+    top: 12px;
+    left: 16px;
+    right: 16px;
+    padding: 9px 12px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 6px;
+    background: var(--background-secondary);
+    color: var(--text-error, var(--text-normal));
+}

@@ -19,10 +19,12 @@ function Attached<T extends object, S extends BoardSessionPort>({ lease, host }:
     );
     if (host.kind === 'notebook') {
         const { attachView: _attachView, loading: _loading, onAttachError: _error, ...props } = host;
-        return <PagedBoardHost {...props} view={lease.view} layers={snapshot.layers} platform={snapshot.platform} reason={snapshot.reason} />;
+        return <PagedBoardHost {...props} view={lease.view} layers={snapshot.layers} platform={snapshot.platform} reason={snapshot.reason}
+            readiness={snapshot.readiness} paint={snapshot.paint} />;
     }
     const { attachView: _attachView, loading: _loading, onAttachError: _error, ...props } = host;
-    return <PagedBoardHost {...props} view={lease.view} layers={snapshot.layers} platform={snapshot.platform} reason={snapshot.reason} />;
+    return <PagedBoardHost {...props} view={lease.view} layers={snapshot.layers} platform={snapshot.platform} reason={snapshot.reason}
+        readiness={snapshot.readiness} paint={snapshot.paint} />;
 }
 
 /** Notebook and PDF ink share the same App-owned session and per-pane lease lifecycle. */

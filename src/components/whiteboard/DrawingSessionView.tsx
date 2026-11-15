@@ -18,7 +18,8 @@ function Attached<T extends object, S extends BoardSessionPort>({
         listener => lease.subscribe(listener), () => lease.getSnapshot(), () => lease.getSnapshot(),
     );
     const { attachView: _attachView, loading: _loading, onAttachError: _onAttachError, ...props } = host;
-    return <DrawingBoardHost {...props} view={lease.view} layers={snapshot.layers} platform={snapshot.platform} reason={snapshot.reason} />;
+    return <DrawingBoardHost {...props} view={lease.view} layers={snapshot.layers} platform={snapshot.platform} reason={snapshot.reason}
+        readiness={snapshot.readiness} paint={snapshot.paint} />;
 }
 
 /** A view lease belongs to a mounted pane, not the App-owned session. Passive cleanup runs

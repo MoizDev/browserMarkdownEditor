@@ -27,7 +27,7 @@ import type { ComposedBoardSession } from '../../whiteboard/session/factoryTypes
 import { attachView } from '../../whiteboard/viewer/attachView';
 import { createBoardNavigationHost } from '../../whiteboard/viewer/navigationHost';
 import type { ViewerEngine, ViewerViewParams } from '../../whiteboard/viewer/types';
-import type { BoardViewLease, BoardViewParameters, BoardViewSnapshot } from './boardHostRuntime';
+import { paintKey, type BoardViewLease, type BoardViewParameters, type BoardViewSnapshot } from './boardHostRuntime';
 import { createNativeViewPlatform } from './nativeViewPlatform';
 import { createNativeEditingLease, type NativeEditingToolOptions, type NativeEmbedInfrastructure } from './nativeEditingLease';
 import type { NativeClipboardService } from './useNativeClipboard';
@@ -447,7 +447,7 @@ export function createNativeViewLease(options: {
     // The platform receives the same controller as pointer input, including its
     // actual constraints and measured viewport; motion never uses a second pose.
     const platform = { ...services, camera, readCamera: () => { refreshViewport(); return camera.camera; } };
-    let snapshot: BoardViewSnapshot<object> | undefined, priorLayers: ReturnType<typeof viewer.getSnapshot>['layers'];
+    let snapshot: BoardViewSnapshot<object> | undefined, priorLayers: ReturnType<typeof viewer.getSnapshot>['layers'], priorProgress = '';
     let navigationSnapshot: NativeNavigationSnapshot = { page: 0, zoom: 1 };
     const getNavigationSnapshot = () => {
         const stack = boardPageStack(board.doc.host);
@@ -544,9 +544,10 @@ export function createNativeViewLease(options: {
             },
         },
         getSnapshot() {
-            const next = viewer.getSnapshot();
-            if (!snapshot || priorLayers !== next.layers || snapshot.reason !== next.readOnlyReason) {
-                priorLayers = next.layers; snapshot = { layers: next.layers, reason: next.readOnlyReason, platform };
+            const next = viewer.getSnapshot(), progress = paintKey(next.state, next.paint);
+            if (!snapshot || priorLayers !== next.layers || snapshot.reason !== next.readOnlyReason || priorProgress !== progress) {
+                priorLayers = next.layers; priorProgress = progress;
+                snapshot = { layers: next.layers, reason: next.readOnlyReason, platform, readiness: next.state, paint: next.paint };
             }
             return snapshot;
         },

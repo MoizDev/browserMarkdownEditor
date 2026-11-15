@@ -11,7 +11,7 @@ import { createBoardMediaIngestor } from '../../whiteboard/host/mediaIngest';
 import { createNativeMediaPorts } from '../../whiteboard/host/mediaPorts';
 import { createMediaActions, type MediaActions, type MediaSelection } from '../../whiteboard/host/mediaActions';
 import type { PictureCropPreset } from '../../whiteboard/media/crop';
-import { prepareNativeExport } from '../../whiteboard/host/nativeExport';
+import { prepareNativeExport, type NativeExportOptions } from '../../whiteboard/host/nativeExport';
 import { getPdfInkSourceState } from '../../whiteboard/host/preparePdfInkSession';
 import { createPdfEmbeddedMediaStorage } from '../../whiteboard/host/pdfEmbeddedMedia';
 import { issueMediaStorageReceipt } from '../../whiteboard/media/storage';
@@ -23,10 +23,6 @@ import type { ViewerViewHandle } from './ViewerHost';
 import { downloadBoardExport } from './exportDelivery';
 import type { NativeViewLease } from './nativeViewLease';
 import { createNativeClipboardController } from './nativeClipboardController';
-import { createBoardExportSnapshot } from '../../whiteboard/export/boardSnapshot';
-import type { BoardPrintSource } from '../../whiteboard/export/print';
-import { pinPagedPrintSource } from '../../whiteboard/export/pagedPrintSnapshot';
-import { boardPageStack } from '../../whiteboard/model/pages';
 import { printBoard } from './printBoard';
 
 export interface FocusedBoardPrintOptions {
@@ -39,33 +35,15 @@ export interface FocusedBoardPrintOptions {
     valid(): boolean;
     notice(message: string): void;
     onError(error: unknown): void;
-}
-
-/**
- * A PDF annotation page prints through its own paged pin: its PDF backdrop has no canonical print route yet, so this
- * path stays until the PDF print route exists. Every other board prints through the canonical export job.
- */
-function pinPdfInkBoard(options: FocusedBoardPrintOptions): BoardPrintSource {
-    const { runtime, readMedia, onError } = options;
-    const media = async (entry: Readonly<MediaEntry>, signal: AbortSignal): Promise<Blob> => {
-        const blob = await readMedia(entry as MediaEntry, signal);
-        if (!blob) throw new Error('A picture on this board is unavailable for printing.');
-        return blob;
-    };
-    const stack = boardPageStack(runtime.session.doc.host);
-    if (!stack) throw new Error('Print pages are unavailable for this board.');
-    const pin = createBoardExportSnapshot({ runtime, request: { sheetId: runtime.selection.getSnapshot().sheet, theme: 'light' },
-        readMedia: media, onError });
-    return pinPagedPrintSource(pin, stack.rects);
+    readonly retainPdfSource?: NativeExportOptions['retainPdfSource'];
 }
 
 /** Mod-P on the focused native board: one canonical export job's print source, printed through the app's print helper. */
 async function printFocusedBoard(options: FocusedBoardPrintOptions, signal: AbortSignal): Promise<void> {
     signal.throwIfAborted();
-    const source = options.kind === 'pdfInk' ? pinPdfInkBoard(options)
-        : (await prepareNativeExport({ runtime: options.runtime, route: 'print', signal, boardName: options.boardName, theme: 'light',
-            transparent: options.transparent, current: options.valid, notice: options.notice, onError: options.onError,
-            readMedia: options.readMedia })).print;
+    const source = (await prepareNativeExport({ runtime: options.runtime, route: 'print', signal, boardName: options.boardName, theme: 'light',
+        transparent: options.transparent, current: options.valid, notice: options.notice, onError: options.onError,
+        readMedia: options.readMedia, ...(options.retainPdfSource ? { retainPdfSource: options.retainPdfSource } : {}) })).print;
     try {
         const pdf = await source.pdf(signal);
         await printBoard({ pdf, valid: options.valid, signal,
@@ -191,6 +169,12 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
         if (!source || !current()) throw new Error('The PDF ink source is unavailable');
         return source;
     };
+    // A PDF page's exports and print carry the document's own PDF backdrop, retained for the one capture.
+    const retainPdfSource = identity.kind !== 'pdfInk' ? undefined : () => {
+        const source = pdfSource();
+        if (source.getSnapshot().status !== 'ready') throw new Error('The PDF source is updating');
+        return source.retainSource();
+    };
     const readMedia = async (entry: MediaEntry, signal: AbortSignal) => {
         signal.throwIfAborted();
         if (identity.kind !== 'pdfInk') return (await ports.read(entry, signal))?.blob ?? null;
@@ -221,11 +205,7 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
             prepareExport: (route, signal) => prepareNativeExport({ runtime, route, signal,
                 boardName: host.identity(identity.documentId)?.name ?? identity.name, theme: active?.theme() ?? 'light',
                 transparent: runtime.session.doc.view.transparent, current, notice: report, onError: fail,
-                ...(identity.kind === 'pdfInk' ? { retainPdfSource: () => {
-                    const source = pdfSource();
-                    if (source.getSnapshot().status !== 'ready') throw new Error('The PDF source is updating');
-                    return source.retainSource();
-                } } : {}) }),
+                ...(retainPdfSource ? { retainPdfSource } : {}) }),
             duplicate: snapshot => {
                 if (!active) return Promise.reject(new Error('The board view is unavailable'));
                 return active.controller.duplicate(snapshot);
@@ -290,7 +270,7 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                     event.preventDefault(); event.stopPropagation();
                     void printFocusedBoard({ runtime, kind: identity.kind, boardName: host.identity(identity.documentId)?.name ?? identity.name,
                         transparent: runtime.session.doc.view.transparent, readMedia, valid: () => current() && bindings.has(binding),
-                        notice: report, onError: fail }, printing.signal).catch(fail);
+                        notice: report, onError: fail, ...(retainPdfSource ? { retainPdfSource } : {}) }, printing.signal).catch(fail);
                     return;
                 }
                 if (canWriteView()) {

@@ -526,8 +526,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     });
     const pair = [definition('underlay'), definition('content')] as unknown as BoardLayerPair;
     pair.invalidate = (reason = 'board-content') => { for (const host of hosts.values()) host.invalidate(reason); };
-    pair.memory = () => allocatorHost?.allocator.cpu ?? null;
     pair.wakeAt = deadlineMs => { for (const host of hosts.values()) host.wakeAt(deadlineMs); };
+    pair.memory = () => allocatorHost?.allocator.cpu ?? null;
     pair.readyFrame = () => {
         if (disposed) return null;
         const gpuFrame = activeHost()?.device() ? gpu?.readyFrame() : null;

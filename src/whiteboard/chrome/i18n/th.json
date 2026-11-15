@@ -390,7 +390,6 @@
     "paper.cancel": "ยกเลิก",
     "paper.keepProtected": "เนื้อหาที่ถูกล็อคจะถูกเก็บไว้",
     "chrome.readOnly": "บอร์ดนี้เป็นแบบอ่านอย่างเดียว",
-    "shortcuts.file.print": "พิมพ์",
     "commands.exportPdf": "PDF",
     "commands.exportJson": "JSON"
   }

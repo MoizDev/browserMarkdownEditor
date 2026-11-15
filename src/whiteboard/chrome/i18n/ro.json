@@ -390,7 +390,6 @@
     "paper.cancel": "Anulează",
     "paper.keepProtected": "Conținutul blocat va fi păstrat.",
     "chrome.readOnly": "Această placă este doar pentru citire.",
-    "shortcuts.file.print": "Imprimă",
     "commands.exportPdf": "PDF",
     "commands.exportJson": "JSON"
   }

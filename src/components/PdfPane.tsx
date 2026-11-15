@@ -362,7 +362,7 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
         : 'The PDF write mark cannot be verified by this version. Annotate is read-only so rebuilding its pages does not discard changes. You can still read the PDF.';
     const legacyOffer = tiled && mode === 'edit' && source?.kind === 'annotated';
     const plainNativeOffer = tiled && mode === 'edit' && source?.kind === 'plain';
-    const liveNativeIdentity = legacyOffer || plainNativeOffer ? nativeCanvasHost?.identity(documentId) : undefined;
+    const liveNativeIdentity = nativeCanvasHost?.identity(documentId);
     const canConvertLegacy = !!(legacyOffer && source.writeSafety.kind === 'safe' && !disk && !isDirty && !flushing
         && pdfEngineAvailableInBuild() && nativeCanvasHost && attachCanvasSession && reading && appSession && liveNativeIdentity
         && liveNativeIdentity.kind === 'pdfInk' && liveNativeIdentity.documentId === documentId
@@ -381,7 +381,7 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
     const retainedToken = retainedSource?.getSnapshot().token;
     // Dirty ink and a saved-byte rebind change the outer role entry, not the acquired
     // document owner. Keep its camera/input shell; that source's own cover fences writes.
-    const retainedNative = !!(retainedIdentity && retainedToken && nativeCanvasHost && appSession && reading
+    const retainedNative = !!(mode === 'edit' && retainedIdentity && retainedToken && nativeCanvasHost && appSession && reading
         && retainedIdentity.kind === 'pdfInk' && retainedIdentity.session === appSession.serial
         && retainedIdentity.vaultActivation === reading.identity.vaultEpoch && nativeCanvasHost.isCurrent(retainedIdentity)
         && retainedToken.documentId === documentId && retainedToken.session === retainedIdentity.session

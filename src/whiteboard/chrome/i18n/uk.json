@@ -390,7 +390,6 @@
     "paper.cancel": "Скасувати",
     "paper.keepProtected": "Заблокований вміст буде збережено.",
     "chrome.readOnly": "Ця дошка доступна лише для читання.",
-    "shortcuts.file.print": "Друк",
     "commands.exportPdf": "PDF",
     "commands.exportJson": "JSON"
   }

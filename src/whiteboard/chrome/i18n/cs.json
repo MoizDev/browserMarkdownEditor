@@ -390,7 +390,6 @@
     "paper.cancel": "Zrušit",
     "paper.keepProtected": "Uzamčený obsah bude zachován.",
     "chrome.readOnly": "Tato deska je pouze pro čtení.",
-    "shortcuts.file.print": "Tisk",
     "commands.exportPdf": "PDF",
     "commands.exportJson": "JSON"
   }

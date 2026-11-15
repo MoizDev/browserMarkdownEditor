@@ -27,7 +27,11 @@ const spelling: BoardToolServicesOptions['spelling'] = {
     },
 };
 
-export interface NativeEmbedInfrastructure { readonly port: EmbedPresentationPort; readonly controller: NativeEmbedController }
+export interface NativeEmbedInfrastructure {
+    readonly port: EmbedPresentationPort;
+    readonly controller: NativeEmbedController;
+    readonly producer: NativeEmbedPresentationProducer;
+}
 
 export type NativeEditingToolOptions = Omit<BoardToolServicesOptions, 'surface' | 'overlay' | 'inputFrames' | 'mappings' | 'sampleToSurface' | 'clientToSurface' | 'imports' | 'spelling' | 'ui'> & {
     readonly ui: Omit<BoardToolServicesOptions['ui'], 'text' | 'keyboardNavigation'> & {
@@ -69,11 +73,15 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
     };
     const disposeTools = () => {
         closeSpelling(); closeTextMenu();
-        const text = textClipboard, old = tools, clip = binding, media = importer, a11y = accessible;
-        textClipboard = null; tools = null; binding = null; importer = null; accessible = null;
+        const text = textClipboard, old = tools, clip = binding, media = importer, a11y = accessible, previousEmbed = embed;
+        textClipboard = null; tools = null; binding = null; importer = null; accessible = null; embed = null;
         toolSurface = null; toolOverlay = null;
-        // Layer changes briefly seal pointer input. Retiring the surface-owned embed
-        // layer here changes the layers again and seals forever before the first frame.
+        if (previousEmbed) {
+            options.onEmbedInfrastructure(null);
+            previousEmbed.producer.dispose();
+            options.engine.connectEmbeds(null);
+            void previousEmbed.controller.dispose().finally(() => previousEmbed.port.dispose()).catch(options.onError);
+        }
         try { text?.dispose(); } finally { try { old?.dispose(); } finally {
             try { media?.dispose(); } finally { try { a11y?.dispose(); } finally { clip?.detach(); } }
         } }
@@ -94,7 +102,10 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
             // Layer attachment briefly pauses platform input. Recreating the embed
             // layer on that pause caused an attach/remove/render loop in the real app.
             // These services belong to the DOM view, not each enable/disable pulse.
-            if (tools && toolSurface === surface && toolOverlay === overlay) return tools.services;
+            if (tools && toolSurface === surface && toolOverlay === overlay) {
+                accessible?.refresh();
+                return tools.services;
+            }
             disposeTools();
             toolSurface = surface; toolOverlay = overlay;
             binding = options.bindClipboard(surface);
@@ -208,18 +219,21 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
         getImporter: () => importer,
         announce: (message: string) => accessible?.announce(message) ?? false,
         repeatAnnouncement: () => accessible?.repeat() ?? false,
-        setInputEnabled(enabled: boolean) { input.setInputEnabled(enabled); },
+        setInputEnabled(enabled: boolean) {
+            input.setInputEnabled(enabled);
+            if (!options.visible()) disposeTools();
+        },
         cancelViewWork(reason: string) {
             input.cancelViewWork(reason);
-            // A layer-topology seal cancels input, not its connected DOM services. Removing
-            // the embed/preview layers here changes that topology again and loops synchronously.
-            if (!options.visible() || !options.current(options.token)) { disposeTools(); disposeEmbeds(); }
+            // A layer-set seal cancels contacts, not the DOM view that owns the
+            // very layers being installed. Actual detach/hide/source retirement
+            // still drops providers and every per-view controller.
+            if (reason === 'platform-detach' || !options.visible() || !options.current(options.token)) disposeTools();
         },
         attachInput(surface: HTMLElement, overlay: HTMLElement) {
             const detach = input.attachInput(surface, overlay);
             if (!input.isAttached()) disposeTools();
-            return () => { try { detach(); } finally { try { disposeTools(); } finally { disposeEmbeds(); } } };
+            return () => { try { detach(); } finally { disposeTools(); } };
         },
-        dispose() { try { input.dispose(); } finally { disposeEmbeds(); } },
     };
 }

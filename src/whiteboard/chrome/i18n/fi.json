@@ -390,7 +390,6 @@
     "paper.cancel": "Peruuta",
     "paper.keepProtected": "Lukittu sisältö säilytetään.",
     "chrome.readOnly": "Tämä taulu on vain luku -tilassa.",
-    "shortcuts.file.print": "Tulosta",
     "commands.exportPdf": "PDF",
     "commands.exportJson": "JSON"
   }

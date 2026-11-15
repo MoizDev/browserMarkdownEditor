@@ -45,7 +45,7 @@ export function nativeCommandShortcut(command: BoardCommand, mac: boolean): stri
 export function nativeActionShortcut(action: MainAction, mac: boolean): string | undefined {
     return bindingShortcut(({ uploadMedia: 'media.insert', zoomIn: 'camera.zoomIn', zoomOut: 'camera.zoomOut',
         zoomTo100: 'camera.reset', zoomToFit: 'camera.fit', zoomToSelection: 'camera.selection',
-        print: 'file.print', keyboardShortcuts: 'help.shortcuts' } as Partial<Record<MainAction, string>>)[action], mac);
+        keyboardShortcuts: 'help.shortcuts' } as Partial<Record<MainAction, string>>)[action], mac);
 }
 
 /** The input router and menus consult the same live command authority. */

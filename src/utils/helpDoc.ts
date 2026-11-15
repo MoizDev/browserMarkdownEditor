@@ -411,26 +411,15 @@ exports; **Cmd/Ctrl+Shift+C** copies a PNG. PNG and SVG copies use the captured
 artwork, not a screenshot of the controls. SVG is copied as text; board data is
 native JSON records, with media referenced by hash rather than a portable asset
 bundle. Context-menu image exports use the selection, or the whole sheet when
-nothing is selected.
+nothing is selected. With exactly one picture selected, the same menu offers
+**Replace picture…**, **Crop picture** with six presets, and **Invert picture**.
+With one link card selected it offers **Fetch link preview**, which contacts
+that site only when you ask. Disabled rows explain why they cannot run.
 
-The board's main menu has an **Export** section with **PNG**, **SVG**, **PDF** and
-**JSON**. **PDF** saves the whole sheet as one PDF; a notebook saves every page.
-**JSON** saves the sheet's native records, with media referenced by hash rather
-than bundled. A selection's **Export as** menu offers **JSON** for just the
-selected items. **Print** (**Cmd/Ctrl+P** with the board focused) prints the open
-board: a notebook prints every page, and a whiteboard prints the drawn content of
-its sheet. A board with a PDF backdrop cannot be printed or exported to PDF from
-here yet; use the PDF pane's own print for that file.
+The board's main menu has an **Export** section with **PNG**, **SVG**, **PDF** and **JSON**. **PDF** saves the board as a PDF: a whiteboard's sheet as one page, and a notebook or a PDF-backed board every page. **JSON** saves the sheet's native records, with media referenced by hash rather than bundled. A selection's **Export as** menu offers **JSON** for just the selected items. **Print** (**Cmd/Ctrl+P** with the board focused) prints the open board the same way.
 
-With exactly one picture selected, the same menu offers
-**Replace picture…** (the new image keeps the old one's centre and longer side;
-a PDF annotation page does not offer it yet), **Crop picture** with six presets,
-and **Invert picture**. With one link card selected it offers **Fetch link
-preview**, which contacts the link's site only when you ask. A row that cannot
-run now stays on the menu and says why, such as a locked picture or a read-only
-canvas. These operations
-and navigation do not edit the source; drawing, Cut and Paste remain unavailable
-in this native viewer.
+Writable native documents have the drawing tools, Cut and Paste; readonly
+sources keep navigation, Copy and export without changing the original.
 
 The agent's **canvas tools** use the document session rather than its viewer.
 They can change an eligible native drawing or notebook while its pane is hidden

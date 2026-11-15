@@ -2,6 +2,7 @@ import type { Affine, PathCommand, Rgba } from '../../platform/types';
 import { figureHatch, pathCommands, type FigureGeometry, type PositionedFigureText } from '../geom/providers';
 import type { InkCoverage } from '../ink/outline';
 import type { MediaEntry } from '../model/media';
+import { planPictureTiles, type PictureTileRequest } from '../media/tilePlan';
 import type { Node, StrokeNode } from '../model/nodes';
 import type { FaceTable } from '../text/paint';
 import { resolveSwatch, type PaintPalette } from './colour';
@@ -43,6 +44,8 @@ function* vectorNodePaint(node: Readonly<Node>, geometry: BoardVectorGeometry,
     context: SceneResolveContext, palette: PaintPalette, faces: FaceTable, options: {
         readonly media?: MediaEntry;
         readonly signal: AbortSignal;
+        /** The request's scale and view: a picture at a reduced mip draws its visible tiles; absent, it draws its whole image. */
+        readonly tiles?: PictureTileRequest;
     }): Generator<void, PaintNode> {
     const content: PaintItem[] = [], color = 'color' in node && node.color !== null ? node.color : 'grey';
     const base = { nodeId: node.id, geometryKey: geometry.key, localToWorld: context.world, clips: context.clips };
@@ -62,12 +65,21 @@ function* vectorNodePaint(node: Readonly<Node>, geometry: BoardVectorGeometry,
         let clips = context.clips;
         if (crop?.circle && geometry.attachments) clips = [...clips, { key: `${geometry.key}:crop`,
             d: [...pathCommands(geometry.attachments.outline)], fillRule: 'nonzero', localToWorld: context.world }];
-        const image: PaintImageItem = { ...base, kind: 'image', key: `${node.id}:image:${node.media}`, imageKey: node.media,
-            localToWorld: imageWorld, clips, rect: { x: 0, y: 0, width: node.w, height: node.h },
-            ...(crop ? { sourceRect: { x: crop.x0 * media.w, y: crop.y0 * media.h,
-                width: (crop.x1 - crop.x0) * media.w, height: (crop.y1 - crop.y0) * media.h } } : {}),
-            opacity: context.opacity, blend: 'normal', inverted: node.kind === 'picture' && node.inverted };
-        content.push(image);
+        const tiles = node.kind === 'picture' && !crop && options.tiles ? planPictureTiles(node, { id: node.media, w: media.w, h: media.h,
+            mime: media.mime, animated: media.animated }, imageWorld, options.tiles) : null;
+        if (tiles) {
+            // Each tile is its own image item, keyed by its tile key, so the paint pipeline acquires exactly the tiles it draws.
+            for (const tile of tiles) content.push({ ...base, kind: 'image', key: `${node.id}:tile:${tile.key}`, imageKey: tile.key,
+                localToWorld: imageWorld, clips, rect: tile.rect, sourceRect: tile.sourceRect,
+                opacity: context.opacity, blend: 'normal', inverted: node.kind === 'picture' && node.inverted });
+        } else {
+            const image: PaintImageItem = { ...base, kind: 'image', key: `${node.id}:image:${node.media}`, imageKey: node.media,
+                localToWorld: imageWorld, clips, rect: { x: 0, y: 0, width: node.w, height: node.h },
+                ...(crop ? { sourceRect: { x: crop.x0 * media.w, y: crop.y0 * media.h,
+                    width: (crop.x1 - crop.x0) * media.w, height: (crop.y1 - crop.y0) * media.h } } : {}),
+                opacity: context.opacity, blend: 'normal', inverted: node.kind === 'picture' && node.inverted };
+            content.push(image);
+        }
     } else {
         for (const part of geometry.paths) {
             options.signal.throwIfAborted();
@@ -110,6 +122,7 @@ function* vectorNodePaint(node: Readonly<Node>, geometry: BoardVectorGeometry,
 export async function paintVectorNode(node: Readonly<Node>, geometry: BoardVectorGeometry,
     context: SceneResolveContext, palette: PaintPalette, faces: FaceTable, options: {
         readonly media?: MediaEntry; readonly signal: AbortSignal; readonly cooperate?: () => Promise<void>;
+        readonly tiles?: PictureTileRequest;
     }): Promise<PaintNode> {
     const job = vectorNodePaint(node, geometry, context, palette, faces, options);
     try {

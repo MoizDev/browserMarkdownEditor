@@ -20,6 +20,7 @@ import { createBoardJournal } from './journal';
 import { acquireLegacyBoard, type LegacyBoardAcquisition } from './legacyAcquisition';
 import { createNativeMediaRestore } from './nativeMediaRestore';
 import { createOwnedBoardRuntime, type OwnedBoardRuntime } from './ownedRuntime';
+import { elbowAdmissionRefusal } from '../geom/elbowAdmission';
 import { primeNativeLoad } from './primeNative';
 import { restoreRecoveredMediaFromHost } from './recoverMediaFromHost';
 
@@ -146,6 +147,9 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
             session: identity.session, bytesGeneration: identity.bytesGeneration };
         services = createBoardRenderServices({ doc, samples, media: store, token });
         const render = services;
+        // Post-layout admission (document-model §9.2): an elbow connector with no valid route opens the board
+        // read-only, on the real layout, before any editable transfer. A layout gap throws and fails closed.
+        const admissionRefusal = elbowAdmissionRefusal(doc, render.changeGeometry);
         const bounds = await createBoardEncoderBounds({ doc, sources: load.sources, local: render.encoderLocal,
             realize: render.realize, geometryEpoch: () => render.text.fonts.epoch });
         const sourceNodes = new Set(load.sources.filter(source => source.category === 'node' && !source.reencode).map(source => source.id));
@@ -234,7 +238,9 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
                         // Only the acquisition's temporary seal (and the App-immutable guards it wraps)
                         // may refuse writes. A permanent per-call reason here could never be cleared by
                         // activateEditing, so it is not an option (measured: cold agent stayed read-only).
-                        readOnlyReason: () => readOnlyReason() ?? null,
+                        // A document-derived refusal (planned §9.2 read-only) holds until reload; it is not the
+                        // static per-call option removed earlier, which activateEditing could never clear.
+                        readOnlyReason: () => admissionRefusal ?? readOnlyReason() ?? null,
                         onFailure: options.onError, onHistoryLimit: options.onHistoryLimit,
                         scene: { token, bounds: render.bounds, retainNode: render.retainNode, realize: render.realize,
                             preparePaint: render.preparePaint, preparePaintStream: render.preparePaintStream, subscribeInvalidation: render.subscribeInvalidation },
@@ -242,12 +248,14 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
                     transferred = true;
                     releaseCreators();
                     try { legacy?.dispose(); } finally { admitted.dispose(); }
-                    let closed = false;
+                    let closing: Promise<void> | undefined;
                     return { board: owned.board, dispose() {
-                        if (closed) return;
-                        closed = true;
-                        pinned.release();
-                        try { owned?.dispose(); } finally { render.dispose(); }
+                        // Revocation is immediate; the pinned native source and render services stay until the
+                        // runtime's builds have settled, because those builds read them.
+                        closing ??= (async () => {
+                            try { await owned?.dispose(); } finally { pinned.release(); render.dispose(); }
+                        })();
+                        return closing;
                     } };
                 } catch (error) { journal.dispose(); throw error; }
             },

@@ -1,21 +1,50 @@
 import type { Block, Marks, RichFragment, RichSpliceResult, RichText } from './richText';
+import type { RichSpliceOperation, RichTransactionResult } from './richTransaction';
+import type { TextAffinity } from './rangeMap';
+import type { PlainTextOptions } from './plainText';
+import type { FragmentSnapshotOptions } from './fragmentSnapshot';
 
 export type RichMark = 'b' | 'i' | 'u' | 's' | 'code' | 'hl';
 export interface RichSelection { readonly anchor: number; readonly focus: number }
 export interface RichEdit { readonly from: number; readonly to: number; readonly insert: RichFragment; readonly selection: RichSelection; readonly replaceBlocks?: true }
 export type { Block, BlockCarrier, Marks, RichFragment, RichSpliceResult, RichText, Run } from './richText';
-export { plain, fromPlain, marksAt, linkRangeAt, insertionFragment, toggleMark, applyLink, enter, blocks, projectionLength, richTextOperations } from './richOperations';
-export { normalizeRichText, sliceRichText, spliceRichText } from './richText';
-export { convertLegacyRichText, convertLegacyRichSpan } from './importRich';
-export { mapTextOffset, mapTextSelection, mapTextSelectionThrough } from './rangeMap';
-export type { TextAffinity, TextSpliceMap } from './rangeMap';
+export { plain, fromPlain, fromPlainCooperative, marksAt, linkRangeAt, insertionFragment, toggleMark, applyLink, enter, blocks, projectionLength, richTextOperations } from './richOperations';
+export { normalizePlainInsertion, normalizePlainInsertionCooperative } from './plainText';
+export type { PlainTextOptions } from './plainText';
+export { repairLegacyCharacters, repairLegacyCharactersCooperative } from './repair';
+export type { RepairedText } from './repair';
+export { GraphemeNavigator } from './graphemes';
+export { RichSelectionOperations } from './selectionOps';
+export type { LogicalMotion } from './selectionOps';
+export { TextProjectionReader } from './projectionReader';
+export type { ProjectionWindow, ProjectionReadOptions } from './projectionReader';
+export { coalesceCarriersCooperative } from './carriers';
+export { normalizeRichText, normalizeRichTextCooperative, sliceRichText, sliceRichTextCooperative, spliceRichText, spliceRichTextCooperative } from './richText';
+export { convertLegacyRichText, convertLegacyRichTextCooperative, convertLegacyRichSpan, convertLegacyRichSpanCooperative } from './importRich';
+export { mapTextOffset, mapTextSelection, mapTextSelectionThrough, normalizeTextSelection, mapTextSelectionTo,
+    mapRichTextChange, mapRichTextChangeCooperative, mapRichTextChanges, mapRichTextChangesCooperative } from './rangeMap';
+export type { TextAffinity, TextSpliceMap, MappedRichTextChange, MappedRichTextChanges } from './rangeMap';
+export { deriveRichTextChange, deriveRichTextChangeCooperative } from './richDiff';
+export type { RichTextChange, RichTextDiffOptions } from './richDiff';
+export { deriveRichTextChanges, deriveRichTextChangesCooperative } from './richMultiDiff';
+export { applyRichTransaction, applyRichTransactionCooperative, validateRichFragment, validateRichFragmentCooperative, richTransactionLength } from './richTransaction';
+export type { RichSpliceOperation, RichTransactionResult } from './richTransaction';
+export { snapshotRichFragmentCooperative } from './fragmentSnapshot';
+export type { FragmentSnapshotOptions } from './fragmentSnapshot';
+export { admitRichFragmentCooperative } from './admitFragment';
+export type { RichFragmentAdmissionOptions } from './admitFragment';
 
 /** TX-2 operations use UTF-16 offsets in the newline-separated projection. */
 export interface RichTextOperations {
     plain(value: RichText): string;
     fromPlain(value: string): RichText;
+    fromPlainCooperative(value: string, options: PlainTextOptions): Promise<RichText>;
     normalize(value: RichText): RichText;
+    normalizeCooperative(value: RichText, options: PlainTextOptions): Promise<RichText>;
     splice(value: RichText, from: number, to: number, insert: RichFragment, wholeBlocks?: boolean): RichSpliceResult;
+    transaction(value: RichText, operations: readonly RichSpliceOperation[], selection: RichSelection, affinity?: TextAffinity): RichTransactionResult;
+    transactionCooperative(value: RichText, operations: readonly RichSpliceOperation[], selection: RichSelection,
+        options: FragmentSnapshotOptions, affinity?: TextAffinity): Promise<RichTransactionResult>;
     marksAt(value: RichText, offset: number): Marks;
     insertionFragment(value: RichText, from: number, inserted: string, storedMarks: Marks | null): RichFragment;
     toggleMark(value: RichText, from: number, to: number, mark: RichMark): RichFragment;

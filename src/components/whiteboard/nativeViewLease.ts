@@ -1,3 +1,4 @@
+import { getBoardPreferences } from '../../utils/boardPreferences';
 import type { PlatformLayerDefinition, PlatformPane, PlatformPresentation } from '../../platform/render/attachPlatformPane.types';
 import { cameraForPagedPosition, pagedPosition, surfaceToWorld, type CameraController, type ViewportInsets, type ZoomLimits } from '../../platform/render/camera';
 import type { Rect, ViewState } from '../../platform/types';
@@ -131,17 +132,13 @@ export function createNativeViewLease(options: {
     onNotice(message: string): void;
 }): NativeViewLease {
     const { board, host, identity, limits, insets } = options;
-    if (options.parameters.mode === 'edit' && !options.editing) {
+    if (options.parameters.mode === 'edit' && (!options.editing || board.doc.kind === 'pdf-ink')) {
         throw new Error('This canvas does not have an authorized editing host');
     }
     if (board.doc.kind === 'pdf-ink' && (!options.pdfBackdrop || !options.readPdfMedia)) {
         throw new Error('The PDF viewer requires its acquired backdrop and media reader');
     }
     if (board.doc.kind !== 'pdf-ink' && options.pdfBackdrop) throw new Error('A PDF backdrop requires a PDF ink session');
-    if (board.doc.kind === 'pdf-ink' && options.parameters.mode === 'edit'
-        && (!options.pdfBackdrop?.sourceToken || !options.pdfBackdrop.isCurrentSource?.() || !host.canWriteSource(identity))) {
-        throw new Error('PDF editing requires its current admitted source');
-    }
     const runtime = getBoardRuntime(board);
     if (!runtime || runtime.session !== board) throw new Error('Native viewer requires its acquired runtime');
     const boardRuntime = runtime;
@@ -314,7 +311,7 @@ export function createNativeViewLease(options: {
         images.setVisible(parameters.visible && current());
         video.setVisible(parameters.visible && current());
         animation.setVisible(parameters.visible && current(), performance.now());
-        viewer = attachView({ session: board, token, view: viewParameters(), images, liveFrames: videoFrameOverlay(images.frames, syncAnimation),
+        viewer = attachView({ session: board, token, view: viewParameters(), images, liveFrames: videoFrameOverlay(images.frames, syncAnimation, keys => images.setDemand(keys)),
             reveal, onError: options.onError });
     } catch (error) { animation.dispose(); video.dispose(); backdrop?.dispose(); images.dispose(); if (!cameraClaim) cameraOwner.dispose(); throw error; }
     let presentedView: ViewState | null = null, presentedFrame: number | null = null;
@@ -327,7 +324,7 @@ export function createNativeViewLease(options: {
         host, identity, clipboard: edit.clipboard, onEmbedInfrastructure: edit.onEmbedInfrastructure, certifyPresentation,
         bindClipboard: element => edit.clipboard.attach(element, lease, () => parameters.theme, options.onNotice, true,
             () => parameters.mode === 'edit' && edit.canMutate()),
-        toolOptions: { runtime, engine: viewer, images, camera, token,
+        toolOptions: { runtime, engine: viewer, images, camera, token, alwaysSnap: () => getBoardPreferences().isSnapMode,
             inputToken: { vaultEpoch: token.vaultEpoch, tabId: token.documentId, sessionGeneration: token.session, viewGeneration: viewLease },
             view: () => { if (!presentedView) throw new Error('The board has not presented its input mapping'); return presentedView; },
             viewport: refreshViewport, current: candidate => current() && candidate.documentId === token.documentId &&
@@ -444,6 +441,7 @@ export function createNativeViewLease(options: {
                     presentation.token.bytesGeneration === token.bytesGeneration ? presentation.frameId : null;
                 if (presentedFrame === null) presentedView = null;
                 navigation.onPresentation(presentation);
+                viewer.presentationAccepted(presentation);
                 if (presentation && certifyPresentation(presentation)) backdrop?.notePresentation?.();
             }, onError: options.onError, onNotice: options.onNotice } });
     // The platform receives the same controller as pointer input, including its

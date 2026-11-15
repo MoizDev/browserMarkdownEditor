@@ -157,7 +157,8 @@ export async function acquireLegacyBoard(options: LegacyAcquisitionOptions): Pro
             previousFrames: Object.freeze(value.previousFrames.map(rect => Object.freeze({ ...rect }))),
             nextFrames: Object.freeze(value.nextFrames.map(rect => Object.freeze({ ...rect }))), conversionPending: true });
     } finally {
-        try { owned?.dispose(); } finally {
+        // The native board retires (its builds settle) before the memory it reserved is returned.
+        try { await owned?.dispose(); } finally {
             for (const resource of resourceReservations) if (resource) memory.release(resource);
             memory.release(reservation);
         }
@@ -248,5 +249,5 @@ export async function rehostLegacyBoard(source: EditableLegacy,
         return ownLegacy({ status: 'editable', original: source.original, originalSha256: source.originalSha256,
             bytes, native, legacyReport: source.legacyReport, media, previousFrames: source.previousFrames,
             nextFrames: source.nextFrames, conversionPending: true });
-    } finally { try { owned?.dispose(); } finally { options.memory.release(reservation); } }
+    } finally { try { await owned?.dispose(); } finally { options.memory.release(reservation); } }
 }

@@ -30,6 +30,16 @@
       "key": "commands.copyAsJson",
       "text": "JSON",
       "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportPdf",
+      "text": "PDF",
+      "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportJson",
+      "text": "JSON",
+      "reason": "International file format or paper size designation."
     }
   ],
   "strings": {
@@ -125,6 +135,7 @@
     "chrome.light": "Iftiin",
     "chrome.system": "Nidaamka",
     "chrome.language": "Luuqad",
+    "chrome.print": "Daabac",
     "chrome.uploadMedia": "Soo rar warbaahinta…",
     "chrome.insertEmbed": "Geli isku dhex gal",
     "chrome.unlockAll": "Fur dhammaan",
@@ -378,6 +389,9 @@
     "paper.deleteConfirm": "Tirtir bogga",
     "paper.cancel": "Jooji",
     "paper.keepProtected": "Waxyaabaha xidhan waa la hayn doonaa",
-    "chrome.readOnly": "Looxani waa akhri-kaliya."
+    "chrome.readOnly": "Looxani waa akhri-kaliya.",
+    "shortcuts.file.print": "Daabac",
+    "commands.exportPdf": "PDF",
+    "commands.exportJson": "JSON"
   }
 }

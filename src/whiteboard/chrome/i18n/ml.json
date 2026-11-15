@@ -30,6 +30,16 @@
       "key": "commands.copyAsJson",
       "text": "JSON",
       "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportPdf",
+      "text": "PDF",
+      "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportJson",
+      "text": "JSON",
+      "reason": "International file format or paper size designation."
     }
   ],
   "strings": {
@@ -125,6 +135,7 @@
     "chrome.light": "വെളിച്ചം",
     "chrome.system": "സിസ്റ്റം",
     "chrome.language": "ഭാഷ",
+    "chrome.print": "പ്രിന്റ് ചെയ്യുക",
     "chrome.uploadMedia": "മീഡിയ അപ്‌ലോഡ് ചെയ്യുക...",
     "chrome.insertEmbed": "ഉൾച്ചേർക്കുക...",
     "chrome.unlockAll": "എല്ലാം അൺലോക്ക് ചെയ്യുക",
@@ -378,6 +389,9 @@
     "paper.deleteConfirm": "പേജ് ഇല്ലാതാക്കുക",
     "paper.cancel": "റദ്ദാക്കുക",
     "paper.keepProtected": "ലോക്ക് ചെയ്ത ഉള്ളടക്കം സൂക്ഷിക്കും.",
-    "chrome.readOnly": "ഈ ബോർഡ് വായിക്കാൻ മാത്രമുള്ളതാണ്."
+    "chrome.readOnly": "ഈ ബോർഡ് വായിക്കാൻ മാത്രമുള്ളതാണ്.",
+    "shortcuts.file.print": "പ്രിന്റ് ചെയ്യുക",
+    "commands.exportPdf": "PDF",
+    "commands.exportJson": "JSON"
   }
 }

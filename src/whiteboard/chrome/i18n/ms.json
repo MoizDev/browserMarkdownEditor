@@ -30,6 +30,16 @@
       "key": "commands.exportPng",
       "text": "PNG",
       "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportPdf",
+      "text": "PDF",
+      "reason": "International file format or paper size designation."
+    },
+    {
+      "key": "commands.exportJson",
+      "text": "JSON",
+      "reason": "International file format or paper size designation."
     }
   ],
   "strings": {
@@ -125,6 +135,7 @@
     "chrome.light": "Cahaya",
     "chrome.system": "Sistem",
     "chrome.language": "Bahasa",
+    "chrome.print": "Cetak",
     "chrome.uploadMedia": "Muat naik media…",
     "chrome.insertEmbed": "Sisipkan benam…",
     "chrome.unlockAll": "Buka kunci semua",
@@ -378,6 +389,9 @@
     "paper.deleteConfirm": "Padam halaman",
     "paper.cancel": "Batal",
     "paper.keepProtected": "Kandungan berkunci akan disimpan.",
-    "chrome.readOnly": "Papan ini adalah baca sahaja."
+    "chrome.readOnly": "Papan ini adalah baca sahaja.",
+    "shortcuts.file.print": "Cetak",
+    "commands.exportPdf": "PDF",
+    "commands.exportJson": "JSON"
   }
 }

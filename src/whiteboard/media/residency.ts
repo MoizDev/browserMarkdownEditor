@@ -185,8 +185,9 @@ export class MediaResidency implements PaintImageProvider {
 
     private async decode(job: Pending): Promise<Cached> {
         const signal = job.controller.signal;
-        const current = () => !signal.aborted && this.visible && !this.disposed
-            && (!this.wanted || this.wanted.has(job.key)) && this.host.isCurrent(job.token, job.identity);
+        // Demand prunes work that is no longer drawn (setDemand aborts it); it does not gate a decode that an acquire
+        // just asked for. A paint acquires its tiles before the frame that names them has been drawn, so gating here would starve it.
+        const current = () => !signal.aborted && this.visible && !this.disposed && this.host.isCurrent(job.token, job.identity);
         const source = await this.host.source(parseMediaTileKey(job.key).id, signal);
         if (!current()) throw new DOMException('Stale media request', 'AbortError');
         if (!source) throw new Error('Missing picture');

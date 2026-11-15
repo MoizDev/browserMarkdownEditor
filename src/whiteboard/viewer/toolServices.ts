@@ -44,6 +44,8 @@ export interface BoardToolServicesOptions {
     readonly visible: () => boolean;
     readonly focused: () => boolean;
     readonly inputFrames: { schedule(callback: () => void): () => void };
+    /** The board's always-snap preference, read live on each gesture; absent means no always-snap. */
+    readonly alwaysSnap?: () => boolean;
     readonly mappings: MappingHistory;
     readonly sampleToSurface: (sample: RealSample) => Point;
     readonly clientToSurface: (x: number, y: number) => Point;
@@ -102,7 +104,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
     const select = createBoardSelectServices({ runtime, render: runtime.render, camera: options.view, cameraController: camera,
         surface: options.surface, inputToken, cameraChanged: options.interaction.cameraChanged, sampleToSurface: options.sampleToSurface, point, region, preview,
         overlay: options.overlay, token, current: t => current() && options.current(t), canMutateView: () => options.editable() && !runtime.session.isReadOnly,
-        inputFrames: options.inputFrames,
+        inputFrames: options.inputFrames, alwaysSnap: options.alwaysSnap,
         editSticky: async id => { await text.editText(id); }, onError: ui.error, openKeyboardContextMenu: ui.openKeyboardContextMenu });
     // Hover and edit targets from real callbacks: the text editor reports the node it holds, and the
     // pointer's hover is hit-tested by the same point query the select tool uses. Changes invalidate the view.
@@ -185,7 +187,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
                 if (choice.id === 'figure' && !FIGURE_SHAPES.includes(variant as FigureShape)) throw new RangeError('Invalid figure variant');
                 const kind = choice.id;
                 return route(boardCreationTool(kind), { runtime, render: runtime.render, camera, kind, registerPending,
-                    sampleToSurface: options.sampleToSurface, guides: select.setGuides,
+                    sampleToSurface: options.sampleToSurface, guides: select.setGuides, alwaysSnap: options.alwaysSnap,
                     ...(kind === 'figure' ? { figure: variant as FigureShape } : {}), preview, current: editable,
                     editText: async id => { await text.editText(id); }, resolveAttachment: (position, signal) => attachments.resolve(position, signal,
                         { input: sample.source === 'keyboard' ? 'mouse' : sample.source }), onError: ui.error });

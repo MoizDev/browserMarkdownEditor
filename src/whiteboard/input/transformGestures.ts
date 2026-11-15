@@ -16,7 +16,8 @@ export interface AsyncTransformGestureHost {
     hold(): () => void;
     registerPending(cancel: () => void): () => void;
     current(): boolean;
-    show(ops: readonly Op[]): void;
+    /** `live`: a pointer move (the preview moves its picture); absent for the commit's own preview. */
+    show(ops: readonly Op[], live?: boolean): void;
     waitUntilReady(signal: AbortSignal): Promise<void>;
     armCommit(): void;
     finishCommit(): void;
@@ -86,7 +87,7 @@ class AsyncTransformGesture<Preview extends { readonly ops: readonly Op[] }> imp
                     catch (error) { this.host.cancelCommit(); throw error; }
                 } else plan.commit(value);
                 this.cleanup();
-            } else { plan.display?.(value); this.host.show(value.ops); }
+            } else { plan.display?.(value); this.host.show(value.ops, true); }
         } catch (error) {
             if (!request.signal.aborted && !this.controller.signal.aborted && generation === this.generation) {
                 try { this.host.error(error); } finally { this.cancel('invalidated'); }

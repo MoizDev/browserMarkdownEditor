@@ -54,6 +54,12 @@ export interface BoardLayersOptions {
     readonly onPresented?: (revision: number, token: RenderToken, frame: PaintSource, context?: ViewerPaintPresentation) => void;
     /** Called after every prepare that reached the adapter, before a compositor frame draws what it built; a caller checks what is built. */
     readonly onPrepared?: () => void;
+    /** A world offset the frame is drawn at, on top of where it was built (a translation preview's move). */
+    readonly drawOffset?: (frame: PaintSource) => Readonly<{ x: number; y: number }>;
+    /** Changes whenever `drawOffset` does, so the pane repaints the layer at an unchanged revision. */
+    readonly drawVersion?: () => number;
+    /** A draw that needs an offset the layer cannot give (a dense frame): the owner rebuilds instead. */
+    readonly onOffsetUnsupported?: () => void;
     readonly onDrawn?: (revision: number, frame: PaintSource, context: ViewerPaintPresentation) => void;
     /** Upper bound on the nodes this view meets, from the sheet index; null while that index builds. */
     readonly candidates?: () => number | null;
@@ -87,6 +93,11 @@ function sameToken(a: RenderToken, b: RenderToken): boolean {
 }
 function copyView(view: ViewState): ViewState {
     return Object.freeze({ ...view, camera: Object.freeze({ ...view.camera }), viewport: Object.freeze({ ...view.viewport }) });
+}
+/** The view that paints a frame moved by `offset` in world units: device = (world − camera) × scale, so the world moves by
+ * `offset` when the camera moves by `−offset`. Every backend paints through the camera, so no backend needs its own offset. */
+function shiftedView(view: ViewState, offset: Readonly<{ x: number; y: number }>): ViewState {
+    return Object.freeze({ ...view, camera: Object.freeze({ ...view.camera, x: view.camera.x - offset.x, y: view.camera.y - offset.y }) });
 }
 function sameView(a: ViewState | null | undefined, b: ViewState): boolean {
     return !!a && a.epoch === b.epoch && a.camera.x === b.camera.x && a.camera.y === b.camera.y && a.camera.z === b.camera.z
@@ -563,6 +574,13 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     };
     // A frame is drawable only while it is the current generation of its source (an optional overlay's superseded frame never paints).
     const drawable = (frame: PaintSource): boolean => !options.optional || options.frames.isCurrent(frame);
+    // The offset a frame is drawn at: null for none, undefined when a dense frame cannot take one (the owner rebuilds).
+    const drawnOffset = (frame: PaintSource, dense: boolean): Readonly<{ x: number; y: number }> | null | undefined => {
+        const offset = options.drawOffset?.(frame);
+        if (!offset || (offset.x === 0 && offset.y === 0)) return null;
+        if (dense) { options.onOffsetUnsupported?.(); return undefined; }
+        return offset;
+    };
     const coverageOf = (layer: Layer, frame: ScheduledFrame, backend: CompositorBackend): LayerCoverage => {
         const gpuCoverage = backend !== 'canvas2d' ? gpu?.coverage(frame.view) : null;
         const ready = backend === 'canvas2d' ? adapter?.readyFrame() : gpu?.readyFrame();
@@ -587,10 +605,11 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     const frame = gpu?.readyFrame();
                     if (!frame || !drawable(frame)) return;
                     const omit = options.omitNodes?.(frame) ?? null;
+                    const shift = drawnOffset(frame, useDense); if (shift === undefined) return;
                     const ink = gpu!.readyInkNodeIds() ?? frame.inkNodeIds;
                     if (!prepareToken) return;
                     const actualView = copyView(view);
-                    gpu!.drawGpu(pass, view, band, omit ?? undefined);
+                    gpu!.drawGpu(pass, shift ? shiftedView(view, shift) : view, band, omit ?? undefined);
                     // Borrowed right after the draw read its snapshot, before anything else can move the adapter on.
                     const hold = captureDraw(frame, omit);
                     const context = Object.freeze({ view: actualView, frameId: prepareFrameId,
@@ -603,10 +622,11 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     const frame = adapter?.readyFrame();
                     if (!frame || !drawable(frame)) return;
                     const omit = options.omitNodes?.(frame) ?? null;
+                    const shift = drawnOffset(frame, useDense); if (shift === undefined) return;
                     const ink = adapter!.borrowPrepared()?.root.inkNodeIds ?? frame.inkNodeIds;
                     if (!prepareToken) return;
                     const actualView = copyView(view);
-                    adapter!.draw2d(ctx, view, band, omit ?? undefined);
+                    adapter!.draw2d(ctx, shift ? shiftedView(view, shift) : view, band, omit ?? undefined);
                     // Borrowed right after the draw read its snapshot, before anything else can move the adapter on.
                     const hold = captureDraw(frame, omit);
                     const context = Object.freeze({ view: actualView, frameId: prepareFrameId,
@@ -653,6 +673,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             return layer;
         },
         revision() { return options.requestedRevision(); },
+        drawVersion() { return options.drawVersion?.() ?? 0; },
         cpuEvict(_layer, bytes) {
             // Only the band that holds the session's memory reclaims it; the other band's grant has nothing of the dense plan.
             if (hosts.get(band) === allocatorHost) dense?.reclaim(bytes);

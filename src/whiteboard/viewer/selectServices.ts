@@ -117,7 +117,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         }
         return ops.length ? { x: dx, y: dy } : null;
     };
-    const showTransform = (ops: readonly Op[]) => { transformPreview = true; transformOffset = translationOf(ops); options.preview.showOps(ops); requestFrame(); };
+    const showTransform = (ops: readonly Op[], live = false) => { transformPreview = true; transformOffset = translationOf(ops); options.preview.showOps(ops, live); requestFrame(); };
     const clearTransform = () => { transformPreview = false; transformOffset = null; options.preview.clear(); requestFrame(); };
     const toSurface = (point: Vec2) => worldToSurface(point, options.camera().camera);
     const physicalSurface = (sample: RealSample) => sampleSurface(sample, options.sampleToSurface);
@@ -206,7 +206,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             return translationHandleGesture(sample, modifiers, { runtime, ids, current: () => mutable() && doc.rev === revision,
                 zoom: () => options.camera().camera.z, alwaysSnap: options.alwaysSnap ?? (() => false) }, {
                 hold: () => session.beginGesture(), registerPending, current: () => mutable() && doc.rev === revision,
-                show: ops => showTransform(ops), waitUntilReady: options.preview.waitUntilReady,
+                show: (ops, live) => showTransform(ops, live === true), waitUntilReady: options.preview.waitUntilReady,
                 armCommit: options.preview.armCommit, finishCommit: options.preview.finishCommit, cancelCommit: options.preview.cancelCommit,
                 guides: setGuides, clear() { setGuides([]); clearTransform(); }, error: report,
             });
@@ -578,7 +578,14 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     };
     // The host routes select through this tool so handles win over body picking for both pointer and keyboard input.
     const selectContext: BoardSelectGestureContext = { ...select, sampleToSurface: physicalSurface, beginHandle,
-        insideSelection: sample => selectionHandles.contains({ x: sample.x, y: sample.y }, sample.time) };
+        insideSelection: sample => selectionHandles.contains({ x: sample.x, y: sample.y }, sample.time),
+        // The selection's picture is built at rest when a press lands on it: a drag's first move then only moves that picture,
+        // and a build takes frames that the first move cannot wait for.
+        prewarm() {
+            const rest: Op[] = [];
+            for (const id of runtime.selection.getSnapshot().selected) { const node = runtime.session.doc.nodes.get(id); if (node) rest.push({ t: 'set', id, key: 'x', value: node.x }); }
+            if (rest.length) options.preview.showOps(rest, true);
+        } };
     const tool = { id: boardSelectTool.id, begin(sample: RealSample, modifiers: Modifiers) {
         return boardSelectTool.begin(sample, modifiers, selectContext);
     } };

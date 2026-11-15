@@ -15,6 +15,9 @@ export interface PlatformLayerDefinition {
     readonly isolation?: CompositorIsolation;
     create(host: LayerHost): Layer;
     revision(layer: Layer): number;
+    /** Changes whenever the layer draws differently at an unchanged revision (a draw-time offset). Folded into the
+     * revision the pane schedules by, so the compositor repaints it; a layer without one keeps its revision alone. */
+    drawVersion?(layer: Layer): number;
     /** Prospective CPU bytes for the physical viewport, separate from currently leased memory. */
     cpuWorkingSet?(layer: Layer, viewport: Readonly<{ width: number; height: number }>): Readonly<{
         mandatoryBytes: number;

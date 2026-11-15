@@ -167,9 +167,9 @@ export function AttachedViewer({ props, identity, lease, inverted, setInverted, 
                     const page = event.currentTarget.valueAsNumber;
                     if (Number.isFinite(page)) lease.jump(Math.max(0, Math.min(board.doc.host.kind === 'notebook' ? board.doc.host.paper.pageCount - 1 : 0, Math.floor(page) - 1)));
                 }} /> / {board.doc.host.paper.pageCount}</label>}
-            <button type="button" onClick={() => lease.zoomBy(1 / 1.2)} aria-label="Zoom out">−</button>
+            <button type="button" onClick={() => lease.zoomStep(-1)} aria-label="Zoom out">−</button>
             <span>{Math.round(navigation.zoom * 100)}%</span>
-            <button type="button" onClick={() => lease.zoomBy(1.2)} aria-label="Zoom in">+</button>
+            <button type="button" onClick={() => lease.zoomStep(1)} aria-label="Zoom in">+</button>
             <button type="button" aria-pressed={inverted} onClick={() => setInverted(!inverted)}>Invert</button>
             {board.doc.kind === 'whiteboard' && <button type="button" aria-pressed={minimapOpen} onClick={() => setMinimapOpen(!minimapOpen)}>Minimap</button>}
             {stack && <NativeNotebookThumbnails pages={stack.rects} revision={revision} page={navigation.page} isVisible={props.isVisible}

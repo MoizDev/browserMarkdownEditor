@@ -63,7 +63,8 @@ export function createBoardTextGeometry(options: { fonts?: BoardFonts; onFontEpo
             if (!node.label) return null;
             text = node.label;
         } else if (node.kind === 'frame') {
-            text = frameTitleRequest(node, '', requestOptions.revision, getFonts().epoch, requestOptions.zoom ?? 1).text;
+            // An unnamed frame stores an empty title but is presented as "Frame", as the accessibility label does.
+            text = frameTitleRequest(node, 'Frame', requestOptions.revision, getFonts().epoch, requestOptions.zoom ?? 1).text;
         } else return null;
         if (node.kind === 'connector' && (!requestOptions.anchor || !Number.isFinite(requestOptions.anchor.x)
             || !Number.isFinite(requestOptions.anchor.y))) throw new RangeError('Connector text requires an exact label anchor');

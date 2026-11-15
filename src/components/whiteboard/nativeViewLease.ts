@@ -1,6 +1,6 @@
 import { getBoardPreferences } from '../../utils/boardPreferences';
 import type { PlatformLayerDefinition, PlatformPane, PlatformPresentation } from '../../platform/render/attachPlatformPane.types';
-import { cameraForPagedPosition, pagedPosition, surfaceToWorld, type CameraController, type ViewportInsets, type ZoomLimits } from '../../platform/render/camera';
+import { cameraForPagedPosition, fitWidthZ, pagedPosition, surfaceToWorld, type CameraController, type ViewportInsets, type ZoomLimits } from '../../platform/render/camera';
 import type { Rect, ViewState } from '../../platform/types';
 import type { RenderToken } from '../../platform/render/types';
 import { createPlatformCapturer } from '../../platform/render/captureRuntime';
@@ -11,6 +11,7 @@ import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeC
 import { recordPdfNavigation } from '../../utils/pdfViewState';
 import { getBoardRuntime, type BoardRuntime } from '../../whiteboard/host/runtime';
 import { createBoardViewCamera } from '../../whiteboard/host/viewCamera';
+import { zoomStepTarget } from '../../whiteboard/host/zoomSteps';
 import { recordNativeAgentViewport, snapshotNativeAgentView, type NativeAgentViewInput } from '../../whiteboard/host/nativeAgentView';
 import { captureLiveAgentProjection, describeLiveAgentView } from '../../whiteboard/host/agentProjection';
 import { registerView, type LiveJob, type NativeLiveView, type ViewReporter } from '../../utils/viewRegistry';
@@ -94,6 +95,8 @@ export interface NativeViewLease extends BoardViewLease<object> {
     jump(page: number): void;
     zoomBy(factor: number): void;
     zoomAt(point: { x: number; y: number }, factor: number): void;
+    /** One rung of the zoom ladder in `direction`, anchored at `anchor` (the view centre when absent). */
+    zoomStep(direction: 1 | -1, anchor?: { x: number; y: number }): void;
     reveal(rect: Rect): void;
     captureRegion(rect: Rect, maxSide: number, signal: AbortSignal): Promise<ImageBitmap>;
     captureBlob(rect: Rect, maxSide: number, signal: AbortSignal): Promise<Blob>;
@@ -515,6 +518,14 @@ export function createNativeViewLease(options: {
             if (platformPane) platformPane.animateZoom(camera.camera.z * factor, point);
             else { camera.zoomTo(camera.camera.z * factor, point); cameraOwner.changed(); }
         },
+        zoomStep(direction, anchor) {
+            // Paged hosts step their ladder from fit-width, so "1" is the page filling the viewport, not 100%.
+            const stack = boardPageStack(board.doc.host);
+            const base = stack ? fitWidthZ(camera.viewport, stack, insets) : 1;
+            if (!(base > 0)) return;
+            const point = anchor ?? { x: camera.viewport.width / 2, y: camera.viewport.height / 2 };
+            lease.zoomAt(point, zoomStepTarget(camera.camera.z, direction, base) / camera.camera.z);
+        },
         view: {
             sourceToken: token,
             accessibility: viewer.accessibility, subscribe: listener => lease.subscribe(listener),
@@ -577,8 +588,12 @@ export function createNativeViewLease(options: {
             // The capture contract is canonical light paint only; a view's inversion is reported by describe, never captured.
             captureRect: (rect, maxSide, signal) => captureBlob(rect, maxSide, { signal, theme: 'light', inverted: false, layers: captureLayers() }),
             current });
+        // The save boundaries (Save, close, a disk conflict's Reload) ask the view for its unsaved edits. Without
+        // these the native board answered "nothing pending" and a completed stroke could be lost (pdf-ink F-PINK-007).
         const reporter: ViewReporter = { kind: board.doc.kind === 'whiteboard' ? 'drawing' : board.doc.kind === 'notebook' ? 'notebook' : 'pdf-annotate',
-            describe: () => live.describe({ deadlineMs: 30_000 }), live };
+            describe: () => live.describe({ deadlineMs: 30_000 }), live,
+            hasPendingEdits: () => board.hasPendingEdits(),
+            flushPending: () => { if (!board.isReadOnly && board.hasPendingEdits()) board.checkpoint(); } };
         unregisterView = registerView(livePath, reporter);
     }
     cameraClaim?.commit();

@@ -104,8 +104,11 @@ export const boardBindings: readonly KeyBinding[] = [
   { id: 'camera.reset', group: 'view', label: 'Reset zoom', key: '0', shift: true },
   { id: 'camera.fit', group: 'view', label: 'Zoom to fit', key: '1', shift: true },
   { id: 'camera.selection', group: 'view', label: 'Zoom to selection', key: '2', shift: true },
+  // Both axes walk the sheets: Left/Up back and Right/Down forward, each route listed in the shortcut sheet (R-4).
   { id: 'sheet.previous', group: 'view', label: 'Previous sheet', key: 'ArrowLeft', alt: true },
+  { id: 'sheet.previous', group: 'view', label: 'Previous sheet', key: 'ArrowUp', alt: true },
   { id: 'sheet.next', group: 'view', label: 'Next sheet', key: 'ArrowRight', alt: true },
+  { id: 'sheet.next', group: 'view', label: 'Next sheet', key: 'ArrowDown', alt: true },
 ]
 
 export interface ShortcutGroup {

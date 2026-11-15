@@ -22,6 +22,10 @@ const defaults: BoardPreferences = {
     animationSpeed: 1, areKeyboardShortcutsEnabled: true, enhancedA11yMode: false,
     inputMode: null, isZoomDirectionInverted: false, locale: 'en', colorScheme: 'system',
 };
+// Until the user chooses, motion follows the OS: a reduced-motion request starts at speed 0 (camera.md F-A11Y-005).
+function osAnimationSpeed(): number {
+    return typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 1;
+}
 function object(value: unknown): Record<string, unknown> {
     return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
@@ -34,7 +38,7 @@ function clamp(value: unknown): BoardPreferences {
         isSnapMode: flag('isSnapMode', defaults.isSnapMode),
         isWrapMode: flag('isWrapMode', defaults.isWrapMode),
         isDynamicResizeMode: typeof input.isDynamicResizeMode === 'boolean' ? input.isDynamicResizeMode : typeof input.isDynamicSizeMode === 'boolean' ? input.isDynamicSizeMode : defaults.isDynamicResizeMode,
-        animationSpeed: typeof input.animationSpeed === 'number' && Number.isFinite(input.animationSpeed) ? Math.max(0, Math.min(1, input.animationSpeed)) : 1,
+        animationSpeed: typeof input.animationSpeed === 'number' && Number.isFinite(input.animationSpeed) ? Math.max(0, Math.min(1, input.animationSpeed)) : osAnimationSpeed(),
         areKeyboardShortcutsEnabled: flag('areKeyboardShortcutsEnabled', defaults.areKeyboardShortcutsEnabled),
         enhancedA11yMode: flag('enhancedA11yMode', defaults.enhancedA11yMode),
         inputMode: input.inputMode === 'mouse' || input.inputMode === 'trackpad' ? input.inputMode : null,

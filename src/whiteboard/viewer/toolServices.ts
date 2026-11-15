@@ -230,8 +230,6 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         hover: event => { ui.hover?.(event); trackHover(event); }, contextMenu: ui.contextMenu, drop: event => options.imports.drop(event), linkAt: ui.linkAt,
         penModeChanged: ui.penModeChanged, persistToolLock: ui.persistToolLock, clearLatches: ui.clearLatches, cancelPendingGestures: cancelPending,
         keyboardContextMenu: select.keyboardContextMenu,
-        // Double-click on a group enters it (F-SEL-005); without this the select surface's handler is never reached.
-        handleDoubleClick: select.doubleClickHandle,
     };
     const writeOverlays = (frame: ScheduledFrame) => {
         if (!current() || frame.token.vaultEpoch !== token.vaultEpoch || frame.token.documentId !== token.documentId

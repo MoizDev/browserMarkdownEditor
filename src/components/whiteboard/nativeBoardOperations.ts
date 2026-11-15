@@ -25,6 +25,7 @@ export function createNativeBoardOperations(options: {
     readonly actionLabel: (id: MainAction) => string;
     readonly actionShortcut: (id: MainAction) => string | undefined;
     readonly notice: (message: string) => void;
+    readonly keptLockedNotice: (count: number) => string;
     readonly onError: (error: unknown) => void;
 }) {
     const { runtime, lease } = options, session = runtime.session;

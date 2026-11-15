@@ -19,6 +19,7 @@
 // so a disabled control's tooltip (the reason it cannot act) still shows.
 
 import { getContextMenu } from './contextMenu';
+import { getBoardPreferences } from './boardPreferences';
 
 const SHOW_DELAY_MS = 400;
 // Sliding from one control to the next along a toolbar shows the next bubble at
@@ -52,12 +53,19 @@ function tooltipText(el: Element): string {
     return el.getAttribute('data-tooltip')?.trim() ?? '';
 }
 
+// Enhanced accessibility mode shows descriptions at once and keeps them hoverable, so a pointer can move onto one.
+function enhanced(): boolean {
+    return getBoardPreferences().enhancedA11yMode;
+}
+
 function ensureBubble(): HTMLDivElement {
     if (bubble) return bubble;
     bubble = document.createElement('div');
     bubble.className = 'tooltip';
     bubble.setAttribute('role', 'tooltip');
     bubble.style.display = 'none';
+    // Leaving a hoverable description closes it, as leaving its target does otherwise.
+    bubble.addEventListener('pointerleave', () => { if (enhanced()) leave(); });
     document.body.appendChild(bubble);
     return bubble;
 }
@@ -193,11 +201,12 @@ function onPointerOver(e: PointerEvent): void {
     const el = e.target instanceof Element ? e.target.closest('[data-tooltip]') : null;
     if (el === target) return;
     if (!el || !tooltipText(el)) { reset(); return; }
-    const warm = shown || performance.now() - hiddenAt < WARM_MS;
+    const warm = shown || performance.now() - hiddenAt < WARM_MS, instant = enhanced();
     hideBubble();
     target = el;
     dismissed = false;
-    if (warm) show();
+    if (bubble) bubble.style.pointerEvents = instant ? 'auto' : '';
+    if (warm || instant) show();
     else showTimer = window.setTimeout(show, SHOW_DELAY_MS);
 }
 
@@ -205,6 +214,7 @@ function onPointerOut(e: PointerEvent): void {
     if (!target) return;
     const to = e.relatedTarget;
     if (to instanceof Node && target.contains(to)) return;
+    if (enhanced() && to instanceof Node && bubble?.contains(to)) return;
     if (dismissed) reset();
     else leave();
 }

@@ -55,20 +55,22 @@ export function createNativeCameraOperations(options: {
         check();
         const box = bounds as Rect | null, viewport = lease.camera.viewport;
         if (!box || box.width <= 0 || box.height <= 0 || viewport.width <= 0 || viewport.height <= 0) throw new Error('There is no measurable content to fit');
-        const padding = 48, width = Math.max(1, viewport.width - 2 * padding), height = Math.max(1, viewport.height - 2 * padding);
+        // Clearance per side is 64 CSS px on the 1016px canvas camera.md measured, and at most 14% of the axis on a narrow view.
+        const padX = Math.min(64, 0.14 * viewport.width), padY = Math.min(64, 0.14 * viewport.height);
+        const width = Math.max(1, viewport.width - 2 * padX), height = Math.max(1, viewport.height - 2 * padY);
         const z = lease.camera.clampZoom(Math.min(width / box.width, height / box.height));
         lease.camera.setCamera({ x: box.x + box.width / 2 - viewport.width / (2 * z),
             y: box.y + box.height / 2 - viewport.height / (2 * z), z });
         lease.changed();
     };
     return {
-        zoomAtCursor(factor: number): boolean {
+        zoomAtCursor(direction: 1 | -1): boolean {
             const point = lease.editing?.pointerSurface();
             if (!point || !available().enabled) return false;
-            lease.zoomAt(point, factor); return true;
+            lease.zoomStep(direction, point); return true;
         },
-        zoomIn: operation(available, () => lease.zoomBy(1.2)),
-        zoomOut: operation(available, () => lease.zoomBy(1 / 1.2)),
+        zoomIn: operation(available, () => lease.zoomStep(1)),
+        zoomOut: operation(available, () => lease.zoomStep(-1)),
         zoomTo100: operation(available, () => lease.zoomBy(1 / lease.getNavigationSnapshot().zoom)),
         zoomToFit: operation(available, () => fit(false)),
         zoomToSelection: operation(selection, () => fit(true)),

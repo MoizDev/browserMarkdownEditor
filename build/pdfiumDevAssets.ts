@@ -37,6 +37,10 @@ export function developmentPdfiumAssets(): Plugin {
       server.middlewares.use((req, res, next) => {
         const path = (req.url ?? '').split('?')[0]
         const asset = assets.find(item => path === '/' + item.name || path === server.config.base + item.name)
+        // An unserved engine path must fail as a missing file, never as Vite's index.html (a wasm MIME error at the caller).
+        if (!asset && (path.startsWith('/__bme_pdfium_dev/') || path.startsWith(server.config.base + '__bme_pdfium_dev/'))) {
+            res.statusCode = 404; res.end(); return
+        }
         if (!asset) return next()
         if (req.method !== 'GET' && req.method !== 'HEAD') { res.statusCode = 405; res.end(); return }
         res.setHeader('Content-Type', asset.type)

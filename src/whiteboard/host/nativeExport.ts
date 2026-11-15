@@ -482,9 +482,12 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
             pngPage: (page, requestSignal) => run(requestSignal, combined => {
                 const world = printPages[page];
                 if (!Number.isSafeInteger(page) || !world) throw new RangeError('Invalid print page');
+                // A print page is decoded by the print viewer in this renderer, so it keeps the clipboard's budget: a
+                // download may be far larger, but a 200 dpi page past this bound would crash the page instead of printing.
+                const raster = Math.min(printRaster, pngScaleLimit(world, true));
                 // A PDF-backed page keeps its backdrop: the raster fallback must show what the PDF print shows.
-                if (pdfBackdrop) return pdfCaptureBlob(world, printRaster, [...pdfLayers, 'board-underlay', 'board-content'], combined, false);
-                return streamRasterPng(source, capturedImages, world, printRaster, combined, { background: '#ffffff' });
+                if (pdfBackdrop) return pdfCaptureBlob(world, raster, [...pdfLayers, 'board-underlay', 'board-content'], combined, false);
+                return streamRasterPng(source, capturedImages, world, raster, combined, { background: '#ffffff' });
             }),
             release,
         };

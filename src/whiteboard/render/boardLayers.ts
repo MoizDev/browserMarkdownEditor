@@ -32,6 +32,8 @@ export interface BoardLayersOptions {
     /** Fired once per actual change of the renderer's progress; never for a repeated value. */
     readonly onPaintProgress?: () => void;
     readonly requestedRevision: () => number;
+    /** The theme the view asks for: a frame painted for the other theme is never current, whatever its revision. */
+    readonly requestedTheme: () => 'light' | 'dark';
     /** View-only suppression, evaluated against the actual ready preview frame. */
     readonly omitNodes?: (frame: PaintSource) => ReadonlySet<string> | null;
     readonly liveNodeIds?: () => ReadonlySet<string> | undefined;
@@ -481,7 +483,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         if (useDense && !denseCoverage?.complete) return { complete: false, sharp: false };
         if (backend !== 'canvas2d' && !gpuCoverage?.complete) return { complete: false, sharp: false };
         if (!ready || !sameToken(ready.token, frame.token)) return { complete: false, sharp: false };
-        const current = ready.sceneRevision === requested && ready.sceneRevision === options.requestedRevision() && options.frames.isCurrent(ready);
+        const current = ready.sceneRevision === requested && ready.sceneRevision === options.requestedRevision()
+            && ready.theme === options.requestedTheme() && options.frames.isCurrent(ready);
         return current ? { complete: true, sharp: (gpuCoverage?.sharp ?? true) && (denseCoverage?.sharp ?? true) } : { complete: false, sharp: false, staleVersion: true };
     };
     const definition = (band: PaintBand): PlatformLayerDefinition => ({

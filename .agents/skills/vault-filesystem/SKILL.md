@@ -57,12 +57,12 @@ existed.
    it is ours: `freeEntryName` certified the name free moments earlier and nothing else may be
    trashing concurrently. It is not a licence to prune `.Garbage`, which nothing does — though
    `restoreAsset` does legitimately *take a file back out* of `.Garbage/.Assets`.
-2. **`App.handleTrash` serializes it** (`trashInFlightRef`, the shape of `pickDirectory`'s
-   `pickerOpenRef`). The folder's row stays on screen for the whole copy, so "nothing happened, click
-   again" is the natural response; unguarded, two copies ran at once, one was abandoned half-written
-   when the source vanished under it, and the loser's `alert` told the user a deletion that had
-   **succeeded** had failed. The status line says `Moving "…" to Trash…` for the duration, because a
-   copy with no outward sign is what invites the second click. Because `ConfirmDialog` does not
+2. **`useTrashActions.handleTrash` (src/app) serializes it** (`trashInFlightRef`, the shape of
+   `useVaultOpeners.pickDirectory` (src/app)'s `pickerOpenRef`). The folder's row stays on screen for the
+   whole copy, so "nothing happened, click again" is the natural response; unguarded, two copies ran at once,
+   one was abandoned half-written when the source vanished under it, and the loser's `alert` told the user a
+   deletion that had **succeeded** had failed. The status line says `Moving "…" to Trash…` for the duration,
+   because a copy with no outward sign is what invites the second click. Because `ConfirmDialog` does not
    freeze the page the way `confirm()` did, that guard must cover the **question** as well as the copy.
 3. **Pending saves are flushed BEFORE the copy, and the reconcile queue drained.** Those tabs stay
    live and editable throughout, with their timers armed, so a debounced write would land on an
@@ -116,14 +116,14 @@ hides them and nothing else looks.
   calls in the app that destroy something the user made with no copy surviving.
 - **`displaceInto(bucket, dir, entry)` is shared with `moveToTrash`** and owns the
   record-before-the-first-byte rollback documented below. Change it and you change both.
-- **The three MUTATING bin handlers take `App`'s existing `trashInFlightRef`** (the one `handleTrash`
-  uses) and drain `reconcileQueueRef.current` before each write — they are copy-then-delete over the
-  same vault. The crawl and the preview reads take neither: they are read-only. Only one dialog fits
-  on screen, so `ask`/`askChoice`/`tell` all go through `raise`, which settles the question it
-  displaces as a cancel — otherwise the displaced promise never resolves and the in-flight ref its
-  caller holds stays true for the session, silently killing every later Trash operation. A 'replace'
-  also closes every tab at the displaced path **or under it**: those handles resolve to the directory
-  entry the restored copy now occupies, so one keystroke would overwrite what was just put back. The
+- **The three MUTATING bin handlers take `App`'s existing `trashInFlightRef` (in `useVaultMoves`, src/app)**
+  (the one `useTrashActions.handleTrash` (src/app) uses) and drain `reconcileQueueRef.current` before each
+  write — they are copy-then-delete over the same vault. The crawl and the preview reads take neither: they
+  are read-only. Only one dialog fits on screen, so `ask`/`askChoice`/`tell` all go through `raise`, which
+  settles the question it displaces as a cancel — otherwise the displaced promise never resolves and the
+  in-flight ref its caller holds stays true for the session, silently killing every later Trash operation. A
+  'replace' also closes every tab at the displaced path **or under it**: those handles resolve to the
+  directory entry the restored copy now occupies, so one keystroke would overwrite what was just put back. The
   panel also closes on `rootHandle` change: every row holds handles from one vault.
 - **Nothing about an item's appearance comes back** — `forgetEntry` dropped its icon/colour (and its
   slot in a custom order) when it was trashed, and nothing records it. Panel-side: rows compose `.tree-item` (for
@@ -153,9 +153,9 @@ a `lastIndexOf('.')` strip turns the help tab's bare `Help Guide` into `Help Gui
 only extension hidden anywhere (a PDF, drawing or notebook keeps its own).
 
 **When the overwritten name is open, its tab is released without a flush and its pane closed**
-(`App.releaseOverwritten`) — otherwise one path ends up in two tabs, drawing one document under two
-names, and flushing the dead buffer would write it straight back over the file that just replaced it.
-Three things about that release are each load-bearing, and each was got wrong once:
+(`useTabLifecycle.releaseOverwritten` (src/app)) — otherwise one path ends up in two tabs, drawing one
+document under two names, and flushing the dead buffer would write it straight back over the file that just
+replaced it. Three things about that release are each load-bearing, and each was got wrong once:
 
 - It runs on **every** overwrite, not only when the file being renamed is itself open. The hazard
   belongs to the tab holding the *destination* name, whose handle still resolves to that directory
@@ -171,34 +171,33 @@ Three things about that release are each load-bearing, and each was got wrong on
   `OpenTab.id` is what does — see the `tabs-and-panes` skill.
 
 **`createFile` is the one hole in that rule, and it is guarded one level up.** The primitive is
-`getFileHandle(name, {create:true})` with no `freeEntryName` and no question, so it
-opens-or-**truncates**: "New note" onto an existing name empties that file, with no warning, no undo,
-and a tree that looks exactly as it did a moment before. The guard is at the one user-facing entry
-point — `App.handleCreateFile` (and `handleCreateFolder`), which asks for **both** a file handle and
-a directory handle by that name and on a hit raises `tell` and creates nothing. There rather than in
-the primitive on purpose: routing `createFile` through `freeEntryName` would quietly create
-`note (1).md` while the caller went on to open the name it had asked for, and the other caller (the
-annotated-PDF path) genuinely wants create-or-open. **The primitive itself is still unguarded, so
-anything new that calls it inherits the hole.**
+`getFileHandle(name, {create:true})` with no `freeEntryName` and no question, so it opens-or-**truncates**:
+"New note" onto an existing name empties that file, with no warning, no undo, and a tree that looks exactly as
+it did a moment before. The guard is at the one user-facing entry point — `useCreateEntries.handleCreateFile`
+(src/app) (and `handleCreateFolder`), which asks for **both** a file handle and a directory handle by that
+name and on a hit raises `tell` and creates nothing. There rather than in the primitive on purpose: routing
+`createFile` through `freeEntryName` would quietly create `note (1).md` while the caller went on to open the
+name it had asked for, and the other caller (the annotated-PDF path) genuinely wants create-or-open. **The
+primitive itself is still unguarded, so anything new that calls it inherits the hole.**
 
 > `FileSystemContext.tsx`'s `entryExists`, exposed as `nameTaken`, is the single check used by
-> App's create handlers and the AI agent's host; files and folders both count.
+> the create handlers (`useCreateEntries`, src/app) and the AI agent's host; files and folders both count.
 
 **The AI agent writes through the same rules** (`utils/agentHost.ts`, the `vault-agent` skill): its
 create/mkdir refuse a taken name instead of truncating, its move REFUSES a taken target (unlike
 `moveFile`/`renameFile` — nothing an agent is told justifies an overwrite), its trash is
-`App.performTrash` without the question (same `trashInFlightRef`), and its text edits land in the
-open editor or go through the save tail (`afterWrite`), never behind the app's back. (A write the app
-did not make is no longer clobbered — see below — but it costs the reader a reload or a conflict bar.)
+`useTrashActions.performTrash` (src/app) without the question (same `trashInFlightRef`), and its text edits
+land in the open editor or go through the save tail (`afterWrite`), never behind the app's back. (A write the
+app did not make is no longer clobbered — see below — but it costs the reader a reload or a conflict bar.)
 
 ## A rename or a move carries every open document with it — a FOLDER's included
 
-`App.retargetTabs`, which `handleRenameFile` and `handleMoveFile` both go through. For a file that
-is the file; for a folder it is every tab under its `path/` prefix, **re-pointed rather than
-closed** — the same document, at a new name. Missing that, a folder rename left its notes open on
-paths that no longer existed, holding handles into a directory that had just been removed: every
-keystroke after it logged "Auto-save failed" and went nowhere, the tree highlighted nothing, and the
-stored session named a file that was gone. Three things about it:
+`useRenameMove.retargetTabs` (src/app), which `handleRenameFile` and `handleMoveFile` both go through. For a
+file that is the file; for a folder it is every tab under its `path/` prefix, **re-pointed rather than
+closed** — the same document, at a new name. Missing that, a folder rename left its notes open on paths that
+no longer existed, holding handles into a directory that had just been removed: every keystroke after it
+logged "Auto-save failed" and went nowhere, the tree highlighted nothing, and the stored session named a file
+that was gone. Three things about it:
 
 - New handles are walked down from the **vault root** (`resolveVaultFile`), not read out of
   `fileTree`. This runs after an await, and the tree is React state the rename's own `refreshTree`
@@ -208,11 +207,12 @@ stored session named a file that was gone. Three things about it:
   destination, and the tab holding that destination has to be released whether or not the file
   replacing it is itself open. The source paths come from the node's own `children`, the last
   description of the folder before it moved.
-- `App.retargetExpanded` moves the tree's disclosure state the same way, so a renamed folder does not
-  collapse itself and everything the reader had opened inside it.
-- The core is **path-based** (`App.retargetPaths` / `retargetExpandedPaths`): a rename noticed ON DISK
-  (`App.followDiskMove`, below) runs the very same fix-ups — tabs, layout, styles and custom order,
-  render caches, asset refs, pending restore — minus the copy, inside `trackVaultMove`.
+- `useRenameMove.retargetExpanded` (src/app) moves the tree's disclosure state the same way, so a renamed
+  folder does not collapse itself and everything the reader had opened inside it.
+- The core is **path-based** (`useRenameMove.retargetPaths` (src/app) / `retargetExpandedPaths`): a rename
+  noticed ON DISK (`useOutsideChanges.followDiskMove` (src/app), below) runs the very same fix-ups — tabs,
+  layout, styles and custom order, render caches, asset refs, pending restore — minus the copy, inside
+  `trackVaultMove`.
 
 **The tree is walked whole only on a vault open, a rescan or `refreshTree`** (dirs-first, alphabetical),
 and every published tree goes through `shareTree` (`utils/treeShare.ts`): each unchanged node keeps
@@ -253,7 +253,7 @@ whole vault to discover nothing had changed. So:
   and rereads the vault; neither persistence nor index facts authorize an asset retirement.
 - **Do not refresh the tree for something the tree cannot show.** `saveAsset` walked every folder in
   the vault after writing a pasted image into a `.Assets` the tree hides. Same trap as
-  `App.writeEntryStyles`.
+  `useEntryStyles.writeEntryStyles` (src/app).
 
 Hidden from the tree — ONE predicate, `utils/vaultEntries.ts` (`isHiddenVaultEntry`; the observer
 filter `isIgnoredChangePath` is built on it, so the two cannot drift): `.Assets`, `.Garbage`,
@@ -298,9 +298,10 @@ HINTS; a stat — and a SHA-256 of the raw bytes when the stat moved — is the 
   against files AND folders via `entryExists`, written with `getFileHandle({create:true})` on a name proven
   free (never `createFile`); deleted parent folders are made again (`ensureDirChain`). `vaultRoot` is the
   document's vault — a vault switch's closing flushes run after `rootHandleRef` names the next one. **`recreateFile(path, data)`** → missing parents + the file, only if nothing is there.
-- **App's half** (`tabs-and-panes` → "Outside changes"): per-document baselines, `checkOpenDocs`, reload
-  in place, the DiskBar, and rename pairing — an explicit `moved` record, or a UNIQUE same-size
-  same-HASH file that appeared in the batch; anything less certain shows "deleted", never a guess.
+- **App's half** (`tabs-and-panes` → "Outside changes"): per-document baselines,
+  `useOutsideChanges.checkOpenDocs` (src/app), reload in place, the DiskBar, and rename pairing — an explicit
+  `moved` record, or a UNIQUE same-size same-HASH file that appeared in the batch; anything less certain shows
+  "deleted", never a guess.
 
 ## `.Assets` and `.Garbage` are per FOLDER (`utils/assets.ts`)
 
@@ -320,13 +321,12 @@ should spell `'.Assets'`.**
   — nothing has ever written an asset sideways — so the walk reaches every misplaced one without ever
   searching the vault. `ancestorsOf` derives the chain by descending from the root, because a handle
   knows its own name and nothing above it.
-- **An asset is retired when the last reference to it goes** (`App.reconcileAssets` → `retireAsset`),
-  into `<folder>/.Garbage/.Assets`. Retired, not erased, because unlike deleting a file this follows
-  from an *edit*, with no confirmation in between — and `restoreAsset` puts it straight back when the
-  reference returns, which is what makes ⌘Z after deleting an embed whole again. That round trip is
-  why retired assets are parked under their own name in their own sub-folder rather than among the
-  trashed files: same name, exact inverse, no chance of resurrecting a user-trashed file's bytes into
-  `.Assets`.
+- **An asset is retired when the last reference to it goes** (`useAssetLifecycle.reconcileAssets` (src/app) →
+  `retireAsset`), into `<folder>/.Garbage/.Assets`. Retired, not erased, because unlike deleting a file this
+  follows from an *edit*, with no confirmation in between — and `restoreAsset` puts it straight back when the
+  reference returns, which is what makes ⌘Z after deleting an embed whole again. That round trip is why
+  retired assets are parked under their own name in their own sub-folder rather than among the trashed files:
+  same name, exact inverse, no chance of resurrecting a user-trashed file's bytes into `.Assets`.
 - **Reconciles are serialized** (`reconcileQueueRef`, the same promise-queue shape as
   `context/recentVaults.ts`). One pass can read a whole subtree while the saves that start them are a
   second apart, so they overlap easily — and raced, the classic sequence loses a picture: remove an
@@ -397,25 +397,24 @@ raising the setting later still has history to show.
   picking a vault you already have — the slow one. The cost is that the menu flashes open under the
   first click of a double-click. Keyboard activation reports `detail === 0` and lists; an empty list
   goes straight to the picker rather than making the user open a menu to reach it.
-- **Each row carries a minus that forgets it** (`forgetRecentVault` on the context → the same
-  serialized `forgetVault`). Every write to the list publishes through `publishVaults` — or, in
-  `recordVault` alone, through the same `menuVaults` builder, so the list and `currentVaultId` are
-  set in one batch (App resolves a link against the list at the render the id arrives; issue #6) —
-  which re-labels first: a qualified `parent/name` is earned only while two listed vaults share a folder
-  name, so dropping one of a pair has to leave the survivor as the bare name. Nothing on disk is
-  touched, so there is no confirm in front of it, and `forgetRecentVault` reports whether the write
-  landed — a refused one says so in the menu rather than leaving a dead click. **It forgets more
-  than the row now**: `StoredVault.id` is also the key of this vault's per-vault browser storage —
-  its tab session (`utils/tabSessions.ts`) and, through `storage.ts`'s `scopedKey`, its scroll and
-  PDF-page positions and collapsed headings. A forgotten folder re-opened is a new id, so it comes back
-  with an empty workspace. That is the intended reading of "forget". Only the **session** is actually
-  deleted (`pruneSessions`, off the recent list, by an effect in `App`); the three path-keyed records
-  are never pruned, so their scoped entries merely become unreachable — and scoping multiplies their
-  growth by the number of vaults, which the "never pruned" decision in AGENTS.md predates. Scoping
-  also orphaned every entry written **before** it, once, on the first load of the build that added
-  it: those are keyed by the bare path and nothing reads them now. Deliberately not migrated — the
-  only vault they could be filed under is whichever opens first, and misattributing another vault's
-  offsets is worse than one reset.
+- **Each row carries a minus that forgets it** (`forgetRecentVault` on the context → the same serialized
+  `forgetVault`). Every write to the list publishes through `publishVaults` — or, in `recordVault` alone,
+  through the same `menuVaults` builder, so the list and `currentVaultId` are set in one batch (App resolves a
+  link against the list at the render the id arrives; issue #6) — which re-labels first: a qualified
+  `parent/name` is earned only while two listed vaults share a folder name, so dropping one of a pair has to
+  leave the survivor as the bare name. Nothing on disk is touched, so there is no confirm in front of it, and
+  `forgetRecentVault` reports whether the write landed — a refused one says so in the menu rather than leaving
+  a dead click. **It forgets more than the row now**: `StoredVault.id` is also the key of this vault's
+  per-vault browser storage — its tab session (`utils/tabSessions.ts`) and, through `storage.ts`'s
+  `scopedKey`, its scroll and PDF-page positions and collapsed headings. A forgotten folder re-opened is a new
+  id, so it comes back with an empty workspace. That is the intended reading of "forget". Only the **session**
+  is actually deleted (`pruneSessions`, off the recent list, by an effect in `useSessionRestore` (src/app));
+  the three path-keyed records are never pruned, so their scoped entries merely become unreachable — and
+  scoping multiplies their growth by the number of vaults, which the "never pruned" decision in AGENTS.md
+  predates. Scoping also orphaned every entry written **before** it, once, on the first load of the build that
+  added it: those are keyed by the bare path and nothing reads them now. Deliberately not migrated — the only
+  vault they could be filed under is whichever opens first, and misattributing another vault's offsets is
+  worse than one reset.
 - **The open vault's row shows no minus**: every load re-records it (`recordVault`), so removing it
   would grow back before the user looked again. `.vault-menu-row` is a two-column grid, so that row
   and "Open folder…" keep every label on one x without a placeholder element to hold the gap.
@@ -431,13 +430,13 @@ raising the setting later still has history to show.
   content-sized and unbounded, one long folder name pushed the whole menu off the left of the
   viewport with its shorter rows rendering outside the window entirely.
 - **A folder in the file tree can be opened as a vault too** — `TreeNode`'s "Open as Vault" row →
-  `App.handleOpenAsVault` → `openFolderAsVault`, which IS `openVaultHandle`, the same body
-  `openRecentVault` runs (`openRecentVault` adds only "forget the row if the folder is `missing`").
-  No picker: the handle is already in hand, so one would only ask the user to find the folder they
-  just right-clicked. It records the vault, so the way back is the vault menu. App does no flushing
-  or tab-closing of its own — setting `rootHandle` is the switch, and the vault-switch effect already
-  drains and saves every open tab before the provider commits the new root, then empties the workspace. It **holds an in-flight ref** covering the
-  switch AND its error dialog, so a second right-click cannot stack a second question.
+  `useVaultOpeners.handleOpenAsVault` (src/app) → `openFolderAsVault`, which IS `openVaultHandle`, the same
+  body `openRecentVault` runs (`openRecentVault` adds only "forget the row if the folder is `missing`"). No
+  picker: the handle is already in hand, so one would only ask the user to find the folder they just
+  right-clicked. It records the vault, so the way back is the vault menu. App does no flushing or tab-closing
+  of its own — setting `rootHandle` is the switch, and the vault-switch effect already drains and saves every
+  open tab before the provider commits the new root, then empties the workspace. It **holds an in-flight ref**
+  covering the switch AND its error dialog, so a second right-click cannot stack a second question.
 - **ONE vault switch at a time, across every raiser — `switchInFlightRef`, in the provider.**
   `refreshTree` is not serialized, so two switches at once are two vault walks racing and the
   LATER-FINISHING one wins the tree: the sidebar lists vault A while `rootHandle`, IndexedDB and the
@@ -452,19 +451,20 @@ raising the setting later still has history to show.
   (deliberately not red — see the CSS comment) for **both** its raisers, the recent row and "Open
   folder…"; a row that greys and un-greys inside a walk running for seconds is the dead click
   `messageFor` exists to rule out. Only the tree row stays silent, having nowhere to put a note.
-- **A vault switch WALKS BEFORE IT COMMITS, and commits in one synchronous burst.** `loadTree` (the
-  walk, `null` on failure) is separate from `refreshTree` (the walk that leaves the current tree
-  standing on failure) for exactly this: `openVaultHandle` and `pickDirectory` both call `loadTree`
-  first, then save the handle and await App's registered pre-root-change drain before committing
-  `setRootHandle` → `setFileTree` with no await between the setters, so React batches them and `rootHandle` and `fileTree` are never seen describing different
-  vaults. `setRootHandle` first and `await refreshTree` after left the app split for the WHOLE walk —
-  the header, IndexedDB and `currentVaultId` on vault B, the sidebar still listing A's rows, nothing
-  covering the tree — and `App.handleFileClick` on one of those rows opens A's handle under B's path.
-  During the walk the app therefore stays wholly on the old vault, which is coherent: a row clicked
-  then opens the old vault's file from the old vault. The one lag left is `recordVault`, deliberately
-  still after the commit — `currentVaultId` (arriving together with the list) trails by
-  `rememberVault` plus the labelling round trips. The one reader that can notice is the record scope:
-  a file opened by hand in that window reads the old vault's saved position (App's `setRecordScope`).
+- **A vault switch WALKS BEFORE IT COMMITS, and commits in one synchronous burst.** `loadTree` (the walk,
+  `null` on failure) is separate from `refreshTree` (the walk that leaves the current tree standing on
+  failure) for exactly this: `openVaultHandle` and `pickDirectory` both call `loadTree` first, then save the
+  handle and await App's registered pre-root-change drain before committing `setRootHandle` → `setFileTree`
+  with no await between the setters, so React batches them and `rootHandle` and `fileTree` are never seen
+  describing different vaults. `setRootHandle` first and `await refreshTree` after left the app split for the
+  WHOLE walk — the header, IndexedDB and `currentVaultId` on vault B, the sidebar still listing A's rows,
+  nothing covering the tree — and `useDocumentOpener.handleFileClick` (src/app) on one of those rows opens A's
+  handle under B's path. During the walk the app therefore stays wholly on the old vault, which is coherent: a
+  row clicked then opens the old vault's file from the old vault. The one lag left is `recordVault`,
+  deliberately still after the commit — `currentVaultId` (arriving together with the list) trails by
+  `rememberVault` plus the labelling round trips. The one reader that can notice is the record scope: a file
+  opened by hand in that window reads the old vault's saved position (`setRecordScope`, from
+  `useSessionPersistence` (src/app)).
 - Opening a row **re-requests permission when Chrome has let the grant lapse** (legal because it's a
   click), then touches the folder before committing the app to it — a vault deleted or moved since
   would otherwise just blank the sidebar. That entry is dropped from the list instead, and every

@@ -46,21 +46,22 @@ never re-reads disk or loses unsaved edits; `dirty` drives the tab dot.
 
 ## The keyboard chords that move between tabs
 
-⌥⇥ / ⌥⇧⇥ walk the open documents, ⌥⇧W closes the focused one, ⌥⇧T reopens the last close. They live
-in **`EditorPane`, not App's chord handler**, for two reasons: all three must hand the keyboard on
-through the same `handKeyboardToNote` a tab-bar click uses (that registry is EditorPane's), and the
-walk is over `layout.panes.flatMap(p => p.paths)` — every column's tabs in drawn order, so a split
+⌥⇥ / ⌥⇧⇥ walk the open documents, ⌥⇧W closes the focused one, ⌥⇧T reopens the last close. They live in
+**`EditorPane`, not `useGlobalShortcuts`'s chord handler (src/app)**, for two reasons: all three must hand the
+keyboard on through the same `handKeyboardToNote` a tab-bar click uses (that registry is EditorPane's), and
+the walk is over `layout.panes.flatMap(p => p.paths)` — every column's tabs in drawn order, so a split
 workspace cycles through all of it.
 
 - **Option, and matched on `e.code`.** ⌃⇥ is the browser's tab switch and ⌘W closes the window;
   Option+W on a Mac gives `e.key === '∑'`, so `e.key` cannot be used for the letters.
 - **Capture phase**, so CodeMirror (which binds plain Tab) and tldraw never see them — and, being
   cancelled there, no ⌥ character is typed into a note.
-- **The reopen stack is App's** (`closedPathsRef`, capped at `CLOSED_TAB_MEMORY`): PATHS, filled by
-  `closeTab` and `closePaneAndTabs` only. A rename, an overwrite (`releaseOverwritten`) or a vault
-  switch takes a tab away for a reason reopening would undo, so those never record — and the stack is
-  **emptied on a vault switch**, since two vaults share paths freely. A reopen reaches further back
-  past anything already open or no longer in the tree, so the chord never resurrects a ghost.
+- **The reopen stack is App's** (`closedPathsRef` in `useTabLifecycle` (src/app), capped at
+  `CLOSED_TAB_MEMORY`): PATHS, filled by `closeTab` and `closePaneAndTabs` only. A rename, an overwrite
+  (`releaseOverwritten`) or a vault switch takes a tab away for a reason reopening would undo, so those never
+  record — and the stack is **emptied on a vault switch**, since two vaults share paths freely. A reopen
+  reaches further back past anything already open or no longer in the tree, so the chord never resurrects a
+  ghost.
 
 ## Autosave and the save funnel
 
@@ -108,7 +109,7 @@ workspace cycles through all of it.
 - **`updateTabContent(path, content, { fromDisk: true })`** buffers WITHOUT dirty and schedules nothing:
   a reload from disk is the file, and reported as typing it would be written straight back.
 
-## Outside changes (`App.checkOpenDocs`, `reloadFromDisk`, `handleDiskAction`, `DiskBar`)
+## Outside changes (`useOutsideChanges`, `useDiskBarActions`, `DiskBar`)
 
 - **Every read that fills a tab records a baseline** (`readFileVersioned`): `handleFileClick`, the restore
   pass (versions carried to the merge), `retryUnreadTab`, `addTabQuietly`. `releaseTab` drops it; the
@@ -190,14 +191,14 @@ runs **once per vault**, on a cold start and again on every switch back to it.
   instead), the asset-reconcile neighbour scan (treated as unreadable → keep), and the restore's
   asset-baseline seeding; DocumentPane mounts no view, drawing or notebook for it, and EditorPane
   hides the header's document actions. A new reader of `tab.content` joins that list.
-- **Retry (`App.retryUnreadTab`)** — the pane's Try again, or clicking the note in the tree
-  (`handleFileClick`, through `retryUnreadTabRef`, AWAITED so a search result's reveal lands on the
+- **Retry (`useTabLifecycle.retryUnreadTab` (src/app))** — the pane's Try again, or clicking the note in the
+  tree (`handleFileClick`, through `retryUnreadTabRef`, AWAITED so a search result's reveal lands on the
   remounted pane). Serialized per tab id by an in-flight `Set`; its updaters match on **id**, so a
   close/rename/switch mid-read no-ops. Success seeds the asset baseline and clears `readError`;
-  `NotFoundError` closes the tab and says so via `tell` — only if the tab still holds the handle
-  the read began with, since a rename/move mid-read removes the old entry. The pane's
-  React key carries `|unread`, so success REMOUNTS it and the view is built from the real text as on
-  a fresh open; `stateKey` is unchanged, safe because the unreadable pane never cached a state.
+  `NotFoundError` closes the tab and says so via `tell` — only if the tab still holds the handle the read
+  began with, since a rename/move mid-read removes the old entry. The pane's React key carries `|unread`, so
+  success REMOUNTS it and the view is built from the real text as on a fresh open; `stateKey` is unchanged,
+  safe because the unreadable pane never cached a state.
 - **An empty `paths` is a real session** — "I closed everything in this vault" — and must survive a
   switch. Nothing may treat it as absence on the way *in*.
 - **The restore pass is the ONLY thing that opens documents when a vault loads.** The address bar's
@@ -539,23 +540,22 @@ a resizable pane one number rather than a rectangle.
   capped at half *the pair being dragged* — never at a share of the whole tab, which put the floor at
   118px on a five-pane 1176px editor. It is never re-applied on a window resize, because that would
   rewrite an arrangement from a window size the reader was only passing through.
-- **The drag writes CSS variables and commits once.** `--pane-w-<i>` and `--pane-x-<i>` on
-  `.editor-pane` — the one box holding both the columns and the PDF panes floating over them — feed
-  the slots' `flex-grow` (against a zero basis, so the browser divides by the sum and the columns tile
-  exactly however the percentages rounded), the dividers' `left`, and every visible PDF pane's
-  rectangle. (The tab-drop highlight is the one column-aligned box that does *not* read them — it
-  exists only while a tab is in flight, which a divider drag excludes.) So one write per frame moves
-  all of it, with **no React render at all**: a `setState` per frame would re-render this component,
-  the tab bar and every mounted PDF pane on top of the work the width change already causes, and would
-  run App's persist effect — writing the whole session to localStorage sixty times a second. The seam
-  is safe because React diffs `style` **by value**: mid-drag its view of the variables is still the
-  committed one, so a re-render (a save status arriving, a keystroke next door) writes nothing and
-  leaves the gesture's values alone — both sides format through the same `pct` helper so that
-  comparison is on identical strings. The corollary is that a **cancelled** drag must put the columns
-  back by hand; React has not re-rendered and nothing else would. The exception, and the one exit that
-  must *not* repaint, is the gesture being **abandoned** because the panes it was moving are no longer
-  the panes on screen — React has just re-rendered, which is what raised the abandon, so repainting
-  the old row would drag the tab that replaced it into a shape nobody chose.
+- **The drag writes CSS variables and commits once.** `--pane-w-<i>` and `--pane-x-<i>` on `.editor-pane` —
+  the one box holding both the columns and the PDF panes floating over them — feed the slots' `flex-grow`
+  (against a zero basis, so the browser divides by the sum and the columns tile exactly however the
+  percentages rounded), the dividers' `left`, and every visible PDF pane's rectangle. (The tab-drop highlight
+  is the one column-aligned box that does *not* read them — it exists only while a tab is in flight, which a
+  divider drag excludes.) So one write per frame moves all of it, with **no React render at all**: a
+  `setState` per frame would re-render this component, the tab bar and every mounted PDF pane on top of the
+  work the width change already causes, and would run the persist effect in `useSessionPersistence` (src/app)
+  — writing the whole session to localStorage sixty times a second. The seam is safe because React diffs
+  `style` **by value**: mid-drag its view of the variables is still the committed one, so a re-render (a save
+  status arriving, a keystroke next door) writes nothing and leaves the gesture's values alone — both sides
+  format through the same `pct` helper so that comparison is on identical strings. The corollary is that a
+  **cancelled** drag must put the columns back by hand; React has not re-rendered and nothing else would. The
+  exception, and the one exit that must *not* repaint, is the gesture being **abandoned** because the panes it
+  was moving are no longer the panes on screen — React has just re-rendered, which is what raised the abandon,
+  so repainting the old row would drag the tab that replaced it into a shape nobody chose.
 - **A gesture is ended by its own pointer, by its own tab, or by nothing at all — so both of those
   have to be watched.** Every exit is a React handler on the handle and React delegates at the root,
   so a handle removed from the document while it still holds the capture gets its implicit
@@ -585,18 +585,18 @@ a resizable pane one number rather than a rectangle.
 
 ## The AI agent's view of the panes (`utils/viewRegistry.ts`)
 
-- **Every mounted pane registers a reporter under its path** (`registerView`), from an effect —
-  NEVER inside the `EditorState` (it outlives the pane). The agent panel calls `describe()` only at
-  send time, so it always gets the live position; nothing is polled or persisted. The unregister
-  removes the reporter under whatever path it holds NOW, and `App.retargetTabs` calls `moveView`
-  beside `movePdfRenderData`, so the reporter answers under the new path until the pane remounts there.
-  `clearViews()` runs in the vault-switch effect. Hidden PDF readers and hidden boards stay registered
-  (they are floats that outlive the switch); annotate canvases, torn down when hidden, do not.
-- **`openInSidePane(layout, path)`** puts a document on screen WITHOUT moving `activeId` — how the
-  agent opens a canvas it was asked to draw on: already visible → unchanged; behind a tab of an
-  unfocused pane → fronted there; otherwise a new column at the right, or at `MAX_PANES` the
-  right-most unfocused column. `App`'s agent host adds the tab first (`addTabQuietly`, no focus) and
-  flips a PDF's tab to `'edit'` (annotate), then waits on `whenViewReady(path, 15s, r => !!r.canvas)`.
+- **Every mounted pane registers a reporter under its path** (`registerView`), from an effect — NEVER inside
+  the `EditorState` (it outlives the pane). The agent panel calls `describe()` only at send time, so it always
+  gets the live position; nothing is polled or persisted. The unregister removes the reporter under whatever
+  path it holds NOW, and `useRenameMove.retargetTabs` (src/app) calls `moveView` beside `movePdfRenderData`,
+  so the reporter answers under the new path until the pane remounts there. `clearViews()` runs in the
+  vault-switch effect. Hidden PDF readers and hidden boards stay registered (they are floats that outlive the
+  switch); annotate canvases, torn down when hidden, do not.
+- **`openInSidePane(layout, path)`** puts a document on screen WITHOUT moving `activeId` — how the agent opens
+  a canvas it was asked to draw on: already visible → unchanged; behind a tab of an unfocused pane → fronted
+  there; otherwise a new column at the right, or at `MAX_PANES` the right-most unfocused column. The agent
+  host (`useAgentHostDeps`, src/app) adds the tab first (`addTabQuietly`, no focus) and flips a PDF's tab to
+  `'edit'` (annotate), then waits on `whenViewReady(path, 15s, r => !!r.canvas)`.
 - **Agent text edits and the save funnel**: a mounted note gets the edit through its reporter (one
   transaction, the pane's update listener carries it to `updateTabContent`); an open-but-hidden note
   gets it applied to EVERY cached `EditorState` for that path (`${id}|${path}`) and to the buffer, so

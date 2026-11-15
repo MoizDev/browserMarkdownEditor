@@ -2,16 +2,12 @@ import { writeStoredValue } from './storage';
 import { pdfEngineAvailableInBuild } from './pdfEngineAvailability';
 
 export type CanvasEngineKind = 'drawing' | 'notebook' | 'pdfInk';
+// Retired names remain readable while existing host contracts migrate; the
+// router never selects them, including for an old stored developer preference.
 export type CanvasEngine = 'tldraw' | 'viewer' | 'board';
 export type PdfViewer = 'classic' | 'tiled';
-
-// Add an engine here only when its host and lazy import are in this build.
-// The same availability list drives the controls and the synchronous router.
-export const AVAILABLE_CANVAS_ENGINES: readonly CanvasEngine[] = ['tldraw', 'board'];
-// The lazy native host shares one admitted session with its editing services;
-// source and per-view readiness still decide whether a particular file is editable.
-const NATIVE_VIEWER_KINDS: readonly CanvasEngineKind[] = ['drawing', 'notebook'];
-export const AVAILABLE_PDF_VIEWERS: readonly PdfViewer[] = pdfEngineAvailableInBuild() ? ['classic', 'tiled'] : ['classic'];
+export const AVAILABLE_CANVAS_ENGINES: readonly CanvasEngine[] = ['board'];
+export const AVAILABLE_PDF_VIEWERS: readonly PdfViewer[] = pdfEngineAvailableInBuild() ? ['tiled'] : [];
 export const PLATFORM_LAYER_AVAILABLE = true;
 export const CANVAS_KINDS: readonly CanvasEngineKind[] = ['drawing', 'notebook', 'pdfInk'];
 export const engineKey = (kind: CanvasEngineKind) => `bme.whiteboard.engine.${kind}`;
@@ -29,21 +25,12 @@ export function setDeveloperSetting(key: string, value: string | boolean): boole
     return written;
 }
 
-/** Read at open, not continuously: an already-mounted editor keeps its engine. */
-export function routeEngines(nativeKind?: CanvasEngineKind) {
+/** Source admission decides editability; a missing PDF engine never selects a legacy engine. */
+export function routeEngines(_nativeKind?: CanvasEngineKind) {
     const enabled = developerEnabled();
-    const canvas = Object.fromEntries(CANVAS_KINDS.map(kind => {
-        const value = enabled ? stored(engineKey(kind)) : null;
-        // Native data must never fall back to tldraw, even when developer
-        // settings are off or its stored switch names a missing engine.
-        const engine = kind === nativeKind
-            ? AVAILABLE_CANVAS_ENGINES.find(candidate => candidate === 'board')
-                ?? (NATIVE_VIEWER_KINDS.includes(kind) ? 'viewer' : undefined)
-                ?? AVAILABLE_CANVAS_ENGINES.find(candidate => candidate === 'viewer') ?? 'unavailable'
-            : AVAILABLE_CANVAS_ENGINES.find(candidate => candidate === value) ?? 'tldraw';
-        return [kind, { engine, emergencyReadOnly: enabled && stored(emergencyKey(kind)) === 'true' }];
-    })) as Record<CanvasEngineKind, { engine: CanvasEngine | 'unavailable'; emergencyReadOnly: boolean }>;
-    const pdfValue = enabled ? stored('bme.pdf.viewer') : null;
-    const pdfViewer = AVAILABLE_PDF_VIEWERS.find(candidate => candidate === pdfValue) ?? 'classic';
-    return { canvas, pdfViewer, platformLayer: enabled && PLATFORM_LAYER_AVAILABLE && stored('bme.pdf.platformLayer') === 'true' };
+    const canvas = Object.fromEntries(CANVAS_KINDS.map(kind => [kind, {
+        engine: 'board' as CanvasEngine,
+        emergencyReadOnly: enabled && stored(emergencyKey(kind)) === 'true',
+    }])) as Record<CanvasEngineKind, { engine: CanvasEngine; emergencyReadOnly: boolean }>;
+    return { canvas, pdfViewer: 'tiled' as PdfViewer, platformLayer: true };
 }

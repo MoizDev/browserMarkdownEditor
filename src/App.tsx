@@ -4745,8 +4745,8 @@ export default function App() {
     const where = parentPath || parentHandle.name || 'this folder';
     const root = rootHandleRef.current, activation = getVaultActivation();
     const current = () => root === rootHandleRef.current && activation === getVaultActivation();
-    const nativeKind = isNativeDrawingFile(name) || isDrawingFile(name) && routeEngines().canvas.drawing.engine === 'board' ? 'whiteboard'
-      : isNotebookFile(name) && routeEngines().canvas.notebook.engine === 'board' ? 'notebook' : null;
+    const nativeKind = isNativeDrawingFile(name) || isDrawingFile(name) ? 'whiteboard'
+      : isNotebookFile(name) ? 'notebook' : null;
     try {
       // Explicit names refuse collisions; native drawing imports keep their existing
       // unique-name behavior and carry the actual freeEntryName result forward.

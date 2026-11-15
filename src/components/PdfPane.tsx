@@ -6,7 +6,7 @@ import { createPdfDocumentSession } from '../utils/pdfDocumentSession';
 import type { PdfDocumentSession } from '../utils/pdfDocumentSession';
 import { clearPdfRotationPicture, peekPdfRotation, stagePdfRotation, type PdfRotationPicture } from '../utils/pdfRotationPreview';
 import { prepareClassicPdfRetry } from '../utils/pdfClassicOpen';
-import { ClassicPdfError, classicPdfFailureIsFatal, createClassicPdfHealth, type ClassicPdfHealth } from '../utils/pdfClassicHealth';
+import { ClassicPdfError, classicPdfFailureIsFatal, createClassicPdfHealth } from '../utils/pdfClassicHealth';
 import PdfRenderNotice from './PdfRenderNotice';
 import ConfirmDialog from './ConfirmDialog';
 import { createPdfTextReader, pdfTextAnchor, USER_TEXT_NAVIGATION_CAUSES } from '../utils/pdfReadingText';
@@ -23,7 +23,7 @@ import { peekPdfFindMemory, retainPdfFindMemory } from '../utils/pdfFindHighligh
 import type { PdfFindMemory } from '../utils/pdfFindHighlight';
 import DiskBar from './DiskBar';
 import { useActivated, useFloatingSlot } from './floatingSlot';
-import type { ActiveFile, ContentChangeOptions, DiskAction, EditorMode, PdfRebuildNotice } from '../types';
+import type { ActiveFile, DiskAction, EditorMode, PdfRebuildNotice } from '../types';
 import type { LocationCause, PdfReadingBinding, ReaderCapabilities, ReaderIdentity, ReaderToken } from '../types/reading';
 import type { DiskVersion } from '../utils/diskVersion';
 import { registerReadingSurface } from '../utils/documentReading';
@@ -41,11 +41,9 @@ import type { PdfNativeEmphasisResult } from '../utils/pdfNativeEmphasis';
 import type { EmphasisAvailability } from '../types/reading';
 import './PdfPane.css';
 
-// tldraw + pdf.js rasterization are heavy and only needed once someone actually
-// annotates, so the canvas is a separate chunk. Viewing a PDF never loads it.
 import { getPdfInkSourceState } from '../whiteboard/host/pdfInkSourceState';
 
-const PdfAnnotateCanvas = lazy(() => import('./PdfAnnotateCanvas'));
+// Native annotation services remain separate from opening a PDF for reading.
 const PdfTiledSurface = lazy(() => import('./PdfTiledSurface'));
 const PdfTiledTextSurface = lazy(() => import('./PdfTiledTextSurface'));
 const NativePdfEntry = lazy(() => import('./whiteboard/NativePdfEntry'));
@@ -66,12 +64,10 @@ export interface PdfPaneProps {
     /**
      * Whether this document is on screen. EditorPane keeps one pane MOUNTED per
      * open PDF tab and merely hides the ones that aren't, so switching tabs
-     * never reloads the document or loses the reading position. Hidden panes
-     * hold their viewer; only the annotate canvas is torn down (it's a whole
-     * tldraw instance, and unmounting it is also what flushes strokes).
+     * never reloads the document or loses the reading position. Native document
+     * services live in App; hidden views release their rendering/input resources.
      */
     isVisible: boolean;
-    retainClosing?: boolean;
     /**
      * Whether this is the FOCUSED pane, which is a narrower thing than being on
      * screen once tabs can hold several documents: two PDFs may be visible side
@@ -95,11 +91,6 @@ export interface PdfPaneProps {
     onFocusPane: (path: string) => void;
     /** 'read' = view the real PDF, 'edit' = annotate. Reuses the per-tab mode. */
     mode: EditorMode;
-    /** The tab's buffered tldraw snapshot (annotated files only). */
-    content: string;
-    onContentChange: (path: string, content: string, options?: ContentChangeOptions) => void;
-    /** Writes to disk immediately; used as the canvas hands over to the viewer. */
-    onFlushNow: (path: string, content: string) => Promise<void>;
     onPreparePrint: (path: string) => Promise<{ bytes: Uint8Array; valid: () => boolean; validate: () => Promise<boolean> }>;
     onUnsignedPdfCopy?: (identity: ReaderIdentity, version: DiskVersion) => Promise<void>;
     /** This PDF is a notebook's export — open that notebook instead. Takes the
@@ -147,7 +138,7 @@ interface PdfSource {
  */
 const DEFAULT_TEXT_TYPOGRAPHY: PdfTextTypography = { family: 'serif', size: 18, leading: 1.6, measure: 'comfortable', margins: 'medium', theme: 'follow-app' };
 
-function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCanvasSession, onNativeCanvasReady, onToggleMode, isVisible, retainClosing = false, isFocused, slotIndex, slotLeft, slotWidth, onFocusPane, mode, content, onContentChange, onFlushNow, onPreparePrint, onUnsignedPdfCopy, onOpenNotebookSource, onRotate, isDirty, disk, onDiskAction, onAnnotationPreflight, pdfRebuildApproval, pdfRebuild }: PdfPaneProps) {
+function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCanvasSession, onNativeCanvasReady, onToggleMode, isVisible, isFocused, slotIndex, slotLeft, slotWidth, onFocusPane, mode, onPreparePrint, onUnsignedPdfCopy, onOpenNotebookSource, onRotate, isDirty, disk, onDiskAction, onAnnotationPreflight, pdfRebuildApproval, pdfRebuild }: PdfPaneProps) {
     const { readBytesVersioned } = useFileSystem();
     const appSession = useSyncExternalStore(subscribeSessionIdentity,
         () => getSessionIdentity(documentId), () => undefined);
@@ -397,17 +388,11 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
     const sessionVersion = useRef<string | undefined>(undefined);
     const pristineSession = useRef<{ version: string; session: PdfDocumentSession } | undefined>(undefined);
     const [idleHealth] = useState(createClassicPdfHealth);
-    const [annotationRender, setAnnotationRender] = useState<{ original: Uint8Array; health: ClassicPdfHealth } | null>(null);
-    const reportRenderHealth = useCallback((health: ClassicPdfHealth) => {
-        if (editableSource) setAnnotationRender({ original: editableSource.original, health });
-    }, [editableSource]);
     const [retryEpoch, setRetryEpoch] = useState(0);
     const [retryBusy, setRetryBusy] = useState(false);
     const retryInFlight = useRef(false);
-    // Role inspection has its own build worker. A refused edit displays the
-    // outer PDF, so its renderer health must belong to that viewer, not a source.
-    const annotationHealth = annotationRender && annotationRender.original === editableSource?.original ? annotationRender.health : idleHealth;
-    const renderHealth = annotationMode ? annotationHealth : session?.health ?? idleHealth;
+    // Native annotation owns its render health; this is the outer PDF reader.
+    const renderHealth = session?.health ?? idleHealth;
     const renderDiagnostics = useSyncExternalStore(renderHealth.subscribe, renderHealth.getSnapshot);
     const renderDelayIssue = renderDiagnostics.find(issue => issue.code === 'render-delayed');
     const fatalRenderIssue = renderDiagnostics.find(classicPdfFailureIsFatal);
@@ -964,33 +949,6 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
                         onViewOriginal={() => { if (mode === 'edit') onToggleMode(file.path); }} />
                 </Suspense>
             ) : <div className="pdf-pane-message" role="status">Preparing PDF annotations…</div>;
-        } else if (!tiled && mode === 'edit' && editableSource && loadedSource?.session) {
-            // Native conversion refusal keeps the outer PDF; only explicit Classic
-            // selection may mount its editor, including while a legacy offer is visible.
-            // The annotate canvas only exists while its document is on screen:
-            // a hidden tldraw instance would pin megabytes of page bitmaps, and
-            // unmounting it is what flushes pending strokes to disk.
-            body = (isVisible || retainClosing) ? (
-                <Suspense fallback={<div className="pdf-pane-message">Loading annotation tools…</div>}>
-                    <PdfAnnotateCanvas
-                        key={file.path}
-                        filePath={file.path}
-                        documentId={documentId}
-                        original={editableSource.original}
-                        session={loadedSource.session}
-                        onRenderHealth={reportRenderHealth}
-                        emphasisEnabled={reading?.emphasisEnabled ?? false}
-                        onNativeEmphasisResult={(_page, result) => reportNative(setNativeAnnotation, result)}
-                        // Only an unsaved buffer outranks this fresh role read.
-                        // A clean old snapshot must not hide another app's ink.
-                        snapshot={isDirty ? content || editableSource.snapshot : editableSource.snapshot}
-                        onContentChange={onContentChange}
-                        onFlushNow={onFlushNow}
-                        onSaveError={reading?.onNotify}
-                        onFlushStart={() => setFlushing(true)}
-                    />
-                </Suspense>
-            ) : null;
         } else if (isDirty || flushing) {
             // Between leaving the canvas and the write landing (a few hundred ms)
             // the file on disk still predates the last strokes. Say so rather than

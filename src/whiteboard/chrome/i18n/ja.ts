@@ -99,6 +99,7 @@ export default defineBoardLanguage({
         "chrome.penWidth": "ペン幅",
         "chrome.transparent": "透明",
         "chrome.keyboardShortcuts": "キーボードショートカット",
+        "chrome.keyboardShortcutsMenu": "キーボードショートカット…",
         "chrome.close": "閉じる",
         "chrome.theme": "テーマ",
         "chrome.dark": "暗い",

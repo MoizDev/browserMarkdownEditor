@@ -150,10 +150,16 @@
     left: 50%;
     transform: translateX(-50%);
     padding: 2px;
+    border: 1px solid var(--board-bar-border, transparent);
     border-radius: 12px;
-    background: var(--background-primary);
-    color: var(--text-muted);
-    box-shadow: 0 6px 20px rgb(0 0 0 / 16%), 0 1px 3px rgb(0 0 0 / 10%);
+    background: var(--board-bar-bg, var(--background-primary));
+    /* The grid's glyphs are mid-grey, between the card and the text ink, in both themes. */
+    color: color-mix(in srgb, var(--text-normal) 55%, var(--background-primary));
+    box-shadow: var(--board-bar-shadow, 0 6px 20px rgb(0 0 0 / 16%), 0 1px 3px rgb(0 0 0 / 10%));
+}
+
+.board-chrome-action svg {
+    stroke-width: 2.5;
 }
 
 .board-chrome-action-popup > [role='toolbar'] {
@@ -182,6 +188,62 @@
 .board-chrome-action:disabled {
     color: var(--text-faint);
     cursor: default;
+}
+
+/* The board's main menu (the strip's menu passes this class to openContextMenu; no other menu carries it).
+   Drawn as the owner's picture: a white card with 12px corners and a soft shadow, 36px rows of 15px text,
+   a grey chord after each label, and a Lucide chevron for each submenu. Its flyouts are scoped the same way,
+   and their panel chrome is reset so only the card shows. The :root[data-theme] selectors outrank the app's
+   light-theme override of .context-menu, which sits on the same kind of selector. */
+.context-menu.board-main-menu,
+:root[data-theme] .context-menu.board-main-menu,
+.board-main-menu .context-menu,
+:root[data-theme] .board-main-menu .context-menu {
+    min-width: 156px;
+    padding: 4px;
+    border: 1px solid var(--board-bar-border, transparent);
+    border-radius: 12px;
+    background: var(--board-bar-bg, var(--background-primary));
+    box-shadow: var(--board-bar-shadow, 0 4px 16px rgb(0 0 0 / 12%), 0 1px 3px rgb(0 0 0 / 8%));
+}
+
+.context-menu.board-main-menu {
+    margin-top: 6px;
+}
+
+.context-menu-panel.board-main-menu,
+:root[data-theme] .context-menu-panel.board-main-menu,
+.board-main-menu .context-menu-panel,
+:root[data-theme] .board-main-menu .context-menu-panel {
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+}
+
+.board-main-menu .context-menu-item:not(:disabled) {
+    height: 36px;
+    padding: 0 8px;
+    color: var(--text-normal);
+    font-size: 15px;
+}
+
+.board-main-menu .context-menu-item > span:not([aria-hidden]) {
+    color: var(--text-faint);
+    font-size: 14px;
+}
+
+/* A mask, so the chevron takes the grey below and not the row's ink. */
+.board-main-menu .context-menu-item-arrow {
+    flex: none;
+    width: 16px;
+    height: 16px;
+    font-size: 0;
+    color: transparent;
+    background-color: color-mix(in srgb, var(--text-normal) 55%, var(--background-primary));
+    -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m9 18 6-6-6-6'/%3E%3C/svg%3E") center / 16px 16px no-repeat;
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m9 18 6-6-6-6'/%3E%3C/svg%3E") center / 16px 16px no-repeat;
 }
 
 .board-chrome-tool-row,

@@ -28,10 +28,12 @@ export function commandRow(source: BoardCommandSource, id: BoardCommand): Contex
     };
 }
 
+/** The Actions grid, four to a row, in this order; its last slot is Group, or Ungroup for a group. */
 export const actionCommands: readonly BoardCommand[] = [
-    'alignLeft', 'alignHorizontal', 'alignRight', 'alignTop', 'alignVertical', 'alignBottom',
-    'stretchHorizontal', 'stretchVertical', 'distributeHorizontal', 'distributeVertical',
-    'stackHorizontal', 'stackVertical', 'sendBack', 'sendBackward', 'bringForward', 'bringFront',
+    'alignLeft', 'alignHorizontal', 'alignRight', 'stretchHorizontal',
+    'alignTop', 'alignVertical', 'alignBottom', 'stretchVertical',
+    'distributeHorizontal', 'distributeVertical', 'stackHorizontal', 'stackVertical',
+    'sendBack', 'sendBackward', 'bringForward', 'bringFront',
     'rotateCounterclockwise', 'rotateClockwise', 'editLink', 'group',
 ];
 

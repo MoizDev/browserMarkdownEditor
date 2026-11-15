@@ -50,9 +50,12 @@ export function BoardHeader({ commands, locale, direction, menuLabel, menuEntrie
                 onClick={event => {
                     const anchor = event.currentTarget;
                     const rect = anchor.getBoundingClientRect();
+                    // The menu renders outside the pane, so a dark board's menu carries the dark tokens itself.
+                    const dark = anchor.closest('[data-board-theme="dark"]') !== null;
                     openContextMenu({ x: rect.left, y: rect.bottom,
                         entries: typeof menuEntries === 'function' ? menuEntries(anchor) : menuEntries,
-                        label: menuLabel, lang: locale, dir: direction, opener: anchor, anchor });
+                        label: menuLabel, lang: locale, dir: direction, opener: anchor, anchor,
+                        className: dark ? 'board-main-menu board-main-menu-dark' : 'board-main-menu' });
                 }}><LucideGlyph nodes={headerIcons.menu} size={16} /></button>
             <button type="button" className="board-chrome-sheet" onClick={event => openSheets(event.currentTarget)}>
                 <span>{sheetName}</span><LucideGlyph nodes={headerIcons.chevronDown} size={16} />
@@ -79,7 +82,7 @@ export function BoardHeader({ commands, locale, direction, menuLabel, menuEntrie
                             return <button key={id} type="button" className="board-chrome-action" disabled={!state.enabled}
                                 aria-disabled={!state.enabled} aria-label={label} data-tooltip={state.enabled ? label : state.reason}
                                 onClick={() => { setActionsOpen(false); void commands.run(id); }}>
-                                {glyph && <LucideGlyph nodes={glyph} size={16} />}
+                                {glyph && <LucideGlyph nodes={glyph} size={18} />}
                             </button>;
                         })}
                     </div>

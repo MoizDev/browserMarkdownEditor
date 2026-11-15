@@ -99,6 +99,7 @@ export default defineBoardLanguage({
         "chrome.penWidth": "ಪೆನ್ ಅಗಲ",
         "chrome.transparent": "ಪಾರದರ್ಶಕ",
         "chrome.keyboardShortcuts": "ಕೀಬೋರ್ಡ್ ಶಾರ್ಟ್‌ಕಟ್‌ಗಳು",
+        "chrome.keyboardShortcutsMenu": "ಕೀಬೋರ್ಡ್ ಶಾರ್ಟ್‌ಕಟ್‌ಗಳು...",
         "chrome.close": "ಮುಚ್ಚಿ",
         "chrome.theme": "ಥೀಮ್",
         "chrome.dark": "ಕತ್ತಲು",

@@ -112,6 +112,7 @@ export default defineBoardLanguage({
         "chrome.penWidth": "Stiftbreite",
         "chrome.transparent": "Transparent",
         "chrome.keyboardShortcuts": "Tastaturkürzel",
+        "chrome.keyboardShortcutsMenu": "Tastaturkürzel…",
         "chrome.close": "Schließen",
         "chrome.theme": "Thema",
         "chrome.dark": "Dunkel",

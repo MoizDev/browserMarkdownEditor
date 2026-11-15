@@ -99,6 +99,7 @@ export default defineBoardLanguage({
         "chrome.penWidth": "Pennebredde",
         "chrome.transparent": "Gjennomsiktig",
         "chrome.keyboardShortcuts": "Hurtigtaster",
+        "chrome.keyboardShortcutsMenu": "Hurtigtaster…",
         "chrome.close": "Lukk",
         "chrome.theme": "Tema",
         "chrome.dark": "Mørkt",

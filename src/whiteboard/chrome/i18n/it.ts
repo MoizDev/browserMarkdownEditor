@@ -99,6 +99,7 @@ export default defineBoardLanguage({
         "chrome.penWidth": "Larghezza della penna",
         "chrome.transparent": "Trasparente",
         "chrome.keyboardShortcuts": "Scorciatoie da tastiera",
+        "chrome.keyboardShortcutsMenu": "Scorciatoie da tastiera...",
         "chrome.close": "Chiudi",
         "chrome.theme": "Tema",
         "chrome.dark": "Buio",

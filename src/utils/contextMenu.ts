@@ -136,6 +136,12 @@ export interface ContextMenuRequest {
     entries: ContextMenuEntry[];
     /** The menu's aria-label. */
     label: string;
+    /**
+     * An extra class on the menu and on its flyouts, for a surface that wants its own look (the board's main
+     * menu). Only a stylesheet reads it: rows, labels and the store behave the same, and a request without it
+     * renders exactly as before.
+     */
+    className?: string;
     lang?: string;
     dir?: 'ltr' | 'rtl';
     /** Focus returns here on close, if it is still `isConnected`. */

@@ -99,6 +99,7 @@ export default defineBoardLanguage({
         "chrome.penWidth": "펜 폭",
         "chrome.transparent": "투명",
         "chrome.keyboardShortcuts": "키보드 단축키",
+        "chrome.keyboardShortcutsMenu": "키보드 단축키…",
         "chrome.close": "닫기",
         "chrome.theme": "테마",
         "chrome.dark": "어둠",

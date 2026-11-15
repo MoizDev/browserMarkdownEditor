@@ -99,6 +99,7 @@ export default defineBoardLanguage({
         "chrome.penWidth": "Amplada del bolígraf",
         "chrome.transparent": "Fons transparent",
         "chrome.keyboardShortcuts": "Dreceres de teclat",
+        "chrome.keyboardShortcutsMenu": "Dreceres de teclat...",
         "chrome.close": "Tancar",
         "chrome.theme": "Tema",
         "chrome.dark": "Fosc",

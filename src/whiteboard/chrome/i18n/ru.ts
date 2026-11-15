@@ -99,6 +99,7 @@ export default defineBoardLanguage({
         "chrome.penWidth": "Ширина пера",
         "chrome.transparent": "Прозрачный",
         "chrome.keyboardShortcuts": "Сочетания клавиш",
+        "chrome.keyboardShortcutsMenu": "Сочетания клавиш…",
         "chrome.close": "Закрыть",
         "chrome.theme": "Тема",
         "chrome.dark": "Темный",

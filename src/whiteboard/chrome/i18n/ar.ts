@@ -99,6 +99,7 @@ export default defineBoardLanguage({
         "chrome.penWidth": "عرض القلم",
         "chrome.transparent": "شفاف",
         "chrome.keyboardShortcuts": "اختصارات لوحة المفاتيح",
+        "chrome.keyboardShortcutsMenu": "اختصارات لوحة المفاتيح…",
         "chrome.close": "إغلاق",
         "chrome.theme": "المظهر",
         "chrome.dark": "داكن",

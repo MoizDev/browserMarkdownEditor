@@ -99,6 +99,7 @@ export default defineBoardLanguage({
         "chrome.penWidth": "Penbreedte",
         "chrome.transparent": "Transparant",
         "chrome.keyboardShortcuts": "Sneltoetsen",
+        "chrome.keyboardShortcutsMenu": "Sneltoetsen...",
         "chrome.close": "Sluiten",
         "chrome.theme": "Thema",
         "chrome.dark": "Donker",

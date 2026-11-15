@@ -104,6 +104,8 @@ function finishSnapshot(s: Snapshot): void {
 /** Both bands share a snapshot and become visible together, never by separate commits. */
 export function createCanvasPaintAdapter(
     resources: PaintLayerResources, project: PaintProjection2d, onError: (error: unknown) => void,
+    /** Items this adapter prepares; an excluded item is skipped in place, so a frame never needs a filtered copy. */
+    include?: (item: PaintItem) => boolean,
 ): CanvasPaintAdapter {
     let staged: Snapshot | null = null, presented: Snapshot | null = null;
     // Snapshots kept alive only by retainPrepared borrows: their memory is still held and counted.
@@ -161,6 +163,7 @@ export function createCanvasPaintAdapter(
             return;
         }
         const item = items[s.index];
+        if (include && !include(item)) { s.index++; s.clipIndex = 0; return; }
         if (s.clipIndex < item.clips.length) {
             const clip = item.clips[s.clipIndex++];
             if (!s.clips.has(clip.key)) {

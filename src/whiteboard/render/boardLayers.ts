@@ -459,6 +459,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             if ((mode === 'dense') !== useDense) {
                 useDense = mode === 'dense';
                 denied = false;
+                // The dense working set (kept bitmaps, tile runs) is declared only in dense mode: the pane re-collects its demand.
+                allocatorHost?.demandChanged?.();
                 if (useDense) {
                     direct!.release('pressure');
                     for (const old of [...reservations.keys()]) releaseFrame(old);
@@ -482,6 +484,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     const lease = allocatorHost!.allocator.cpu.reserve(bytes);
                     if (!lease) {
                         memoryGate.refused();
+                        allocatorHost!.demandChanged?.();
                         denied = true;
                         if (frame.openTile && deniedDirectSegments === null) { deniedDirectSegments = segments; allocatorHost!.invalidate('board-density-demand-ready'); }
                         allocatorHost!.allocator.cpu.whenAvailable?.(() => allocatorHost?.invalidate('board-memory'));

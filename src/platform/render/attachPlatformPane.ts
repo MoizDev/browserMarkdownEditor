@@ -109,6 +109,14 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             lifecycle?.invalidate('budget');
         });
     };
+    // A layer's declared demand changes between refreshes (a plan starts, a session bitmap is kept or dropped, a run is
+    // refused). Each change marks the pane dirty; one refresh runs on the next microtask, however many changes landed.
+    let demandQueued = false;
+    const requestDemand = (): void => {
+        if (demandQueued || disposed) return;
+        demandQueued = true;
+        queueMicrotask(() => { demandQueued = false; if (!disposed) runtime.refresh(); });
+    };
     const layerSet = new PaneLayerSet((id, current) => {
         const now = performance.now();
         const common = { paneId: options.paneId, owner: options.documentToken, hiddenAt: visible ? null : now,
@@ -136,6 +144,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             preparationCompositor: drawCompositor,
             invalidate: (reason, damage) => lifecycle?.invalidate(reason, damage),
             wakeAt: deadline => { const layer = current(); if (layer) frameLease?.wakeAt(layer, deadline); },
+            demandChanged: requestDemand,
         });
     });
     try { layerSet.replace(options.layers); }
@@ -209,7 +218,8 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             // CPU's retained back frame coexists with the staged GPU backing and its
             // document-colour target until promotion. Inversion is not a free surface effect.
             const frameCopies = 2 + Number(options.readAppearance().inverted) + Number(!!options.session.mirrors) + isolated;
-            let mandatory = 0, prefetch = 0;
+            // The 2D canvas's CPU working cache is charged to this pane, so its bytes are part of the demand the grant covers.
+            let mandatory = created.compositor.cpuWorkingBytes?.() ?? 0, prefetch = 0;
             for (const layer of layerSet.layers) {
                 // An unobserved/zero box has no drawable viewport. Asking a producer for an
                 // artificial 0×0 floor can deny it before ResizeObserver has published its size.

@@ -166,6 +166,8 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         const frame = resources.frames.readFrame();
         return frame?.sessionRasters && frame.rasterVariant ? { cache: frame.sessionRasters, variant: frame.rasterVariant } : null;
     };
+    // A refused run backs off, and first marks the pane demand dirty: the next retry, after the window, sees the re-declared grant.
+    const refuse = (): void => { gate.refused(); host.demandChanged?.(); };
     let lastFrame = -1;
     // A plan whose stream failed is not restarted each frame: its frame is refused until a newer one arrives.
     let failedFrame: PaintSource | null = null;
@@ -230,8 +232,10 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         if (![x0, y0, x1, y1].every(Number.isSafeInteger)) throw new RangeError('Dense viewport grid overflows');
         const lease = host.allocator.cpu.reserve(BLOCK);
         // A denied plan start waits for a real capacity change: the wake re-runs the frame, nothing polls.
-        if (!lease) { denied = true; gate.refused(); host.allocator.cpu.whenAvailable?.(() => resources.invalidate()); return null; }
+        if (!lease) { denied = true; refuse(); host.allocator.cpu.whenAvailable?.(() => resources.invalidate()); return null; }
         gate.admitted();
+        // A new plan is a new declared working set: the pane re-collects its demand.
+        host.demandChanged?.();
         try {
             const summarized = !!frame.occupiedRoot && !!frame.sessionRasters && !!frame.rasterVariant;
             const p: Plan = { source: frame, windows: windowsOfSource(frame), view: projection(view), scale, sharp: scale >= demand, live,
@@ -378,7 +382,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                     images: p.resources.images, host, onError: report });
             }
             p.job.prepare(view, budget);
-            if (p.job.blocked) gate.refused();
+            if (p.job.blocked) refuse();
             if (p.job.failed) { failedFrame = p.source; retire(p); staged = null; return; }
             if (p.job.stopped) { retire(p); staged = null; return; }
             if (!p.job.isComplete && !p.job.isEmpty) return;
@@ -394,6 +398,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                 for (const part of parts) releaseDenseTilePart(part);
                 throw error;
             }
+            if (accepted) host.demandChanged?.();
             if (!accepted) pending.cache.cancel(pending.ticket);
             for (const part of parts) if (!(accepted && part === only)) releaseDenseTilePart(part);
         }
@@ -432,7 +437,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                 } else own?.release();
                 const ticket = cache.begin(interval, address, p.source.sceneRevision);
                 // Memory denied this tile and nothing coarser exists: the plan waits for memory.
-                if (!ticket) { p.blocked = true; gate.refused(); host.allocator.cpu.whenAvailable?.(() => resources.invalidate()); return; }
+                if (!ticket) { p.blocked = true; refuse(); host.allocator.cpu.whenAvailable?.(() => resources.invalidate()); return; }
                 gate.admitted();
                 p.cache = { cache, ticket };
             }
@@ -442,7 +447,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
             isCurrent: () => !p.retired && resources.frames.isCurrent(p.source), images: p.resources.images,
             host, onError: report });
         p.job.prepare(view, budget);
-        if (p.job.blocked) gate.refused();
+        if (p.job.blocked) refuse();
         if (p.job.failed) { failedFrame = p.source; retire(p); staged = null; return; }
         if (p.job.stopped) { retire(p); staged = null; return; }
         if (!p.job.isComplete && !p.job.isEmpty) return;
@@ -457,6 +462,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                     rect: only.rect, scale: p.scale });
             } catch (error) { pending.cache.cancel(pending.ticket); releaseDenseTilePart(only); throw error; }
             if (accepted) {
+                host.demandChanged?.();
                 const found = pending.cache.borrowAncestor(interval, address);
                 if (!found || !found.bitmap) { found?.release(); throw new Error('Published dense tile cannot be borrowed'); }
                 settle(p, [{ end: null, blend: 'normal', bitmap: borrowBitmap(found)! }]);
@@ -512,7 +518,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         if (windowBytes > (p.windowLease?.bytes ?? 0)) {
             // A denied reservation keeps the current picture and waits for a real capacity change.
             const lease = host.allocator.cpu.reserve(windowBytes);
-            if (!lease) { p.blocked = true; gate.refused(); host.allocator.cpu.whenAvailable?.(() => resources.invalidate()); return; }
+            if (!lease) { p.blocked = true; refuse(); host.allocator.cpu.whenAvailable?.(() => resources.invalidate()); return; }
             gate.admitted();
             if (p.windowLease) host.allocator.cpu.release(p.windowLease);
             p.windowLease = lease;
@@ -594,7 +600,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                         // an up-front estimate of every item.
                         while (adapter.memory().cpuBytes + DIRECT_CHUNK > p.directLeased) {
                             const lease = host.allocator.cpu.reserve(DIRECT_CHUNK);
-                            if (!lease) { p.blocked = true; gate.refused(); host.allocator.cpu.whenAvailable?.(() => resources.invalidate()); return; }
+                            if (!lease) { p.blocked = true; refuse(); host.allocator.cpu.whenAvailable?.(() => resources.invalidate()); return; }
                             gate.admitted();
                             p.directLeases.push(lease); p.directLeased += lease.bytes;
                         }
@@ -682,14 +688,14 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         },
         reclaim(bytes) {
             const view = lastView, session = !disposed && view ? sessionOf() : null;
-            if (session && view) session.cache.evictUnused(usableBitmaps(session.variant, view), bytes);
+            if (session && view && session.cache.evictUnused(usableBitmaps(session.variant, view), bytes) > 0) host.demandChanged?.();
         },
         dropUnused(view) {
             if (disposed) return false;
             lastView = view;
             const session = sessionOf();
             if (!session) return false;
-            session.cache.evictUnused(usableBitmaps(session.variant, view), Number.MAX_SAFE_INTEGER);
+            if (session.cache.evictUnused(usableBitmaps(session.variant, view), Number.MAX_SAFE_INTEGER) > 0) host.demandChanged?.();
             return true;
         },
         dispose() { if (!disposed) { disposed = true; drop(staged); drop(ready); staged = ready = null; } },

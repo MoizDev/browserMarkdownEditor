@@ -248,7 +248,7 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
     const editingChrome = useCallback((context: NativeEditingChromeContext) => {
         if (!owned) throw new Error('Board commands are not attached');
         const { commands } = owned;
-        return <NativeChromeAttachment context={context} bind={bindMinimap}><NativeBoardChromeHost runtime={runtime} engine={lease.engine} lease={lease} language={language} preferences={clipboard.preferences}
+        return <NativeChromeAttachment context={context} bind={bindMinimap}><NativeBoardChromeHost runtime={runtime} engine={lease.engine} lease={lease} language={language} preferences={clipboard.preferences} capturePage={clipboard.pagePng}
             currentOwner={current} mac={mac} isVisible={props.isVisible}
             readOnly={adapter.board.isReadOnly || !canWrite()} readOnlyReason={adapter.board.readOnlyReason ?? 'Board editing services are not ready'} reportError={report}
             toolStateFor={toolStateFor} commands={commands} actionShortcut={commands.actionShortcut} actionState={commands.actionState}

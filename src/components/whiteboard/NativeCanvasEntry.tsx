@@ -8,7 +8,7 @@ import { prepareNativeRuntime } from '../../whiteboard/host/prepareNativeRuntime
 import { registerNativeNotebookExporter } from '../../whiteboard/host/registerNativeNotebookExporter';
 import { pinNativeSheetThumbnailBounds } from '../../whiteboard/host/sheetThumbnailBounds';
 import { boardPageStack } from '../../whiteboard/model/pages';
-import { useNativeClipboard } from './useNativeClipboard';
+import { useDocumentClipboard, useNativeClipboard } from './useNativeClipboard';
 import type { ComposedBoardSession } from '../../whiteboard/session/factoryTypes';
 import { createNativeAcquisitionOptions } from './nativeAcquisitionOptions';
 import { useNativeBoardAcquisition } from './useNativeBoardAcquisition';
@@ -102,8 +102,10 @@ export function AttachedViewer({ props, identity, lease, inverted, setInverted, 
     const getSceneRevision = useCallback(() => lease.runtime.scene?.ready ? lease.runtime.scene.revision : -1, [lease]);
     const sceneRevision = useSyncExternalStore(lease.subscribe, getSceneRevision, getSceneRevision);
     const current = useCallback(() => props.nativeCanvasHost.isCurrent(identity), [props.nativeCanvasHost, identity]);
-    const capturePng = useCallback((rect: Parameters<NativeViewLease['captureBlob']>[0], maxSide: number, signal: AbortSignal) =>
-        lease.captureBlob(rect, maxSide, signal), [lease]);
+    // Thumbnails read the document's all-sheet print source, so they wait for the same command service the view uses.
+    const clipboard = useDocumentClipboard(lease.runtime, props.nativeCanvasHost, identity, setNotice);
+    const capturePage = useCallback((index: number, maxSide: number, signal: AbortSignal) => clipboard
+        ? clipboard.pagePng(index, maxSide, signal) : Promise.reject(new Error('The board is not ready to show its pages.')), [clipboard]);
     const jump = useCallback((page: number) => lease.jump(page), [lease]);
     const stack = board.doc.kind === 'notebook' ? boardPageStack(board.doc.host) : undefined;
     const [minimapOpen, setMinimapOpen] = useState(false);
@@ -173,7 +175,7 @@ export function AttachedViewer({ props, identity, lease, inverted, setInverted, 
             <button type="button" aria-pressed={inverted} onClick={() => setInverted(!inverted)}>Invert</button>
             {board.doc.kind === 'whiteboard' && <button type="button" aria-pressed={minimapOpen} onClick={() => setMinimapOpen(!minimapOpen)}>Minimap</button>}
             {stack && <NativeNotebookThumbnails pages={stack.rects} revision={revision} page={navigation.page} isVisible={props.isVisible}
-                current={current} currentRevision={getRevision} capturePng={capturePng} jump={jump} onError={reportThumbnailError} />}
+                current={current} currentRevision={getRevision} capturePage={capturePage} jump={jump} onError={reportThumbnailError} />}
             {notice && <span role="status">{notice}</span>}
         </div>}
         {editingChrome && notice && <span role="status">{notice}</span>}

@@ -30,7 +30,6 @@ const spelling: BoardToolServicesOptions['spelling'] = {
 export interface NativeEmbedInfrastructure {
     readonly port: EmbedPresentationPort;
     readonly controller: NativeEmbedController;
-    readonly producer: NativeEmbedPresentationProducer;
 }
 
 export type NativeEditingToolOptions = Omit<BoardToolServicesOptions, 'surface' | 'overlay' | 'inputFrames' | 'mappings' | 'sampleToSurface' | 'clientToSurface' | 'imports' | 'spelling' | 'ui'> & {
@@ -73,15 +72,9 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
     };
     const disposeTools = () => {
         closeSpelling(); closeTextMenu();
-        const text = textClipboard, old = tools, clip = binding, media = importer, a11y = accessible, previousEmbed = embed;
-        textClipboard = null; tools = null; binding = null; importer = null; accessible = null; embed = null;
+        const text = textClipboard, old = tools, clip = binding, media = importer, a11y = accessible;
+        textClipboard = null; tools = null; binding = null; importer = null; accessible = null;
         toolSurface = null; toolOverlay = null;
-        if (previousEmbed) {
-            options.onEmbedInfrastructure(null);
-            previousEmbed.producer.dispose();
-            options.engine.connectEmbeds(null);
-            void previousEmbed.controller.dispose().finally(() => previousEmbed.port.dispose()).catch(options.onError);
-        }
         try { text?.dispose(); } finally { try { old?.dispose(); } finally {
             try { media?.dispose(); } finally { try { a11y?.dispose(); } finally { clip?.detach(); } }
         } }

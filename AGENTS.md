@@ -48,20 +48,18 @@ exception:** when the user EXPLICITLY asks for a code-based test, write it — o
 
 ## Architecture: what every change must respect
 
-- **The layers, and what may not cross between them.** `src/context/` is the only code that touches the
-  File System Access API. Its index worker (`vaultIndex/reader.ts`) reads only file handles sent by
-  `vaultIndex/client.ts`; listing, prompts and all mutations stay on the main thread in `FileSystemContext`.
-  `src/editor/` is CodeMirror land, **React-free**, reached through facets and plain callbacks, never a
-  component or a hook. `src/components/` is React; `src/utils/` is pure or DOM-light; `src/app/` (App's
-  state as hooks) is imported only by `App.tsx` and itself. An import crossing those lines is the change
-  to rethink. `shared/` is pure data and types the app and `helper/` (Bun) both import.
+- **The layers, and what may not cross between them.** `src/context/` is the only code that touches the File
+  System Access API. Its index worker (`vaultIndex/reader.ts`) reads only file handles sent by `vaultIndex/client.ts`;
+  listing, prompts and all mutations stay on the main thread in `FileSystemContext`. `src/editor/` is CodeMirror
+  land, **React-free**, reached through facets and plain callbacks. `src/components/` is React; `src/utils/` is pure
+  or DOM-light; `src/app/` is App's state as hooks, imported only by `App.tsx` and itself. An import crossing those
+  lines is the change to rethink. `shared/` is pure data and types the app and `helper/` (Bun) both import.
 - **Nothing the user made is destroyed outright.** A deleted file is *moved* to `.Garbage`, an
   unreferenced asset is *retired* into it and returns if the reference does, an unasked-for overwrite
   is renamed aside — which is why each costs a copy instead of a `removeEntry`. Prefer a wrong call
   that keeps a file over a right one that cannot be undone.
-- **App's state lives in `src/app/`, one hook per concern taking a named `deps` object; the filesystem
-  lives behind `useFileSystem()`.** `App.tsx` only composes the hooks **in effect order** — moving a call
-  reorders its effects (persist → vault switch → restore → URL writer must stay so). No undo stack.
+- **App's state lives in `src/app/`, one hook per concern taking a named `deps` object; `App.tsx` composes them
+  **in effect order** (persist → vault switch → restore → URL writer); FS only via `useFileSystem()`; no undo stack.
 - **The AI agent changes the vault ONLY through the app** — its CLI runs never-ask with full normal tools
   (the user's decision; never restrict them again), but each vault read/write is a `vault_*`/`canvas_*` MCP
   call run in the browser (`utils/agentHost.ts` → App); the prompt bans disk edits. The **terminal** is the

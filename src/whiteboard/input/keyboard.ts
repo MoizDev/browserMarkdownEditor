@@ -111,9 +111,11 @@ export interface ShortcutGroup {
   readonly bindings: readonly { readonly id: string; readonly label: string; readonly chord: string }[]
 }
 
-export function shortcutGroups(mac: boolean): readonly ShortcutGroup[] {
+/** `paperHost` drops the theme row: on notebooks and PDF ink Mod+/ does nothing (R-26), so it is not advertised. */
+export function shortcutGroups(mac: boolean, paperHost = false): readonly ShortcutGroup[] {
   const groups = new Map<string, { id: string; label: string; chord: string }[]>()
   for (const binding of boardBindings) {
+    if (paperHost && binding.id === 'preferences.theme') continue
     const parts = [binding.accel ? (mac ? '⌘' : 'Ctrl') : '', binding.alt ? (mac ? '⌥' : 'Alt') : '', binding.shift ? (mac ? '⇧' : 'Shift') : '', binding.key.length === 1 ? binding.key.toUpperCase() : binding.key].filter(Boolean)
     const rows = groups.get(binding.group) ?? []
     rows.push({ id: `${binding.id}:${binding.accel ? 'mod-' : ''}${binding.alt ? 'alt-' : ''}${binding.shift ? 'shift-' : ''}${binding.key}`, label: binding.label, chord: parts.join(mac ? '' : '+') })

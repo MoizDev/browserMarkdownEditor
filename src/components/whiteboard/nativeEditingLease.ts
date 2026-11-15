@@ -214,19 +214,18 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
         repeatAnnouncement: () => accessible?.repeat() ?? false,
         setInputEnabled(enabled: boolean) {
             input.setInputEnabled(enabled);
-            if (!options.visible()) disposeTools();
+            if (!options.visible()) { disposeTools(); disposeEmbeds(); }
         },
         cancelViewWork(reason: string) {
             input.cancelViewWork(reason);
-            // A layer-set seal cancels contacts, not the DOM view that owns the
-            // very layers being installed. Actual detach/hide/source retirement
-            // still drops providers and every per-view controller.
-            if (reason === 'platform-detach' || !options.visible() || !options.current(options.token)) disposeTools();
+            // A topology seal cancels contacts, not its connected DOM services. Real
+            // detach retires them below; hide or source loss revokes providers here.
+            if (!options.visible() || !options.current(options.token)) { disposeTools(); disposeEmbeds(); }
         },
         attachInput(surface: HTMLElement, overlay: HTMLElement) {
             const detach = input.attachInput(surface, overlay);
-            if (!input.isAttached()) disposeTools();
-            return () => { try { detach(); } finally { disposeTools(); } };
+            if (!input.isAttached()) { disposeTools(); disposeEmbeds(); }
+            return () => { try { detach(); } finally { disposeTools(); disposeEmbeds(); } };
         },
     };
 }

@@ -93,8 +93,8 @@ and **one** module-level store; `App` reads it with `useSyncExternalStore` and r
   deletes only once the clipboard **write resolves**, so a refused clipboard never also destroys the
   text. `document.execCommand('paste')` is not usable in Chromium web content and is deliberately not
   attempted.
-- **A menu row closes over a view or a tree node**, so `App` closes the menu whenever `mainView` or
-  `rootHandle` changes — both of those unmount the things the rows act on.
+- **A menu row closes over a view or a tree node**, so `useMainView` (src/app) closes the menu whenever
+  `mainView` or `rootHandle` changes — both of those unmount the things the rows act on.
 - **The flyout hosts two pickers and command submenus** — `kind: 'grid'` (table size),
   `kind: 'entry-style'` (a file's or folder's icon and colour), and `kind: 'submenu'` (plain command
   rows used by board menus). The row branch opens the flyout and the panel branch chooses its content. Entry types stay PLAIN

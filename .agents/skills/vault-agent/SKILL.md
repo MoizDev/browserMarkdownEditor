@@ -80,9 +80,9 @@ skill's context, tools or chat index reads one.
   streams `run.event` and ends in exactly one `run.done`/`run.error`), `AgentEvent`, ports, limits,
   `CanvasOp`. `shared/vaultAgentTools.ts` — the tool table (schemas + the descriptions the model
   reads), split out so the main chunk does not carry it. Pure data; both sides import them.
-- `src/types/vaultAgent.ts` — `AgentHost`/`VaultToolHost` (implemented once by `utils/agentHost.ts`,
-  built in the panel chunk from App's `getHostDeps`, stable for the page's life, reading App through
-  `agentDepsRef`), `ChatMeta`, `AgentChange`.
+- `src/types/vaultAgent.ts` — `AgentHost`/`VaultToolHost` (implemented once by `utils/agentHost.ts`, built in
+  the panel chunk from `getAgentHostDeps` (`useAgentHostDeps`, src/app), stable for the page's life, reading
+  App through `agentDepsRef`), `ChatMeta`, `AgentChange`.
 - `utils/viewRegistry.ts` — see `tabs-and-panes`; each mounted pane's reporter (`describe`,
   `capture`, `pdfText`, `renderPage`, `applyTextChanges`, `canvas`).
 
@@ -98,14 +98,14 @@ the focused drawing/notebook/PDF view rides along ONLY when its SHA-256 differs 
 
 ## Edits go through the app, never behind it
 
-A write the app did not make is no longer clobbered — every document save is versioned and an outside
-change reloads the note or raises a conflict bar (`tabs-and-panes` → "Outside changes") — but it costs
-the reader exactly that interruption, which is why the prompt still forbids the agent's own tools on
-vault files. So text edits
-(`vault_edit`/`vault_write`, refused as stale unless the text still equals what the agent read) go live view → cached `EditorState`s + buffer → disk + `afterWrite`; create/mkdir refuse taken
-names (`useFileSystem().nameTaken`) and never truncate; move REFUSES a taken target; trash is
-`App.performTrash` without the question; canvas ops land in the live tldraw editor (`pdf-and-drawings`),
-opening a closed canvas beside the user via `openInSidePane` without moving the focus.
+A write the app did not make is no longer clobbered — every document save is versioned and an outside change
+reloads the note or raises a conflict bar (`tabs-and-panes` → "Outside changes") — but it costs the reader
+exactly that interruption, which is why the prompt still forbids the agent's own tools on vault files. So text
+edits (`vault_edit`/`vault_write`, refused as stale unless the text still equals what the agent read) go live
+view → cached `EditorState`s + buffer → disk + `afterWrite`; create/mkdir refuse taken names
+(`useFileSystem().nameTaken`) and never truncate; move REFUSES a taken target; trash is
+`useTrashActions.performTrash` (src/app) without the question; canvas ops land in the live tldraw editor
+(`pdf-and-drawings`), opening a closed canvas beside the user via `openInSidePane` without moving the focus.
 
 - **Search never executes an agent-supplied regex on the UI thread.** `vault_search` goes through
   `context/vaultIndex/` (tree order, bounded text residency, open-buffer overlays) and runs its
@@ -185,8 +185,8 @@ is a writing job). Teaching is **sticky per conversation** (`ChatStoreState.teac
   Network Access prompt. Later loads auto-connect only if `vaultAgentConnectedOnce` is set AND the
   permission query (`loopback-network`, then `local-network-access`/`local-network`) says granted — or
   the page itself is on loopback (dev), where no prompt exists and a 'denied' reading is ignored.
-- App: `⌘⇧X` is a CAPTURE-phase listener — a Mod-Shift letter no keymap here (CodeMirror,
-  tldraw), Chrome or Edge claims; never ⌘⇧K (the user keeps it as deleteLine). `⌘E` is ignored
+- `useSidePanels` (src/app): `⌘⇧X` is a CAPTURE-phase listener — a Mod-Shift letter no keymap here
+  (CodeMirror, tldraw), Chrome or Edge claims; never ⌘⇧K (the user keeps it as deleteLine). `⌘E` is ignored
   inside `[data-agent-panel]` (dropdowns are portalled and carry it too).
 - Header: the app's AI glyph (`StatusMark`, tinted and pulsed by `data-state`), the chat switcher,
   New chat, ⋯, close. **Which CLI runs the next chat is a pick-one section of the ⋯ menu** (`checked`

@@ -87,14 +87,13 @@ Each step below exists because skipping it produces a *working change that looks
    effect never re-runs, and a link-opens-a-note probe silently proves nothing. Force it
    (`page.reload()`), and assert you did: set a `window` marker before, check it is gone after.
 
-8. **`await document.fonts.ready` before asserting a column width.** Two fonts re-trigger the table
-   fit when they land, and only one of them is a request you could watch for. The app reaches **two**
-   Google hosts: `index.html` links a `fonts.googleapis.com` stylesheet (Fira Code) and preconnects
-   `fonts.gstatic.com`, and a chosen text font adds a second stylesheet at runtime (`App.tsx`'s
-   `google-font-link`) — but the request that moves layout is the **gstatic woff2**, fetched only for
-   a face something actually renders, so a default load makes no font request at all. **KaTeX's faces
-   are bundled locally** and a table holding maths re-fits when they arrive too (`tableFit`'s
-   `mathProbe`). Offline is not an exemption.
+8. **`await document.fonts.ready` before asserting a column width.** Two fonts re-trigger the table fit when
+   they land, and only one of them is a request you could watch for. The app reaches **two** Google hosts:
+   `index.html` links a `fonts.googleapis.com` stylesheet (Fira Code) and preconnects `fonts.gstatic.com`, and
+   a chosen text font adds a second stylesheet at runtime (`useAppSettings` (src/app)'s `google-font-link`) —
+   but the request that moves layout is the **gstatic woff2**, fetched only for a face something actually
+   renders, so a default load makes no font request at all. **KaTeX's faces are bundled locally** and a table
+   holding maths re-fits when they arrive too (`tableFit`'s `mathProbe`). Offline is not an exemption.
 
 9. **Suppressed browser menus are asserted, not screenshotted.** To check the app's own context menu
    replaced the browser's, assert `defaultPrevented` on the `contextmenu` event — the OS menu never

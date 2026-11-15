@@ -36,10 +36,10 @@ In memory it is ONE merged view, keyed by vault path all the way down — that i
   every folder, so it keeps the handle of each `.appearance.json` it passes on
   `FileTreeDirNode.styleFile`; App opens only those. Nothing is opened speculatively and a vault with
   no icons reads nothing. Still never per tree walk — that runs after every save.
-- **Writes: only the files that changed.** `App.writeEntryStyles` cuts the merged view into files,
-  compares each with `shardTextRef` (what that folder's file last said, byte for byte) and writes the
-  difference — an icon picked in one folder is one small write. A folder left with nothing to say has
-  its file **removed**, not left holding `{}` in every folder an icon was ever tried in.
+- **Writes: only the files that changed.** `useEntryStyles.writeEntryStyles` (src/app) cuts the merged view
+  into files, compares each with `shardTextRef` (what that folder's file last said, byte for byte) and writes
+  the difference — an icon picked in one folder is one small write. A folder left with nothing to say has its
+  file **removed**, not left holding `{}` in every folder an icon was ever tried in.
 - **MIGRATION IS AUTOMATIC AND ONE-WAY.** `needsFanOut` reads the SHAPE, not `version`: a key with a
   separator, or an order keyed by anything but `''`. Such a file is the merged view already, so it is
   read whole and fanned back out once the tree lands. A root file that only ever styled top-level
@@ -108,15 +108,15 @@ means its descendants too (their keys all carry the old prefix):
   opened or forgotten. It is `undefined` for a vault outside the open one and for the open vault
   itself, which then falls back to a plain folder: that vault's look lives in ITS OWN
   `.appearance.json`, which is not the file loaded.
-- Writes go through `App.writeEntryStyles`, which sets the store FIRST and writes after — the picker
-  is a live preview and is being judged against the real sidebar. It does **not** call `createFile`:
-  that one empties the file in a writable of its own (a crash in between loses every icon and the
-  order) and then re-walks the whole vault — which, mid-`moveFile`, drew a dropped item in both
-  folders, and after a vault switch repainted the old vault's tree. One `getFileHandle({create})`
-  writable replaces it whole — and only for the FILES that changed, diffed against `shardTextRef`;
-  a folder left with nothing to say has its file removed. Writes are **serialized in call order** on
-  a promise chain, each bound to the vault it was issued in — a cross-folder drop writes twice back to back, and overlapping
-  writables land in completion order. The loader empties the store the moment the vault changes.
+- Writes go through `useEntryStyles.writeEntryStyles` (src/app), which sets the store FIRST and writes after —
+  the picker is a live preview and is being judged against the real sidebar. It does **not** call
+  `createFile`: that one empties the file in a writable of its own (a crash in between loses every icon and
+  the order) and then re-walks the whole vault — which, mid-`moveFile`, drew a dropped item in both folders,
+  and after a vault switch repainted the old vault's tree. One `getFileHandle({create})` writable replaces it
+  whole — and only for the FILES that changed, diffed against `shardTextRef`; a folder left with nothing to
+  say has its file removed. Writes are **serialized in call order** on a promise chain, each bound to the
+  vault it was issued in — a cross-folder drop writes twice back to back, and overlapping writables land in
+  completion order. The loader empties the store the moment the vault changes.
 - `order` maps are **prototype-free** (`newOrder`) and read from outside only via `orderListFor`:
   its keys are folder paths, and a root folder named `constructor`/`toString` otherwise crashed
   rename, trash and the Custom sort.

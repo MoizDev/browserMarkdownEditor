@@ -62,9 +62,10 @@ resolves the vault itself.
   (it gates the CHAT; raising it would lock older helpers out of the chat) and `PROTOCOL_VERSION` stays 1
   (additive). `HelperGate` (`components/HelperGate/`, shared by both lazy chunks; `gatePasses(bridge,
   'terminal')`) shows install / connect / "Update VaultAgent to use the terminal".
-- **LNA rule kept:** no 127.0.0.1 request on page load unless `autoConnect()`'s gate passes. The button
-  and ⌃` are a gesture, so App calls `connectHelperForTerminal()` (`components/terminalLaunch.ts`, a
-  dynamic import of the bridge) inside it; a dock restored open on load goes through `autoConnect`.
+- **LNA rule kept:** no 127.0.0.1 request on page load unless `autoConnect()`'s gate passes. The button and ⌃`
+  are a gesture, so `useSidePanels` (src/app) calls `connectHelperForTerminal()`
+  (`components/terminalLaunch.ts`, a dynamic import of the bridge) inside it; a dock restored open on load
+  goes through `autoConnect`.
 
 ## Helper side (`helper/src/terminal/`)
 
@@ -152,11 +153,12 @@ every shell is a child of **`vaultagent-pty`**: ~380 lines of libc C, its own La
   Height in localStorage `terminalHeight`, clamped on read and drag (120 px … 70%), the pane-divider
   pointer-capture pattern, ↑/↓ nudge, double-click reset. App owns only `terminalOpen` (localStorage),
   `terminalOpenedByUser` and the stable `toggleTerminal`/`hideTerminal` (`SidebarFooter` is memo'd).
-- **Keyboard:** ⌃` (capture phase in App, every OS) toggles even from inside the shell. `[data-terminal]`
-  (on the dock, handle and panel root) is exempt from App's ⌘E and EditorPane's capture ⌥ chords. xterm's
-  custom key handler: macOS ⌘C/⌘V native, ⌘K clears, ⌥/⌘ arrows mapped; Windows/Linux Ctrl+C copies with a
-  selection (else SIGINT), Ctrl+Shift+C/V. Ctrl+W cannot be intercepted, so a `beforeunload` guard runs
-  while focus is inside (non-mac). `macOptionIsMeta: false`. Links open on ⌘/Ctrl-click (http/https).
+- **Keyboard:** ⌃` (capture phase in `useSidePanels` (src/app), every OS) toggles even from inside the shell.
+  `[data-terminal]` (on the dock, handle and panel root) is exempt from `useGlobalShortcuts`'s ⌘E (src/app)
+  and EditorPane's capture ⌥ chords. xterm's custom key handler: macOS ⌘C/⌘V native, ⌘K clears, ⌥/⌘ arrows
+  mapped; Windows/Linux Ctrl+C copies with a selection (else SIGINT), Ctrl+Shift+C/V. Ctrl+W cannot be
+  intercepted, so a `beforeunload` guard runs while focus is inside (non-mac). `macOptionIsMeta: false`. Links
+  open on ⌘/Ctrl-click (http/https).
 - **Context menu:** the app's own (`openContextMenu`), raised only when the program has not enabled mouse
   tracking or Shift is held.
 - **Fonts:** Settings (`utils/terminalSettings.ts`, lightweight store, clamped, Reset to Defaults) →

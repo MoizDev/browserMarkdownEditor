@@ -218,12 +218,15 @@ export function createNativeClipboardController(options: NativeClipboardControll
             const target = capturePasteTarget(intent);
             return { cachePin: target.cachePin, run: (signal?: AbortSignal) => target.run(input, signal), release: target.release };
         },
+        /** Never throws: a refused target is a rejection the caller reports, not an exception lost in a change handler. */
         importFiles(files: readonly File[], point: ClipboardPoint): Promise<void> {
             if (!files.length) return Promise.resolve();
-            const target = targetNow(point);
-            const input: ClipboardInput = { html: null, text: null, svg: null, uriList: null, privatePng: null,
-                files: files.map(file => ({ blob: file, name: file.name, directory: false })) };
-            return execute(Promise.resolve(input), target, 'drop');
+            try {
+                const target = targetNow(point);
+                const input: ClipboardInput = { html: null, text: null, svg: null, uriList: null, privatePng: null,
+                    files: files.map(file => ({ blob: file, name: file.name, directory: false })) };
+                return execute(Promise.resolve(input), target, 'drop');
+            } catch (error) { return Promise.reject(error); }
         },
         cancelPending() {
             const cancelled = jobs.size > 0;

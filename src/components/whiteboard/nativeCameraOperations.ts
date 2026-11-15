@@ -1,6 +1,5 @@
-import type { Rect } from '../../platform/types';
-import { boardPageStack } from '../../whiteboard/model/pages';
-import { BoundsQuality } from '../../whiteboard/scene/bounds';
+import { centredCamera, contentBounds, fitTarget, pageStackBounds, unionRects } from '../../whiteboard/commands/contentBounds';
+import type { NodeId } from '../../whiteboard/model/ids';
 import type { BoardRuntime } from '../../whiteboard/host/runtime';
 import type { CommandState } from './chrome/boardCommands';
 import type { NativeCommandOperation } from './nativeCommandSource';
@@ -26,8 +25,9 @@ export function createNativeCameraOperations(options: {
         const state = available(); return state.enabled && !runtime.selection.getSnapshot().selected.length ? no('Select content first') : state;
     };
     const operation = (state: () => CommandState, run: () => void | Promise<void>): NativeCommandOperation => ({ state, run });
+    /** The View menu and the shortcuts share one fit (contentBounds.ts), so the two cannot diverge. */
     const fit = async (selectedOnly: boolean) => {
-        const scene = runtime.scene, doc = session.doc, revision = doc.rev, snapshot = runtime.selection.getSnapshot();
+        const doc = session.doc, revision = doc.rev, snapshot = runtime.selection.getSnapshot(), scene = runtime.scene;
         const signal = options.signal, font = runtime.render.text.fonts.epoch;
         const check = () => {
             signal.throwIfAborted();
@@ -36,31 +36,17 @@ export function createNativeCameraOperations(options: {
                 runtime.selection.getSnapshot() !== snapshot) throw new DOMException('Board view changed', 'AbortError');
         };
         check();
-        let bounds: Rect | null = null;
-        const union = (box: Rect) => {
-            if (![box.x, box.y, box.width, box.height].every(Number.isFinite) || box.width < 0 || box.height < 0) throw new Error('Invalid board bounds');
-            if (!bounds) { bounds = { ...box }; return; }
-            const x = Math.min(bounds.x, box.x), y = Math.min(bounds.y, box.y);
-            bounds = { x, y, width: Math.max(bounds.x + bounds.width, box.x + box.width) - x,
-                height: Math.max(bounds.y + bounds.height, box.y + box.height) - y };
-        };
-        const pages = !selectedOnly ? boardPageStack(doc.host) : null;
-        if (pages?.rects.length) for (const page of pages.rects) union(page);
-        const ids = selectedOnly ? snapshot.selected : [...(doc.bySheet.get(snapshot.sheet) ?? [])];
-        for (const id of ids) {
-            check(); const result = await scene!.ensureExactBounds(id, signal); check();
-            if (!result || result.revision !== revision || result.quality !== BoundsQuality.Exact || !result.selectable) throw new Error('Exact board bounds are unavailable');
-            const b = result.selectable; union({ x: b[0], y: b[1], width: b[2] - b[0], height: b[3] - b[1] });
-        }
+        const paper = !selectedOnly && doc.kind !== 'whiteboard';
+        const roots: NodeId[] = selectedOnly ? [...snapshot.selected] : (doc.children.get(snapshot.sheet) ?? []).map(child => child.id);
+        const content = await contentBounds(runtime, roots, { signal, fence: check, cooperate: () => new Promise<void>(resolve => setTimeout(resolve, 0)) });
         check();
-        const box = bounds as Rect | null, viewport = lease.camera.viewport;
-        if (!box || box.width <= 0 || box.height <= 0 || viewport.width <= 0 || viewport.height <= 0) throw new Error('There is no measurable content to fit');
-        // Clearance per side is 64 CSS px on the 1016px canvas camera.md measured, and at most 14% of the axis on a narrow view.
-        const padX = Math.min(64, 0.14 * viewport.width), padY = Math.min(64, 0.14 * viewport.height);
-        const width = Math.max(1, viewport.width - 2 * padX), height = Math.max(1, viewport.height - 2 * padY);
-        const z = lease.camera.clampZoom(Math.min(width / box.width, height / box.height));
-        lease.camera.setCamera({ x: box.x + box.width / 2 - viewport.width / (2 * z),
-            y: box.y + box.height / 2 - viewport.height / (2 * z), z });
+        const bounds = unionRects(paper ? pageStackBounds(doc) : null, content), view = lease.camera.viewport;
+        if (!bounds) throw new Error('There is no measurable content to fit');
+        if (view.width <= 0 || view.height <= 0) throw new Error('The board view has no size');
+        // Selection at any zoom but 1 toggles to natural 1:1, as the shortcut does (F-CAM-007).
+        const toNatural = selectedOnly && Math.abs(lease.camera.camera.z - 1) > .001;
+        const plan = fitTarget(doc, view, bounds, { paper, natural: !paper && toNatural });
+        lease.camera.setCamera(centredCamera(bounds, lease.camera.clampZoom(plan.z), view, plan.edges));
         lease.changed();
     };
     return {

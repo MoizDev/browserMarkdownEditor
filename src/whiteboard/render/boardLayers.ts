@@ -211,24 +211,25 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         const borrow = adapter?.retainPrepared() ?? null;
         if (!borrow) return null;
         const { prepared } = borrow;
-        let usable = prepared.frame.sceneRevision === frame.sceneRevision && sameToken(prepared.frame.token, frame.token);
+        const source = prepared.sourceFrame;
+        let usable = source.sceneRevision === frame.sceneRevision && sameToken(source.token, frame.token);
         const images: PresentedImage[] = [];
         if (usable) {
             try {
-                for (const band of ['underlay', 'content'] as const) {
-                    for (const item of prepared.frame[band]) {
+                // Windows are walked in canonical order, one bounded window at a time.
+                windows: for (const window of prepared.windows) {
+                    for (const item of window.items) {
                         if (item.kind !== 'image' || omit?.has(item.nodeId)) continue;
-                        const source = prepared.resources.image(item.imageKey);
-                        if (!(source instanceof ImageBitmap)) { usable = false; break; }
-                        images.push({ nodeId: item.nodeId, item, source });
+                        const bitmap = prepared.resources.image(item.imageKey);
+                        if (!(bitmap instanceof ImageBitmap)) { usable = false; break windows; }
+                        images.push({ nodeId: item.nodeId, item, source: bitmap });
                     }
-                    if (!usable) break;
                 }
             } catch { usable = false; }
         }
         if (!usable) { borrow.release(); return null; }
         let released = false;
-        return Object.freeze({ frame: prepared.frame, images: Object.freeze(images), release() { if (!released) { released = true; borrow.release(); } } });
+        return Object.freeze({ frame: source, images: Object.freeze(images), release() { if (!released) { released = true; borrow.release(); } } });
     };
     const retainedByDense = (): ReadonlySet<PaintFrame> => {
         const retained = new Set(dense?.retainedFrames());
@@ -417,7 +418,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     const frame = adapter?.readyFrame();
                     if (!frame) return;
                     const omit = options.omitNodes?.(frame) ?? null;
-                    const ink = adapter!.borrowPrepared()?.frame.inkNodeIds ?? frame.inkNodeIds;
+                    const ink = adapter!.borrowPrepared()?.root.inkNodeIds ?? frame.inkNodeIds;
                     if (!prepareToken) return;
                     const actualView = copyView(view);
                     const context = Object.freeze({ view: actualView, frameId: prepareFrameId,
@@ -487,7 +488,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         const gpuFrame = activeHost()?.device() ? gpu?.readyFrame() : null;
         const frame = gpuFrame ?? adapter?.readyFrame();
         if (!frame) return null;
-        const ink = gpuFrame ? gpu?.readyInkNodeIds() : adapter?.borrowPrepared()?.frame.inkNodeIds;
+        const ink = gpuFrame ? gpu?.readyInkNodeIds() : adapter?.borrowPrepared()?.root.inkNodeIds;
         return ink ? inkFrame(frame, ink) : frame;
     };
     return Object.freeze(pair);

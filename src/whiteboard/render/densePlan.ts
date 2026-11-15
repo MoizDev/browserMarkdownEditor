@@ -11,6 +11,7 @@ import type { DenseRasterBorrow, DenseRasterTicket, SessionDenseRasters } from '
 import { createStreamingDenseTileJob, releaseDenseTilePart, type DenseTilePart, type StreamingDenseTileJob } from './streamingDenseTile';
 import { FilteredInk } from './nodeSets';
 import { createCanvasPaintAdapter, type CanvasPaintAdapter, type PreparedPaint2d } from './reference/canvasPaintAdapter';
+import { PaintWindowBuilder, rootOf, type PaintRoot } from './paintWindows';
 import { paintItem2d } from './reference/paint2d';
 
 const EDGE = 512, BLOCK = 65_536;
@@ -401,9 +402,10 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         if (!Number.isSafeInteger(p.directEstimate)) throw new RangeError('Dense live path estimate overflows');
         p.estimateItem++; p.estimateClip = p.estimateChunk = 0; return false;
     };
-    /** The band's frame in canonical order, with each barrier's tile parts placed before its live items.
-     * One walk over the frame's own items: buckets follow the parts, never a per-live-node structure. */
-    const bandItems = (p: Plan, band: PaintBand): PaintItem[] => {
+    /** The band's frame in canonical order, with each barrier's tile parts placed before its live items, pushed
+     * into the window builder as it goes. One walk over the frame's own items: buckets follow the parts, never a
+     * per-live-node structure, and no whole-band array is built. */
+    const bandInto = (p: Plan, band: PaintBand, out: PaintWindowBuilder): void => {
         const buckets = new Map<string | null, Entry[]>();
         for (const entry of p.entries[band]) {
             const list = buckets.get(entry.end);
@@ -417,31 +419,29 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                 sourceRect: { x: 2, y: 2, width: EDGE, height: EDGE }, opacity: 1, blend: entry.blend, inverted: false, retainedTile: true };
             return item;
         };
-        const out: PaintItem[] = [];
         let group: string | null = null;
         for (const item of p.source[band]) {
             if (!p.live?.has(item.nodeId)) continue;
             if (item.nodeId !== group) {
                 group = item.nodeId;
                 const before = buckets.get(group);
-                if (before) { for (const entry of before) out.push(image(entry)); buckets.delete(group); }
+                if (before) { for (const entry of before) out.push(band, image(entry)); buckets.delete(group); }
             }
-            out.push(item);
+            out.push(band, item);
         }
         for (const end of buckets.keys()) if (end !== null) throw new Error('Dense tile barrier is missing from the live frame');
-        for (const entry of buckets.get(null) ?? []) out.push(image(entry));
-        return out;
+        for (const entry of buckets.get(null) ?? []) out.push(band, image(entry));
     };
     /** Publishes the plan's current coverage. Complete coverage with standins is published as a provisional
      * frame: the plan stays staged, and each refinement republishes. Only a plan without standins is sharp. */
     const publish = (p: Plan) => {
         const direct = p.directAdapter!.borrowPrepared();
         if (!direct) return;
-        const underlay = bandItems(p, 'underlay'), content = bandItems(p, 'content');
-        const frame: PaintFrame = { ...p.source, underlay: Object.freeze(underlay), content: Object.freeze(content),
-            inkNodeIds: p.sharp ? p.source.inkNodeIds : new FilteredInk(p.source.inkNodeIds, p.live, true) };
+        const windows = new PaintWindowBuilder();
+        bandInto(p, 'underlay', windows); bandInto(p, 'content', windows);
+        const root: PaintRoot = { ...rootOf(p.source), inkNodeIds: p.sharp ? p.source.inkNodeIds : new FilteredInk(p.source.inkNodeIds, p.live, true) };
         const final = p.standins === 0;
-        p.prepared = { frame, sourceFrame: p.source, sharp: p.sharp && final, resources: {
+        p.prepared = { sourceFrame: p.source, root, windows: windows.finish(), sharp: p.sharp && final, resources: {
             path: item => direct.resources.path(item), clip: key => direct.resources.clip(key),
             image: key => p.bitmaps.get(key)?.bitmap ?? direct.resources.image(key),
         } };
@@ -528,29 +528,32 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         draw2d(ctx, view, band, omitNodes) {
             const p = ready, prepared = p?.prepared;
             if (!p || !prepared) return;
-            for (const item of prepared.frame[band]) {
-                if (omitNodes?.has(item.nodeId)) continue;
-                if (item.kind !== 'image' || !item.retainedTile) {
-                    host.paintWorld(ctx, view, () => paintItem2d(ctx, item, prepared.resources));
-                    continue;
+            for (const window of prepared.windows) {
+                if (window.band !== band) continue;
+                for (const item of window.items) {
+                    if (omitNodes?.has(item.nodeId)) continue;
+                    if (item.kind !== 'image' || !item.retainedTile) {
+                        host.paintWorld(ctx, view, () => paintItem2d(ctx, item, prepared.resources));
+                        continue;
+                    }
+                    const bitmap = p.bitmaps.get(item.imageKey);
+                    if (!bitmap) throw new Error('Retained dense bitmap unavailable');
+                    const scale = view.camera.z * view.viewport.dpr, sourceScale = EDGE / item.rect.width;
+                    const left = (item.rect.x - view.camera.x) * scale, top = (item.rect.y - view.camera.y) * scale;
+                    const right = left + item.rect.width * scale, bottom = top + item.rect.height * scale;
+                    const x = Math.max(0, Math.ceil(left - .5)), y = Math.max(0, Math.ceil(top - .5));
+                    const x1 = Math.min(Math.round(view.viewport.width * view.viewport.dpr), Math.ceil(right - .5));
+                    const y1 = Math.min(Math.round(view.viewport.height * view.viewport.dpr), Math.ceil(bottom - .5));
+                    if (x1 <= x || y1 <= y) continue;
+                    const gutter = 2 * scale / sourceScale, crop = bitmap.crop;
+                    ctx.save();
+                    try {
+                        ctx.resetTransform(); ctx.beginPath(); ctx.rect(x, y, x1 - x, y1 - y); ctx.clip();
+                        ctx.globalAlpha = 1; ctx.globalCompositeOperation = item.blend === 'multiply' ? 'multiply' : 'source-over'; ctx.filter = 'none';
+                        if (crop) ctx.drawImage(bitmap.bitmap, crop.x, crop.y, crop.width, crop.height, left, top, right - left, bottom - top);
+                        else ctx.drawImage(bitmap.bitmap, left - gutter, top - gutter, right - left + 2 * gutter, bottom - top + 2 * gutter);
+                    } finally { ctx.restore(); }
                 }
-                const bitmap = p.bitmaps.get(item.imageKey);
-                if (!bitmap) throw new Error('Retained dense bitmap unavailable');
-                const scale = view.camera.z * view.viewport.dpr, sourceScale = EDGE / item.rect.width;
-                const left = (item.rect.x - view.camera.x) * scale, top = (item.rect.y - view.camera.y) * scale;
-                const right = left + item.rect.width * scale, bottom = top + item.rect.height * scale;
-                const x = Math.max(0, Math.ceil(left - .5)), y = Math.max(0, Math.ceil(top - .5));
-                const x1 = Math.min(Math.round(view.viewport.width * view.viewport.dpr), Math.ceil(right - .5));
-                const y1 = Math.min(Math.round(view.viewport.height * view.viewport.dpr), Math.ceil(bottom - .5));
-                if (x1 <= x || y1 <= y) continue;
-                const gutter = 2 * scale / sourceScale, crop = bitmap.crop;
-                ctx.save();
-                try {
-                    ctx.resetTransform(); ctx.beginPath(); ctx.rect(x, y, x1 - x, y1 - y); ctx.clip();
-                    ctx.globalAlpha = 1; ctx.globalCompositeOperation = item.blend === 'multiply' ? 'multiply' : 'source-over'; ctx.filter = 'none';
-                    if (crop) ctx.drawImage(bitmap.bitmap, crop.x, crop.y, crop.width, crop.height, left, top, right - left, bottom - top);
-                    else ctx.drawImage(bitmap.bitmap, left - gutter, top - gutter, right - left + 2 * gutter, bottom - top + 2 * gutter);
-                } finally { ctx.restore(); }
             }
         },
         coverage(view, liveNodes) {

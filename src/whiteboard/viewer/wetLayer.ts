@@ -14,7 +14,8 @@ import { colourCss, resolveSwatch, withOpacity, type PaintPalette } from '../ren
 import { HIGHLIGHT_OVERLAY_ALPHA, HIGHLIGHT_UNDERLAY_ALPHA } from '../render/material';
 import type { PaintFrame, PaintInkItem } from '../render/paintStream';
 import { createGpuPaintAdapter } from '../render/gpuPaintAdapter';
-import type { CanvasPaintAdapter, PreparedPaint2d } from '../render/reference/canvasPaintAdapter';
+import { bandItemsOf } from '../render/paintWindows';
+import { preparedOfFrame, type CanvasPaintAdapter, type PreparedPaint2d } from '../render/reference/canvasPaintAdapter';
 import { appendPath2d } from '../render/reference/coverage2d';
 
 // Provenance: wet/dry ink handover, bounded ink outline and C4 layer contracts;
@@ -94,7 +95,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
     let gpuPrepared: PreparedPaint2d | null = null, gpuToken: FrameToken | null = null;
     let gpu: ReturnType<typeof createGpuPaintAdapter> | null = null;
     const gpuReference: CanvasPaintAdapter = {
-        prepare: () => {}, readyFrame: () => gpuPrepared?.frame ?? null, borrowPrepared: () => gpuPrepared, retainPrepared: () => null,
+        prepare: () => {}, readyFrame: () => gpuPrepared?.sourceFrame ?? null, borrowPrepared: () => gpuPrepared, retainPrepared: () => null,
         draw2d: () => {}, release: () => {}, needsFrame: () => false,
         memory: () => ({ gpuBytes: 0, cpuBytes: 0 }), dispose: () => {},
     };
@@ -221,10 +222,10 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
             emit('content', highlight ? HIGHLIGHT_OVERLAY_ALPHA : 1);
         }
         const frame: PaintFrame = { token: options.token, sceneRevision: generation, inkNodeIds: new Set(), underlay, content };
-        gpuPrepared = { frame, resources: {
+        gpuPrepared = preparedOfFrame(frame, {
             path: item => { const source = paths.get(item as PaintInkItem); if (!source) throw new Error('Wet GPU path unavailable'); return { path: source.path, origin: source.origin }; },
             clip: () => { throw new Error('Wet ink has no clips'); }, image: () => { throw new Error('Wet ink has no images'); },
-        } };
+        });
         sourceVersion = publicationVersion; sourceGeneration = generation; paletteRevision = palette.revision;
     };
     const prepare = (view: ViewState, budget: FrameBudget) => {
@@ -274,7 +275,8 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                     const visible = new Set((handover?.forFrame(identity => visuallyCovered(frame, identity, options.token)) ?? [])
                         .map(item => item.identity.nodeId));
                     const omit = new Set<string>();
-                    for (const item of gpu.readyFrame()?.[band] ?? []) if (!visible.has(item.nodeId)) omit.add(item.nodeId);
+                    const paint = gpu.readyPaint();
+                    if (paint) for (const item of bandItemsOf(paint.windows, band)) if (!visible.has(item.nodeId)) omit.add(item.nodeId);
                     gpu.drawGpu(pass, view, band, omit);
                 },
                 draw2d(ctx, view) {
@@ -335,7 +337,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
             if (missing) return { complete: false, sharp: false };
             if (backend === 'canvas2d') return { complete: true, sharp: true };
             if (!gpu || !gpuToken || !sameToken(gpuToken, frame.token) || gpuToken.viewLease !== frame.token.viewLease ||
-                gpuToken.deviceGeneration !== frame.token.deviceGeneration || gpu.readyFrame() !== gpuPrepared?.frame) return { complete: false, sharp: false };
+                gpuToken.deviceGeneration !== frame.token.deviceGeneration || gpu.readyPaint() !== gpuPrepared) return { complete: false, sharp: false };
             return gpu.coverage(frame.view);
         },
     });

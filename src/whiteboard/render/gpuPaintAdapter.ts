@@ -9,12 +9,13 @@ import type { PaintBand } from './material';
 import { PaintBoundsJob } from './paintBounds';
 import { paintContributions } from './paintContributions';
 import { analyticInkPaint, type AnalyticInkPaint } from './analyticInk';
+import { isGutterQuadTile, texturedQuad, TILE_EDGE, TILE_GUTTER, TILE_SIZE } from './imageSampling';
 import { createAnalyticInkBatch, type PreparedAnalyticInkBatch } from './analyticInkBatch';
-import type { PaintFrame, PaintItem, PaintPathItem } from './paintStream';
-import type { CanvasPaintAdapter } from './reference/canvasPaintAdapter';
+import type { PaintSource, PaintItem, PaintPathItem } from './paintStream';
+import type { CanvasPaintAdapter, PreparedPaint2d } from './reference/canvasPaintAdapter';
 import { paintItem2d } from './reference/paint2d';
 
-const EDGE = 512, GUTTER = 2, SIZE = EDGE + GUTTER * 2;
+const EDGE = TILE_EDGE, GUTTER = TILE_GUTTER, SIZE = TILE_SIZE;
 const GPU_BYTES = SIZE * SIZE * 4, CPU_BYTES = GPU_BYTES * 2;
 interface CachedTile { texture: TextureHandle; device: GfxDevice; refs: number; key: string; bytes: number }
 type Tile = { item: PaintItem; x: number; y: number; cached: CachedTile; multiply: boolean; worldRect?: Readonly<Rect>; analytic?: never; path?: never }
@@ -24,19 +25,23 @@ type Tile = { item: PaintItem; x: number; y: number; cached: CachedTile; multipl
 interface PreparedPathItem { readonly clips: readonly PreparedPathCoverage[]; readonly fill: PreparedPathCoverage | null; readonly stroke: PreparedPathCoverage | null }
 /** Device pixels of flattening error allowed for a stencil-covered path (design §5.1: ≤0.1 px). */
 const PATH_FLATTEN_DEVICE_PX = 0.1;
+/** A run of analytic ink commands inside one window; a group never crosses a window, so a window is drawn alone. */
 interface AnalyticGroup {
-    band: PaintBand; first: number; end: number; paints: AnalyticInkPaint[]; batch: PreparedAnalyticInkBatch | null;
+    window: number; first: number; end: number; paints: AnalyticInkPaint[]; batch: PreparedAnalyticInkBatch | null;
 }
+/** The tile commands of one window, in its draw order, and the analytic groups that start inside it. */
+interface WindowTiles { readonly band: PaintBand; readonly tiles: Tile[]; readonly groupAt: Map<number, AnalyticGroup> }
 interface Plan {
-    frame: PaintFrame; sourceFrame: PaintFrame; token: FrameToken; device: GfxDevice; projection: string; scale: number; sharp: boolean;
+    prepared: PreparedPaint2d; sourceFrame: PaintSource; token: FrameToken; device: GfxDevice; projection: string; scale: number; sharp: boolean;
     x0: number; y0: number; x1: number; y1: number;
-    band: PaintBand; item: number; x: number; y: number; tiles: Record<PaintBand, Tile[]>;
+    /** The window and the item inside it that the build step has reached. */
+    window: number; item: number; x: number; y: number; out: WindowTiles[];
     boundsJob: PaintBoundsJob | null; tileBounds: { x0: number; y0: number; x1: number; y1: number } | null; itemKey: string;
     analyticReady: boolean;
     parts: Generator<PaintItem> | null; part: PaintItem | null; partIndex: number; hasMultiply: boolean;
     cpuLeases: ByteLease[]; cpuUsed: number;
-    groups: AnalyticGroup[]; groupAt: Record<PaintBand, Map<number, AnalyticGroup>>;
-    scanBand: PaintBand; scanIndex: number; scanned: boolean; groupIndex: number; waitingBatch: boolean;
+    groups: AnalyticGroup[];
+    scanWindow: number; scanIndex: number; scanned: boolean; groupIndex: number; waitingBatch: boolean;
 }
 function sameToken(a: FrameToken, b: FrameToken): boolean {
     return a.vaultEpoch === b.vaultEpoch && a.documentId === b.documentId && a.bytesGeneration === b.bytesGeneration &&
@@ -46,8 +51,9 @@ function projection(view: ViewState): string {
     const { camera: c, viewport: v } = view;
     return [c.x, c.y, c.z, v.width, v.height, v.dpr].join(':');
 }
-function documentMatches(frame: PaintFrame, token: FrameToken): boolean {
-    const t = frame.token;
+type DocumentIdentity = Pick<FrameToken, 'vaultEpoch' | 'documentId' | 'bytesGeneration' | 'session'>;
+function documentMatches(source: { readonly token: DocumentIdentity }, token: FrameToken): boolean {
+    const t = source.token;
     return t.vaultEpoch === token.vaultEpoch && t.documentId === token.documentId &&
         t.bytesGeneration === token.bytesGeneration && t.session === token.session;
 }
@@ -175,7 +181,8 @@ function drawPathItem(pass: GpuPass, item: PreparedPathItem, kit: ReturnType<typ
     }
 }
 
-/** Item-isolated raster tiles preserve ordering and permit exact node omission. */
+/** Item-isolated raster tiles preserve ordering and permit exact node omission. The paint is consumed one
+ * window at a time: each window's tile commands are built, scanned and drawn as their own bounded list. */
 export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: LayerHost, report: (error: unknown) => void) {
     let staged: Plan | null = null, ready: Plan | null = null, disposed = false, denied = false;
     let currentToken: FrameToken | null = null, lastFrame = -1, scratch = 0;
@@ -195,15 +202,16 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             if (group.batch) analytic.retire(group.batch); else analytic.cancel(group.paints);
         }
         plan.groups.length = 0;
-        for (const band of ['underlay', 'content'] as const) {
-            for (const tile of plan.tiles[band]) {
+        for (const out of plan.out) {
+            for (const tile of out.tiles) {
                 if (tile.analytic) continue;
                 if (tile.path) { retirePathItem(tile.path); continue; }
                 const entry = tile.cached;
                 if (--entry.refs === 0) { cache.delete(entry.key); tileBytes -= entry.bytes; entry.device.destroy(entry.texture); }
             }
-            plan.tiles[band].length = 0; plan.groupAt[band].clear();
+            out.tiles.length = 0; out.groupAt.clear();
         }
+        plan.out.length = 0;
         for (const lease of plan.cpuLeases) host.allocator.cpu.release(lease);
         plan.cpuLeases.length = 0;
     };
@@ -229,9 +237,9 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             lastFrame = budget.frameId; currentToken = { ...budget.token };
             analytic.warm();
             const prepared = reference.borrowPrepared(), device = host.device(), demand = view.camera.z * view.viewport.dpr;
-            if (!prepared || !device || !documentMatches(prepared.frame, budget.token) || !documentMatches(prepared.sourceFrame ?? prepared.frame, budget.token) || device.generation !== budget.token.deviceGeneration ||
+            if (!prepared || !device || !documentMatches(prepared.root, budget.token) || !documentMatches(prepared.sourceFrame, budget.token) || device.generation !== budget.token.deviceGeneration ||
                 host.generation !== budget.token.deviceGeneration || !Number.isFinite(demand) || demand <= 0) { reset(); return; }
-            const sourceFrame = prepared.sourceFrame ?? prepared.frame;
+            const sourceFrame = prepared.sourceFrame;
             const scale = rasterScale(view, demand);
             // One bounded source group and its independently leased real backdrop are reused
             // sequentially; the node/group itself never becomes an isolated-opacity operation.
@@ -241,36 +249,34 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             // A denial suppresses polling via needsFrame(), but a real wake may bring a new grant.
             denied = false;
             if (ready && !validDevice(ready)) { drop(ready); ready = null; denied = false; }
-            if (staged && (!valid(staged, view, scale) || (staged.frame !== prepared.frame || staged.sourceFrame !== sourceFrame) || staged.analyticReady !== analytic.ready())) { drop(staged); staged = null; denied = false; }
-            if ((ready?.frame === prepared.frame && ready.sourceFrame === sourceFrame && valid(ready, view, scale) && ready.analyticReady === analytic.ready()) || denied) return;
+            if (staged && (!valid(staged, view, scale) || staged.prepared !== prepared || staged.analyticReady !== analytic.ready())) { drop(staged); staged = null; denied = false; }
+            if ((ready?.prepared === prepared && valid(ready, view, scale) && ready.analyticReady === analytic.ready()) || denied) return;
             if (!staged) {
                 const x0 = Math.floor(view.camera.x * scale / EDGE), y0 = Math.floor(view.camera.y * scale / EDGE);
                 const x1 = Math.ceil((view.camera.x + view.viewport.width / view.camera.z) * scale / EDGE);
                 const y1 = Math.ceil((view.camera.y + view.viewport.height / view.camera.z) * scale / EDGE);
                 if (![x0, y0, x1, y1].every(Number.isSafeInteger)) throw new RangeError('Invalid board tile projection');
-                staged = { frame: prepared.frame, sourceFrame, token: { ...budget.token }, device, projection: projection(view), scale, sharp: prepared.sharp !== false,
-                    x0, y0, x1, y1, band: 'underlay', item: 0, x: x0, y: y0, tiles: { underlay: [], content: [] }, boundsJob: null, tileBounds: null, itemKey: '', analyticReady: analytic.ready(),
+                staged = { prepared, sourceFrame, token: { ...budget.token }, device, projection: projection(view), scale, sharp: prepared.sharp !== false,
+                    x0, y0, x1, y1, window: 0, item: 0, x: x0, y: y0, out: [], boundsJob: null, tileBounds: null, itemKey: '', analyticReady: analytic.ready(),
                     parts: null, part: null, partIndex: 0, hasMultiply: false, cpuLeases: [], cpuUsed: 0,
-                    groups: [], groupAt: { underlay: new Map(), content: new Map() }, scanBand: 'underlay', scanIndex: 0, scanned: false, groupIndex: 0, waitingBatch: false };
+                    groups: [], scanWindow: 0, scanIndex: 0, scanned: false, groupIndex: 0, waitingBatch: false };
             }
             const p = staged;
             try {
                 while (!budget.shouldYield()) {
-                    const items = p.frame[p.band];
-                    if (p.item >= items.length) {
-                        if (p.band === 'underlay') { p.band = 'content'; p.item = 0; continue; }
+                    const win = prepared.windows[p.window];
+                    if (!win) {
+                        // Every window is built: scan each window's analytic runs, then prepare the batches.
                         while (!p.scanned && !budget.shouldYield()) {
-                            const commands = p.tiles[p.scanBand];
-                            if (p.scanIndex === commands.length) {
-                                if (p.scanBand === 'underlay') { p.scanBand = 'content'; p.scanIndex = 0; continue; }
-                                p.scanned = true; break;
-                            }
-                            const index = p.scanIndex++, command = commands[index];
+                            if (p.scanWindow === p.out.length) { p.scanned = true; break; }
+                            const out = p.out[p.scanWindow];
+                            if (p.scanIndex === out.tiles.length) { p.scanWindow++; p.scanIndex = 0; continue; }
+                            const index = p.scanIndex++, command = out.tiles[index];
                             if (!command.analytic) continue;
                             let group = p.groups[p.groups.length - 1];
-                            if (!group || group.band !== p.scanBand || group.end !== index) {
-                                group = { band: p.scanBand, first: index, end: index, paints: [], batch: null };
-                                p.groups.push(group); p.groupAt[p.scanBand].set(index, group);
+                            if (!group || group.window !== p.scanWindow || group.end !== index) {
+                                group = { window: p.scanWindow, first: index, end: index, paints: [], batch: null };
+                                p.groups.push(group); out.groupAt.set(index, group);
                             }
                             group.paints.push(command.analytic); group.end++;
                         }
@@ -285,7 +291,10 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                         if (p.groupIndex !== p.groups.length) return;
                         drop(ready); ready = p; staged = null; return;
                     }
-                    const original = items[p.item];
+                    if (p.item >= win.items.length) { p.window++; p.item = 0; continue; }
+                    if (p.out.length === p.window) p.out.push({ band: win.band, tiles: [], groupAt: new Map() });
+                    const out = p.out[p.window];
+                    const original = win.items[p.item];
                     if (!p.parts) { p.parts = paintContributions(original); p.partIndex = 0; }
                     if (!p.part) {
                         const next = p.parts.next();
@@ -295,11 +304,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                     const item = p.part;
                     const multiply = (original.kind === 'image' ? original.blend : original.material.blend) === 'multiply';
                     p.hasMultiply ||= multiply;
-                    if (item.kind === 'image' && item.retainedTile && !multiply && item.blend === 'normal' && item.opacity === 1 &&
-                        !item.inverted && !item.clips.length && item.localToWorld.every((v, i) => v === [1, 0, 0, 1, 0, 0][i]) &&
-                        item.sourceRect?.x === GUTTER && item.sourceRect.y === GUTTER && item.sourceRect.width === EDGE && item.sourceRect.height === EDGE &&
-                        [item.rect.x, item.rect.y, item.rect.width, item.rect.height].every(Number.isFinite) &&
-                        item.rect.width > 0 && item.rect.width === item.rect.height) {
+                    if (item.kind === 'image' && !multiply && isGutterQuadTile(item)) {
                         const image = prepared.resources.image(item.imageKey);
                         if (typeof ImageBitmap !== 'undefined' && image instanceof ImageBitmap && image.width === SIZE && image.height === SIZE) {
                             if (!ensurePlanCapacity(p)) return;
@@ -325,14 +330,14 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                                     if (!attached) host.allocator.gpu.release(lease);
                                 }
                             }
-                            p.tiles[p.band].push({ item: original, x: 0, y: 0, cached, multiply: false, worldRect: item.rect });
+                            out.tiles.push({ item: original, x: 0, y: 0, cached, multiply: false, worldRect: item.rect });
                             p.cpuUsed += 512; p.part = null; return;
                         }
                     }
                     if (item.kind === 'path') {
                         if (!ensurePlanCapacity(p)) return;
                         const admission = admitPathItem(item, view, pathCoverage, budget);
-                        if (admission.status === 'ready') { p.tiles[p.band].push({ item: original, x: 0, y: 0, path: admission.value }); p.cpuUsed += 512; p.part = null; continue; }
+                        if (admission.status === 'ready') { out.tiles.push({ item: original, x: 0, y: 0, path: admission.value }); p.cpuUsed += 512; p.part = null; continue; }
                         if (admission.status === 'empty') { p.part = null; continue; }
                         if (admission.status === 'denied') { denied = true; return; }
                         // 'unsupported': the exact canonical raster route below draws this item.
@@ -340,7 +345,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                     if (p.analyticReady && !p.tileBounds && item.kind === 'ink' && !multiply) {
                         if (!ensurePlanCapacity(p)) return;
                         const paint = analyticInkPaint(item, view);
-                        if (paint) { p.tiles[p.band].push({ item: original, x: 0, y: 0, analytic: paint }); p.cpuUsed += 512; p.part = null; continue; }
+                        if (paint) { out.tiles.push({ item: original, x: 0, y: 0, analytic: paint }); p.cpuUsed += 512; p.part = null; continue; }
                     }
                     if (!p.tileBounds) {
                         p.boundsJob ??= new PaintBoundsJob(item);
@@ -359,7 +364,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                     const existing = cache.get(tileKey);
                     if (!ensurePlanCapacity(p)) return;
                     if (existing) {
-                        existing.refs++; p.tiles[p.band].push({ item: original, x: p.x, y: p.y, cached: existing, multiply }); p.cpuUsed += 512;
+                        existing.refs++; out.tiles.push({ item: original, x: p.x, y: p.y, cached: existing, multiply }); p.cpuUsed += 512;
                         const bounds = p.tileBounds;
                         if (++p.x >= bounds.x1) { p.x = bounds.x0; if (++p.y >= bounds.y1) { p.part = null; p.tileBounds = null; } }
                         return;
@@ -383,7 +388,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                         device.writeTexture(texture, { x: 0, y: 0, width: SIZE, height: SIZE },
                             { source: bitmap, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
                         const cached: CachedTile = { texture, device, refs: 1, key: tileKey, bytes: GPU_BYTES };
-                        cache.set(tileKey, cached); tileBytes += cached.bytes; p.tiles[p.band].push({ item: original, x: p.x, y: p.y, cached, multiply }); p.cpuUsed += 512; texture = null;
+                        cache.set(tileKey, cached); tileBytes += cached.bytes; out.tiles.push({ item: original, x: p.x, y: p.y, cached, multiply }); p.cpuUsed += 512; texture = null;
                     } finally {
                         bitmap?.close(); if (canvas) { canvas.width = 0; canvas.height = 0; }
                         if (texture) device.destroy(texture);
@@ -396,8 +401,10 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                 }
             } catch (error) { drop(staged); drop(ready); staged = ready = null; denied = true; report(error); throw error; }
         },
-        readyFrame(): PaintFrame | null { return disposed ? null : ready?.sourceFrame ?? null; },
-        readyInkNodeIds(): ReadonlySet<string> | null { return disposed ? null : ready?.frame.inkNodeIds ?? null; },
+        readyFrame(): PaintSource | null { return disposed ? null : ready?.sourceFrame ?? null; },
+        /** The prepared paint the ready tiles were built from; consumers iterate its windows. */
+        readyPaint(): PreparedPaint2d | null { return disposed ? null : ready?.prepared ?? null; },
+        readyInkNodeIds(): ReadonlySet<string> | null { return disposed ? null : ready?.prepared.root.inkNodeIds ?? null; },
         coverage(view: ViewState): { complete: boolean; sharp: boolean; staleVersion?: boolean } {
             if (!ready || !validDevice(ready)) return { complete: false, sharp: false };
             const complete = ready.projection === projection(view);
@@ -407,50 +414,54 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         drawGpu(pass: GpuPass, view: ViewState, band: PaintBand, omitNodes?: ReadonlySet<string>): void {
             if (!ready || !validDevice(ready)) return;
             const factor = view.camera.z * view.viewport.dpr / ready.scale;
-            for (let index = 0; index < ready.tiles[band].length; index++) {
-                const group = ready.groupAt[band].get(index);
-                if (group) {
-                    if (!group.batch) throw new Error('Analytic ink batch is not prepared');
-                    analytic.draw(pass, group.batch, view, omitNodes); index = group.end - 1; continue;
-                }
-                const tile = ready.tiles[band][index];
-                if (omitNodes?.has(tile.item.nodeId)) continue;
-                if (tile.analytic) throw new Error('Unbatched analytic ink command');
-                if (tile.path) { drawPathItem(pass, tile.path, pathCoverage); continue; }
-                if (tile.worldRect) {
-                    const rect = tile.worldRect, scale = view.camera.z * view.viewport.dpr;
-                    const x = (rect.x - view.camera.x) * scale, y = (rect.y - view.camera.y) * scale;
-                    const width = rect.width * scale, height = rect.height * scale;
-                    const left = Math.max(0, Math.ceil(x - 0.5)), top = Math.max(0, Math.ceil(y - 0.5));
-                    const right = Math.min(Math.round(view.viewport.width * view.viewport.dpr), Math.ceil(x + width - 0.5));
-                    const bottom = Math.min(Math.round(view.viewport.height * view.viewport.dpr), Math.ceil(y + height - 0.5));
+            for (const out of ready.out) {
+                if (out.band !== band) continue;
+                for (let index = 0; index < out.tiles.length; index++) {
+                    const group = out.groupAt.get(index);
+                    if (group) {
+                        if (!group.batch) throw new Error('Analytic ink batch is not prepared');
+                        analytic.draw(pass, group.batch, view, omitNodes); index = group.end - 1; continue;
+                    }
+                    const tile = out.tiles[index];
+                    if (omitNodes?.has(tile.item.nodeId)) continue;
+                    if (tile.analytic) throw new Error('Unbatched analytic ink command');
+                    if (tile.path) { drawPathItem(pass, tile.path, pathCoverage); continue; }
+                    if (tile.worldRect) {
+                        const rect = tile.worldRect, scale = view.camera.z * view.viewport.dpr;
+                        const x = (rect.x - view.camera.x) * scale, y = (rect.y - view.camera.y) * scale;
+                        const width = rect.width * scale, height = rect.height * scale;
+                        const left = Math.max(0, Math.ceil(x - 0.5)), top = Math.max(0, Math.ceil(y - 0.5));
+                        const right = Math.min(Math.round(view.viewport.width * view.viewport.dpr), Math.ceil(x + width - 0.5));
+                        const bottom = Math.min(Math.round(view.viewport.height * view.viewport.dpr), Math.ceil(y + height - 0.5));
+                        if (right <= left || bottom <= top) continue;
+                        const clip = pass.pushClip({ x: left, y: top, width: right - left, height: bottom - top });
+                        try {
+                            // The same quad the presentation facts classify (imageSampling.texturedQuad), gutter included.
+                            const quad = texturedQuad({ x: x, y: y, width, height }, SIZE, { x: GUTTER, y: GUTTER, width: EDGE, height: EDGE });
+                            host.drawTexturedQuad(pass, tile.cached.texture, { x: 0, y: 0, width: SIZE, height: SIZE },
+                                { x: quad.x0, y: quad.y0, width: quad.x1 - quad.x0, height: quad.y1 - quad.y0 },
+                                { opacity: 1, sampling: 'linear', coverage: 'none' });
+                        } finally { pass.popClip(clip); }
+                        continue;
+                    }
+                    const source: Rect = { x: GUTTER, y: GUTTER, width: EDGE, height: EDGE };
+                    const dest: Rect = { x: (tile.x * EDGE - view.camera.x * ready.scale) * factor, y: (tile.y * EDGE - view.camera.y * ready.scale) * factor, width: EDGE * factor, height: EDGE * factor };
+                    const left = Math.max(0, Math.floor(dest.x)), top = Math.max(0, Math.floor(dest.y));
+                    const right = Math.min(Math.round(view.viewport.width * view.viewport.dpr), Math.ceil(dest.x + dest.width));
+                    const bottom = Math.min(Math.round(view.viewport.height * view.viewport.dpr), Math.ceil(dest.y + dest.height));
                     if (right <= left || bottom <= top) continue;
-                    const clip = pass.pushClip({ x: left, y: top, width: right - left, height: bottom - top });
-                    try {
-                        const apron = GUTTER * width / EDGE;
-                        host.drawTexturedQuad(pass, tile.cached.texture, { x: 0, y: 0, width: SIZE, height: SIZE },
-                            { x: x - apron, y: y - apron, width: width + 2 * apron, height: height + 2 * apron },
-                            { opacity: 1, sampling: 'linear', coverage: 'none' });
-                    } finally { pass.popClip(clip); }
-                    continue;
+                    const isolated = tile.multiply ? pass.beginGroup({ x: left, y: top, width: right - left, height: bottom - top },
+                        { opacity: 1, blend: 'multiply', colourEffect: 'none' }) : null;
+                    host.drawTexturedQuad(pass, tile.cached.texture, source, dest, { opacity: 1, sampling: 'linear', coverage: 'none' });
+                    if (isolated) pass.endGroup(isolated);
                 }
-                const source: Rect = { x: GUTTER, y: GUTTER, width: EDGE, height: EDGE };
-                const dest: Rect = { x: (tile.x * EDGE - view.camera.x * ready.scale) * factor, y: (tile.y * EDGE - view.camera.y * ready.scale) * factor, width: EDGE * factor, height: EDGE * factor };
-                const left = Math.max(0, Math.floor(dest.x)), top = Math.max(0, Math.floor(dest.y));
-                const right = Math.min(Math.round(view.viewport.width * view.viewport.dpr), Math.ceil(dest.x + dest.width));
-                const bottom = Math.min(Math.round(view.viewport.height * view.viewport.dpr), Math.ceil(dest.y + dest.height));
-                if (right <= left || bottom <= top) continue;
-                const isolated = tile.multiply ? pass.beginGroup({ x: left, y: top, width: right - left, height: bottom - top },
-                    { opacity: 1, blend: 'multiply', colourEffect: 'none' }) : null;
-                host.drawTexturedQuad(pass, tile.cached.texture, source, dest, { opacity: 1, sampling: 'linear', coverage: 'none' });
-                if (isolated) pass.endGroup(isolated);
             }
         },
         release(_reason: GpuReleaseReason): void { reset(); analytic.release(); pathCoverage.release(); denied = false; currentToken = null; lastFrame = -1; },
         needsFrame(): boolean {
             if (disposed || denied) return false;
             if (staged?.waitingBatch) return analytic.needsFrame();
-            return !!staged || !ready || ready.sourceFrame !== reference.readyFrame() || ready.frame !== reference.borrowPrepared()?.frame;
+            return !!staged || !ready || ready.sourceFrame !== reference.readyFrame() || ready.prepared !== reference.borrowPrepared();
         },
         memory(): { gpuBytes: number; cpuBytes: number } {
             const batches = analytic.memory();

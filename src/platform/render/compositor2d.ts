@@ -869,7 +869,9 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         }
         ctx.save();
         try {
+            // Linear is the declared bilinear profile (whiteboard/render/imageSampling.ts); quality 'low' makes it mip-free.
             ctx.resetTransform(); ctx.globalAlpha *= options.opacity; ctx.imageSmoothingEnabled = options.sampling === 'linear';
+            ctx.imageSmoothingQuality = 'low';
             ctx.drawImage(image, sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height, destRect.x, destRect.y, destRect.width, destRect.height);
         } finally { ctx.restore(); if (__BME_BENCH__) {
             if (previousCoverage) benchmarkCanvas?.coverageKinds.set(this, previousCoverage);

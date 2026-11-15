@@ -5,7 +5,7 @@ import type { PageStack } from '../../platform/render/pageStack';
 import type { RenderToken } from '../../platform/render/types';
 import type { SheetId } from '../model/ids';
 import type { PaintImageProvider } from '../render/resources';
-import type { PaintFrame } from '../render/paintStream';
+import type { PaintSource } from '../render/paintStream';
 import type { VideoFrameOverlay } from '../media/videoFrames';
 import type { ViewerPaintPresentation } from '../render/paintPresentation';
 export type { ViewerPaintPresentation } from '../render/paintPresentation';
@@ -56,7 +56,7 @@ export interface ViewerInteractionPorts {
     captureText?(): TextSelectionSnapshot | undefined;
     restoreText?(snapshot: TextSelectionSnapshot): void;
     beforeHistoryReplay?(step: HistoryStepInfo, direction: 'undo' | 'redo'): boolean;
-    presented?(revision: number, token: RenderToken, frame?: PaintFrame, context?: ViewerPaintPresentation): void;
+    presented?(revision: number, token: RenderToken, frame?: PaintSource, context?: ViewerPaintPresentation): void;
     liveNodeIds?(): ReadonlySet<string>;
     /** The theme palette changed. Interaction-owned paint (the wet ink source) caches pigments
      * from the palette and is only refreshed when its own layer is prepared, so the view must
@@ -81,10 +81,12 @@ export interface ViewerEngine {
     connectEmbeds(port: EmbedPresentationPort | null): void;
     /** The platform's acceptance of a presented frame; the embed producer builds only after this matches its draw. */
     presentationAccepted(presentation: PlatformPresentation | null): void;
-    readyPaintFrame(): PaintFrame | null;
+    /** The requested or accepted embed set changed: repaint with the live barriers that set implies. */
+    embedsChanged(): void;
+    readyPaintFrame(): PaintSource | null;
     setInteractionLayers(layers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null): void;
     setPreviewLayers(layers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null,
-        coverage?: () => Readonly<{ frame: PaintFrame; nodeIds: ReadonlySet<string> }> | null): void;
+        coverage?: () => Readonly<{ frame: PaintSource; nodeIds: ReadonlySet<string> }> | null): void;
     bindPreviewClear(clear: () => void): () => void;
     /** Detach the platform pane first: lifecycle disposes its layers. Releases only this view's
      * jobs/borrowed leases/listeners, NEVER the App-owned BoardSession or its undo/save state.

@@ -5,7 +5,8 @@ import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { BoardDoc } from '../model/doc';
 import type { Rect } from '../../platform/types';
 import { PaintStreamJob } from './paintStream';
-import type { PaintFrame, PaintItem, PaintNode, PaintNodeSource } from './paintStream';
+import type { PaintItem, PaintNode, PaintNodeSource, PaintSource } from './paintStream';
+import { PAINT_WINDOW_ITEMS, PaintWindowBuilder } from './paintWindows';
 import type { PaintBand } from './material';
 import type { PaintFrameAssembler, PinnedPaintSource, PinnedPaintStream } from './frameTypes';
 import type { SessionDenseRasters } from './sessionDenseRasters';
@@ -17,6 +18,8 @@ const BLOCK_BYTES = 64 * 1024;
 const REFERENCE_BYTES = 16;
 const INK_SET_ENTRY_BYTES = 64;
 const FRAME_BASE_BYTES = 256;
+// Per-window bookkeeping of a live frame: the window object, its frozen array and its band entry.
+const WINDOW_BYTES = 64;
 interface Block { readonly owner: MemoryAllocator; readonly lease: ByteLease }
 
 /** What a frame borrows from its source: identity fields read at publication, the pinned
@@ -30,6 +33,9 @@ interface Owner {
     readonly rasterVariant?: string;
     readonly sourceWorld?: Readonly<Rect>;
     readonly regionChangesSince?: (from: number) => RegionChanges;
+    readonly sensitiveMayMeet?: (world: Readonly<Rect>, nodes: ReadonlySet<string>) => boolean;
+    readonly mayPaint?: (world: Readonly<Rect>) => boolean;
+    readonly occupiedRoot?: Readonly<Rect>;
     readonly openTile?: (world: Readonly<Rect>, signal: AbortSignal) => Promise<ScenePaintNodeStream>;
     readonly liveOnly?: true;
     isCurrent(): boolean;
@@ -43,17 +49,23 @@ interface Feed {
     readonly waiting: boolean;
     cancel(): void;
 }
+/** Where staged items go: band arrays for a full frame, bounded windows for a live-only frame. A live frame
+ * never builds a whole band array, so its staging holds only the windows already closed plus one open window. */
+type StagedItems =
+    | { readonly kind: 'arrays'; readonly underlay: PaintItem[]; readonly content: PaintItem[] }
+    | { readonly kind: 'windows'; readonly underlay: PaintWindowBuilder; readonly content: PaintWindowBuilder };
 interface Staging {
     readonly owner: Owner;
     feed: Feed;
-    readonly underlay: PaintItem[];
-    readonly content: PaintItem[];
+    readonly items: StagedItems;
+    /** Live items admitted so far; each window's bookkeeping is charged once per window, not per item. */
+    windowed: number;
     readonly inkNodeIds: Set<string>;
     readonly blocks: Block[];
     used: number;
 }
 interface Published {
-    readonly owner: Owner; readonly frame: PaintFrame; readonly blocks: Block[];
+    readonly owner: Owner; readonly frame: PaintSource; readonly blocks: Block[];
     borrowers: number;
     retired: boolean;
     releasing: boolean;
@@ -83,6 +95,9 @@ function streamOwner(pin: PinnedPaintStream): Owner {
         get rasterVariant() { return stream.rasterVariant; },
         get sourceWorld() { return stream.sourceWorld; },
         get regionChangesSince() { return stream.regionChangesSince; },
+        get sensitiveMayMeet() { return stream.sensitiveMayMeet; },
+        get mayPaint() { return stream.mayPaint; },
+        get occupiedRoot() { return stream.occupiedRoot; },
         openTile: pin.open ? (world, signal) => pin.open!(world, signal) : undefined,
         liveOnly: pin.liveOnly,
         isCurrent: () => pin.isCurrent(),
@@ -146,7 +161,7 @@ function streamFeed(stream: PinnedPaintStream['stream'], add: Add, room: () => b
 export function createPaintFrameAssembler(invalidate: () => void, onError: (error: unknown) => void): PaintFrameAssembler {
     let staging: Staging | null = null, latest: Published | null = null, disposed = false;
     let allocator: MemoryAllocator | null = null, blocked = false, heldBytes = 0;
-    const retained = new Map<PaintFrame, Published>(), retiring = new Set<Promise<void>>();
+    const retained = new Map<PaintSource, Published>(), retiring = new Set<Promise<void>>();
     const waiters = new Set<() => void>();
     const report = (error: unknown) => { try { onError(error); } catch { /* Cleanup must still release every lease. */ } };
     const notifyRetired = () => {
@@ -182,7 +197,7 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
         entry.releasing = true;
         releaseOwned(entry.owner, entry.blocks, () => { retained.delete(entry.frame); });
     };
-    const retire = (frame: PaintFrame) => {
+    const retire = (frame: PaintSource) => {
         const entry = retained.get(frame);
         if (!entry || entry === latest) return;
         entry.retired = true;
@@ -200,11 +215,17 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
     const needsBlock = (work: Staging) => work.used + REFERENCE_BYTES + INK_SET_ENTRY_BYTES > work.blocks.length * BLOCK_BYTES;
     const start = (owner: Owner, feed: (add: Add, room: () => boolean) => Feed): void => {
         dropStaging();
-        const underlay: PaintItem[] = [], content: PaintItem[] = [], inkNodeIds = new Set<string>();
-        const blocks: Block[] = [];
-        const work: Staging = { owner, feed: IDLE_FEED, underlay, content, inkNodeIds, blocks, used: FRAME_BASE_BYTES };
+        const inkNodeIds = new Set<string>(), blocks: Block[] = [];
+        const items: StagedItems = owner.liveOnly
+            ? { kind: 'windows', underlay: new PaintWindowBuilder(), content: new PaintWindowBuilder() }
+            : { kind: 'arrays', underlay: [], content: [] };
+        const work: Staging = { owner, feed: IDLE_FEED, items, windowed: 0, inkNodeIds, blocks, used: FRAME_BASE_BYTES };
         const add: Add = (item, band) => {
-            (band === 'underlay' ? underlay : content).push(item);
+            if (items.kind === 'arrays') (band === 'underlay' ? items.underlay : items.content).push(item);
+            else {
+                (band === 'underlay' ? items.underlay : items.content).push(band, item);
+                if (work.windowed++ % PAINT_WINDOW_ITEMS === 0) work.used += WINDOW_BYTES;
+            }
             work.used += REFERENCE_BYTES;
             if (item.kind === 'ink' && !inkNodeIds.has(item.nodeId)) {
                 inkNodeIds.add(item.nodeId); work.used += INK_SET_ENTRY_BYTES;
@@ -215,13 +236,15 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
         invalidate();
     };
     const publish = (work: Staging) => {
-        const o = work.owner;
-        const frame: PaintFrame = Object.freeze({ token: o.token, sceneRevision: o.sceneRevision,
+        const o = work.owner, staged = work.items;
+        const root = { token: o.token, sceneRevision: o.sceneRevision,
             sourceDoc: o.sourceDoc, sensitiveNodes: o.sensitiveNodes,
             sessionRasters: o.sessionRasters, rasterVariant: o.rasterVariant, sourceWorld: o.sourceWorld, openTile: o.openTile,
-            regionChangesSince: o.regionChangesSince,
-            ...(o.liveOnly ? { liveOnly: true as const } : {}),
-            underlay: Object.freeze(work.underlay), content: Object.freeze(work.content), inkNodeIds: work.inkNodeIds });
+            regionChangesSince: o.regionChangesSince, sensitiveMayMeet: o.sensitiveMayMeet, mayPaint: o.mayPaint, occupiedRoot: o.occupiedRoot,
+            inkNodeIds: work.inkNodeIds };
+        const frame: PaintSource = staged.kind === 'windows'
+            ? Object.freeze({ ...root, liveOnly: true as const, windows: Object.freeze([...staged.underlay.finish(), ...staged.content.finish()]) })
+            : Object.freeze({ ...root, underlay: Object.freeze(staged.underlay), content: Object.freeze(staged.content) });
         const published: Published = { owner: o, frame, blocks: work.blocks, borrowers: 0, retired: false, releasing: false };
         retained.set(frame, published); latest = published; staging = null; invalidate();
     };

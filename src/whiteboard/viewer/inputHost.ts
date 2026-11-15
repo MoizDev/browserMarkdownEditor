@@ -8,7 +8,7 @@ import { attachBoardInput, type BoardInputMode, type BoardInputServices, type Bo
 import { MappingHistory, presentedMapping } from '../input/pointer';
 import type { InputToken, RealSample } from '../input/tool';
 import type { BoardSession } from '../session/BoardSession';
-import type { PaintFrame } from '../render/paintStream';
+import type { PaintSource } from '../render/paintStream';
 import type { ViewerPaintPresentation } from '../render/paintPresentation';
 import type { ViewerEngine, ViewerInteractionPorts } from './types';
 import { createBoardWetLayer } from './wetLayer';
@@ -41,7 +41,7 @@ export interface BoardInputHostOptions {
     /** Called after an attachment's listeners are removed, so per-attachment services can release. */
     released?(): void;
     /** Composable observer of each actual presented frame; the wet layer always runs first. */
-    presented?(revision: number, token: RenderToken, frame?: PaintFrame, context?: ViewerPaintPresentation): void;
+    presented?(revision: number, token: RenderToken, frame?: PaintSource, context?: ViewerPaintPresentation): void;
     invalidate(): void;
     onError(error: unknown): void;
     readonly overlays?: {

@@ -1,5 +1,5 @@
 import type { RenderToken } from '../../platform/render/types';
-import type { PaintFrame } from './paintStream';
+import type { PaintSource } from './paintStream';
 
 /** Decoder/broker ownership stays with the injected provider, never a Canvas executor. */
 export interface PaintImageLease {
@@ -18,8 +18,8 @@ export interface PaintImageProvider {
 }
 export interface PaintFrameSource {
     /** O(1), complete immutable frame only. Null means no publishable frame yet. */
-    readFrame(): PaintFrame | null;
-    isCurrent(frame: PaintFrame): boolean;
+    readFrame(): PaintSource | null;
+    isCurrent(frame: PaintSource): boolean;
 }
 export interface PaintLayerResources {
     readonly frames: PaintFrameSource;

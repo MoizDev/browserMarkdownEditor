@@ -93,7 +93,7 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
     let disposed = false, generation = 0, pin: SceneSnapshot | null = null, document: Promise<BoardDoc> | null = null;
     let controller: AbortController | null = null, pendingRelease: (() => void) | null = null, pair: BoardLayerPair | null = null;
     let frames: ReturnType<typeof createPaintFrameAssembler> | null = null;
-    let requestedIds: ReadonlySet<string> | null = null, requestedGeneration = -1;
+    let requestedIds: ReadonlySet<string> | null = null, requestedGeneration = -1, handedOffGeneration = -1;
     let commitRevision: number | null = null, commitRelease: (() => void) | null = null;
     const frameIds = new WeakMap<PaintSource, ReadonlySet<string>>(), frameGenerations = new WeakMap<PaintSource, number>();
     const waiters = new Set<{ generation: number; resolve(): void; reject(error: unknown): void; signal: AbortSignal; abort(): void }>();
@@ -279,10 +279,8 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
                             frameIds.set(frame, requestedIds); frameGenerations.set(frame, requestedGeneration);
                         }
                     } };
-                    // Readiness is this layer's own draw of the current generation. The main view's coverage poll
-                    // runs only when the main layers draw, which a gesture need not cause, so it cannot be the signal.
                     const layers = createBoardLayers({ frames: assembler, images: options.images, onError: report, requestedRevision: () => pinned.revision,
-                        onDrawn(_revision, drawn) { if (frameGenerations.get(drawn as PaintSource) === generation) settle(); } });
+                        optional: true });
                     frames = assembler; pair = layers;
                     engine.setPreviewLayers({ underlay: { ...layers[0], id: 'board-preview-underlay' },
                         content: { ...layers[1], id: 'board-preview-content' } }, () => {
@@ -297,6 +295,9 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
                 }
                 requestedIds = candidates; requestedGeneration = seq;
                 frames.request({ source: guarded, release: releaseLeases }); handedOff = true;
+                // Ready means this generation's source is handed to its layer. Drawing it is the platform's
+                // later step, and the commit must not wait on a compositor cycle that a gesture may not trigger.
+                handedOffGeneration = seq; settle();
                 if (pendingRelease === releaseLeases) pendingRelease = null;
             } catch (error) {
                 if (!job.signal.aborted && generation === seq) {
@@ -320,8 +321,7 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
         showOps(ops) { try { const projected = operationNodes(runtime.session.doc, ops); start(projected.changes, undefined, projected.paper); } catch (error) { clear(); report(error); } },
         waitUntilReady(signal) {
             if (disposed || signal.aborted || !pin || !controller) return Promise.reject(interrupted());
-            const frame = pair?.readyFrame();
-            if (frame && frames?.isCurrent(frame) && frameGenerations.get(frame) === generation) return Promise.resolve();
+            if (handedOffGeneration === generation && frames) return Promise.resolve();
             return new Promise<void>((resolve, reject) => {
                 const waiter = { generation, resolve, reject, signal, abort: () => {} };
                 waiter.abort = () => { if (waiters.delete(waiter)) reject(interrupted()); };

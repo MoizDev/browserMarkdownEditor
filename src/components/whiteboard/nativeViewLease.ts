@@ -577,8 +577,12 @@ export function createNativeViewLease(options: {
             // The capture contract is canonical light paint only; a view's inversion is reported by describe, never captured.
             captureRect: (rect, maxSide, signal) => captureBlob(rect, maxSide, { signal, theme: 'light', inverted: false, layers: captureLayers() }),
             current });
+        // The save boundaries (Save, close, a disk conflict's Reload) ask the view for its unsaved edits. Without
+        // these the native board answered "nothing pending" and a completed stroke could be lost (pdf-ink F-PINK-007).
         const reporter: ViewReporter = { kind: board.doc.kind === 'whiteboard' ? 'drawing' : board.doc.kind === 'notebook' ? 'notebook' : 'pdf-annotate',
-            describe: () => live.describe({ deadlineMs: 30_000 }), live };
+            describe: () => live.describe({ deadlineMs: 30_000 }), live,
+            hasPendingEdits: () => board.hasPendingEdits(),
+            flushPending: () => { if (!board.isReadOnly && board.hasPendingEdits()) board.checkpoint(); } };
         unregisterView = registerView(livePath, reporter);
     }
     cameraClaim?.commit();

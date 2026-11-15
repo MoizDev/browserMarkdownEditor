@@ -218,7 +218,7 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
             toolStateFor={toolStateFor} commands={commands} actionShortcut={commands.actionShortcut} actionState={commands.actionState}
             runAction={commands.runAction} openMedia={() => { void commands.runAction('uploadMedia'); }} zoom={context.zoom}
             minimapVisible={context.minimapOpen} confirm={dialogs.confirm} canWrite={canWrite} registerShortcuts={registerShortcuts} onReady={handleChromeReady} onStyles={onStyles}
-            notebook={runtime.session.doc.kind === 'notebook' ? { inverted, setInverted, thumbnailsOpen: thumbnails, setThumbnailsOpen: setThumbnails } : undefined} /></NativeChromeAttachment>;
+            notebook={runtime.session.doc.kind !== 'whiteboard' ? { inverted, setInverted, thumbnailsOpen: thumbnails, setThumbnailsOpen: setThumbnails } : undefined} /></NativeChromeAttachment>;
     }, [runtime, lease, language, clipboard, current, mac, props.isVisible, adapter, canWrite, report, toolStateFor, owned, dialogs.confirm, registerShortcuts, onStyles, handleChromeReady, inverted, setInverted, thumbnails, bindMinimap]);
     useEffect(() => {
         if (!props.isVisible || signal.aborted || !current() || !attached || !chromeReady || !owned || !embedPort

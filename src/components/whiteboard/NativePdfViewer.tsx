@@ -204,7 +204,7 @@ function PdfAttachedFrame({ props, lease, viewer, onFocus, register, inverted, s
             view={viewer} layers={view.layers} platform={view.platform} reason={view.reason ?? VIEW_REASON}
             readiness={view.readiness} paint={view.paint}
             readOnly={readOnly} externalAccessibility={editingChrome !== undefined} readOnlyNotice={VIEW_REASON} registerKeyboardTarget={register} onFocus={onFocus}
-            chrome={<>{editingChrome}<div className="native-canvas-navigation" role="toolbar" aria-label="PDF navigation">
+            chrome={<>{editingChrome}{!editingChrome && <div className="native-canvas-navigation" role="toolbar" aria-label="PDF navigation">
                 <label>Page <input type="number" min={1} max={pages} value={navigation.page + 1} onChange={event => {
                     const page = event.currentTarget.valueAsNumber;
                     if (Number.isFinite(page) && pages) lease.jump(Math.max(0, Math.min(pages - 1, Math.floor(page) - 1)));
@@ -213,7 +213,7 @@ function PdfAttachedFrame({ props, lease, viewer, onFocus, register, inverted, s
                 <span>{Math.round(navigation.zoom * 100)}%</span>
                 <button type="button" onClick={() => lease.zoomBy(1.2)} aria-label="Zoom in">+</button>
                 <button type="button" aria-pressed={inverted} onClick={() => setInverted(!inverted)}>Invert</button>
-            </div></>} />}
+            </div>}</>} />}
         {cover && <div className="native-pdf-updating" role={reason ? 'alert' : 'status'} style={{ position: 'absolute', inset: 0,
             zIndex: 10, display: 'grid', placeItems: 'center', background: props.theme === 'dark' ? '#181818' : '#fff',
             color: props.theme === 'dark' ? '#fff' : '#111' }}>{reason ?? 'Updating PDF view…'}</div>}

@@ -5,6 +5,7 @@ import { NativeBoardChrome, type NativeBoardChromeProps } from './NativeBoardChr
 import type { NativeViewLease } from './nativeViewLease';
 import { boardPageStack } from '../../whiteboard/model/pages';
 import { NotebookControls } from './NotebookControls';
+import { PagedNavigation } from './PagedNavigation';
 import NativeNotebookThumbnails from './NativeNotebookThumbnails';
 import { useNativeSheetControls } from './useNativeSheetControls';
 import './boardHost.css';
@@ -36,19 +37,26 @@ export function NativeBoardChromeHost({ lease, confirm, canWrite, notebook, ...p
     const jump = useCallback((page: number) => lease.jump(page), [lease]);
     const host = props.runtime.session.doc.host;
     const stack = useMemo(() => boardPageStack(host), [host]);
-    if (host.kind === 'notebook' && (!notebook || !stack)) throw new Error('Notebook controls need the actual page view');
+    if (host.kind !== 'whiteboard' && (!notebook || !stack)) throw new Error('Paged board controls need the actual page view');
     const t = (key: string, values?: Readonly<Record<string, string | number>>) => translateBoard(lang.table, key, values);
-    // The paper bar belongs to the chrome column under the header, so it cannot cover the header's commands.
-    const paper = host.kind === 'notebook' && notebook && stack ? <div className="board-paper-slot"><div className="board-paper-bar">
-        <NotebookControls paper={host.paper} page={navigation.page} readOnly={props.readOnly} inverted={notebook.inverted}
+    // The paged bar belongs to the chrome column under the header, so it cannot cover the header's commands.
+    // A notebook's bar also edits paper; an annotated PDF's only navigates, and its physical pages are fixed.
+    const paper = host.kind !== 'whiteboard' && notebook && stack ? <div className="board-paper-slot"><div className="board-paper-bar">
+        {host.kind === 'notebook' ? <NotebookControls paper={host.paper} page={navigation.page} readOnly={props.readOnly} inverted={notebook.inverted}
             thumbnailsOpen={notebook.thumbnailsOpen} dir={lang.table.dir} t={t} changePaper={sheets.controls.changePaper}
             addPage={sheets.controls.addPage} deleteLastPage={() => { void sheets.controls.deleteLastPage(); }} jump={jump}
             toggleInversion={() => notebook.setInverted(!notebook.inverted)}
             toggleThumbnails={() => notebook.setThumbnailsOpen(!notebook.thumbnailsOpen)} />
+            : <div className="board-paper-controls board-chrome-tool-row" role="toolbar" dir={lang.table.dir} aria-label={t('paper.name')}>
+                <PagedNavigation page={navigation.page} count={stack.rects.length} inverted={notebook.inverted}
+                    thumbnailsOpen={notebook.thumbnailsOpen} t={t} jump={jump}
+                    toggleInversion={() => notebook.setInverted(!notebook.inverted)}
+                    toggleThumbnails={() => notebook.setThumbnailsOpen(!notebook.thumbnailsOpen)} />
+            </div>}
         <NativeNotebookThumbnails pages={stack.rects} revision={getRevision()} page={navigation.page} isVisible={props.isVisible}
             current={props.currentOwner} currentRevision={getRevision} capturePng={capturePng} jump={jump} onError={props.reportError}
             open={notebook.thumbnailsOpen} onOpenChange={notebook.setThumbnailsOpen}
-            reorder={props.readOnly ? undefined : (from, to) => {
+            reorder={props.readOnly || host.kind !== 'notebook' ? undefined : (from, to) => {
                 try { sheets.controls.reorderPage(from, to); } catch (error) { props.reportError(error); }
             }} />
     </div></div> : undefined;

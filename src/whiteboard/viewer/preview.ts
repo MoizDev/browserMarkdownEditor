@@ -307,7 +307,7 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
                         }
                     } };
                     const layers = createBoardLayers({ frames: assembler, images: options.images, onError: report, requestedRevision: () => pinned.revision,
-                        optional: true });
+                        requestedTheme: () => engine.getView().theme, optional: true });
                     frames = assembler; pair = layers;
                     engine.setPreviewLayers({ underlay: { ...layers[0], id: 'board-preview-underlay' },
                         content: { ...layers[1], id: 'board-preview-content' } }, () => {

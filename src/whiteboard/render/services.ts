@@ -327,7 +327,7 @@ export function createBoardRenderServices(options: {
         const world = request.world ? Object.freeze({ ...request.world }) : undefined;
         const stream = createScenePaintNodeStream(doc, sourceToken, request, asyncPaintPorts(doc, request, orderedIds), signal);
         return {
-            token: stream.token, sceneRevision: stream.sceneRevision, sourceDoc: stream.sourceDoc, sensitiveNodes: stream.sensitiveNodes,
+            token: stream.token, theme: request.theme, sceneRevision: stream.sceneRevision, sourceDoc: stream.sourceDoc, sensitiveNodes: stream.sensitiveNodes,
             sessionRasters, sourceWorld: world,
             get rasterVariant() { return text.fonts.epoch === epoch ? variant : undefined; },
             isCurrent: () => stream.isCurrent(),

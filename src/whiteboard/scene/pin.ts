@@ -182,7 +182,7 @@ export function createSceneSnapshot(options: {
         signal.addEventListener('abort', abort, { once: true });
         if (signal.aborted) abort();
         return {
-            token: source.token, sceneRevision: source.sceneRevision, sourceDoc: source.sourceDoc, sensitiveNodes: source.sensitiveNodes,
+            token: source.token, theme: source.theme, sceneRevision: source.sceneRevision, sourceDoc: source.sourceDoc, sensitiveNodes: source.sensitiveNodes,
             sessionRasters: source.sessionRasters, get rasterVariant() { return source.rasterVariant; }, sourceWorld, regionChangesSince,
             sensitiveMayMeet: (world, nodes) => sensitiveMayMeet(index, world, nodes),
             mayPaint: world => mayPaint(index, world), ...(occupiedRoot ? { occupiedRoot } : {}),
@@ -260,7 +260,7 @@ export function createSceneSnapshot(options: {
                 check();
                 if (!source || source.sceneRevision !== revision || !sameToken(source.token, token)) throw new TypeError('Paint source does not match scene snapshot');
                 const extended = source as PaintNodeSource & { readonly sessionRasters?: unknown; readonly rasterVariant?: unknown };
-                return { sourceDoc: doc, token, sceneRevision: revision, sensitiveNodes: source.sensitiveNodes, nodeCount: source.nodeCount,
+                return { sourceDoc: doc, token, theme: source.theme, sceneRevision: revision, sensitiveNodes: source.sensitiveNodes, nodeCount: source.nodeCount,
                     ...{ sessionRasters: extended.sessionRasters, rasterVariant: extended.rasterVariant, sourceWorld: pinnedRequest.world },
                     readNode: (index: number) => source.readNode(index), isCurrent: () => !released && !controller.signal.aborted } satisfies PaintNodeSource;
             })());

@@ -8,15 +8,18 @@ import { createBoardCaptureSnapshot } from '../export/runtimeSnapshot';
 import { encodeTiledPngInWorker } from '../export/pngWorkerClient';
 import { checkPngSize, pngScaleLimit, splicePngDensity } from '../export/png';
 import type { BoardPrintSource } from '../export/print';
-import { streamIncrementalPdf } from '../export/incrementalPdf';
+import { streamIncrementalPdf, writeIncrementalPdfPage } from '../export/incrementalPdf';
 import { createLazyIncrementalPdfWriter } from '../export/lazyPdfWriter';
 import { exportFileName, resolveExportScope, type ExportRoute } from '../export/scope';
+import { streamPageDisplayList } from '../export/streamPage';
 import { streamRasterPng } from '../export/streamRaster';
+import type { PdfInkSnapshot } from './pdfInkExport';
+import { pinPdfInkAssembly } from './pdfInkAssembly';
 import { streamSvg } from '../export/streamSvg';
 import { createBoardHostImages } from '../media/hostImages';
 import type { MediaLease } from '../media/store';
 import type { MediaEntry, MediaId } from '../model/media';
-import type { NodeId } from '../model/ids';
+import type { NodeId, SheetId } from '../model/ids';
 import { colourCss } from '../render/colour';
 import { DEFAULT_BOARD_PALETTES } from '../render/palette';
 import type { PaintImageProvider } from '../render/resources';
@@ -88,7 +91,9 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
     if (!options.current() || !scene?.ready || scene.revision !== doc.rev) throw new Error('Board export scene is not ready');
     const selection = runtime.selection.getSnapshot(), revision = doc.rev, fontEpoch = runtime.render.text.fonts.epoch;
     if (region && options.selection) throw new TypeError('Explicit selection and capture region are mutually exclusive');
-    const selectedRoots = options.selection ? [...options.selection.roots] : route === 'menu' || region ? [] : [...selection.selected];
+    // A paged document prints every page: a selection never shrinks the whole PDF a print must carry.
+    const pagedPrint = route === 'print' && doc.kind !== 'whiteboard';
+    const selectedRoots = options.selection ? [...options.selection.roots] : route === 'menu' || region || pagedPrint ? [] : [...selection.selected];
     if (options.selection && !selectedRoots.length) throw new RangeError('Nothing to export');
     const excluded = new Set(options.selection?.excludeSubtrees), rootOf = new Map<NodeId, NodeId>();
     const selected = new Set<NodeId>(), pending = selectedRoots.map(id => ({ id, root: id }));
@@ -327,15 +332,45 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
                 },
             });
         };
-        const pdfPng = async (captureSignal: AbortSignal) => {
-            const scale = (longest * pngScale) / longest;
-            checkPngSize(Math.max(1, Math.ceil(scope.bounds.width * scale)), Math.max(1, Math.ceil(scope.bounds.height * scale)), route === 'copy');
+        /** One world rectangle of the PDF-backed board, captured at `pixelsPerUnit` from the same pinned backdrop and board. */
+        const pdfCaptureBlob = async (world: Readonly<Rect>, pixelsPerUnit: number, layers: readonly string[],
+            captureSignal: AbortSignal, clipboard: boolean): Promise<Blob> => {
             const capturer = pdfCapturer(true);
             try {
-                return await capturer.captureExportBlob(scope.bounds, longest * pngScale,
-                    { layers: [...(region && background ? ['native-export-background'] : []), ...pdfLayers, 'board-underlay', 'board-content'], theme: 'light', inverted: false, signal: captureSignal,
-                        deadlineMs: 300_000, clipboard: route === 'copy', pixelsPerWorldUnit: scale });
+                return await capturer.captureExportBlob(world, Math.max(world.width, world.height) * pixelsPerUnit,
+                    { layers, theme: 'light', inverted: false, signal: captureSignal, deadlineMs: 300_000, clipboard, pixelsPerWorldUnit: pixelsPerUnit });
             } finally { await capturer.dispose(); }
+        };
+        const pdfPng = async (captureSignal: AbortSignal) => {
+            checkPngSize(Math.max(1, Math.ceil(scope.bounds.width * pngScale)), Math.max(1, Math.ceil(scope.bounds.height * pngScale)), route === 'copy');
+            return pdfCaptureBlob(scope.bounds, pngScale,
+                [...(region && background ? ['native-export-background'] : []), ...pdfLayers, 'board-underlay', 'board-content'], captureSignal, route === 'copy');
+        };
+        /** The full PDF with its ink: the pinned backdrop's pages and every sheet's ink, written by the same writer a save uses. */
+        const pdfInkPrint = async (inkLease: PdfInkSourceLease, printSignal: AbortSignal): Promise<Uint8Array> => {
+            const layout = pages;
+            if (!layout || layout.length !== inkLease.source.pages.length) throw new Error('PDF page geometry is unavailable');
+            const images = (imageSignal: AbortSignal) => createExportImageResolver(token, capturedImages, readImage, imageSignal);
+            const pageSource = async (sheet: SheetId, index: number, pageSignal: AbortSignal) => {
+                pageSignal.throwIfAborted();
+                const world = layout[index];
+                if (!world || !doc.sheetOrder.some(item => item.id === sheet)) throw new Error('Captured board page is unavailable');
+                return { world, source: await pin.paintSource({ sheetId: sheet, page: index, world, theme: 'light' }, pageSignal) };
+            };
+            const ink: PdfInkSnapshot = { pages: inkLease.source.pages, sheets: doc.sheetOrder.map(item => item.id),
+                async readSheetPage(sheet, index, pageSignal) {
+                    const { world, source: paint } = await pageSource(sheet, index, pageSignal);
+                    return streamPageDisplayList(paint, index, world, 1, images(pageSignal), pageSignal);
+                },
+                async writeSheetPage(sheet, index, sink, pageSignal) {
+                    const { world, source: paint } = await pageSource(sheet, index, pageSignal);
+                    await writeIncrementalPdfPage({ source: paint, world }, index, 1, images(pageSignal), sink, pageSignal);
+                } };
+            const assembly = pinPdfInkAssembly({ revision, source: inkLease.source.source,
+                writeId: crypto.randomUUID().replace(/-/g, ''), ink, media: [...entries.values()],
+                mediaBlob: id => blobs.get(id), isCurrent: () => !released && options.current(), release: () => {} },
+                signal => inkLease.source.openWriter(signal));
+            return assembly.printable(printSignal);
         };
         const pdfSvg = async (captureSignal: AbortSignal) => {
             if (!pages) throw new Error('PDF page geometry is unavailable');
@@ -422,6 +457,7 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
         const print: BoardPrintSource = {
             pageCount: printPages.length,
             pdf: requestSignal => run(requestSignal, async combined => {
+                if (pdfLease) return new Blob([(await pdfInkPrint(pdfLease, combined)).slice().buffer], { type: 'application/pdf' });
                 const bytes = await streamIncrementalPdf({ revision, pageCount: printPages.length,
                     async page(index, pageSignal) {
                         pageSignal.throwIfAborted();
@@ -433,6 +469,8 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
             pngPage: (page, requestSignal) => run(requestSignal, combined => {
                 const world = printPages[page];
                 if (!Number.isSafeInteger(page) || !world) throw new RangeError('Invalid print page');
+                // A PDF-backed page keeps its backdrop: the raster fallback must show what the PDF print shows.
+                if (pdfBackdrop) return pdfCaptureBlob(world, printRaster, [...pdfLayers, 'board-underlay', 'board-content'], combined, false);
                 return streamRasterPng(source, capturedImages, world, printRaster, combined, { background: '#ffffff' });
             }),
             release,

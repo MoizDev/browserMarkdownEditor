@@ -18,10 +18,18 @@ import type { PresentedImage, PresentedImageLease, ViewerPaintPresentation } fro
 
 /** Both paths execute the same prepared paint; the platform alone selects/recovers the device. */
 export const BOARD_BACKEND_PREFERENCE = 'auto' as const;
+/** What the renderer holds for the current revision. `pending` keeps the last coherent presented pixels on screen;
+ * `current` needs a presented frame of the requested revision with nothing outstanding; `failed` is a real error. */
+export type PaintProgress = { readonly kind: 'current' } | { readonly kind: 'pending'; readonly reason: 'building' | 'waiting-memory' }
+    | { readonly kind: 'failed'; readonly message: string };
+function sameProgress(a: PaintProgress, b: PaintProgress): boolean { return JSON.stringify(a) === JSON.stringify(b); }
+function messageOf(error: unknown): string { return error instanceof Error ? error.message : String(error); }
 export interface BoardLayersOptions {
     readonly frames: PaintFrameAssembler;
     readonly images: PaintImageProvider;
     readonly onError: (error: unknown) => void;
+    /** Fired once per actual change of the renderer's progress; never for a repeated value. */
+    readonly onPaintProgress?: () => void;
     readonly requestedRevision: () => number;
     /** View-only suppression, evaluated against the actual ready preview frame. */
     readonly omitNodes?: (frame: PaintSource) => ReadonlySet<string> | null;
@@ -132,6 +140,8 @@ export interface BoardLayerPair extends Readonly<[PlatformLayerDefinition, Platf
     /** Each band's LayerHost deadline; the scheduler's coalesced wake only invalidates, it never draws. */
     wakeAt(deadlineMs: number | null): void;
     readyFrame(): PaintSource | null;
+    /** The renderer's progress for the requested revision, read live. */
+    paintProgress(): PaintProgress;
     /** The canonical CPU allocator of the bound layer host, or null before the first host has drawn. */
     memory(): MemoryAllocator | null;
 }
@@ -199,7 +209,27 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     const reservations = new Map<PaintSource, ByteLease[]>(), known = new Set<PaintSource>();
     let reserved = 0;
     const activeHost = () => hosts.get('underlay') ?? hosts.get('content');
-    const report = (error: unknown) => { try { options.onError(error); } catch { /* reporting cannot reject a worker callback */ } };
+    let lastError: string | null = null, lastProgress: PaintProgress | null = null;
+    const report = (error: unknown) => {
+        lastError = messageOf(error); refreshProgress();
+        try { options.onError(error); } catch { /* reporting cannot reject a worker callback */ }
+    };
+    // Pending while work or memory is outstanding; current only for the presented requested revision with nothing
+    // outstanding. Memory denial is waiting for capacity, never a failure. A real error stands until a current
+    // presentation actually completes.
+    const progressNow = (): PaintProgress => {
+        if (lastError !== null) return { kind: 'failed', message: lastError };
+        const blocked = !!options.frames.blocked?.() || denied || !!dense?.memoryBlocked();
+        const working = !!options.frames.needsFrame() || (!!estimate && !estimate.done) || !!adapter?.needsFrame()
+            || (!!activeHost()?.device() && !!gpu?.needsFrame()) || !!dense?.pending();
+        if (!blocked && !working && presented && presented.sceneRevision === options.requestedRevision() && options.frames.isCurrent(presented)) return { kind: 'current' };
+        return { kind: 'pending', reason: blocked ? 'waiting-memory' : 'building' };
+    };
+    const refreshProgress = () => {
+        const next = progressNow();
+        if (lastProgress && sameProgress(lastProgress, next)) return;
+        lastProgress = next; options.onPaintProgress?.();
+    };
     const releaseFrame = (frame: PaintSource) => {
         const leases = reservations.get(frame);
         if (!leases) return;
@@ -256,7 +286,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         estimate = null; denied = false; lastPrepareFrame = null; drawn.clear(); drawTokens = new WeakMap(); announced = new WeakMap(); drawSource = null; prepareToken = null; prepareFrameId = -1;
         ackFrame = null; ackOmit = null; ackInk = null; ackMask = 0; ackToken = null; ackContext = null; presentedInk = null;
         if (reason === 'hidden') {
-            deferredClear = true; collectRetired(); presented = null; presentedContext = null;
+            deferredClear = true; collectRetired(); presented = null; presentedContext = null; refreshProgress();
             density.reset(); useDense = false;
         }
     };
@@ -366,6 +396,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             gpu?.prepare(view, budget);
             prune(frame, adapter.readyFrame());
         } catch (error) { report(error); }
+        finally { refreshProgress(); }
     };
     const acknowledge = (band: PaintBand, revision: number, token: RenderToken) => {
         const drawnBand = drawTokens.get(token)?.get(band), frame = drawnBand?.frame, omit = drawnBand?.omit ?? null, ink = drawnBand?.ink;
@@ -386,6 +417,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         try {
             options.frames.presented(frame);
             const previous = presented; presented = frame; presentedOmit = omit; presentedInk = ink; presentedContext = context;
+            // A completed presentation is the only event that clears a real error.
+            lastError = null; refreshProgress();
             ackFrame = null; ackOmit = null; ackInk = null; ackMask = 0; ackToken = null; ackContext = null; drawTokens.delete(token);
             if (previous && previous !== frame && !retainedByDense().has(previous)) {
                 options.frames.retire(previous); releaseFrame(previous); known.delete(previous);
@@ -447,7 +480,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     hosts.delete(band);
                     if (!hosts.size) {
                         disposed = true; gpu?.dispose(); gpu = null; adapter?.dispose(); adapter = null;
-                        deferredClear = true; collectRetired(); presented = null;
+                        deferredClear = true; collectRetired(); presented = null; refreshProgress();
                     } else if (!allocatorHost) {
                         allocatorHost = activeHost()!;
                         options.frames.bindMemory?.(allocatorHost.allocator.cpu);
@@ -484,6 +517,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     pair.invalidate = (reason = 'board-content') => { for (const host of hosts.values()) host.invalidate(reason); };
     pair.memory = () => allocatorHost?.allocator.cpu ?? null;
     pair.wakeAt = deadlineMs => { for (const host of hosts.values()) host.wakeAt(deadlineMs); };
+    pair.paintProgress = progressNow;
     pair.readyFrame = () => {
         if (disposed) return null;
         const gpuFrame = activeHost()?.device() ? gpu?.readyFrame() : null;

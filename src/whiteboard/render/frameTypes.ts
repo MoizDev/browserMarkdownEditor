@@ -35,6 +35,8 @@ export interface PaintFrameAssembler extends PaintFrameSource {
     requestStream(pin: PinnedPaintStream): void;
     prepare(budget: FrameBudget): void;
     needsFrame(): boolean;
+    /** True while a staged frame waits for memory; a real capacity change wakes it, so the owner never polls. */
+    blocked?(): boolean;
     /** Presentation uses the frame actually drawn, not the newest requested scene revision. */
     presented(frame: PaintSource): void;
     /** Retains this exact frame's source/metadata through asynchronous presentation-fact work.

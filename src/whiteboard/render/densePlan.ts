@@ -478,6 +478,10 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         prepare(view: ViewState, budget: FrameBudget, liveNodes?: ReadonlySet<string>): void;
         coverage(view: ViewState, liveNodes?: ReadonlySet<string>): { complete: boolean; sharp: boolean; staleVersion?: boolean };
         retainedFrames(): ReadonlySet<PaintSource>;
+        /** A staged plan waits for memory; a real capacity change wakes it. */
+        memoryBlocked(): boolean;
+        /** Work for the requested revision is outstanding: staged, or a provisional frame still refining. */
+        pending(): boolean;
         cpuWorkingSet(nativePathUpperBound?: number): number;
     } = {
         prepare(view, budget, liveNodes?: ReadonlySet<string>) {
@@ -592,6 +596,8 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
             return { complete, sharp: complete && !!ready?.sharp, ...(ready?.source !== resources.frames.readFrame() ? { staleVersion: true } : {}) };
         },
         retainedFrames: () => new Set([...plans].map(p => p.source)),
+        memoryBlocked: () => !disposed && !!staged?.blocked,
+        pending: () => !disposed && (!!staged || (!!ready && !ready.sharp)),
         cpuWorkingSet(nativePathUpperBound = 0) {
             let held = 0; for (const p of plans) held += working(p);
             const pending = !!staged || !ready || !ready.sharp || ready.source !== resources.frames.readFrame() || !resources.frames.isCurrent(ready.source);

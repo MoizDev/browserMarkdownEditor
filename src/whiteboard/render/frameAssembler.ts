@@ -300,6 +300,7 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
             };
         },
         needsFrame: () => !disposed && staging !== null && !blocked && !staging.feed.waiting,
+        blocked: () => !disposed && blocked && staging !== null,
         presented(frame) {
             if (!retained.has(frame)) throw new Error('Cannot present an unowned paint frame');
         },

@@ -576,7 +576,12 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
     if (!buffer) return;
     // Never into an unreadable tab's buffer: nothing edits one (its pane builds
     // no editor), but the funnel guards itself — see OpenTab.readError.
-    if (options?.fromDisk) return;
+    // A disk report is saved by definition; tell the funnel, or a capture still pending for the older edit finds the
+    // revision moved and reports a failure (measured: DiskBar conflict then Keep mine, 'Recovery revision changed before capture').
+    if (options?.fromDisk) {
+      void recoveryEvent({ type: 'written', documentId: target.id, revision: buffer.revision, fingerprint: getBaseline(target.id)?.hash ?? '' });
+      return;
+    }
     syncExitGuard();
     const baseline = getBaseline(target.id), vaultId = currentVaultIdRef.current;
     if (baseline && vaultId) {

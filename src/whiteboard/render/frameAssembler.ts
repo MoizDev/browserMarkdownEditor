@@ -304,7 +304,8 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
             };
         },
         needsFrame: () => !disposed && staging !== null && !blocked && !staging.feed.waiting,
-        blocked: () => !disposed && blocked && staging !== null,
+        // Waiting for an allocator to bind is not a denial; only a refused reservation is reported as memory pressure.
+        blocked: () => !disposed && blocked && staging !== null && allocator !== null,
         presented(frame) {
             if (!retained.has(frame)) throw new Error('Cannot present an unowned paint frame');
         },

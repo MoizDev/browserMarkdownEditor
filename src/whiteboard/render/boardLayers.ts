@@ -435,6 +435,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 : frame.openTile ? (deniedDirectSegments !== null ? 'dense' : observed) : 'direct';
             if ((mode === 'dense') !== useDense) {
                 useDense = mode === 'dense';
+                denied = false;
                 if (useDense) {
                     direct!.release('pressure');
                     for (const old of [...reservations.keys()]) releaseFrame(old);
@@ -457,6 +458,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     if (!lease) {
                         denied = true;
                         if (frame.openTile && deniedDirectSegments === null) { deniedDirectSegments = segments; allocatorHost!.invalidate('board-density-demand-ready'); }
+                        allocatorHost!.allocator.cpu.whenAvailable?.(() => allocatorHost?.invalidate('board-memory'));
                         return;
                     }
                     reservations.set(frame, [lease]); reserved += lease.bytes;

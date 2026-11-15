@@ -148,8 +148,12 @@ export class StreamingDenseTileJob {
         this.blockedValue = true;
         this.options.host.allocator.cpu.whenAvailable?.(() => this.options.host.invalidate('dense-memory'));
     }
+    /** A read-ahead or open is in flight. Its completion invalidates, and the frame keeps coming until it lands. */
+    get awaiting(): boolean { return this.opening || this.pumping; }
     needsFrame(): boolean {
-        if (this.blockedValue || this.opening || this.pumping) return false;
+        if (this.blockedValue) return false;
+        // Work in flight is still pending work: frames keep coming while it runs, so a lost completion wake cannot stall the tile.
+        if (this.awaiting) return true;
         if (this.state === 'item') return !!this.adapter?.needsFrame();
         return this.state === 'start' || this.state === 'read' || this.state === 'items' || this.state === 'bounds' || this.state === 'estimate';
     }

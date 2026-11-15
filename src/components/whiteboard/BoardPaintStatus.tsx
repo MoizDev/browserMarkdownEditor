@@ -1,3 +1,5 @@
+import { useEffect, useState } from 'react';
+
 /** The renderer's readiness as the board host shows it; structurally the whiteboard viewer's own readiness. */
 export type BoardReadiness = 'loading' | 'ready' | 'read-only' | 'failed';
 /** What the renderer holds for the current revision. Structurally the whiteboard viewer's own progress. */
@@ -16,6 +18,14 @@ export interface BoardPaintStatusProps {
  * coherent pixels stay on screen; the actual error on failure. It is display only: it never blocks input or saving,
  * and it never claims readiness that the renderer has not reported. */
 export default function BoardPaintStatus({ readiness, paint, isVisible, reason }: BoardPaintStatusProps) {
+    const pending = isVisible && readiness !== 'failed' && readiness !== 'loading' && paint?.kind === 'pending';
+    // An ordinary edit repaints in a frame or two; showing the mark at once flashed it on every stroke.
+    const [shown, setShown] = useState(false);
+    useEffect(() => {
+        if (!pending) { setShown(false); return; }
+        const timer = setTimeout(() => setShown(true), 500);
+        return () => clearTimeout(timer);
+    }, [pending]);
     if (!isVisible || !readiness) return null;
     if (readiness === 'failed') {
         const message = paint?.kind === 'failed' ? paint.message : reason ?? 'This drawing could not be drawn.';
@@ -29,7 +39,7 @@ export default function BoardPaintStatus({ readiness, paint, isVisible, reason }
     if (paint?.kind === 'failed') {
         return <div className="board-paint-status board-paint-status-failed" role="alert" data-paint-state="failed">Drawing error: {paint.message}</div>;
     }
-    if (paint?.kind === 'pending') {
+    if (paint?.kind === 'pending' && shown) {
         return <div className="board-paint-status board-paint-status-pending" role="status" data-paint-state="pending">
             {paint.reason === 'waiting-memory' ? 'Waiting for memory…' : 'Updating…'}</div>;
     }

@@ -269,6 +269,13 @@ export class PaneLifecycle<T extends object> {
         this.withGpuRelease(reason, () => this.releaseSelection(this.layers, reason));
     }
 
+    /** Pressure on one layer's cache releases that layer only. Releasing every layer for it dropped the committed board
+     * plans each frame a live stroke held the pool over target, so the stroke's tail never drew. */
+    releaseLayerGpu(layer: Layer, reason: GpuReleaseReason): void {
+        if (!this.layers.includes(layer)) return;
+        this.withGpuRelease(reason, () => this.releaseSelection([layer], reason));
+    }
+
     /** Scheduler suspension is not pane hide: no GPU release and no hidden-mirror demotion. */
     suspend(reason: PaneSuspendReason): void {
         if (reason === 'window-hidden' || reason === 'frozen') this.suspended = true;

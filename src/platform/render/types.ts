@@ -147,6 +147,7 @@ export interface RenderConstants {
     readonly decodedRgbaBytesPerPixel: 4;
     readonly memorySoftPressureRatio: 0.9;
     readonly memoryTrimTargetRatio: 0.8;
+    readonly liveInputGpuFraction: 0.25;
     /** Hysteresis from §6.3:643 and §6.4:653; lower q remains allowed if 0.5 cannot fit. */
     readonly qualityReductionFactor: 0.8;
     readonly minInteractiveQualityScale: 0.5;

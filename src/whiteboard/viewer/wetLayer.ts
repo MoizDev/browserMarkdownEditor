@@ -239,7 +239,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         } catch (error) { dropWork(); denied = true; report(error); }
         if (owner.device() && sameToken(options.token, budget.token)) {
             try {
-                gpu ??= createGpuPaintAdapter(gpuReference, owner, report);
+                gpu ??= createGpuPaintAdapter(gpuReference, owner, report, { streaming: true });
                 updateGpuSource(); gpuToken = { ...budget.token }; gpu.prepare(view, budget);
             } catch (error) { report(error); }
         }
@@ -319,8 +319,10 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                 .some(item => !prepared.has(item.identity.gestureSequence));
             if (missing) return { complete: false, sharp: false };
             if (backend === 'canvas2d') return { complete: true, sharp: true };
+            // The adapter presents the last completed paint and reports staleVersion until it catches up;
+            // requiring the newest source here refused every frame of a live stroke.
             if (!gpu || !gpuToken || !sameToken(gpuToken, frame.token) || gpuToken.viewLease !== frame.token.viewLease ||
-                gpuToken.deviceGeneration !== frame.token.deviceGeneration || gpu.readyPaint() !== gpuPrepared) return { complete: false, sharp: false };
+                gpuToken.deviceGeneration !== frame.token.deviceGeneration) return { complete: false, sharp: false };
             return gpu.coverage(frame.view);
         },
     });

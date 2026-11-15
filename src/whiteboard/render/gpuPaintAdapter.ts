@@ -183,7 +183,13 @@ function drawPathItem(pass: GpuPass, item: PreparedPathItem, kit: ReturnType<typ
 
 /** Item-isolated raster tiles preserve ordering and permit exact node omission. The paint is consumed one
  * window at a time: each window's tile commands are built, scanned and drawn as their own bounded list. */
-export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: LayerHost, report: (error: unknown) => void) {
+export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: LayerHost, report: (error: unknown) => void,
+    options: { readonly streaming?: boolean } = {}) {
+    // `streaming`: the source changes on every input frame (a live stroke). Each plan completes against the paint
+    // it was started from and the newest starts only after it lands, so ready always advances. Discarding an
+    // unfinished plan on every new paint never completes one (measured: 82/82 frames refused in a 650 ms stroke).
+    // Coverage reports staleVersion until caught up.
+    const streaming = options.streaming === true;
     let staged: Plan | null = null, ready: Plan | null = null, disposed = false, denied = false;
     let currentToken: FrameToken | null = null, lastFrame = -1, scratch = 0;
     let movingScale = 0, tileBytes = 0;
@@ -249,7 +255,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             // A denial suppresses polling via needsFrame(), but a real wake may bring a new grant.
             denied = false;
             if (ready && !validDevice(ready)) { drop(ready); ready = null; denied = false; }
-            if (staged && (!valid(staged, view, scale) || staged.prepared !== prepared || staged.analyticReady !== analytic.ready())) { drop(staged); staged = null; denied = false; }
+            if (staged && (!valid(staged, view, scale) || (!streaming && staged.prepared !== prepared) || staged.analyticReady !== analytic.ready())) { drop(staged); staged = null; denied = false; }
             if ((ready?.prepared === prepared && valid(ready, view, scale) && ready.analyticReady === analytic.ready()) || denied) return;
             if (!staged) {
                 const x0 = Math.floor(view.camera.x * scale / EDGE), y0 = Math.floor(view.camera.y * scale / EDGE);
@@ -264,7 +270,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             const p = staged;
             try {
                 while (!budget.shouldYield()) {
-                    const win = prepared.windows[p.window];
+                    const win = p.prepared.windows[p.window];
                     if (!win) {
                         // Every window is built: scan each window's analytic runs, then prepare the batches.
                         while (!p.scanned && !budget.shouldYield()) {
@@ -305,7 +311,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                     const multiply = (original.kind === 'image' ? original.blend : original.material.blend) === 'multiply';
                     p.hasMultiply ||= multiply;
                     if (item.kind === 'image' && !multiply && isGutterQuadTile(item)) {
-                        const image = prepared.resources.image(item.imageKey);
+                        const image = p.prepared.resources.image(item.imageKey);
                         if (typeof ImageBitmap !== 'undefined' && image instanceof ImageBitmap && image.width === SIZE && image.height === SIZE) {
                             if (!ensurePlanCapacity(p)) return;
                             const key = JSON.stringify(['retained', identity(p.sourceFrame), p.token.vaultEpoch, p.token.documentId,
@@ -382,7 +388,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                         const ctx = canvas.getContext('2d');
                         if (!ctx) throw new Error('Offscreen 2D canvas unavailable');
                         ctx.setTransform(scale, 0, 0, scale, GUTTER - p.x * EDGE, GUTTER - p.y * EDGE);
-                        paintItem2d(ctx, item, { ...prepared.resources, path: () => prepared.resources.path(original) });
+                        paintItem2d(ctx, item, { ...p.prepared.resources, path: () => p.prepared.resources.path(original) });
                         bitmap = canvas.transferToImageBitmap();
                         texture = device.createTexture(SIZE, SIZE, 'rgba8', ['sample', 'copy-dst'], gpu); attached = true;
                         device.writeTexture(texture, { x: 0, y: 0, width: SIZE, height: SIZE },

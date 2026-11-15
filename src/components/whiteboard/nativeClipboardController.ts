@@ -1,5 +1,5 @@
 import type { CameraController } from '../../platform/render/camera';
-import { surfaceToWorld } from '../../platform/render/camera';
+import { surfaceToWorld, worldToSurface } from '../../platform/render/camera';
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
 import { pasteBoardClipboardInJob } from '../../whiteboard/clipboard/paste';
@@ -72,6 +72,15 @@ export function createNativeClipboardController(options: NativeClipboardControll
             pasteAtCursor: options.pasteAtCursor() });
         return { target, zoom: camera.z };
     };
+    // R-21: a paste never changes zoom. Only when the placed centre lies outside the view does the camera pan, at the same
+    // zoom, to centre it; a centre already in view needs no pan. Measured against the camera now, since decoding is async.
+    const bringIntoView = (point: ClipboardPoint) => {
+        const camera = options.camera.camera, viewport = options.camera.viewport;
+        if (viewport.width <= 0 || viewport.height <= 0) return;
+        const surface = worldToSurface(point, camera);
+        if (surface.x >= 0 && surface.y >= 0 && surface.x <= viewport.width && surface.y <= viewport.height) return;
+        options.camera.setCamera({ x: point.x - viewport.width / (2 * camera.z), y: point.y - viewport.height / (2 * camera.z), z: camera.z });
+    };
     const targetCurrent = (target: Readonly<ClipboardTarget>) => current() && options.canWriteView() && !session.isReadOnly
         && target.session === `${identity.documentId}:${identity.session}` && target.vaultEpoch === identity.vaultActivation
         && target.generation === identity.bytesGeneration && runtime.selection.getSnapshot().sheet === target.sheet;
@@ -108,6 +117,7 @@ export function createNativeClipboardController(options: NativeClipboardControll
                     transferred = true;
                     await insertNativeClipboard({ runtime, acquisition: acquired, media: staged, placement, target,
                         receivingBoardId: identity.documentId, external: false, current: targetCurrent, signal: context.signal });
+                    if (current()) bringIntoView(placement.worldCentre);
                 } finally { if (!transferred) { staged?.release(); acquired.dispose(); } }
             };
             if (duplicate) {

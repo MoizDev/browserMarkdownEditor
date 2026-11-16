@@ -15,7 +15,6 @@ import type { PaintSource, PaintInkItem } from '../render/paintStream';
 import { createGpuPaintAdapter } from '../render/gpuPaintAdapter';
 import { bandItemsOf } from '../render/paintWindows';
 import { preparedOfFrame, type CanvasPaintAdapter, type PreparedPaint2d } from '../render/reference/canvasPaintAdapter';
-import { awaitCapacity, isBudgetRefusal } from '../render/budgetRefusal';
 import { appendPath2d } from '../render/reference/coverage2d';
 
 // Provenance: wet/dry ink handover, bounded ink outline and C4 layer contracts;
@@ -104,10 +103,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         memory: () => ({ gpuBytes: 0, cpuBytes: 0 }), dispose: () => {},
     };
     const hostLayers = new Map<LayerHost, Layer>();
-    const report = (error: unknown) => {
-        if (isBudgetRefusal(error)) { denied = true; awaitCapacity(owner, invalidate); return; }
-        try { options.onError(error); } catch { /* reporting must not escape the scheduler */ }
-    };
+    const report = (error: unknown) => { try { options.onError(error); } catch { /* reporting must not escape the scheduler */ } };
     const invalidate = () => { if (disposed) return; dirty = true; generation++; denied = false; options.invalidate(); for (const host of hosts) host.invalidate('wet-ink'); };
     const release = (lease: ByteLease) => { owner!.allocator.cpu.release(lease); reserved -= lease.bytes; };
     const stables = new Map<number, Stable>();
@@ -286,13 +282,13 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         } catch (error) { dropWork(); denied = true; report(error); }
         if (owner.device() && sameToken(options.token, budget.token)) {
             try {
-                gpu ??= createGpuPaintAdapter(gpuReference, owner, report, { streaming: true });
+                gpu ??= createGpuPaintAdapter(gpuReference, owner, report);
                 updateGpuSource(); gpuToken = { ...budget.token }; gpu.prepare(view, budget);
             } catch (error) { report(error); }
         }
     };
     const make = (band: 'underlay' | 'content'): PlatformLayerDefinition => ({
-        id: `board-wet-${band}`, group: 'document', liveInput: true,
+        id: `board-wet-${band}`, group: 'document',
         create(host) {
             if (disposed) throw new Error('Wet layer disposed');
             hosts.add(host); owner ??= host;
@@ -359,26 +355,22 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
             const extra = pending ? (work ? (work.chunk ? 0 : TEMP_BYTES) + PATH_BLOCK + (work.chunk?.retained?.bytes ?? 0) : TEMP_BYTES + PATH_BLOCK) : 0;
             return { mandatoryBytes: reserved + extra + (owner.device() ? (gpu?.cpuWorkingSet().mandatoryBytes ?? 2 * 516 * 516 * 4) : 0), prefetchBytes: 0 };
         },
-        // A live stroke whose GPU paint is still catching up is critical: the non-critical share of a frame is one
-        // sliver, which took two frames per plan (measured: every other screencast frame held the same ink).
-        critical: () => !!owner?.device() && !!gpu?.needsFrame() || (handover?.forFrame(identity => visuallyCovered(options.readyFrame(), identity, options.token)) ?? [])
+        critical: () => (handover?.forFrame(identity => visuallyCovered(options.readyFrame(), identity, options.token)) ?? [])
             .some(item => !prepared.has(item.identity.gestureSequence)),
         coverage: (_layer, frame, backend) => {
             const missing = (handover?.forFrame(identity => visuallyCovered(options.readyFrame(), identity, options.token)) ?? [])
                 .some(item => !prepared.has(item.identity.gestureSequence));
             if (missing) return { complete: false, sharp: false };
             if (backend === 'canvas2d') return { complete: true, sharp: true };
-            // The adapter presents the last completed paint and reports staleVersion until it catches up;
-            // requiring the newest source here refused every frame of a live stroke.
             if (!gpu || !gpuToken || !sameToken(gpuToken, frame.token) || gpuToken.viewLease !== frame.token.viewLease ||
-                gpuToken.deviceGeneration !== frame.token.deviceGeneration) return { complete: false, sharp: false };
+                gpuToken.deviceGeneration !== frame.token.deviceGeneration || gpu.readyPaint() !== gpuPrepared) return { complete: false, sharp: false };
             return gpu.coverage(frame.view);
         },
     });
     const layers = Object.freeze({ underlay: make('underlay'), content: make('content') });
     return {
         layers,
-        attach(value) { if (disposed) throw new Error('Wet layer disposed'); handover = value; value.onPublish(invalidate); invalidate(); return () => { if (handover === value) { value.onPublish(null); handover = null; clear(); invalidate(); } }; },
+        attach(value) { if (disposed) throw new Error('Wet layer disposed'); handover = value; invalidate(); return () => { if (handover === value) { handover = null; clear(); invalidate(); } }; },
         onInputFrame(callback) { callbacks.add(callback); return () => { callbacks.delete(callback); }; },
         invalidate,
         consumeInput() { if (disposed || !options.current()) return; for (const callback of callbacks) callback(); },
@@ -398,8 +390,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                 if (item.dry && available(frame, item.dry, token)) { handover?.acknowledgePresented(item.dry); acknowledged = true; }
             }
             // Only a handover that changed needs another frame. Invalidating on every presented frame made each frame ask
-            // for the next: on a webgl2 PDF the board restarted its GPU plan every frame (245 in 6 s idle), never finished
-            // one, stayed 'Updating…', and a later drag froze on a frame without the moved ink.
+            // for the next, so an idle board never stopped rendering (pdf measured 245 GPU plan restarts in 6 s idle).
             if (acknowledged) invalidate();
         },
         clear,

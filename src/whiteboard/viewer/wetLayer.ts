@@ -385,8 +385,13 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         },
         presented(revision, token, frame) {
             if (disposed || !sameToken(token, options.token) || !frame || frame.sceneRevision !== revision || !sameToken(frame.token, token)) return;
-            for (const item of handover?.forFrame(() => false) ?? []) if (item.dry && available(frame, item.dry, token)) handover?.acknowledgePresented(item.dry);
-            invalidate();
+            let acknowledged = false;
+            for (const item of handover?.forFrame(() => false) ?? []) {
+                if (item.dry && available(frame, item.dry, token)) { handover?.acknowledgePresented(item.dry); acknowledged = true; }
+            }
+            // Only a handover that changed needs another frame. Invalidating on every presented frame made each frame ask
+            // for the next, so an idle board never stopped rendering (pdf measured 245 GPU plan restarts in 6 s idle).
+            if (acknowledged) invalidate();
         },
         clear,
         dispose() { if (disposed) return; clear(); gpu?.dispose(); gpu = null; disposed = true; callbacks.clear(); handover = null; },

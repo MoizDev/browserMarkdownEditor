@@ -318,8 +318,9 @@ export class GpuCompositor implements PaneCompositor {
                         if (key === 'draw' && typeof value === 'function') return (cmd: unknown) => { auditCount(auditId, 'gpu-draw'); return (value as (c: unknown) => void).call(target, cmd); };
                         return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(target) : value;
                     } }) : scope.pass;
+                    drawScope.passes.add(layerTarget);
                     try { binding.layer.drawGpu(layerTarget, frame.view); }
-                    finally { drawScope.passes.delete(scope.pass); scope.finish(); }
+                    finally { drawScope.passes.delete(scope.pass); drawScope.passes.delete(layerTarget); scope.finish(); }
                     if (isolation) pass.endGroup(isolation);
                 }
                 if (document) pass.endGroup(document);
@@ -436,14 +437,14 @@ export class GpuCompositor implements PaneCompositor {
         }
         const gpuTexture = texture as TextureHandle;
         const active = this.#active;
-        if (!active || !active.passes.has(pass) || !this.#quad || !this.#linear || !this.#nearest) throw new ArenaError('invalid-input');
+        if (!active || !active.passes.has(pass) || !this.#quad || !this.#linear || !this.#nearest) { console.error('RDIAG quadstate', JSON.stringify({ active: !!active, pass: !!active?.passes.has(pass), passes: active?.passes.size, quad: !!this.#quad, lin: !!this.#linear, near: !!this.#nearest })); throw new ArenaError('invalid-input'); }
         const opacity = options.opacity ?? 1;
         if (!validRect(sourceRect) || !validRect(destRect) || !Number.isFinite(opacity) || opacity < 0 || opacity > 1 ||
-            options.sampling !== undefined && !['nearest', 'linear'].includes(options.sampling)) throw new ArenaError('invalid-input');
+            options.sampling !== undefined && !['nearest', 'linear'].includes(options.sampling)) { console.error('RDIAG quadrect', JSON.stringify({ sourceRect, destRect, opacity })); throw new ArenaError('invalid-input'); }
         const info = this.#options.owner.textureInfo(gpuTexture);
         if (info.format !== 'rgba8' || sourceRect.x < info.usedRect.x || sourceRect.y < info.usedRect.y ||
             sourceRect.x + sourceRect.width > info.usedRect.x + info.usedRect.width ||
-            sourceRect.y + sourceRect.height > info.usedRect.y + info.usedRect.height) throw new ArenaError('invalid-input');
+            sourceRect.y + sourceRect.height > info.usedRect.y + info.usedRect.height) { console.error('RDIAG quad', JSON.stringify({ sourceRect, destRect, info: { f: info.format, u: info.usedRect, w: info.width, h: info.height } })); throw new ArenaError('invalid-input'); }
         if (!sourceRect.width || !sourceRect.height || !destRect.width || !destRect.height || !opacity) return;
         const width = Math.round(active.view.viewport.width * active.view.viewport.dpr);
         const height = Math.round(active.view.viewport.height * active.view.viewport.dpr);

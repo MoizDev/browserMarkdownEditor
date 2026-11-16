@@ -579,7 +579,7 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
                 token?.vaultEpoch === session.token.vaultEpoch && token.documentId === session.token.documentId &&
                 token.bytesGeneration === session.token.bytesGeneration && token.session === session.token.session && token.viewLease === lease;
             if (currentSharp.current && updatingRef.current) { updatingRef.current = false; setUpdating(false); }
-        }, onError: () => reportRenderNotice('The PDF viewer encountered a rendering error.', true),
+        }, onError: (...a: unknown[]) => { console.error('RDIAG onError', ...a.map(e => e instanceof Error ? e.name + ':' + e.message + ' ' + e.stack : JSON.stringify(e))); reportRenderNotice('The PDF viewer encountered a rendering error.', true); },
         onNotice: message => reportRenderNotice(message === 'memory-pressure' ? 'PDF rendering quality was reduced to fit memory.'
             : message === 'cpu-floor-denied' ? 'PDF rendering is limited by available memory.'
                 : message === 'cpu-pinned' ? 'PDF rendering is using a compatible mode.' : 'GPU rendering is unavailable; a compatible mode is in use.'),

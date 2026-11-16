@@ -11,6 +11,7 @@ import type { PdfDemandInput, PdfTileRequest } from './tileDemand';
 import { getPdfFontEpoch, pdfMirrorProfilePrefix, pdfVariantRevision } from '../fonts/profiles';
 import { pdfDocKey } from '../worker/protocol';
 import { consumePdfTileArrival, forgetPdfTileArrival } from '../pool/arrivalWindow';
+import { auditCount } from '../../platform/render/renderAudit';
 
 /** The pool returns the requested cell plus its one-pixel apron. Ownership of
  * every returned bitmap transfers to this layer, including cancelled replies. */
@@ -35,11 +36,19 @@ interface MirrorJob {
 
 interface Entry {
     readonly request: PdfTileRequest;
-    readonly lease: ByteLease;
+    /** The CPU bitmap's charge; null once a GPU-resident tile let its bitmap go. */
+    lease: ByteLease | null;
     readonly controller: AbortController;
+    /** The producer settled with pixels: they live in `bitmap`, `texture` or both. */
+    settled?: boolean;
     bitmap?: ImageBitmap;
     texture?: PooledTexture;
     used: number;
+}
+
+/** Pixels this backend can draw: the device's texture, or the CPU bitmap (which a GPU backend can still upload). */
+function drawableOn(entry: Entry, device: GfxDevice | null): boolean {
+    return device ? entry.texture?.device === device || !!entry.bitmap : !!entry.bitmap;
 }
 
 function contentFamily(input: Omit<PdfDemandInput, 'covered' | 'previousMotionScale'>): string {
@@ -90,6 +99,8 @@ export class PdfTileLayer implements Layer {
     private latestView: ViewState | null = null;
     private mirrorJob: MirrorJob | null = null;
     private mirrorKey = '';
+    /** A settled view whose mirror cannot be cropped because a visible tile is GPU-only; it keeps its older mirror. */
+    private mirrorSkipped = '';
 
     constructor(private readonly host: LayerHost, private readonly producer: PdfTileProducer,
         private readonly demand: (view: ViewState) => Omit<PdfDemandInput, 'covered' | 'previousMotionScale'>,
@@ -141,16 +152,42 @@ export class PdfTileLayer implements Layer {
         if (input.moving && !holdMotionScale) this.motionScaleAt = now;
         this.lastMotionScale = planned.motionScale;
         this.desired = new Set(planned.requests.map(request => tileKeyString(request.key)));
+        const exactScale = planned.requests.find(request => request.level === 'exact')?.scale.scale;
         for (const [key, entry] of this.entries) {
             // A running off-window render is cancelled; settled older scales
             // remain available as stand-ins until the allocator needs space.
-            if (!entry.bitmap && !this.desired.has(key)) this.remove(key, entry);
+            if (!entry.settled && !this.desired.has(key)) this.remove(key, entry);
+            // On a GPU backend a stand-in is a texture. A bitmap that arrived after the plan moved on was never
+            // uploaded and never will be (measured: a 40-step zoom rastered 51 tiles, uploaded 18, and left 31 MB
+            // of such bitmaps charged until the pane stopped at cpu-floor-denied).
+            else if (device && entry.settled && entry.texture?.device !== device && !this.desired.has(key)) {
+                auditCount('pdf-page', 'fallback:raster-unused');
+                this.remove(key, entry);
+            }
+            // Once settled, another scale's off-plan texture is no stand-in for anything: the plan covers the view at
+            // its own scale. Same-scale tiles stay as the scroll cache. Measured: one zoom left 34 MB of old-scale
+            // textures, and the next window resize pushed the pool over its target and degraded the pane to 0.64.
+            // Motion tiles stay: the next scroll draws them again. Scales compare with a tolerance, since the same zoom
+            // recomputes its scale with float noise (1.4379084967320261 vs ...255).
+            else if (!input.moving && entry.settled && !this.desired.has(key) && exactScale !== undefined &&
+                entry.request.level === 'exact' && Math.abs(entry.request.scale.scale / exactScale - 1) > 1e-6) {
+                auditCount('pdf-page', 'evict-other-scale');
+                this.remove(key, entry);
+            }
         }
-        let running = [...this.entries.values()].filter(entry => !entry.bitmap).length;
+        let running = [...this.entries.values()].filter(entry => !entry.settled).length;
         for (const request of planned.requests) {
             const key = tileKeyString(request.key);
-            const existing = this.entries.get(key);
+            let existing = this.entries.get(key);
+            // A GPU-resident tile whose bitmap was released is lost with its device and rastered again on the new one.
+            // A 2D-bridge frame keeps it: that frame draws the mirror, and the next GPU frame still has the texture
+            // (measured: a window resize re-rastered 2 visible tiles through one bridge frame).
+            if (existing?.settled && device && !drawableOn(existing, device)) {
+                auditCount('pdf-page', 'fallback:re-raster-after-release');
+                this.remove(key, existing); existing = undefined;
+            }
             if (existing) {
+                if (device && existing.texture?.device === device) auditCount('pdf-page', 'cache-hit');
                 existing.used = ++this.sequence;
                 if (device && existing.bitmap && existing.texture?.device !== device) {
                     if (budget.shouldYield()) { this.pendingFrame = true; break; }
@@ -163,7 +200,7 @@ export class PdfTileLayer implements Layer {
                     try {
                         device.writeTexture(texture.handle, { x: 0, y: 0, width: existing.bitmap.width, height: existing.bitmap.height },
                             { source: existing.bitmap, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
-                        if (existing.texture) this.texturePool.release(existing.texture);
+                        if (existing.texture) { this.texturePool.release(existing.texture); auditCount('pdf-page', 're-upload'); }
                         existing.texture = texture;
                         consumePdfTileArrival(existing.bitmap);
                     } catch (error) { device.destroy(texture.handle); this.onError(error, request); }
@@ -192,6 +229,8 @@ export class PdfTileLayer implements Layer {
                     return;
                 }
                 entry.bitmap = bitmap;
+                entry.settled = true;
+                auditCount('pdf-page', 'cpu-raster', 1, { px: bitmap.width * bitmap.height });
                 this.contentRevision++;
                 this.host.invalidate('pdf-tile-arrived');
             }, error => {
@@ -205,6 +244,28 @@ export class PdfTileLayer implements Layer {
             });
         }
         this.prepareMirror(view, input, planned.requests, budget);
+        if (device) this.releaseUploadedBitmaps(view, input.viewport, device);
+    }
+
+    /**
+     * On a GPU backend a tile's texture is its pixels; keeping the PDFium bitmap as well doubled every tile into the
+     * 32 MB CPU pool, which then sat over its target, degraded the pane to quality 0.5 for good and so no frame was
+     * ever sharp (measured: CPU 30-33 MB after one zoom, read view blurry and Annotate's tools disabled). A bitmap stays
+     * only while the settled view's 2D mirror may still crop it: a visible tile until that view's mirror is made.
+     */
+    private releaseUploadedBitmaps(view: ViewState, viewport: Readonly<Rect>, device: GfxDevice): void {
+        const snapshot = this.mirror?.view(view);
+        const mirrored = !snapshot || mirrorViewKey(snapshot) === this.mirrorKey || mirrorViewKey(snapshot) === this.mirrorSkipped;
+        for (const [key, entry] of this.entries) {
+            if (!entry.bitmap || entry.texture?.device !== device) continue;
+            // Only the current plan's visible tiles feed the mirror; an older scale kept as a stand-in never does
+            // (measured: a zoom left 31 MB of visible stand-in bitmaps charged and the pane at cpu-floor-denied).
+            if (!mirrored && this.desired.has(key) && intersects(rect(entry.request), viewport)) continue;
+            forgetPdfTileArrival(entry.bitmap);
+            entry.bitmap.close();
+            entry.bitmap = undefined;
+            if (entry.lease) { this.host.allocator.cpu.release(entry.lease); entry.lease = null; }
+        }
     }
 
     coverage(view: ViewState, gpu: boolean): { complete: boolean; sharp: boolean } {
@@ -237,7 +298,7 @@ export class PdfTileLayer implements Layer {
         for (const request of desired.requests) {
             if (request.level !== 'exact' || !intersects(rect(request), input.viewport)) continue;
             const entry = this.entries.get(tileKeyString(request.key));
-            if (!entry?.bitmap || (device && entry.texture?.device !== device)) return { complete: true, sharp: false };
+            if (!entry || !drawableOn(entry, device) || (device && entry.texture?.device !== device)) return { complete: true, sharp: false };
         }
         return { complete: true, sharp: true };
     }
@@ -301,6 +362,7 @@ export class PdfTileLayer implements Layer {
     }
 
     releaseGpu(reason: GpuReleaseReason): void {
+        if (reason === 'pressure' && this.releaseUnneededGpu()) return;
         if (this.frameTexture && reason !== 'context-lost') this.frameTexture.device.destroy(this.frameTexture.handle);
         this.frameTexture = null;
         for (const entry of this.entries.values()) {
@@ -315,6 +377,26 @@ export class PdfTileLayer implements Layer {
         this.texturePool.clear(reason === 'context-lost');
         this.pendingFrame = false;
         if (reason === 'hidden') this.hide();
+    }
+
+    /**
+     * Pool pressure takes what the view does not show first: off-plan and off-screen tiles. Releasing every texture
+     * for it meant re-rastering the visible page, since a GPU-resident tile has no bitmap left (measured: a window
+     * resize re-rastered 28 tiles). Returns false when nothing was spare, so the caller releases everything.
+     */
+    private releaseUnneededGpu(): boolean {
+        const input = this.latestDemand;
+        if (!input) return false;
+        let freed = false;
+        for (const [key, entry] of this.entries) {
+            if (!entry.texture || this.desired.has(key) && intersects(rect(entry.request), input.viewport)) continue;
+            auditCount('pdf-page', 'pressure-evict');
+            this.remove(key, entry);
+            freed = true;
+        }
+        freed = this.texturePool.memory() > 0 || freed;
+        this.texturePool.clear(false);
+        return freed;
     }
 
     /** Prospective tile and cropped-mirror storage, before requests allocate (design §6.3:640–646). */
@@ -381,10 +463,10 @@ export class PdfTileLayer implements Layer {
         let gpuBytes = (this.frameTexture ? 8 : 0) + this.texturePool.memory(), cpuBytes = 0;
         for (const texture of this.bridgeTextures.values()) gpuBytes += texture.bytes;
         for (const entry of this.entries.values()) {
-            cpuBytes += entry.lease.bytes;
+            cpuBytes += entry.lease?.bytes ?? 0;
             if (entry.texture) gpuBytes += entry.texture.bytes;
         }
-        for (const entry of this.retiring) cpuBytes += entry.lease.bytes;
+        for (const entry of this.retiring) cpuBytes += entry.lease?.bytes ?? 0;
         return { gpuBytes, cpuBytes };
     }
     revision(): number { return this.contentRevision; }
@@ -448,7 +530,13 @@ export class PdfTileLayer implements Layer {
         if (this.mirrorJob?.key !== key) {
             const exact = requests.filter(request => request.level === 'exact' && intersects(rect(request), input.viewport));
             const entries = exact.map(request => this.entries.get(tileKeyString(request.key)));
-            if (!entries.length || entries.some(entry => !entry?.bitmap)) { this.mirrorJob = null; return; }
+            if (!entries.length || entries.some(entry => !entry?.settled)) { this.mirrorJob = null; return; }
+            if (entries.some(entry => !entry?.bitmap)) {
+                // The 2D mirror is the hidden/rebind stand-in, never this view's pixels; re-rastering to refresh it would
+                // cost more than a slightly older stand-in, which the cover already treats as non-current.
+                if (this.mirrorSkipped !== key) auditCount('pdf-page', 'fallback:mirror-kept-older');
+                this.mirrorSkipped = key; this.mirrorJob = null; return;
+            }
             const low = requests.filter(request => request.level === 'low' && intersects(rect(request), input.viewport))
                 .map(request => this.entries.get(tileKeyString(request.key)))
                 .filter((entry): entry is Entry => !!entry?.bitmap);
@@ -523,7 +611,7 @@ export class PdfTileLayer implements Layer {
         additional: readonly Readonly<Rect>[] = []): boolean {
         const boxes: Readonly<Rect>[] = [...additional];
         for (const entry of this.entries.values()) {
-            if (entry.request.page !== page || !entry.bitmap || (device && entry.texture?.device !== device)) continue;
+            if (entry.request.page !== page || !drawableOn(entry, device) || (device && entry.texture?.device !== device)) continue;
             boxes.push(rect(entry.request));
         }
         return covers(area, boxes);
@@ -543,7 +631,7 @@ export class PdfTileLayer implements Layer {
         const input = this.demand(view);
         if (contentFamily(input) !== this.contentIdentity) return [];
         const viewport = { x: view.camera.x, y: view.camera.y, width: view.viewport.width / view.camera.z, height: view.viewport.height / view.camera.z };
-        return [...this.entries.values()].filter(entry => entry.bitmap && intersects(rect(entry.request), viewport))
+        return [...this.entries.values()].filter(entry => entry.settled && intersects(rect(entry.request), viewport))
             .sort((a, b) => a.request.scale.scale - b.request.scale.scale || a.used - b.used);
     }
 
@@ -559,7 +647,7 @@ export class PdfTileLayer implements Layer {
             a[1].used - b[1].used);
         let freed = 0;
         for (const [key, entry] of candidates) {
-            freed += entry.lease.bytes;
+            freed += entry.lease?.bytes ?? 0;
             this.remove(key, entry);
             if (freed >= neededBytes) break;
         }
@@ -570,11 +658,10 @@ export class PdfTileLayer implements Layer {
         this.entries.delete(key);
         entry.controller.abort();
         if (entry.texture) this.texturePool.release(entry.texture);
-        if (entry.bitmap) {
+        if (entry.settled) {
             this.contentRevision++;
-            forgetPdfTileArrival(entry.bitmap);
-            entry.bitmap.close();
-            this.host.allocator.cpu.release(entry.lease);
+            if (entry.bitmap) { forgetPdfTileArrival(entry.bitmap); entry.bitmap.close(); }
+            if (entry.lease) this.host.allocator.cpu.release(entry.lease);
         } else {
             // Cancellation is best effort: the transferred bitmap and its CPU
             // reservation remain owned until the producer actually settles.
@@ -584,6 +671,6 @@ export class PdfTileLayer implements Layer {
 
     private finishRetiring(entry: Entry): void {
         if (!this.retiring.delete(entry)) return;
-        this.host.allocator.cpu.release(entry.lease);
+        if (entry.lease) this.host.allocator.cpu.release(entry.lease);
     }
 }

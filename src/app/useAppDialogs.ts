@@ -164,7 +164,7 @@ export function useAppDialogs() {
     if (typeof message !== 'string' || !message.trim()) {
       console.error('An app notice needs a nonempty message:', new Error('Invalid app notice').stack);
     }
-    void tell({ title: 'Could not continue', confirmLabel: 'OK', body: message });
+    console.error('RDIAG notify', message, new Error().stack); void tell({ title: 'Could not continue', confirmLabel: 'OK', body: message });
   }, [tell]);
 
   // The same voice, given to the editor subsystem: a refused clipboard read

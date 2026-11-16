@@ -458,7 +458,9 @@ export class MemoryGovernor {
             hiddenMirrorBytes: this.hiddenMirrorBytes(), borrowedRetiringBytes: this.kindBytes('mirror-retiring'),
             hiddenMirrorLimitBytes: this.hiddenMirrorLimit(),
             workerHeapBytes: this.workerHeapBytes, sourceBytes: this.sourceBytes,
-        };
+            // RDIAG
+            caches: [...this.caches.values()].filter(c => c.bytes > 0).map(c => [c.registration.pool, c.registration.kind, c.registration.id, c.bytes]),
+        } as MemoryReadout;
     }
 
     private cacheReadout(cache: CacheRecord): MemoryCacheReadout {

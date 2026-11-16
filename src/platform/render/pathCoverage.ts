@@ -50,10 +50,11 @@ export type PathCoverageAdmission =
     | { readonly status: 'denied' }
     | { readonly status: 'unsupported' };
 
-/** A pre-admitted coverage target and vertex buffer, plus the clip handle when the output is a mask. */
+/** A pre-admitted vertex buffer, plus the mask's own target and clip handle when the output is a mask. A composite
+ * owns no target: it draws through the kit's shared scratch, one band at a time. */
 export interface PreparedPathCoverage {
     readonly device: GfxDevice;
-    readonly target: CoverageTarget;
+    readonly target: CoverageTarget | null;
     readonly vertices: BufferHandle;
     readonly clip: ClipHandle | null;
     readonly positiveVertices: number;
@@ -140,13 +141,41 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         if (bytes === undefined) return;
         live.delete(prepared); gpuBytes -= bytes;
         if (prepared.clip) prepared.device.destroy(prepared.clip);
-        prepared.device.destroy(prepared.target.target);
-        prepared.device.destroy(prepared.target.texture);
+        if (prepared.target) { prepared.device.destroy(prepared.target.target); prepared.device.destroy(prepared.target.texture); }
         prepared.device.destroy(prepared.vertices);
+    };
+    // One composite scratch per kit, grown (never shrunk) to the widest admitted path and as many rows as the cap allows.
+    // A target per item, held for its plan, made every page-sized fill a 13-33 MB admission the pane never granted, so
+    // the paper took the CPU raster route (measured: 330 fallbacks in one notebook pan).
+    let scratch: { device: GfxDevice; target: CoverageTarget; bytes: number } | null = null;
+    const dropScratch = () => {
+        if (!scratch) return;
+        scratch.device.destroy(scratch.target.target); scratch.device.destroy(scratch.target.texture);
+        gpuBytes -= scratch.bytes; scratch = null;
+    };
+    /** Ensures the scratch holds a band of the given width; false when its lease is refused (a wait, never a fallback). */
+    const ensureScratch = (owner: GfxDevice, width: number, height: number): boolean | 'unsupported' => {
+        const rowBytes = coverageTargetBytes(width, 1, PATH_COVERAGE_SAMPLES);
+        if (rowBytes > PATH_COVERAGE_MAX_TARGET_BYTES) return 'unsupported';
+        const rows = Math.min(height, Math.floor(PATH_COVERAGE_MAX_TARGET_BYTES / rowBytes));
+        if (scratch && scratch.device === owner && scratch.target.width >= width && scratch.target.height >= rows) return true;
+        const w = Math.max(width, scratch?.device === owner ? scratch.target.width : 0);
+        const h = Math.min(Math.max(rows, scratch?.device === owner ? scratch.target.height : 0),
+            Math.floor(PATH_COVERAGE_MAX_TARGET_BYTES / coverageTargetBytes(w, 1, PATH_COVERAGE_SAMPLES)));
+        const bytes = coverageTargetBytes(w, h, PATH_COVERAGE_SAMPLES);
+        const lease = host.allocator.gpu.reserve(bytes);
+        if (!lease) return false;
+        let target: CoverageTarget;
+        try { target = owner.createCoverageTarget(w, h, PATH_COVERAGE_SAMPLES, lease); }
+        catch (error) { host.allocator.gpu.release(lease); throw error; }
+        dropScratch();
+        scratch = { device: owner, target, bytes }; gpuBytes += bytes;
+        return true;
     };
     const release = () => {
         incarnation++;
         for (const prepared of [...live.keys()]) retireOwned(prepared);
+        dropScratch();
         if (pipelines && device) for (const handle of Object.values(pipelines)) device.destroy(handle);
         pipelines = null; device = null; pending = false; failed = false; unsupported = false;
     };
@@ -196,12 +225,18 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
     const render = (pass: GpuPass, prepared: PreparedPathCoverage): void => {
         if (disposed || !live.has(prepared) || !pipelines || prepared.device !== device || host.device() !== device ||
             host.generation !== prepared.device.generation) throw new Error('Stale path coverage');
-        const { bounds, affine, colour, target, viewport, output } = prepared;
+        const { affine, colour, viewport, output } = prepared;
+        const target = prepared.target ?? scratch?.target;
+        if (!target || (!prepared.target && scratch?.device !== prepared.device) || target.width < prepared.bounds.width) throw new Error('Stale path coverage');
         const windingData = new Float32Array(12);
         windingData.set([viewport.width, viewport.height, 0, 0, affine[0], affine[1], affine[2], affine[3], affine[4], affine[5], 0, 0]);
+        const windingUniforms = host.uniforms(windingData);
+        const whole = prepared.bounds;
+        for (let y = whole.y; y < whole.y + whole.height; y += target.height) {
+        const bounds: RectI = { x: whole.x, y, width: whole.width, height: Math.min(target.height, whole.y + whole.height - y) };
         const coverData = new Float32Array(12);
         coverData.set([viewport.width, viewport.height, 0, 0, bounds.x, bounds.y, bounds.width, bounds.height, ...colour]);
-        const windingUniforms = host.uniforms(windingData), coverUniforms = host.uniforms(coverData);
+        const coverUniforms = host.uniforms(coverData);
         const token = pass.beginCoverage(target, bounds);
         try {
             const total = prepared.positiveVertices + prepared.negativeVertices;
@@ -219,6 +254,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
             pass.draw({ pipeline: pipelines.cover, bindings: { uniforms: [{ binding: 0, slice: coverUniforms }], textures: [] },
                 vertices: [], first: 0, count: 4, instances: 1, scissor: bounds });
         } finally { pass.endCoverage(token, output); }
+        }
     };
     return {
         warm,
@@ -249,8 +285,14 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
             if (!Number.isSafeInteger(vertexCount) || vertexCount % 3) throw new RangeError('Invalid path triangle storage');
             if (vertexCount === 0) return { status: 'empty' };
             const vertexBytes = vertexCount * 8;
-            const targetBytes = coverageTargetBytes(bounds.width, bounds.height, PATH_COVERAGE_SAMPLES);
+            const composite = output.kind === 'composite';
+            const targetBytes = composite ? 0 : coverageTargetBytes(bounds.width, bounds.height, PATH_COVERAGE_SAMPLES);
             if (targetBytes > PATH_COVERAGE_MAX_TARGET_BYTES) { auditCount('path-coverage', 'fallback:raster-route'); return { status: 'unsupported' }; }
+            if (composite) {
+                const fits = ensureScratch(owner, bounds.width, bounds.height);
+                if (fits === 'unsupported') { auditCount('path-coverage', 'fallback:raster-route'); return { status: 'unsupported' }; }
+                if (!fits) return { status: 'denied' };
+            }
             const staging = host.allocator.cpu.reserve(vertexBytes);
             if (!staging) return { status: 'denied' };
             let data: Float32Array;
@@ -263,21 +305,22 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
             const vertexLease = host.allocator.gpu.reserve(vertexBytes);
             if (!vertexLease) return { status: 'denied' };
             if (!budget.claimUpload(vertexBytes)) { host.allocator.gpu.release(vertexLease); return { status: 'denied' }; }
-            const targetLease = host.allocator.gpu.reserve(targetBytes);
-            if (!targetLease) { host.allocator.gpu.release(vertexLease); return { status: 'denied' }; }
+            const targetLease = composite ? null : host.allocator.gpu.reserve(targetBytes);
+            if (!composite && !targetLease) { host.allocator.gpu.release(vertexLease); return { status: 'denied' }; }
             let vertices: BufferHandle | null = null, target: CoverageTarget | null = null, clip: ClipHandle | null = null;
             let vertexAttached = false, targetAttached = false;
             try {
                 vertices = owner.createBuffer(vertexBytes, ['vertex', 'copy-dst'], vertexLease); vertexAttached = true;
                 owner.writeBuffer(vertices, 0, data);
-                target = owner.createCoverageTarget(bounds.width, bounds.height, PATH_COVERAGE_SAMPLES, targetLease); targetAttached = true;
-                if (output.kind === 'mask') clip = owner.createClip(target.texture, bounds);
+                if (targetLease) target = owner.createCoverageTarget(bounds.width, bounds.height, PATH_COVERAGE_SAMPLES, targetLease);
+                targetAttached = true;
+                if (output.kind === 'mask') clip = owner.createClip(target!.texture, bounds);
             } catch (error) {
                 if (clip) owner.destroy(clip);
                 if (target) { owner.destroy(target.target); owner.destroy(target.texture); }
                 if (vertices) owner.destroy(vertices);
                 if (!vertexAttached) host.allocator.gpu.release(vertexLease);
-                if (!targetAttached) host.allocator.gpu.release(targetLease);
+                if (!targetAttached && targetLease) host.allocator.gpu.release(targetLease);
                 if (error instanceof ArenaError && error.code === 'unsupported') { unsupported = true; return { status: 'unsupported' }; }
                 throw error;
             }

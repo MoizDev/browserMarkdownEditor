@@ -262,7 +262,8 @@ export interface GpuPass {
         opacity: number;
     }): void;
     // Stencil-winding coverage (rendering-design §2.4, §5.1). The target was admitted and created
-    // during prepare; this scope only BORROWS it. Draws between beginCoverage and endCoverage use
+    // during prepare; this scope only BORROWS it. `bounds` may be smaller than the target (a shared scratch drawn
+    // one band at a time); only that rectangle, from the target's origin, is drawn, resolved and composited. Draws between beginCoverage and endCoverage use
     // stencil pipelines against the target; endCoverage resolves multisampled colour and composites
     // the coverage into the current colour target with the clip active at begin. Nested or
     // overlapping borrows of one target are rejected; LIFO with clips and groups is enforced.

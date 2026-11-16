@@ -1,6 +1,6 @@
 import type { Affine, PathCommand, Rect, ViewState } from '../../platform/types';
 import type { LayerHost } from '../../platform/render/compositor.types';
-import type { ByteLease, GfxDevice, GpuPass, TextureHandle } from '../../platform/render/gfx/api';
+import type { ByteLease, GfxDevice, GpuPass, RectI, TextureHandle } from '../../platform/render/gfx/api';
 import type { FrameBudget, FrameToken, GpuReleaseReason } from '../../platform/render/types';
 import { createPathCoverageKit, type PathCoverageAdmission, type PathCoverageRule, type PreparedPathCoverage } from '../../platform/render/pathCoverage';
 import { pathFillTriangles } from './pathFillTriangles';
@@ -25,7 +25,7 @@ type Tile = { item: PaintItem; x: number; y: number; cached: CachedTile; multipl
     | { item: PaintItem; x: number; y: number; analytic: AnalyticInkPaint; cached?: never; path?: never }
     | { item: PaintItem; x: number; y: number; path: PreparedPathItem; cached?: never; analytic?: never; multiply?: never; worldRect?: never };
 /** One path item's admitted stencil work, in draw order: clip masks, then fill, then stroke. */
-interface PreparedPathItem { readonly clips: readonly PreparedPathCoverage[]; readonly fill: PreparedPathCoverage | null; readonly stroke: PreparedPathCoverage | null }
+interface PreparedPathItem { readonly clips: readonly PreparedPathCoverage[]; readonly rects: readonly RectI[]; readonly fill: PreparedPathCoverage | null; readonly stroke: PreparedPathCoverage | null }
 /** Device pixels of flattening error allowed for a stencil-covered path (design §5.1: ≤0.1 px). */
 const PATH_FLATTEN_DEVICE_PX = 0.1;
 /** A run of analytic ink commands inside one window; a group never crosses a window, so a window is drawn alone. */
@@ -111,6 +111,35 @@ function deviceAffine(localToWorld: Affine, origin: { x: number; y: number }, vi
         scale * (a * origin.x + c * origin.y + e - view.camera.x), scale * (b * origin.x + d * origin.y + f - view.camera.y)] };
 }
 
+/** A clip that is an axis-aligned rectangle under a rotation-free transform, as device pixels; null for any other path.
+ * Such a clip is the pass's scissor clip, not a coverage mask: a notebook page's clip asked a 52 B/px MSAA mask larger
+ * than any target the pane grants, and every paper item fell back to a CPU raster (measured: 330 fallbacks in one pan). */
+function deviceClipRect(clip: PaintPathItem['clips'][number], view: ViewState): RectI | null {
+    const [a, b, c, d] = clip.localToWorld;
+    if (b !== 0 || c !== 0 || clip.d.length < 4) return null;
+    const points: [number, number][] = [];
+    for (const command of clip.d) {
+        if (command[0] === 'Z') continue;
+        if (command[0] !== 'M' && command[0] !== 'L') return null;
+        if (command[0] === 'M' && points.length) return null;
+        points.push([command[1] as number, command[2] as number]);
+    }
+    if (points.length === 5 && points[4][0] === points[0][0] && points[4][1] === points[0][1]) points.pop();
+    if (points.length !== 4) return null;
+    const xs = new Set(points.map(point => point[0])), ys = new Set(points.map(point => point[1]));
+    if (xs.size !== 2 || ys.size !== 2) return null;
+    // Consecutive corners must share an x or a y, else the four points are a bow tie, not a rectangle.
+    for (let i = 0; i < 4; i++) { const p = points[i], q = points[(i + 1) % 4]; if (p[0] !== q[0] && p[1] !== q[1]) return null; }
+    const frame = deviceAffine(clip.localToWorld, { x: 0, y: 0 }, view);
+    if (!frame) return null;
+    const [sa, , , sd, se, sf] = frame.affine;
+    if (!(a !== 0 && d !== 0)) return null;
+    const [x0, x1] = [...xs].map(x => sa * x + se).sort((p, q) => p - q), [y0, y1] = [...ys].map(y => sd * y + sf).sort((p, q) => p - q);
+    // Edges round to the nearest device pixel, as the canvas2d path clip's half-covered edge column would read.
+    const rx0 = Math.round(x0), ry0 = Math.round(y0);
+    return { x: rx0, y: ry0, width: Math.round(x1) - rx0, height: Math.round(y1) - ry0 };
+}
+
 type PathAdmission = { status: 'ready'; value: PreparedPathItem } | { status: 'empty' | 'denied' | 'unsupported' };
 
 /** Admits one path item's clip masks, fill and stroke, all or nothing: a later refusal retires the
@@ -123,12 +152,19 @@ function admitPathItem(item: PaintPathItem, view: ViewState, kit: ReturnType<typ
         for (const prepared of acquired) kit.retire(prepared);
         return { status };
     };
-    const clips: PreparedPathCoverage[] = [];
+    const clips: PreparedPathCoverage[] = [], rects: RectI[] = [];
     const place = (result: PathCoverageAdmission): 'ok' | 'empty' | 'denied' | 'unsupported' => {
         if (result.status === 'ready') { acquired.push(result.value); return 'ok'; }
         return result.status;
     };
     for (const clip of item.clips) {
+        const rect = deviceClipRect(clip, view);
+        if (rect) {
+            const x0 = Math.max(0, rect.x), y0 = Math.max(0, rect.y);
+            const x1 = Math.min(viewport.width, rect.x + rect.width), y1 = Math.min(viewport.height, rect.y + rect.height);
+            if (x1 <= x0 || y1 <= y0) return fail('empty');  // a clip that excludes the viewport hides the item
+            rects.push({ x: x0, y: y0, width: x1 - x0, height: y1 - y0 }); continue;
+        }
         const origin = pathOrigin(clip.d);
         const frame = deviceAffine(clip.localToWorld, origin, view);
         if (!frame) return fail('unsupported');
@@ -169,13 +205,13 @@ function admitPathItem(item: PaintPathItem, view: ViewState, kit: ReturnType<typ
         else if (outcome !== 'empty') return fail(outcome as 'denied' | 'unsupported');
     }
     if (!fill && !stroke) return fail('empty');
-    return { status: 'ready', value: { clips, fill, stroke } };
+    return { status: 'ready', value: { clips, rects, fill, stroke } };
 }
 
 /** Draw order inside one item: clip masks render first, then the item's coverage inside the pushed clips. */
 function drawPathItem(pass: GpuPass, item: PreparedPathItem, kit: ReturnType<typeof createPathCoverageKit>): void {
     for (const clip of item.clips) kit.drawMask(pass, clip);
-    const tokens = item.clips.map(clip => pass.pushClip(clip.clip!));
+    const tokens = [...item.rects.map(rect => pass.pushClip(rect)), ...item.clips.map(clip => pass.pushClip(clip.clip!))];
     try {
         if (item.fill) kit.draw(pass, item.fill);
         if (item.stroke) kit.draw(pass, item.stroke);

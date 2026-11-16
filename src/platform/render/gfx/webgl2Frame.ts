@@ -611,7 +611,7 @@ class DevicePass implements GpuPass {
             if (!native.stencil || native.samples !== target.samples || native.format !== 'rgba8' ||
                 native.width !== target.width || native.height !== target.height || !texture.uses.includes('sample') ||
                 texture.texture === parent.target.color?.texture || [bounds.x, bounds.y, bounds.width, bounds.height].some(value => !Number.isSafeInteger(value)) ||
-                bounds.width !== target.width || bounds.height !== target.height) throw new ArenaError('invalid-input');
+                bounds.width <= 0 || bounds.height <= 0 || bounds.width > target.width || bounds.height > target.height) throw new ArenaError('invalid-input');
             const token = Object.freeze({ id: this.#frame.token() });
             const previous = this.#clip;
             // The scope covers the target's own rectangle; coverage outside the admitted area is never drawn.
@@ -650,7 +650,8 @@ class DevicePass implements GpuPass {
             stencil: { load: { kind: 'load' }, store: 'discard' } });
         if (child.target.samples === 4) {
             const resolve: FrameTarget = { ...child.target, framebuffer: child.target.resolveFramebuffer, samples: 1 };
-            this.#frame.blit(child.target, { x: 0, y: 0, width: child.target.width, height: child.target.height }, resolve, 0, 0);
+            // Only the borrowed rectangle: a shared scratch target is larger than one band of one path.
+            this.#frame.blit(child.target, { x: 0, y: 0, width: child.bounds.width, height: child.bounds.height }, resolve, 0, 0);
         }
         if (output.kind === 'mask') return;
         if (child.coverage) this.#scope.coverage = true;

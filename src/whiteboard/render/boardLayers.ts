@@ -530,12 +530,13 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 const bytes = estimate!.bytes;
                 if (bytes) {
                     // Inside a refusal's back-off the whole-frame estimate is not asked again.
-                    if (memoryGate.closed()) { denied = true; return; }
+                    if (memoryGate.closed()) { auditCount(pathAudit, 'prep:direct-gate-closed', bytes); denied = true; return; }
                     // The pane's grant may still be the floor from before this estimate was known (the demand is collected
                     // on refresh). Re-collect it now and retry once; only a refusal against the refreshed grant latches.
                     let lease = allocatorHost!.allocator.cpu.reserve(bytes);
                     if (!lease) { allocatorHost!.refreshDemandNow?.(); lease = allocatorHost!.allocator.cpu.reserve(bytes); }
                     if (!lease) {
+                        auditCount(pathAudit, 'prep:direct-estimate-refused', bytes);
                         memoryGate.refused();
                         allocatorHost!.demandChanged?.();
                         denied = true;

@@ -1,3 +1,4 @@
+import { auditCount, renderAuditEnabled } from './renderAudit';
 import type { Rect, ViewState } from '../types';
 import type {
     CompositorAppearance, CompositorCoverage, CompositorLayer, CompositorPage, IsolationReservation, PaneCompositor, PaneSurfaceHost, TexturedQuadOptions,
@@ -309,7 +310,15 @@ export class GpuCompositor implements PaneCompositor {
                         { opacity: effect.opacity, blend: effect.blend, colourEffect: 'none' }) : null;
                     const scope = layerPass(pass);
                     drawScope.passes.add(scope.pass);
-                    try { binding.layer.drawGpu(scope.pass, frame.view); }
+                    const auditId = (binding as { id?: string }).id ?? 'layer';
+                    auditCount(auditId, 'gpu-layer');
+                    // Audit only: count the layer's own draw calls (quads included; gpu-draw minus gpu-quad is its shader work).
+                    const layerTarget = renderAuditEnabled() ? new Proxy(scope.pass, { get(target, key) {
+                        const value = Reflect.get(target, key, target) as unknown;
+                        if (key === 'draw' && typeof value === 'function') return (cmd: unknown) => { auditCount(auditId, 'gpu-draw'); return (value as (c: unknown) => void).call(target, cmd); };
+                        return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+                    } }) : scope.pass;
+                    try { binding.layer.drawGpu(layerTarget, frame.view); }
                     finally { drawScope.passes.delete(scope.pass); scope.finish(); }
                     if (isolation) pass.endGroup(isolation);
                 }

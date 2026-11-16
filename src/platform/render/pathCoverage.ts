@@ -1,3 +1,4 @@
+import { auditCount } from './renderAudit';
 import type { Affine, Rgba } from '../types';
 import type { LayerHost } from './compositor.types';
 import type { BufferHandle, ClipHandle, CoverageOutput, CoverageTarget, GfxDevice, GpuPass, PipelineHandle, RectI, Samples, ShaderModule, StencilOp, StencilState } from './gfx/api';
@@ -249,7 +250,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
             if (vertexCount === 0) return { status: 'empty' };
             const vertexBytes = vertexCount * 8;
             const targetBytes = coverageTargetBytes(bounds.width, bounds.height, PATH_COVERAGE_SAMPLES);
-            if (targetBytes > PATH_COVERAGE_MAX_TARGET_BYTES) return { status: 'unsupported' };
+            if (targetBytes > PATH_COVERAGE_MAX_TARGET_BYTES) { auditCount('path-coverage', 'fallback:raster-route'); return { status: 'unsupported' }; }
             const staging = host.allocator.cpu.reserve(vertexBytes);
             if (!staging) return { status: 'denied' };
             let data: Float32Array;

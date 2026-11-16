@@ -1,3 +1,4 @@
+import { auditFrame } from './renderAudit';
 import type { Viewport, ViewState } from '../types';
 import { cameraAtAnchor, surfaceToWorld } from './camera';
 import type { CameraAnchor, CameraController, Point } from './camera';
@@ -745,6 +746,7 @@ export class FrameScheduler {
             const meter = this.meter;
             this.meter = null;
             this.inFrame = false;
+            auditFrame('scheduler', performance.now() - started);
             try {
                 if (meter) {
                     const elapsedMs = performance.now() - started;

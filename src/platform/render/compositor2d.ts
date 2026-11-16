@@ -1,3 +1,4 @@
+import { auditCount } from './renderAudit';
 import type { Rect, ViewState } from '../types';
 import { deviceContext, imageExtent, paintCanvasIsolation, registerCanvasIsolation } from './canvas2dContext';
 import { createColourGroup2d } from './colourGroup2d';
@@ -736,6 +737,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
     }
     private paintBindings(bindings: readonly CompositorLayer[], target: Buffer2D, snapshot: Snapshot, frame: ScheduledFrame): void {
         for (const binding of bindings) {
+            auditCount(binding.id, 'canvas2d-layer');
             const effect = binding.isolation;
             if (!effect) {
                 target.context.save();

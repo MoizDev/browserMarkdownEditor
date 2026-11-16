@@ -1,3 +1,4 @@
+import { renderAuditEnabled } from './renderAudit';
 import { getTerminalContextActive, subscribeTerminalContext } from '../terminalContext';
 import { RENDER_CONSTANTS as POLICY } from './constants';
 import { MemoryGovernor } from './memoryGovernor';
@@ -183,4 +184,15 @@ export class PlatformRuntime {
 let runtime: PlatformRuntime | null = null;
 
 /** Only lazy engine/pane code calls this. Importing the module does not initialize the platform. */
-export function getPlatformRuntime(): PlatformRuntime { return runtime ??= new PlatformRuntime(); }
+export function getPlatformRuntime(): PlatformRuntime {
+    if (!runtime) {
+        runtime = new PlatformRuntime();
+        const created = runtime;
+        // Audit only: the measured inventory reads memory beside its counters (renderAudit.ts).
+        if (renderAuditEnabled() && typeof window !== 'undefined') {
+            const audit = (window as unknown as { __bmeRenderAudit?: Record<string, unknown> }).__bmeRenderAudit;
+            if (audit) audit.memory = () => created.governor.readout();
+        }
+    }
+    return runtime;
+}

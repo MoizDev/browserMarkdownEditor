@@ -1,3 +1,4 @@
+import { auditCount, auditFrame } from './renderAudit';
 import type { ViewState } from '../types';
 const benchmarkMemory = __BME_BENCH__ ? await import('./benchmarkMemory') : null;
 import type { DamageRecord } from './damage';
@@ -146,6 +147,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         } catch (error) { cpu.close(); throw error; }
         caches.push({ cpu, gpu: gpuCache, layer: current });
         return createLayerHost({
+            auditId: id,
             allocator: { cpu, gpu: gpuCache }, generation: () => lifecycle?.surface.snapshot().gpuGeneration ?? 0,
             // GPU uploads cannot gate CPU source acquisition, including the resize bridge.
             gpuResources: () => {
@@ -307,6 +309,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                     onGpuReady: grant => candidate.ready(grant),
                     onCapabilityFailure: () => runtime.observeCapabilityFailure(options.paneId),
                     onCpuFallback: reason => {
+                        auditCount('pane', `fallback:pane-2d:${reason}`);
                         gpu = null;
                         cpuPresented = false;
                         surfaceHost.clearStaged();
@@ -334,6 +337,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                             // layers can prepare the new viewport. Build the normal CPU bridge detached,
                             // then resize/rebuild this SAME kept GPU behind that complete picture.
                             cpuPresented = false;
+                            auditCount('pane', 'fallback:2d-bridge');
                             drawing = compositor;
                             planned = computeSurfaceMetrics(size.physical, size.nominalDpr, drawing.target.limits, grant.pixelGrant);
                         }
@@ -392,6 +396,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                         lastFrameInterval = frame.intervalMs;
                         const drawing = drawCompositor();
                         if (!drawing) return null;
+                        const encodeStart = performance.now();
                         const encoding = drawing.encode(frame);
                         if (!encoding && !(drawing === compositor && options.session.mirrors)) return null;
                         const revision = options.revision();
@@ -446,6 +451,8 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                                         return null;
                                     }
                                 }
+                                auditFrame(drawing.backend, performance.now() - encodeStart);
+                                if (qualityScale < 1) auditCount('pane', 'quality-below-1');
                                 if (drawing !== compositor) candidate.presented(frame.token.deviceGeneration);
                                 options.onPresentation({ frameId: frame.frameId, token: frame.token, backend: drawing.backend,
                                     complete, sharp, staleVersion,

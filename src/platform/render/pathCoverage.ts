@@ -140,13 +140,25 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
     let device: GfxDevice | null = null, pipelines: Pipelines | null = null, pending = false, failed = false, unsupported = false;
     let incarnation = 0, disposed = false, gpuBytes = 0;
     const live = new Map<PreparedPathCoverage, number>();
+    // One vertex buffer per triangle set, shared by every admission of it: the triangles are origin-relative, so all tile
+    // views of an item at one scale draw the same buffer under their own affine. A buffer per admission uploaded and
+    // charged a stroke once per tile it crossed, and the notebook's paper was refused for the room (267 refusals).
+    const shared = new Map<Float64Array, { device: GfxDevice; buffer: BufferHandle; negative: Float64Array; refs: number; bytes: number }>();
+    const releaseVertices = (prepared: PreparedPathCoverage) => {
+        for (const [key, entry] of shared) {
+            if (entry.buffer !== prepared.vertices) continue;
+            if (--entry.refs === 0) { shared.delete(key); gpuBytes -= entry.bytes; entry.device.destroy(entry.buffer); }
+            return;
+        }
+        prepared.device.destroy(prepared.vertices);
+    };
     const retireOwned = (prepared: PreparedPathCoverage) => {
         const bytes = live.get(prepared);
         if (bytes === undefined) return;
         live.delete(prepared); gpuBytes -= bytes;
         if (prepared.clip) prepared.device.destroy(prepared.clip);
         if (prepared.target) { prepared.device.destroy(prepared.target.target); prepared.device.destroy(prepared.target.texture); }
-        prepared.device.destroy(prepared.vertices);
+        releaseVertices(prepared);
     };
     // One composite scratch per kit, grown (never shrunk) to the widest admitted path and as many rows as the cap allows.
     // A target per item, held for its plan, made every page-sized fill a 13-33 MB admission the pane never granted, so
@@ -179,6 +191,8 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
     const release = () => {
         incarnation++;
         for (const prepared of [...live.keys()]) retireOwned(prepared);
+        for (const entry of shared.values()) { gpuBytes -= entry.bytes; entry.device.destroy(entry.buffer); }
+        shared.clear();
         dropScratch();
         if (pipelines && device) for (const handle of Object.values(pipelines)) device.destroy(handle);
         pipelines = null; device = null; pending = false; failed = false; unsupported = false;
@@ -297,6 +311,20 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
                 if (fits === 'unsupported') { auditCount('path-coverage', 'fallback:raster-route'); return { status: 'unsupported' }; }
                 if (!fits) return { status: 'denied' };
             }
+            const reuse = shared.get(shapes.positive);
+            const reusable = reuse && reuse.device === owner && reuse.negative === shapes.negative && reuse.bytes === vertexBytes ? reuse : null;
+            if (reusable && composite) {
+                reusable.refs++;
+                const colour: readonly [number, number, number, number] = [request.colour[0] * request.colour[3], request.colour[1] * request.colour[3],
+                    request.colour[2] * request.colour[3], request.colour[3]];
+                const prepared: PreparedPathCoverage = Object.freeze({ device: owner, target: null, vertices: reusable.buffer, clip: null,
+                    positiveVertices: shapes.positive.length / 2, negativeVertices: shapes.negative.length / 2, rule, output, bounds,
+                    viewport: Object.freeze({ width: viewport.width, height: viewport.height }),
+                    affine: Object.freeze([...affine]) as unknown as Affine,
+                    colour: Object.freeze([...colour]) as unknown as readonly [number, number, number, number], gpuBytes: 0 });
+                live.set(prepared, 0);
+                return { status: 'ready', value: prepared };
+            }
             const staging = host.allocator.cpu.reserve(vertexBytes);
             if (!staging) return { status: 'denied' };
             let data: Float32Array;
@@ -330,7 +358,11 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
             }
             const colour: readonly [number, number, number, number] = output.kind === 'mask' ? [1, 1, 1, 1]
                 : [request.colour[0] * request.colour[3], request.colour[1] * request.colour[3], request.colour[2] * request.colour[3], request.colour[3]];
-            const gpu = vertexBytes + targetBytes;
+            // A composite's buffer is shared from here: its bytes are the shared entry's, counted once.
+            const sharing = composite && !shared.has(shapes.positive);
+            if (sharing) shared.set(shapes.positive, { device: owner, buffer: vertices!, negative: shapes.negative, refs: 1, bytes: vertexBytes });
+            const gpu = (sharing ? 0 : vertexBytes) + targetBytes;
+            if (sharing) gpuBytes += vertexBytes;
             const prepared: PreparedPathCoverage = Object.freeze({ device: owner, target, vertices, clip,
                 positiveVertices: shapes.positive.length / 2, negativeVertices: shapes.negative.length / 2, rule, output, bounds,
                 viewport: Object.freeze({ width: viewport.width, height: viewport.height }),

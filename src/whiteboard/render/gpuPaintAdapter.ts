@@ -244,7 +244,8 @@ function admitPathItem(item: PaintPathItem, view: ViewState, kit: ReturnType<typ
         // Stable identities: the kit shares one vertex buffer per triangle array across tile views.
         const positive = union && shapes.negative.length ? unionTriangles(shapes) : shapes.positive;
         const outcome = place(kit.admit({ shapes: { positive, negative: union ? NO_TRIANGLES : shapes.negative, edges: shapes.edges, bounds: shapes.bounds },
-            rule: union ? 'union' : item.fillRule, affine: frame.affine, viewport, colour: item.material.fill, output: { kind: 'composite', blend } }, budget));
+            rule: union ? 'union' : item.fillRule, affine: frame.affine, viewport, colour: item.material.fill, output: { kind: 'composite', blend },
+            supersample: union }, budget));
         if (outcome === 'ok') fill = acquired[acquired.length - 1];
         else if (outcome !== 'empty') return fail(outcome as 'denied' | 'deferred' | 'unsupported');
     }

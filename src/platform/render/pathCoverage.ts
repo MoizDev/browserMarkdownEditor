@@ -28,6 +28,8 @@ const PATH_COVERAGE_MAX_TARGET_BYTES = 8 * 2 ** 20;
 const PATH_COVERAGE_SCRATCH_BYTES = 2 * 2 ** 20;
 /** One vertex upload piece; a frame's allowance takes as many as it covers. */
 const PATH_COVERAGE_UPLOAD_CHUNK_BYTES = 256 * 1024;
+interface SharedScratch { readonly device: GfxDevice; readonly target: CoverageTarget; readonly bytes: number; readonly users: Set<object>; readonly account: (delta: number) => void }
+const deviceScratch = new WeakMap<GfxDevice, SharedScratch>();
 
 /** Origin-relative triangles, six values per triangle. `positive` adds +1 winding and `negative`
  * adds -1; for `union` every triangle is in `positive` and `negative` is empty. */
@@ -48,6 +50,9 @@ export interface PathCoverageRequest {
     /** Straight colour; premultiplied at admission. A mask request ignores it and covers with white. */
     readonly colour: Rgba;
     readonly output: CoverageOutput;
+    /** Union coverage drawn in four jittered passes (16 samples): for ink, where antialiased edges stack. Never for crisp
+     * axis-aligned strokes (paper ruling): the jitter spread a one-row line over three rows. */
+    readonly supersample?: boolean;
 }
 
 export type PathCoverageAdmission =
@@ -74,6 +79,7 @@ export interface PreparedPathCoverage {
     readonly affine: Affine;
     readonly colour: readonly [number, number, number, number];
     readonly gpuBytes: number;
+    readonly supersample: boolean;
 }
 
 const KEEP_FACE = { fail: 'keep', depthFail: 'keep', pass: 'keep' } as const;
@@ -184,20 +190,28 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
     // One composite scratch per kit, grown (never shrunk) to the widest admitted path and as many rows as the cap allows.
     // A target per item, held for its plan, made every page-sized fill a 13-33 MB admission the pane never granted, so
     // the paper took the CPU raster route (measured: 330 fallbacks in one notebook pan).
-    let scratch: { device: GfxDevice; target: CoverageTarget; bytes: number } | null = null;
+    // The composite scratch is one per DEVICE (a pane's context), shared by every layer's kit there: coverage draws are
+    // sequential within a frame. One per kit held 2 MiB for each of paper, board and wet, and the pane's working grant
+    // refused the paper's path admissions for the room (measured: refused at pane-grant:working, 33 and 54 per draw).
+    const token = {};
+    const scratchOf = (owner: GfxDevice | null): SharedScratch | undefined => owner ? deviceScratch.get(owner) : undefined;
+    const account = (delta: number) => { gpuBytes += delta; };
     const dropScratch = () => {
-        if (!scratch) return;
-        scratch.device.destroy(scratch.target.target); scratch.device.destroy(scratch.target.texture);
-        gpuBytes -= scratch.bytes; scratch = null;
+        const shared = scratchOf(device);
+        if (!shared || !shared.users.delete(token) || shared.users.size) return;
+        deviceScratch.delete(shared.device);
+        shared.device.destroy(shared.target.target); shared.device.destroy(shared.target.texture);
+        shared.account(-shared.bytes);
     };
-    /** Ensures the scratch holds a band of the given width; false when its lease is refused (a wait, never a fallback). */
+    /** Ensures the device's scratch holds a band of the given width; false when its lease is refused (a wait). */
     const ensureScratch = (owner: GfxDevice, width: number, height: number): boolean | 'unsupported' => {
         const rowBytes = coverageTargetBytes(width, 1, PATH_COVERAGE_SAMPLES);
         if (rowBytes > PATH_COVERAGE_SCRATCH_BYTES) return 'unsupported';
         const rows = Math.min(height, Math.floor(PATH_COVERAGE_SCRATCH_BYTES / rowBytes));
-        if (scratch && scratch.device === owner && scratch.target.width >= width && scratch.target.height >= rows) return true;
-        const w = Math.max(width, scratch?.device === owner ? scratch.target.width : 0);
-        const h = Math.min(Math.max(rows, scratch?.device === owner ? scratch.target.height : 0),
+        const current = deviceScratch.get(owner);
+        if (current && current.target.width >= width && current.target.height >= rows) { current.users.add(token); return true; }
+        const w = Math.max(width, current?.target.width ?? 0);
+        const h = Math.min(Math.max(rows, current?.target.height ?? 0),
             Math.floor(PATH_COVERAGE_SCRATCH_BYTES / coverageTargetBytes(w, 1, PATH_COVERAGE_SAMPLES)));
         const bytes = coverageTargetBytes(w, h, PATH_COVERAGE_SAMPLES);
         const lease = host.allocator.gpu.reserve(bytes);
@@ -205,8 +219,11 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         let target: CoverageTarget;
         try { target = owner.createCoverageTarget(w, h, PATH_COVERAGE_SAMPLES, lease); }
         catch (error) { host.allocator.gpu.release(lease); throw error; }
-        dropScratch();
-        scratch = { device: owner, target, bytes }; gpuBytes += bytes;
+        // A grown scratch replaces the old for every user; the device returns the old one's lease as it retires.
+        const users = new Set<object>(current?.users ?? []); users.add(token);
+        if (current) { current.device.destroy(current.target.target); current.device.destroy(current.target.texture); current.account(-current.bytes); }
+        deviceScratch.set(owner, { device: owner, target, bytes, users, account });
+        account(bytes);
         return true;
     };
     const release = () => {
@@ -268,8 +285,8 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         if (disposed || !live.has(prepared) || !pipelines || prepared.device !== device || host.device() !== device ||
             host.generation !== prepared.device.generation) throw new Error('Stale path coverage');
         const { affine, colour, viewport, output } = prepared;
-        const target = prepared.target ?? scratch?.target;
-        if (!target || (!prepared.target && scratch?.device !== prepared.device) || target.width < prepared.bounds.width) throw new Error('Stale path coverage');
+        const target = prepared.target ?? scratchOf(prepared.device)?.target;
+        if (!target || target.width < prepared.bounds.width) throw new Error('Stale path coverage');
         const windingData = new Float32Array(12);
         windingData.set([viewport.width, viewport.height, 0, 0, affine[0], affine[1], affine[2], affine[3], affine[4], affine[5], 0, 0]);
         const windingUniforms = host.uniforms(windingData);
@@ -287,7 +304,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
                 pass.draw({ pipeline, bindings: { uniforms: [{ binding: 0, slice: windingUniforms }], textures: [] },
                     vertices: [{ buffer: prepared.vertices, offset: 0, bytes: total * 8 }], first, count, instances: 1, scissor: bounds });
             };
-            if (prepared.rule === 'union' && output.kind === 'composite') {
+            if (prepared.supersample && prepared.rule === 'union' && output.kind === 'composite') {
                 const quarter = new Float32Array(12);
                 quarter.set([viewport.width, viewport.height, 0, 0, bounds.x, bounds.y, bounds.width, bounds.height, ...colour.map(v => v * 0.25)]);
                 const quarterUniforms = host.uniforms(quarter);
@@ -410,7 +427,8 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
                 positiveVertices: shapes.positive.length / 2, negativeVertices: shapes.negative.length / 2, rule, output, bounds,
                 viewport: Object.freeze({ width: viewport.width, height: viewport.height }),
                 affine: Object.freeze([...affine]) as unknown as Affine,
-                colour: Object.freeze([...colour]) as unknown as readonly [number, number, number, number], gpuBytes: gpu });
+                colour: Object.freeze([...colour]) as unknown as readonly [number, number, number, number], gpuBytes: gpu,
+                supersample: request.supersample === true });
             live.set(prepared, gpu); gpuBytes += gpu;
             return { status: 'ready', value: prepared };
         },

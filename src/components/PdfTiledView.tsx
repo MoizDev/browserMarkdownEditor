@@ -92,6 +92,9 @@ interface Props {
 
 /** The pane is a camera and DOM chrome around one shared-platform page layer.
  * The document/pool and CPU mirror belong to App's session, not this mount. */
+/** The governor's memory notices, which clear when the pane is back at full quality. */
+const QUALITY_NOTICES = new Set(['PDF rendering quality was reduced to fit memory.', 'PDF rendering is limited by available memory.']);
+
 export default function PdfTiledView({ reading, session, document: pdf, filePath, isVisible, isFocused,
     mirror, transition, bridge, capturer, findMemory, selectionState, sourceHash, onPresentation, onSearchVault, onRotate, onOpenTextView, onNotice, onCapabilities }: Props) {
     const [host, setHost] = useState<HTMLDivElement | null>(null);
@@ -134,6 +137,15 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         const next = { message, error };
         sessionNotices.set(session, next);
         setNoticeState({ session, notice: next });
+    }, [session]);
+    // A memory notice describes a state, not an event: a sharp frame is full quality, so it goes then. It stayed over a
+    // sharp page for the rest of the session (seen after a zoom or resize that only briefly pressed memory).
+    const clearQualityNotice = useCallback(() => {
+        if (!mounted.current || liveSession.current !== session) return;
+        const current = sessionNotices.get(session);
+        if (!current || current.error || !QUALITY_NOTICES.has(current.message)) return;
+        sessionNotices.delete(session);
+        setNoticeState({ session, notice: undefined });
     }, [session]);
     const notice = noticeState.session === session ? noticeState.notice : sessionNotices.get(session);
     const retryDocument = pdf.poolDocument.retry;
@@ -579,11 +591,12 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
                 token?.vaultEpoch === session.token.vaultEpoch && token.documentId === session.token.documentId &&
                 token.bytesGeneration === session.token.bytesGeneration && token.session === session.token.session && token.viewLease === lease;
             if (currentSharp.current && updatingRef.current) { updatingRef.current = false; setUpdating(false); }
+            if (currentSharp.current) clearQualityNotice();
         }, onError: () => reportRenderNotice('The PDF viewer encountered a rendering error.', true),
         onNotice: message => reportRenderNotice(message === 'memory-pressure' ? 'PDF rendering quality was reduced to fit memory.'
             : message === 'cpu-floor-denied' ? 'PDF rendering is limited by available memory.'
                 : message === 'cpu-pinned' ? 'PDF rendering is using a compatible mode.' : 'GPU rendering is unavailable; a compatible mode is in use.'),
-    }), [lease, mirror, capturer, mirrorView, onNotice, pageLayer, pdf, session, stack, updateTextMirrorView, onFindView, filePath, persist, correctReveal, clamp, refreshSelectionPointer, capabilities, reportRenderNotice]);
+    }), [lease, mirror, capturer, mirrorView, onNotice, pageLayer, pdf, session, stack, updateTextMirrorView, onFindView, filePath, persist, correctReveal, clamp, refreshSelectionPointer, capabilities, reportRenderNotice, clearQualityNotice]);
     const platformPane = usePlatformPane<PdfMirrorPixels>({ host, isVisible, isFocused, vaultEpoch: session.token.vaultEpoch,
         documentId: session.token.documentId, layers, services });
     paneRef.current = platformPane;

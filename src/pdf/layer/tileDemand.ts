@@ -62,7 +62,9 @@ export function planPdfTileDemand(input: PdfDemandInput): PdfDemandSet {
     const { stack, viewport } = input;
     if (!stack.rects.length || viewport.width <= 0 || viewport.height <= 0) return { requests: [] };
     const motionScale = input.moving ? input.motionScaleOverride ?? movingScale(input.rasterScale, input.previousMotionScale) : undefined;
-    const scale = motionScale ?? exactScale(input.rasterScale);
+    // The key encodes the scale's float bits, and one zoom recomputes it with noise (1.4379084967320261 vs ...255):
+    // each variant keyed a new tile and re-rastered identical pixels. Twelve significant digits is far below a texel.
+    const scale = motionScale ?? exactScale(Number(input.rasterScale.toPrecision(12)));
     const prefetch = tilePrefetchRegion(viewport, input.velocity, false, input.direction);
     const lowRegion = tilePrefetchRegion(viewport, input.velocity, true, input.direction);
     const documentToken = renderTokenKey(input.token);

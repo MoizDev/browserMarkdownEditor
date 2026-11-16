@@ -43,6 +43,8 @@ interface Plan {
     boundsJob: PaintBoundsJob | null; tileBounds: { x0: number; y0: number; x1: number; y1: number } | null; itemKey: string;
     analyticReady: boolean;
     parts: Generator<PaintItem> | null; part: PaintItem | null; partIndex: number; hasMultiply: boolean;
+    /** A multiply item drawn by the coverage kit: its composite snapshots a backdrop as wide as its band, not a tile. */
+    multiplyCoverage: boolean;
     cpuLeases: ByteLease[]; cpuUsed: number;
     groups: AnalyticGroup[];
     scanWindow: number; scanIndex: number; scanned: boolean; groupIndex: number; waitingBatch: boolean;
@@ -177,8 +179,8 @@ export function inkPathItem(item: PaintInkItem, view: ViewState): PaintPathItem 
 /** Fill triangles are origin-relative, so every tile view of one item at one scale shares them: a tile composer admits a
  * stroke once per tile it crosses, and re-triangulating its whole outline each time kept tiles from ever completing
  * (measured: 301 position stop-waits in one draw phase with the ink route on, against 2 off). */
-const fillCache = new WeakMap<PaintPathItem, { tolerance: number; shapes: ReturnType<typeof pathFillTriangles> }>();
-function fillTriangles(item: PaintPathItem, tolerance: number, origin: { x: number; y: number }): ReturnType<typeof pathFillTriangles> {
+const fillCache = new WeakMap<{ readonly d: readonly PathCommand[] }, { tolerance: number; shapes: ReturnType<typeof pathFillTriangles> }>();
+function fillTriangles(item: { readonly d: readonly PathCommand[] }, tolerance: number, origin: { x: number; y: number }): ReturnType<typeof pathFillTriangles> {
     const cached = fillCache.get(item);
     if (cached && cached.tolerance === tolerance) return cached.shapes;
     const shapes = pathFillTriangles(item.d, { tolerance, origin: [origin.x, origin.y] });
@@ -194,7 +196,7 @@ function unionTriangles(shapes: { positive: Float64Array; negative: Float64Array
     return merged;
 }
 
-type PathAdmission = { status: 'ready'; value: PreparedPathItem } | { status: 'empty' | 'denied' | 'unsupported' };
+type PathAdmission = { status: 'ready'; value: PreparedPathItem } | { status: 'empty' | 'denied' | 'deferred' | 'unsupported' };
 
 /** Admits one path item's clip masks, fill and stroke, all or nothing: a later refusal retires the
  * earlier admissions, and any unsupported part sends the whole item to the exact canonical raster. */
@@ -202,12 +204,12 @@ function admitPathItem(item: PaintPathItem, view: ViewState, kit: ReturnType<typ
     budget: FrameBudget): PathAdmission {
     const viewport = { width: Math.round(view.viewport.width * view.viewport.dpr), height: Math.round(view.viewport.height * view.viewport.dpr) };
     const acquired: PreparedPathCoverage[] = [];
-    const fail = (status: 'empty' | 'denied' | 'unsupported'): PathAdmission => {
+    const fail = (status: 'empty' | 'denied' | 'deferred' | 'unsupported'): PathAdmission => {
         for (const prepared of acquired) kit.retire(prepared);
         return { status };
     };
     const clips: PreparedPathCoverage[] = [], rects: RectI[] = [];
-    const place = (result: PathCoverageAdmission): 'ok' | 'empty' | 'denied' | 'unsupported' => {
+    const place = (result: PathCoverageAdmission): 'ok' | 'empty' | 'denied' | 'deferred' | 'unsupported' => {
         if (result.status === 'ready') { acquired.push(result.value); return 'ok'; }
         return result.status;
     };
@@ -222,12 +224,12 @@ function admitPathItem(item: PaintPathItem, view: ViewState, kit: ReturnType<typ
         const origin = pathOrigin(clip.d);
         const frame = deviceAffine(clip.localToWorld, origin, view);
         if (!frame) return fail('unsupported');
-        const shapes = pathFillTriangles(clip.d, { tolerance: PATH_FLATTEN_DEVICE_PX / (frame.scale * frame.norm), origin: [origin.x, origin.y] });
+        const shapes = fillTriangles(clip, PATH_FLATTEN_DEVICE_PX / (frame.scale * frame.norm), origin);
         if (!shapes) return fail('unsupported');
         const outcome = place(kit.admit({ shapes, rule: clip.fillRule, affine: frame.affine, viewport, colour: [1, 1, 1, 1],
             output: { kind: 'mask' } }, budget));
         if (outcome === 'empty') return fail('empty');  // a clip that excludes the viewport hides the item
-        if (outcome !== 'ok') return fail(outcome as 'denied' | 'unsupported');
+        if (outcome !== 'ok') return fail(outcome as 'denied' | 'deferred' | 'unsupported');
         clips.push(acquired[acquired.length - 1]);
     }
     const blend = item.material.blend === 'multiply' ? 'multiply' : 'normal';
@@ -244,7 +246,7 @@ function admitPathItem(item: PaintPathItem, view: ViewState, kit: ReturnType<typ
         const outcome = place(kit.admit({ shapes: { positive, negative: union ? NO_TRIANGLES : shapes.negative, edges: shapes.edges, bounds: shapes.bounds },
             rule: union ? 'union' : item.fillRule, affine: frame.affine, viewport, colour: item.material.fill, output: { kind: 'composite', blend } }, budget));
         if (outcome === 'ok') fill = acquired[acquired.length - 1];
-        else if (outcome !== 'empty') return fail(outcome as 'denied' | 'unsupported');
+        else if (outcome !== 'empty') return fail(outcome as 'denied' | 'deferred' | 'unsupported');
     }
     let stroke: PreparedPathCoverage | null = null;
     const style = item.material.stroke;
@@ -259,7 +261,7 @@ function admitPathItem(item: PaintPathItem, view: ViewState, kit: ReturnType<typ
         const outcome = place(kit.admit({ shapes: { positive: outline.triangles, negative: new Float64Array(0), edges: 0, bounds: outline.bounds },
             rule: 'union', affine: frame.affine, viewport, colour: style.color, output: { kind: 'composite', blend } }, budget));
         if (outcome === 'ok') stroke = acquired[acquired.length - 1];
-        else if (outcome !== 'empty') return fail(outcome as 'denied' | 'unsupported');
+        else if (outcome !== 'empty') return fail(outcome as 'denied' | 'deferred' | 'unsupported');
     }
     if (!fill && !stroke) return fail('empty');
     return { status: 'ready', value: { clips, rects, fill, stroke } };
@@ -385,9 +387,12 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             const scale = rasterScale(view, demand);
             // One bounded source group and its independently leased real backdrop are reused
             // sequentially; the node/group itself never becomes an isolated-opacity operation.
+            // A multiply composite from the coverage kit snapshots its band's backdrop, up to the viewport's width: a tile-sized
+            // reservation refused it and the board never presented again after a highlighter stroke (measured, route on).
+            const wide = ready?.multiplyCoverage || staged?.multiplyCoverage;
             if (ready?.hasMultiply || staged?.hasMultiply) host.reserveIsolation({ depth: 1, maskDepth: 0,
-                bounds: { x: 0, y: 0, width: Math.min(Math.ceil(view.viewport.width * view.viewport.dpr), Math.ceil(EDGE * demand / scale) + 2),
-                    height: Math.min(Math.ceil(view.viewport.height * view.viewport.dpr), Math.ceil(EDGE * demand / scale) + 2) }, multiply: true });
+                bounds: { x: 0, y: 0, width: Math.min(Math.ceil(view.viewport.width * view.viewport.dpr), wide ? Infinity : Math.ceil(EDGE * demand / scale) + 2),
+                    height: Math.min(Math.ceil(view.viewport.height * view.viewport.dpr), wide ? Infinity : Math.ceil(EDGE * demand / scale) + 2) }, multiply: true });
             // A denial suppresses polling via needsFrame(), but a real wake may bring a new grant.
             denied = false;
             if (ready && !validDevice(ready)) { drop(ready); ready = null; denied = false; }
@@ -401,7 +406,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                 auditCount(surface, 'plan-start');
                 staged = { prepared, sourceFrame, token: { ...budget.token }, device, projection: projection(view), scale, sharp: prepared.sharp !== false,
                     x0, y0, x1, y1, window: 0, item: 0, x: x0, y: y0, out: [], boundsJob: null, tileBounds: null, itemKey: '', analyticReady: analytic.ready(),
-                    parts: null, part: null, partIndex: 0, hasMultiply: false, cpuLeases: [], cpuUsed: 0,
+                    parts: null, part: null, partIndex: 0, hasMultiply: false, multiplyCoverage: false, cpuLeases: [], cpuUsed: 0,
                     groups: [], scanWindow: 0, scanIndex: 0, scanned: false, groupIndex: 0, waitingBatch: false };
             }
             const p = staged;
@@ -481,8 +486,10 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                     if (item.kind === 'path') {
                         if (!ensurePlanCapacity(p)) return;
                         const admission = admitPathItem(item, view, pathCoverage, budget);
-                        if (admission.status === 'ready') { out.tiles.push({ item: original, x: 0, y: 0, path: admission.value }); p.cpuUsed += 512; p.part = null; continue; }
+                        if (admission.status === 'ready') { p.multiplyCoverage ||= multiply; out.tiles.push({ item: original, x: 0, y: 0, path: admission.value }); p.cpuUsed += 512; p.part = null; continue; }
                         if (admission.status === 'empty') { p.part = null; continue; }
+                        // An upload that ran out of this frame's allowance resumes next frame; only memory waits for capacity.
+                        if (admission.status === 'deferred') return;
                         if (admission.status === 'denied') { denied = true; awaitCapacity(); return; }
                         // 'unsupported': the exact canonical raster route below draws this item.
                         auditCount(`${surface}-${win.band}`, 'fallback:path-raster');
@@ -496,8 +503,10 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                         if (!ensurePlanCapacity(p)) return;
                         const asPath = inkPathItem(item, view);
                         const admission = asPath ? admitPathItem(asPath, view, pathCoverage, budget) : { status: 'unsupported' as const };
-                        if (admission.status === 'ready') { out.tiles.push({ item: original, x: 0, y: 0, path: admission.value }); auditCount(`${surface}-${win.band}`, 'ink-coverage'); p.cpuUsed += 512; p.part = null; continue; }
+                        if (admission.status === 'ready') { p.multiplyCoverage ||= multiply; out.tiles.push({ item: original, x: 0, y: 0, path: admission.value }); auditCount(`${surface}-${win.band}`, 'ink-coverage'); p.cpuUsed += 512; p.part = null; continue; }
                         if (admission.status === 'empty') { p.part = null; continue; }
+                        // An upload that ran out of this frame's allowance resumes next frame; only memory waits for capacity.
+                        if (admission.status === 'deferred') return;
                         if (admission.status === 'denied') { denied = true; awaitCapacity(); return; }
                         auditCount(`${surface}-${win.band}`, 'fallback:ink-raster');
                     }

@@ -1,7 +1,7 @@
 import { auditCount } from './renderAudit';
 import type { Affine, Rgba } from '../types';
 import type { LayerHost } from './compositor.types';
-import type { BufferHandle, ClipHandle, CoverageOutput, CoverageTarget, GfxDevice, GpuPass, PipelineHandle, RectI, Samples, ShaderModule, StencilOp, StencilState } from './gfx/api';
+import type { BufferHandle, ClipHandle, CoverageOutput, CoverageTarget, GfxDevice, GpuPass, PipelineHandle, RectI, Samples, ShaderModule, StencilOp, StencilState, ByteLease } from './gfx/api';
 import { coverageTargetBytes } from './gfx/api';
 import { ArenaError } from './resourceArena';
 import type { FrameBudget } from './types';
@@ -26,6 +26,8 @@ const PATH_COVERAGE_MAX_TARGET_BYTES = 8 * 2 ** 20;
  * request that pushed a notebook's load over the GPU pool (paper, board and wet layers each hold a kit), degrading it;
  * at 2 MiB a 516-texel tile draws in about four bands. */
 const PATH_COVERAGE_SCRATCH_BYTES = 2 * 2 ** 20;
+/** One vertex upload piece; a frame's allowance takes as many as it covers. */
+const PATH_COVERAGE_UPLOAD_CHUNK_BYTES = 256 * 1024;
 
 /** Origin-relative triangles, six values per triangle. `positive` adds +1 winding and `negative`
  * adds -1; for `union` every triangle is in `positive` and `negative` is empty. */
@@ -52,6 +54,8 @@ export type PathCoverageAdmission =
     | { readonly status: 'ready'; readonly value: PreparedPathCoverage }
     | { readonly status: 'empty' }
     | { readonly status: 'denied' }
+    /** The frame's upload allowance ran out mid-upload: retry next frame (a frame wait, not a memory wait). */
+    | { readonly status: 'deferred' }
     | { readonly status: 'unsupported' };
 
 /** A pre-admitted vertex buffer, plus the mask's own target and clip handle when the output is a mask. A composite
@@ -144,13 +148,23 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
     // views of an item at one scale draw the same buffer under their own affine. A buffer per admission uploaded and
     // charged a stroke once per tile it crossed, and the notebook's paper was refused for the room (267 refusals).
     const shared = new Map<Float64Array, { device: GfxDevice; buffer: BufferHandle; negative: Float64Array; refs: number; bytes: number }>();
+    // A buffer larger than one frame's upload allowance fills across frames. Refused whole each frame, a stroke's outline
+    // at 332% never uploaded and the board never presented again (measured: claimUpload refused 73 of 73 admissions).
+    const uploading = new Map<Float64Array, { device: GfxDevice; buffer: BufferHandle; data: Float32Array; staging: ByteLease;
+        written: number; negative: Float64Array; bytes: number }>();
+    const dropUpload = (key: Float64Array) => {
+        const up = uploading.get(key);
+        if (!up) return;
+        uploading.delete(key); gpuBytes -= up.bytes;
+        host.allocator.cpu.release(up.staging); up.device.destroy(up.buffer);
+    };
+    const releaseShared = (entry: { device: GfxDevice; buffer: BufferHandle; refs: number; bytes: number }) => {
+        if (--entry.refs > 0) return;
+        for (const [key, value] of shared) if (value === entry) { shared.delete(key); break; }
+        gpuBytes -= entry.bytes; entry.device.destroy(entry.buffer);
+    };
     const releaseVertices = (prepared: PreparedPathCoverage) => {
-        for (const [key, entry] of shared) {
-            if (entry.buffer !== prepared.vertices) continue;
-            if (--entry.refs === 0) { shared.delete(key); gpuBytes -= entry.bytes; entry.device.destroy(entry.buffer); }
-            return;
-        }
-        prepared.device.destroy(prepared.vertices);
+        for (const entry of shared.values()) if (entry.buffer === prepared.vertices) { releaseShared(entry); return; }
     };
     const retireOwned = (prepared: PreparedPathCoverage) => {
         const bytes = live.get(prepared);
@@ -193,6 +207,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         for (const prepared of [...live.keys()]) retireOwned(prepared);
         for (const entry of shared.values()) { gpuBytes -= entry.bytes; entry.device.destroy(entry.buffer); }
         shared.clear();
+        for (const key of [...uploading.keys()]) dropUpload(key);
         dropScratch();
         if (pipelines && device) for (const handle of Object.values(pipelines)) device.destroy(handle);
         pipelines = null; device = null; pending = false; failed = false; unsupported = false;
@@ -311,58 +326,63 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
                 if (fits === 'unsupported') { auditCount('path-coverage', 'fallback:raster-route'); return { status: 'unsupported' }; }
                 if (!fits) return { status: 'denied' };
             }
-            const reuse = shared.get(shapes.positive);
-            const reusable = reuse && reuse.device === owner && reuse.negative === shapes.negative && reuse.bytes === vertexBytes ? reuse : null;
-            if (reusable && composite) {
-                reusable.refs++;
-                const colour: readonly [number, number, number, number] = [request.colour[0] * request.colour[3], request.colour[1] * request.colour[3],
-                    request.colour[2] * request.colour[3], request.colour[3]];
-                const prepared: PreparedPathCoverage = Object.freeze({ device: owner, target: null, vertices: reusable.buffer, clip: null,
-                    positiveVertices: shapes.positive.length / 2, negativeVertices: shapes.negative.length / 2, rule, output, bounds,
-                    viewport: Object.freeze({ width: viewport.width, height: viewport.height }),
-                    affine: Object.freeze([...affine]) as unknown as Affine,
-                    colour: Object.freeze([...colour]) as unknown as readonly [number, number, number, number], gpuBytes: 0 });
-                live.set(prepared, 0);
-                return { status: 'ready', value: prepared };
+            // One vertex buffer per triangle set, uploaded in chunks within each frame's allowance, then shared.
+            let entry = shared.get(shapes.positive);
+            if (entry && (entry.device !== owner || entry.negative !== shapes.negative || entry.bytes !== vertexBytes)) return { status: 'unsupported' };
+            if (!entry) {
+                let up = uploading.get(shapes.positive);
+                if (up && (up.device !== owner || up.negative !== shapes.negative || up.bytes !== vertexBytes)) { dropUpload(shapes.positive); up = undefined; }
+                if (!up) {
+                    const staging = host.allocator.cpu.reserve(vertexBytes);
+                    if (!staging) return { status: 'denied' };
+                    // Positive triangles first, then negative: the draw ranges follow this order.
+                    const data = new Float32Array(vertexCount * 2);
+                    data.set(shapes.positive, 0);
+                    data.set(shapes.negative, shapes.positive.length);
+                    const lease = host.allocator.gpu.reserve(vertexBytes);
+                    if (!lease) { host.allocator.cpu.release(staging); return { status: 'denied' }; }
+                    let buffer: BufferHandle;
+                    try { buffer = owner.createBuffer(vertexBytes, ['vertex', 'copy-dst'], lease); }
+                    catch (error) {
+                        host.allocator.gpu.release(lease); host.allocator.cpu.release(staging);
+                        if (error instanceof ArenaError && error.code === 'unsupported') { unsupported = true; return { status: 'unsupported' }; }
+                        throw error;
+                    }
+                    up = { device: owner, buffer, data, staging, written: 0, negative: shapes.negative, bytes: vertexBytes };
+                    uploading.set(shapes.positive, up); gpuBytes += vertexBytes;
+                }
+                while (up.written < up.bytes) {
+                    const piece = Math.min(PATH_COVERAGE_UPLOAD_CHUNK_BYTES, up.bytes - up.written);
+                    if (!budget.claimUpload(piece)) return { status: 'deferred' };
+                    owner.writeBuffer(up.buffer, up.written, up.data.subarray(up.written / 4, (up.written + piece) / 4));
+                    up.written += piece;
+                }
+                uploading.delete(shapes.positive); host.allocator.cpu.release(up.staging);
+                entry = { device: owner, buffer: up.buffer, negative: shapes.negative, refs: 0, bytes: vertexBytes };
+                shared.set(shapes.positive, entry);
             }
-            const staging = host.allocator.cpu.reserve(vertexBytes);
-            if (!staging) return { status: 'denied' };
-            let data: Float32Array;
-            try {
-                // Positive triangles first, then negative: the draw ranges follow this order.
-                data = new Float32Array(vertexCount * 2);
-                data.set(shapes.positive, 0);
-                data.set(shapes.negative, shapes.positive.length);
-            } finally { host.allocator.cpu.release(staging); }
-            const vertexLease = host.allocator.gpu.reserve(vertexBytes);
-            if (!vertexLease) return { status: 'denied' };
-            if (!budget.claimUpload(vertexBytes)) { host.allocator.gpu.release(vertexLease); return { status: 'denied' }; }
+            entry.refs++;
+            const vertices = entry.buffer;
             const targetLease = composite ? null : host.allocator.gpu.reserve(targetBytes);
-            if (!composite && !targetLease) { host.allocator.gpu.release(vertexLease); return { status: 'denied' }; }
-            let vertices: BufferHandle | null = null, target: CoverageTarget | null = null, clip: ClipHandle | null = null;
-            let vertexAttached = false, targetAttached = false;
+            if (!composite && !targetLease) { releaseShared(entry); return { status: 'denied' }; }
+            let target: CoverageTarget | null = null, clip: ClipHandle | null = null;
+            let targetAttached = false;
             try {
-                vertices = owner.createBuffer(vertexBytes, ['vertex', 'copy-dst'], vertexLease); vertexAttached = true;
-                owner.writeBuffer(vertices, 0, data);
                 if (targetLease) target = owner.createCoverageTarget(bounds.width, bounds.height, PATH_COVERAGE_SAMPLES, targetLease);
                 targetAttached = true;
                 if (output.kind === 'mask') clip = owner.createClip(target!.texture, bounds);
             } catch (error) {
                 if (clip) owner.destroy(clip);
                 if (target) { owner.destroy(target.target); owner.destroy(target.texture); }
-                if (vertices) owner.destroy(vertices);
-                if (!vertexAttached) host.allocator.gpu.release(vertexLease);
                 if (!targetAttached && targetLease) host.allocator.gpu.release(targetLease);
+                releaseShared(entry);
                 if (error instanceof ArenaError && error.code === 'unsupported') { unsupported = true; return { status: 'unsupported' }; }
                 throw error;
             }
             const colour: readonly [number, number, number, number] = output.kind === 'mask' ? [1, 1, 1, 1]
                 : [request.colour[0] * request.colour[3], request.colour[1] * request.colour[3], request.colour[2] * request.colour[3], request.colour[3]];
-            // A composite's buffer is shared from here: its bytes are the shared entry's, counted once.
-            const sharing = composite && !shared.has(shapes.positive);
-            if (sharing) shared.set(shapes.positive, { device: owner, buffer: vertices!, negative: shapes.negative, refs: 1, bytes: vertexBytes });
-            const gpu = (sharing ? 0 : vertexBytes) + targetBytes;
-            if (sharing) gpuBytes += vertexBytes;
+            // The vertex buffer's bytes are the shared entry's, counted once; this admission owns only its target.
+            const gpu = targetBytes;
             const prepared: PreparedPathCoverage = Object.freeze({ device: owner, target, vertices, clip,
                 positiveVertices: shapes.positive.length / 2, negativeVertices: shapes.negative.length / 2, rule, output, bounds,
                 viewport: Object.freeze({ width: viewport.width, height: viewport.height }),

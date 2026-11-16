@@ -99,6 +99,7 @@ export class PdfTileLayer implements Layer {
     private latestView: ViewState | null = null;
     private mirrorJob: MirrorJob | null = null;
     private mirrorKey = '';
+    private criticalMemo: { view: ViewState; revision: number; value: boolean } | null = null;
     /** A settled view whose mirror cannot be cropped because a visible tile is GPU-only; it keeps its older mirror. */
     private mirrorSkipped = '';
 
@@ -421,6 +422,19 @@ export class PdfTileLayer implements Layer {
             this.remove(key, entry);
         }
         if (freed) this.host.invalidate('pdf-tile-evicted');
+    }
+
+    /**
+     * Critical only while the view has page area no tile covers. A page layer that called itself critical for good
+     * kept every pane's criticalPending true, so an optional layer never got the one-tile progress grant: on a webgl2
+     * PDF with the frame allowance near zero the ink board's 1 MB tile was refused on every frame after a drag, the
+     * board never presented again and the moved strokes stayed hidden (measured: 366 refusals in 6 s, cp=true).
+     */
+    critical(view: ViewState): boolean {
+        if (this.criticalMemo?.view === view && this.criticalMemo.revision === this.contentRevision) return this.criticalMemo.value;
+        const value = !this.coverage(view, !!this.host.device()).complete;
+        this.criticalMemo = { view, revision: this.contentRevision, value };
+        return value;
     }
 
     /** Prospective tile and cropped-mirror storage, before requests allocate (design §6.3:640–646). */

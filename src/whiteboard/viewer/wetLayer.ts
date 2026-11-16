@@ -393,8 +393,14 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         },
         presented(revision, token, frame) {
             if (disposed || !sameToken(token, options.token) || !frame || frame.sceneRevision !== revision || !sameToken(frame.token, token)) return;
-            for (const item of handover?.forFrame(() => false) ?? []) if (item.dry && available(frame, item.dry, token)) handover?.acknowledgePresented(item.dry);
-            invalidate();
+            let acknowledged = false;
+            for (const item of handover?.forFrame(() => false) ?? []) {
+                if (item.dry && available(frame, item.dry, token)) { handover?.acknowledgePresented(item.dry); acknowledged = true; }
+            }
+            // Only a handover that changed needs another frame. Invalidating on every presented frame made each frame ask
+            // for the next: on a webgl2 PDF the board restarted its GPU plan every frame (245 in 6 s idle), never finished
+            // one, stayed 'Updating…', and a later drag froze on a frame without the moved ink.
+            if (acknowledged) invalidate();
         },
         clear,
         dispose() { if (disposed) return; clear(); gpu?.dispose(); gpu = null; disposed = true; callbacks.clear(); handover = null; },

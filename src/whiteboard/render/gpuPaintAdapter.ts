@@ -9,7 +9,6 @@ import type { PaintBand } from './material';
 import { PaintBoundsJob } from './paintBounds';
 import { paintContributions } from './paintContributions';
 import { isBudgetRefusal } from './budgetRefusal';
-import { viewWorld, worldCovers, type WorldRect } from './tileHierarchy';
 import { analyticInkPaint, type AnalyticInkPaint } from './analyticInk';
 import { isGutterQuadTile, texturedQuad, TILE_EDGE, TILE_GUTTER, TILE_SIZE } from './imageSampling';
 import { createAnalyticInkBatch, type PreparedAnalyticInkBatch } from './analyticInkBatch';
@@ -18,20 +17,10 @@ import { inkCoverageChunks, type PaintInkItem, type PaintSource, type PaintItem,
 import type { CanvasPaintAdapter, PreparedPaint2d } from './reference/canvasPaintAdapter';
 import { paintItem2d } from './reference/paint2d';
 import { auditCount } from '../../platform/render/renderAudit';
+import { InkOutlineJob } from '../ink/outline';
 
 const EDGE = TILE_EDGE, GUTTER = TILE_GUTTER, SIZE = TILE_SIZE;
 const GPU_BYTES = SIZE * SIZE * 4, CPU_BYTES = GPU_BYTES * 2;
-/** Unreferenced tiles kept for reuse by a later plan: 128 tiles, 32 MB of texture. Only the least recently used go. A
- * refused reservation frees all of them first (the plan needs the memory more than the cache does). */
-const IDLE_TILE_LIMIT = 32;
-/** The same picture to paint: the frame's scene revision, theme and raster variant, not the snapshot object that wraps it.
- * A camera step mints a new snapshot of the unchanged scene, so object identity dropped every staged plan (measured: 60 of 60 pan
- * steps dropped, none completed); a real edit bumps the revision and still drops. */
-function sameContent(a: PaintSource, b: PaintSource): boolean {
-    return a.sceneRevision === b.sceneRevision && a.theme === b.theme && a.rasterVariant === b.rasterVariant;
-}
-/** A staged plan covers the view plus this fraction of its extent on every side, so a camera move that small keeps drawing. */
-const PLAN_MARGIN = 0.25;
 interface CachedTile { texture: TextureHandle; device: GfxDevice; refs: number; key: string; bytes: number }
 type Tile = { item: PaintItem; x: number; y: number; cached: CachedTile; multiply: boolean; worldRect?: Readonly<Rect>; analytic?: never; path?: never }
     | { item: PaintItem; x: number; y: number; analytic: AnalyticInkPaint; cached?: never; path?: never }
@@ -48,8 +37,6 @@ interface AnalyticGroup {
 interface WindowTiles { readonly band: PaintBand; readonly tiles: Tile[]; readonly groupAt: Map<number, AnalyticGroup> }
 interface Plan {
     prepared: PreparedPaint2d; sourceFrame: PaintSource; token: FrameToken; device: GfxDevice; projection: string; scale: number; sharp: boolean;
-    /** The world the plan was staged for: a plan built with a margin keeps drawing the view while the camera moves inside it. */
-    world: WorldRect;
     x0: number; y0: number; x1: number; y1: number;
     /** The window and the item inside it that the build step has reached. */
     window: number; item: number; x: number; y: number; out: WindowTiles[];
@@ -154,6 +141,39 @@ function deviceClipRect(clip: PaintPathItem['clips'][number], view: ViewState): 
     return { x: rx0, y: ry0, width: Math.round(x1) - rx0, height: Math.round(y1) - ry0 };
 }
 
+/** General ink drawn as what the 2D reference fills: its outline commands under the nonzero rule (coverage2d's
+ * InkCoverageUnionPath2dJob), so GPU and canvas2d agree on geometry. Ink the analytic batch cannot take (several chunks,
+ * clips, multiply, many primitives) used to be rastered on the CPU into tiles and uploaded. Outlines are cached per item
+ * and device scale; null when the outline exceeds its command budget (the raster route then draws it, counted). */
+const INK_OUTLINE_MAX_COMMANDS = 262144;
+const inkOutlines = new WeakMap<PaintInkItem, { scale: number; item: PaintPathItem | null }>();
+/** Ink outlines emit every subpath with positive orientation (outline.ts), so their nonzero fill IS the union of the
+ * subpaths: the kit's union rule draws it with any edge count, where nonzero is capped by 8-bit winding at 255 edges
+ * (measured: every multi-capsule stroke refused, 17-35 ink rasters per gesture). */
+const inkDerived = new WeakSet<PaintPathItem>();
+export function inkPathItem(item: PaintInkItem, view: ViewState): PaintPathItem | null {
+    const [a, b, c, d] = item.localToWorld;
+    const scale = view.camera.z * view.viewport.dpr * Math.hypot(a, b, c, d);
+    if (!(scale > 0) || !Number.isFinite(scale)) return null;
+    const cached = inkOutlines.get(item);
+    if (cached && cached.scale === scale) return cached.item;
+    const commands: PathCommand[] = [];
+    let result: PaintPathItem | null = null;
+    try {
+        for (const chunk of inkCoverageChunks(item.coverage)) {
+            const job = new InkOutlineJob(chunk, scale, command => { commands.push(command); }, INK_OUTLINE_MAX_COMMANDS);
+            let state: 'pending' | 'complete' | 'cancelled' = 'pending';
+            while ((state = job.step(4096)) === 'pending') { /* bounded by the command budget */ }
+            if (state !== 'complete') throw new RangeError('Ink outline cancelled');
+        }
+        const { coverage: _coverage, material, kind: _kind, ...base } = item;
+        result = { ...base, kind: 'path', d: commands, fillRule: 'nonzero', material: { fill: material.color, blend: material.blend } };
+        inkDerived.add(result);
+    } catch { result = null; }
+    inkOutlines.set(item, { scale, item: result });
+    return result;
+}
+
 type PathAdmission = { status: 'ready'; value: PreparedPathItem } | { status: 'empty' | 'denied' | 'unsupported' };
 
 /** Admits one path item's clip masks, fill and stroke, all or nothing: a later refusal retires the
@@ -198,8 +218,10 @@ function admitPathItem(item: PaintPathItem, view: ViewState, kit: ReturnType<typ
         if (!frame) return fail('unsupported');
         const shapes = pathFillTriangles(item.d, { tolerance: PATH_FLATTEN_DEVICE_PX / (frame.scale * frame.norm), origin: [origin.x, origin.y] });
         if (!shapes) return fail('unsupported');
-        const outcome = place(kit.admit({ shapes: { positive: shapes.positive, negative: shapes.negative, edges: shapes.edges, bounds: shapes.bounds },
-            rule: item.fillRule, affine: frame.affine, viewport, colour: item.material.fill, output: { kind: 'composite', blend } }, budget));
+        const union = inkDerived.has(item);
+        const positive = union && shapes.negative.length ? Float64Array.of(...shapes.positive, ...shapes.negative) : shapes.positive;
+        const outcome = place(kit.admit({ shapes: { positive, negative: union ? new Float64Array(0) : shapes.negative, edges: shapes.edges, bounds: shapes.bounds },
+            rule: union ? 'union' : item.fillRule, affine: frame.affine, viewport, colour: item.material.fill, output: { kind: 'composite', blend } }, budget));
         if (outcome === 'ok') fill = acquired[acquired.length - 1];
         else if (outcome !== 'empty') return fail(outcome as 'denied' | 'unsupported');
     }
@@ -237,7 +259,11 @@ function drawPathItem(pass: GpuPass, item: PreparedPathItem, kit: ReturnType<typ
 /** Item-isolated raster tiles preserve ordering and permit exact node omission. The paint is consumed one
  * window at a time: each window's tile commands are built, scanned and drawn as their own bounded list. */
 export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: LayerHost, report: (error: unknown) => void,
-    options: { readonly streaming?: boolean; readonly audit?: string } = {}) {
+    options: { readonly streaming?: boolean; readonly audit?: string;
+        /** Ink the analytic batch can't take is admitted as its outline through the coverage kit. For a composer that
+         * draws once per cached tile: in the direct per-frame plan it re-triangulated every stroke on each replan
+         * (measured: notebook pan 135 → 67, drawing draw 147 → 97 presents), where the raster tiles it replaced were cached. */
+        readonly inkCoverage?: boolean } = {}) {
     // The render audit's surface name: `<surface>-<band>` (board-underlay, board-preview-content, ...).
     const surface = options.audit ?? 'board';
     // `streaming`: the source changes on every input frame (a live stroke). Each plan completes against the paint
@@ -248,41 +274,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
     let staged: Plan | null = null, ready: Plan | null = null, disposed = false, denied = false;
     let currentToken: FrameToken | null = null, lastFrame = -1, scratch = 0;
     let movingScale = 0, tileBytes = 0;
-    // Tiles belong to the world, not to the plan that drew them. A pan, zoom or drag changes the view, not the content, so a
-    // tile is reused by its key until it is evicted. A tile a ready or staged plan references is never evicted; an
-    // unreferenced one stays in an LRU (a Map in insertion order, re-inserted on each hit) bounded to IDLE_TILE_LIMIT.
     const cache = new Map<string, CachedTile>();
-    let idleTiles = 0;
-    const hit = (key: string, entry: CachedTile): CachedTile => {
-        cache.delete(key); cache.set(key, entry);
-        if (entry.refs++ === 0) idleTiles--;
-        return entry;
-    };
-    const releaseTile = (entry: CachedTile): void => { if (--entry.refs === 0) idleTiles++; };
-    const trimIdle = (limit = IDLE_TILE_LIMIT): void => {
-        if (idleTiles <= limit) return;
-        for (const entry of cache.values()) {
-            if (entry.refs !== 0) continue;
-            cache.delete(entry.key); tileBytes -= entry.bytes; idleTiles--; auditCount(surface, 'idle-evict');
-            entry.device.destroy(entry.texture);
-            if (idleTiles <= limit) return;
-        }
-    };
-    // The scale in a key is rounded: a zoom that returns to 1 arrives as 0.9999999999999996 and must reuse the same tiles.
-    const scaleKey = (scale: number): number => Math.round(scale * 1e9);
-    // The idle cache yields to the plan: a refused reservation frees every unreferenced tile, then asks once more.
-    const reserveGpu = (bytes: number): ByteLease | null => {
-        const lease = host.allocator.gpu.reserve(bytes);
-        if (lease || !idleTiles) return lease;
-        trimIdle(0);
-        return host.allocator.gpu.reserve(bytes);
-    };
-    const reserveCpu = (bytes: number): ByteLease | null => {
-        const lease = host.allocator.cpu.reserve(bytes);
-        if (lease || !idleTiles) return lease;
-        trimIdle(0);
-        return host.allocator.cpu.reserve(bytes);
-    };
     const analytic = createAnalyticInkBatch(host, () => { /* optional pipeline failure keeps canonical coverage tiles */ });
     const pathCoverage = createPathCoverageKit(host, report);
     const retirePathItem = (item: PreparedPathItem) => {
@@ -301,7 +293,8 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             for (const tile of out.tiles) {
                 if (tile.analytic) continue;
                 if (tile.path) { retirePathItem(tile.path); continue; }
-                releaseTile(tile.cached);
+                const entry = tile.cached;
+                if (--entry.refs === 0) { cache.delete(entry.key); tileBytes -= entry.bytes; entry.device.destroy(entry.texture); }
             }
             out.tiles.length = 0; out.groupAt.clear();
         }
@@ -321,15 +314,13 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
     const ensurePlanCapacity = (plan: Plan): boolean => {
         if (plan.cpuUsed + 512 <= plan.cpuLeases.length * 65_536) return true;
         const lease = host.allocator.cpu.reserve(65_536);
-        if (!lease) { deny('plan-cpu'); return false; }
+        if (!lease) { denied = true; awaitCapacity(); return false; }
         plan.cpuLeases.push(lease); return true;
     };
     const reset = () => { drop(staged); drop(ready); staged = ready = null; };
     // A refused reservation does not poll (needsFrame() is false while denied): it waits for a real capacity change.
-    const capacityWake = () => { auditCount(surface, 'wake:capacity'); host.invalidate('paint-adapter-capacity'); };
+    const capacityWake = () => host.invalidate('paint-adapter-capacity');
     const awaitCapacity = (): void => { host.allocator.cpu.whenAvailable?.(capacityWake); host.allocator.gpu.whenAvailable?.(capacityWake); };
-    /** A refused claim: count the site, then wait for capacity (the wake is counted as wake:capacity). */
-    const deny = (site: string): void => { auditCount(surface, 'stage:denied:' + site); denied = true; awaitCapacity(); };
     // A streaming (live-stroke) tile is keyed by the coverage chunks that reach it, not by the whole source: each
     // publication appends chunks and replaces only the tip, so the tiles behind the tip keep their key and are reused.
     // Keyed by the source serial, every publication re-rasterised and re-uploaded the whole stroke, one tile per frame.
@@ -368,15 +359,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             analytic.warm();
             const prepared = reference.borrowPrepared(), device = host.device(), demand = view.camera.z * view.viewport.dpr;
             if (!prepared || !device || !documentMatches(prepared.root, budget.token) || !documentMatches(prepared.sourceFrame, budget.token) || device.generation !== budget.token.deviceGeneration ||
-                host.generation !== budget.token.deviceGeneration || !Number.isFinite(demand) || demand <= 0) {
-                // No snapshot yet (a camera step mints a new one, and the old is not borrowable meanwhile) keeps both plans: the
-                // picture stays and staging continues. Document, device and token changes reset.
-                auditCount(surface, !prepared ? 'guard:no-prepared' : !device ? 'guard:no-device' : !documentMatches(prepared.root, budget.token) ? 'guard:root'
-                    : !documentMatches(prepared.sourceFrame, budget.token) ? 'guard:source' : device.generation !== budget.token.deviceGeneration ? 'guard:device-gen'
-                    : host.generation !== budget.token.deviceGeneration ? 'guard:host-gen' : 'guard:demand');
-                if (!prepared) return;
-                reset(); return;
-            }
+                host.generation !== budget.token.deviceGeneration || !Number.isFinite(demand) || demand <= 0) { reset(); return; }
             const sourceFrame = prepared.sourceFrame;
             const scale = rasterScale(view, demand);
             // One bounded source group and its independently leased real backdrop are reused
@@ -386,22 +369,16 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                     height: Math.min(Math.ceil(view.viewport.height * view.viewport.dpr), Math.ceil(EDGE * demand / scale) + 2) }, multiply: true });
             // A denial suppresses polling via needsFrame(), but a real wake may bring a new grant.
             denied = false;
-            if (ready && !validDevice(ready)) { auditCount(surface, 'drop:ready-device'); drop(ready); ready = null; denied = false; }
-            // A staged plan is dropped only when it can no longer finish a picture of the view: a camera move inside its margin keeps it building.
-            const stagedFits = !!staged && validDevice(staged) && worldCovers(staged.world, view) && staged.scale === scale;
-            if (staged && (!stagedFits || (!streaming && !sameContent(staged.sourceFrame, prepared.sourceFrame)) || staged.analyticReady !== analytic.ready())) {
-                auditCount(surface, !validDevice(staged) ? 'drop:staged-device' : !worldCovers(staged.world, view) ? 'drop:staged-outside'
-                    : staged.scale !== scale ? 'drop:staged-scale' : !sameContent(staged.sourceFrame, prepared.sourceFrame) ? 'drop:staged-content' : 'drop:staged-analytic');
-                drop(staged); staged = null; denied = false;
-            }
-            if ((!!ready && sameContent(ready.sourceFrame, prepared.sourceFrame) && valid(ready, view, scale) && ready.analyticReady === analytic.ready()) || denied) return;
+            if (ready && !validDevice(ready)) { drop(ready); ready = null; denied = false; }
+            if (staged && (!valid(staged, view, scale) || (!streaming && staged.prepared !== prepared) || staged.analyticReady !== analytic.ready())) { drop(staged); staged = null; denied = false; }
+            if ((ready?.prepared === prepared && valid(ready, view, scale) && ready.analyticReady === analytic.ready()) || denied) return;
             if (!staged) {
-                const world = viewWorld(view, PLAN_MARGIN);
-                const x0 = Math.floor(world.x0 * scale / EDGE), y0 = Math.floor(world.y0 * scale / EDGE);
-                const x1 = Math.ceil(world.x1 * scale / EDGE), y1 = Math.ceil(world.y1 * scale / EDGE);
+                const x0 = Math.floor(view.camera.x * scale / EDGE), y0 = Math.floor(view.camera.y * scale / EDGE);
+                const x1 = Math.ceil((view.camera.x + view.viewport.width / view.camera.z) * scale / EDGE);
+                const y1 = Math.ceil((view.camera.y + view.viewport.height / view.camera.z) * scale / EDGE);
                 if (![x0, y0, x1, y1].every(Number.isSafeInteger)) throw new RangeError('Invalid board tile projection');
                 auditCount(surface, 'plan-start');
-                staged = { prepared, sourceFrame, token: { ...budget.token }, device, projection: projection(view), scale, sharp: prepared.sharp !== false, world,
+                staged = { prepared, sourceFrame, token: { ...budget.token }, device, projection: projection(view), scale, sharp: prepared.sharp !== false,
                     x0, y0, x1, y1, window: 0, item: 0, x: x0, y: y0, out: [], boundsJob: null, tileBounds: null, itemKey: '', analyticReady: analytic.ready(),
                     parts: null, part: null, partIndex: 0, hasMultiply: false, cpuLeases: [], cpuUsed: 0,
                     groups: [], scanWindow: 0, scanIndex: 0, scanned: false, groupIndex: 0, waitingBatch: false };
@@ -434,9 +411,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                             p.groupIndex++;
                         }
                         if (p.groupIndex !== p.groups.length) return;
-                        let tiles = 0; for (const out of p.out) tiles += out.tiles.length;
-                    auditCount(surface, 'plan-tiles', tiles);
-                    drop(ready); ready = p; staged = null; trimIdle(); return;
+                        drop(ready); ready = p; staged = null; return;
                     }
                     if (p.item >= win.items.length) { p.window++; p.item = 0; continue; }
                     if (p.out.length === p.window) p.out.push({ band: win.band, tiles: [], groupAt: new Map() });
@@ -459,12 +434,12 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                                 p.token.bytesGeneration, p.token.session, p.token.viewLease, p.token.deviceGeneration,
                                 EDGE / item.rect.width, identity(image), p.partIndex, contentKey(item)]);
                             let cached = cache.get(key);
-                            if (cached) { cached = hit(key, cached); auditCount(`${surface}-${win.band}`, 'cache-hit'); }
+                            if (cached) { cached.refs++; auditCount(`${surface}-${win.band}`, 'cache-hit'); }
                             else {
                                 auditCount(`${surface}-${win.band}`, 'tile-upload', 1, { bytes: image.width * image.height * 4 });
                                 const bytes = image.width * image.height * 4;
-                                const lease = reserveGpu(bytes);
-                                if (!lease) { deny('tile-lease'); return; }
+                                const lease = host.allocator.gpu.reserve(bytes);
+                                if (!lease) { denied = true; awaitCapacity(); return; }
                                 if (!budget.claimUpload(bytes)) { host.allocator.gpu.release(lease); return; }
                                 let texture: TextureHandle | null = null, attached = false;
                                 try {
@@ -487,7 +462,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                         const admission = admitPathItem(item, view, pathCoverage, budget);
                         if (admission.status === 'ready') { out.tiles.push({ item: original, x: 0, y: 0, path: admission.value }); p.cpuUsed += 512; p.part = null; continue; }
                         if (admission.status === 'empty') { p.part = null; continue; }
-                        if (admission.status === 'denied') { deny('admission'); return; }
+                        if (admission.status === 'denied') { denied = true; awaitCapacity(); return; }
                         // 'unsupported': the exact canonical raster route below draws this item.
                         auditCount(`${surface}-${win.band}`, 'fallback:path-raster');
                     }
@@ -495,6 +470,15 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                         if (!ensurePlanCapacity(p)) return;
                         const paint = analyticInkPaint(item, view);
                         if (paint) { out.tiles.push({ item: original, x: 0, y: 0, analytic: paint }); p.cpuUsed += 512; p.part = null; continue; }
+                    }
+                    if (options.inkCoverage === true && !streaming && item.kind === 'ink') {
+                        if (!ensurePlanCapacity(p)) return;
+                        const asPath = inkPathItem(item, view);
+                        const admission = asPath ? admitPathItem(asPath, view, pathCoverage, budget) : { status: 'unsupported' as const };
+                        if (admission.status === 'ready') { out.tiles.push({ item: original, x: 0, y: 0, path: admission.value }); auditCount(`${surface}-${win.band}`, 'ink-coverage'); p.cpuUsed += 512; p.part = null; continue; }
+                        if (admission.status === 'empty') { p.part = null; continue; }
+                        if (admission.status === 'denied') { denied = true; awaitCapacity(); return; }
+                        auditCount(`${surface}-${win.band}`, 'fallback:ink-raster');
                     }
                     if (!p.tileBounds) {
                         p.boundsJob ??= new PaintBoundsJob(item);
@@ -509,21 +493,21 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                         p.tileBounds = { x0, y0, x1, y1 }; p.x = x0; p.y = y0; p.itemKey = `${p.partIndex}:${contentKey(item)}`;
                     }
                     const tileKey = JSON.stringify([p.token.vaultEpoch, p.token.documentId, p.token.bytesGeneration, p.token.session,
-                        p.token.viewLease, p.token.deviceGeneration, scaleKey(p.scale), p.x, p.y, streaming && item.kind === 'ink' ? streamingInkKey(item, p.scale, p.x, p.y) : p.itemKey]);
+                        p.token.viewLease, p.token.deviceGeneration, p.scale, p.x, p.y, streaming && item.kind === 'ink' ? streamingInkKey(item, p.scale, p.x, p.y) : p.itemKey]);
                     const existing = cache.get(tileKey);
                     if (!ensurePlanCapacity(p)) return;
                     if (existing) {
                         auditCount(`${surface}-${win.band}`, 'cache-hit');
-                        hit(tileKey, existing); out.tiles.push({ item: original, x: p.x, y: p.y, cached: existing, multiply }); p.cpuUsed += 512;
+                        existing.refs++; out.tiles.push({ item: original, x: p.x, y: p.y, cached: existing, multiply }); p.cpuUsed += 512;
                         const bounds = p.tileBounds;
                         if (++p.x >= bounds.x1) { p.x = bounds.x0; if (++p.y >= bounds.y1) { p.part = null; p.tileBounds = null; } }
                         // A cache hit costs no upload, so it does not spend the frame: the next tile is taken if the budget allows.
                         if (streaming) continue; return;
                     }
-                    const cpu = reserveCpu(CPU_BYTES);
-                    if (!cpu) { deny('cpu-claim'); return; }
+                    const cpu = host.allocator.cpu.reserve(CPU_BYTES);
+                    if (!cpu) { denied = true; awaitCapacity(); return; }
                     scratch = cpu.bytes;
-                    const gpu = reserveGpu(GPU_BYTES);
+                    const gpu = host.allocator.gpu.reserve(GPU_BYTES);
                     if (!gpu) { host.allocator.cpu.release(cpu); scratch = 0; denied = true; awaitCapacity(); return; }
                     if (!budget.claimUpload(GPU_BYTES)) { host.allocator.gpu.release(gpu); host.allocator.cpu.release(cpu); scratch = 0; return; }
                     let canvas: OffscreenCanvas | null = null, bitmap: ImageBitmap | null = null, texture: TextureHandle | null = null;
@@ -554,11 +538,8 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                     if (streaming) continue; return;
                 }
             } catch (error) {
-                // A budget refusal keeps both plans: the on-screen picture stays, and the staged plan resumes at the same
-                // tile once capacity returns (its cursor only advances after a successful claim). Dropping them here wiped
-                // the picture and restarted staging on every refusal (measured: 60 starts, 0 completions in pan).
-                if (isBudgetRefusal(error)) { auditCount(surface, 'stage:refused'); denied = true; awaitCapacity(); return; }
                 drop(staged); drop(ready); staged = ready = null; denied = true;
+                if (isBudgetRefusal(error)) { awaitCapacity(); return; }
                 report(error); throw error;
             }
         },
@@ -568,13 +549,8 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         readyInkNodeIds(): ReadonlySet<string> | null { return disposed ? null : ready?.prepared.root.inkNodeIds ?? null; },
         coverage(view: ViewState): { complete: boolean; sharp: boolean; staleVersion?: boolean } {
             if (!ready || !validDevice(ready)) return { complete: false, sharp: false };
-            // A moved camera is stale-but-drawable: the plan's tiles are world-space, so drawGpu draws them at the current
-            // camera. Only document or token staleness refuses (the caller checks those). Sharp asks for the exact
-            // projection, scale and coverage. A view outside the plan's world is counted: that is the one blank case.
-            const covers = worldCovers(ready.world, view);
-            const exact = ready.projection === projection(view);
-            if (!covers) auditCount(surface, 'cov:uncovered');
-            return { complete: true, sharp: covers && exact && ready.sharp && ready.scale >= view.camera.z * view.viewport.dpr,
+            const complete = ready.projection === projection(view);
+            return { complete, sharp: complete && ready.sharp && ready.scale >= view.camera.z * view.viewport.dpr,
                 ...(ready.sourceFrame !== reference.readyFrame() ? { staleVersion: true } : {}) };
         },
         drawGpu(pass: GpuPass, view: ViewState, band: PaintBand, omitNodes?: ReadonlySet<string>): void {
@@ -623,7 +599,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                 }
             }
         },
-        release(_reason: GpuReleaseReason): void { reset(); trimIdle(0); analytic.release(); pathCoverage.release(); denied = false; currentToken = null; lastFrame = -1; },
+        release(_reason: GpuReleaseReason): void { reset(); analytic.release(); pathCoverage.release(); denied = false; currentToken = null; lastFrame = -1; },
         needsFrame(): boolean {
             if (disposed || denied) return false;
             if (staged?.waitingBatch) return analytic.needsFrame();
@@ -640,6 +616,6 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             return { mandatoryBytes: held + CPU_BYTES + analytic.cpuWorkingSet(nextBatch).mandatoryBytes
                 + (staged && staged.cpuUsed + 512 > staged.cpuLeases.length * 65_536 ? 65_536 : 0), prefetchBytes: 0 };
         },
-        dispose(): void { if (!disposed) { disposed = true; reset(); trimIdle(0); analytic.release(); pathCoverage.dispose(); } },
+        dispose(): void { if (!disposed) { disposed = true; reset(); analytic.release(); pathCoverage.dispose(); } },
     };
 }

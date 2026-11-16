@@ -1,17 +1,4 @@
-import type { Rect, ViewState } from '../../platform/types';
-
-export interface WorldRect { readonly x0: number; readonly y0: number; readonly x1: number; readonly y1: number }
-/** The board rectangle a view shows, grown by `margin` of the view's own extent on every side. */
-export function viewWorld(view: ViewState, margin = 0): WorldRect {
-    const w = view.viewport.width / view.camera.z, h = view.viewport.height / view.camera.z;
-    const mx = w * margin, my = h * margin;
-    return { x0: view.camera.x - mx, y0: view.camera.y - my, x1: view.camera.x + w + mx, y1: view.camera.y + h + my };
-}
-/** Whether a plan built for `outer` holds everything the view shows, so it can still draw the view. */
-export function worldCovers(outer: WorldRect, view: ViewState): boolean {
-    const v = viewWorld(view);
-    return v.x0 >= outer.x0 && v.y0 >= outer.y0 && v.x1 <= outer.x1 && v.y1 <= outer.y1;
-}
+import type { Rect } from '../../platform/types';
 
 export const DENSE_TILE_PIXELS = 512;
 export type TilePyramid = 0 | 1;

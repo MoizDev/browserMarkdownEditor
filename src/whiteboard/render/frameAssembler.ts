@@ -12,7 +12,6 @@ import type { PaintFrameAssembler, PinnedPaintSource, PinnedPaintStream } from '
 import type { SessionDenseRasters } from './sessionDenseRasters';
 import type { ScenePaintNodeStream } from './scenePaintStream';
 import type { ResolvedNodeCache } from './resolvedNodeCache';
-import { auditCount } from '../../platform/render/renderAudit';
 
 const BLOCK_BYTES = 64 * 1024;
 // Array capacity and Set bookkeeping are JS-engine dependent; retain conservative per-entry
@@ -218,22 +217,7 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
         notifyRetired();
     };
     const needsBlock = (work: Staging) => work.used + REFERENCE_BYTES + INK_SET_ENTRY_BYTES > work.blocks.length * BLOCK_BYTES;
-    // A live-only (dense) frame holds the live nodes of the whole sheet, not the view: a new owner with the same document,
-    // revision, theme, variant and live set paints the same picture, so the published frame stands and the new one is released.
-    // Direct frames are bounded to the view, so they still publish per request.
-    const sameLive = (a: ReadonlySet<string>, b: ReadonlySet<string>) => a.size === b.size && [...a].every(id => b.has(id));
-    const reusable = (owner: Owner): boolean => {
-        const cur = latest;
-        if (!owner.liveOnly || !cur || cur.retired || !cur.frame.liveOnly || !cur.owner.isCurrent()) return false;
-        const f = cur.frame, t = f.token, u = owner.token;
-        return f.sceneRevision === owner.sceneRevision && f.theme === owner.theme && f.rasterVariant === owner.rasterVariant
-            && t.vaultEpoch === u.vaultEpoch && t.documentId === u.documentId && t.bytesGeneration === u.bytesGeneration
-            && t.session === u.session
-            && !!f.sensitiveNodes && !!owner.sensitiveNodes && sameLive(f.sensitiveNodes, owner.sensitiveNodes);
-    };
     const start = (owner: Owner, feed: (add: Add, room: () => boolean) => Feed): void => {
-        if (reusable(owner)) { auditCount('frame-assembler', 'reuse'); releaseOwned(owner, []); return; }
-        auditCount('frame-assembler', 'start');
         dropStaging();
         const inkNodeIds = new Set<string>(), blocks: Block[] = [];
         const items: StagedItems = owner.liveOnly
@@ -268,7 +252,6 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
             ? Object.freeze({ ...root, liveOnly: true as const, windows: Object.freeze([...staged.underlay.finish(), ...staged.content.finish()]) })
             : Object.freeze({ ...root, underlay: Object.freeze(staged.underlay), content: Object.freeze(staged.content) });
         const published: Published = { owner: o, frame, blocks: work.blocks, borrowers: 0, retired: false, releasing: false };
-        auditCount('frame-assembler', 'publish');
         retained.set(frame, published); latest = published; staging = null; invalidate();
     };
     return {

@@ -1,5 +1,5 @@
 import type { ViewState } from '../types';
-import type { GpuPass } from './gfx/api';
+import type { GpuPass, RectI, RgbaP, TargetHandle } from './gfx/api';
 import type { DamageRecord } from './damage';
 
 export type { Camera, Viewport, ViewState } from '../types';
@@ -38,6 +38,12 @@ export interface FrameBudget {
 /** Idempotent cache teardown causes, never document mutations (contracts.md C4.3:519–520). */
 export type GpuReleaseReason = 'hidden' | 'context-lost' | 'pressure';
 
+/** Begins one pass into a layer-owned target; the returned pass must be ended before the next begins and before
+ * `encodeOffscreen` returns. `clear` null loads the target's previous contents (an incremental tile update). */
+export interface OffscreenPasses {
+    begin(target: TargetHandle, viewport: RectI, options: { clear: RgbaP | null; stencil: boolean }): GpuPass;
+}
+
 /** One stream's ordered contribution to a pane (contracts.md C4.3:512–547).
  * Every layer supplies both rendering paths; it never owns a requestAnimationFrame loop.
  */
@@ -47,6 +53,11 @@ export interface Layer {
     /** Schedule work without blocking; preparation is split into resumable units (design:677–679). */
     prepare(view: ViewState, budget: FrameBudget): void;
     drawGpu(pass: GpuPass, view: ViewState): void;
+    /** Optional, GPU only. Encodes passes into the layer's OWN offscreen targets (tile textures) on this frame's encoder,
+     * before the frame's surface pass, so `drawGpu` can sample them in the same frame. Targets and every resource drawn
+     * are created and admitted in `prepare`; this only draws, like `drawGpu`. A layer that composes its tiles here makes
+     * their pixels on the GPU instead of rastering them on the CPU and uploading (rendering-design §5). */
+    encodeOffscreen?(passes: OffscreenPasses, view: ViewState): void;
     draw2d(ctx: CanvasRenderingContext2D, view: ViewState): void;
     releaseGpu(reason: GpuReleaseReason): void;
     /** Cheap byte accounting, called every frame (C4.3:521–522). */

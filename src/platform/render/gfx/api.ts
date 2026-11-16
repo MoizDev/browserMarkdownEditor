@@ -332,6 +332,9 @@ export interface GfxDevice {
     createClip(mask: TextureHandle, deviceBounds: RectI): ClipHandle;
     // Admitted in prepare on the same lease (texture then stencil target). Destroy both to retire it.
     createCoverageTarget(width: number, height: number, samples: Samples, lease: ByteLease): CoverageTarget;
+    /** A sampleable rgba8 texture with its own single-sample, stencil-less render target, charged through one lease
+     * (width × height × 4): a layer's offscreen tile, composed on the GPU and then sampled by the layer. */
+    createRenderTexture(width: number, height: number, lease: ByteLease): { texture: TextureHandle; target: TargetHandle };
     createPipeline(desc: PipelineDesc): Promise<PipelineHandle>;
     createTarget(
         color: TextureHandle,

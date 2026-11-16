@@ -191,7 +191,7 @@ export function getPlatformRuntime(): PlatformRuntime {
         // Audit only: the measured inventory reads memory beside its counters (renderAudit.ts).
         if (renderAuditEnabled() && typeof window !== 'undefined') {
             const audit = (window as unknown as { __bmeRenderAudit?: Record<string, unknown> }).__bmeRenderAudit;
-            if (audit) audit.memory = () => created.governor.readout();
+            if (audit) { audit.memory = () => created.governor.readout(); audit.caches = () => created.governor.auditCaches(); }
         }
     }
     return runtime;

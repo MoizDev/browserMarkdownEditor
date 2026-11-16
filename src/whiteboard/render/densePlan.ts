@@ -566,7 +566,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
     };
     const adapter: CanvasPaintAdapter & {
         prepare(view: ViewState, budget: FrameBudget, liveNodes?: ReadonlySet<string>): void;
-        coverage(view: ViewState, liveNodes?: ReadonlySet<string>, relaxed?: boolean): { complete: boolean; sharp: boolean; staleVersion?: boolean };
+        coverage(view: ViewState, liveNodes?: ReadonlySet<string>): { complete: boolean; sharp: boolean; staleVersion?: boolean };
         retainedFrames(): ReadonlySet<PaintSource>;
         /** A staged plan waits for memory; a real capacity change wakes it. */
         memoryBlocked(): boolean;
@@ -697,12 +697,9 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
                 }
             }
         },
-        coverage(view, liveNodes, relaxed = false) {
-            // Relaxed (GPU backends): the ready plan draws at the current camera, a moved camera is stale-but-drawable.
-            // Canvas2d keeps the exact projection, so its frames are unchanged.
-            const exact = !!ready && ready.view === projection(view);
-            const complete = !!ready && (relaxed || exact) && supportsLive(ready, liveNodes);
-            return { complete, sharp: complete && exact && !!ready?.sharp, ...(ready?.source !== resources.frames.readFrame() ? { staleVersion: true } : {}) };
+        coverage(view, liveNodes) {
+            const complete = !!ready && ready.view === projection(view) && supportsLive(ready, liveNodes);
+            return { complete, sharp: complete && !!ready?.sharp, ...(ready?.source !== resources.frames.readFrame() ? { staleVersion: true } : {}) };
         },
         retainedFrames: () => new Set([...plans].map(p => p.source)),
         memoryBlocked: () => !disposed && (denied || !!staged?.blocked || !!staged?.job?.blocked),

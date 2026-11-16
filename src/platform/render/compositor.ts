@@ -259,7 +259,9 @@ export class GpuCompositor implements PaneCompositor {
         this.#isolationPlan = null;
         if (!plan || !this.#prepared || this.#prepared.frameId !== frame.frameId || !sameToken(this.#prepared.token, frame.token) ||
             !this.#options.owner.frameResourcesReady) return;
-        if (budget.shouldYield()) { this.#options.invalidate('isolation-admission-deferred'); return; }
+        // Admission only reserves the frame's isolation targets, and without it no frame can present. Deferring it to a
+        // frame whose optional prepare window was left over never came while a live stroke used that window each frame
+        // (measured: 49 of 115 refused notebook frames in one stroke).
         try {
             if (!this.#options.owner.admitIsolation(plan.finish())) {
                 this.#options.onError(new ArenaError('out-of-budget'));

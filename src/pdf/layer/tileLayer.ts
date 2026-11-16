@@ -205,12 +205,17 @@ export class PdfTileLayer implements Layer {
                 existing.used = ++this.sequence;
                 if (device && existing.bitmap && existing.texture?.device !== device) {
                     if (budget.shouldYield()) { this.pendingFrame = true; break; }
-                    const bytes = existing.bitmap.width * existing.bitmap.height * 4;
-                    if (!budget.claimUpload(bytes)) { this.pendingFrame = true; break; }
+                    // Storage before budget: a claim whose texture was then refused still spent the frame's upload
+                    // allowance, so the next tile never fit it, frame after frame, and the page stayed blurred.
                     let texture: PooledTexture | null;
-                    try { texture = this.texturePool.acquire(device, existing.bitmap.width, existing.bitmap.height); }
+                    try { texture = this.acquireTexture(device, existing.bitmap.width, existing.bitmap.height); }
                     catch (error) { this.onError(error, request); continue; }
                     if (!texture) continue;
+                    // The reclaim may have taken this very tile when it was off view (a prefetch).
+                    if (this.entries.get(key) !== existing || !existing.bitmap) { this.texturePool.release(texture); continue; }
+                    if (!budget.claimUpload(existing.bitmap.width * existing.bitmap.height * 4)) {
+                        this.texturePool.release(texture); this.pendingFrame = true; break;
+                    }
                     try {
                         device.writeTexture(texture.handle, { x: 0, y: 0, width: existing.bitmap.width, height: existing.bitmap.height },
                             { source: existing.bitmap, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
@@ -395,6 +400,18 @@ export class PdfTileLayer implements Layer {
     }
 
     /**
+     * A refused texture first gives back this layer's own off-plan and off-view textures, then retries once. The
+     * pane's grant reclaim never asks the requesting cache, so when this layer's stand-ins filled the grant nothing
+     * else could make room (measured: an image-page PDF's visible tile refused for good after find).
+     */
+    private acquireTexture(device: GfxDevice, width: number, height: number): PooledTexture | null {
+        const texture = this.texturePool.acquire(device, width, height);
+        if (texture || !this.releaseUnneededGpu()) return texture;
+        auditCount('pdf-page', 'self-reclaim');
+        return this.texturePool.acquire(device, width, height);
+    }
+
+    /**
      * Pool pressure takes what the view does not show first: off-plan and off-screen tiles. Releasing every texture
      * for it meant re-rastering the visible page, since a GPU-resident tile has no bitmap left (measured: a window
      * resize re-rastered 28 tiles). Returns false when nothing was spare, so the caller releases everything.
@@ -545,10 +562,13 @@ export class PdfTileLayer implements Layer {
             const bitmap = item.pixels.bitmap;
             const existing = this.bridgeTextures.get(item.entry.id);
             if (device && existing?.device === device) continue;
-            if (!budget.claimUpload(bitmap.width * bitmap.height * 4)) { this.pendingFrame = true; break; }
-            if (!device) { this.bridgeReady.add(item.entry.id); continue; }
-            const texture = this.texturePool.acquire(device, bitmap.width, bitmap.height);
+            if (!device) {
+                if (!budget.claimUpload(bitmap.width * bitmap.height * 4)) { this.pendingFrame = true; break; }
+                this.bridgeReady.add(item.entry.id); continue;
+            }
+            const texture = this.acquireTexture(device, bitmap.width, bitmap.height);
             if (!texture) break;
+            if (!budget.claimUpload(bitmap.width * bitmap.height * 4)) { this.texturePool.release(texture); this.pendingFrame = true; break; }
             try {
                 device.writeTexture(texture.handle, { x: 0, y: 0, width: bitmap.width, height: bitmap.height },
                     { source: bitmap, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });

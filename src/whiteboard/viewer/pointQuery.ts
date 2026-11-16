@@ -135,8 +135,10 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                 const now = options.camera(), state = runtime.selection.getSnapshot();
                 if (disposed || !options.current() || runtime.session.doc !== doc || runtime.session.owner !== token || doc.rev !== revision
                     || options.fontEpoch() !== font || state.sheet !== selection.sheet || state.focus !== selection.focus
-                    // Geometry, not the view epoch: a motion flag ticks it with an unchanged camera (killed every drag hit).
-                    || now.camera.x !== camera.x || now.camera.y !== camera.y || now.camera.z !== camera.z
+                    // Zoom and viewport, not translation: the query projects through its own captured camera, so a pan cannot
+                    // change its answer for a world point. Measured: an annotated image-page PDF nudged the camera by a third of a
+                    // pixel at a press, every press inside a selection went stale, and a person's drag never moved the ink.
+                    || now.camera.z !== camera.z
                     || now.viewport.width !== viewport.width || now.viewport.height !== viewport.height || now.viewport.dpr !== viewport.dpr) throw cancelled();
             };
             const tick = async () => { check(); await cooperate(); check(); };

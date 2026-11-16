@@ -321,15 +321,13 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
     const ensurePlanCapacity = (plan: Plan): boolean => {
         if (plan.cpuUsed + 512 <= plan.cpuLeases.length * 65_536) return true;
         const lease = host.allocator.cpu.reserve(65_536);
-        if (!lease) { deny('plan-cpu'); return false; }
+        if (!lease) { denied = true; awaitCapacity(); return false; }
         plan.cpuLeases.push(lease); return true;
     };
     const reset = () => { drop(staged); drop(ready); staged = ready = null; };
     // A refused reservation does not poll (needsFrame() is false while denied): it waits for a real capacity change.
-    const capacityWake = () => { auditCount(surface, 'wake:capacity'); host.invalidate('paint-adapter-capacity'); };
+    const capacityWake = () => host.invalidate('paint-adapter-capacity');
     const awaitCapacity = (): void => { host.allocator.cpu.whenAvailable?.(capacityWake); host.allocator.gpu.whenAvailable?.(capacityWake); };
-    /** A refused claim: count the site, then wait for capacity (the wake is counted as wake:capacity). */
-    const deny = (site: string): void => { auditCount(surface, 'stage:denied:' + site); denied = true; awaitCapacity(); };
     // A streaming (live-stroke) tile is keyed by the coverage chunks that reach it, not by the whole source: each
     // publication appends chunks and replaces only the tip, so the tiles behind the tip keep their key and are reused.
     // Keyed by the source serial, every publication re-rasterised and re-uploaded the whole stroke, one tile per frame.
@@ -464,7 +462,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                                 auditCount(`${surface}-${win.band}`, 'tile-upload', 1, { bytes: image.width * image.height * 4 });
                                 const bytes = image.width * image.height * 4;
                                 const lease = reserveGpu(bytes);
-                                if (!lease) { deny('tile-lease'); return; }
+                                if (!lease) { denied = true; awaitCapacity(); return; }
                                 if (!budget.claimUpload(bytes)) { host.allocator.gpu.release(lease); return; }
                                 let texture: TextureHandle | null = null, attached = false;
                                 try {
@@ -487,7 +485,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                         const admission = admitPathItem(item, view, pathCoverage, budget);
                         if (admission.status === 'ready') { out.tiles.push({ item: original, x: 0, y: 0, path: admission.value }); p.cpuUsed += 512; p.part = null; continue; }
                         if (admission.status === 'empty') { p.part = null; continue; }
-                        if (admission.status === 'denied') { deny('admission'); return; }
+                        if (admission.status === 'denied') { denied = true; awaitCapacity(); return; }
                         // 'unsupported': the exact canonical raster route below draws this item.
                         auditCount(`${surface}-${win.band}`, 'fallback:path-raster');
                     }
@@ -521,7 +519,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                         if (streaming) continue; return;
                     }
                     const cpu = reserveCpu(CPU_BYTES);
-                    if (!cpu) { deny('cpu-claim'); return; }
+                    if (!cpu) { denied = true; awaitCapacity(); return; }
                     scratch = cpu.bytes;
                     const gpu = reserveGpu(GPU_BYTES);
                     if (!gpu) { host.allocator.cpu.release(cpu); scratch = 0; denied = true; awaitCapacity(); return; }

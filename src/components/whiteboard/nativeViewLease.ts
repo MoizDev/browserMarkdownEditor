@@ -325,7 +325,8 @@ export function createNativeViewLease(options: {
         viewer = attachView({ session: board, token, view: viewParameters(), images, liveFrames: videoFrameOverlay(images.frames, syncAnimation, keys => images.setDemand(keys)),
             reveal, onError: options.onError });
     } catch (error) { animation.dispose(); video.dispose(); backdrop?.dispose(); images.dispose(); if (!cameraClaim) cameraOwner.dispose(); throw error; }
-    let presentedView: ViewState | null = null, presentedFrame: number | null = null, qualityNotice: string | null = null;
+    let presentedView: ViewState | null = null, presentedFrame: number | null = null, qualityNotice: string | null = null,
+        qualityTimer: ReturnType<typeof setTimeout> | null = null;
     const edit = options.parameters.mode === 'edit' ? options.editing : undefined;
     const editing = (() => { try { return edit ? createNativeEditingLease({ session: board, runtime, engine: viewer, token,
         inputToken: { vaultEpoch: token.vaultEpoch, tabId: token.documentId, sessionGeneration: token.session, viewGeneration: viewLease },
@@ -476,16 +477,24 @@ export function createNativeViewLease(options: {
                 viewer.presentationAccepted(presentation && certifyPresentation(presentation) ? presentation : null);
                 if (presentation && certifyPresentation(presentation)) backdrop?.notePresentation?.();
                 if (presentation && certifyPresentation(presentation)) recordBoardPresentation(performance.now(), presentation.backend);
-                // Measured: 'Rendering quality was reduced to fit memory.' stayed for the whole session after a brief squeeze,
-                // over sharp pages, in every canvas2d Annotate run. A sharp, complete frame at full quality withdraws it.
-                if (qualityNotice && presentation && presentedFrame !== null && presentation.complete && presentation.sharp
+                // A sharp, complete frame at full quality ends reduced quality: a pending notice is dropped, a shown one withdrawn.
+                if ((qualityNotice || qualityTimer) && presentation && presentedFrame !== null && presentation.complete && presentation.sharp
                     && !presentation.staleVersion && certifyPresentation(presentation)) {
-                    const shown = qualityNotice; qualityNotice = null; options.onNoticeCleared?.(shown);
+                    if (qualityTimer) { clearTimeout(qualityTimer); qualityTimer = null; }
+                    if (qualityNotice) { const shown = qualityNotice; qualityNotice = null; options.onNoticeCleared?.(shown); }
                 }
             }, onError: options.onError, onNotice: code => {
                 const text = noticeText(code);
-                if (code === 'memory-pressure' || code === 'cpu-floor-denied') qualityNotice = text;
-                options.onNotice(text);
+                if (code !== 'memory-pressure' && code !== 'cpu-floor-denied') { options.onNotice(text); return; }
+                // A memory notice describes reduced quality a person could see, so it waits until that has lasted a second.
+                // Measured: shown at once, it stayed in the page 16 ms (one soft frame at a zoom-out) and then the next sharp
+                // frame withdrew it, a flash nobody could read; before that it stayed for the whole session.
+                if (qualityNotice || qualityTimer) return;
+                qualityTimer = setTimeout(() => {
+                    qualityTimer = null;
+                    if (disposed) return;
+                    qualityNotice = text; options.onNotice(text);
+                }, QUALITY_NOTICE_DELAY_MS);
             } } });
     // The platform receives the same controller as pointer input, including its
     // actual constraints and measured viewport; motion never uses a second pose.
@@ -616,7 +625,7 @@ export function createNativeViewLease(options: {
         subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
         dispose() {
             if (disposed) return;
-            recordViewport(); disposed = true; unregisterView?.(); stopSelection(); stopViewer(); stopEditingReady?.(); edit?.onAttachment(false); detachSurface();
+            recordViewport(); disposed = true; if (qualityTimer) { clearTimeout(qualityTimer); qualityTimer = null; } unregisterView?.(); stopSelection(); stopViewer(); stopEditingReady?.(); edit?.onAttachment(false); detachSurface();
             navigation.dispose(); if (!cameraTransferred) cameraOwner.dispose(); viewer.dispose(); animation.dispose(); video.dispose(); images.dispose(); backdrop?.dispose(); backdrop = undefined; listeners.clear(); platformPane = null;
         },
     };
@@ -688,6 +697,9 @@ function createNativeLiveView(source: NativeLiveSource): NativeLiveView {
         },
     };
 }
+
+/** How long reduced quality must last before the notice says so. */
+const QUALITY_NOTICE_DELAY_MS = 1000;
 
 /** The platform reports codes; the bar shows sentences (the codes reached the owner as raw words). */
 function noticeText(code: string): string {

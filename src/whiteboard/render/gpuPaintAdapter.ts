@@ -8,6 +8,7 @@ import { pathStrokeTriangles } from './pathStrokeTriangles';
 import type { PaintBand } from './material';
 import { PaintBoundsJob } from './paintBounds';
 import { paintContributions } from './paintContributions';
+import { isBudgetRefusal } from './budgetRefusal';
 import { analyticInkPaint, type AnalyticInkPaint } from './analyticInk';
 import { isGutterQuadTile, texturedQuad, TILE_EDGE, TILE_GUTTER, TILE_SIZE } from './imageSampling';
 import { createAnalyticInkBatch, type PreparedAnalyticInkBatch } from './analyticInkBatch';
@@ -442,7 +443,11 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                     // The upload was this frame's; the next tile is a cache hit (free) or its own claim is refused.
                     if (streaming) continue; return;
                 }
-            } catch (error) { drop(staged); drop(ready); staged = ready = null; denied = true; report(error); throw error; }
+            } catch (error) {
+                drop(staged); drop(ready); staged = ready = null; denied = true;
+                if (isBudgetRefusal(error)) { awaitCapacity(); return; }
+                report(error); throw error;
+            }
         },
         readyFrame(): PaintSource | null { return disposed ? null : ready?.sourceFrame ?? null; },
         /** The prepared paint the ready tiles were built from; consumers iterate its windows. */

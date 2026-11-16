@@ -15,6 +15,7 @@ import type { PaintSource, PaintInkItem } from '../render/paintStream';
 import { createGpuPaintAdapter } from '../render/gpuPaintAdapter';
 import { bandItemsOf } from '../render/paintWindows';
 import { preparedOfFrame, type CanvasPaintAdapter, type PreparedPaint2d } from '../render/reference/canvasPaintAdapter';
+import { awaitCapacity, isBudgetRefusal } from '../render/budgetRefusal';
 import { appendPath2d } from '../render/reference/coverage2d';
 
 // Provenance: wet/dry ink handover, bounded ink outline and C4 layer contracts;
@@ -103,7 +104,10 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         memory: () => ({ gpuBytes: 0, cpuBytes: 0 }), dispose: () => {},
     };
     const hostLayers = new Map<LayerHost, Layer>();
-    const report = (error: unknown) => { try { options.onError(error); } catch { /* reporting must not escape the scheduler */ } };
+    const report = (error: unknown) => {
+        if (isBudgetRefusal(error)) { denied = true; awaitCapacity(owner, invalidate); return; }
+        try { options.onError(error); } catch { /* reporting must not escape the scheduler */ }
+    };
     const invalidate = () => { if (disposed) return; dirty = true; generation++; denied = false; options.invalidate(); for (const host of hosts) host.invalidate('wet-ink'); };
     const release = (lease: ByteLease) => { owner!.allocator.cpu.release(lease); reserved -= lease.bytes; };
     const stables = new Map<number, Stable>();

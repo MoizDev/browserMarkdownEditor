@@ -1,5 +1,6 @@
 import type { Affine, ViewState } from '../../platform/types';
 import type { PlatformLayerDefinition } from '../../platform/render/attachPlatformPane.types';
+import { awaitCapacity, isBudgetRefusal } from './budgetRefusal';
 import type { CompositorBackend, LayerCoverage, LayerHost } from '../../platform/render/compositor.types';
 import type { ScheduledFrame } from '../../platform/render/scheduler';
 import type { ByteLease } from '../../platform/render/gfx/api';
@@ -255,6 +256,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     const activeHost = () => hosts.get('underlay') ?? hosts.get('content');
     let lastError: string | null = null, lastProgress: PaintProgress | null = null;
     const report = (error: unknown) => {
+        if (isBudgetRefusal(error)) { awaitCapacity(activeHost(), () => { for (const host of hosts.values()) host.invalidate('board-capacity'); }); return; }
         lastError = messageOf(error); refreshProgress();
         try { options.onError(error); } catch { /* reporting cannot reject a worker callback */ }
     };

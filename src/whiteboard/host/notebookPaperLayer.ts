@@ -9,6 +9,7 @@ import { boardPageStack } from '../model/pages';
 import type { HostBlock } from '../model/doc';
 import type { PaintPalette } from '../render/colour';
 import type { PaintFrame, PaintPathItem } from '../render/paintStream';
+import { awaitCapacity, isBudgetRefusal } from '../render/budgetRefusal';
 import { createGpuPaintAdapter } from '../render/gpuPaintAdapter';
 import { preparedOfFrame, type CanvasPaintAdapter, type PreparedPaint2d } from '../render/reference/canvasPaintAdapter';
 import { Path2dJob } from '../render/reference/coverage2d';
@@ -82,7 +83,14 @@ class NotebookPaperLayer implements Layer {
     constructor(private readonly host: LayerHost, private readonly options: NotebookPaperLayerOptions) {
         this.gpu = createGpuPaintAdapter(this.gpuReference, host, error => this.report(error));
     }
-    private report(error: unknown): void { try { this.options.onError(error); } catch { /* errors do not escape the layer scheduler */ } }
+    private report(error: unknown): void {
+        if (isBudgetRefusal(error)) {
+            this.denied = true;
+            awaitCapacity(this.host, () => { this.denied = false; this.host.invalidate('notebook-paper-capacity'); });
+            return;
+        }
+        try { this.options.onError(error); } catch { /* errors do not escape the layer scheduler */ }
+    }
     private dropStaged(): void {
         const old = this.staged; this.staged = null;
         if (!old) return;

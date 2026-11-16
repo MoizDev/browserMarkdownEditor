@@ -12,7 +12,6 @@ import type { PaintFrameAssembler, PinnedPaintSource, PinnedPaintStream } from '
 import type { SessionDenseRasters } from './sessionDenseRasters';
 import type { ScenePaintNodeStream } from './scenePaintStream';
 import type { ResolvedNodeCache } from './resolvedNodeCache';
-import { auditCount } from '../../platform/render/renderAudit';
 
 const BLOCK_BYTES = 64 * 1024;
 // Array capacity and Set bookkeeping are JS-engine dependent; retain conservative per-entry
@@ -219,7 +218,6 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
     };
     const needsBlock = (work: Staging) => work.used + REFERENCE_BYTES + INK_SET_ENTRY_BYTES > work.blocks.length * BLOCK_BYTES;
     const start = (owner: Owner, feed: (add: Add, room: () => boolean) => Feed): void => {
-        auditCount('frame-assembler', 'start');
         dropStaging();
         const inkNodeIds = new Set<string>(), blocks: Block[] = [];
         const items: StagedItems = owner.liveOnly
@@ -254,7 +252,6 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
             ? Object.freeze({ ...root, liveOnly: true as const, windows: Object.freeze([...staged.underlay.finish(), ...staged.content.finish()]) })
             : Object.freeze({ ...root, underlay: Object.freeze(staged.underlay), content: Object.freeze(staged.content) });
         const published: Published = { owner: o, frame, blocks: work.blocks, borrowers: 0, retired: false, releasing: false };
-        auditCount('frame-assembler', 'publish');
         retained.set(frame, published); latest = published; staging = null; invalidate();
     };
     return {

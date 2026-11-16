@@ -452,16 +452,13 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             // The two returns below leave this layer reporting needsFrame() over a frame that cannot draw, and nothing
             // else asks for its replacement. Each asks ONCE per frame object, as the missing-live-node case does, so a
             // frame that never changes cannot keep the pump running with no progress.
-            const pathAudit = options.auditSurface ?? 'board';
             if (!frame || !options.frames.isCurrent(frame) || !sameToken(frame.token, budget.token)) {
-                auditCount(pathAudit, 'prep:no-current-frame');
                 if (frame && !replacementAsked.has(frame)) { replacementAsked.add(frame); options.requestFrame?.(); }
                 return;
             }
             // A live-only frame holds no other items, so it can never serve direct drawing; a direct frame
             // cannot serve dense drawing either. The owner's request for the other kind is already in flight.
             if (!!frame.liveOnly !== useDense && frame.openTile) {
-                auditCount(pathAudit, 'prep:kind-mismatch');
                 if (!replacementAsked.has(frame)) { replacementAsked.add(frame); options.requestFrame?.(); }
                 return;
             }
@@ -478,15 +475,13 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             while (!estimate!.done && !budget.shouldYield()) estimateStep(estimate!);
             // An estimate split across frames must ask for the next one: nothing else wakes a still view
             // (seen: a 3,500-item board froze in 'building' after switching to dense).
-            if (!estimate!.done) { auditCount(pathAudit, 'prep:estimate-continue'); allocatorHost!.invalidate('board-estimate-continue'); return; }
-            auditCount(pathAudit, frame.openTile ? 'prep:has-open-tile' : 'prep:no-open-tile');
+            if (!estimate!.done) { allocatorHost!.invalidate('board-estimate-continue'); return; }
             // Initial operation-count defaults; the owner defers binding calibration, not the hierarchy.
             // Dense tiles are streamed from the frame's own pin; a frame that cannot reopen its stream stays direct.
             // The index count is the same for a dense and a direct frame, so the mode cannot oscillate
             // with the frame kind it selects; the frame's own estimate stands in only before the index is built.
             const candidates = options.candidates?.() ?? null;
             const segments = candidates ?? estimate!.segments, items = candidates ?? estimate!.items;
-            auditCount(pathAudit, 'cand:sum', segments);
             const observed = density.observe({ frameId: budget.frameId, now: performance.now(),
                 candidateSegments: segments, coveredDevicePixels: view.viewport.width * view.viewport.height * view.viewport.dpr ** 2,
                 estimatedGpuMs: segments * .00004 + items * .0001 });
@@ -501,9 +496,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             // A frame whose dense tile jobs failed their bounded retries is drawn direct; the next frame starts over.
             const mode = dense!.gaveUp(frame) ? 'direct' : useDense && frame.liveOnly && deniedDirectSegments !== null ? 'dense'
                 : frame.openTile ? (deniedDirectSegments !== null ? 'dense' : observed) : 'direct';
-            auditCount(options.auditSurface ?? 'board', useDense ? 'frame:dense' : 'frame:direct');
             if ((mode === 'dense') !== useDense) {
-                auditCount(options.auditSurface ?? 'board', mode === 'dense' ? 'mode:to-dense' : 'mode:to-direct');
                 useDense = mode === 'dense';
                 denied = false;
                 // The dense working set (kept bitmaps, tile runs) is declared only in dense mode: the pane re-collects its demand.
@@ -518,7 +511,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             }
             // Three actual decision frames avoid allocating a whole-scene Path2D cache just
             // before dense mode would throw it away. No timer or stationary RAF is introduced.
-            if (!useDense && density.pending()) { auditCount(pathAudit, 'prep:density-pending'); denied = false; return; }
+            if (!useDense && density.pending()) { denied = false; return; }
             // A live overlay frame is replaced by the next pointer move, so the demand round trip (one whole frame that
             // builds nothing) would be paid for every move and the overlay would never build: it reserves at once, and a
             // refused reservation still re-collects the demand below before it latches.
@@ -594,14 +587,13 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         return offset;
     };
     const coverageOf = (layer: Layer, frame: ScheduledFrame, backend: CompositorBackend): LayerCoverage => {
-        const pathAudit = options.auditSurface ?? 'board';
         const gpuCoverage = backend !== 'canvas2d' ? gpu?.coverage(frame.view) : null;
         const ready = backend === 'canvas2d' ? adapter?.readyFrame() : gpu?.readyFrame();
         const requested = frame.layers.find(item => item.layer === layer)?.sceneRevision;
-        const denseCoverage = useDense && ready ? dense?.coverage(frame.view, liveFor(ready), backend !== 'canvas2d') : null;
-        if (useDense && !denseCoverage?.complete) { auditCount(pathAudit, 'cov:dense-incomplete'); return { complete: false, sharp: false }; }
-        if (backend !== 'canvas2d' && !gpuCoverage?.complete) { auditCount(pathAudit, gpuCoverage?.staleVersion ? 'cov:gpu-stale' : 'cov:gpu-incomplete'); return { complete: false, sharp: false }; }
-        if (!ready || !sameToken(ready.token, frame.token)) { auditCount(pathAudit, 'cov:no-ready-or-token'); return { complete: false, sharp: false }; }
+        const denseCoverage = useDense && ready ? dense?.coverage(frame.view, liveFor(ready)) : null;
+        if (useDense && !denseCoverage?.complete) return { complete: false, sharp: false };
+        if (backend !== 'canvas2d' && !gpuCoverage?.complete) return { complete: false, sharp: false };
+        if (!ready || !sameToken(ready.token, frame.token)) return { complete: false, sharp: false };
         const current = ready.sceneRevision === requested && ready.sceneRevision === options.requestedRevision()
             && ready.theme === options.requestedTheme() && options.frames.isCurrent(ready);
         return current ? { complete: true, sharp: (gpuCoverage?.sharp ?? true) && (denseCoverage?.sharp ?? true) } : { complete: false, sharp: false, staleVersion: true };

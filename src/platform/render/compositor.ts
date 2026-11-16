@@ -231,7 +231,7 @@ export class GpuCompositor implements PaneCompositor {
         this.#isolationReadyFrame = -1;
         if (!snapshot || !snapshot.metrics || snapshot.view !== frame.view || budget.cameraEpoch !== frame.view.epoch ||
             budget.frameId !== frame.frameId || !sameToken(budget.token, frame.token) ||
-            budget.token.deviceGeneration !== this.target.generation) return;
+            budget.token.deviceGeneration !== this.target.generation) { auditCount('compositor', 'refuse:prepare-gate'); return; }
         this.#prepared = { frameId: budget.frameId, token: Object.freeze({ ...budget.token }), snapshot };
         const plan = new GpuIsolationPlan(snapshot.metrics.backingWidth, snapshot.metrics.backingHeight);
         const inverted = snapshot.appearance.inverted;
@@ -246,7 +246,7 @@ export class GpuCompositor implements PaneCompositor {
         this.#isolationPlan = plan;
         try {
             if (!this.#options.owner.frameResourcesReady && !budget.claimUpload(1)) {
-                this.#options.invalidate('gpu-frame-resources-deferred'); return;
+                auditCount('compositor', 'refuse:frame-resources'); this.#options.invalidate('gpu-frame-resources-deferred'); return;
             }
             this.#options.owner.prepareFrameResources(); this.#prepareQuad();
             if (benchmarkDomain) this.#options.owner.prepareCoverageFrame?.({ frameId: frame.frameId, token: frame.token,
@@ -259,18 +259,19 @@ export class GpuCompositor implements PaneCompositor {
         const plan = this.#isolationPlan;
         this.#isolationPlan = null;
         if (!plan || !this.#prepared || this.#prepared.frameId !== frame.frameId || !sameToken(this.#prepared.token, frame.token) ||
-            !this.#options.owner.frameResourcesReady) return;
+            !this.#options.owner.frameResourcesReady) { auditCount('compositor', 'refuse:finish-gate'); return; }
         // Admission only reserves the frame's isolation targets, and without it no frame can present. Deferring it to a
         // frame whose optional prepare window was left over never came while a live stroke used that window each frame
         // (measured: 49 of 115 refused notebook frames in one stroke).
         try {
             if (!this.#options.owner.admitIsolation(plan.finish())) {
+                auditCount('compositor', 'refuse:isolation-budget');
                 this.#options.onError(new ArenaError('out-of-budget'));
                 return;
             }
             this.#isolationReadyFrame = frame.frameId;
         } catch (error) {
-            if (error instanceof ArenaError && error.code === 'out-of-budget') this.#options.onError(error);
+            if (error instanceof ArenaError && error.code === 'out-of-budget') { auditCount('compositor', 'refuse:isolation-budget'); this.#options.onError(error); }
             else this.#failure(error);
         }
     }
@@ -281,11 +282,20 @@ export class GpuCompositor implements PaneCompositor {
         const snapshot = this.#snapshot;
         if (!prepared || !snapshot || !this.#quad || !this.#nearest || !this.#linear || !snapshot.metrics ||
             prepared.snapshot !== snapshot || snapshot.view !== frame.view || prepared.frameId !== frame.frameId || this.#isolationReadyFrame !== frame.frameId ||
-            !sameToken(prepared.token, frame.token) || !this.#drawable(snapshot, frame)) return null;
+            !sameToken(prepared.token, frame.token) || !this.#drawable(snapshot, frame)) {
+            if (renderAuditEnabled()) auditCount('compositor', `refuse:${!prepared ? 'unprepared' : !this.#quad ? 'quad' : prepared.snapshot !== snapshot ? 'snapshot'
+                : snapshot?.view !== frame.view ? 'view' : prepared.frameId !== frame.frameId ? 'frame-id'
+                : this.#isolationReadyFrame !== frame.frameId ? 'isolation' : !sameToken(prepared.token, frame.token) ? 'token' : 'drawable'}`);
+            return null;
+        }
         let encoder: FrameEncoder | null = null;
         try {
             const coverage = snapshot.layers.map(binding => binding.coverage(frame, this.backend));
-            if (coverage.some(item => !item.complete)) return null;
+            if (coverage.some(item => !item.complete)) {
+                auditCount('compositor', 'refuse:coverage');
+                if (renderAuditEnabled()) coverage.forEach((item, i) => { if (!item.complete) auditCount((snapshot.layers[i] as { id?: string }).id ?? 'layer', 'incomplete'); });
+                return null;
+            }
             encoder = this.#options.owner.resources.beginFrame();
             this.#encodings.add(encoder);
             const bounds = { x: 0, y: 0, width: snapshot.metrics.backingWidth, height: snapshot.metrics.backingHeight };

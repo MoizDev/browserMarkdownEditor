@@ -174,6 +174,18 @@ export function inkPathItem(item: PaintInkItem, view: ViewState): PaintPathItem 
     return result;
 }
 
+/** Fill triangles are origin-relative, so every tile view of one item at one scale shares them: a tile composer admits a
+ * stroke once per tile it crosses, and re-triangulating its whole outline each time kept tiles from ever completing
+ * (measured: 301 position stop-waits in one draw phase with the ink route on, against 2 off). */
+const fillCache = new WeakMap<PaintPathItem, { tolerance: number; shapes: ReturnType<typeof pathFillTriangles> }>();
+function fillTriangles(item: PaintPathItem, tolerance: number, origin: { x: number; y: number }): ReturnType<typeof pathFillTriangles> {
+    const cached = fillCache.get(item);
+    if (cached && cached.tolerance === tolerance) return cached.shapes;
+    const shapes = pathFillTriangles(item.d, { tolerance, origin: [origin.x, origin.y] });
+    fillCache.set(item, { tolerance, shapes });
+    return shapes;
+}
+
 type PathAdmission = { status: 'ready'; value: PreparedPathItem } | { status: 'empty' | 'denied' | 'unsupported' };
 
 /** Admits one path item's clip masks, fill and stroke, all or nothing: a later refusal retires the
@@ -216,7 +228,7 @@ function admitPathItem(item: PaintPathItem, view: ViewState, kit: ReturnType<typ
         const origin = pathOrigin(item.d);
         const frame = deviceAffine(item.localToWorld, origin, view);
         if (!frame) return fail('unsupported');
-        const shapes = pathFillTriangles(item.d, { tolerance: PATH_FLATTEN_DEVICE_PX / (frame.scale * frame.norm), origin: [origin.x, origin.y] });
+        const shapes = fillTriangles(item, PATH_FLATTEN_DEVICE_PX / (frame.scale * frame.norm), origin);
         if (!shapes) return fail('unsupported');
         const union = inkDerived.has(item);
         const positive = union && shapes.negative.length ? Float64Array.of(...shapes.positive, ...shapes.negative) : shapes.positive;

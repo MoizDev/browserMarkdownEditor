@@ -47,6 +47,9 @@ interface Entry {
 }
 
 /** Pixels this backend can draw: the device's texture, or the CPU bitmap (which a GPU backend can still upload). */
+/** A zoom gesture's scale changes every few frames; this long without a change, it has settled enough to raster. */
+const ZOOM_SETTLE_MS = 150;
+
 function drawableOn(entry: Entry, device: GfxDevice | null): boolean {
     return device ? entry.texture?.device === device || !!entry.bitmap : !!entry.bitmap;
 }
@@ -95,6 +98,8 @@ export class PdfTileLayer implements Layer {
     private contentIdentity = '';
     private lastMotionScale: PdfDemandInput['previousMotionScale'];
     private motionScaleAt = 0;
+    private lastZoomValue = 0;
+    private scaleChangedAt = 0;
     private latestDemand: Omit<PdfDemandInput, 'covered' | 'previousMotionScale'> | null = null;
     private latestView: ViewState | null = null;
     private mirrorJob: MirrorJob | null = null;
@@ -151,6 +156,14 @@ export class PdfTileLayer implements Layer {
             motionScaleOverride: holdMotionScale ? this.lastMotionScale : undefined,
             covered: (page, area) => this.covered(page, area, device) });
         if (input.moving && !holdMotionScale) this.motionScaleAt = now;
+        // The camera's zoom, not the tile scale's kind: a pan or drag flips between motion and exact tiles at about the
+        // same scale, and counting that as a zoom deferred tiles during plain drags (measured: 40 per drag).
+        const zoomValue = input.rasterScale;
+        if (!this.lastZoomValue || Math.abs(zoomValue / this.lastZoomValue - 1) > 0.01) { this.lastZoomValue = zoomValue; this.scaleChangedAt = now; }
+        // While a zoom is still changing the scale, a tile whose area a stand-in already shows is not started: it
+        // usually finishes after the zoom has moved past its scale and is thrown away (measured on a 1000-page PDF:
+        // 18-32 of 66 rasters per zoom gesture dropped unused). Uncovered area is still rastered at once.
+        const zooming = !!device && now - this.scaleChangedAt < ZOOM_SETTLE_MS;
         this.lastMotionScale = planned.motionScale;
         this.desired = new Set(planned.requests.map(request => tileKeyString(request.key)));
         const exactScale = planned.requests.find(request => request.level === 'exact')?.scale.scale;
@@ -192,12 +205,17 @@ export class PdfTileLayer implements Layer {
                 existing.used = ++this.sequence;
                 if (device && existing.bitmap && existing.texture?.device !== device) {
                     if (budget.shouldYield()) { this.pendingFrame = true; break; }
-                    const bytes = existing.bitmap.width * existing.bitmap.height * 4;
-                    if (!budget.claimUpload(bytes)) { this.pendingFrame = true; break; }
+                    // Storage before budget: a claim whose texture was then refused still spent the frame's upload
+                    // allowance, so the next tile never fit it, frame after frame, and the page stayed blurred.
                     let texture: PooledTexture | null;
-                    try { texture = this.texturePool.acquire(device, existing.bitmap.width, existing.bitmap.height); }
+                    try { texture = this.acquireTexture(device, existing.bitmap.width, existing.bitmap.height); }
                     catch (error) { this.onError(error, request); continue; }
                     if (!texture) continue;
+                    // The reclaim may have taken this very tile when it was off view (a prefetch).
+                    if (this.entries.get(key) !== existing || !existing.bitmap) { this.texturePool.release(texture); continue; }
+                    if (!budget.claimUpload(existing.bitmap.width * existing.bitmap.height * 4)) {
+                        this.texturePool.release(texture); this.pendingFrame = true; break;
+                    }
                     try {
                         device.writeTexture(texture.handle, { x: 0, y: 0, width: existing.bitmap.width, height: existing.bitmap.height },
                             { source: existing.bitmap, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
@@ -209,6 +227,7 @@ export class PdfTileLayer implements Layer {
                 continue;
             }
             if (this.failed.has(key) || running >= 3) continue;
+            if (zooming && this.covered(request.page, rect(request), device)) { auditCount('pdf-page', 'zoom-deferred'); this.pendingFrame = true; continue; }
             if (budget.shouldYield()) { this.pendingFrame = true; break; }
             const bytes = request.tile.textureWidth * request.tile.textureHeight * 4;
             let lease = this.host.allocator.cpu.reserve(bytes);
@@ -381,6 +400,18 @@ export class PdfTileLayer implements Layer {
     }
 
     /**
+     * A refused texture first gives back this layer's own off-plan and off-view textures, then retries once. The
+     * pane's grant reclaim never asks the requesting cache, so when this layer's stand-ins filled the grant nothing
+     * else could make room (measured: an image-page PDF's visible tile refused for good after find).
+     */
+    private acquireTexture(device: GfxDevice, width: number, height: number): PooledTexture | null {
+        const texture = this.texturePool.acquire(device, width, height);
+        if (texture || !this.releaseUnneededGpu()) return texture;
+        auditCount('pdf-page', 'self-reclaim');
+        return this.texturePool.acquire(device, width, height);
+    }
+
+    /**
      * Pool pressure takes what the view does not show first: off-plan and off-screen tiles. Releasing every texture
      * for it meant re-rastering the visible page, since a GPU-resident tile has no bitmap left (measured: a window
      * resize re-rastered 28 tiles). Returns false when nothing was spare, so the caller releases everything.
@@ -531,10 +562,13 @@ export class PdfTileLayer implements Layer {
             const bitmap = item.pixels.bitmap;
             const existing = this.bridgeTextures.get(item.entry.id);
             if (device && existing?.device === device) continue;
-            if (!budget.claimUpload(bitmap.width * bitmap.height * 4)) { this.pendingFrame = true; break; }
-            if (!device) { this.bridgeReady.add(item.entry.id); continue; }
-            const texture = this.texturePool.acquire(device, bitmap.width, bitmap.height);
+            if (!device) {
+                if (!budget.claimUpload(bitmap.width * bitmap.height * 4)) { this.pendingFrame = true; break; }
+                this.bridgeReady.add(item.entry.id); continue;
+            }
+            const texture = this.acquireTexture(device, bitmap.width, bitmap.height);
             if (!texture) break;
+            if (!budget.claimUpload(bitmap.width * bitmap.height * 4)) { this.texturePool.release(texture); this.pendingFrame = true; break; }
             try {
                 device.writeTexture(texture.handle, { x: 0, y: 0, width: bitmap.width, height: bitmap.height },
                     { source: bitmap, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });

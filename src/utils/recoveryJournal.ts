@@ -51,18 +51,20 @@ function done(tx: IDBTransaction): Promise<void> {
     });
 }
 
-let persistence: Promise<void> | undefined;
-function requestDurability(refused: () => void): void {
-    persistence ??= requestPersistentStorage().then(result => {
-        if (result !== 'persisted') refused();
-    });
+// Asked once per page load, and a refusal is not announced: Chrome grants this from engagement, never a prompt,
+// so on a fresh origin it is refused and the user has nothing to do about it (measured: production, fresh origin,
+// the status line said 'Recovery storage may be evicted by the browser.' at the first edit of every page load).
+// Settings → Vault is where the state is reported, worded for a reader.
+let persistence: Promise<unknown> | undefined;
+function requestDurability(): void {
+    persistence ??= requestPersistentStorage();
 }
 
 /** A journal id is independent of both the transient document id and the file's bytes. */
 export function newJournalId(): string { return crypto.randomUUID(); }
 
 /** Atomic per-key revision comparison prevents a late checkpoint replacing a newer one. */
-export async function writeRecoveryEntry(entry: RecoveryEntry, refused: () => void): Promise<void> {
+export async function writeRecoveryEntry(entry: RecoveryEntry): Promise<void> {
     const db = await open();
     const tx = db.transaction('entries', 'readwrite');
     const finished = done(tx);
@@ -73,7 +75,7 @@ export async function writeRecoveryEntry(entry: RecoveryEntry, refused: () => vo
         if (!old || old.revision <= entry.revision) store.put(old?.copyOnly ? { ...entry, copyOnly: true } : entry);
     };
     await finished;
-    requestDurability(refused);
+    requestDurability();
 }
 
 /** An acknowledgement cannot erase or rebase a newer checkpoint. */

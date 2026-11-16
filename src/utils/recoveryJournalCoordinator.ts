@@ -6,7 +6,7 @@ import type { RecoveryEntry } from './recoveryJournal';
 import { groupRecovery } from './recoveryOffers';
 
 /** The one bridge C-20 calls from the funnel. No pane owns a journal timer. */
-export function createRecoveryJournal(options: { refused(): void; failed(error: unknown): void }) {
+export function createRecoveryJournal(options: { failed(error: unknown): void }) {
     const pending = new Map<string, RecoveryEntry>();
     const acknowledged = new Map<string, number>();
     const owned = new Set<string>();
@@ -27,7 +27,7 @@ export function createRecoveryJournal(options: { refused(): void; failed(error: 
             for (let i = 0; i < entries.length; i++) {
                 const [id, entry] = entries[i];
                 if ((acknowledged.get(id) ?? -1) >= entry.revision) continue;
-                try { await writeRecoveryEntry(entry, options.refused); }
+                try { await writeRecoveryEntry(entry); }
                 catch (error) {
                     // Keep every uncommitted capture for the next checkpoint.
                     for (const [remainingId, remaining] of entries.slice(i)) {

@@ -5,7 +5,6 @@ import { createRecoveryFunnel } from '../utils/recoveryFunnel';
 /** The crash-recovery journal and the one funnel every document change reports into. */
 export function useRecoveryJournal(announce: (message: string) => void) {
   const [recoveryJournal] = useState(() => createRecoveryJournal({
-    refused: () => announce('Recovery storage may be evicted by the browser.'),
     failed: () => announce('Could not write recovery storage; keep your edits open.'),
   }));
   const [recoveryEvent] = useState(() => createRecoveryFunnel(recoveryJournal, error => {

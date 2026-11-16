@@ -1,11 +1,13 @@
 // Settings → Vault → "Keep this data on this device".
 //
 // The honest answer to "where does all this live, and can it disappear?": the
-// vault list (the folder handles themselves), the open tabs, reading positions
-// and every setting are in this browser's storage and nowhere else, and a
+// vault list (the folder handles themselves), the open tabs, reading positions,
+// every setting and the crash-recovery journal are in this browser's storage and nowhere else, and a
 // "best effort" origin can be evicted under storage pressure without a word.
 // utils/storagePersistence.ts has the mechanism; this row is the only place the
-// app says out loud which of the two it is living under, and the one place a
+// app says out loud which of the two it is living under (the recovery journal's own
+// refusal notice was removed: a status-line warning at every page load's first edit,
+// about something the user cannot act on), and the one place a
 // user can ask for the better one on purpose.
 //
 // Chrome grants persistence from engagement rather than a prompt, so the button
@@ -26,9 +28,9 @@ export function StorageDurabilitySetting() {
     useEffect(() => { void checkStorageDurability(); }, []);
 
     const hint = {
-        persisted: 'Your vault list, open tabs and settings are kept until you clear this site’s data yourself.',
-        'best-effort': 'Your browser may clear your vault list, open tabs and settings if it runs short of space.',
-        unknown: 'This browser does not say whether it keeps site data, so treat the vault list as replaceable.',
+        persisted: 'This browser keeps your vault list, open tabs, settings and the recovery copies of unsaved edits until you clear this site’s data yourself. The files in your vault folder are never affected.',
+        'best-effort': 'If your disk runs low on space, this browser may clear your vault list, open tabs, settings and the recovery copies of unsaved edits. The files in your vault folder are not affected. Installing this app from the address bar, or bookmarking it, usually lets the browser keep them.',
+        unknown: 'This browser does not say whether it keeps your vault list, open tabs, settings and the recovery copies of unsaved edits. The files in your vault folder are not affected.',
     }[durability];
 
     const refused = asked && durability !== 'persisted';
@@ -39,7 +41,7 @@ export function StorageDurabilitySetting() {
                 <div className="setting-name">Keep this data on this device</div>
                 <div className="settings-hint">
                     {hint}
-                    {refused && ' Your browser decided not to — it grants this to sites you use often, so try again after a few more visits, or install this app from the address bar.'}
+                    {refused && ' Your browser said no for now. It decides this itself, mostly for sites you install, bookmark or use often, so ask again after doing one of those.'}
                 </div>
             </div>
             <div className="setting-control">

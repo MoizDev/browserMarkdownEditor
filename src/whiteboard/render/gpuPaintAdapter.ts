@@ -186,6 +186,14 @@ function fillTriangles(item: PaintPathItem, tolerance: number, origin: { x: numb
     return shapes;
 }
 
+const NO_TRIANGLES = new Float64Array(0);
+const unionCache = new WeakMap<Float64Array, Float64Array>();
+function unionTriangles(shapes: { positive: Float64Array; negative: Float64Array }): Float64Array {
+    let merged = unionCache.get(shapes.positive);
+    if (!merged) { merged = new Float64Array(shapes.positive.length + shapes.negative.length); merged.set(shapes.positive); merged.set(shapes.negative, shapes.positive.length); unionCache.set(shapes.positive, merged); }
+    return merged;
+}
+
 type PathAdmission = { status: 'ready'; value: PreparedPathItem } | { status: 'empty' | 'denied' | 'unsupported' };
 
 /** Admits one path item's clip masks, fill and stroke, all or nothing: a later refusal retires the
@@ -231,8 +239,9 @@ function admitPathItem(item: PaintPathItem, view: ViewState, kit: ReturnType<typ
         const shapes = fillTriangles(item, PATH_FLATTEN_DEVICE_PX / (frame.scale * frame.norm), origin);
         if (!shapes) return fail('unsupported');
         const union = inkDerived.has(item);
-        const positive = union && shapes.negative.length ? Float64Array.of(...shapes.positive, ...shapes.negative) : shapes.positive;
-        const outcome = place(kit.admit({ shapes: { positive, negative: union ? new Float64Array(0) : shapes.negative, edges: shapes.edges, bounds: shapes.bounds },
+        // Stable identities: the kit shares one vertex buffer per triangle array across tile views.
+        const positive = union && shapes.negative.length ? unionTriangles(shapes) : shapes.positive;
+        const outcome = place(kit.admit({ shapes: { positive, negative: union ? NO_TRIANGLES : shapes.negative, edges: shapes.edges, bounds: shapes.bounds },
             rule: union ? 'union' : item.fillRule, affine: frame.affine, viewport, colour: item.material.fill, output: { kind: 'composite', blend } }, budget));
         if (outcome === 'ok') fill = acquired[acquired.length - 1];
         else if (outcome !== 'empty') return fail(outcome as 'denied' | 'unsupported');

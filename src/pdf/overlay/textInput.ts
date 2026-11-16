@@ -103,7 +103,11 @@ export function bindPdfTextInput<Point>(element: HTMLElement, host: PdfTextInput
                 void begin(active);
             }, 500);
         } else {
+            // Preventing the default (native selection) also cancels the focus move, so a click on a page left the
+            // keyboard in the file tree and Cmd+F after it went nowhere.
             event.preventDefault(); element.setPointerCapture(active.id);
+            // The bound element is the content wrapper; the keyboard target is its focusable surface.
+            if (!element.contains(document.activeElement)) (element.querySelector<HTMLElement>('[tabindex="0"]') ?? element).focus({ preventScroll: true });
         }
     };
     const move = (event: PointerEvent) => {

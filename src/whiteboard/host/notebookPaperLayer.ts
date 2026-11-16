@@ -221,6 +221,9 @@ class NotebookPaperLayer implements Layer {
     }
     releaseGpu(reason: GpuReleaseReason): void {
         this.gpu.release(reason); this.gpuPrepared = null; this.gpuSource = null;
+        // Pressure takes GPU memory only. The CPU paths stay: dropping them made every pressure release a
+        // full rebuild (measured: 788 rebuilds in one notebook stroke), and the rebuild asked for the same tiles again.
+        if (reason === 'pressure') return;
         try { this.dropStaged(); } catch (error) { this.report(error); }
         try { this.dropReady(); } catch (error) { this.report(error); }
         this.desired = null; this.denied = false; this.failedRevision = null;

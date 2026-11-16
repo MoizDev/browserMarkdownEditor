@@ -18,15 +18,13 @@ import type { CanvasPaintAdapter, PreparedPaint2d } from './reference/canvasPain
 import { paintItem2d } from './reference/paint2d';
 import { auditCount } from '../../platform/render/renderAudit';
 import { InkOutlineJob } from '../ink/outline';
-import { createInkUnionKit, type PreparedInkUnion } from './analyticInkCoverage';
 
 const EDGE = TILE_EDGE, GUTTER = TILE_GUTTER, SIZE = TILE_SIZE;
 const GPU_BYTES = SIZE * SIZE * 4, CPU_BYTES = GPU_BYTES * 2;
 interface CachedTile { texture: TextureHandle; device: GfxDevice; refs: number; key: string; bytes: number }
-type Tile = { item: PaintItem; x: number; y: number; cached: CachedTile; multiply: boolean; worldRect?: Readonly<Rect>; analytic?: never; path?: never; ink?: never }
-    | { item: PaintItem; x: number; y: number; analytic: AnalyticInkPaint; cached?: never; path?: never; ink?: never }
-    | { item: PaintItem; x: number; y: number; path: PreparedPathItem; cached?: never; analytic?: never; multiply?: never; worldRect?: never; ink?: never }
-    | { item: PaintItem; x: number; y: number; ink: PreparedInkUnion; cached?: never; analytic?: never; path?: never; multiply?: never; worldRect?: never };
+type Tile = { item: PaintItem; x: number; y: number; cached: CachedTile; multiply: boolean; worldRect?: Readonly<Rect>; analytic?: never; path?: never }
+    | { item: PaintItem; x: number; y: number; analytic: AnalyticInkPaint; cached?: never; path?: never }
+    | { item: PaintItem; x: number; y: number; path: PreparedPathItem; cached?: never; analytic?: never; multiply?: never; worldRect?: never };
 /** One path item's admitted stencil work, in draw order: clip masks, then fill, then stroke. */
 interface PreparedPathItem { readonly clips: readonly PreparedPathCoverage[]; readonly rects: readonly RectI[]; readonly fill: PreparedPathCoverage | null; readonly stroke: PreparedPathCoverage | null }
 /** Device pixels of flattening error allowed for a stencil-covered path (design §5.1: ≤0.1 px). */
@@ -44,8 +42,6 @@ interface Plan {
     window: number; item: number; x: number; y: number; out: WindowTiles[];
     boundsJob: PaintBoundsJob | null; tileBounds: { x0: number; y0: number; x1: number; y1: number } | null; itemKey: string;
     analyticReady: boolean;
-    /** The ink union pipeline was ready when the plan started; a plan built before it is rebuilt once it is. */
-    inkReady: boolean;
     parts: Generator<PaintItem> | null; part: PaintItem | null; partIndex: number; hasMultiply: boolean;
     cpuLeases: ByteLease[]; cpuUsed: number;
     groups: AnalyticGroup[];
@@ -281,8 +277,6 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
     const cache = new Map<string, CachedTile>();
     const analytic = createAnalyticInkBatch(host, () => { /* optional pipeline failure keeps canonical coverage tiles */ });
     const pathCoverage = createPathCoverageKit(host, report);
-    const inkUnion = createInkUnionKit(host, report, pathCoverage);
-    const inkReadyNow = (): boolean => options.inkCoverage === true && !streaming && inkUnion.ready();
     const retirePathItem = (item: PreparedPathItem) => {
         for (const clip of item.clips) pathCoverage.retire(clip);
         if (item.fill) pathCoverage.retire(item.fill);
@@ -299,7 +293,6 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             for (const tile of out.tiles) {
                 if (tile.analytic) continue;
                 if (tile.path) { retirePathItem(tile.path); continue; }
-                if (tile.ink) { inkUnion.retire(tile.ink); continue; }
                 const entry = tile.cached;
                 if (--entry.refs === 0) { cache.delete(entry.key); tileBytes -= entry.bytes; entry.device.destroy(entry.texture); }
             }
@@ -363,7 +356,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         prepare(view: ViewState, budget: FrameBudget): void {
             if (disposed || lastFrame === budget.frameId) return;
             lastFrame = budget.frameId; currentToken = { ...budget.token };
-            analytic.warm(); if (options.inkCoverage === true && !streaming) inkUnion.warm();
+            analytic.warm();
             const prepared = reference.borrowPrepared(), device = host.device(), demand = view.camera.z * view.viewport.dpr;
             if (!prepared || !device || !documentMatches(prepared.root, budget.token) || !documentMatches(prepared.sourceFrame, budget.token) || device.generation !== budget.token.deviceGeneration ||
                 host.generation !== budget.token.deviceGeneration || !Number.isFinite(demand) || demand <= 0) { reset(); return; }
@@ -377,8 +370,8 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             // A denial suppresses polling via needsFrame(), but a real wake may bring a new grant.
             denied = false;
             if (ready && !validDevice(ready)) { drop(ready); ready = null; denied = false; }
-            if (staged && (!valid(staged, view, scale) || (!streaming && staged.prepared !== prepared) || staged.analyticReady !== analytic.ready() || staged.inkReady !== inkReadyNow())) { drop(staged); staged = null; denied = false; }
-            if ((ready?.prepared === prepared && valid(ready, view, scale) && ready.analyticReady === analytic.ready() && ready.inkReady === inkReadyNow()) || denied) return;
+            if (staged && (!valid(staged, view, scale) || (!streaming && staged.prepared !== prepared) || staged.analyticReady !== analytic.ready())) { drop(staged); staged = null; denied = false; }
+            if ((ready?.prepared === prepared && valid(ready, view, scale) && ready.analyticReady === analytic.ready()) || denied) return;
             if (!staged) {
                 const x0 = Math.floor(view.camera.x * scale / EDGE), y0 = Math.floor(view.camera.y * scale / EDGE);
                 const x1 = Math.ceil((view.camera.x + view.viewport.width / view.camera.z) * scale / EDGE);
@@ -386,7 +379,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                 if (![x0, y0, x1, y1].every(Number.isSafeInteger)) throw new RangeError('Invalid board tile projection');
                 auditCount(surface, 'plan-start');
                 staged = { prepared, sourceFrame, token: { ...budget.token }, device, projection: projection(view), scale, sharp: prepared.sharp !== false,
-                    x0, y0, x1, y1, window: 0, item: 0, x: x0, y: y0, out: [], boundsJob: null, tileBounds: null, itemKey: '', analyticReady: analytic.ready(), inkReady: inkReadyNow(),
+                    x0, y0, x1, y1, window: 0, item: 0, x: x0, y: y0, out: [], boundsJob: null, tileBounds: null, itemKey: '', analyticReady: analytic.ready(),
                     parts: null, part: null, partIndex: 0, hasMultiply: false, cpuLeases: [], cpuUsed: 0,
                     groups: [], scanWindow: 0, scanIndex: 0, scanned: false, groupIndex: 0, waitingBatch: false };
             }
@@ -478,10 +471,11 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                         const paint = analyticInkPaint(item, view);
                         if (paint) { out.tiles.push({ item: original, x: 0, y: 0, analytic: paint }); p.cpuUsed += 512; p.part = null; continue; }
                     }
-                    if (p.inkReady && item.kind === 'ink') {
+                    if (options.inkCoverage === true && !streaming && item.kind === 'ink') {
                         if (!ensurePlanCapacity(p)) return;
-                        const admission = inkUnion.admit(item, view, budget);
-                        if (admission.status === 'ready') { out.tiles.push({ item: original, x: 0, y: 0, ink: admission.value }); auditCount(`${surface}-${win.band}`, 'ink-coverage'); p.cpuUsed += 512; p.part = null; continue; }
+                        const asPath = inkPathItem(item, view);
+                        const admission = asPath ? admitPathItem(asPath, view, pathCoverage, budget) : { status: 'unsupported' as const };
+                        if (admission.status === 'ready') { out.tiles.push({ item: original, x: 0, y: 0, path: admission.value }); auditCount(`${surface}-${win.band}`, 'ink-coverage'); p.cpuUsed += 512; p.part = null; continue; }
                         if (admission.status === 'empty') { p.part = null; continue; }
                         if (admission.status === 'denied') { denied = true; awaitCapacity(); return; }
                         auditCount(`${surface}-${win.band}`, 'fallback:ink-raster');
@@ -574,7 +568,6 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                     if (omitNodes?.has(tile.item.nodeId)) continue;
                     if (tile.analytic) throw new Error('Unbatched analytic ink command');
                     if (tile.path) { drawPathItem(pass, tile.path, pathCoverage); continue; }
-                    if (tile.ink) { inkUnion.draw(pass, tile.ink); continue; }
                     if (tile.worldRect) {
                         const rect = tile.worldRect, scale = view.camera.z * view.viewport.dpr;
                         const x = (rect.x - view.camera.x) * scale, y = (rect.y - view.camera.y) * scale;
@@ -606,7 +599,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                 }
             }
         },
-        release(_reason: GpuReleaseReason): void { reset(); analytic.release(); pathCoverage.release(); inkUnion.release(); denied = false; currentToken = null; lastFrame = -1; },
+        release(_reason: GpuReleaseReason): void { reset(); analytic.release(); pathCoverage.release(); denied = false; currentToken = null; lastFrame = -1; },
         needsFrame(): boolean {
             if (disposed || denied) return false;
             if (staged?.waitingBatch) return analytic.needsFrame();
@@ -614,7 +607,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         },
         memory(): { gpuBytes: number; cpuBytes: number } {
             const batches = analytic.memory();
-            return { gpuBytes: tileBytes + batches.gpuBytes + pathCoverage.memory().gpuBytes + inkUnion.memory().gpuBytes,
+            return { gpuBytes: tileBytes + batches.gpuBytes + pathCoverage.memory().gpuBytes,
                 cpuBytes: scratch + batches.cpuBytes + ((staged?.cpuLeases.length ?? 0) + (ready?.cpuLeases.length ?? 0)) * 65_536 };
         },
         cpuWorkingSet(): { mandatoryBytes: number; prefetchBytes: number } {
@@ -623,6 +616,6 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             return { mandatoryBytes: held + CPU_BYTES + analytic.cpuWorkingSet(nextBatch).mandatoryBytes
                 + (staged && staged.cpuUsed + 512 > staged.cpuLeases.length * 65_536 ? 65_536 : 0), prefetchBytes: 0 };
         },
-        dispose(): void { if (!disposed) { disposed = true; reset(); analytic.release(); pathCoverage.dispose(); inkUnion.dispose(); } },
+        dispose(): void { if (!disposed) { disposed = true; reset(); analytic.release(); pathCoverage.dispose(); } },
     };
 }

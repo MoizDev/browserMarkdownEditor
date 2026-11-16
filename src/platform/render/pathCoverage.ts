@@ -1,7 +1,7 @@
 import { auditCount } from './renderAudit';
 import type { Affine, Rgba } from '../types';
 import type { LayerHost } from './compositor.types';
-import type { BufferHandle, ClipHandle, CoverageOutput, CoverageTarget, GfxDevice, GpuPass, PipelineHandle, RectI, Samples, ShaderModule, StencilOp, StencilState, TextureHandle } from './gfx/api';
+import type { BufferHandle, ClipHandle, CoverageOutput, CoverageTarget, GfxDevice, GpuPass, PipelineHandle, RectI, Samples, ShaderModule, StencilOp, StencilState } from './gfx/api';
 import { coverageTargetBytes } from './gfx/api';
 import { ArenaError } from './resourceArena';
 import type { FrameBudget } from './types';
@@ -338,43 +338,6 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
                 colour: Object.freeze([...colour]) as unknown as readonly [number, number, number, number], gpuBytes: gpu });
             live.set(prepared, gpu); gpuBytes += gpu;
             return { status: 'ready', value: prepared };
-        },
-        /** Admits the shared scratch for a caller's own coverage draws over `bounds` (device pixels), drawn with `compose`.
-         * The scratch is 4× multisampled with stencil, cleared per band; a caller's pipeline is created for 4 samples. */
-        admitScratch(bounds: RectI, budget: FrameBudget): 'ready' | 'denied' | 'unsupported' {
-            if (disposed || failed || unsupported) return 'unsupported';
-            warm();
-            if (!isReady()) return pending || !device ? 'denied' : 'unsupported';
-            const owner = device!;
-            if (owner.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration) return 'denied';
-            const fits = ensureScratch(owner, bounds.width, bounds.height);
-            return fits === 'unsupported' ? 'unsupported' : fits ? 'ready' : 'denied';
-        },
-        /** Draws `encode` once per band of `bounds` into the shared scratch, then composites each band with `output`.
-         * `encode` must scissor its draws to the band it is given. */
-        compose(pass: GpuPass, bounds: RectI, output: CoverageOutput, encode: (pass: GpuPass, band: RectI) => void): void {
-            if (output.kind !== 'composite') throw new Error('compose composites');
-            const target = scratch?.target;
-            if (disposed || !target || scratch?.device !== host.device() || target.width < bounds.width) throw new Error('Stale path coverage');
-            for (let y = bounds.y; y < bounds.y + bounds.height; y += target.height) {
-                const band: RectI = { x: bounds.x, y, width: bounds.width, height: Math.min(target.height, bounds.y + bounds.height - y) };
-                const token = pass.beginCoverage(target, band);
-                try { encode(pass, band); } finally { pass.endCoverage(token, output); }
-            }
-        },
-        /** Like `compose`, but each band's scope ends as a mask (no composite) and `resolve` then draws from its texture
-         * into the caller's pass: for coverage that is not premultiplied colour (per-channel flags). Rows are stored
-         * bottom-up: the band's API row r is texel row `textureHeight - 1 - r`. */
-        composeResolved(pass: GpuPass, bounds: RectI, encode: (pass: GpuPass, band: RectI) => void,
-            resolve: (pass: GpuPass, band: RectI, texture: TextureHandle, textureHeight: number) => void): void {
-            const target = scratch?.target;
-            if (disposed || !target || scratch?.device !== host.device() || target.width < bounds.width) throw new Error('Stale path coverage');
-            for (let y = bounds.y; y < bounds.y + bounds.height; y += target.height) {
-                const band: RectI = { x: bounds.x, y, width: bounds.width, height: Math.min(target.height, bounds.y + bounds.height - y) };
-                const token = pass.beginCoverage(target, band);
-                try { encode(pass, band); } finally { pass.endCoverage(token, { kind: 'mask' }); }
-                resolve(pass, band, target.texture, target.height);
-            }
         },
         /** Composite output: borrows the admitted target inside the caller's pass. */
         draw(pass: GpuPass, prepared: PreparedPathCoverage): void {

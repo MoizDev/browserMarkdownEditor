@@ -55,6 +55,14 @@ export function createNativeViewPlatform(options: {
         writeOverlays: frame => ports.writeOverlays(frame),
         onPresentation: presentation => ports.onPresentation(presentation),
         onError: error => ports.onError(error),
-        onNotice: message => ports.onNotice(message),
+        onNotice: message => ports.onNotice(noticeText(message)),
     };
+}
+
+/** The platform reports codes; the bar shows sentences (the codes reached the owner as raw words). */
+function noticeText(code: string): string {
+    return code === 'memory-pressure' ? 'Rendering quality was reduced to fit memory.'
+        : code === 'cpu-floor-denied' ? 'Rendering is limited by available memory.'
+            : code === 'cpu-pinned' ? 'Rendering is using a compatible mode.'
+                : 'GPU rendering is unavailable; a compatible mode is in use.';
 }

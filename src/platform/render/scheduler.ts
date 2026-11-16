@@ -560,7 +560,8 @@ export class FrameScheduler {
                     const previousGeometry = entry.pane.metrics.current?.tags.geometryGeneration;
                     const result = entry.pane.commitMetrics(frameId);
                     if (result?.kind === 'ready') {
-                        entry.pane.camera.setViewport(result.metrics.viewport, anchor, result.tags.geometryGeneration !== previousGeometry);
+                        entry.pane.camera.setViewport(result.metrics.viewport, anchor, result.tags.geometryGeneration !== previousGeometry,
+                            result.metrics.nominalDpr);
                     }
                     const token = this.token(entry);
                     const metrics = entry.pane.metrics.current;

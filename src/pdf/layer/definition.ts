@@ -27,7 +27,7 @@ export function pdfPageLayerDefinition(options: {
         revision: layer => asTileLayer(layer).revision(),
         cpuWorkingSet: (layer, viewport) => asTileLayer(layer).cpuWorkingSet(viewport),
         cpuEvict: (layer, bytes) => asTileLayer(layer).cpuEvict(bytes),
-        critical: () => true,
+        critical: (layer, view) => asTileLayer(layer).critical(view),
         coverage: (layer, frame, backend) => asTileLayer(layer).coverage(frame.view, backend !== 'canvas2d'),
     };
     return { definition, current: () => current };

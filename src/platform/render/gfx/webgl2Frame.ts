@@ -528,7 +528,9 @@ class DevicePass implements GpuPass {
                     (!Number.isSafeInteger(last * (attribute.stride || size)) ||
                     last * (attribute.stride || size) > vertex.slice.bytes - attribute.offset - size))) throw new ArenaError('invalid-input');
             }
-            if (desc.blend === 'mask-max') this.#scope.coverage = true;
+            // MAX into an r8 target is a coverage mask, and its parent then composites it as one. MAX into rgba8 is a colour
+            // union (analytic ink pieces in a coverage scratch); marking it a mask made the parent MAX it over white: no ink.
+            if (desc.blend === 'mask-max' && this.#scope.target.format === 'r8') this.#scope.coverage = true;
             const scissor = intersect(intersect(rect(cmd.scissor), this.#clip), this.#scope.bounds);
             if (this.#scope.empty || !cmd.count || !cmd.instances || !scissor.width || !scissor.height) return;
             const command: EncodedDraw = { pipeline, uniforms, textures, vertices, index,

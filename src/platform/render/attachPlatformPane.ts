@@ -104,8 +104,8 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         queueMicrotask(() => {
             trimQueued = false;
             if (disposed || !visible) return;
-            // Rebalance rebuildable caches without revoking another pane's native context.
-            lifecycle?.releaseGpu('pressure');
+            // A visible pane's device working set is trimmed by its owner; releasing every layer for it dropped the plans on
+            // screen (a notebook's paper and board) on each eviction, and nothing presented until they were rebuilt.
             lifecycle?.invalidate('budget');
         });
     };

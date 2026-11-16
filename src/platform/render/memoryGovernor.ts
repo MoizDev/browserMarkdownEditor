@@ -522,7 +522,9 @@ export class MemoryGovernor {
             // A pane grant refuses only its own residency, so that is reclaimed first; the pool's idle residency
             // (redundant levels, idle geometry) goes only when the reclaim did not make room.
             this.reclaimPane(cache, bytes);
-            if (!allowed()) this.trimPool(pool, Math.max(0, Math.min(this.target[pool] - bytes,
+            // Only a pool that cannot hold the request is trimmed. A pane at its own grant with the pool at 81% evicted the
+            // paper, the board and the device working set of that same pane, and the stroke froze for a second.
+            if (!allowed() && this.charged[pool] + bytes > this.target[pool]) this.trimPool(pool, Math.max(0, Math.min(this.target[pool] - bytes,
                 Math.floor(this.target[pool] * POLICY.memoryTrimTargetRatio))));
             this.trimHiddenMirrors(kind === 'mirror' && cache.activity.hiddenAt !== null ? bytes : 0);
             if (!allowed()) {
@@ -704,11 +706,15 @@ export class MemoryGovernor {
                 b.bytes - a.bytes || stableId(a.registration.id, b.registration.id));
         this.trimming = true;
         try {
+            // Owners release asynchronously, so charged does not fall inside this loop: count each asked cache as freed, or
+            // one trim asks every candidate (measured: four caches, 45 MB, evicted for a 0.47 MB excess).
+            let excess = this.charged[pool] - target;
             for (const cache of candidates) {
-                const excess = this.charged[pool] - target;
                 if (excess <= 0) break;
+                const before = cache.bytes;
                 // The owner protects its last visible coverage provider and capture/live-input pins.
                 cache.registration.evict(excess);
+                excess -= Math.max(before - cache.bytes, Math.min(before, excess));
             }
         } finally { this.trimming = false; this.plan(); }
     }

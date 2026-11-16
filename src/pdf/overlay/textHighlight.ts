@@ -1,7 +1,7 @@
 import type { Rect, Rgba, ViewState } from '../../platform/types';
 import type { FrameBudget, GpuReleaseReason, Layer } from '../../platform/render/types';
 import type { LayerHost } from '../../platform/render/compositor.types';
-import type { GfxDevice, GpuPass, TextureHandle } from '../../platform/render/gfx/api';
+import type { ByteLease, GfxDevice, GpuPass, TextureHandle } from '../../platform/render/gfx/api';
 
 export interface PdfHighlightRects {
     /** World-space rectangles, already clipped to their physical pages. */
@@ -33,10 +33,17 @@ export class PdfTextHighlightLayer implements Layer {
     private texture: { device: GfxDevice; handle: TextureHandle } | null = null;
     private disposed = false;
     private pending = false;
+    private lease: ByteLease | null = null;
 
     constructor(private readonly host: LayerHost, private palette: PdfHighlightPalette) {}
 
     setRects(rects: PdfHighlightRects): void {
+        // Reported bytes need a covering reservation: an unreserved report made every governor readout throw
+        // 'unaccounted' once find or a selection had highlights. A refused reservation still shows the highlights,
+        // which are a few rectangles, but reports nothing it does not hold.
+        const bytes = (rects.find.length + rects.current.length + rects.selection.length) * 32;
+        if (this.lease) { this.host.allocator.cpu.release(this.lease); this.lease = null; }
+        if (bytes) this.lease = this.host.allocator.cpu.reserve(bytes);
         this.rects = rects;
         this.host.invalidate('pdf-text-highlights');
     }
@@ -101,13 +108,13 @@ export class PdfTextHighlightLayer implements Layer {
         this.texture = null; this.pending = false;
     }
     memory(): { gpuBytes: number; cpuBytes: number } {
-        return { gpuBytes: this.texture ? 12 : 0,
-            cpuBytes: (this.rects.find.length + this.rects.current.length + this.rects.selection.length) * 32 };
+        return { gpuBytes: this.texture ? 12 : 0, cpuBytes: this.lease?.bytes ?? 0 };
     }
     needsFrame(): boolean { return this.pending; }
     dispose(): void {
         if (this.disposed) return;
         this.disposed = true; this.releaseGpu('pressure');
         this.rects = { find: [], current: [], selection: [] };
+        if (this.lease) { this.host.allocator.cpu.release(this.lease); this.lease = null; }
     }
 }

@@ -474,7 +474,7 @@ export function createNativeViewLease(options: {
                 viewer.presentationAccepted(presentation && certifyPresentation(presentation) ? presentation : null);
                 if (presentation && certifyPresentation(presentation)) backdrop?.notePresentation?.();
                 if (presentation && certifyPresentation(presentation)) recordBoardPresentation(performance.now(), presentation.backend);
-            }, onError: options.onError, onNotice: options.onNotice } });
+            }, onError: options.onError, onNotice: code => options.onNotice(noticeText(code)) } });
     // The platform receives the same controller as pointer input, including its
     // actual constraints and measured viewport; motion never uses a second pose.
     const platform = { ...services, camera, readCamera: () => { refreshViewport(); return camera.camera; } };
@@ -675,4 +675,12 @@ function createNativeLiveView(source: NativeLiveSource): NativeLiveView {
             return captureAt({ x: box.x, y: box.y, width: box.width, height: box.height }, maxSide, job);
         },
     };
+}
+
+/** The platform reports codes; the bar shows sentences (the codes reached the owner as raw words). */
+function noticeText(code: string): string {
+    return code === 'memory-pressure' ? 'Rendering quality was reduced to fit memory.'
+        : code === 'cpu-floor-denied' ? 'Rendering is limited by available memory.'
+            : code === 'cpu-pinned' ? 'Rendering is using a compatible mode.'
+                : 'GPU rendering is unavailable; a compatible mode is in use.';
 }

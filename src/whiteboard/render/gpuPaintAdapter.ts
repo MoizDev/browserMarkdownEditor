@@ -20,6 +20,8 @@ import { auditCount } from '../../platform/render/renderAudit';
 
 const EDGE = TILE_EDGE, GUTTER = TILE_GUTTER, SIZE = TILE_SIZE;
 const GPU_BYTES = SIZE * SIZE * 4, CPU_BYTES = GPU_BYTES * 2;
+/** Unreferenced tiles kept for reuse by a later plan: 256 tiles, 64 MB of texture. Only the least recently used go. */
+const IDLE_TILE_LIMIT = 256;
 interface CachedTile { texture: TextureHandle; device: GfxDevice; refs: number; key: string; bytes: number }
 type Tile = { item: PaintItem; x: number; y: number; cached: CachedTile; multiply: boolean; worldRect?: Readonly<Rect>; analytic?: never; path?: never }
     | { item: PaintItem; x: number; y: number; analytic: AnalyticInkPaint; cached?: never; path?: never }
@@ -198,7 +200,28 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
     let staged: Plan | null = null, ready: Plan | null = null, disposed = false, denied = false;
     let currentToken: FrameToken | null = null, lastFrame = -1, scratch = 0;
     let movingScale = 0, tileBytes = 0;
+    // Tiles belong to the world, not to the plan that drew them. A pan, zoom or drag changes the view, not the content, so a
+    // tile is reused by its key until it is evicted. A tile a ready or staged plan references is never evicted; an
+    // unreferenced one stays in an LRU (a Map in insertion order, re-inserted on each hit) bounded to IDLE_TILE_LIMIT.
     const cache = new Map<string, CachedTile>();
+    let idleTiles = 0;
+    const hit = (key: string, entry: CachedTile): CachedTile => {
+        cache.delete(key); cache.set(key, entry);
+        if (entry.refs++ === 0) idleTiles--;
+        return entry;
+    };
+    const releaseTile = (entry: CachedTile): void => { if (--entry.refs === 0) idleTiles++; };
+    const trimIdle = (limit = IDLE_TILE_LIMIT): void => {
+        if (idleTiles <= limit) return;
+        for (const entry of cache.values()) {
+            if (entry.refs !== 0) continue;
+            cache.delete(entry.key); tileBytes -= entry.bytes; idleTiles--;
+            entry.device.destroy(entry.texture);
+            if (idleTiles <= limit) return;
+        }
+    };
+    // The scale in a key is rounded: a zoom that returns to 1 arrives as 0.9999999999999996 and must reuse the same tiles.
+    const scaleKey = (scale: number): number => Math.round(scale * 1e9);
     const analytic = createAnalyticInkBatch(host, () => { /* optional pipeline failure keeps canonical coverage tiles */ });
     const pathCoverage = createPathCoverageKit(host, report);
     const retirePathItem = (item: PreparedPathItem) => {
@@ -217,8 +240,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             for (const tile of out.tiles) {
                 if (tile.analytic) continue;
                 if (tile.path) { retirePathItem(tile.path); continue; }
-                const entry = tile.cached;
-                if (--entry.refs === 0) { cache.delete(entry.key); tileBytes -= entry.bytes; entry.device.destroy(entry.texture); }
+                releaseTile(tile.cached);
             }
             out.tiles.length = 0; out.groupAt.clear();
         }
@@ -293,8 +315,12 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                     height: Math.min(Math.ceil(view.viewport.height * view.viewport.dpr), Math.ceil(EDGE * demand / scale) + 2) }, multiply: true });
             // A denial suppresses polling via needsFrame(), but a real wake may bring a new grant.
             denied = false;
-            if (ready && !validDevice(ready)) { drop(ready); ready = null; denied = false; }
-            if (staged && (!valid(staged, view, scale) || (!streaming && staged.prepared !== prepared) || staged.analyticReady !== analytic.ready())) { drop(staged); staged = null; denied = false; }
+            if (ready && !validDevice(ready)) { auditCount(surface, 'drop:ready-device'); drop(ready); ready = null; denied = false; }
+            if (staged && (!valid(staged, view, scale) || (!streaming && staged.prepared !== prepared) || staged.analyticReady !== analytic.ready())) {
+                auditCount(surface, !validDevice(staged) ? 'drop:staged-device' : projection(view) !== staged.projection ? 'drop:staged-projection'
+                    : staged.scale !== scale ? 'drop:staged-scale' : staged.prepared !== prepared ? 'drop:staged-prepared' : 'drop:staged-analytic');
+                drop(staged); staged = null; denied = false;
+            }
             if ((ready?.prepared === prepared && valid(ready, view, scale) && ready.analyticReady === analytic.ready()) || denied) return;
             if (!staged) {
                 const x0 = Math.floor(view.camera.x * scale / EDGE), y0 = Math.floor(view.camera.y * scale / EDGE);
@@ -335,7 +361,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                             p.groupIndex++;
                         }
                         if (p.groupIndex !== p.groups.length) return;
-                        drop(ready); ready = p; staged = null; return;
+                        drop(ready); ready = p; staged = null; trimIdle(); return;
                     }
                     if (p.item >= win.items.length) { p.window++; p.item = 0; continue; }
                     if (p.out.length === p.window) p.out.push({ band: win.band, tiles: [], groupAt: new Map() });
@@ -358,7 +384,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                                 p.token.bytesGeneration, p.token.session, p.token.viewLease, p.token.deviceGeneration,
                                 EDGE / item.rect.width, identity(image), p.partIndex, contentKey(item)]);
                             let cached = cache.get(key);
-                            if (cached) { cached.refs++; auditCount(`${surface}-${win.band}`, 'cache-hit'); }
+                            if (cached) { cached = hit(key, cached); auditCount(`${surface}-${win.band}`, 'cache-hit'); }
                             else {
                                 auditCount(`${surface}-${win.band}`, 'tile-upload', 1, { bytes: image.width * image.height * 4 });
                                 const bytes = image.width * image.height * 4;
@@ -408,12 +434,12 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                         p.tileBounds = { x0, y0, x1, y1 }; p.x = x0; p.y = y0; p.itemKey = `${p.partIndex}:${contentKey(item)}`;
                     }
                     const tileKey = JSON.stringify([p.token.vaultEpoch, p.token.documentId, p.token.bytesGeneration, p.token.session,
-                        p.token.viewLease, p.token.deviceGeneration, p.scale, p.x, p.y, streaming && item.kind === 'ink' ? streamingInkKey(item, p.scale, p.x, p.y) : p.itemKey]);
+                        p.token.viewLease, p.token.deviceGeneration, scaleKey(p.scale), p.x, p.y, streaming && item.kind === 'ink' ? streamingInkKey(item, p.scale, p.x, p.y) : p.itemKey]);
                     const existing = cache.get(tileKey);
                     if (!ensurePlanCapacity(p)) return;
                     if (existing) {
                         auditCount(`${surface}-${win.band}`, 'cache-hit');
-                        existing.refs++; out.tiles.push({ item: original, x: p.x, y: p.y, cached: existing, multiply }); p.cpuUsed += 512;
+                        hit(tileKey, existing); out.tiles.push({ item: original, x: p.x, y: p.y, cached: existing, multiply }); p.cpuUsed += 512;
                         const bounds = p.tileBounds;
                         if (++p.x >= bounds.x1) { p.x = bounds.x0; if (++p.y >= bounds.y1) { p.part = null; p.tileBounds = null; } }
                         // A cache hit costs no upload, so it does not spend the frame: the next tile is taken if the budget allows.
@@ -514,7 +540,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                 }
             }
         },
-        release(_reason: GpuReleaseReason): void { reset(); analytic.release(); pathCoverage.release(); denied = false; currentToken = null; lastFrame = -1; },
+        release(_reason: GpuReleaseReason): void { reset(); trimIdle(0); analytic.release(); pathCoverage.release(); denied = false; currentToken = null; lastFrame = -1; },
         needsFrame(): boolean {
             if (disposed || denied) return false;
             if (staged?.waitingBatch) return analytic.needsFrame();
@@ -531,6 +557,6 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             return { mandatoryBytes: held + CPU_BYTES + analytic.cpuWorkingSet(nextBatch).mandatoryBytes
                 + (staged && staged.cpuUsed + 512 > staged.cpuLeases.length * 65_536 ? 65_536 : 0), prefetchBytes: 0 };
         },
-        dispose(): void { if (!disposed) { disposed = true; reset(); analytic.release(); pathCoverage.dispose(); } },
+        dispose(): void { if (!disposed) { disposed = true; reset(); trimIdle(0); analytic.release(); pathCoverage.dispose(); } },
     };
 }

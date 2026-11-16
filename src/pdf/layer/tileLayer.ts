@@ -317,6 +317,30 @@ export class PdfTileLayer implements Layer {
         if (reason === 'hidden') this.hide();
     }
 
+    /**
+     * The governor's CPU reclaim. Without it a full pool refused every new tile for good, since nothing freed the old
+     * ones (measured: a 40% zoom-out of a long annotated PDF held 28.1 MB of bitmaps for an 11.9 MB view, refused 780
+     * tiles and froze on the pre-zoom picture). Off-view tiles go first, then other scales, then the least recently
+     * used; the current plan's visible tiles are kept, since they are what the next frame draws.
+     */
+    cpuEvict(bytes: number): void {
+        const viewport = this.latestDemand?.viewport;
+        const exact = this.latestDemand && planPdfTileDemand({ ...this.latestDemand, moving: false, covered: () => false })
+            .requests.find(request => request.level === 'exact')?.scale.scale;
+        const rank = (entry: Entry): number => !viewport || !intersects(rect(entry.request), viewport) ? 0
+            : entry.request.scale.scale !== exact ? 1 : 2;
+        const candidates = [...this.entries].filter(([key, entry]) => entry.bitmap &&
+            !(this.desired.has(key) && viewport && intersects(rect(entry.request), viewport)))
+            .sort((a, b) => rank(a[1]) - rank(b[1]) || a[1].used - b[1].used);
+        let freed = 0;
+        for (const [key, entry] of candidates) {
+            if (freed >= bytes) break;
+            freed += entry.lease.bytes;
+            this.remove(key, entry);
+        }
+        if (freed) this.host.invalidate('pdf-tile-evicted');
+    }
+
     /** Prospective tile and cropped-mirror storage, before requests allocate (design §6.3:640–646). */
     cpuWorkingSet(physical: Readonly<{ width: number; height: number }>): { mandatoryBytes: number; prefetchBytes: number } {
         if (!Number.isFinite(physical.width) || !Number.isFinite(physical.height) || physical.width <= 0 || physical.height <= 0) {

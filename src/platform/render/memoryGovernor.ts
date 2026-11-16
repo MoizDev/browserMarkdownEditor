@@ -470,6 +470,17 @@ export class MemoryGovernor {
         return { live, retiring, reservedBytes: cache.bytes, leaseCount: cache.leaseCount, closed: cache.closed };
     }
 
+    /** Render audit only: every cache's charge with its pane, and each pane's grant. */
+    auditCaches(): { caches: { id: string; pane: string | null; pool: MemoryPool; kind: MemoryKind; bytes: number; hidden: boolean }[];
+        grants: { pane: string; cpuBytes: number; gpuCacheBytes: number }[] } {
+        return {
+            caches: [...this.caches.values()].filter(cache => cache.bytes > 0).map(cache => ({ id: cache.registration.id,
+                pane: cache.registration.paneId ?? null, pool: cache.registration.pool, kind: cache.registration.kind,
+                bytes: cache.bytes, hidden: cache.activity.hiddenAt !== null })),
+            grants: [...this.grants].map(([pane, grant]) => ({ pane, cpuBytes: grant.cpuBytes, gpuCacheBytes: grant.gpuCacheBytes })),
+        };
+    }
+
     private poolReadout(pool: MemoryPool): PoolMemoryReadout {
         let workingBytes = 0;
         let retiringBytes = 0;

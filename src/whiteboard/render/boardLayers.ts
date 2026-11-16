@@ -13,6 +13,7 @@ import { paintItemsOf } from './paintWindows';
 import type { PaintImageProvider } from './resources';
 import { createCanvasPaintAdapter, type CanvasPaintAdapter, type PreparedRetain } from './reference/canvasPaintAdapter';
 import { createGpuPaintAdapter } from './gpuPaintAdapter';
+import { auditCount } from '../../platform/render/renderAudit';
 import { createDensePaintAdapter } from './densePlan';
 import { MEMORY_RETRY_MIN_MS, MemoryRetryGate } from './memoryRetryGate';
 import { DensityController, type DensityMode } from './density';
@@ -68,6 +69,8 @@ export interface BoardLayersOptions {
     readonly onDensityMode?: (mode: DensityMode) => void;
     /** A live item the current dense frame does not hold: the owner requests a frame that does. */
     readonly requestFrame?: () => void;
+    /** The render audit's surface name for these layers (`<surface>-underlay`, `<surface>-content`); a preview names its own. */
+    readonly auditSurface?: string;
     /** An overlay whose absence is not a view failure (a preview). Until its current frame is ready it reports complete
      * and draws nothing, and it never draws a superseded frame, so it cannot hold back the pane's other layers. */
     readonly optional?: boolean;
@@ -418,7 +421,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 needsFrame: () => current().needsFrame(), memory: () => current().memory(),
                 dispose: () => { direct!.dispose(); dense!.dispose(); },
             };
-            gpu = createGpuPaintAdapter(adapter, host, report);
+            gpu = createGpuPaintAdapter(adapter, host, report, { audit: options.auditSurface ?? 'board' });
         }
         return adapter;
     };
@@ -580,7 +583,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     const drawnOffset = (frame: PaintSource, dense: boolean): Readonly<{ x: number; y: number }> | null | undefined => {
         const offset = options.drawOffset?.(frame);
         if (!offset || (offset.x === 0 && offset.y === 0)) return null;
-        if (dense) { options.onOffsetUnsupported?.(); return undefined; }
+        if (dense) { auditCount(options.auditSurface ?? 'board', 'fallback:offset-rebuild'); options.onOffsetUnsupported?.(); return undefined; }
         return offset;
     };
     const coverageOf = (layer: Layer, frame: ScheduledFrame, backend: CompositorBackend): LayerCoverage => {
@@ -668,7 +671,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                         const oldDense = dense!; oldDense.dispose(); retiringDense.add(oldDense);
                         dense = createDensePaintAdapter({ frames: options.frames, images: options.images,
                             invalidate: () => { collectRetired(); activeHost()?.invalidate('board-resource'); } }, allocatorHost, report, memoryGate);
-                        gpu?.dispose(); gpu = createGpuPaintAdapter(adapter!, allocatorHost, report);
+                        gpu?.dispose(); gpu = createGpuPaintAdapter(adapter!, allocatorHost, report, { audit: options.auditSurface ?? 'board' });
                     }
                 },
             };

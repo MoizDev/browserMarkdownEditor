@@ -17,6 +17,7 @@ import { inkCoverageChunks, type PaintInkItem, type PaintSource, type PaintItem,
 import type { CanvasPaintAdapter, PreparedPaint2d } from './reference/canvasPaintAdapter';
 import { paintItem2d } from './reference/paint2d';
 import { auditCount } from '../../platform/render/renderAudit';
+import { InkOutlineJob } from '../ink/outline';
 
 const EDGE = TILE_EDGE, GUTTER = TILE_GUTTER, SIZE = TILE_SIZE;
 const GPU_BYTES = SIZE * SIZE * 4, CPU_BYTES = GPU_BYTES * 2;
@@ -140,6 +141,39 @@ function deviceClipRect(clip: PaintPathItem['clips'][number], view: ViewState): 
     return { x: rx0, y: ry0, width: Math.round(x1) - rx0, height: Math.round(y1) - ry0 };
 }
 
+/** General ink drawn as what the 2D reference fills: its outline commands under the nonzero rule (coverage2d's
+ * InkCoverageUnionPath2dJob), so GPU and canvas2d agree on geometry. Ink the analytic batch cannot take (several chunks,
+ * clips, multiply, many primitives) used to be rastered on the CPU into tiles and uploaded. Outlines are cached per item
+ * and device scale; null when the outline exceeds its command budget (the raster route then draws it, counted). */
+const INK_OUTLINE_MAX_COMMANDS = 262144;
+const inkOutlines = new WeakMap<PaintInkItem, { scale: number; item: PaintPathItem | null }>();
+/** Ink outlines emit every subpath with positive orientation (outline.ts), so their nonzero fill IS the union of the
+ * subpaths: the kit's union rule draws it with any edge count, where nonzero is capped by 8-bit winding at 255 edges
+ * (measured: every multi-capsule stroke refused, 17-35 ink rasters per gesture). */
+const inkDerived = new WeakSet<PaintPathItem>();
+export function inkPathItem(item: PaintInkItem, view: ViewState): PaintPathItem | null {
+    const [a, b, c, d] = item.localToWorld;
+    const scale = view.camera.z * view.viewport.dpr * Math.hypot(a, b, c, d);
+    if (!(scale > 0) || !Number.isFinite(scale)) return null;
+    const cached = inkOutlines.get(item);
+    if (cached && cached.scale === scale) return cached.item;
+    const commands: PathCommand[] = [];
+    let result: PaintPathItem | null = null;
+    try {
+        for (const chunk of inkCoverageChunks(item.coverage)) {
+            const job = new InkOutlineJob(chunk, scale, command => { commands.push(command); }, INK_OUTLINE_MAX_COMMANDS);
+            let state: 'pending' | 'complete' | 'cancelled' = 'pending';
+            while ((state = job.step(4096)) === 'pending') { /* bounded by the command budget */ }
+            if (state !== 'complete') throw new RangeError('Ink outline cancelled');
+        }
+        const { coverage: _coverage, material, kind: _kind, ...base } = item;
+        result = { ...base, kind: 'path', d: commands, fillRule: 'nonzero', material: { fill: material.color, blend: material.blend } };
+        inkDerived.add(result);
+    } catch { result = null; }
+    inkOutlines.set(item, { scale, item: result });
+    return result;
+}
+
 type PathAdmission = { status: 'ready'; value: PreparedPathItem } | { status: 'empty' | 'denied' | 'unsupported' };
 
 /** Admits one path item's clip masks, fill and stroke, all or nothing: a later refusal retires the
@@ -184,8 +218,10 @@ function admitPathItem(item: PaintPathItem, view: ViewState, kit: ReturnType<typ
         if (!frame) return fail('unsupported');
         const shapes = pathFillTriangles(item.d, { tolerance: PATH_FLATTEN_DEVICE_PX / (frame.scale * frame.norm), origin: [origin.x, origin.y] });
         if (!shapes) return fail('unsupported');
-        const outcome = place(kit.admit({ shapes: { positive: shapes.positive, negative: shapes.negative, edges: shapes.edges, bounds: shapes.bounds },
-            rule: item.fillRule, affine: frame.affine, viewport, colour: item.material.fill, output: { kind: 'composite', blend } }, budget));
+        const union = inkDerived.has(item);
+        const positive = union && shapes.negative.length ? Float64Array.of(...shapes.positive, ...shapes.negative) : shapes.positive;
+        const outcome = place(kit.admit({ shapes: { positive, negative: union ? new Float64Array(0) : shapes.negative, edges: shapes.edges, bounds: shapes.bounds },
+            rule: union ? 'union' : item.fillRule, affine: frame.affine, viewport, colour: item.material.fill, output: { kind: 'composite', blend } }, budget));
         if (outcome === 'ok') fill = acquired[acquired.length - 1];
         else if (outcome !== 'empty') return fail(outcome as 'denied' | 'unsupported');
     }
@@ -223,7 +259,11 @@ function drawPathItem(pass: GpuPass, item: PreparedPathItem, kit: ReturnType<typ
 /** Item-isolated raster tiles preserve ordering and permit exact node omission. The paint is consumed one
  * window at a time: each window's tile commands are built, scanned and drawn as their own bounded list. */
 export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: LayerHost, report: (error: unknown) => void,
-    options: { readonly streaming?: boolean; readonly audit?: string } = {}) {
+    options: { readonly streaming?: boolean; readonly audit?: string;
+        /** Ink the analytic batch can't take is admitted as its outline through the coverage kit. For a composer that
+         * draws once per cached tile: in the direct per-frame plan it re-triangulated every stroke on each replan
+         * (measured: notebook pan 135 → 67, drawing draw 147 → 97 presents), where the raster tiles it replaced were cached. */
+        readonly inkCoverage?: boolean } = {}) {
     // The render audit's surface name: `<surface>-<band>` (board-underlay, board-preview-content, ...).
     const surface = options.audit ?? 'board';
     // `streaming`: the source changes on every input frame (a live stroke). Each plan completes against the paint
@@ -430,6 +470,15 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                         if (!ensurePlanCapacity(p)) return;
                         const paint = analyticInkPaint(item, view);
                         if (paint) { out.tiles.push({ item: original, x: 0, y: 0, analytic: paint }); p.cpuUsed += 512; p.part = null; continue; }
+                    }
+                    if (options.inkCoverage === true && !streaming && item.kind === 'ink') {
+                        if (!ensurePlanCapacity(p)) return;
+                        const asPath = inkPathItem(item, view);
+                        const admission = asPath ? admitPathItem(asPath, view, pathCoverage, budget) : { status: 'unsupported' as const };
+                        if (admission.status === 'ready') { out.tiles.push({ item: original, x: 0, y: 0, path: admission.value }); auditCount(`${surface}-${win.band}`, 'ink-coverage'); p.cpuUsed += 512; p.part = null; continue; }
+                        if (admission.status === 'empty') { p.part = null; continue; }
+                        if (admission.status === 'denied') { denied = true; awaitCapacity(); return; }
+                        auditCount(`${surface}-${win.band}`, 'fallback:ink-raster');
                     }
                     if (!p.tileBounds) {
                         p.boundsJob ??= new PaintBoundsJob(item);

@@ -243,8 +243,12 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                 // blocks) are still this pane's: left out, a dense board declared 2.7 MB over a 0.5 MB self-count while its
                 // cache held 6-9 MB, the grant sat at the pane floor and every next 1 MB tile was refused after a return.
                 const own = layer.memory().cpuBytes, held = heldBytes(caches.find(cache => cache.layer() === layer)?.cpu);
-                mandatory += Math.max(own, demand?.mandatoryBytes ?? 0) + Math.max(0, held - own);
-                prefetch += demand?.prefetchBytes ?? 0;
+                // The declared working set is the floor; what the layer holds beyond it is need that competes after every
+                // floor, and reclaimable on refusal. Holding counted as floor made a long PDF's stale pages (28 MB held over
+                // an 11.9 MB view) the whole CPU target after a zoom out: the floor was denied and nothing presented again.
+                const floor = demand ? demand.mandatoryBytes : own;
+                mandatory += floor;
+                prefetch += (demand?.prefetchBytes ?? 0) + Math.max(0, Math.max(own, held) - floor);
             }
             const cpuMandatoryBytes = requestedPixels ? Math.max(mandatory, requestedPixels * RENDER_CONSTANTS.decodedRgbaBytesPerPixel) +
                 (requestedPixels + bandPixels) * 4 : 0;

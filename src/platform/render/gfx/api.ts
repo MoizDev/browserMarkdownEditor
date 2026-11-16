@@ -138,7 +138,7 @@ export interface PipelineDesc {
     topology: 'triangles' | 'triangle-strip';
     colorFormat: TextureFormat;
     samples: Samples;
-    blend: 'replace' | 'source-over' | 'mask-max';
+    blend: 'replace' | 'source-over' | 'mask-max' | 'add';
     alphaToCoverage: boolean;
     colorWrite: readonly [boolean, boolean, boolean, boolean];
     stencil: StencilState;

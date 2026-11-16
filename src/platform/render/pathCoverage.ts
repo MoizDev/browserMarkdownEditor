@@ -86,6 +86,13 @@ const UNION_STENCIL: StencilState = { enabled: true, compare: 'always', referenc
 const COVER_STENCIL: StencilState = { enabled: true, compare: 'not-equal', reference: 0, readMask: 255, writeMask: 0,
     front: KEEP_FACE, back: KEEP_FACE };
 const NO_COLOUR_WRITE = [false, false, false, false] as const;
+/** Covers where the stencil is set and clears it there, so the next jittered pass starts from zero. */
+const COVER_RESET_STENCIL: StencilState = { enabled: true, compare: 'not-equal', reference: 0, readMask: 255, writeMask: 255,
+    front: { fail: 'keep', depthFail: 'keep', pass: 'zero' }, back: { fail: 'keep', depthFail: 'keep', pass: 'zero' } };
+/** Union coverage (ink) is drawn four times at these device-pixel offsets, each adding a quarter: with 4× MSAA that is 16
+ * samples a pixel. Where two antialiased ink edges stack (a crossing, a highlighter over ink), 4× MSAA's quarter steps
+ * added up to two steps against canvas2d (max 100-113); the GPU offers no 8× (probed: 2 and 4 only). */
+const UNION_JITTER: readonly (readonly [number, number])[] = [[-0.25, -0.25], [0.25, -0.25], [-0.25, 0.25], [0.25, 0.25]];
 
 const UNIFORM_BYTES = 48;
 const WINDING_SHADER: ShaderModule = {
@@ -134,7 +141,7 @@ void main() { fragmentColour=fillColour; }`,
 
 interface Pipelines {
     readonly increment: PipelineHandle; readonly decrement: PipelineHandle;
-    readonly invert: PipelineHandle; readonly union: PipelineHandle; readonly cover: PipelineHandle;
+    readonly invert: PipelineHandle; readonly union: PipelineHandle; readonly cover: PipelineHandle; readonly coverAdd: PipelineHandle;
 }
 
 /** Platform stencil-coverage executor. Winding or union triangles fill an admitted stencil target,
@@ -224,12 +231,14 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
             owner.createPipeline({ ...base, ...hidden, shader: WINDING_SHADER, stencil: UNION_STENCIL }),
             owner.createPipeline({ ...base, topology: 'triangle-strip', shader: COVER_SHADER, blend: 'source-over',
                 colorWrite: [true, true, true, true], stencil: COVER_STENCIL }),
-        ]).then(([increment, decrement, invert, union, cover]) => {
+            owner.createPipeline({ ...base, topology: 'triangle-strip', shader: COVER_SHADER, blend: 'add',
+                colorWrite: [true, true, true, true], stencil: COVER_RESET_STENCIL }),
+        ]).then(([increment, decrement, invert, union, cover, coverAdd]) => {
             if (disposed || incarnation !== serial || device !== owner) {
-                for (const handle of [increment, decrement, invert, union, cover]) owner.destroy(handle);
+                for (const handle of [increment, decrement, invert, union, cover, coverAdd]) owner.destroy(handle);
                 return;
             }
-            pipelines = { increment, decrement, invert, union, cover };
+            pipelines = { increment, decrement, invert, union, cover, coverAdd };
             pending = false; host.invalidate('path-coverage-ready');
         }, error => {
             if (incarnation !== serial) return;
@@ -278,6 +287,19 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
                 pass.draw({ pipeline, bindings: { uniforms: [{ binding: 0, slice: windingUniforms }], textures: [] },
                     vertices: [{ buffer: prepared.vertices, offset: 0, bytes: total * 8 }], first, count, instances: 1, scissor: bounds });
             };
+            if (prepared.rule === 'union' && output.kind === 'composite') {
+                const quarter = new Float32Array(12);
+                quarter.set([viewport.width, viewport.height, 0, 0, bounds.x, bounds.y, bounds.width, bounds.height, ...colour.map(v => v * 0.25)]);
+                const quarterUniforms = host.uniforms(quarter);
+                for (const [dx, dy] of UNION_JITTER) {
+                    const jittered = new Float32Array(12);
+                    jittered.set([viewport.width, viewport.height, 0, 0, affine[0], affine[1], affine[2], affine[3], affine[4] + dx, affine[5] + dy, 0, 0]);
+                    pass.draw({ pipeline: pipelines.union, bindings: { uniforms: [{ binding: 0, slice: host.uniforms(jittered) }], textures: [] },
+                        vertices: [{ buffer: prepared.vertices, offset: 0, bytes: total * 8 }], first: 0, count: prepared.positiveVertices, instances: 1, scissor: bounds });
+                    pass.draw({ pipeline: pipelines.coverAdd, bindings: { uniforms: [{ binding: 0, slice: quarterUniforms }], textures: [] },
+                        vertices: [], first: 0, count: 4, instances: 1, scissor: bounds });
+                }
+            } else {
             if (prepared.rule === 'evenodd') drawWinding(pipelines.invert, 0, total);
             else if (prepared.rule === 'union') drawWinding(pipelines.union, 0, prepared.positiveVertices);
             else {
@@ -286,6 +308,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
             }
             pass.draw({ pipeline: pipelines.cover, bindings: { uniforms: [{ binding: 0, slice: coverUniforms }], textures: [] },
                 vertices: [], first: 0, count: 4, instances: 1, scissor: bounds });
+            }
         } finally { pass.endCoverage(token, output); }
         }
     };

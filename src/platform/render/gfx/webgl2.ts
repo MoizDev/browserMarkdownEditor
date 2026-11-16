@@ -1414,12 +1414,13 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         this.#textureUnits.add(binding);
     }
 
-    #blend(blend: 'replace' | 'source-over' | 'mask-max'): void {
+    #blend(blend: 'replace' | 'source-over' | 'mask-max' | 'add'): void {
         const gl = this.#usable();
         if (blend === 'replace') gl.disable(gl.BLEND);
         else {
             gl.enable(gl.BLEND);
             gl.blendEquation(blend === 'mask-max' ? gl.MAX : gl.FUNC_ADD);
+            // 'add' sums premultiplied colour (ONE, ONE): jittered coverage passes accumulate into one supersampled result.
             gl.blendFunc(gl.ONE, blend === 'source-over' ? gl.ONE_MINUS_SRC_ALPHA : gl.ONE);
         }
     }
@@ -1628,7 +1629,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             typeof desc.shader.glsl.fragment !== 'string' || !desc.shader.glsl.fragment) throw new ArenaError('invalid-input');
         count(desc.shader.revision);
         if (!['triangles', 'triangle-strip'].includes(desc.topology) || !['rgba8', 'r8'].includes(desc.colorFormat) ||
-            ![1, 4].includes(desc.samples) || !['replace', 'source-over', 'mask-max'].includes(desc.blend) ||
+            ![1, 4].includes(desc.samples) || !['replace', 'source-over', 'mask-max', 'add'].includes(desc.blend) ||
             typeof desc.alphaToCoverage !== 'boolean' ||
             desc.colorWrite.length !== 4 || desc.colorWrite.some(value => typeof value !== 'boolean')) throw new ArenaError('invalid-input');
         const gl = this.#healthy();

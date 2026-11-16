@@ -78,7 +78,7 @@ export interface QuadCommand {
     readonly mask: FrameTexture;
     readonly uniforms: { buffer: FrameBuffer; slice: UniformSlice };
     readonly scissor: RectI;
-    readonly blend: 'source-over' | 'replace' | 'mask-max';
+    readonly blend: 'source-over' | 'replace' | 'mask-max' | 'add';
 }
 export interface FrameBackend {
     readonly signal: AbortSignal;

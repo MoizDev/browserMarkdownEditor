@@ -25,6 +25,7 @@ export async function createNativePdfEditingLease(options: {
     onPresented(): void;
     onError(error: unknown): void;
     onNotice(message: string): void;
+    onNoticeCleared?(message: string): void;
 }): Promise<NativeViewLease> {
     const { host, identity, sourceState, signal } = options;
     signal.throwIfAborted();
@@ -62,7 +63,8 @@ export async function createNativePdfEditingLease(options: {
         const lease = createNativeViewLease({ board: options.board, host, identity, pdfBackdrop: paired,
             ...(options.cameraHandoff ? { cameraHandoff: options.cameraHandoff } : {}), readPdfMedia: (id, mediaSignal) => sourceState.readMedia(id, mediaSignal), editing: options.editing,
             parameters: { ...options.parameters, mode: 'edit' }, limits: options.limits, insets: options.insets,
-            onError: options.onError, onNotice: options.onNotice });
+            onError: options.onError, onNotice: options.onNotice,
+            ...(options.onNoticeCleared ? { onNoticeCleared: options.onNoticeCleared } : {}) });
         transferred = true;
         if (signal.aborted || !current() || !host.canWriteSource(identity)) { lease.dispose(); throw new DOMException('PDF source changed', 'AbortError'); }
         return lease;

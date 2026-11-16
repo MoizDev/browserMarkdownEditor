@@ -139,6 +139,8 @@ export function createNativeViewLease(options: {
     };
     onError(error: unknown): void;
     onNotice(message: string): void;
+    /** A memory notice describes a state: it is withdrawn (this message) once a sharp frame presents. */
+    onNoticeCleared?(message: string): void;
 }): NativeViewLease {
     const { board, host, identity, limits, insets } = options;
     if (options.parameters.mode === 'edit' && !options.editing) {
@@ -323,7 +325,7 @@ export function createNativeViewLease(options: {
         viewer = attachView({ session: board, token, view: viewParameters(), images, liveFrames: videoFrameOverlay(images.frames, syncAnimation, keys => images.setDemand(keys)),
             reveal, onError: options.onError });
     } catch (error) { animation.dispose(); video.dispose(); backdrop?.dispose(); images.dispose(); if (!cameraClaim) cameraOwner.dispose(); throw error; }
-    let presentedView: ViewState | null = null, presentedFrame: number | null = null;
+    let presentedView: ViewState | null = null, presentedFrame: number | null = null, qualityNotice: string | null = null;
     const edit = options.parameters.mode === 'edit' ? options.editing : undefined;
     const editing = (() => { try { return edit ? createNativeEditingLease({ session: board, runtime, engine: viewer, token,
         inputToken: { vaultEpoch: token.vaultEpoch, tabId: token.documentId, sessionGeneration: token.session, viewGeneration: viewLease },
@@ -474,7 +476,17 @@ export function createNativeViewLease(options: {
                 viewer.presentationAccepted(presentation && certifyPresentation(presentation) ? presentation : null);
                 if (presentation && certifyPresentation(presentation)) backdrop?.notePresentation?.();
                 if (presentation && certifyPresentation(presentation)) recordBoardPresentation(performance.now(), presentation.backend);
-            }, onError: options.onError, onNotice: code => options.onNotice(noticeText(code)) } });
+                // Measured: 'Rendering quality was reduced to fit memory.' stayed for the whole session after a brief squeeze,
+                // over sharp pages, in every canvas2d Annotate run. A sharp, complete frame at full quality withdraws it.
+                if (qualityNotice && presentation && presentedFrame !== null && presentation.complete && presentation.sharp
+                    && !presentation.staleVersion && certifyPresentation(presentation)) {
+                    const shown = qualityNotice; qualityNotice = null; options.onNoticeCleared?.(shown);
+                }
+            }, onError: options.onError, onNotice: code => {
+                const text = noticeText(code);
+                if (code === 'memory-pressure' || code === 'cpu-floor-denied') qualityNotice = text;
+                options.onNotice(text);
+            } } });
     // The platform receives the same controller as pointer input, including its
     // actual constraints and measured viewport; motion never uses a second pose.
     const platform = { ...services, camera, readCamera: () => { refreshViewport(); return camera.camera; } };

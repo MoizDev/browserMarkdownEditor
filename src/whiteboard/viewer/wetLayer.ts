@@ -19,13 +19,18 @@ import { appendPath2d } from '../render/reference/coverage2d';
 
 // Provenance: wet/dry ink handover, bounded ink outline and C4 layer contracts;
 // independently wired renderer, no third-party source.
-const CHUNK = 256, TEMP_BYTES = 4 * 1024 * 1024, PATH_BLOCK = 256 * 1024;
+const CHUNK = 256, FINAL_SPANS = 16, TEMP_BYTES = 4 * 1024 * 1024, PATH_BLOCK = 256 * 1024;
 type Bounds = { x: number; y: number; w: number; h: number };
 type Prepared = { readonly snapshot: WetInkSnapshot; readonly path: Path2D; readonly origin: readonly [number, number]; readonly leases: ByteLease[]; readonly scale: number; readonly bounds: Bounds | null; readonly coverageChunks: readonly InkCoverage[]; readonly serial: number };
-type Work = { snapshot: WetInkSnapshot; path: Path2D; origin: readonly [number, number]; leases: ByteLease[]; capacity: number; commands: number;
-    temp: ByteLease | null; scan: number; dot: boolean; offset: number; geometry: CurveGeometry | null;
-    coverage: InkCoverageJob | null; outline: InkOutlineJob | null; scale: number; bounds: Bounds | null; coverageChunks: InkCoverage[];
-    buffers: Set<ArrayBufferLike>; retained: { coverage: InkCoverage; buffers: ArrayBufferLike[]; bytes: number; outlined: boolean } | null };
+// The finalized prefix of one stroke. A span the curve has finalized (publication.finalizedSpanCount) keeps its
+// coverage and outline for the stroke's life, so a growing stroke recomputes only its replaceable tail.
+type Stable = { readonly nodeId: string; readonly scale: number; readonly origin: readonly [number, number]; spans: number;
+    chunks: InkCoverage[]; path: Path2D; bounds: Bounds | null; dot: boolean; scan: number; buffers: Set<ArrayBufferLike>; leases: ByteLease[] };
+type Tail = { chunks: InkCoverage[]; path: Path2D; bounds: Bounds | null; buffers: Set<ArrayBufferLike>; leases: ByteLease[] };
+type Chunk = { readonly first: number; readonly count: number; readonly finalizing: boolean; readonly temp: ByteLease;
+    coverage: InkCoverageJob | null; outline: InkOutlineJob | null; readonly path: Path2D; readonly leases: ByteLease[]; capacity: number;
+    retained: { coverage: InkCoverage; buffers: ArrayBufferLike[]; bytes: number; outlined: boolean } | null };
+type Work = { snapshot: WetInkSnapshot; stable: Stable; scale: number; offset: number; tail: Tail; chunk: Chunk | null };
 export interface BoardWetOptions {
     readonly token: RenderToken;
     readonly palette: () => PaintPalette;
@@ -53,9 +58,14 @@ function visuallyCovered(frame: PaintSource | null | undefined, identity: DryInk
     return available(frame, identity, token) || !!frame && sameToken(frame.token, token)
         && frame.sceneRevision >= identity.nodeRevision && !!frame.occludedInkNodeIds?.has(identity.nodeId);
 }
-function retainedBuffers(coverage: InkCoverage, known: ReadonlySet<ArrayBufferLike>): { buffers: ArrayBufferLike[]; bytes: number } {
+function unionBounds(a: Bounds | null, next: Bounds): Bounds {
+    if (!a) return { x: next.x, y: next.y, w: next.w, h: next.h };
+    const x = Math.min(a.x, next.x), y = Math.min(a.y, next.y);
+    return { x, y, w: Math.max(a.x + a.w, next.x + next.w) - x, h: Math.max(a.y + a.h, next.y + next.h) - y };
+}
+function retainedBuffers(coverage: InkCoverage, known: readonly ReadonlySet<ArrayBufferLike>[]): { buffers: ArrayBufferLike[]; bytes: number } {
     const unique = new Set<ArrayBufferLike>();
-    const add = (view: ArrayBufferView) => { if (!known.has(view.buffer)) unique.add(view.buffer); };
+    const add = (view: ArrayBufferView) => { if (!known.some(set => set.has(view.buffer))) unique.add(view.buffer); };
     add(coverage.geometry.cubics); add(coverage.geometry.flags); add(coverage.radii);
     add(coverage.segments); add(coverage.discs); add(coverage.centreline);
     for (const map of coverage.arcMaps) { add(map.cubic); add(map.pieces); }
@@ -96,16 +106,28 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
     const report = (error: unknown) => { try { options.onError(error); } catch { /* reporting must not escape the scheduler */ } };
     const invalidate = () => { if (disposed) return; dirty = true; generation++; denied = false; options.invalidate(); for (const host of hosts) host.invalidate('wet-ink'); };
     const release = (lease: ByteLease) => { owner!.allocator.cpu.release(lease); reserved -= lease.bytes; };
+    const stables = new Map<number, Stable>();
     const dropPrepared = (item: Prepared) => { for (const lease of item.leases) release(lease); };
+    const dropStable = (gesture: number) => {
+        const item = stables.get(gesture);
+        if (!item) return;
+        stables.delete(gesture);
+        for (const lease of item.leases) release(lease);
+    };
     const dropWork = () => {
         const item = work; work = null;
         if (!item) return;
-        item.coverage?.cancel(); item.outline?.cancel();
-        if (item.temp) release(item.temp);
-        for (const lease of item.leases) release(lease);
+        const chunk = item.chunk; item.chunk = null;
+        if (chunk) {
+            chunk.coverage?.cancel(); chunk.outline?.cancel();
+            release(chunk.temp);
+            for (const lease of chunk.leases) release(lease);
+        }
+        for (const lease of item.tail.leases) release(lease);
     };
     const clear = () => {
         dropWork(); for (const item of prepared.values()) dropPrepared(item); prepared.clear();
+        for (const gesture of [...stables.keys()]) dropStable(gesture);
         gpu?.release('pressure'); gpuPrepared = null; gpuToken = null; publicationVersion++;
         dirty = false; denied = false; liveIds = EMPTY_LIVE_IDS;
     };
@@ -115,72 +137,90 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         return lease;
     };
     const begin = (snapshot: WetInkSnapshot, view: ViewState): boolean => {
-        const base = reserve(PATH_BLOCK); if (!base) return false;
         const matrix = snapshot.presentation.localToWorld;
         const scale = Math.max(Number.MIN_VALUE, view.camera.z * view.viewport.dpr * Math.hypot(matrix[0], matrix[1], matrix[2], matrix[3]));
-        const samples = snapshot.curve.samples;
-        work = { snapshot, path: new Path2D(), origin: [samples.x(0), samples.y(0)], leases: [base], capacity: base.bytes,
-            commands: 0, temp: null, scan: 1, dot: true, offset: 0, geometry: null, coverage: null, outline: null, scale, bounds: null, coverageChunks: [], buffers: new Set(), retained: null };
+        const gesture = snapshot.identity.gestureSequence;
+        let stable = stables.get(gesture);
+        // Finalized geometry is specific to its device scale and node: any change starts the prefix again.
+        if (stable && (stable.nodeId !== snapshot.identity.nodeId || stable.scale !== scale)) { dropStable(gesture); stable = undefined; }
+        if (!stable) {
+            const samples = snapshot.curve.samples;
+            stable = { nodeId: snapshot.identity.nodeId, scale, origin: [samples.x(0), samples.y(0)], spans: 0, chunks: [], path: new Path2D(),
+                bounds: null, dot: true, scan: 1, buffers: new Set(), leases: [] };
+            stables.set(gesture, stable);
+        }
+        work = { snapshot, stable, scale, offset: stable.spans, chunk: null,
+            tail: { chunks: [], path: new Path2D(), bounds: null, buffers: new Set(), leases: [] } };
         return true;
     };
     const step = (): boolean => {
-        const w = work!, publication = w.snapshot.curve, real = publication.samples;
-        if (w.scan < real.count) {
-            if (real.x(w.scan) !== real.x(0) || real.y(w.scan) !== real.y(0)) w.dot = false;
-            w.scan++; return false;
+        const w = work!, publication = w.snapshot.curve, real = publication.samples, s = w.stable;
+        if (s.scan < real.count) {
+            if (real.x(s.scan) !== real.x(0) || real.y(s.scan) !== real.y(0)) s.dot = false;
+            s.scan++; return false;
         }
-        if (w.retained?.outlined) {
-            const retained = w.retained;
+        const c = w.chunk;
+        if (c?.retained?.outlined) {
+            const retained = c.retained;
             const lease = retained.bytes ? reserve(retained.bytes) : null;
             if (retained.bytes && !lease) { denied = true; return false; }
-            if (lease) w.leases.push(lease);
-            for (const buffer of retained.buffers) w.buffers.add(buffer);
-            w.coverageChunks.push(retained.coverage);
-            if (w.temp) { release(w.temp); w.temp = null; }
-            w.retained = null; w.coverage = null; w.geometry = null;
+            if (lease) c.leases.push(lease);
+            release(c.temp);
+            if (c.finalizing) {
+                const next = new Path2D(); next.addPath(s.path); next.addPath(c.path); s.path = next;
+                s.chunks.push(retained.coverage); s.spans = c.first + c.count;
+                s.bounds = unionBounds(s.bounds, retained.coverage.boundsLocal);
+                for (const buffer of retained.buffers) s.buffers.add(buffer);
+                s.leases.push(...c.leases);
+            } else {
+                w.tail.path.addPath(c.path); w.tail.chunks.push(retained.coverage);
+                w.tail.bounds = unionBounds(w.tail.bounds, retained.coverage.boundsLocal);
+                for (const buffer of retained.buffers) w.tail.buffers.add(buffer);
+                w.tail.leases.push(...c.leases);
+            }
+            w.chunk = null;
             return false;
         }
-        if (w.outline) {
-            if ((w.commands + w.outline.commandCount + 1) * 80 > w.capacity) {
-                const lease = reserve(PATH_BLOCK); if (!lease) { denied = true; return false; }
-                w.leases.push(lease); w.capacity += lease.bytes;
+        if (c?.outline) {
+            const outline = c.outline;
+            if ((outline.commandCount + 1) * 80 > c.capacity) {
+                const bytes = Math.max(4096, (outline.commandCount + 1) * 80 - c.capacity);
+                const lease = reserve(bytes); if (!lease) { denied = true; return false; }
+                c.leases.push(lease); c.capacity += lease.bytes;
             }
-            if (w.outline.step(1) === 'complete') {
-                w.commands += w.outline.commandCount; w.outline = null; w.retained!.outlined = true;
-            }
+            if (outline.step(1) === 'complete') { c.outline = null; c.retained!.outlined = true; }
             return false;
         }
-        if (w.coverage) {
-            if (w.coverage.step(1) === 'complete') {
-                const coverage = w.coverage.result, path = w.path, origin = w.origin, next = coverage.boundsLocal;
-                if (!w.bounds) w.bounds = { ...next };
-                else {
-                    const x = Math.min(w.bounds.x, next.x), y = Math.min(w.bounds.y, next.y);
-                    w.bounds = { x, y, w: Math.max(w.bounds.x + w.bounds.w, next.x + next.w) - x,
-                        h: Math.max(w.bounds.y + w.bounds.h, next.y + next.h) - y };
-                }
-                w.retained = { coverage, ...retainedBuffers(coverage, w.buffers), outlined: false };
-                w.outline = new InkOutlineJob(coverage, w.scale, command => appendPath2d(path, command, origin));
+        if (c?.coverage) {
+            if (c.coverage.step(1) === 'complete') {
+                const coverage = c.coverage.result;
+                c.coverage = null;
+                c.retained = { coverage, ...retainedBuffers(coverage, c.finalizing ? [s.buffers] : [s.buffers, w.tail.buffers]), outlined: false };
+                c.outline = new InkOutlineJob(coverage, w.scale, command => appendPath2d(c.path, command, s.origin));
             }
             return false;
         }
         // Only sealed real samples are drawn. A predicted tail (browser getPredictedEvents) was tried
         // and removed: measured, predicted tails were retracted on 7/186 frames and read as recoil.
-        const spans = real.count - 1;
-        if (w.offset < spans || (spans === 0 && w.offset === 0)) {
-            const count = Math.min(CHUNK, spans - w.offset), first = w.offset;
-            const temp = reserve(TEMP_BYTES); if (!temp) { denied = true; return false; } w.temp = temp;
-            const geometry = materializeCurveRange(real, { firstSpan: first, spanCount: count }, publication.parameters);
-            w.offset = spans === 0 ? 1 : first + count;
+        const spans = real.count - 1, offset = w.offset;
+        if (offset < spans || (spans === 0 && offset === 0)) {
+            const finalizing = spans > 0 && offset + FINAL_SPANS <= publication.finalizedSpanCount;
+            const count = spans === 0 ? 0 : finalizing ? FINAL_SPANS : Math.min(CHUNK, spans - offset);
+            const temp = reserve(TEMP_BYTES); if (!temp) { denied = true; return false; }
+            const geometry = materializeCurveRange(real, { firstSpan: offset, spanCount: count }, publication.parameters);
+            w.offset = spans === 0 ? 1 : offset + count;
             const style: InkWidth = { width: w.snapshot.presentation.width, model: { id: 'uniform' }, pressure: 'none' };
-            const dot: InkDot | null = w.dot ? { x: real.x(0), y: real.y(0), radius: DOT_METRIC_PROVISIONAL.radius(style.width, style.width / 2, style.model) } : null;
-            w.geometry = geometry;
-            w.coverage = new InkCoverageJob(real, geometry, style, { deviceScale: w.scale, dot: first === 0 ? dot : null, maxPrimitives: 4096 });
+            const dot: InkDot | null = offset === 0 && s.dot ? { x: real.x(0), y: real.y(0), radius: DOT_METRIC_PROVISIONAL.radius(style.width, style.width / 2, style.model) } : null;
+            w.chunk = { first: offset, count, finalizing, temp, path: new Path2D(), leases: [], capacity: 0, outline: null, retained: null,
+                coverage: new InkCoverageJob(real, geometry, style, { deviceScale: w.scale, dot, maxPrimitives: 4096 }) };
             return false;
         }
-        const prior = prepared.get(w.snapshot.identity.gestureSequence);
+        const gesture = w.snapshot.identity.gestureSequence;
+        const prior = prepared.get(gesture);
         if (prior) dropPrepared(prior);
-        prepared.set(w.snapshot.identity.gestureSequence, { snapshot: w.snapshot, path: w.path, origin: w.origin, leases: w.leases, scale: w.scale, bounds: w.bounds, coverageChunks: w.coverageChunks, serial: ++publicationVersion });
+        const path = new Path2D(); path.addPath(s.path); path.addPath(w.tail.path);
+        prepared.set(gesture, { snapshot: w.snapshot, path, origin: s.origin, leases: w.tail.leases, scale: w.scale,
+            bounds: w.tail.bounds ? unionBounds(s.bounds, w.tail.bounds) : s.bounds, coverageChunks: [...s.chunks, ...w.tail.chunks], serial: ++publicationVersion });
         work = null; return true;
     };
     const updateGpuSource = () => {
@@ -223,6 +263,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
             const snapshots = handover?.forFrame(() => false) ?? [];
             const ids = new Set(snapshots.map(item => item.identity.gestureSequence));
             for (const [id, item] of prepared) if (!ids.has(id)) { dropPrepared(item); prepared.delete(id); publicationVersion++; }
+            for (const gesture of [...stables.keys()]) if (!ids.has(gesture)) dropStable(gesture);
             const scaleFor = (item: WetInkSnapshot) => { const m = item.presentation.localToWorld; return view.camera.z * view.viewport.dpr * Math.hypot(m[0], m[1], m[2], m[3]); };
             if (work && (!snapshots.some(item => item.identity.gestureSequence === work!.snapshot.identity.gestureSequence
                 && item.identity.nodeId === work!.snapshot.identity.nodeId) || work.scale < scaleFor(work.snapshot))) dropWork();
@@ -234,7 +275,9 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                 }
                 step();
                 // Publish the exact next admission to demand() before attempting it.
-                if (denied || work?.retained?.outlined) break;
+                // A finalized span is not on the published path, so its outline does not gate this frame's publication:
+                // only the tail chunk, which the next publication shows, yields here (measured: a per-finalize break was a hold every 16 samples).
+                if (denied || (work?.chunk?.retained?.outlined && !work.chunk.finalizing)) break;
             }
         } catch (error) { dropWork(); denied = true; report(error); }
         if (owner.device() && sameToken(options.token, budget.token)) {
@@ -309,7 +352,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
             const pending = !!work || snapshots.some(item => prepared.get(item.identity.gestureSequence)?.snapshot !== item);
             // Each band shares this one owner. Demand the NEXT bounded native-path/coverage
             // allocation before prepare, including a replacement while old wet pixels stay live.
-            const extra = pending ? (work ? (work.temp ? 0 : TEMP_BYTES) + PATH_BLOCK + (work.retained?.bytes ?? 0) : TEMP_BYTES + PATH_BLOCK) : 0;
+            const extra = pending ? (work ? (work.chunk ? 0 : TEMP_BYTES) + PATH_BLOCK + (work.chunk?.retained?.bytes ?? 0) : TEMP_BYTES + PATH_BLOCK) : 0;
             return { mandatoryBytes: reserved + extra + (owner.device() ? (gpu?.cpuWorkingSet().mandatoryBytes ?? 2 * 516 * 516 * 4) : 0), prefetchBytes: 0 };
         },
         // A live stroke whose GPU paint is still catching up is critical: the non-critical share of a frame is one

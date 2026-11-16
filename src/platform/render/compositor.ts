@@ -318,8 +318,9 @@ export class GpuCompositor implements PaneCompositor {
                         if (key === 'draw' && typeof value === 'function') return (cmd: unknown) => { auditCount(auditId, 'gpu-draw'); return (value as (c: unknown) => void).call(target, cmd); };
                         return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(target) : value;
                     } }) : scope.pass;
+                    drawScope.passes.add(layerTarget);
                     try { binding.layer.drawGpu(layerTarget, frame.view); }
-                    finally { drawScope.passes.delete(scope.pass); scope.finish(); }
+                    finally { drawScope.passes.delete(layerTarget); drawScope.passes.delete(scope.pass); scope.finish(); }
                     if (isolation) pass.endGroup(isolation);
                 }
                 if (document) pass.endGroup(document);

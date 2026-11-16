@@ -1,3 +1,4 @@
+import { auditCount } from '../../platform/render/renderAudit';
 import type { Rect, ViewState } from '../../platform/types';
 import type { RenderToken } from '../../platform/render/types';
 import { getBoardRuntime } from '../host/runtime';
@@ -144,6 +145,7 @@ export const attachView: AttachView = options => {
             const sensitive = interaction?.sensitiveNodeIds?.();
             const changed = sensitive !== lastSensitive;
             if (!lastView || current.epoch !== lastView.epoch || changed) {
+                auditCount('board', !lastView ? 'req:first' : current.epoch !== lastView.epoch ? 'req:epoch' : 'req:sensitive');
                 lastView = { ...current, camera: { ...current.camera }, viewport: { ...current.viewport } };
                 requestPaint(sensitive);
             }
@@ -206,9 +208,10 @@ export const attachView: AttachView = options => {
         for (const listener of listeners) listener();
     }
     function requestPaint(sensitive = interaction?.sensitiveNodeIds?.()): void {
+        auditCount('board', 'req:paint-call');
         // A request made while the Scene is still catching up is kept and sent once it is ready: the dense
         // path asks once per missing live set, so a dropped request froze a large board (seen at 3,500 items).
-        if (!disposed && view.visible && runtime.scene && !runtime.scene.ready) { paintWhenReady = true; return; }
+        if (!disposed && view.visible && runtime.scene && !runtime.scene.ready) { auditCount('board', 'req:scene-wait'); paintWhenReady = true; return; }
         if (disposed || !view.visible || !runtime.scene?.ready) return;
         paintWhenReady = false;
         paintJob?.abort();

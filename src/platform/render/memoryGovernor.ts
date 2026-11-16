@@ -598,13 +598,19 @@ export class MemoryGovernor {
     private reclaimPane(cache: CacheRecord, bytes: number): void {
         const { paneId, pool, kind } = cache.registration;
         const grant = paneId === undefined ? undefined : this.grants.get(paneId);
-        if (paneId === undefined || !grant || pool !== 'cpu' || this.trimming) return;
-        let excess = this.paneUsed(paneId, pool, kind) + bytes - grant.cpuBytes;
+        if (paneId === undefined || !grant || this.trimming) return;
+        // GPU too: a pane at its own GPU grant with the pool 83% full refused the board's tiles on every frame while the
+        // pane's page tiles held 19 MB, and nothing reclaimed (measured: an annotated PDF never presented after a drag).
+        // Only the pane's layer caches compete there; its surface, working set and live input are counted apart.
+        if (pool === 'gpu' && ['surface', 'program', 'context', 'live-input', 'canvas-working'].includes(kind)) return;
+        let excess = this.paneUsed(paneId, pool, kind) + bytes - (pool === 'gpu' ? grant.gpuCacheBytes : grant.cpuBytes);
         if (excess <= 0) return;
         const candidates = [...this.caches.values()].filter(other => other.registration.paneId === paneId &&
             other.registration.pool === pool && other.bytes > 0 && other.activity.hiddenAt === null &&
             RECLAIMABLE.includes(other.registration.class) &&
-            !['surface', 'program', 'context', 'mirror', 'mirror-retiring'].includes(other.registration.kind))
+            // A GPU layer evicted whole cannot be the one asking: it would release the residency it is growing.
+            (pool === 'cpu' || other !== cache) &&
+            !['surface', 'program', 'context', 'mirror', 'mirror-retiring', 'live-input', 'canvas-working'].includes(other.registration.kind))
             .sort((a, b) => RECLAIMABLE.indexOf(a.registration.class) - RECLAIMABLE.indexOf(b.registration.class) ||
                 a.activity.lastVisibleAt - b.activity.lastVisibleAt || a.activity.lastUsedAt - b.activity.lastUsedAt ||
                 stableId(a.registration.id, b.registration.id));

@@ -1,4 +1,5 @@
 import { worldToSurface } from '../../platform/render/camera';
+import { auditCount, auditTimed } from '../../platform/render/renderAudit';
 import type { ScheduledFrame } from '../../platform/render/scheduler';
 import type { ViewState } from '../../platform/types';
 import { isLocked, selectedRoots } from '../change/commands';
@@ -105,7 +106,9 @@ export function createSelectionHandles(options: SelectionHandleOptions) {
         },
         /** `moving`: a translation preview moves the box by its offset, so it follows the drag; `'hidden'` (a transform that
          * is not a plain translation) hides the box while the preview shows the shape elsewhere. */
-        write(frame: ScheduledFrame, moving: Vec2 | 'hidden' | null = null) {
+        // Audit only: the time each frame's handle write takes, and the DOM nodes it builds.
+        write: (frame: ScheduledFrame, moving: Vec2 | 'hidden' | null = null) => auditTimed('select-handles', () => {
+            auditCount('select-handles', 'frame');
             if (!current() || !box) { svg?.remove(); svg = undefined; presented.clear(); return; }
             presented.present(frame.timestamp, { ...frame.view.camera });
             if (moving === 'hidden') { if (svg) svg.style.display = 'none'; return; }
@@ -131,7 +134,8 @@ export function createSelectionHandles(options: SelectionHandleOptions) {
                 circle.setAttribute('cx', String(position.x)); circle.setAttribute('cy', String(position.y)); circle.setAttribute('r', '4');
                 circle.setAttribute('fill', '#ffffff'); circle.setAttribute('stroke', '#75b7ff'); circle.setAttribute('stroke-width', '1.5'); svg.append(circle);
             }
-        },
+            auditCount('select-handles', 'rebuild', 1, { nodes: 3 + geometry.positions.length });
+        }),
         hide() { generation++; controller?.abort(); clear(); },
         dispose() { if (disposed) return; disposed = true; generation++; controller?.abort(); stopSelection(); stopSession(); svg?.remove(); svg = undefined; box = null; presented.clear(); },
     };

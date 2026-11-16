@@ -418,7 +418,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 needsFrame: () => current().needsFrame(), memory: () => current().memory(),
                 dispose: () => { direct!.dispose(); dense!.dispose(); },
             };
-            gpu = createGpuPaintAdapter(adapter, host, report);
+            gpu = createGpuPaintAdapter(adapter, host, report, { audit: 'board' });
         }
         return adapter;
     };
@@ -668,7 +668,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                         const oldDense = dense!; oldDense.dispose(); retiringDense.add(oldDense);
                         dense = createDensePaintAdapter({ frames: options.frames, images: options.images,
                             invalidate: () => { collectRetired(); activeHost()?.invalidate('board-resource'); } }, allocatorHost, report, memoryGate);
-                        gpu?.dispose(); gpu = createGpuPaintAdapter(adapter!, allocatorHost, report);
+                        gpu?.dispose(); gpu = createGpuPaintAdapter(adapter!, allocatorHost, report, { audit: 'board' });
                     }
                 },
             };

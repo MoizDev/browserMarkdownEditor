@@ -47,6 +47,13 @@ export function auditFrame(backend: string, ms: number): void {
     frames.set(backend, entry);
 }
 
+/** Times one frame's work under a surface name; a plain call when the audit is off. */
+export function auditTimed(surface: string, work: () => void): void {
+    if (!enabled) { work(); return; }
+    const started = performance.now();
+    try { work(); } finally { auditFrame(surface, performance.now() - started); }
+}
+
 export function auditSnapshot(): RenderAuditSnapshot {
     return { enabled, since, counters: Object.fromEntries(counters), frames: Object.fromEntries([...frames].map(([key, value]) => [key, { ...value }])) };
 }

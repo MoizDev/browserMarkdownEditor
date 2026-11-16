@@ -3,6 +3,7 @@ import type { LayerHost } from '../../platform/render/compositor.types';
 import type { ByteLease, GfxDevice, GpuPass, TextureHandle } from '../../platform/render/gfx/api';
 import type { FrameBudget, FrameToken, GpuReleaseReason } from '../../platform/render/types';
 import { createPathCoverageKit, type PathCoverageAdmission, type PathCoverageRule, type PreparedPathCoverage } from '../../platform/render/pathCoverage';
+import { auditCount, renderAuditEnabled } from '../../platform/render/renderAudit';
 import { pathFillTriangles } from './pathFillTriangles';
 import { pathStrokeTriangles } from './pathStrokeTriangles';
 import type { PaintBand } from './material';
@@ -186,12 +187,15 @@ function drawPathItem(pass: GpuPass, item: PreparedPathItem, kit: ReturnType<typ
 /** Item-isolated raster tiles preserve ordering and permit exact node omission. The paint is consumed one
  * window at a time: each window's tile commands are built, scanned and drawn as their own bounded list. */
 export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: LayerHost, report: (error: unknown) => void,
-    options: { readonly streaming?: boolean } = {}) {
+    options: { readonly streaming?: boolean; readonly audit?: string } = {}) {
     // `streaming`: the source changes on every input frame (a live stroke). Each plan completes against the paint
     // it was started from and the newest starts only after it lands, so ready always advances. Discarding an
     // unfinished plan on every new paint never completes one (measured: 82/82 frames refused in a 650 ms stroke).
     // Coverage reports staleVersion until caught up.
     const streaming = options.streaming === true;
+    // Audit only: the surface these tiles belong to, and the keys ever rastered, so a re-raster of the same tile is counted.
+    const audit = options.audit ?? 'board-tiles';
+    const rasteredKeys = new Set<string>();
     let staged: Plan | null = null, ready: Plan | null = null, disposed = false, denied = false;
     let currentToken: FrameToken | null = null, lastFrame = -1, scratch = 0;
     let movingScale = 0, tileBytes = 0;
@@ -235,13 +239,15 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
     const ensurePlanCapacity = (plan: Plan): boolean => {
         if (plan.cpuUsed + 512 <= plan.cpuLeases.length * 65_536) return true;
         const lease = host.allocator.cpu.reserve(65_536);
-        if (!lease) { denied = true; awaitCapacity(); return false; }
+        if (!lease) { refuse(); return false; }
         plan.cpuLeases.push(lease); return true;
     };
     const reset = () => { drop(staged); drop(ready); staged = ready = null; };
     // A refused reservation does not poll (needsFrame() is false while denied): it waits for a real capacity change.
     const capacityWake = () => host.invalidate('paint-adapter-capacity');
     const awaitCapacity = (): void => { host.allocator.cpu.whenAvailable?.(capacityWake); host.allocator.gpu.whenAvailable?.(capacityWake); };
+    // Audit only: a refused reservation is the GPU path handing a frame back to waiting for capacity.
+    const refuse = (): void => { denied = true; auditCount(audit, 'fallback:denied'); awaitCapacity(); };
     // A streaming (live-stroke) tile is keyed by the coverage chunks that reach it, not by the whole source: each
     // publication appends chunks and replaces only the tip, so the tiles behind the tip keep their key and are reused.
     // Keyed by the source serial, every publication re-rasterised and re-uploaded the whole stroke, one tile per frame.
@@ -358,7 +364,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                             else {
                                 const bytes = image.width * image.height * 4;
                                 const lease = host.allocator.gpu.reserve(bytes);
-                                if (!lease) { denied = true; awaitCapacity(); return; }
+                                if (!lease) { refuse(); return; }
                                 if (!budget.claimUpload(bytes)) { host.allocator.gpu.release(lease); return; }
                                 let texture: TextureHandle | null = null, attached = false;
                                 try {
@@ -381,7 +387,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                         const admission = admitPathItem(item, view, pathCoverage, budget);
                         if (admission.status === 'ready') { out.tiles.push({ item: original, x: 0, y: 0, path: admission.value }); p.cpuUsed += 512; p.part = null; continue; }
                         if (admission.status === 'empty') { p.part = null; continue; }
-                        if (admission.status === 'denied') { denied = true; awaitCapacity(); return; }
+                        if (admission.status === 'denied') { refuse(); return; }
                         // 'unsupported': the exact canonical raster route below draws this item.
                     }
                     if (p.analyticReady && !p.tileBounds && item.kind === 'ink' && !multiply) {
@@ -406,6 +412,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                     const existing = cache.get(tileKey);
                     if (!ensurePlanCapacity(p)) return;
                     if (existing) {
+                        auditCount(audit, 'cache-hit');
                         existing.refs++; out.tiles.push({ item: original, x: p.x, y: p.y, cached: existing, multiply }); p.cpuUsed += 512;
                         const bounds = p.tileBounds;
                         if (++p.x >= bounds.x1) { p.x = bounds.x0; if (++p.y >= bounds.y1) { p.part = null; p.tileBounds = null; } }
@@ -413,11 +420,13 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                         if (streaming) continue; return;
                     }
                     const cpu = host.allocator.cpu.reserve(CPU_BYTES);
-                    if (!cpu) { denied = true; awaitCapacity(); return; }
+                    if (!cpu) { refuse(); return; }
                     scratch = cpu.bytes;
                     const gpu = host.allocator.gpu.reserve(GPU_BYTES);
-                    if (!gpu) { host.allocator.cpu.release(cpu); scratch = 0; denied = true; awaitCapacity(); return; }
+                    if (!gpu) { host.allocator.cpu.release(cpu); scratch = 0; refuse(); return; }
                     if (!budget.claimUpload(GPU_BYTES)) { host.allocator.gpu.release(gpu); host.allocator.cpu.release(cpu); scratch = 0; return; }
+                    // Audit only: a CPU raster of one tile's pixels, and whether that same tile was rastered before in this adapter.
+                    if (renderAuditEnabled()) { auditCount(audit, 'cpu-raster', 1, { px: SIZE * SIZE }); auditCount(audit, rasteredKeys.has(tileKey) ? 're-upload' : 'first-raster'); rasteredKeys.add(tileKey); }
                     let canvas: OffscreenCanvas | null = null, bitmap: ImageBitmap | null = null, texture: TextureHandle | null = null;
                     let attached = false;
                     try {

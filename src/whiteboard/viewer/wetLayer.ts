@@ -286,7 +286,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         } catch (error) { dropWork(); denied = true; report(error); }
         if (owner.device() && sameToken(options.token, budget.token)) {
             try {
-                gpu ??= createGpuPaintAdapter(gpuReference, owner, report, { streaming: true });
+                gpu ??= createGpuPaintAdapter(gpuReference, owner, report, { streaming: true, audit: 'board-wet' });
                 updateGpuSource(); gpuToken = { ...budget.token }; gpu.prepare(view, budget);
             } catch (error) { report(error); }
         }

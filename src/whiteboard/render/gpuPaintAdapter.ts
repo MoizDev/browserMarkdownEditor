@@ -16,6 +16,7 @@ import type { InkCoverage } from '../ink/outline';
 import { inkCoverageChunks, type PaintInkItem, type PaintSource, type PaintItem, type PaintPathItem } from './paintStream';
 import type { CanvasPaintAdapter, PreparedPaint2d } from './reference/canvasPaintAdapter';
 import { paintItem2d } from './reference/paint2d';
+import { auditCount } from '../../platform/render/renderAudit';
 
 const EDGE = TILE_EDGE, GUTTER = TILE_GUTTER, SIZE = TILE_SIZE;
 const GPU_BYTES = SIZE * SIZE * 4, CPU_BYTES = GPU_BYTES * 2;
@@ -186,7 +187,9 @@ function drawPathItem(pass: GpuPass, item: PreparedPathItem, kit: ReturnType<typ
 /** Item-isolated raster tiles preserve ordering and permit exact node omission. The paint is consumed one
  * window at a time: each window's tile commands are built, scanned and drawn as their own bounded list. */
 export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: LayerHost, report: (error: unknown) => void,
-    options: { readonly streaming?: boolean } = {}) {
+    options: { readonly streaming?: boolean; readonly audit?: string } = {}) {
+    // The render audit's surface name: `<surface>-<band>` (board-underlay, board-preview-content, ...).
+    const surface = options.audit ?? 'board';
     // `streaming`: the source changes on every input frame (a live stroke). Each plan completes against the paint
     // it was started from and the newest starts only after it lands, so ready always advances. Discarding an
     // unfinished plan on every new paint never completes one (measured: 82/82 frames refused in a 650 ms stroke).
@@ -298,6 +301,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                 const x1 = Math.ceil((view.camera.x + view.viewport.width / view.camera.z) * scale / EDGE);
                 const y1 = Math.ceil((view.camera.y + view.viewport.height / view.camera.z) * scale / EDGE);
                 if (![x0, y0, x1, y1].every(Number.isSafeInteger)) throw new RangeError('Invalid board tile projection');
+                auditCount(surface, 'plan-start');
                 staged = { prepared, sourceFrame, token: { ...budget.token }, device, projection: projection(view), scale, sharp: prepared.sharp !== false,
                     x0, y0, x1, y1, window: 0, item: 0, x: x0, y: y0, out: [], boundsJob: null, tileBounds: null, itemKey: '', analyticReady: analytic.ready(),
                     parts: null, part: null, partIndex: 0, hasMultiply: false, cpuLeases: [], cpuUsed: 0,
@@ -354,8 +358,9 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                                 p.token.bytesGeneration, p.token.session, p.token.viewLease, p.token.deviceGeneration,
                                 EDGE / item.rect.width, identity(image), p.partIndex, contentKey(item)]);
                             let cached = cache.get(key);
-                            if (cached) cached.refs++;
+                            if (cached) { cached.refs++; auditCount(`${surface}-${win.band}`, 'cache-hit'); }
                             else {
+                                auditCount(`${surface}-${win.band}`, 'tile-upload', 1, { bytes: image.width * image.height * 4 });
                                 const bytes = image.width * image.height * 4;
                                 const lease = host.allocator.gpu.reserve(bytes);
                                 if (!lease) { denied = true; awaitCapacity(); return; }
@@ -383,6 +388,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                         if (admission.status === 'empty') { p.part = null; continue; }
                         if (admission.status === 'denied') { denied = true; awaitCapacity(); return; }
                         // 'unsupported': the exact canonical raster route below draws this item.
+                        auditCount(`${surface}-${win.band}`, 'fallback:path-raster');
                     }
                     if (p.analyticReady && !p.tileBounds && item.kind === 'ink' && !multiply) {
                         if (!ensurePlanCapacity(p)) return;
@@ -406,6 +412,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                     const existing = cache.get(tileKey);
                     if (!ensurePlanCapacity(p)) return;
                     if (existing) {
+                        auditCount(`${surface}-${win.band}`, 'cache-hit');
                         existing.refs++; out.tiles.push({ item: original, x: p.x, y: p.y, cached: existing, multiply }); p.cpuUsed += 512;
                         const bounds = p.tileBounds;
                         if (++p.x >= bounds.x1) { p.x = bounds.x0; if (++p.y >= bounds.y1) { p.part = null; p.tileBounds = null; } }
@@ -426,8 +433,10 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                         if (!ctx) throw new Error('Offscreen 2D canvas unavailable');
                         ctx.setTransform(scale, 0, 0, scale, GUTTER - p.x * EDGE, GUTTER - p.y * EDGE);
                         paintItem2d(ctx, streaming && item.kind === 'ink' ? { ...item, coverage: tileChunks(item, p.scale, p.x, p.y) } : item, { ...p.prepared.resources, path: () => p.prepared.resources.path(original) });
+                        auditCount(`${surface}-${win.band}`, 'cpu-raster', 1, { px: SIZE * SIZE });
                         bitmap = canvas.transferToImageBitmap();
                         texture = device.createTexture(SIZE, SIZE, 'rgba8', ['sample', 'copy-dst'], gpu); attached = true;
+                        auditCount(`${surface}-${win.band}`, 'tile-upload', 1, { bytes: GPU_BYTES });
                         device.writeTexture(texture, { x: 0, y: 0, width: SIZE, height: SIZE },
                             { source: bitmap, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
                         const cached: CachedTile = { texture, device, refs: 1, key: tileKey, bytes: GPU_BYTES };

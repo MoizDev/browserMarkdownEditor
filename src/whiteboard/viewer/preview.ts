@@ -349,7 +349,7 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
                         }
                     } };
                     const layers = createBoardLayers({ frames: assembler, images: options.images, onError: report, requestedRevision: () => pinned.revision,
-                        requestedTheme: () => engine.getView().theme, optional: true, onPresented: presentedOverlay,
+                        requestedTheme: () => engine.getView().theme, optional: true, onPresented: presentedOverlay, auditSurface: 'board-preview',
                         // Built is enough to take the next request: the built frame is drawn by the next compositor frame, and
                         // a request made after a draw is one frame late (measured: the ink trailed the pointer by three frames).
                         onPrepared: () => queueMicrotask(presentedOverlay),

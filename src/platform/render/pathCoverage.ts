@@ -22,6 +22,10 @@ export const PATH_COVERAGE_SAMPLES: Samples = 4;
  * paper never drew on the GPU (measured: 54 of 54 page-mask admissions refused). Larger items take the exact canonical
  * raster route, which tiles within any budget. */
 const PATH_COVERAGE_MAX_TARGET_BYTES = 8 * 2 ** 20;
+/** The shared composite scratch's cap: one band of a path, reused band by band. 8 MiB per layer's kit was the 7.98 MB
+ * request that pushed a notebook's load over the GPU pool (paper, board and wet layers each hold a kit), degrading it;
+ * at 2 MiB a 516-texel tile draws in about four bands. */
+const PATH_COVERAGE_SCRATCH_BYTES = 2 * 2 ** 20;
 
 /** Origin-relative triangles, six values per triangle. `positive` adds +1 winding and `negative`
  * adds -1; for `union` every triangle is in `positive` and `negative` is empty. */
@@ -156,12 +160,12 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
     /** Ensures the scratch holds a band of the given width; false when its lease is refused (a wait, never a fallback). */
     const ensureScratch = (owner: GfxDevice, width: number, height: number): boolean | 'unsupported' => {
         const rowBytes = coverageTargetBytes(width, 1, PATH_COVERAGE_SAMPLES);
-        if (rowBytes > PATH_COVERAGE_MAX_TARGET_BYTES) return 'unsupported';
-        const rows = Math.min(height, Math.floor(PATH_COVERAGE_MAX_TARGET_BYTES / rowBytes));
+        if (rowBytes > PATH_COVERAGE_SCRATCH_BYTES) return 'unsupported';
+        const rows = Math.min(height, Math.floor(PATH_COVERAGE_SCRATCH_BYTES / rowBytes));
         if (scratch && scratch.device === owner && scratch.target.width >= width && scratch.target.height >= rows) return true;
         const w = Math.max(width, scratch?.device === owner ? scratch.target.width : 0);
         const h = Math.min(Math.max(rows, scratch?.device === owner ? scratch.target.height : 0),
-            Math.floor(PATH_COVERAGE_MAX_TARGET_BYTES / coverageTargetBytes(w, 1, PATH_COVERAGE_SAMPLES)));
+            Math.floor(PATH_COVERAGE_SCRATCH_BYTES / coverageTargetBytes(w, 1, PATH_COVERAGE_SAMPLES)));
         const bytes = coverageTargetBytes(w, h, PATH_COVERAGE_SAMPLES);
         const lease = host.allocator.gpu.reserve(bytes);
         if (!lease) return false;

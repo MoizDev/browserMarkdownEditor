@@ -541,7 +541,9 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         this.#usable();
         count(bytes);
         const checked = uniqueUses(uses, ['vertex', 'index', 'uniform', 'copy-src', 'copy-dst']);
-        return this.#allocate('buffer', { bytes, uses: checked }, bytes, lease);
+        const handle = this.#allocate('buffer', { bytes, uses: checked }, bytes, lease);
+        this.#arena.closeLease(lease);
+        return handle;
     }
 
     writeBuffer(dst: BufferHandle, offset: number, src: ArrayBufferView): void {
@@ -581,7 +583,17 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         }
     }
 
+    /** A layer's lease grants one resource: the device owns it from here and returns it when the resource retires. Layers
+     * could not close their grants (GfxDevice had no closeLease), so every destroyed tile stayed charged (measured: 17 wet
+     * tile leases, 18 MB, held for one stroke while its texture count was 1). Internal multi-resource paths use the
+     * private variants and close their own. */
     createTexture(width: number, height: number, format: TextureFormat, uses: readonly TextureUse[], lease: ByteLease): TextureHandle {
+        const handle = this.#createTexture(width, height, format, uses, lease);
+        this.#arena.closeLease(lease);
+        return handle;
+    }
+
+    #createTexture(width: number, height: number, format: TextureFormat, uses: readonly TextureUse[], lease: ByteLease): TextureHandle {
         this.#usable();
         this.#extent(width, height, this.limits.maxTexture2D);
         if (format !== 'rgba8' && format !== 'r8') throw new ArenaError('invalid-input');
@@ -711,9 +723,10 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     createCoverageTarget(width: number, height: number, samples: Samples, lease: ByteLease): CoverageTarget {
         this.#usable();
         if (lease.bytes < coverageTargetBytes(width, height, samples)) throw new ArenaError('out-of-budget');
-        const texture = this.createTexture(width, height, 'rgba8', ['render', 'sample'], lease);
+        const texture = this.#createTexture(width, height, 'rgba8', ['render', 'sample'], lease);
         try {
             const target = this.createTarget(texture, { samples, stencil: true }, lease);
+            this.#arena.closeLease(lease);
             return { target, texture, width, height, samples };
         } catch (error) {
             this.destroy(texture);
@@ -916,7 +929,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         let texture: TextureHandle | null = null;
         let target: TargetHandle | null = null;
         try {
-            texture = this.createTexture(2, 2, 'rgba8', ['render', 'copy-src'], lease);
+            texture = this.#createTexture(2, 2, 'rgba8', ['render', 'copy-src'], lease);
             target = this.createTarget(texture, { samples: 1, stencil: false }, lease);
             this.closeLease(lease);
             const programHandle = await this.#program(CAPABILITY_SHADER, combined);
@@ -971,7 +984,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         const lease = this.#reserve(this.#services.working, 1);
         let handle: TextureHandle | null = null;
         try {
-            handle = this.createTexture(1, 1, 'r8', ['sample', 'copy-dst'], lease);
+            handle = this.#createTexture(1, 1, 'r8', ['sample', 'copy-dst'], lease);
             this.writeTexture(handle, { x: 0, y: 0, width: 1, height: 1 }, {
                 source: new Uint8Array([255]), rowBytes: 1, premultiplied: true, colorSpace: 'srgb', origin: 'top-left',
             });

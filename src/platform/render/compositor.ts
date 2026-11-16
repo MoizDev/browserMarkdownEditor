@@ -299,9 +299,11 @@ export class GpuCompositor implements PaneCompositor {
             encoder = this.#options.owner.resources.beginFrame();
             this.#encodings.add(encoder);
             const bounds = { x: 0, y: 0, width: snapshot.metrics.backingWidth, height: snapshot.metrics.backingHeight };
+            const drawScope: DrawScope = { encoder, view: frame.view, passes: new Set() };
+            this.#active = drawScope;
+            try { this.#encodeOffscreen(snapshot, frame, encoder, drawScope); } finally { this.#active = null; }
             const pass = encoder.beginPass({ target: 'surface', viewport: bounds,
                 load: { kind: 'clear', color: snapshot.appearance.background }, store: 'store' });
-            const drawScope: DrawScope = { encoder, view: frame.view, passes: new Set() };
             this.#active = drawScope;
             let document: GroupToken | null = null;
             try {
@@ -495,6 +497,45 @@ export class GpuCompositor implements PaneCompositor {
         this.#layers = [];
         for (const handle of [this.#quad, this.#linear, this.#nearest]) if (handle) this.#options.owner.resources.destroy(handle);
         this.#quad = null; this.#linear = null; this.#nearest = null;
+    }
+
+    /** Each layer's offscreen passes, in layer order, before the surface pass: one pass open at a time, every scope closed. */
+    #encodeOffscreen(snapshot: Snapshot, frame: ScheduledFrame, encoder: FrameEncoder, drawScope: DrawScope): void {
+        for (const binding of snapshot.layers) {
+            const layer = binding.layer;
+            if (!layer.encodeOffscreen) continue;
+            const auditId = (binding as { id?: string }).id ?? 'layer';
+            let open: { pass: GpuPass; finish(): void; raw: GpuPass; registered: GpuPass[] } | null = null;
+            const close = () => {
+                if (!open) return;
+                const current = open; open = null;
+                for (const registered of current.registered) drawScope.passes.delete(registered);
+                current.finish(); current.raw.end();
+            };
+            try {
+                layer.encodeOffscreen({
+                    begin: (target, viewport, options) => {
+                        if (open) throw new ArenaError('invalid-input');
+                        const raw = encoder.beginPass({ target, viewport,
+                            load: options.clear ? { kind: 'clear', color: options.clear } : { kind: 'load' }, store: 'store',
+                            ...(options.stencil ? { stencil: { load: { kind: 'clear', value: 0 }, store: 'discard' } as const } : {}) });
+                        const scope = layerPass(raw);
+                        auditCount(auditId, 'offscreen-pass');
+                        const counted: GpuPass = renderAuditEnabled() ? new Proxy(scope.pass, { get(t, key) {
+                            const value = Reflect.get(t, key, t) as unknown;
+                            if (key === 'draw' && typeof value === 'function') return (cmd: unknown) => { auditCount(auditId, 'gpu-draw'); return (value as (c: unknown) => void).call(t, cmd); };
+                            return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(t) : value;
+                        } }) : scope.pass;
+                        const pass: GpuPass = { ...counted, draw: c => counted.draw(c), end: () => { if (open?.pass !== pass) throw new ArenaError('invalid-input'); close(); } };
+                        const registered = [pass, counted, scope.pass];
+                        open = { pass, finish: scope.finish, raw, registered };
+                        for (const value of registered) drawScope.passes.add(value);
+                        return pass;
+                    },
+                }, frame.view);
+                if (open) throw new ArenaError('invalid-input');
+            } finally { close(); }
+        }
     }
 
     #check(): void { if (this.#disposed) throw new ArenaError('aborted'); }

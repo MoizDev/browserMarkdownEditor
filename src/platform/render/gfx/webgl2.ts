@@ -734,6 +734,20 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         }
     }
 
+    createRenderTexture(width: number, height: number, lease: ByteLease): { texture: TextureHandle; target: TargetHandle } {
+        this.#usable();
+        if (lease.bytes < width * height * 4) throw new ArenaError('out-of-budget');
+        const texture = this.#createTexture(width, height, 'rgba8', ['render', 'sample'], lease);
+        try {
+            const target = this.createTarget(texture, { samples: 1, stencil: false }, lease);
+            this.#arena.closeLease(lease);
+            return { texture, target };
+        } catch (error) {
+            this.destroy(texture);
+            throw error;
+        }
+    }
+
     async readTexture(src: TextureHandle, rect: RectI, signal: AbortSignal): Promise<ImageBitmap> {
         const combined = AbortSignal.any([signal, this.#work.signal]);
         const raw = await this.#readRaw(src, rect, combined, 8);

@@ -361,7 +361,9 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         },
         // A live stroke whose GPU paint is still catching up is critical: the non-critical share of a frame is one
         // sliver, which took two frames per plan (measured: every other screencast frame held the same ink).
-        critical: () => !!owner?.device() && !!gpu?.needsFrame() || (handover?.forFrame(identity => visuallyCovered(options.readyFrame(), identity, options.token)) ?? [])
+        // Only while ink is in flight: an idle wet adapter that still wanted a frame kept every frame critical, which
+        // starves the other layers' upload share (measured: drawing pan 204 → 78 presents, notebook pan 38).
+        critical: () => !!owner?.device() && !!gpu?.needsFrame() && (handover?.forFrame(() => false).length ?? 0) > 0 || (handover?.forFrame(identity => visuallyCovered(options.readyFrame(), identity, options.token)) ?? [])
             .some(item => !prepared.has(item.identity.gestureSequence)),
         coverage: (_layer, frame, backend) => {
             const missing = (handover?.forFrame(identity => visuallyCovered(options.readyFrame(), identity, options.token)) ?? [])

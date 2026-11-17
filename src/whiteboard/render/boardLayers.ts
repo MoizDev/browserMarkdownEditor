@@ -400,7 +400,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         for (const hold of old) if (!kept.includes(hold)) releaseHold(hold);
     };
     // Takes the draw's borrow right after the draw read its snapshot. A draw whose images cannot be proven (the
-    // frame has moved on, or a drawn image is not a live ImageBitmap) has no hold, so its facts stay unknown.
+    // frame has moved on, or a drawn image is neither a live ImageBitmap nor a VideoFrame) has no hold, so its facts stay unknown.
     const captureDraw = (frame: PaintSource, omit: ReadonlySet<string> | null): DrawHold | null => {
         const borrow = adapter?.retainPrepared() ?? null;
         if (!borrow) return null;
@@ -417,6 +417,9 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                         // A standin draws a crop with no quad to classify: it gets no facts, so the embed keeps its poster.
                         if (prepared.resources.imageCrop?.(item.imageKey)) continue;
                         const bitmap = prepared.resources.image(item.imageKey);
+                        // A video frame draws like a bitmap (drawImage takes both) but has no readback for the image facts: it
+                        // is drawn without an entry, so its facts stay unknown (embedPresentationFacts) while the draw stays usable.
+                        if (bitmap instanceof VideoFrame) continue;
                         if (!(bitmap instanceof ImageBitmap)) { usable = false; break windows; }
                         images.push({ nodeId: item.nodeId, item, source: bitmap });
                     }

@@ -203,6 +203,9 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     let frame = 0, validRevision = 0;
     let omitIds: ReadonlySet<string> | null = null;
     let lastZoom: number | undefined, zoomScale = 0;
+    // The scale the last prepare composed and drew. Coverage describes this scale, not the exact demand: a zoom draws its
+    // ladder scale, and coverage asked about the exact one, where nothing is composed, so every frame of a zoom read incomplete.
+    let drawnTarget = 0;
 
     const wake = (): void => { host.invalidate('tile-composer-capacity'); };
     const refuseTarget = (): void => { denied = true; auditCount(audit, 'tile:denied'); store.wait(TARGET_BYTES, wake); };
@@ -392,9 +395,12 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                             position = started;
                             building.set(key, position);
                         }
-                        if (composed >= limit || budget.shouldYield()) return;
+                        // Why a frame composes nothing is the zoom question: each exit is counted (pass and cause).
+                        if (composed >= limit) { auditCount(audit, `compose:limit:${pass}`); return; }
+                        if (budget.shouldYield()) { auditCount(audit, `compose:yield:${pass}`); return; }
                         const outcome = advance(position, budget, gpu);
-                        if (outcome !== 'done') return;
+                        if (outcome !== 'done') { auditCount(audit, `compose:${outcome}:${pass}`); return; }
+                        auditCount(audit, `compose:done:${pass}`);
                         building.delete(key);
                         finished.push(position);
                         composed += position.slices.length;
@@ -536,6 +542,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             else if (!(zoomScale >= demand && zoomScale <= demand * 1.2 * SQRT2)) zoomScale = ladderScale(demand);
             const exact = exactScale(demand);
             const target = zooming ? zoomScale : exact;
+            drawnTarget = target;
 
             indexing = !parts.sync(prepared, budget);
             if (!indexing) {
@@ -565,7 +572,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 if (device) compose(view, budget, device, target, span, zooming, demand);
             }
             buildDraws(view, target, zooming);
-            settled = !indexing && allExact(view, exact);
+            settled = !indexing && allExact(view, target);
         },
         encodeOffscreen(passes: OffscreenPasses, _view: ViewState, band: PaintBand): void {
             if (!finished.length) return;
@@ -608,18 +615,20 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         coverage(view: ViewState): { complete: boolean; sharp: boolean; staleVersion?: boolean } {
             if (!presenting) return { complete: false, sharp: false };
             const exact = exactScale(view.camera.z * view.viewport.dpr);
-            const span = spanAt(view, exact);
-            // A position with any picture (its exact tile, a dirty one, or a stand-in of another scale) is complete; only
-            // a position with nothing is not. Sharp needs every position exact and clean at the demanded scale.
-            let complete = true, sharp = !indexing && preparedSharp, stale = indexing;
+            const target = drawnTarget;
+            const span = spanAt(view, target);
+            // A position with any picture (its tile at the drawn scale, a dirty one, or a stand-in of another scale) is
+            // complete; only a position with nothing is not. Sharp needs the drawn scale to be the demanded one, and every
+            // position exact and clean there.
+            let complete = true, sharp = !indexing && preparedSharp && target === exact, stale = indexing;
             for (const band of BANDS) {
                 for (let y = span.y0; y < span.y1; y++) {
                     for (let x = span.x0; x < span.x1; x++) {
-                        const status = statusAt(band, exact, x, y);
+                        const status = statusAt(band, target, x, y);
                         if (status === 'ok') continue;
                         sharp = false;
                         if (status === 'dirty') { stale = true; continue; }
-                        if (!standInsOf(band, exact, x, y).length) complete = false;
+                        if (!standInsOf(band, target, x, y).length) complete = false;
                     }
                 }
             }

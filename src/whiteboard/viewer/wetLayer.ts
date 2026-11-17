@@ -19,7 +19,13 @@ import { appendPath2d, path2d } from '../render/reference/coverage2d';
 
 // Provenance: wet/dry ink handover, bounded ink outline and C4 layer contracts;
 // independently wired renderer, no third-party source.
-const CHUNK = 256, FINAL_SPANS = 16, TEMP_BYTES = 4 * 1024 * 1024, PATH_BLOCK = 256 * 1024;
+/** The primitive ceiling of one chunk's coverage job (its segment, disc and centreline stores). */
+const CHUNK_PRIMITIVES = 4096;
+const CHUNK = 256, FINAL_SPANS = 16, PATH_BLOCK = 256 * 1024;
+/** The scratch a chunk's tessellation holds, derived from what it can reach: per span its cubics (8 doubles), flags (1 byte) and
+ * radii (2 doubles); and the coverage job's three stores at their ceiling (6 + 3 + 4 doubles per primitive). A store grows by copy,
+ * so it holds its old and new arrays for a moment: 3/2 of the ceiling. 660 KB, not the 4 MiB it was sized at before. */
+const TEMP_BYTES = CHUNK * (8 * 8 + 1 + 2 * 8) + Math.ceil(CHUNK_PRIMITIVES * (6 + 3 + 4) * 8 * 3 / 2);
 /** The tip's upload grant past a frame's yield: one kit upload piece (64 KiB), so a chunk's append always fits. */
 const TIP_UPLOAD_BYTES = 64 * 1024;
 type Bounds = { x: number; y: number; w: number; h: number };
@@ -548,7 +554,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         if (c?.retained) {
             const retained = c.retained;
             const lease = retained.bytes ? reserve(retained.bytes) : null;
-            if (retained.bytes && !lease) { denied = true; return false; }
+            if (retained.bytes && !lease) { denied = true; awaitSizedCapacity(owner, invalidate, { pool: 'cpu', bytes: retained.bytes }); return false; }
             if (lease) c.leases.push(lease);
             if (c.finalizing) {
                 s.chunks.push(retained.coverage); s.spans = c.first + c.count;
@@ -578,14 +584,15 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         if (offset < spans || (spans === 0 && offset === 0)) {
             const finalizing = spans > 0 && offset + FINAL_SPANS <= publication.finalizedSpanCount;
             const count = spans === 0 ? 0 : finalizing ? FINAL_SPANS : Math.min(CHUNK, spans - offset);
-            const temp = s.temp ?? reserve(TEMP_BYTES); if (!temp) { denied = true; return false; }
+            // A refusal waits for the pool to have TEMP_BYTES free, as every other wet refusal does: without the wake the stroke polled.
+            const temp = s.temp ?? reserve(TEMP_BYTES); if (!temp) { denied = true; awaitSizedCapacity(owner, invalidate, { pool: 'cpu', bytes: TEMP_BYTES }); return false; }
             s.temp = temp;
             const geometry = materializeCurveRange(real, { firstSpan: offset, spanCount: count }, publication.parameters);
             w.offset = spans === 0 ? 1 : offset + count;
             const style: InkWidth = s.style ??= { width: w.snapshot.presentation.width, model: { id: 'uniform' }, pressure: 'none' };
             const dot: InkDot | null = offset === 0 && s.dot ? { x: real.x(0), y: real.y(0), radius: DOT_METRIC_PROVISIONAL.radius(style.width, style.width / 2, style.model) } : null;
             w.chunk = { first: offset, count, finalizing, leases: [], retained: null,
-                coverage: new InkCoverageJob(real, geometry, style, { deviceScale: w.scale, dot, maxPrimitives: 4096 }) };
+                coverage: new InkCoverageJob(real, geometry, style, { deviceScale: w.scale, dot, maxPrimitives: CHUNK_PRIMITIVES }) };
             // A non-finalized chunk is the tip: rebuilt on every publication, so this counts the per-input tessellation.
             if (!finalizing) auditCount('wet', 'tip-build');
             return false;
@@ -624,7 +631,6 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         if (disposed || !owner || !options.current()) return false;
         if (lastPrepareFrame === budget.frameId) return frameAnswer;
         lastPrepareFrame = budget.frameId;
-        let complete = false;
         // A denied reservation waits for a genuine scheduler wake, not another polling frame.
         denied = false;
         try {
@@ -644,7 +650,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                         const old = prepared.get(item.identity.gestureSequence);
                         if (old?.snapshot !== item || old.scale < scaleAt(view, item)) { next = item; break; }
                     }
-                    if (!next) { dirty = false; complete = true; break; }
+                    if (!next) { dirty = false; break; }
                     if (!begin(next, view)) { denied = true; break; }
                 }
                 step();
@@ -658,7 +664,10 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         if (owner.device() && sameToken(options.token, budget.token)) {
             try { admitRuns(owner, view, budget); admitted = true; } catch (error) { report(error); }
         } else auditCount('wet', 'admit-skip:device-or-token');
-        frameAnswer = complete && admitted && !denied && routedCoverage(budget.token, view) === VERDICT_SHARP;
+        // Complete is the state, not the loop: a frame whose budget was spent before the loop ran (no work to do) is complete too.
+        // Every pending stroke must be prepared at its current snapshot and scale, with no work left in progress.
+        const caughtUp = (handover?.pendingSnapshots() ?? []).every(item => { const old = prepared.get(item.identity.gestureSequence); return old?.snapshot === item && old.scale >= scaleAt(view, item); });
+        frameAnswer = caughtUp && work === null && admitted && !denied && routedCoverage(budget.token, view) === VERDICT_SHARP;
         return frameAnswer;
     };
     const prepareBand = (band: WetBand) => (view: ViewState, budget: FrameBudget): boolean | undefined => {

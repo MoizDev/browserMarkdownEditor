@@ -249,10 +249,6 @@ type GpuWorkingSetReporter = { gpuMandatoryBytes?(viewport: Readonly<{ width: nu
 
 const STALE: LayerCoverage = Object.freeze({ complete: false, sharp: false, staleVersion: true });
 /** The revision a frame asks a layer for: a loop, since this runs every frame and `find` would allocate a closure. */
-function requestedRevisionOf(frame: ScheduledFrame, layer: Layer): number | undefined {
-    for (const entry of frame.layers) if (entry.layer === layer) return entry.sceneRevision;
-    return undefined;
-}
 export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     const hosts = new Map<PaintBand, LayerHost>();
     let adapter: CanvasPaintAdapter | null = null, allocatorHost: LayerHost | null = null;
@@ -838,7 +834,6 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     const coverageOf = (layer: Layer, frame: ScheduledFrame, backend: CompositorBackend): LayerCoverage => {
         const gpuCoverage = backend !== 'canvas2d' ? gpu?.coverage(frame.view) : null;
         const ready = backend === 'canvas2d' ? adapter?.readyFrame() : gpu?.readyFrame();
-        const requested = requestedRevisionOf(frame, layer);
         const denseCoverage = useDense && ready ? dense?.coverage(frame.view, liveFor(ready)) : null;
         if (useDense && !denseCoverage?.complete) return INCOMPLETE;
         if (backend !== 'canvas2d' && !gpuCoverage?.complete) return INCOMPLETE;

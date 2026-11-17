@@ -831,7 +831,9 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         const changed = options.changedNodesSince?.(from, to) ?? (now && now.sceneRevision === to ? now.changedNodesSince?.(from) : null);
         if (!changed) return false;
         const omitted = now ? options.omitNodes?.(now) ?? null : null;
-        for (const id of changed) if (!omitted?.has(id) && !options.liveDraws?.(id, band, view, canvas)) return false;
+        // A node the device's live draw laid in the last composite of this band is drawn live, so it is current wherever the board shows it.
+        const laid = canvas ? null : gpu?.drawnLiveNodeIds(band) ?? null;
+        for (const id of changed) if (!omitted?.has(id) && !options.liveDraws?.(id, band, view, canvas) && !laid?.has(id)) return false;
         return true;
     };
     const coverageOf = (band: PaintBand, frame: ScheduledFrame, backend: CompositorBackend): LayerCoverage => {

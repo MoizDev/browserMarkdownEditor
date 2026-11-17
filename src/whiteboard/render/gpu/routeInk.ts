@@ -61,9 +61,8 @@ export const createInkRoutes: CreateInkRoutes = (host: LayerHost, audit: string)
         id: 'ink-union',
         accepts: (item: PaintItem): item is PaintInkItem => item.kind === 'ink' && inkRouteFor(item) === 'ink-union',
         admit(items, view, blend, budget): Admission<PreparedRun> {
-            // A multiply slice is laid by the kit's modulate cover: each stroke multiplies k = C·c + 1 − α·c into the white slice.
-            // Its supersample is off: the kit's supersample cover adds quarter colours, which is wrong for a multiplicative source
-            // (kit request K4); the 4 MSAA samples stand until K1-style per-sample modulate lands.
+            // Both blends sample the measured 4x4 grid (the proxy's sample positions). A multiply slice is laid by the kit's
+            // modulate cover: each stroke multiplies k = C·c + 1 − α·c into the white slice, once per sample.
             const modulate = blend === 'modulate';
             const admitted: PreparedPathCoverage[] = [];
             const retireAll = (): void => { for (const stroke of admitted) kit.retire(stroke); };
@@ -77,10 +76,8 @@ export const createInkRoutes: CreateInkRoutes = (host: LayerHost, audit: string)
                 const result: PathCoverageAdmission = kit.admit({
                     shapes: { positive: stroke.triangles, negative: NO_TRIANGLES, edges: stroke.edges, bounds: stroke.bounds },
                     rule: 'union', affine: affineAt(item.localToWorld, stroke.origin, view), viewport: pixels(view),
-                    // TODO(gpu-h5): supersample: true is the kit's MSAA x jitter path, not the measured 4x4 grid; switch to
-                    // supersample: 4 when h4 lands K1 (scratch/gpu/gpu-h5/kit-requests.md).
                     colour: item.material.color, output: { kind: 'composite', blend: modulate ? 'modulate' : 'normal' },
-                    supersample: !modulate,
+                    sampling: 'grid4',
                 }, budget);
                 if (result.status === 'ready') admitted.push(result.value);
                 else if (result.status !== 'empty') {

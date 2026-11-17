@@ -223,10 +223,11 @@ void main() {
 };
 
 function count(value: number, positive = false): void {
-    if (!Number.isSafeInteger(value) || value < (positive ? 1 : 0)) throw new ArenaError('invalid-input');
+    if (!Number.isSafeInteger(value) || value < (positive ? 1 : 0)) throw new ArenaError('invalid-input', { site: 'count', value, positive });
 }
 function byteSize(...factors: number[]): number {
     const bytes = factors.reduce((a, b) => a * b, 1);
+    if (!Number.isSafeInteger(bytes) || bytes < 0) throw new ArenaError('invalid-input', { site: 'byteSize', factors: [...factors], bytes });
     count(bytes);
     return bytes;
 }

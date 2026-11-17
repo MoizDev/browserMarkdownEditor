@@ -342,6 +342,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     // A refusal whose size its thrower did not report (the device and arena errors carry none) waits on each pool once: one
     // waiter per pool until that pool fires. A waiter per refusal would pile up for as long as a stall lasts, one per frame.
     const refusalWaiting = { cpu: false, gpu: false };
+    // The bands whose content has been complete at least once in this attach (see `critical`).
+    const completedBands = new Set<PaintBand>();
     const awaitRefusal = (): void => {
         const owner = activeHost();
         if (!owner) return;
@@ -889,9 +891,12 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             return { mandatoryBytes: hosts.get(band) === allocatorHost
                 ? reserved + upcoming + scratch + (useDense ? dense?.cpuWorkingSet(estimate?.maxItemBytes ?? 0) ?? 0 : 0) + (options.frames.cpuWorkingSet?.() ?? 0) : 0, prefetchBytes: 0 };
         },
-        critical() { return !adapter?.readyFrame(); },
+        // Critical (its missing positions refuse the frame) only until this band's first complete coverage in this attach.
+        // After that a pan that exposes positions faster than they compose presents their stand-ins instead of refusing every frame.
+        critical() { return !completedBands.has(band); },
         coverage(layer, frame, backend) {
             const actual = coverageOf(layer, frame, backend);
+            if (actual.complete) completedBands.add(band);
             return options.optional && !actual.complete ? { complete: true, sharp: true } : actual;
         },
     });

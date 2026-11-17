@@ -159,7 +159,8 @@ export class TextAtlas {
     /** Governor pressure: frees whole pages that nothing pins and nothing drew this frame, coldest first, until `bytes` are
      * freed. A page pinned or drawn this frame is never a victim, so a refusal here never breaks a frame in progress. */
     evict(bytes: number, frame: number): number {
-        if (!Number.isFinite(bytes) || bytes < 0) throw new RangeError('Invalid text atlas eviction size');
+        // Infinity is a valid request (free everything evictable); NaN and negatives are not.
+        if (!(bytes >= 0)) throw new RangeError('Invalid text atlas eviction size');
         let freed = 0;
         while (freed < bytes) {
             let victim: AtlasPage | undefined;

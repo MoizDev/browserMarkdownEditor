@@ -42,6 +42,9 @@ export interface CompositorLayer {
     /** Benchmark denominator only, in device pixels; never a declaration of painted coverage. */
     readonly benchmarkDomain?: (frame: ScheduledFrame) => readonly Readonly<Rect>[];
     coverage(frame: ScheduledFrame, backend: CompositorBackend): LayerCoverage;
+    /** Whether this layer's missing content may refuse the frame. Absent or true: the frame waits, as it always has. False:
+     * an incomplete layer presents with whatever it drew (its stand-in), as PLAN issue 3 requires for non-critical content. */
+    critical?(frame: ScheduledFrame): boolean;
 }
 
 /** Canonical allocators stay bound to one pool; never reconstruct a ByteLease by id. */

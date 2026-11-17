@@ -20,9 +20,12 @@ export interface TextRoute extends ItemRoute<PaintTextItem> {
 /** Per instance: device rect (x, y, w, h), page uv rect (u0, v0, u1, v1; u0 = -1 marks a solid rect), premultiplied colour. */
 const INSTANCE_BYTES = 48;
 const SOLID_UV = -1;
+const PARALLELOGRAM_UV = -2;
 /** A new colour-glyph run is measured here; the set is cleared when full so a long session cannot grow it without bound. */
 const COLOUR_RUN_LIMIT = 4096;
 const MONO_PAGES = 8, COLOUR_PAGES = 2;
+/** Stand-in records kept at once; cleared whole when full, as the measurement memo is. */
+const STANDIN_LIMIT = 4096;
 /** CPU pool chunk for the memos: one lease per 64 KB, so a memo's accounting is a handful of leases, not one per entry. */
 const MEMO_CHUNK = 64 * 1024;
 /** The instance scratch starts at this many floats (one quad is 12) and doubles; its lease is exact, so it is never over-reported. */
@@ -43,16 +46,25 @@ layout(location=0) in vec4 instanceRect;
 layout(location=1) in vec4 instanceUv;
 layout(location=2) in vec4 instanceColour;
 out vec2 pixel; out vec2 uv;
-flat out vec4 edges; flat out vec4 colour; flat out float solid;
+flat out vec4 edges; flat out vec4 colour; flat out float shape;
+flat out vec2 origin; flat out vec2 axisU; flat out vec2 axisV;
 void main() {
     vec2 corner = vec2(float(gl_VertexID & 1), float((gl_VertexID >> 1) & 1));
-    float isSolid = step(instanceUv.x, -0.5);
-    vec2 p = instanceRect.xy - isSolid + corner * (instanceRect.zw + 2.0 * isSolid);
+    // uv.x = -2 marks a parallelogram: rect.xy is its origin, rect.zw the first edge, uv.yz the second. uv.x = -1 an axis-aligned solid.
+    float isRotated = step(instanceUv.x, -1.5);
+    float isSolid = step(instanceUv.x, -0.5) - isRotated;
+    vec2 axisPixel = instanceRect.xy - isSolid + corner * (instanceRect.zw + 2.0 * isSolid);
+    // The parallelogram's device bounds, grown by a pixel so its supersampled edges are not clipped.
+    vec2 p0 = instanceRect.xy, e1 = instanceRect.zw, e2 = instanceUv.yz;
+    vec2 c1 = p0 + e1, c2 = p0 + e2, c3 = p0 + e1 + e2;
+    vec2 lo = min(min(p0, c1), min(c2, c3)) - 1.0, hi = max(max(p0, c1), max(c2, c3)) + 1.0;
+    vec2 p = mix(axisPixel, mix(lo, hi, corner), isRotated);
     pixel = p;
     uv = mix(instanceUv.xy, instanceUv.zw, corner);
     edges = vec4(instanceRect.xy, instanceRect.xy + instanceRect.zw);
     colour = instanceColour;
-    solid = isSolid;
+    shape = isSolid + 2.0 * isRotated;
+    origin = p0; axisU = e1; axisV = e2;
     vec2 unit = p / viewport.xy;
     gl_Position = vec4(unit.x * 2.0 - 1.0, 1.0 - unit.y * 2.0, 0.0, 1.0);
 }`;
@@ -60,13 +72,28 @@ const HEADER = `#version 300 es
 precision highp float;
 uniform sampler2D gfxTexture0;
 in vec2 pixel; in vec2 uv;
-flat in vec4 edges; flat in vec4 colour; flat in float solid;
+flat in vec4 edges; flat in vec4 colour; flat in float shape;
+flat in vec2 origin; flat in vec2 axisU; flat in vec2 axisV;
 layout(location=0) out vec4 gfxColour;
 `;
-/** Coverage of a mask texel, or the exact area a solid rect covers in this pixel. */
+/** Coverage of a mask texel, the exact area of an axis-aligned solid in this pixel, or the area of a parallelogram in this
+ * pixel by 8 × 8 point samples (within 1/64 of the area, which is below the 8-level parity bar at any edge). */
 const COVERAGE = `
 float coverage() {
-    if (solid > 0.5) {
+    if (shape > 1.5) {
+        float det = axisU.x * axisV.y - axisU.y * axisV.x;
+        if (abs(det) < 1e-12) return 0.0;
+        vec2 cell = floor(pixel);
+        float hits = 0.0;
+        for (int j = 0; j < 8; j++) for (int i = 0; i < 8; i++) {
+            vec2 d = cell + vec2((float(i) + 0.5) / 8.0, (float(j) + 0.5) / 8.0) - origin;
+            float u = (d.x * axisV.y - d.y * axisV.x) / det;
+            float v = (axisU.x * d.y - axisU.y * d.x) / det;
+            if (u >= 0.0 && u <= 1.0 && v >= 0.0 && v <= 1.0) hits += 1.0;
+        }
+        return hits / 64.0;
+    }
+    if (shape > 0.5) {
         vec2 cell = floor(pixel);
         vec2 span = clamp(min(edges.zw, cell + 1.0) - max(edges.xy, cell), 0.0, 1.0);
         return span.x * span.y;
@@ -97,6 +124,10 @@ function shaderFor(variant: Variant): ShaderModule {
 /** A run's quads, in paint order. Each batch is consecutive quads that share a pipeline and texture: one instanced draw. */
 interface Batch { readonly mode: Mode; readonly texture: TextureHandle; readonly first: number; readonly count: number }
 interface Pin { readonly atlas: TextAtlas; readonly entry: AtlasEntry }
+/** An exact entry's draw, or a stand-in's: `rect` is the device rect a stand-in is drawn in, null for an exact entry. */
+interface Found { readonly entry: AtlasEntry; readonly rgba: boolean; readonly rect: { x: number; y: number; w: number; h: number } | null }
+/** A single-slice mask the index can stand in for, with the geometry it is scaled from. */
+interface StandIn { readonly atlas: TextAtlas; readonly entry: AtlasEntry; readonly scale: number; readonly originX: number; readonly originY: number; readonly w: number; readonly h: number }
 interface TextRun extends PreparedRun {
     readonly device: GfxDevice;
     readonly buffer: BufferHandle;
@@ -154,6 +185,8 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         if (whiteLease) host.allocator.gpu.release(whiteLease);
         pipelines = new Map(); pipelinesPending = false; failed = false;
         mono = null; colour = null; white = null; whiteLease = null; sampler = null;
+        // Stand-in records name the atlases this device just disposed: none may be drawn from again.
+        standIns.clear();
         device = null;
     };
 
@@ -182,7 +215,9 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
     const ensureDeviceObjects = (owner: GfxDevice): Stop | null => {
         if (!mono) mono = new TextAtlas(owner, atlasHost, { format: 'r8', maxPages: MONO_PAGES, surface: audit });
         if (!colour) colour = new TextAtlas(owner, atlasHost, { format: 'rgba8', maxPages: COLOUR_PAGES, surface: audit });
-        if (!sampler) sampler = owner.createSampler('nearest');
+        // Linear, not nearest: an exact quad sits on whole pixels with texel-centre samples, so it reads the same texels either
+        // way; a stand-in is scaled, and only linear filtering keeps it smooth.
+        if (!sampler) sampler = owner.createSampler('linear');
         if (!white) {
             const lease = host.allocator.gpu.reserve(1);
             if (!lease) return { status: 'denied', pool: 'gpu', bytes: 1 };
@@ -232,27 +267,53 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         const last = build.batches[build.batches.length - 1];
         if (last && last.mode === mode && last.texture === texture) build.batches[build.batches.length - 1] = { mode, texture, first: last.first, count: last.count + 1 };
         else build.batches.push({ mode, texture, first: build.count - 1, count: 1 });
-        build.x0 = Math.min(build.x0, x); build.y0 = Math.min(build.y0, y);
-        build.x1 = Math.max(build.x1, x + w); build.y1 = Math.max(build.y1, y + h);
         return true;
+    };
+    /** Grows the run's device bounds, which become its scissor. */
+    const widen = (build: Build, x0: number, y0: number, x1: number, y1: number): void => {
+        build.x0 = Math.min(build.x0, x0); build.y0 = Math.min(build.y0, y0);
+        build.x1 = Math.max(build.x1, x1); build.y1 = Math.max(build.y1, y1);
     };
 
     /** A solid rect in device px: analytic coverage in the shader, so its edges match the canvas's fill. False only on refusal. */
     const solidRect = (build: Build, x0: number, y0: number, x1: number, y1: number, colourOf: Rgba, viewW: number, viewH: number): boolean => {
         if (!(x1 > x0 && y1 > y0) || x1 <= 0 || y1 <= 0 || x0 >= viewW || y0 >= viewH) return true;
-        return put(build, 'mono', white!, x0, y0, x1 - x0, y1 - y0, SOLID_UV, SOLID_UV, SOLID_UV, SOLID_UV, colourOf);
+        if (!put(build, 'mono', white!, x0, y0, x1 - x0, y1 - y0, SOLID_UV, SOLID_UV, SOLID_UV, SOLID_UV, colourOf)) return false;
+        widen(build, x0, y0, x1, y1);
+        return true;
     };
 
     const denied = (build: Build): Stop => ({ status: 'denied', pool: 'cpu', bytes: (build.count + 1) * INSTANCE_BYTES });
 
-    /** Rects of one item: the backgrounds before its glyphs, the decorations after. Only axis-aligned maps are solid here. */
+    /** A rect under a map with rotation or skew: the device parallelogram, one instance. Its shader supersamples the coverage
+     * (the canvas fill's antialiasing), so a rotated node's backgrounds and underlines stay on the GPU. False only on refusal. */
+    const parallelogram = (build: Build, r: { x: number; y: number; w: number; h: number }, A: readonly number[], colourOf: Rgba, viewW: number, viewH: number): boolean => {
+        // A negative extent fills the same rect as its positive one, so the origin moves to the low corner first.
+        const rx = r.w < 0 ? r.x + r.w : r.x, rw = Math.abs(r.w);
+        const ry = r.h < 0 ? r.y + r.h : r.y, rh = Math.abs(r.h);
+        if (!(rw > 0 && rh > 0)) return true;
+        const ox = A[0] * rx + A[2] * ry + A[4], oy = A[1] * rx + A[3] * ry + A[5];
+        const e1x = A[0] * rw, e1y = A[1] * rw, e2x = A[2] * rh, e2y = A[3] * rh;
+        const xs = [ox, ox + e1x, ox + e2x, ox + e1x + e2x], ys = [oy, oy + e1y, oy + e2y, oy + e1y + e2y];
+        const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+        if (x1 <= 0 || y1 <= 0 || x0 >= viewW || y0 >= viewH) return true;
+        if (!put(build, 'mono', white!, ox, oy, e1x, e1y, PARALLELOGRAM_UV, e2x, e2y, 0, colourOf)) return false;
+        widen(build, x0, y0, x1, y1);
+        return true;
+    };
+
+    /** Rects of one item: the backgrounds before its glyphs, the decorations after. Axis-aligned maps are analytic solids;
+     * rotated or skewed ones are parallelograms. */
     const rects = (build: Build, list: readonly { x: number; y: number; w: number; h: number }[], colours: readonly Rgba[],
         A: readonly number[], viewW: number, viewH: number): Stop | null => {
         for (let i = 0; i < list.length; i++) {
             const colourOf = colours[i];
             if (!colourOf) return { status: 'unsupported', why: 'material' };
-            if (A[1] !== 0 || A[2] !== 0) return { status: 'unsupported', why: 'rotated-rect' };
             const r = list[i];
+            if (A[1] !== 0 || A[2] !== 0) {
+                if (!parallelogram(build, r, A, colourOf, viewW, viewH)) return denied(build);
+                continue;
+            }
             const xa = A[0] * r.x + A[4], xb = A[0] * (r.x + r.w) + A[4];
             const ya = A[3] * r.y + A[5], yb = A[3] * (r.y + r.h) + A[5];
             if (!solidRect(build, Math.min(xa, xb), Math.min(ya, yb), Math.max(xa, xb), Math.max(ya, yb), colourOf, viewW, viewH)) return denied(build);
@@ -260,13 +321,57 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         return null;
     };
 
-    /** One slice of a glyph mask: the atlas hit, or the raster and its upload. Null when the run must wait. */
-    const sliceEntry = (req: MaskRequest, geometry: MaskGeometry, slice: number, glyph: Rgba, frame: number, budget: FrameBudget): Stop | { entry: AtlasEntry; rgba: boolean } => {
+    /** The scale of a glyph run's device map: its square root of |det|, so a uniform zoom is exactly its ratio. */
+    const scaleOf = (req: MaskRequest): number => Math.sqrt(Math.abs(req.a * req.d - req.b * req.c));
+    /** The identity of a run ignoring its scale and position: a stand-in is the same glyphs at another size. Axis-aligned
+     * maps only: a rotated mask drawn as an axis-aligned quad would be wrong, so a rotated run waits for its exact mask. */
+    const standInKey = (req: MaskRequest, glyph: Rgba | null): string | null => {
+        if (!(scaleOf(req) > 0) || req.b !== 0 || req.c !== 0) return null;
+        return JSON.stringify([req.epoch, req.css, req.text, req.rtl, Math.sign(req.a), Math.sign(req.d), glyph]);
+    };
+    /** The latest single-slice mask placed for each identity, with the geometry a stand-in scales from. */
+    const standIns = new Map<string, StandIn>();
+    const recordStandIn = (req: MaskRequest, glyph: Rgba | null, atlas: TextAtlas, entry: AtlasEntry, geometry: MaskGeometry): void => {
+        if (geometry.slices !== 1) return;
+        const key = standInKey(req, glyph);
+        if (!key) return;
+        if (standIns.size >= STANDIN_LIMIT) standIns.clear();
+        standIns.set(key, { atlas, entry, scale: scaleOf(req), originX: geometry.originX, originY: geometry.originY, w: geometry.w, h: geometry.h });
+    };
+    /** Motion only: the nearest existing mask of these glyphs, drawn scaled about the new origin. The ratio is bounded to 2×
+     * either way (beyond that the stand-in is blurred); a stand-in the atlas has evicted is not used. Null when none fits. */
+    const standInFor = (req: MaskRequest, glyph: Rgba, knownColour: boolean): Found | null => {
+        const scale = scaleOf(req);
+        const candidates = knownColour ? [standInKey(req, glyph)] : [standInKey(req, null), standInKey(req, glyph)];
+        for (const key of candidates) {
+            if (!key) continue;
+            const record = standIns.get(key);
+            if (!record || !record.atlas.holds(record.entry)) continue;
+            const ratio = scale / record.scale;
+            if (!(ratio >= 0.5 && ratio <= 2)) continue;
+            auditCount(audit, 'text:standin');
+            return { entry: record.entry, rgba: record.atlas === colour,
+                rect: { x: req.x - ratio * record.originX, y: req.y - ratio * record.originY, w: ratio * record.w, h: ratio * record.h } };
+        }
+        return null;
+    };
+
+    /** One slice of a glyph mask: the atlas hit, or during motion a stand-in, or the raster and its upload. A stand-in
+     * carries its own rect; an exact entry is drawn where its geometry puts it. Null when the run must wait. */
+    const sliceEntry = (req: MaskRequest, geometry: MaskGeometry, slice: number, glyph: Rgba, frame: number, budget: FrameBudget, moving: boolean): Stop | Found => {
         const key = maskKey(req, geometry, slice, null);
         const knownColour = colourRuns.has(key);
         if (!knownColour) {
             const hit = mono!.lookup(key, frame);
-            if (hit) return { entry: hit, rgba: false };
+            if (hit) return { entry: hit, rgba: false, rect: null };
+        } else {
+            const hit = colour!.lookup(maskKey(req, geometry, slice, glyph), frame);
+            if (hit) return { entry: hit, rgba: true, rect: null };
+        }
+        // Motion draws what exists: a missing exact mask is a stand-in, not a raster, until the view settles.
+        if (moving && geometry.slices === 1) {
+            const standIn = standInFor(req, glyph, knownColour);
+            if (standIn) return standIn;
         }
         if (budget.shouldYield()) return { status: 'deferred' };
         if (!ensureRasterLease()) return { status: 'denied', pool: 'cpu', bytes: MASK_CANVAS_BYTES };
@@ -275,20 +380,22 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
             if (!probe.colourGlyphs) {
                 if (!budget.claimUpload(probe.pixels.byteLength)) return { status: 'deferred' };
                 auditCount(audit, 'text:mask-raster', 1, { px: probe.w * probe.h });
-                const placed = mono!.place(key, req.css, probe.w, probe.h, frame);
+                const placed = mono!.place(maskKey(req, geometry, slice, null), req.css, probe.w, probe.h, frame);
                 if (placed === 'oversize') return { status: 'unsupported', why: 'oversize' };
                 if (placed === 'denied') return { status: 'denied', pool: 'gpu', bytes: probe.pixels.byteLength };
                 mono!.upload(placed, probe.pixels, probe.w);
                 auditCount(audit, 'upload:mask', 1, { bytes: probe.pixels.byteLength });
-                return { entry: placed, rgba: false };
+                recordStandIn(req, null, mono!, placed, geometry);
+                return { entry: placed, rgba: false, rect: null };
             }
             if (colourRuns.size >= COLOUR_RUN_LIMIT) { colourRuns.clear(); colourAccount.reset(); }
             // A memo the pool refuses is not kept: the run is rastered as a probe again next time, which is correct, only slower.
             if (colourAccount.charge(colourRunBytes(key))) colourRuns.add(key);
         }
         const colourKey = maskKey(req, geometry, slice, glyph);
-        const hit = colour!.lookup(colourKey, frame);
-        if (hit) return { entry: hit, rgba: true };
+        // A colour entry can outlive its memo (the memo is cleared when full), so the atlas is asked before a raster.
+        const present = colour!.lookup(colourKey, frame);
+        if (present) return { entry: present, rgba: true, rect: null };
         const made = raster.rasterise(req, geometry, slice, glyph);
         if (!budget.claimUpload(made.pixels.byteLength)) return { status: 'deferred' };
         auditCount(audit, 'text:mask-raster', 1, { px: made.w * made.h });
@@ -297,11 +404,12 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         if (placed === 'denied') return { status: 'denied', pool: 'gpu', bytes: made.pixels.byteLength };
         colour!.upload(placed, made.pixels, made.w * 4);
         auditCount(audit, 'upload:mask', 1, { bytes: made.pixels.byteLength });
-        return { entry: placed, rgba: true };
+        recordStandIn(req, glyph, colour!, placed, geometry);
+        return { entry: placed, rgba: true, rect: null };
     };
 
     /** A glyph fragment: its mask slices, each drawn as one quad at the origin's whole pixel plus the mask's offset. */
-    const glyphs = (build: Build, item: PaintTextItem, A: readonly number[], frame: number, viewW: number, viewH: number, budget: FrameBudget): Stop | null => {
+    const glyphs = (build: Build, item: PaintTextItem, A: readonly number[], frame: number, viewW: number, viewH: number, budget: FrameBudget, moving: boolean): Stop | null => {
         let glyph = 0;
         for (const line of item.paint.lines) for (const fragment of line.fragments) {
             const colourOf = item.material.glyphs[glyph++];
@@ -319,17 +427,22 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
             if (measured.status !== 'ok') return { status: 'unsupported', why: measured.status === 'oversize' ? 'oversize' : measured.why };
             const geometry = measured.geometry;
             for (let slice = 0; slice < geometry.slices; slice++) {
-                const found = sliceEntry(req, geometry, slice, colourOf, frame, budget);
+                const found = sliceEntry(req, geometry, slice, colourOf, frame, budget, moving);
                 if ('status' in found) return found;
-                const sliceX = slice * 1024;
-                const x = Math.floor(req.x) + geometry.left + sliceX, y = Math.floor(req.y) + geometry.top;
-                const w = Math.min(1024, geometry.w - sliceX), h = geometry.h;
+                let x: number, y: number, w: number, h: number;
+                if (found.rect) ({ x, y, w, h } = found.rect);
+                else {
+                    const sliceX = slice * 1024;
+                    x = Math.floor(req.x) + geometry.left + sliceX; y = Math.floor(req.y) + geometry.top;
+                    w = Math.min(1024, geometry.w - sliceX); h = geometry.h;
+                }
                 const e = found.entry;
                 // A slice outside the view draws nothing: it is neither uploaded nor pinned by this run.
                 if (x + w <= 0 || y + h <= 0 || x >= viewW || y >= viewH) continue;
                 const u0 = e.x / ATLAS_PAGE, v0 = 1 - e.y / ATLAS_PAGE, u1 = (e.x + e.w) / ATLAS_PAGE, v1 = 1 - (e.y + e.h) / ATLAS_PAGE;
                 // A colour run is tinted by nothing: its own colour is in the texels, so the instance carries white.
                 if (!put(build, found.rgba ? 'colour' : 'mono', e.page.texture, x, y, w, h, u0, v0, u1, v1, found.rgba ? WHITE : colourOf)) return denied(build);
+                widen(build, x, y, x + w, y + h);
                 build.pins.push({ atlas: found.rgba ? colour! : mono!, entry: e });
             }
         }
@@ -341,17 +454,17 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
     const noteEpoch = (it: PaintTextItem): void => {
         if (it.paint.fontEpoch === seenEpoch) return;
         for (const face of it.faces.faces) { mono?.retireFace(face.css); colour?.retireFace(face.css); }
-        colourRuns.clear(); colourAccount.reset();
+        colourRuns.clear(); colourAccount.reset(); standIns.clear();
         seenEpoch = it.paint.fontEpoch;
     };
 
-    const item = (build: Build, it: PaintTextItem, frame: number, viewW: number, viewH: number, scale: number, view: { camera: { x: number; y: number } }, budget: FrameBudget): Stop | null => {
+    const item = (build: Build, it: PaintTextItem, frame: number, viewW: number, viewH: number, scale: number, view: { camera: { x: number; y: number }; moving: boolean }, budget: FrameBudget): Stop | null => {
         // Routes never clip: the composer applies the item's clips around whatever this draws.
         const [a, b, c, d, e, f] = it.localToWorld;
         // The item's device map: its local-to-world, then the view's camera and pixel scale (deviceAffine without the origin rebase).
         const A = [scale * a, scale * b, scale * c, scale * d, scale * (e - view.camera.x), scale * (f - view.camera.y)];
         return rects(build, it.paint.backgrounds, it.material.backgrounds, A, viewW, viewH)
-            ?? glyphs(build, it, A, frame, viewW, viewH, budget)
+            ?? glyphs(build, it, A, frame, viewW, viewH, budget, view.moving)
             ?? rects(build, it.paint.decorations, it.material.decorations, A, viewW, viewH);
     };
 

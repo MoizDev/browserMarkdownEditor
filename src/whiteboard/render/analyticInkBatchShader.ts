@@ -32,3 +32,44 @@ void main() {
         fragment,
     },
 };
+
+/** The run route's fragment: the grid4 sample set of the union route, not an exact area. A stroke beside or over another
+ * is judged by the same 16 samples on both routes (the grid composite box-averages 4×4 subsamples at (i + ½)/4 of each
+ * pixel), so the seam between an analytic capsule and a union stroke carries no sampling mismatch. By reading, the exact
+ * area differed from the grid at every edge by up to a sixteenth, and that difference is the seam. Every sample lies within
+ * √2·3/8 ≈ 0.53 px of the pixel centre, so a centre more than 0.54 px inside or outside the capsule decides all 16 without
+ * sampling; only the edge band pays for the sixteen tests. */
+const GRID_FRAGMENT = `#version 300 es
+precision highp float;
+flat in vec4 endpoints; flat in vec4 metrics; flat in vec4 colour;
+in vec2 pixel;
+layout(location=0) out vec4 gfxColour;
+float capsuleDistance(vec2 p, vec2 a, vec2 d, float invLength2) {
+    float t = clamp(dot(p - a, d) * invLength2, 0.0, 1.0);
+    return length(p - a - d * t);
+}
+void main() {
+    vec2 a = endpoints.xy, d = endpoints.zw - endpoints.xy;
+    float r = metrics.x, length2 = dot(d, d), invLength2 = length2 > 0.0 ? 1.0 / length2 : 0.0;
+    vec2 cell = floor(pixel);
+    float centre = capsuleDistance(cell + vec2(0.5), a, d, invLength2);
+    float coverage;
+    if (centre <= r - 0.54) coverage = 1.0;
+    else if (centre > r + 0.54) coverage = 0.0;
+    else {
+        float inside = 0.0;
+        for (int j = 0; j < 4; j++) for (int i = 0; i < 4; i++) {
+            vec2 s = cell + vec2(float(i) + 0.5, float(j) + 0.5) * 0.25;
+            if (capsuleDistance(s, a, d, invLength2) <= r) inside += 1.0;
+        }
+        coverage = inside / 16.0;
+    }
+    gfxColour = colour * coverage;
+}`;
+
+/** The run route's shader: the batch's vertex stage with the grid4 fragment. The adapter keeps ANALYTIC_INK_BATCH_SHADER as it is. */
+export const ANALYTIC_INK_GRID_SHADER: ShaderModule = {
+    id: 'board-analytic-capsule-grid4', revision: 1,
+    layout: ANALYTIC_INK_BATCH_SHADER.layout,
+    glsl: { vertex: ANALYTIC_INK_BATCH_SHADER.glsl.vertex, fragment: GRID_FRAGMENT },
+};

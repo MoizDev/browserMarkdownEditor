@@ -8,7 +8,7 @@ import type { ByteLease, ClipToken, GpuPass, RectI } from '../../../platform/ren
 import type { FrameBudget } from '../../../platform/render/types';
 import { auditCount } from '../../../platform/render/renderAudit';
 import { createPathCoverageKit, type PathCoverageAdmission, type PreparedPathCoverage } from '../../../platform/render/pathCoverage';
-import { pathFillTriangles } from '../pathFillTriangles';
+import { pathFillTriangles, type PathFillTriangles } from '../pathFillTriangles';
 import { pathStrokeTriangles } from '../pathStrokeTriangles';
 import type { PaintClip, PaintPathItem } from '../paintStream';
 import type { Admission, CreatePathRoute, ItemRoute, PreparedRun, WithClips } from './contracts';
@@ -21,6 +21,12 @@ const GEOMETRY_CACHE_BYTES = 16 * 2 ** 20;
 const NO_TRIANGLES = new Float64Array(0);
 const ORIGIN = Object.freeze({ x: 0, y: 0 });
 const WHITE = Object.freeze([1, 1, 1, 1] as const);
+/** Most items one grouped coverage pass takes. A group is one geometry build and one admission, so a bound keeps a long run's
+ * build and its cache key bounded. */
+const GROUP_MAX_ITEMS = 512;
+/** Device pixels two grouped items' bounds must be apart. Closer, their anti-aliased edges share pixels, and one union coverage
+ * over both differs from two composites along the shared edge (a seam). By reading: the notebook's ruling lines are 10+ px apart. */
+const GROUP_GAP_DEVICE_PX = 2;
 
 type Origin = Readonly<{ x: number; y: number }>;
 type Bounds = Readonly<{ x0: number; y0: number; x1: number; y1: number }>;
@@ -62,7 +68,9 @@ function bandOf(localToWorld: Affine, view: ViewState): number | null {
     const [a, b, c, d] = localToWorld;
     const scale = view.camera.z * view.viewport.dpr * Math.hypot(a, b, c, d);
     if (!(scale > 0) || !Number.isFinite(scale)) return null;
-    return Math.floor(2 * Math.log2(scale));
+    // The ladder's scales are exact powers of 2^(1/2), and log2 of such a value can land an ulp below its integer; the floor
+    // would then put the same zoom in the band below, under its own cache key (by reading: a band split at a ladder step).
+    return Math.floor(2 * Math.log2(scale) + 1e-9);
 }
 function flattenTolerance(band: number): number {
     return FLATTEN_DEVICE_PX / Math.pow(2, (band + 1) / 2);
@@ -97,7 +105,12 @@ const commandKeys = new WeakMap<readonly PathCommand[], string>();
 function commandKey(d: readonly PathCommand[]): string {
     const known = commandKeys.get(d);
     if (known !== undefined) return known;
-    const text = JSON.stringify(d);
+    const key = textKey(JSON.stringify(d));
+    commandKeys.set(d, key);
+    return key;
+}
+/** The 53-bit hash of a text and its length, as a short key. */
+function textKey(text: string): string {
     let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
     for (let i = 0; i < text.length; i++) {
         const ch = text.charCodeAt(i);
@@ -105,10 +118,83 @@ function commandKey(d: readonly PathCommand[]): string {
     }
     h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
     h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-    const key = `${(4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36)}:${text.length}`;
-    commandKeys.set(d, key);
-    return key;
+    return `${(4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36)}:${text.length}`;
 }
+
+/** The commands' control-point bounds, in local units (a conservative bound, as pathOrigin's). Null when there are no points. */
+const commandBoxes = new WeakMap<readonly PathCommand[], Bounds | null>();
+function commandBounds(d: readonly PathCommand[]): Bounds | null {
+    const known = commandBoxes.get(d);
+    if (known !== undefined) return known;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const command of d) {
+        if (command[0] === 'Z') continue;
+        for (let i = 1; i + 1 < command.length; i += 2) {
+            const x = command[i] as number, y = command[i + 1] as number;
+            x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y);
+        }
+    }
+    const found = Number.isFinite(x0) && Number.isFinite(y0) && Number.isFinite(x1) && Number.isFinite(y1) ? { x0, y0, x1, y1 } : null;
+    commandBoxes.set(d, found);
+    return found;
+}
+
+/** An item's device-pixel box, for an axis-aligned transform only (then the box of the control points is exact to order). */
+interface DeviceBox { readonly x0: number; readonly x1: number; readonly y0: number; readonly y1: number }
+function deviceBoxOf(item: PaintPathItem, view: ViewState): DeviceBox | null {
+    const bounds = commandBounds(item.d);
+    const affine = bounds && deviceAffine(item.localToWorld, ORIGIN, view);
+    if (!bounds || !affine) return null;
+    const [a, , , d, e, f] = affine;
+    const ax = a * bounds.x0 + e, bx = a * bounds.x1 + e, ay = d * bounds.y0 + f, by = d * bounds.y1 + f;
+    return { x0: Math.min(ax, bx), x1: Math.max(ax, bx), y0: Math.min(ay, by), y1: Math.max(ay, by) };
+}
+/** Whether an item may join a coverage group: an opaque, unclipped, fill-only item under an axis-aligned transform. */
+function groupable(item: PaintPathItem, cover: CoverBlend): boolean {
+    const fill = item.material.fill;
+    if (cover !== 'normal' || !fill || fill[3] !== 1 || item.material.stroke || item.clips.length) return false;
+    const [a, b, c, d] = item.localToWorld;
+    return b === 0 && c === 0 && a !== 0 && d !== 0;
+}
+/** Whether two items share what one coverage pass needs: colour, fill rule and transform. */
+function sameGroupMaterial(a: PaintPathItem, b: PaintPathItem): boolean {
+    const fa = a.material.fill!, fb = b.material.fill!;
+    for (let i = 0; i < 4; i++) if (fa[i] !== fb[i]) return false;
+    for (let i = 0; i < 6; i++) if (a.localToWorld[i] !== b.localToWorld[i]) return false;
+    return a.fillRule === b.fillRule;
+}
+function separated(a: DeviceBox, b: DeviceBox): boolean {
+    return a.x1 + GROUP_GAP_DEVICE_PX <= b.x0 || b.x1 + GROUP_GAP_DEVICE_PX <= a.x0 || a.y1 + GROUP_GAP_DEVICE_PX <= b.y0 || b.y1 + GROUP_GAP_DEVICE_PX <= a.y0;
+}
+
+/** The fill triangles of several items in one origin: each item's own triangles, offset to `origin`, so one admission draws them
+ * all. Null when any item cannot be tessellated; the caller then admits the items one by one. */
+function mergedFillTriangles(members: readonly PaintPathItem[], origin: Origin, tolerance: number): Shapes | null {
+    const parts: { readonly t: PathFillTriangles; readonly dx: number; readonly dy: number }[] = [];
+    let positive = 0, negative = 0, edges = 0, any = false;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const member of members) {
+        const mo = pathOrigin(member.d);
+        const t = pathFillTriangles(member.d, { tolerance, origin: [mo.x, mo.y] });
+        if (!t) return null;
+        const dx = mo.x - origin.x, dy = mo.y - origin.y;
+        parts.push({ t, dx, dy }); positive += t.positive.length; negative += t.negative.length; edges += t.edges;
+        if (t.positive.length + t.negative.length > 0) {
+            any = true;
+            x0 = Math.min(x0, t.bounds.x0 + dx); x1 = Math.max(x1, t.bounds.x1 + dx);
+            y0 = Math.min(y0, t.bounds.y0 + dy); y1 = Math.max(y1, t.bounds.y1 + dy);
+        }
+    }
+    const pos = new Float64Array(positive), neg = new Float64Array(negative);
+    let p = 0, n = 0;
+    for (const { t, dx, dy } of parts) { p = copyOffset(t.positive, pos, p, dx, dy); n = copyOffset(t.negative, neg, n, dx, dy); }
+    return { positive: pos, negative: neg, edges, bounds: any ? { x0, y0, x1, y1 } : { x0: 0, y0: 0, x1: 0, y1: 0 } };
+}
+function copyOffset(src: Float64Array, dst: Float64Array, at: number, dx: number, dy: number): number {
+    for (let i = 0; i < src.length; i += 2) { dst[at + i] = src[i] + dx; dst[at + i + 1] = src[i + 1] + dy; }
+    return at + src.length;
+}
+
 
 const localRects = new WeakMap<PaintClip, LocalRect | null>();
 /** A clip that is an axis-aligned rectangle under a rotation-free transform, in its own local units; null for any other path.
@@ -298,6 +384,28 @@ export function createPath(host: LayerHost, audit: string): {
         drawMask: (pass, mask) => kit.drawMask(pass, mask),
         retire: () => { for (const mask of masks) kit.retire(mask); },
     });
+    /** The clips of an item that has none: one frozen value, so a grouped item builds no clips. */
+    const noClips = makeClips([], []);
+    /** One coverage pass for a group of items that share colour, rule and transform, with disjoint device bounds: their triangles
+     * are one set. Null when the group's geometry cannot be built (the caller admits its items one by one). */
+    const admitGroup = (members: readonly PaintPathItem[], view: ViewState, viewport: Viewport, cover: CoverBlend, budget: FrameBudget,
+        acquired: PreparedPathCoverage[]): ItemAdmission | null => {
+        const lead = members[0];
+        const band = bandOf(lead.localToWorld, view);
+        if (band === null) return null;
+        const key = `group|${band}|${lead.fillRule}|${textKey(members.map(member => commandKey(member.d)).join(';'))}`;
+        const geometry = outlineFor(key, lead.d, band, (tolerance, origin) => mergedFillTriangles(members, origin, tolerance));
+        if (isRefused(geometry)) return { status: 'denied', bytes: geometry.refused, pool: 'cpu' };
+        if (!geometry) return null;
+        const affine = deviceAffine(lead.localToWorld, geometry.origin, view);
+        if (!affine) return { status: 'unsupported', why: 'path geometry' };
+        const taken = take(kit.admit({ shapes: geometry, rule: lead.fillRule, affine, viewport, colour: lead.material.fill!,
+            output: { kind: 'composite', blend: cover } }, budget), acquired, geometry.bytes);
+        if (isStop(taken)) return taken;
+        auditCount(audit, 'route:path-group', members.length);
+        return { status: 'ready', value: { clips: noClips, fill: taken, stroke: null } };
+    };
+
     /** Admits a clip list. Masks it acquires go into `acquired`; the caller retires them on any stop. */
     const admitClipList = (clips: readonly PaintClip[], view: ViewState, viewport: Viewport, budget: FrameBudget,
         acquired: PreparedPathCoverage[]): PreparedClips | Stop => {
@@ -390,17 +498,52 @@ export function createPath(host: LayerHost, audit: string): {
             const cover: CoverBlend = blend === 'modulate' ? 'modulate' : 'normal';
             const viewport = viewportOf(view);
             const acquired: PreparedPathCoverage[] = [], prepared: PreparedPathItem[] = [];
-            for (const item of items) {
-                const mark = acquired.length;
-                const admission = admitItem(item, view, viewport, cover, budget, acquired);
-                if (admission.status === 'ready') { prepared.push(admission.value); continue; }
-                // What this item acquired is retired; an empty item is skipped, any other stop ends the run.
+            // Consecutive items that can share a coverage pass wait in `group` (with their device boxes); the first item that cannot
+            // join ends the group, so the draw order of every item is kept.
+            const group: PaintPathItem[] = [], boxes: DeviceBox[] = [];
+            const stopWith = (stop: Stop): Admission<PreparedRun> => {
+                for (const held of acquired) kit.retire(held);
+                return stopAdmission(stop);
+            };
+            /** Places one admission: a ready item is prepared, an empty one is skipped and what it acquired retired, any other
+             * stop is returned for the caller to end the run with. */
+            const place = (admission: ItemAdmission, mark: number): Stop | null => {
+                if (admission.status === 'ready') { prepared.push(admission.value); return null; }
                 for (let i = acquired.length - 1; i >= mark; i--) kit.retire(acquired[i]);
                 acquired.length = mark;
-                if (admission.status === 'empty') continue;
-                for (const held of acquired) kit.retire(held);
-                return stopAdmission(admission);
+                return admission.status === 'empty' ? null : admission;
+            };
+            const flush = (): Stop | null => {
+                if (!group.length) return null;
+                const members = group.splice(0);
+                boxes.length = 0;
+                const mark = acquired.length;
+                if (members.length > 1) {
+                    const grouped = admitGroup(members, view, viewport, cover, budget, acquired);
+                    if (grouped) return place(grouped, mark);
+                }
+                for (const member of members) {
+                    const itemMark = acquired.length;
+                    const stopped = place(admitItem(member, view, viewport, cover, budget, acquired), itemMark);
+                    if (stopped) return stopped;
+                }
+                return null;
+            };
+            for (const item of items) {
+                const box = groupable(item, cover) ? deviceBoxOf(item, view) : null;
+                if (box && (!group.length || (sameGroupMaterial(group[0], item) && boxes.every(other => separated(other, box))))) {
+                    group.push(item); boxes.push(box);
+                    if (group.length >= GROUP_MAX_ITEMS) { const ended = flush(); if (ended) return stopWith(ended); }
+                    continue;
+                }
+                const ended = flush();
+                if (ended) return stopWith(ended);
+                const mark = acquired.length;
+                const stopped = place(admitItem(item, view, viewport, cover, budget, acquired), mark);
+                if (stopped) return stopWith(stopped);
             }
+            const ended = flush();
+            if (ended) return stopWith(ended);
             if (!prepared.length) return { status: 'empty' };
             auditCount(audit, 'route:path', prepared.length);
             const run: PathRun = { route: 'path', blend, items: prepared };

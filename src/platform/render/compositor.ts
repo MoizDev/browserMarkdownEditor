@@ -301,11 +301,17 @@ export class GpuCompositor implements PaneCompositor {
         const encodeStarted = timed ? performance.now() : 0;
         try {
             const coverage = snapshot.layers.map(binding => binding.coverage(frame, this.backend));
-            if (coverage.some(item => !item.complete)) {
-                auditCount('compositor', 'refuse:coverage');
-                if (renderAuditEnabled()) coverage.forEach((item, i) => { if (!item.complete) auditCount((snapshot.layers[i] as { id?: string }).id ?? 'layer', 'incomplete'); });
-                return null;
+            // Only a critical layer's missing content refuses the frame. A non-critical layer presents with its stand-in (what it
+            // drew), so one incomplete layer cannot hold back every other layer on a quiet board (PLAN issue 3, the 0-presents class).
+            let refuse = false;
+            for (let i = 0; i < coverage.length; i++) {
+                if (coverage[i].complete) continue;
+                const layer = snapshot.layers[i];
+                if (layer.critical?.(frame) === false) { if (renderAuditEnabled()) auditCount(layer.id, 'standin'); continue; }
+                refuse = true;
+                if (renderAuditEnabled()) auditCount(layer.id, 'incomplete');
             }
+            if (refuse) { auditCount('compositor', 'refuse:coverage'); return null; }
             encoder = this.#options.owner.resources.beginFrame();
             this.#encodings.add(encoder);
             const bounds = { x: 0, y: 0, width: snapshot.metrics.backingWidth, height: snapshot.metrics.backingHeight };

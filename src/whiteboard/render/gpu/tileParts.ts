@@ -159,6 +159,8 @@ export const createTileParts: CreateTileParts = (_host, audit) => {
             // font change it missed is caught by the next sync, which compares the epochs it published.
             if (!building || building.revision !== revision || building.stamp !== stamp) {
                 pending = changesSince(prepared, stamp);
+                // The zoom question: how often a paint change rebuilds the index, and whether it reports everything.
+                auditCount(audit, pending === 'all' ? 'index:rebuild-all' : 'index:rebuild-regions');
                 const grid = newGrid();
                 building = { revision, stamp, grid, steps: indexSteps(prepared, grid), prepared, done: false };
             }

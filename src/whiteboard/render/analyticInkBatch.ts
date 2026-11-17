@@ -1,12 +1,12 @@
 import type { ViewState } from '../../platform/types';
 import type { LayerHost } from '../../platform/render/compositor.types';
-import type { BufferHandle, ByteLease, GfxDevice, GpuPass, PipelineHandle, RectI } from '../../platform/render/gfx/api';
+import type { BufferHandle, BufferSlice, ByteLease, GfxDevice, GpuPass, PipelineHandle, RectI } from '../../platform/render/gfx/api';
 import type { FrameBudget, FrameToken } from '../../platform/render/types';
 import { analyticInkPaint, type AnalyticInkPaint } from './analyticInk';
 import { auditCount } from '../../platform/render/renderAudit';
 import type { Admission, PreparedRun } from './gpu/contracts';
 import type { PaintInkItem } from './paintStream';
-import { ANALYTIC_INK_BATCH_SHADER } from './analyticInkBatchShader';
+import { ANALYTIC_INK_BATCH_SHADER, ANALYTIC_INK_GRID_SHADER } from './analyticInkBatchShader';
 
 const STRIDE = 48, SLABS = [64 * 1024, 128 * 1024, 256 * 1024] as const;
 type Slab = Readonly<{ buffer: BufferHandle; count: number; size: number; firstPaintIndex: number; bounds: RectI }>;
@@ -216,7 +216,11 @@ export function createAnalyticInkBatch(host: LayerHost, report: (error: unknown)
 
 /** Slabs are bounded so one upload stays inside a frame's allowance; a run larger than a slab takes several. */
 const RUN_SLAB_BYTES = 256 * 1024;
-interface AnalyticSlab { readonly buffer: BufferHandle; readonly count: number; readonly bytes: number; readonly bounds: RectI }
+/** One uploaded slab. Its vertex slice is built once, at admission, so a draw builds only the command that uses it. */
+interface AnalyticSlab {
+    readonly buffer: BufferHandle; readonly count: number; readonly bytes: number; readonly bounds: RectI;
+    readonly vertices: readonly BufferSlice[];
+}
 /** A run admitted for one view. Its slabs are immutable GPU buffers, drawn in item order. */
 export class AnalyticInkRun implements PreparedRun {
     readonly route = 'ink-analytic' as const;
@@ -262,7 +266,7 @@ export function createAnalyticInkRuns(host: LayerHost, audit: string) {
         if (pending || failed) return false;
         const serial = ++incarnation; pending = true;
         try {
-            owner.createPipeline({ shader: ANALYTIC_INK_BATCH_SHADER, topology: 'triangle-strip', colorFormat: 'rgba8', samples: 1,
+            owner.createPipeline({ shader: ANALYTIC_INK_GRID_SHADER, topology: 'triangle-strip', colorFormat: 'rgba8', samples: 1,
                 blend: 'source-over', alphaToCoverage: false, colorWrite: [true, true, true, true], stencil: { enabled: false } })
                 .then(value => {
                     if (incarnation !== serial || device !== owner) { owner.destroy(value); return; }
@@ -319,7 +323,7 @@ export function createAnalyticInkRuns(host: LayerHost, audit: string) {
                 }
                 let bounds: RectI | null = null;
                 for (let i = start; i < end; i++) bounds = union(bounds, rects[i]);
-                created.push({ buffer, count: end - start, bytes, bounds: bounds! });
+                created.push({ buffer, count: end - start, bytes, bounds: bounds!, vertices: [{ buffer, offset: 0, bytes }] });
                 gpuBytes += bytes;
                 auditCount(audit, 'upload:vertex', 1, { bytes });
             }
@@ -332,10 +336,10 @@ export function createAnalyticInkRuns(host: LayerHost, audit: string) {
             if (!live.has(run) || !ready || run.device !== device || host.device() !== device || host.generation !== run.device.generation) {
                 throw new Error('Stale analytic ink run');
             }
+            // The uniform slice is per frame, so one is taken per draw and shared by the run's slabs; nothing else is built here.
             const bindings = { uniforms: [{ binding: 0, slice: host.uniforms(run.viewport) }], textures: [] };
             for (const slab of run.slabs) {
-                pass.draw({ pipeline: ready, bindings, vertices: [{ buffer: slab.buffer, offset: 0, bytes: slab.bytes }],
-                    first: 0, count: 4, instances: slab.count, scissor: slab.bounds });
+                pass.draw({ pipeline: ready, bindings, vertices: slab.vertices, first: 0, count: 4, instances: slab.count, scissor: slab.bounds });
             }
             auditCount(audit, 'route:ink-analytic', run.instances);
         },

@@ -1271,6 +1271,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             attachment: value => target(this.#attachment(value.handle)),
             white: () => texture(this.#white!),
             uniforms: bytes => this.#frameUniforms(work, bytes),
+            uniformsInto: (bytes, into) => this.#frameUniformsInto(work, bytes, into),
             uploadUniforms: () => { if (work.surface) this.#timer.begin(); this.#uploadUniforms(work); },
             beginReplay: () => this.#beginReplay(),
             endReplay: () => this.#endReplay(),
@@ -1384,6 +1385,20 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     }
 
     #frameUniforms(work: FrameWork, bytes: ArrayBufferView): UniformSlice {
+        const slot = this.#writeUniforms(work, bytes);
+        // The write leaves work.offset just past the bytes it copied, so their offset is that minus their length.
+        return { buffer: slot.handle, offset: work.offset - bytes.byteLength, bytes: bytes.byteLength };
+    }
+
+    /** Rewrites a caller-owned record to name the bytes, with no allocation. Fields change only after the write succeeds. */
+    #frameUniformsInto(work: FrameWork, bytes: ArrayBufferView, into: UniformSlice): void {
+        const slot = this.#writeUniforms(work, bytes);
+        into.buffer = slot.handle;
+        into.offset = work.offset - bytes.byteLength;
+        into.bytes = bytes.byteLength;
+    }
+
+    #writeUniforms(work: FrameWork, bytes: ArrayBufferView): UniformSlot {
         count(bytes.byteLength, true);
         if (!work.slot) work.slot = this.#uniformSlot(work);
         const offset = Math.ceil(work.offset / this.limits.uniformAlignment) * this.limits.uniformAlignment;
@@ -1400,7 +1415,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         work.slot.data.set(new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength), offset);
         work.offset = offset + bytes.byteLength;
         this.#pin(work.encoding, work.slot.handle, 'buffer');
-        return { buffer: work.slot.handle, offset, bytes: bytes.byteLength };
+        return work.slot;
     }
 
     #uniformSlot(work: FrameWork): UniformSlot {

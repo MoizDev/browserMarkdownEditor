@@ -104,6 +104,7 @@ export interface FrameBackend {
     attachment(texture: FrameTexture): FrameTarget;
     white(): FrameTexture;
     uniforms(bytes: ArrayBufferView): UniformSlice;
+    uniformsInto(bytes: ArrayBufferView, into: UniformSlice): void;
     uploadUniforms(): void;
     /** The pinned program and sampler for a quad. Cached per frame and variant by the backend, so a quad allocates nothing. */
     quad(command: QuadCommand): QuadPin;
@@ -279,6 +280,9 @@ class DeviceFrame implements ControlledFrame {
     }
     uniforms(bytes: ArrayBufferView): UniformSlice {
         return this.guard(() => this.#backend.uniforms(bytes));
+    }
+    uniformsInto(bytes: ArrayBufferView, into: UniformSlice): void {
+        this.guard(() => this.#backend.uniformsInto(bytes, into));
     }
     acquireTarget(desc: TargetRequest): TargetLease | null {
         return this.guard(() => this.#backend.acquireTarget(desc));

@@ -70,6 +70,67 @@ export function auditTimed(surface: string, work: () => void): void {
     try { work(); } finally { auditFrame(surface, performance.now() - started); }
 }
 
+/** A frame at its presentation point: presented, or refused (`refusal` names why). `canvas` is the pane's canvas that drew the
+ * frame, readable in the same task as the draw; null for a refused frame. */
+export interface PresentInfo {
+    readonly pane: string | null;
+    readonly frame: number;
+    readonly rawTick: number;
+    readonly backend: 'webgl2' | 'canvas2d';
+    readonly complete: boolean;
+    readonly canvas: HTMLCanvasElement | null;
+    /** Stand-in quads drawn this frame; 0 when no layer reported one. */
+    readonly standIns: number;
+    /** Tiles or items left uncovered this frame; 0 when no layer reported one. */
+    readonly holes: number;
+    /** Why the frame was refused instead of presented; null for a presented frame. */
+    readonly refusal: string | null;
+}
+
+/** A recorded present without its canvas reference, so the ring never keeps a canvas alive. */
+export type PresentRecord = Omit<PresentInfo, 'canvas'>;
+
+const PRESENT_CAPACITY = 1024;
+const presentRing: (PresentRecord | undefined)[] = new Array(PRESENT_CAPACITY);
+let presentTotal = 0;
+let drawn = { standIns: 0, holes: 0 };
+
+/** A layer reports, while it draws a frame, the stand-ins it drew and the positions it left with nothing. */
+export function auditDrawn(kind: 'stand-in' | 'hole', count = 1): void {
+    if (!enabled || !(count > 0)) return;
+    if (kind === 'stand-in') drawn.standIns += count; else drawn.holes += count;
+}
+
+/** The compositor starts a frame's tally before its layers draw, and takes it once they have drawn. */
+export function auditDrawnStart(): void { drawn = { standIns: 0, holes: 0 }; }
+export function auditDrawnTake(): { standIns: number; holes: number } {
+    const taken = drawn;
+    drawn = { standIns: 0, holes: 0 };
+    return taken;
+}
+
+/** Records a frame at its presentation point. Off unless the audit is on: one boolean test. Each record enters a bounded ring
+ * (read with auditPresents, exposed as window.__bmeRenderAudit.presents()), and the audit kit's `__bmePresentHook`, if
+ * installed, receives the full info, canvas included. */
+export function auditPresent(info: PresentInfo): void {
+    if (!enabled) return;
+    presentRing[presentTotal % PRESENT_CAPACITY] = { pane: info.pane, frame: info.frame, rawTick: info.rawTick, backend: info.backend,
+        complete: info.complete, standIns: info.standIns, holes: info.holes, refusal: info.refusal };
+    presentTotal++;
+    (globalThis as unknown as { __bmePresentHook?: (info: PresentInfo) => void }).__bmePresentHook?.(info);
+}
+
+/** The recent presents, oldest first. `dropped` counts the records the ring has overwritten since the last reset. */
+export function auditPresents(): { dropped: number; records: readonly PresentRecord[] } {
+    const kept = Math.min(presentTotal, PRESENT_CAPACITY);
+    const records: PresentRecord[] = [];
+    for (let i = presentTotal - kept; i < presentTotal; i++) {
+        const record = presentRing[i % PRESENT_CAPACITY];
+        if (record) records.push(record);
+    }
+    return { dropped: presentTotal - kept, records };
+}
+
 export function auditSnapshot(): RenderAuditSnapshot {
     return { enabled, since, counters: Object.fromEntries(counters),
         frames: Object.fromEntries([...frames].map(([key, value]) => [key, { ...value }])),
@@ -78,9 +139,10 @@ export function auditSnapshot(): RenderAuditSnapshot {
 
 export function auditReset(): void {
     counters = new Map(); frames = new Map(); stages = new Map();
+    presentRing.fill(undefined); presentTotal = 0; drawn = { standIns: 0, holes: 0 };
     since = typeof performance !== 'undefined' ? performance.now() : 0;
 }
 
 if (enabled && typeof window !== 'undefined') {
-    (window as unknown as { __bmeRenderAudit?: unknown }).__bmeRenderAudit = { snapshot: auditSnapshot, reset: auditReset };
+    (window as unknown as { __bmeRenderAudit?: unknown }).__bmeRenderAudit = { snapshot: auditSnapshot, reset: auditReset, presents: auditPresents };
 }

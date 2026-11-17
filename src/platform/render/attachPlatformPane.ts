@@ -13,7 +13,7 @@ import { registerWebgl2PaneFactory } from './compositorFactory';
 import { GpuPaneCandidate } from './gpuPaneCandidate';
 import type { QualifiedGpuPane } from './gpuPaneCandidate';
 import type { CameraConstraint } from './camera';
-import type { Compositor2DOptions, CreatedCompositor2D, PaneCompositor } from './compositor.types';
+import type { CompositorLayer, Compositor2DOptions, CreatedCompositor2D, PaneCompositor } from './compositor.types';
 import { RENDER_CONSTANTS } from './constants';
 import { createLayerHost } from './layerHost';
 import type { MemoryCacheHandle } from './memoryGovernor';
@@ -197,6 +197,12 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             refreshDemandNow: () => { if (!disposed) runtime.refresh(); },
         });
     });
+    // The compositor's view of the layers. Its critical() is the definition's, judged on each frame's view: a layer whose
+    // content a stand-in covers is non-critical and presents with it (PLAN issue 3). Rebuilt only when the layer set changes.
+    const compositorLayers = (): readonly CompositorLayer[] => layerSet.compositorLayers.map(binding => ({
+        ...binding,
+        critical: (frame: ScheduledFrame) => layerSet.definition(binding.layer)?.critical(binding.layer, frame.view) ?? true,
+    }));
     try { layerSet.replace(options.layers); }
     catch (error) {
         for (const cache of caches) { cache.cpu.close(); cache.gpu.close(); }
@@ -247,7 +253,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     }
     const compositor = created.compositor;
     compositorRef.current = compositor;
-    compositor.setLayers(layerSet.compositorLayers);
+    compositor.setLayers(compositorLayers());
     compositor.setLayout(options.layout);
     compositor.setAppearance(options.readAppearance());
 
@@ -323,7 +329,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         onReady: ready => {
             if (disposed || !visible) return;
             gpu = ready;
-            gpu.bundle.compositor.setLayers(layerSet.compositorLayers);
+            gpu.bundle.compositor.setLayers(compositorLayers());
             gpu.bundle.compositor.setLayout(layout);
             gpu.bundle.compositor.setAppearance(options.readAppearance());
             surfaceHost.stage(gpu.bundle.compositor);
@@ -602,8 +608,8 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                 }
             }
             lifecycle?.setLayers(layerSet.layers);
-            compositor.setLayers(layerSet.compositorLayers);
-            gpu?.bundle.compositor.setLayers(layerSet.compositorLayers);
+            compositor.setLayers(compositorLayers());
+            gpu?.bundle.compositor.setLayers(compositorLayers());
             runtime.refresh();
         },
         invalidate(reason, damage) {

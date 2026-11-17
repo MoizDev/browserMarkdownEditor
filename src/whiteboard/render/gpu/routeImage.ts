@@ -9,7 +9,7 @@ import type { FrameBudget } from '../../../platform/render/types';
 import type { PaintImageItem } from '../paintStream';
 import type { PaintResources2d } from '../reference/paint2d';
 import type { Admission, Blend, CreateImageRoute, ItemRoute, PreparedRun } from './contracts';
-import { createImageTextures, IMAGE_FILTER, type ImageTextures } from './imageTextures';
+import { createImageTextures, IMAGE_FILTER, MAX_BOARD_ZOOM, type ImageTextures } from './imageTextures';
 
 /** The picture route as the composer sees it. `useResources` gives it the paint's image lookup for the revision being
  * composed: the ItemRoute contract has no place for it (see the report to gpu), so the composer binds it. */
@@ -180,7 +180,12 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
                 if (b !== 0 || c !== 0 || !(a > 0) || !(d > 0)) return reject(unsupported('transform'));
                 // Routes never clip (gpu's rule): the composer applies the item's clips around this draw.
                 if (item.retainedTile) return reject(unsupported('retained'));
-                const admitted = textures.acquire(item.imageKey, resources.image(item.imageKey), budget);
+                // The texels this picture can show: its device size at the largest zoom a board reaches (not the camera's zoom, which a
+                // later zoom would outgrow and re-upload). By reading: a picture kept at its full source size is more than any zoom shows.
+                const zoom = Math.max(view.camera.z, MAX_BOARD_ZOOM) * view.viewport.dpr;
+                const need = { shown: { width: rect.width * a * zoom, height: rect.height * d * zoom },
+                    crop: item.sourceRect ? { width: item.sourceRect.width, height: item.sourceRect.height } : null };
+                const admitted = textures.acquire(item.imageKey, resources.image(item.imageKey), budget, need);
                 if (admitted.status === 'empty') continue;
                 if (admitted.status !== 'ready') return reject(admitted);
                 holds.push(item.imageKey);

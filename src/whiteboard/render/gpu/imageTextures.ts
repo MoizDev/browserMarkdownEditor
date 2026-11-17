@@ -1,15 +1,20 @@
-// One GPU texture per decoded picture (imageKey), leased from the governor, written once and then only read.
-// A picture is written whole when the frame's upload allowance takes it, else in row chunks that each pass their own
-// claimUpload, so a picture bigger than one frame's allowance still arrives. Design: PLAN §4 gpu-h7, §3.1.
+// One GPU texture per decoded picture (imageKey), leased from the governor and written only as it arrives, then only read.
+// A picture that fits one chunk is written whole; anything larger arrives in row bands, each decoded and then claimed on its
+// own claimUpload, so no single write is larger than a chunk. Design: PLAN §4 gpu-h7, §3.1.
 import type { LayerHost } from '../../../platform/render/compositor.types';
 import type { ByteLease, GfxDevice, TextureHandle } from '../../../platform/render/gfx/api';
 import { auditCount } from '../../../platform/render/renderAudit';
 import type { FrameBudget } from '../../../platform/render/types';
 import type { Admission } from './contracts';
 
-/** One upload chunk, one tile's worth: the scheduler's progress grant is a tile (scheduler.ts progressUploadBytes,
- * 516 × 516 × 4 = 1,064,256 B), so a chunk of this size is always claimable on an otherwise idle frame. */
+/** One upload chunk: the scheduler's progress grant is a tile (scheduler.ts progressUploadBytes, 516 × 516 × 4 = 1,064,256 B),
+ * so a chunk of this size is claimable on an otherwise idle frame. Smaller chunks would mean a decode round trip per band:
+ * a 4000-px-wide picture would take about 16 times as many frames to arrive. */
 export const IMAGE_CHUNK_BYTES = 1024 * 1024;
+
+/** The largest zoom a board shows: DRAWING_VIEW_LIMITS in CanvasPane.tsx (max 100); notebook pages cap at 4, so this bounds
+ * every board. A picture is never kept finer than its device size at this zoom: the texels beyond it are unreachable. */
+export const MAX_BOARD_ZOOM = 100;
 
 /** Mip levels stay off. IMAGE_SAMPLING_PROFILE is bilinear without mip levels, canvas2d samples that way, and the
  * parity row (pictures within 3 levels of canvas2d) is measured against it; mips would smooth minified pictures away
@@ -29,7 +34,7 @@ function textureBytes(width: number, height: number): number {
 }
 
 /** A picture's texture, the stable value every route draws from. `width`/`height` are its texels: smaller than the
- * source only when the source is larger than the device's texture limit and was downscaled at decode. */
+ * source only when the source is larger than the picture's texels at the largest zoom, or the device's texture limit. */
 export interface ImageTexture {
     readonly key: string;
     readonly texture: TextureHandle;
@@ -39,10 +44,17 @@ export interface ImageTexture {
     readonly height: number;
 }
 
+/** The device pixels a draw of the picture spans at the largest zoom (`shown`), and the crop it draws in source texels
+ * (null: the whole picture). The texture keeps the texels those pixels can resolve, never more than the source. */
+export interface ImageNeed {
+    readonly shown: { readonly width: number; readonly height: number };
+    readonly crop: { readonly width: number; readonly height: number } | null;
+}
+
 export interface ImageTextures {
     /** `ready` holds the texture until `unhold` (a route pairs them per prepared run). `deferred` while staging or
      * uploading; `denied` when the GPU pool refuses the lease; `unsupported` for a source this path cannot draw. */
-    acquire(key: string, image: CanvasImageSource, budget: FrameBudget): Admission<ImageTexture>;
+    acquire(key: string, image: CanvasImageSource, budget: FrameBudget, need: ImageNeed): Admission<ImageTexture>;
     unhold(key: string): void;
     /** Frees textures nobody holds and no frame used this frame, least recently used first. Returns the bytes freed. */
     evict(bytes: number, frameId: number): number;
@@ -53,6 +65,10 @@ export interface ImageTextures {
 /** A decoded piece awaiting its upload, charged to the CPU pool while it exists. */
 interface Staged { readonly bitmap: ImageBitmap; readonly lease: ByteLease; readonly row: number; readonly rows: number }
 
+/** A decode in flight. Its CPU lease is returned by whichever comes first: its settlement, or the release of its slot. A
+ * release returns the lease at once, so the governor sees the bytes freed synchronously; the bitmap is closed when it lands. */
+interface Inflight { lease: ByteLease | null }
+
 interface Slot {
     readonly device: GfxDevice;
     readonly view: ImageTexture;
@@ -62,26 +78,35 @@ interface Slot {
     refs: number;
     usedFrame: number;
     ready: boolean;
-    /** Whole-picture upload refused by the allowance: the picture now arrives in chunks. */
-    chunked: boolean;
-    /** Rows of the texture already written, from the top, in chunked mode. */
+    /** Rows of the texture already written, from the top, once the picture arrives in bands. */
     uploaded: number;
-    /** The downscaled source, present only when the picture was larger than the device limit. */
+    /** The downscaled source, present only when the picture was larger than its texture. */
     scaled: Staged | null;
-    /** A chunk decoded and waiting for its claimUpload. */
+    /** A band decoded and waiting for its claimUpload. */
     band: Staged | null;
-    /** One asynchronous decode in flight (a resize or a chunk); its settlement clears this. */
+    /** The decode in flight (a resize or a band), when there is one. */
+    inflight: Inflight | null;
+    /** One asynchronous decode in flight; its settlement clears this. */
     busy: boolean;
     failed: boolean;
     dropped: boolean;
 }
 
-/** The largest texture side the device takes: `limits.maxTexture2D`, the field gpu confirmed (PLAN §3.4's
- * `maxTextureSize` is superseded). */
-const maxTextureSide = (device: GfxDevice): number => device.limits.maxTexture2D;
-
 const UPLOAD_USES = ['sample', 'copy-dst'] as const;
 const UPLOAD_SOURCE = { premultiplied: true, colorSpace: 'srgb', origin: 'top-left' } as const;
+
+/** The texture a picture needs, per axis: its source, cut to the texels its largest-zoom draw spans, and to the device's
+ * texture limit (`limits.maxTexture2D`, the field gpu confirmed). Never larger than the source. */
+function targetSize(device: GfxDevice, w: number, h: number, need: ImageNeed): { width: number; height: number } {
+    const max = device.limits.maxTexture2D;
+    // The source texels one device pixel covers at the largest zoom, scaled up when the draw shows only a crop of the source.
+    const cropW = need.crop ? need.crop.width : w, cropH = need.crop ? need.crop.height : h;
+    const axis = (source: number, cropSize: number, shown: number, cap: number): number => {
+        const fullNeed = shown > 0 && Number.isFinite(shown) ? Math.ceil(shown * source / cropSize) : source;
+        return Math.max(1, Math.min(source, cap, fullNeed));
+    };
+    return { width: axis(w, cropW, need.shown.width, max), height: axis(h, cropH, need.shown.height, max) };
+}
 
 export function createImageTextures(host: LayerHost, audit: string): ImageTextures {
     const slots = new Map<string, Slot>();
@@ -97,15 +122,34 @@ export function createImageTextures(host: LayerHost, audit: string): ImageTextur
     const releaseCpu = (lease: ByteLease): void => { host.allocator.cpu.release(lease); cpuBytes -= lease.bytes; };
     const closeStaged = (staged: Staged): void => { staged.bitmap.close(); releaseCpu(staged.lease); };
 
-    // In-flight decodes are not cancelled: their settlement sees `dropped`, closes what it made and returns its lease.
+    // Synchronous: every byte this slot holds is returned by the time it returns (its decode's bitmap closes when it lands).
     const drop = (slot: Slot): void => {
         slot.dropped = true;
         if (slots.get(slot.view.key) === slot) slots.delete(slot.view.key);
         if (slot.scaled) { closeStaged(slot.scaled); slot.scaled = null; }
         if (slot.band) { closeStaged(slot.band); slot.band = null; }
+        if (slot.inflight?.lease) { releaseCpu(slot.inflight.lease); slot.inflight.lease = null; }
         slot.device.destroy(slot.view.texture);
         host.allocator.gpu.release(slot.lease);
         gpuBytes -= slot.bytes;
+    };
+
+    // One decode in flight for a slot: its lease is held in `inflight` until the decode lands or the slot is dropped.
+    const decode = (slot: Slot, lease: ByteLease, make: () => Promise<ImageBitmap>, onStaged: (bitmap: ImageBitmap, held: ByteLease) => void): void => {
+        const inflight: Inflight = { lease };
+        slot.inflight = inflight; slot.busy = true;
+        make().then(bitmap => {
+            slot.busy = false; slot.inflight = null;
+            const held = inflight.lease; inflight.lease = null;
+            if (!held || slot.dropped) { bitmap.close(); if (held) releaseCpu(held); return; }
+            onStaged(bitmap, held);
+        }, () => {
+            slot.busy = false; slot.inflight = null;
+            const held = inflight.lease; inflight.lease = null;
+            if (held) releaseCpu(held);
+            if (slot.dropped) return;
+            slot.failed = true; host.invalidate('image-texture-failed');
+        });
     };
 
     // Decodes the picture down to the texture size. Settlement is an invalidate, so the next prepare finds it.
@@ -113,34 +157,16 @@ export function createImageTextures(host: LayerHost, audit: string): ImageTextur
         const { width, height } = slot.view;
         const lease = reserveCpu(width * height * 4);
         if (!lease) { awaitCapacity(); return; }
-        slot.busy = true;
-        createImageBitmap(image, { resizeWidth: width, resizeHeight: height, resizeQuality: 'high' }).then(bitmap => {
-            slot.busy = false;
-            if (slot.dropped) { bitmap.close(); releaseCpu(lease); return; }
-            slot.scaled = { bitmap, lease, row: 0, rows: height };
-            host.invalidate('image-texture-staged');
-        }, () => {
-            slot.busy = false; releaseCpu(lease);
-            if (slot.dropped) return;
-            slot.failed = true; host.invalidate('image-texture-failed');
-        });
+        decode(slot, lease, () => createImageBitmap(image, { resizeWidth: width, resizeHeight: height, resizeQuality: 'high' }),
+            (bitmap, held) => { slot.scaled = { bitmap, lease: held, row: 0, rows: height }; host.invalidate('image-texture-staged'); });
     };
 
     // Decodes rows [row, row + rows) of the texture-sized source into a bitmap of exactly that band.
     const startBand = (slot: Slot, source: ImageBitmap, row: number, rows: number): void => {
         const lease = reserveCpu(slot.view.width * rows * 4);
         if (!lease) { awaitCapacity(); return; }
-        slot.busy = true;
-        createImageBitmap(source, 0, row, slot.view.width, rows).then(bitmap => {
-            slot.busy = false;
-            if (slot.dropped) { bitmap.close(); releaseCpu(lease); return; }
-            slot.band = { bitmap, lease, row, rows };
-            host.invalidate('image-texture-band');
-        }, () => {
-            slot.busy = false; releaseCpu(lease);
-            if (slot.dropped) return;
-            slot.failed = true; host.invalidate('image-texture-failed');
-        });
+        decode(slot, lease, () => createImageBitmap(source, 0, row, slot.view.width, rows),
+            (bitmap, held) => { slot.band = { bitmap, lease: held, row, rows }; host.invalidate('image-texture-band'); });
     };
 
     const writeRows = (slot: Slot, device: GfxDevice, rect: { x: number; y: number; width: number; height: number },
@@ -163,15 +189,14 @@ export function createImageTextures(host: LayerHost, audit: string): ImageTextur
             return false;
         }
         const source = slot.scaled ? slot.scaled.bitmap : image;
-        if (!slot.chunked) {
-            const bytes = width * height * 4;
-            if (budget.claimUpload(bytes)) {
+        // A picture that fits one chunk is written whole, from its own bitmap, once its claim is granted.
+        if (slot.uploaded === 0 && !slot.band && width * height * 4 <= IMAGE_CHUNK_BYTES) {
+            if (budget.claimUpload(width * height * 4)) {
                 writeRows(slot, device, { x: 0, y: 0, width, height }, source);
                 finish(slot, device);
                 return true;
             }
-            if (bytes <= IMAGE_CHUNK_BYTES) { host.invalidate('image-texture-upload'); return false; }
-            slot.chunked = true;
+            host.invalidate('image-texture-upload'); return false;
         }
         if (slot.band) {
             const band = slot.band;
@@ -186,7 +211,7 @@ export function createImageTextures(host: LayerHost, audit: string): ImageTextur
     };
 
     return {
-        acquire(key, image, budget) {
+        acquire(key, image, budget, need) {
             const device = host.device();
             if (!device) return { status: 'unsupported', why: 'no-device' };
             if (device.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration) return { status: 'deferred' };
@@ -195,20 +220,24 @@ export function createImageTextures(host: LayerHost, audit: string): ImageTextur
             if (!(w > 0 && h > 0)) return { status: 'empty' };
             let slot = slots.get(key);
             if (slot?.failed) { drop(slot); return { status: 'unsupported', why: 'upload-failed' }; }
-            if (slot && (slot.device !== device || slot.view.sourceWidth !== w || slot.view.sourceHeight !== h)) { drop(slot); slot = undefined; }
+            const target = targetSize(device, w, h, need);
+            // A texture is grown only when no run holds it and none is decoding: a later, larger draw of the same picture needs
+            // more texels than the texture has. A texture that is only too large (the device's scale fell) is kept.
+            const grows = !!slot && slot.refs === 0 && !slot.busy && (slot.view.width < target.width || slot.view.height < target.height);
+            if (slot && (slot.device !== device || slot.view.sourceWidth !== w || slot.view.sourceHeight !== h || grows)) {
+                if (grows) auditCount(audit, 'image:texture-grow', 1, { from: slot.view.width, to: target.width });
+                drop(slot); slot = undefined;
+            }
             if (!slot) {
-                const max = maxTextureSide(device);
-                const scale = Math.min(1, max / w, max / h);
-                const width = Math.min(max, Math.max(1, Math.round(w * scale))), height = Math.min(max, Math.max(1, Math.round(h * scale)));
-                const bytes = textureBytes(width, height);
+                const bytes = textureBytes(target.width, target.height);
                 const lease = host.allocator.gpu.reserve(bytes);
                 if (!lease) { awaitCapacity(); return { status: 'denied', pool: 'gpu', bytes }; }
                 let texture: TextureHandle;
-                try { texture = device.createTexture(width, height, 'rgba8', UPLOAD_USES, lease, { mips: IMAGE_MIPS }); }
+                try { texture = device.createTexture(target.width, target.height, 'rgba8', UPLOAD_USES, lease, { mips: IMAGE_MIPS }); }
                 catch (error) { host.allocator.gpu.release(lease); throw error; }
-                const view: ImageTexture = Object.freeze({ key, texture, sourceWidth: w, sourceHeight: h, width, height });
-                slot = { device, view, lease, bytes, refs: 0, usedFrame: budget.frameId, ready: false, chunked: false, uploaded: 0,
-                    scaled: null, band: null, busy: false, failed: false, dropped: false };
+                const view: ImageTexture = Object.freeze({ key, texture, sourceWidth: w, sourceHeight: h, width: target.width, height: target.height });
+                slot = { device, view, lease, bytes, refs: 0, usedFrame: budget.frameId, ready: false, uploaded: 0,
+                    scaled: null, band: null, inflight: null, busy: false, failed: false, dropped: false };
                 slots.set(key, slot); gpuBytes += bytes;
             }
             slot.usedFrame = budget.frameId;

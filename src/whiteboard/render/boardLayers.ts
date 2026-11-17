@@ -191,6 +191,8 @@ function estimateStep(state: Estimate): void {
 /** Each invocation belongs to one view; the paired layer definitions share one adapter. */
 export interface BoardLayerPair extends Readonly<[PlatformLayerDefinition, PlatformLayerDefinition]> {
     invalidate(reason?: string): void;
+    /** The ink nodes the board's GPU tiles drew in the last composite: the live stroke's wet layer hands over to them. */
+    drawnInkNodeIds(): ReadonlySet<string>;
     /** Each band's LayerHost deadline; the scheduler's coalesced wake only invalidates, it never draws. */
     wakeAt(deadlineMs: number | null): void;
     readyFrame(): PaintSource | null;
@@ -209,6 +211,10 @@ type LayerEvicting = { evictGpu?(bytes: number, frameId: number): number };
 const DIRECT_CHUNK = 64 * 1024;
 /** The coverage a layer reports while it cannot draw the frame: shared, so the per-frame check allocates nothing. */
 const INCOMPLETE: LayerCoverage = Object.freeze({ complete: false, sharp: false });
+const NO_INK: ReadonlySet<string> = Object.freeze(new Set<string>());
+/** The GPU adapter's report of the ink its tiles drew (h2 adds it to the adapter). Until then nothing is reported drawn,
+ * so the live stroke keeps drawing itself, as it does today. */
+type DrawnInkReporter = { drawnInkNodeIds?(): ReadonlySet<string> };
 const STALE: LayerCoverage = Object.freeze({ complete: false, sharp: false, staleVersion: true });
 /** The revision a frame asks a layer for: a loop, since this runs every frame and `find` would allocate a closure. */
 function requestedRevisionOf(frame: ScheduledFrame, layer: Layer): number | undefined {
@@ -827,6 +833,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     });
     const pair = [definition('underlay'), definition('content')] as unknown as BoardLayerPair;
     pair.invalidate = (reason = 'board-content') => { for (const host of hosts.values()) host.invalidate(reason); };
+    pair.drawnInkNodeIds = () => (gpu as DrawnInkReporter | null)?.drawnInkNodeIds?.() ?? NO_INK;
     pair.wakeAt = deadlineMs => { for (const host of hosts.values()) host.wakeAt(deadlineMs); };
     pair.memory = () => allocatorHost?.allocator.cpu ?? null;
     pair.paintProgress = progressNow;

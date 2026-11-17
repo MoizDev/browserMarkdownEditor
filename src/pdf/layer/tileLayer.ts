@@ -289,7 +289,9 @@ export class PdfTileLayer implements Layer {
      */
     private releaseUploadedBitmaps(view: ViewState, viewport: Readonly<Rect>, device: GfxDevice): void {
         const snapshot = this.mirror?.view(view);
-        const mirrored = !snapshot || mirrorViewKey(snapshot) === this.mirrorKey || mirrorViewKey(snapshot) === this.mirrorSkipped;
+        // One key per call: it is a JSON string, and the expression below hashed the same snapshot up to twice.
+        const snapshotKey = snapshot ? mirrorViewKey(snapshot) : '';
+        const mirrored = !snapshot || snapshotKey === this.mirrorKey || snapshotKey === this.mirrorSkipped;
         for (const [key, entry] of this.entries) {
             if (!entry.bitmap || entry.texture?.device !== device) continue;
             // Only the current plan's visible tiles feed the mirror; an older scale kept as a stand-in never does
@@ -362,7 +364,7 @@ export class PdfTileLayer implements Layer {
             this.host.drawTexturedQuad(pass, texture.handle, quad.sourceRect, quad.destRect, { opacity: 1, sampling: 'linear',
                 ...(__BME_BENCH__ ? { coverage: 'standin' as const, standInRatio: item.pixels.source.width / item.pixels.world.width / rasterScale } : {}) });
         }
-        for (const entry of this.drawable(view)) {
+        for (const entry of this.drawable(view, current)) {
             if (!entry.texture || entry.texture.device !== this.host.device()) continue;
             const { source, destination } = this.quad(entry.request, stack.rects[entry.request.page], view);
             this.host.drawTexturedQuad(pass, entry.texture.handle, source, destination,
@@ -392,7 +394,7 @@ export class PdfTileLayer implements Layer {
             this.host.drawTexturedQuad(ctx, item.pixels.bitmap, quad.sourceRect, quad.destRect, { opacity: 1, sampling: 'linear',
                 ...(__BME_BENCH__ ? { coverage: 'standin' as const, standInRatio: item.pixels.source.width / item.pixels.world.width / rasterScale } : {}) });
         }
-        for (const entry of this.drawable(view)) {
+        for (const entry of this.drawable(view, current)) {
             if (!entry.bitmap) continue;
             const { source, destination } = this.quad(entry.request, stack.rects[entry.request.page], view);
             this.host.drawTexturedQuad(ctx, entry.bitmap, source, destination,
@@ -765,9 +767,9 @@ export class PdfTileLayer implements Layer {
         this.drawnPages.set(index, Object.freeze({ x: page.x, y: page.y, width: page.width, height: page.height }));
     }
 
-    private drawable(view: ViewState): Entry[] {
-        const input = this.demand(view);
-        if (contentFamily(input) !== this.contentIdentity) return [];
+    /** `current` is the caller's own check that the frame's content identity is the one entries were planned for. */
+    private drawable(view: ViewState, current: boolean): Entry[] {
+        if (!current) return [];
         const viewport = { x: view.camera.x, y: view.camera.y, width: view.viewport.width / view.camera.z, height: view.viewport.height / view.camera.z };
         return [...this.entries.values()].filter(entry => entry.settled && intersects(rect(entry.request), viewport))
             .sort((a, b) => a.request.scale.scale - b.request.scale.scale || a.used - b.used);

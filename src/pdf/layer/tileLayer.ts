@@ -11,7 +11,7 @@ import type { PdfDemandInput, PdfTileRequest } from './tileDemand';
 import { getPdfFontEpoch, pdfMirrorProfilePrefix, pdfVariantRevision } from '../fonts/profiles';
 import { pdfDocKey } from '../worker/protocol';
 import { consumePdfTileArrival, forgetPdfTileArrival } from '../pool/arrivalWindow';
-import { auditCount } from '../../platform/render/renderAudit';
+import { auditCount, auditDrawn } from '../../platform/render/renderAudit';
 import { QuadList } from './quadList';
 
 /** The pool returns the requested cell plus its one-pixel apron. Ownership of
@@ -429,12 +429,15 @@ export class PdfTileLayer implements Layer {
             const snapshot = this.mirror?.view(view);
             if (!texture || texture.device !== this.host.device() || !snapshot) continue;
             const quad = this.mirror!.store.mirrorQuad(item, snapshot);
+            // The bridge's mirror is a stand-in for the page, never this view's own pixels.
+            auditDrawn('stand-in');
             this.host.drawTexturedQuad(pass, texture.handle, quad.sourceRect, quad.destRect, { opacity: 1, sampling: 'linear',
                 ...(__BME_BENCH__ ? { coverage: 'standin' as const, standInRatio: item.pixels.source.width / item.pixels.world.width / rasterScale } : {}) });
         }
         for (const entry of this.drawable(view, current)) {
             if (!entry.texture || entry.texture.device !== this.host.device()) continue;
             const { source, destination } = this.quad(entry.request, stack.rects[entry.request.page], view);
+            if (entry.request.scale.scale !== rasterScale) auditDrawn('stand-in');
             this.host.drawTexturedQuad(pass, entry.texture.handle, source, destination,
                 { opacity: 1, sampling: 'linear', ...(__BME_BENCH__ ? {
                     coverage: entry.request.scale.scale === rasterScale ? 'current' as const : 'standin' as const,
@@ -459,12 +462,15 @@ export class PdfTileLayer implements Layer {
             const snapshot = this.mirror?.view(view);
             if (!snapshot || !this.bridgeReady.has(item.entry.id)) continue;
             const quad = this.mirror!.store.mirrorQuad(item, snapshot);
+            // The bridge's mirror is a stand-in for the page, never this view's own pixels.
+            auditDrawn('stand-in');
             this.host.drawTexturedQuad(ctx, item.pixels.bitmap, quad.sourceRect, quad.destRect, { opacity: 1, sampling: 'linear',
                 ...(__BME_BENCH__ ? { coverage: 'standin' as const, standInRatio: item.pixels.source.width / item.pixels.world.width / rasterScale } : {}) });
         }
         for (const entry of this.drawable(view, current)) {
             if (!entry.bitmap) continue;
             const { source, destination } = this.quad(entry.request, stack.rects[entry.request.page], view);
+            if (entry.request.scale.scale !== rasterScale) auditDrawn('stand-in');
             this.host.drawTexturedQuad(ctx, entry.bitmap, source, destination,
                 { opacity: 1, sampling: 'linear', ...(__BME_BENCH__ ? {
                     coverage: entry.request.scale.scale === rasterScale ? 'current' as const : 'standin' as const,

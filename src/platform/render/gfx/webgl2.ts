@@ -1058,6 +1058,9 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             this.writeTexture(handle, { x: 0, y: 0, width: 1, height: 1 }, {
                 source: new Uint8Array([255]), rowBytes: 1, premultiplied: true, colorSpace: 'srgb', origin: 'top-left',
             });
+            // Once per device: the single-channel upload path is proven here, not on every upload.
+            const gl = this.#healthy();
+            if (gl.getError() !== gl.NO_ERROR) throw new ArenaError('unsupported');
             this.#white = handle;
             return handle;
         } catch (error) { if (handle) this.destroy(handle); throw error; }
@@ -1067,7 +1070,11 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     #checkUpload(): void {
         // Upload admission is separate from draw submission. A failed copy must not
         // publish a new CPU index summary or stale uniforms as if the GPU accepted it.
+        // Production does not read the GL error flag here: gl.getError is a synchronous round trip to the GPU process, paid on
+        // every upload in the frame path. Arguments are validated before each call; a lost context is seen by #healthy with
+        // no read. The benchmark build keeps the read. The device proves its r8 upload path once, in #ensureWhite.
         const gl = this.#healthy();
+        if (!__BME_BENCH__) return;
         const error = gl.getError();
         if (error !== gl.NO_ERROR) {
             this.#healthy();

@@ -74,6 +74,10 @@ interface CpuRun extends PreparedRun {
     readonly route: 'cpu';
     readonly texture: TextureHandle;
     readonly device: GfxDevice;
+    /** The lease the texture was created on: its bytes are what this run reports, read from the lease, not from a count. */
+    readonly lease: ByteLease;
+    /** The device generation the lease was granted in. A new generation abandons the old one, and returns its leases. */
+    readonly generation: number;
 }
 type CpuRoute = ItemRoute & ResourcedRoute;
 
@@ -86,6 +90,9 @@ function createCpuRoute(host: LayerHost, surface: string, lay: TileLay): CpuRout
     // The scratch canvas is CPU memory the governor must see: it is leased on the layer's CPU pool, and only that lease is reported.
     let scratchLease: ByteLease | null = null;
     const live = new Set<CpuRun>();
+    // A run is held only while its device generation is the host's: a new generation (or a lost device) abandons the old
+    // one, and the arena returns every lease it granted, so a stale run's bytes are no longer reserved to this layer.
+    const current = (run: CpuRun): boolean => run.device === host.device() && run.generation === host.generation;
     // Path geometry of a fragment or ink part, built once per item and device scale: the reference holds only its own items' paths.
     const paths = new WeakMap<PaintItem, { scale: number; prepared: PreparedPath2d }>();
     const pathOf = (item: PaintItem, scale: number, paint: PaintResources2d): PreparedPath2d => {
@@ -153,7 +160,7 @@ function createCpuRoute(host: LayerHost, surface: string, lay: TileLay): CpuRout
                     { source: bitmap, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
                 // Counted once the raster has its texture: the composer counts the fallback with the same pixels.
                 auditCount(surface, 'cpu-raster', 1, { px: SIZE * SIZE });
-                const run: CpuRun = { route: 'cpu', blend, texture, device };
+                const run: CpuRun = { route: 'cpu', blend, texture, device, lease, generation: host.generation };
                 live.add(run);
                 return { status: 'ready', value: run };
             } catch (error) {
@@ -178,17 +185,22 @@ function createCpuRoute(host: LayerHost, surface: string, lay: TileLay): CpuRout
             if (run.route !== 'cpu') throw new Error('CPU route retired a run of another route');
             const cpu = run as CpuRun;
             if (!live.delete(cpu)) return;
-            cpu.device.destroy(cpu.texture);
+            if (current(cpu)) cpu.device.destroy(cpu.texture);
         },
         release(): void {
-            for (const run of live) run.device.destroy(run.texture);
+            // Cleared before any destroy: a destroy that throws must not leave a run counted with its lease already returned.
+            const runs = [...live];
             live.clear();
+            for (const run of runs) if (current(run)) run.device.destroy(run.texture);
             if (scratchLease) host.allocator.cpu.release(scratchLease);
             scratchLease = null;
             scratch = null;
         },
         memory(): { gpuBytes: number; cpuBytes: number } {
-            return { gpuBytes: live.size * TILE_BYTES, cpuBytes: scratchLease?.bytes ?? 0 };
+            // The ledger is the leases the live runs hold on this generation's device: each run's own lease, never a count.
+            let gpuBytes = 0;
+            for (const run of live) if (current(run)) gpuBytes += run.lease.bytes;
+            return { gpuBytes, cpuBytes: scratchLease?.bytes ?? 0 };
         },
     };
     return route;
@@ -238,6 +250,9 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
     let disposed = false;
     let lastFrame = -1;
     let presented: PreparedPaint2d | null = null;
+    // The device and generation the composer's leases were granted on, set when it last prepared. Once either changes the
+    // arena has returned those leases, so the composer's bytes are no longer reserved to this layer and are not reported.
+    let ledger: { device: GfxDevice; generation: number } | null = null;
     let omitPrepared: ReadonlySet<string> | null = null;
     // The view the composed tiles were last prepared for: the store keeps the tiles on it, so its eviction spares them.
     let lastView: ViewState | null = null;
@@ -276,10 +291,11 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             if (!prepared || !device || !documentMatches(prepared.root, budget.token) || !documentMatches(prepared.sourceFrame, budget.token) ||
                 device.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration) {
                 composer.release('hidden');
-                presented = null; omitPrepared = null;
+                presented = null; omitPrepared = null; ledger = null;
                 return;
             }
             omitPrepared = omit?.size ? omit : null;
+            ledger = { device, generation: host.generation };
             try {
                 timed(surface, 'prepare', () => composer.prepare(view, budget, prepared, omit));
             } catch (error) {
@@ -321,7 +337,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         },
         release(reason: GpuReleaseReason): void {
             composer.release(reason);
-            presented = null; omitPrepared = null; lastFrame = -1;
+            presented = null; omitPrepared = null; lastFrame = -1; ledger = null;
         },
         needsFrame(): boolean { return !disposed && composer.needsFrame(); },
         drawnInkNodeIds(): ReadonlySet<string> { return disposed ? NO_INK : composer.drawnInkNodeIds(); },
@@ -344,7 +360,11 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         // GPU bytes are the composer's: each is leased by its owner (the store, a route) on the layer's GPU pool, reported once.
         // CPU bytes are this route's own leased scratch only: a route's CPU bytes that are not leased (the text scratch, the path
         // geometry cache) are not reported, since the governor would refuse to admit bytes it has not reserved.
-        memory(): { gpuBytes: number; cpuBytes: number } { return { gpuBytes: composer.memory().gpuBytes, cpuBytes: cpu.memory().cpuBytes }; },
+        memory(): { gpuBytes: number; cpuBytes: number } {
+            // The composer's ledger (store targets and route leases, the CPU route's included) counts only while its device generation is current.
+            const held = ledger !== null && ledger.device === host.device() && ledger.generation === host.generation;
+            return { gpuBytes: held ? composer.memory().gpuBytes : 0, cpuBytes: cpu.memory().cpuBytes };
+        },
         cpuWorkingSet(): { mandatoryBytes: number; prefetchBytes: number } {
             return { mandatoryBytes: composer.memory().cpuBytes, prefetchBytes: 0 };
         },

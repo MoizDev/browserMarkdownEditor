@@ -122,6 +122,9 @@ class NotebookPaperLayer implements Layer {
     /** Stack rects whose paper has been drawn at least once since the GPU route was last released: the pages a board may
      * claim opaque. By identity: a layout change makes new rect objects, so the claim resets with the layout. */
     private drawn = new WeakSet<Rect>();
+    /** Whether any page has been drawn since the GPU route was last released. Unlike `drawn` (this revision's rects), it
+     * survives a new revision: the previous pictures are what stands in while the new ones compose. */
+    private drawnOnce = false;
     private claim: { readonly ready: Ready; readonly rects: readonly Rect[] } | null = null;
     private readonly gpuReference: CanvasPaintAdapter = {
         prepare: () => {}, readyFrame: () => this.gpuPrepared?.sourceFrame ?? null,
@@ -291,6 +294,7 @@ class NotebookPaperLayer implements Layer {
         return this.claim.rects;
     }
     private markDrawn(rect: Rect): void {
+        this.drawnOnce = true;
         if (this.drawn.has(rect)) return;
         this.drawn.add(rect); this.claim = null;
     }
@@ -332,7 +336,7 @@ class NotebookPaperLayer implements Layer {
         });
     }
     releaseGpu(reason: GpuReleaseReason): void {
-        this.gpu.release(reason); this.gpuPrepared = null; this.gpuSource = null; this.drawn = new WeakSet(); this.claim = null;
+        this.gpu.release(reason); this.gpuPrepared = null; this.gpuSource = null; this.drawn = new WeakSet(); this.drawnOnce = false; this.claim = null;
         // Pressure takes GPU memory only. The CPU paths stay: dropping them made every pressure release a
         // full rebuild (measured: 788 rebuilds in one notebook stroke), and the rebuild asked for the same tiles again.
         if (reason === 'pressure') return;
@@ -360,11 +364,11 @@ class NotebookPaperLayer implements Layer {
     }
     /** Critical only while the paper has drawn no page at all: a stand-in (any drawn page) lets a pan that exposes pages faster
      * than they compose present what there is, instead of refusing every frame (the 0-presents class, measured on large boards). */
-    critical(): boolean { return this.drawnPageRects().length === 0; }
+    critical(): boolean { return !this.drawnOnce; }
     coverage(frame: ScheduledFrame, layer: Layer, backend: CompositorBackend): LayerCoverage {
         const result = this.coverageNow(frame, layer, backend);
         // What the paper draws besides the current picture, for the present audit: pages drawn before are stand-ins; none drawn is a hole.
-        if (!result.complete || !result.sharp) auditDrawn(!result.complete && this.drawnPageRects().length === 0 ? 'hole' : 'stand-in');
+        if (!result.complete || !result.sharp) auditDrawn(!result.complete && !this.drawnOnce ? 'hole' : 'stand-in');
         return result;
     }
     private coverageNow(frame: ScheduledFrame, layer: Layer, backend: CompositorBackend): LayerCoverage {

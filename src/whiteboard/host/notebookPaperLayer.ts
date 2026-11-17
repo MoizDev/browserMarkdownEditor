@@ -289,6 +289,11 @@ class NotebookPaperLayer implements Layer {
         if (this.drawn.has(rect)) return;
         this.drawn.add(rect); this.claim = null;
     }
+    /** The paper's own adapter reports its mandatory GPU bytes for the viewport (h2's gpuMandatoryBytes; none until it lands). */
+    gpuWorkingSetBytes(viewport: Readonly<{ width: number; height: number }>): number {
+        if (this.disposed) return 0;
+        return (this.gpu as { gpuMandatoryBytes?(viewport: Readonly<{ width: number; height: number }>): number }).gpuMandatoryBytes?.(viewport) ?? 0;
+    }
     /** Forwards the composer's offscreen encode; a no-op until the adapter has one (PLAN §3.3, wave 2). */
     /** The governor's trim: frees the adapter's GPU tiles not used this frame, and returns the bytes freed. */
     evictGpu(bytes: number, frameId: number): number {
@@ -374,6 +379,9 @@ export function createNotebookPaperLayer(options: NotebookPaperLayerOptions): No
         drawnPageRects: () => live?.drawnPageRects() ?? [],
         revision: layer => (layer as NotebookPaperLayer).currentRevision(),
         cpuWorkingSet: layer => ({ mandatoryBytes: (layer as NotebookPaperLayer).demand(), prefetchBytes: 0 }),
+        // A spread until the platform type carries gpuWorkingSet (h9). The paper owns its adapter, so it reports it once.
+        ...{ gpuWorkingSet: (layer: Layer, viewport: Readonly<{ width: number; height: number }>) =>
+            ({ mandatoryBytes: (layer as NotebookPaperLayer).gpuWorkingSetBytes(viewport) }) },
         critical: layer => (layer as NotebookPaperLayer).critical(),
         coverage: (layer, frame, backend) => (layer as NotebookPaperLayer).coverage(frame, layer, backend),
     };

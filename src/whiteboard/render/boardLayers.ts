@@ -193,6 +193,8 @@ export interface BoardLayerPair extends Readonly<[PlatformLayerDefinition, Platf
     invalidate(reason?: string): void;
     /** The ink nodes the board's GPU tiles drew in the last composite: the live stroke's wet layer hands over to them. */
     drawnInkNodeIds(): ReadonlySet<string>;
+    /** Whether the board draws on a device (its GPU composer), so the owner may ask for whole-scene frames. */
+    onDevice(): boolean;
     /** Each band's LayerHost deadline; the scheduler's coalesced wake only invalidates, it never draws. */
     wakeAt(deadlineMs: number | null): void;
     readyFrame(): PaintSource | null;
@@ -845,6 +847,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     const pair = [definition('underlay'), definition('content')] as unknown as BoardLayerPair;
     pair.invalidate = (reason = 'board-content') => { for (const host of hosts.values()) host.invalidate(reason); };
     pair.drawnInkNodeIds = () => (gpu as DrawnInkReporter | null)?.drawnInkNodeIds?.() ?? NO_INK;
+    pair.onDevice = () => !!activeHost()?.device();
     pair.wakeAt = deadlineMs => { for (const host of hosts.values()) host.wakeAt(deadlineMs); };
     pair.memory = () => allocatorHost?.allocator.cpu ?? null;
     pair.paintProgress = progressNow;

@@ -119,9 +119,13 @@ interface Draw {
     clipOn: boolean; cx: number; cy: number; cw: number; ch: number;
     /** The ink nodes of the tile, added to the drawn-ink set when the draw is laid. */
     ink: readonly string[];
-    /** A live part's admitted run, drawn through the image route under the clip; null for a tile draw. */
+    /** A live part's admitted run and the route that admitted it, drawn under the clip; null for a tile draw. */
     live: PreparedRun | null;
+    liveRoute: ItemRoute | null;
 }
+
+/** A live part admitted for this frame: its run and the route that owns it, retired by that route. */
+interface LiveAdmission { readonly route: ItemRoute; readonly run: PreparedRun }
 
 /** The item routes a composer draws through. `cpu` takes what a GPU route refuses; its own counters name that raster. */
 export interface TileRoutes {
@@ -265,9 +269,9 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     const drawnInk = new Set<string>();
     // Live parts: admitted each frame through the image route, released at the next prepare. Scratch holds the ones of the
     // position being drawn, in paint order.
-    const liveRuns: PreparedRun[] = [];
-    const liveAdmitted = new Map<PaintItem, PreparedRun | null>();
-    const liveScratch: { order: number; run: PreparedRun }[] = [];
+    const liveRuns: LiveAdmission[] = [];
+    const liveAdmitted = new Map<PaintItem, LiveAdmission | null>();
+    const liveScratch: { order: number; run: PreparedRun; route: ItemRoute }[] = [];
     const standScratch: { order: number; entry: TileEntry; slot: Slot }[] = [];
     // Batch scratch: the quads of one call, reused. The pool holds spec objects for the composer's life.
     const quadPool: { sourceRect: Rect; destRect: Rect }[] = [];
@@ -288,6 +292,11 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     let device: GfxDevice | null = null;
     let frame = 0, validRevision = 0;
     let omitIds: ReadonlySet<string> | null = null;
+    // Nodes that left the omit set while their tiles lack them: drawn live until the tiles under them are composed (see prepare).
+    // The value is the frame it left: a tile encoded from that frame on already holds the node, so its live part is skipped.
+    const heldNodes = new Map<string, number>();
+    // The frame each tile entry was last encoded (its content's frame), read against heldNodes.
+    const composedAt = new WeakMap<TileEntry, number>();
     let lastZoom: number | undefined, zoomScale = 0;
     // The scale the last prepare composed and drew. Coverage describes this scale, not the exact demand: a zoom draws its
     // ladder scale, and coverage asked about the exact one, where nothing is composed, so every frame of a zoom read incomplete.
@@ -362,6 +371,23 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             return position;
         }
         return null;
+    };
+
+    /** True while a node's tiles at `target` lack it: a position under its bounds is dirty (it still holds the old content), or a
+     * visible one has nothing yet. Positions out of view are not waited for: they hold their dirty tiles until they are seen. */
+    const heldStillMissing = (id: string, target: number, span: Span): boolean => {
+        for (const rect of parts.boundsOfNodes(new Set([id]))) {
+            const x0 = Math.floor(rect.x * target / EDGE), x1 = Math.ceil((rect.x + rect.width) * target / EDGE);
+            const y0 = Math.floor(rect.y * target / EDGE), y1 = Math.ceil((rect.y + rect.height) * target / EDGE);
+            for (const band of BANDS) {
+                for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+                    const status = statusAt(band, target, x, y);
+                    if (status === 'dirty') return true;
+                    if (status === 'missing' && inSpan(span, x, y) && !finishedAt(band, target, x, y)) return true;
+                }
+            }
+        }
+        return false;
     };
 
     /** The GPU route for an item, or the CPU route with the reason no GPU route takes it. */
@@ -506,17 +532,12 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
 
     /** The compose pass of one frame, in priority order: dirty visible positions, then missing visible ones, then the
      * missing positions one ring outside the view. The frame's limit is the number of tiles it may compose. */
-    const compose = (view: ViewState, budget: FrameBudget, gpu: GfxDevice, target: number, span: Span, zooming: boolean, demand: number): void => {
+    const compose = (view: ViewState, budget: FrameBudget, gpu: GfxDevice, target: number, span: Span): void => {
         let limit = view.moving ? 2 : 8;
         if (options.slowGpu?.()) limit = Math.max(1, limit >> 1);
         let composed = 0;
-        // While zooming, a missing position may wait for a stand-in that is at most 2× magnified (the stand-in is drawn meanwhile).
-        const magnifiedAtMost2 = (band: PaintBand, x: number, y: number): boolean => {
-            const list = standInsOf(band, target, x, y);
-            return list.length > 0 && list[0].key.scale >= demand / 2;
-        };
         // Advances one position. False when this frame's compose is spent (limit, budget, a wait); true when the pass goes on.
-        const drive = (position: Position, key: number, pass: 'dirty' | 'missing' | 'ring'): boolean => {
+        const drive = (position: Position, key: number, pass: 'held' | 'dirty' | 'missing' | 'ring'): boolean => {
             if (position.parked) return true;
             // Why a frame composes nothing is the zoom question: each exit is counted (pass and cause).
             if (composed >= limit) { auditCount(audit, `compose:limit:${pass}`); return false; }
@@ -556,6 +577,29 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             auditCount(audit, `compose:wait:${pass}`);
             return false;
         };
+        // The positions under a held node come first: it stays live until they are composed, so they shorten every hold, and
+        // a held node's content is composed before any other tile in the frame's budget (gpu).
+        for (const id of heldNodes.keys()) {
+            for (const rect of parts.boundsOfNodes(new Set([id]))) {
+                const x0 = Math.max(span.x0, Math.floor(rect.x * target / EDGE)), x1 = Math.min(span.x1, Math.ceil((rect.x + rect.width) * target / EDGE));
+                const y0 = Math.max(span.y0, Math.floor(rect.y * target / EDGE)), y1 = Math.min(span.y1, Math.ceil((rect.y + rect.height) * target / EDGE));
+                for (const band of BANDS) {
+                    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+                        const key = positionKey(band, target, x, y);
+                        let position = building.get(key);
+                        if (!position) {
+                            const status = statusAt(band, target, x, y);
+                            if (status !== 'dirty' && !(status === 'missing' && !finishedAt(band, target, x, y))) continue;
+                            const started = begin(band, target, x, y, view);
+                            if (!started) continue;
+                            position = started;
+                            building.set(key, position);
+                        }
+                        if (!drive(position, key, 'held')) return;
+                    }
+                }
+            }
+        }
         for (const pass of ['dirty', 'missing', 'ring'] as const) {
             const margin = pass === 'ring' ? 1 : 0;
             for (const band of BANDS) {
@@ -568,7 +612,6 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         if (!position) {
                             const status = statusAt(band, target, x, y);
                             if (pass === 'dirty' ? status !== 'dirty' : status !== 'missing') continue;
-                            if (pass !== 'dirty' && zooming && magnifiedAtMost2(band, x, y)) continue;
                             const started = begin(band, target, x, y, view);
                             if (!started) continue;
                             position = started;
@@ -622,7 +665,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         const world = tileWorld(entry.key);
         let draw = draws[drawCount];
         if (!draw) {
-            draw = { band, texture: target.texture, mode: slot.mode, x: 0, y: 0, w: 0, h: 0, clipOn: false, cx: 0, cy: 0, cw: 0, ch: 0, ink: NO_IDS, live: null };
+            draw = { band, texture: target.texture, mode: slot.mode, x: 0, y: 0, w: 0, h: 0, clipOn: false, cx: 0, cy: 0, cw: 0, ch: 0, ink: NO_IDS, live: null, liveRoute: null };
             draws.push(draw);
         }
         drawCount++;
@@ -630,7 +673,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         draw.x = world.x; draw.y = world.y; draw.w = world.width; draw.h = world.height;
         draw.clipOn = clip !== null;
         draw.ink = slot.inkNodes;
-        draw.live = null;
+        draw.live = null; draw.liveRoute = null;
         if (clip) { draw.cx = clip.x; draw.cy = clip.y; draw.cw = clip.width; draw.ch = clip.height; }
         if (draw.mode === 'isolated') auditCount(audit, 'isolation:copy');
         store.touch(entry, frame);
@@ -640,56 +683,70 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
      * until then (and while zooming) each position shows its exact tile if it has one, else a stand-in clipped to it. */
     /** Retires the live runs admitted for the last frame. Called at the next prepare, after that frame was drawn. */
     const retireLive = (): void => {
-        const route = routes.image;
-        for (const run of liveRuns) route?.retire(run);
+        for (const live of liveRuns) live.route.retire(live.run);
         liveRuns.length = 0;
         liveAdmitted.clear();
     };
 
-    /** A live part's run for this frame, admitted once however many positions show it. A part the image route does not
-     * draw this frame is counted (live:dropped:<why>), never skipped silently. */
-    const admitLive = (item: PaintItem, view: ViewState, budget: FrameBudget): PreparedRun | null => {
+    /** A live part's run for this frame, admitted once however many positions show it. Video parts take the image route; any other
+     * part is admitted by the route that draws its kind (a held node's parts). A part no route draws this frame is counted
+     * (live:dropped:<why>), never skipped silently. */
+    const admitLive = (item: PaintItem, blend: Blend, view: ViewState, budget: FrameBudget): LiveAdmission | null => {
         const known = liveAdmitted.get(item);
         if (known !== undefined) return known;
-        let run: PreparedRun | null = null;
-        const route = routes.image;
-        if (!route) auditCount(audit, 'live:dropped:route-absent');
+        let admitted: LiveAdmission | null = null;
+        const route = isLivePart(item) ? routes.image : routeOf(item).route;
+        // The CPU route rasters a tile-sized scratch at the camera origin: it cannot draw a live part over the surface.
+        if (!route || route === routes.cpu) auditCount(audit, route ? 'live:dropped:cpu-route' : 'live:dropped:route-absent');
         else {
-            const outcome = route.admit([item], view, 'over', budget);
-            if (outcome.status === 'ready') { run = outcome.value; liveRuns.push(run); }
+            const outcome = route.admit([item], view, blend, budget);
+            if (outcome.status === 'ready') { admitted = { route, run: outcome.value }; liveRuns.push(admitted); }
             else if (outcome.status === 'unsupported') auditCount(audit, `live:dropped:${outcome.why}`);
             else if (outcome.status !== 'empty') auditCount(audit, `live:dropped:${outcome.status}`);
         }
-        liveAdmitted.set(item, run);
-        return run;
+        liveAdmitted.set(item, admitted);
+        return admitted;
     };
 
-    /** The live parts of a position, in paint order, admitted for this frame into `liveScratch`. Empty unless `wanted`. */
-    const collectLive = (band: PaintBand, target: number, x: number, y: number, view: ViewState, budget: FrameBudget, wanted: boolean): void => {
+    /** A held node's parts are drawn live here unless a stand-in entry of this position was encoded since the node left the omit
+     * set: that tile already holds the node, so the live part would be a second copy. */
+    const heldLive = (nodeId: string, stand: readonly { readonly entry: TileEntry }[]): boolean => {
+        const since = heldNodes.get(nodeId);
+        if (since === undefined) return false;
+        for (const { entry } of stand) if ((composedAt.get(entry) ?? -1) >= since) return false;
+        return true;
+    };
+
+    /** The live parts of a position, in paint order, admitted for this frame into `liveScratch`. Video parts only when `wanted`; the
+     * parts of a held node (its tiles lack it) when `held`. */
+    const collectLive = (band: PaintBand, target: number, x: number, y: number, view: ViewState, budget: FrameBudget,
+        wanted: boolean, stand: readonly { readonly entry: TileEntry }[] | null): void => {
         liveScratch.length = 0;
-        if (!wanted) return;
+        // A position's parts are queried only for video or while a node is held: a board with neither pays nothing here.
+        if (!wanted && !(stand && heldNodes.size)) return;
         const interior = tileWorld(keyOf(band, target, x, y, 0));
         const pad = GUTTER / target;
         const gutter: Rect = { x: interior.x - pad, y: interior.y - pad, width: interior.width + 2 * pad, height: interior.height + 2 * pad };
         // partsFor answers in paint order, so the scratch is too.
         for (const part of parts.partsFor(band, gutter, omitIds ?? undefined)) {
-            if (!isLivePart(part.item)) continue;
-            const run = admitLive(part.item, view, budget);
-            if (run) liveScratch.push({ order: part.order, run });
+            const video = isLivePart(part.item);
+            if (video ? !wanted : !(stand && heldLive(part.nodeId, stand))) continue;
+            const admitted = admitLive(part.item, part.blend, view, budget);
+            if (admitted) liveScratch.push({ order: part.order, run: admitted.run, route: admitted.route });
         }
     };
 
     /** A live draw: its run under `clip`, in the draw order of the position it shows. */
-    const addLiveDraw = (band: PaintBand, run: PreparedRun, clip: Rect): void => {
+    const addLiveDraw = (band: PaintBand, run: PreparedRun, route: ItemRoute, clip: Rect): void => {
         let draw = draws[drawCount];
         if (!draw) {
-            draw = { band, texture: null, mode: 'over', x: 0, y: 0, w: 0, h: 0, clipOn: true, cx: 0, cy: 0, cw: 0, ch: 0, ink: NO_IDS, live: null };
+            draw = { band, texture: null, mode: 'over', x: 0, y: 0, w: 0, h: 0, clipOn: true, cx: 0, cy: 0, cw: 0, ch: 0, ink: NO_IDS, live: null, liveRoute: null };
             draws.push(draw);
         }
         drawCount++;
         draw.band = band; draw.texture = null; draw.mode = 'over'; draw.clipOn = true;
         draw.cx = clip.x; draw.cy = clip.y; draw.cw = clip.width; draw.ch = clip.height;
-        draw.ink = NO_IDS; draw.live = run;
+        draw.ink = NO_IDS; draw.live = run; draw.liveRoute = route;
         auditCount(audit, 'tile:live-part');
     };
 
@@ -697,7 +754,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     const liveBefore = (band: PaintBand, order: number, from: number, clip: Rect | null): number => {
         let li = from;
         for (; li < liveScratch.length && liveScratch[li].order < order; li++) {
-            if (clip) addLiveDraw(band, liveScratch[li].run, clip);
+            if (clip) addLiveDraw(band, liveScratch[li].run, liveScratch[li].route, clip);
         }
         return li;
     };
@@ -729,7 +786,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         // A lowered tile covers four positions: each draw is clipped to the position it shows.
                         const pendingClip = pending.lowered ? clipAt(x, y) : null;
                         if (pending.lowered && !pendingClip) continue;
-                        collectLive(band, target, x, y, view, budget, pending.live > 0);
+                        collectLive(band, target, x, y, view, budget, pending.live > 0, null);
                         const orders = pending.slices.map(part => part.firstOrder);
                         let li = 0;
                         for (const slice of pending.slices) {
@@ -748,7 +805,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         const count = slot0?.count ?? 0;
                         const withLive = (slot0?.live ?? 0) > 0;
                         const clip = withLive ? clipAt(x, y) : null;
-                        collectLive(band, target, x, y, view, budget, withLive);
+                        collectLive(band, target, x, y, view, budget, withLive, null);
                         let li = 0;
                         for (let s = 0; s < count; s++) {
                             const entry = entryAt(band, target, x, y, s);
@@ -768,13 +825,13 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     if (!clip) continue;
                     // The stand-in's entries are drawn in paint order, so its live parts interleave as they do in an exact tile
                     // (the list is in position order, which is not paint order).
-                    collectLive(band, target, x, y, view, budget, paintHasLive);
                     standScratch.length = 0;
                     for (const entry of standInsOf(band, target, x, y)) {
                         const slot = slots.get(entry);
                         if (slot) standScratch.push({ order: slot.firstOrder[entry.key.slice] ?? Infinity, entry, slot });
                     }
                     standScratch.sort((a, b) => a.order - b.order);
+                    collectLive(band, target, x, y, view, budget, paintHasLive, standScratch);
                     let li = 0;
                     for (const item of standScratch) {
                         li = liveBefore(band, item.order, li, clip);
@@ -787,6 +844,20 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 }
             }
         }
+    };
+
+    /** Every visible position of both bands has its tile at `scale`, or one finished this frame (encoded before the draw). */
+    const exactReady = (view: ViewState, scale: number): boolean => {
+        const span = spanAt(view, scale);
+        for (const band of BANDS) {
+            for (let y = span.y0; y < span.y1; y++) {
+                for (let x = span.x0; x < span.x1; x++) {
+                    const status = statusAt(band, scale, x, y);
+                    if (status !== 'ok' && !(status === 'missing' && finishedAt(band, scale, x, y))) return false;
+                }
+            }
+        }
+        return true;
     };
 
     /** Every visible position of both bands has its exact tile at `exact`, or no content: the band's picture is current. */
@@ -805,6 +876,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             const entry = slice.entry;
             if (entry && entry.target && entryOfKey(slice.key) === entry) {
                 const target = entry.target;
+                composedAt.set(entry, frame);
                 const pass = passes.begin(target.target, { x: 0, y: 0, width: target.size, height: target.size },
                     { clear: slice.blend === 'modulate' ? WHITE : CLEAR, stencil: false });
                 const audited = renderAuditEnabled();
@@ -841,6 +913,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         store.releaseAll();
         for (const route of routeList) route.release();
         denied = false; waiting = false; settled = false; presenting = false;
+        heldNodes.clear();
     };
 
     return {
@@ -849,7 +922,10 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             frame = budget.frameId;
             drawnInk.clear();
             retireLive();
-            if (scaleIndexes.size >= 60) {
+            // The interned scales only name the positions in progress: with none in progress they are forgotten now, so a zoom's
+            // scales are not kept after it ends (gpu: the churn cannot hold memory). The restart at 60 stays for a long zoom.
+            if (!building.size) scaleIndexes.clear();
+            else if (scaleIndexes.size >= 60) {
                 // The keys' scale indexes are nearly spent: the positions in progress are restarted, which frees their indexes.
                 for (const position of building.values()) cancel(position);
                 building.clear(); scaleIndexes.clear();
@@ -876,8 +952,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             if (!zooming) zoomScale = 0;
             else if (!(zoomScale >= demand && zoomScale <= demand * 1.2 * SQRT2)) zoomScale = ladderScale(demand);
             const exact = exactScale(demand);
-            const target = zooming ? zoomScale : exact;
-            drawnTarget = target;
+            // Compose targets the exact scale every frame, visible positions first (exact-first zoom, gpu).
+            const target = exact;
             drawnCamX = view.camera.x; drawnCamY = view.camera.y; drawnCamZ = view.camera.z;
 
             indexing = !parts.sync(prepared, budget);
@@ -895,6 +971,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     for (const id of omitIds ?? []) if (!nextOmit?.has(id)) diff.add(id);
                     for (const id of nextOmit ?? []) if (!omitIds?.has(id)) diff.add(id);
                     for (const rect of parts.boundsOfNodes(diff)) store.markDirty(rect);
+                    // A node that leaves the omit set is drawn live until the tiles under it are composed: its old tiles lack it.
+                    for (const id of omitIds ?? []) if (!nextOmit?.has(id)) heldNodes.set(id, frame);
                     omitIds = nextOmit ? new Set(nextOmit) : null;
                     invalidated = true;
                 }
@@ -913,12 +991,19 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     else cancel(position);
                 }
                 finished = kept;
-                if (device) compose(view, budget, device, target, span, zooming, demand);
+                if (device) compose(view, budget, device, target, span);
+                // A held node stays live while a tile under it is dirty, or a visible one under it has nothing yet.
+                for (const id of heldNodes.keys()) if (!heldStillMissing(id, target, span)) heldNodes.delete(id);
             } else {
                 for (const position of finished) cancel(position);
                 finished = [];
             }
-            buildDraws(view, target, zooming, budget);
+            // Drawn at the exact scale once its visible tiles are all there. While zooming and not yet, the bucket's composed tiles
+            // are drawn (they are the stand-ins), so a zoom frame never waits on the exact compose (gpu's cost rule).
+            const drawTarget = zooming && zoomScale > 0 && !exactReady(view, target) ? zoomScale : target;
+            drawnTarget = drawTarget;
+            if (zooming) auditCount(audit, drawTarget === target ? 'compose:zoom:exact' : 'compose:zoom:standin');
+            buildDraws(view, drawTarget, zooming, budget);
             settled = !indexing && allExact(view, target);
         },
         encodeOffscreen(passes: OffscreenPasses, _view: ViewState, band: PaintBand): void {
@@ -952,7 +1037,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     if (draw.clipOn) {
                         scissor.x = draw.cx; scissor.y = draw.cy; scissor.width = draw.cw; scissor.height = draw.ch;
                         const clip = pass.pushClip(scissor);
-                        routes.image?.draw(pass, draw.live);
+                        draw.liveRoute?.draw(pass, draw.live);
                         pass.popClip(clip);
                     }
                     i++;

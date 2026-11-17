@@ -138,6 +138,9 @@ export interface TileComposer {
     /** Lays the frame's tiles of one band. Draws only: no allocation, no upload, no readback. */
     drawGpu(pass: GpuPass, view: ViewState, band: PaintBand): void;
     coverage(view: ViewState): { complete: boolean; sharp: boolean; staleVersion?: boolean };
+    /** The ids whose every visible position is composed exactly at the drawn scale (no stand-in, no dirty tile, no index in
+     * progress). The board shows a wet stroke until its node is in this set, so committed and wet ink overlap, never gap. */
+    inkComposed(view: ViewState, ids: ReadonlySet<string>): Set<string>;
     /** False while nothing can make progress this frame: composed and settled, or waiting for memory. */
     needsFrame(): boolean;
     memory(): { gpuBytes: number; cpuBytes: number };
@@ -641,6 +644,27 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 }
             }
             return { complete, sharp: complete && sharp, ...(stale ? { staleVersion: true } : {}) };
+        },
+        inkComposed(view: ViewState, ids: ReadonlySet<string>): Set<string> {
+            const out = new Set<string>();
+            if (disposed || !presenting || indexing) return out;
+            const target = drawnTarget, span = spanAt(view, target);
+            // A node the index does not know is not composed, whatever the view shows; a node with no visible position is.
+            const exactIn = (rect: Readonly<Rect>): boolean => {
+                const x0 = Math.max(span.x0, Math.floor(rect.x * target / EDGE));
+                const x1 = Math.min(span.x1 - 1, Math.ceil((rect.x + rect.width) * target / EDGE) - 1);
+                const y0 = Math.max(span.y0, Math.floor(rect.y * target / EDGE));
+                const y1 = Math.min(span.y1 - 1, Math.ceil((rect.y + rect.height) * target / EDGE) - 1);
+                for (const band of BANDS) for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+                    if (statusAt(band, target, x, y) !== 'ok') return false;
+                }
+                return true;
+            };
+            for (const id of ids) {
+                const rects = parts.boundsOfNodes(new Set([id]));
+                if (rects.length && rects.every(exactIn)) out.add(id);
+            }
+            return out;
         },
         needsFrame(): boolean {
             if (disposed || denied || !presenting) return false;

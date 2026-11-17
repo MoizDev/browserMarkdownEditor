@@ -225,6 +225,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
     let omitPrepared: ReadonlySet<string> | null = null;
     // The view the composed tiles were last prepared for: the store keeps the tiles on it, so its eviction spares them.
     let lastView: ViewState | null = null;
+    let inkMemo: { frame: number; paint: PreparedPaint2d; set: ReadonlySet<string> } | null = null;
     const lay = createLay(host);
     const cpu = createCpuRoute(host, surface, lay);
     const ink = createInkRoutes(host, surface);
@@ -270,7 +271,17 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         },
         readyFrame(): PaintSource | null { return disposed ? null : presented?.sourceFrame ?? null; },
         readyPaint(): PreparedPaint2d | null { return disposed ? null : presented; },
-        readyInkNodeIds(): ReadonlySet<string> | null { return disposed ? null : presented?.root.inkNodeIds ?? null; },
+        readyInkNodeIds(): ReadonlySet<string> | null {
+            if (disposed || !presented) return null;
+            const nodes = presented.root.inkNodeIds;
+            if (!nodes.size) return nodes;
+            if (!lastView) return new Set();
+            // Memoized per prepare: the composer only changes in prepare, and the board asks several times a frame.
+            if (inkMemo && inkMemo.frame === lastFrame && inkMemo.paint === presented) return inkMemo.set;
+            const set = composer.inkComposed(lastView, nodes);
+            inkMemo = { frame: lastFrame, paint: presented, set };
+            return set;
+        },
         encodeOffscreen(passes: OffscreenPasses, view: ViewState, band: PaintBand): void {
             if (disposed) return;
             timed(surface, 'encodeOffscreen', () => composer.encodeOffscreen(passes, view, band));

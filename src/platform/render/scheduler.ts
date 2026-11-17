@@ -266,8 +266,8 @@ interface FrameWork { entry: PaneEntry; frame: ScheduledFrame; batch: DamageBatc
     first: boolean[] | null;
     /** A layer's prepare reported (or may have) drawn something different, or the frame was granted an upload. */
     drawnChange: boolean;
-    /** Layers whose prepare ran to completion this frame (a skipped layer is not counted). */
-    called: number;
+    /** Layers settled this frame: prepared to completion (whatever it answered), or passed over while settled (see passedOver). */
+    settled: number;
     /** A full repaint is due (see the damage decision in the work pass): this frame must reach the canvas. */
     repaint: boolean;
     /** The audit's name for what asked for this frame; '' when the render audit is off. */
@@ -319,6 +319,8 @@ export class FrameScheduler {
     private frameFailures = 0;
     /** The back-off timer after a failed frame: while it runs, no frame is requested. */
     private frameHold: ReturnType<typeof setTimeout> | null = null;
+    /** Each layer's last prepare answer and the scene revision it was prepared at (see passedOver). */
+    private readonly layerAnswers = new WeakMap<Layer, { revision: number; unchanged: boolean }>();
     private hiddenTimer: ReturnType<typeof setTimeout> | null = null;
     private hiddenAt: number | null = null;
     private retainedReleased = false;
@@ -588,8 +590,19 @@ export class FrameScheduler {
      * repaint (a full damage, a new token, camera or geometry since the last presented picture). A pane with a pending
      * acknowledgement presents, because its submission is awaited. A layer that was passed over, or returns nothing, is a
      * change: nothing was proved about it. The reason does not matter when nothing drawn changed. */
+    /** A layer not prepared this frame (the window was exhausted, or the frame's share ran out) settles unchanged only when it
+     * has no pending work: its scene revision has not moved since it last prepared, it does not ask for a frame, and its last
+     * answer was unchanged. Any other passed-over layer is a change, so the frame presents. */
+    private passedOver(item: FrameWork, meta: ScheduledLayerSnapshot): void {
+        const last = this.layerAnswers.get(meta.layer);
+        const pending = last === undefined || !last.unchanged || last.revision !== meta.sceneRevision || meta.layer.needsFrame();
+        if (pending) item.drawnChange = true;
+        else item.settled++;
+        if (renderAuditEnabled()) auditCount('pane', 'prepare-passed-over:' + (item.entry.pane.layerId?.(meta.layer) ?? 'unnamed'));
+    }
+
     private unchangedPicture(item: FrameWork): boolean {
-        if (item.drawnChange || item.called !== item.frame.layers.length || item.repaint) return false;
+        if (item.drawnChange || item.settled !== item.frame.layers.length || item.repaint) return false;
         for (const ack of this.acknowledgements) if (ack.entry === item.entry) return false;
         return true;
     }
@@ -784,7 +797,7 @@ export class FrameScheduler {
                     const repaint = moved || explicitFull;
                     const damage = batch.damage.freeze()!;
                     const frame = Object.freeze({ frameId, timestamp, intervalMs: this.intervalMs, token, view, layers, reasons, damage });
-                    work.push({ entry, frame, batch, geometry, hadInput: entry.inputPriority || reasons.includes('input'), platformPrepared: false, skipped: false, first: null, drawnChange: false, called: 0, repaint, cause });
+                    work.push({ entry, frame, batch, geometry, hadInput: entry.inputPriority || reasons.includes('input'), platformPrepared: false, skipped: false, first: null, drawnChange: false, settled: 0, repaint, cause });
                     entry.inputPriority = false;
                 });
             }
@@ -984,7 +997,7 @@ export class FrameScheduler {
             const platform = meta === null;
             if (exhausted && !requesting && !platform) {
                 item.skipped = true;
-                if (renderAuditEnabled() && meta) auditCount('pane', 'prepare-passed-over:' + (item.entry.pane.layerId?.(meta.layer) ?? 'unnamed'));
+                if (meta) this.passedOver(item, meta);
                 return;
             }
             const limit = exhausted && !platform ? performance.now() + meter.sliceMs : deadline;
@@ -1041,13 +1054,16 @@ export class FrameScheduler {
                 }
             } else if (meta && !shouldYield()) {
                 // prepare returns false only when a completed prepare left nothing it draws next different (types.ts). A layer
-                // that returns nothing, or that was not called, leaves the frame's picture open: it is presented.
+                // that returns nothing leaves the frame's picture open: it is presented.
                 const unchanged = meta.layer.prepare(item.frame.view, budget) === false;
-                item.called++;
+                this.layerAnswers.set(meta.layer, { revision: meta.sceneRevision, unchanged });
+                item.settled++;
                 if (!unchanged) {
                     item.drawnChange = true;
                     if (renderAuditEnabled()) auditCount('pane', 'prepare-changed:' + (item.entry.pane.layerId?.(meta.layer) ?? 'unnamed'));
                 }
+            } else if (meta) {
+                this.passedOver(item, meta);
             }
             overshoot = Math.max(0, performance.now() - deadline);
         });

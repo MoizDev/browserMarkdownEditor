@@ -247,6 +247,12 @@ export class SessionScene implements SceneSpatial {
         this.paintBinding = Object.freeze({ token: Object.freeze({ ...token }), preparePaint: binding.preparePaint,
             preparePaintStream: binding.preparePaintStream, retainRenderer: binding.retainRenderer });
     }
+    /** The node ids the live scene published in (from, to]: null when that span is not retained or a structural change makes
+     * every node unknown. Read live (not from a pinned frame), so a viewer can judge a frame older than the published revision. */
+    changedNodesSince(from: number, to: number = this.options.doc.rev): ReadonlySet<NodeId> | null {
+        if (this.disposed) return null;
+        return this.boundsVersions.changedNodesSince(from, to);
+    }
     pin(): SceneSnapshot {
         if (this.disposed) throw new Error('Scene is disposed');
         const binding = this.paintBinding, revision = this.options.doc.rev, records = this.records.pin();

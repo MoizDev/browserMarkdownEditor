@@ -83,7 +83,11 @@ function clean(points: readonly Vec2[], closed: boolean): Vec2[] {
 
 /** Dash intervals along a polyline, each an open piece. Phase and pattern follow canvas: a total
  * phase is reduced modulo the pattern length, and zero-length on-intervals become dots. */
-function dashPieces(line: Polyline, array: readonly number[], phase: number): Polyline[] {
+/** Dash steps one stroke may take, across all its subpaths. A dash of 1e-6 on a 1000-unit line is 5×10⁸ steps, each a new
+ * interval, before any triangle exists, so the count is bounded where the intervals are made, not only at the triangles. */
+const MAX_DASH_STEPS = 262_144;
+interface DashBudget { left: number }
+function dashPieces(line: Polyline, array: readonly number[], phase: number, budget: DashBudget): Polyline[] {
     const total = array.reduce((sum, value) => sum + value, 0);
     let index = 0, p = phase % total;
     if (p < 0) p += total;
@@ -100,6 +104,7 @@ function dashPieces(line: Polyline, array: readonly number[], phase: number): Po
         const ux = dx / length, uy = dy / length;
         let t = 0;
         while (t < length) {
+            if (--budget.left < 0) throw new RangeError('Stroke dash budget exceeded');
             const at = (value: number): Vec2 => ({ x: a.x + ux * value, y: a.y + uy * value });
             if (remaining <= 0) {
                 if (on) { if (current) pieces.push({ points: current, closed: false }); current = null; }
@@ -229,11 +234,12 @@ export function pathStrokeTriangles(commands: readonly PathCommand[], options: S
     if (!lines) return null;
     const sink = new Sink(ox, oy, options.maxTriangles ?? MAX_TRIANGLES_DEFAULT);
     const solid = !dash || dash.array.reduce((sum, value) => sum + value, 0) <= 0;
+    const dashBudget: DashBudget = { left: MAX_DASH_STEPS };
     try {
         for (const line of lines) {
             const points = clean(line.points, line.closed);
             const pieceList: Polyline[] = solid ? [{ points, closed: line.closed }]
-                : dashPieces({ points, closed: line.closed }, dash!.array, dash!.phase);
+                : dashPieces({ points, closed: line.closed }, dash!.array, dash!.phase, dashBudget);
             for (const piece of pieceList) {
                 if (!piece.points.length) continue;
                 emitPolyline(sink, clean(piece.points, piece.closed), piece.closed, options);

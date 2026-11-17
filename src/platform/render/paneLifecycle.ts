@@ -158,7 +158,13 @@ export class PaneLifecycle<T extends object> {
                     prepareGpu: async preparation => this.wrapOwner(await callbacks.prepareGpu(preparation)),
                     onGpuReady: grant => {
                         this.readyGrant = grant;
-                        if (this.visible && !this.suspended && !this.disposed) { this.readyGrant = null; callbacks.onGpuReady(grant); }
+                        if (this.visible && !this.suspended && !this.disposed) {
+                            this.readyGrant = null;
+                            callbacks.onGpuReady(grant);
+                            // A new owner (first ready, or a restored context after loss) has released or never held every
+                            // layer's GPU state: the next frame prepares each layer again from its CPU truth.
+                            this.invalidate('gpu-ready');
+                        }
                     },
                     onCpuFallback: reason => {
                         if (!this.disposed && this.visible) this.begin2D();
@@ -216,9 +222,15 @@ export class PaneLifecycle<T extends object> {
         if (this.disposed || !this.visible) return;
         this.visible = false;
         this.view = { ...this.view, visible: false };
-        // Broker.beforeHide seals first, then the wrapped owner releases layers/arena and zeros GL.
-        try { this.withGpuRelease('hidden', () => this.surface.updateView(this.view)); }
-        finally {
+        // Broker.beforeHide seals first, then the wrapped owner releases layers/arena and zeros GL. The broker releases only
+        // a drawable pane's reservation, so every layer is also released here, in this task: a hidden pane holds no GPU
+        // working memory whatever the broker had reserved. The serial makes a second release of a layer a no-op.
+        try {
+            this.withGpuRelease('hidden', () => {
+                this.surface.updateView(this.view);
+                this.releaseSelection(this.layers, 'hidden');
+            });
+        } finally {
             try {
                 all([() => this.discard2D(), () => this.options.presenter.releaseSurface(), () => this.returnBorrow(),
                 () => this.options.session.mirrors?.setVisible(false, this.options.now())]);

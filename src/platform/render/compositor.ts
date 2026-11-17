@@ -1,4 +1,4 @@
-import { auditCount, renderAuditEnabled } from './renderAudit';
+import { auditCount, auditStage, renderAuditEnabled } from './renderAudit';
 import type { Rect, ViewState } from '../types';
 import type {
     CompositorAppearance, CompositorCoverage, CompositorLayer, CompositorPage, IsolationReservation, PaneCompositor, PaneSurfaceHost, TexturedQuadOptions,
@@ -226,6 +226,13 @@ export class GpuCompositor implements PaneCompositor {
 
     prepareFrame(frame: ScheduledFrame, budget: FrameBudget): void {
         this.#check();
+        if (!renderAuditEnabled()) { this.#prepare(frame, budget); return; }
+        const started = performance.now();
+        try { this.#prepare(frame, budget); }
+        finally { auditStage('compositor', 'prepare', performance.now() - started); }
+    }
+
+    #prepare(frame: ScheduledFrame, budget: FrameBudget): void {
         const snapshot = this.#snapshot;
         this.#isolationPlan = null;
         this.#isolationReadyFrame = -1;
@@ -289,6 +296,9 @@ export class GpuCompositor implements PaneCompositor {
             return null;
         }
         let encoder: FrameEncoder | null = null;
+        // Audit only: `frame` spans encode to presentation, as the pane's own frame timer does; off, no clock is read.
+        const timed = renderAuditEnabled();
+        const encodeStarted = timed ? performance.now() : 0;
         try {
             const coverage = snapshot.layers.map(binding => binding.coverage(frame, this.backend));
             if (coverage.some(item => !item.complete)) {
@@ -332,8 +342,12 @@ export class GpuCompositor implements PaneCompositor {
                     } }) : scope.pass;
                     // The layer receives the audit view, so the scope must admit that same object: drawTexturedQuad checks identity.
                     drawScope.passes.add(layerTarget);
+                    const drawStarted = timed ? performance.now() : 0;
                     try { binding.layer.drawGpu(layerTarget, frame.view); }
-                    finally { drawScope.passes.delete(layerTarget); drawScope.passes.delete(scope.pass); scope.finish(); }
+                    finally {
+                        drawScope.passes.delete(layerTarget); drawScope.passes.delete(scope.pass); scope.finish();
+                        if (timed) auditStage(auditId, 'draw', performance.now() - drawStarted);
+                    }
                     if (isolation) pass.endGroup(isolation);
                 }
                 if (document) pass.endGroup(document);
@@ -351,7 +365,13 @@ export class GpuCompositor implements PaneCompositor {
                         return null;
                     }
                     try {
+                        const submitStarted = timed ? performance.now() : 0;
                         const submitted = owned.submit();
+                        if (timed) {
+                            const now = performance.now();
+                            auditStage('compositor', 'submit', now - submitStarted);
+                            auditStage('compositor', 'frame', now - encodeStarted);
+                        }
                         this.#lastSubmissionSerial = submitted.serial;
                         // Publish the canonical CSS extent with the completed framebuffer, not
                         // during metrics preparation while the previous picture is still displayed.
@@ -513,6 +533,8 @@ export class GpuCompositor implements PaneCompositor {
                 for (const registered of current.registered) drawScope.passes.delete(registered);
                 current.finish(); current.raw.end();
             };
+            const timed = renderAuditEnabled();
+            const started = timed ? performance.now() : 0;
             try {
                 layer.encodeOffscreen({
                     begin: (target, viewport, options) => {
@@ -535,7 +557,10 @@ export class GpuCompositor implements PaneCompositor {
                     },
                 }, frame.view);
                 if (open) throw new ArenaError('invalid-input');
-            } finally { close(); }
+            } finally {
+                close();
+                if (timed) auditStage(auditId, 'encodeOffscreen', performance.now() - started);
+            }
         }
     }
 

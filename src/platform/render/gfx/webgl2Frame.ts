@@ -78,7 +78,7 @@ export interface QuadCommand {
     readonly mask: FrameTexture;
     readonly uniforms: { buffer: FrameBuffer; slice: UniformSlice };
     readonly scissor: RectI;
-    readonly blend: 'source-over' | 'replace' | 'mask-max' | 'add';
+    readonly blend: 'source-over' | 'replace' | 'mask-max' | 'add' | 'modulate';
 }
 export interface FrameBackend {
     readonly signal: AbortSignal;
@@ -408,9 +408,9 @@ class DeviceFrame implements ControlledFrame {
         return { lease, texture: this.#backend.texture(lease.texture) };
     }
     composite(scope: Scope, clip: RectI, source: FrameTexture, sourceRect: RectI, bounds: RectI,
-        options: { opacity: number; blend: 'normal' | 'multiply'; colourEffect: 'none' | 'page-invert' }, mask: Mask | null): void {
+        options: { opacity: number; blend: 'normal' | 'multiply' | 'modulate'; colourEffect: 'none' | 'page-invert' }, mask: Mask | null): void {
         opacity(options.opacity);
-        if (!['normal', 'multiply'].includes(options.blend) || !['none', 'page-invert'].includes(options.colourEffect) ||
+        if (!['normal', 'multiply', 'modulate'].includes(options.blend) || !['none', 'page-invert'].includes(options.colourEffect) ||
             scope.capture && options.colourEffect === 'page-invert') throw new ArenaError('invalid-input');
         const area = intersect(intersect(bounds, clip), scope.bounds);
         if (scope.empty || !area.width || !area.height || options.opacity === 0) return;
@@ -436,7 +436,7 @@ class DeviceFrame implements ControlledFrame {
         const command: QuadCommand = {
             context: scope, source, backdrop: backdrop?.texture ?? this.#backend.white(), mask: mask?.texture ?? this.#backend.white(),
             uniforms: { buffer: this.#backend.buffer(packed.buffer), slice: packed }, scissor: area,
-            blend: options.blend === 'multiply' ? 'replace' : scope.coverage ? 'mask-max' : 'source-over',
+            blend: options.blend === 'modulate' ? 'modulate' : options.blend === 'multiply' ? 'replace' : scope.coverage ? 'mask-max' : 'source-over',
         };
         this.command(this.#backend.quad(command));
         if (backdrop) this.releaseTemporary(backdrop.lease);
@@ -637,7 +637,7 @@ class DevicePass implements GpuPass {
         this.#guard(() => {
             const entry = this.#groups.at(-1);
             if (!entry || entry.kind !== 'coverage' || entry.token !== token || entry.clipDepth !== this.#clips.length) throw new ArenaError('invalid-input');
-            if (output.kind === 'composite' ? !['normal', 'multiply'].includes(output.blend) : output.kind !== 'mask') throw new ArenaError('invalid-input');
+            if (output.kind === 'composite' ? !['normal', 'multiply', 'modulate'].includes(output.blend) : output.kind !== 'mask') throw new ArenaError('invalid-input');
             this.#groups.pop();
             this.#closeCoverage(entry.isolation, entry.previous, output);
             this.#clip = entry.previous;

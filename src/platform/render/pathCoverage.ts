@@ -28,8 +28,13 @@ const PATH_COVERAGE_MAX_TARGET_BYTES = 8 * 2 ** 20;
 const PATH_COVERAGE_SCRATCH_BYTES = 2 * 2 ** 20;
 /** One vertex upload piece; a frame's allowance takes as many as it covers. */
 const PATH_COVERAGE_UPLOAD_CHUNK_BYTES = 256 * 1024;
-interface SharedScratch { readonly device: GfxDevice; readonly target: CoverageTarget; readonly bytes: number; readonly users: Set<object>; readonly account: (delta: number) => void }
+/** A device's composite scratch, shared by every kit on that device. `refs` counts the live composite admissions of all
+ * of them: the scratch exists exactly while one is in flight, and its lease is the device's, not any one kit's. */
+interface SharedScratch { readonly device: GfxDevice; readonly target: CoverageTarget; readonly bytes: number; refs: number }
 const deviceScratch = new WeakMap<GfxDevice, SharedScratch>();
+/** The widest composite band any kit on a device has asked for. It outlives the scratch, so the next scratch is made at
+ * this width and no kit grows it again (a notebook's paper, board and wet ink ask for different widths). */
+const scratchWidth = new WeakMap<GfxDevice, number>();
 
 /** Origin-relative triangles, six values per triangle. `positive` adds +1 winding and `negative`
  * adds -1; for `union` every triangle is in `positive` and `negative` is empty. */
@@ -80,6 +85,8 @@ export interface PreparedPathCoverage {
     readonly colour: readonly [number, number, number, number];
     readonly gpuBytes: number;
     readonly supersample: boolean;
+    /** A 'modulate' composite: its colour is the multiply source k = C·c + 1 − α·c, drawn by the modulate cover. */
+    readonly modulate: boolean;
 }
 
 const KEEP_FACE = { fail: 'keep', depthFail: 'keep', pass: 'keep' } as const;
@@ -148,14 +155,15 @@ void main() { fragmentColour=fillColour; }`,
 interface Pipelines {
     readonly increment: PipelineHandle; readonly decrement: PipelineHandle;
     readonly invert: PipelineHandle; readonly union: PipelineHandle; readonly cover: PipelineHandle; readonly coverAdd: PipelineHandle;
+    readonly coverModulate: PipelineHandle;
 }
 
 /** Platform stencil-coverage executor. Winding or union triangles fill an admitted stencil target,
  * one cover quad paints the colour under the not-equal test, and the scope composites once (or
  * leaves an R-channel clip mask). Admission and uploads happen in admit(); draws only borrow. */
-export function createPathCoverageKit(host: LayerHost, report: (error: unknown) => void) {
+export function createPathCoverageKit(host: LayerHost, report: (error: unknown) => void, audit = 'path-coverage') {
     let device: GfxDevice | null = null, pipelines: Pipelines | null = null, pending = false, failed = false, unsupported = false;
-    let incarnation = 0, disposed = false, gpuBytes = 0;
+    let incarnation = 0, disposed = false, gpuBytes = 0, compositeLive = 0;
     const live = new Map<PreparedPathCoverage, number>();
     // One vertex buffer per triangle set, shared by every admission of it: the triangles are origin-relative, so all tile
     // views of an item at one scale draw the same buffer under their own affine. A buffer per admission uploaded and
@@ -183,47 +191,46 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         const bytes = live.get(prepared);
         if (bytes === undefined) return;
         live.delete(prepared); gpuBytes -= bytes;
+        if (prepared.output.kind === 'composite') { compositeLive--; releaseScratch(prepared.device); }
         if (prepared.clip) prepared.device.destroy(prepared.clip);
         if (prepared.target) { prepared.device.destroy(prepared.target.target); prepared.device.destroy(prepared.target.texture); }
         releaseVertices(prepared);
     };
-    // One composite scratch per kit, grown (never shrunk) to the widest admitted path and as many rows as the cap allows.
+    // The composite scratch is one per DEVICE (a pane's context), shared by every kit there: coverage draws are sequential
+    // within a frame. One per kit held 2 MiB for each of paper, board and wet, and the pane's working grant refused the
+    // paper's path admissions for the room (measured: refused at pane-grant:working, 33 and 54 per draw).
     // A target per item, held for its plan, made every page-sized fill a 13-33 MB admission the pane never granted, so
     // the paper took the CPU raster route (measured: 330 fallbacks in one notebook pan).
-    // The composite scratch is one per DEVICE (a pane's context), shared by every layer's kit there: coverage draws are
-    // sequential within a frame. One per kit held 2 MiB for each of paper, board and wet, and the pane's working grant
-    // refused the paper's path admissions for the room (measured: refused at pane-grant:working, 33 and 54 per draw).
-    const token = {};
     const scratchOf = (owner: GfxDevice | null): SharedScratch | undefined => owner ? deviceScratch.get(owner) : undefined;
-    const account = (delta: number) => { gpuBytes += delta; };
-    const dropScratch = () => {
-        const shared = scratchOf(device);
-        if (!shared || !shared.users.delete(token) || shared.users.size) return;
-        deviceScratch.delete(shared.device);
-        shared.device.destroy(shared.target.target); shared.device.destroy(shared.target.texture);
-        shared.account(-shared.bytes);
+    /** Drops one composite admission's hold on its device's scratch. The scratch is released when none is in flight. */
+    const releaseScratch = (owner: GfxDevice) => {
+        const shared = deviceScratch.get(owner);
+        if (!shared || --shared.refs > 0) return;
+        deviceScratch.delete(owner);
+        owner.destroy(shared.target.target); owner.destroy(shared.target.texture);
     };
-    /** Ensures the device's scratch holds a band of the given width; false when its lease is refused (a wait). */
-    const ensureScratch = (owner: GfxDevice, width: number, height: number): boolean | 'unsupported' => {
+    /** Ensures the device's scratch holds a band of the given width; false when its lease is refused (a wait). It only
+     * grows, and to the widest band the device has asked for, at the full height the cap allows: a grown scratch replaced
+     * the one every kit drew from, and a band re-sized per request was a new target for each kit's width change. */
+    const ensureScratch = (owner: GfxDevice, width: number): boolean | 'unsupported' => {
         const rowBytes = coverageTargetBytes(width, 1, PATH_COVERAGE_SAMPLES);
         if (rowBytes > PATH_COVERAGE_SCRATCH_BYTES) return 'unsupported';
-        const rows = Math.min(height, Math.floor(PATH_COVERAGE_SCRATCH_BYTES / rowBytes));
         const current = deviceScratch.get(owner);
-        if (current && current.target.width >= width && current.target.height >= rows) { current.users.add(token); return true; }
-        const w = Math.max(width, current?.target.width ?? 0);
-        const h = Math.min(Math.max(rows, current?.target.height ?? 0),
-            Math.floor(PATH_COVERAGE_SCRATCH_BYTES / coverageTargetBytes(w, 1, PATH_COVERAGE_SAMPLES)));
+        // Draws loop over bands of the target's height, so any height serves; only the width must fit the request.
+        if (current && current.target.width >= width) return true;
+        const w = Math.max(width, current?.target.width ?? 0, scratchWidth.get(owner) ?? 0);
+        const h = Math.floor(PATH_COVERAGE_SCRATCH_BYTES / coverageTargetBytes(w, 1, PATH_COVERAGE_SAMPLES));
         const bytes = coverageTargetBytes(w, h, PATH_COVERAGE_SAMPLES);
         const lease = host.allocator.gpu.reserve(bytes);
         if (!lease) return false;
         let target: CoverageTarget;
         try { target = owner.createCoverageTarget(w, h, PATH_COVERAGE_SAMPLES, lease); }
         catch (error) { host.allocator.gpu.release(lease); throw error; }
-        // A grown scratch replaces the old for every user; the device returns the old one's lease as it retires.
-        const users = new Set<object>(current?.users ?? []); users.add(token);
-        if (current) { current.device.destroy(current.target.target); current.device.destroy(current.target.texture); current.account(-current.bytes); }
-        deviceScratch.set(owner, { device: owner, target, bytes, users, account });
-        account(bytes);
+        // No admission holds the old target (draws read the scratch when they draw), and the device returns its lease.
+        if (current) { owner.destroy(current.target.target); owner.destroy(current.target.texture); }
+        scratchWidth.set(owner, w);
+        deviceScratch.set(owner, { device: owner, target, bytes, refs: current?.refs ?? 0 });
+        auditCount(audit, 'kit:scratch-new');
         return true;
     };
     const release = () => {
@@ -232,7 +239,6 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         for (const entry of shared.values()) { gpuBytes -= entry.bytes; entry.device.destroy(entry.buffer); }
         shared.clear();
         for (const key of [...uploading.keys()]) dropUpload(key);
-        dropScratch();
         if (pipelines && device) for (const handle of Object.values(pipelines)) device.destroy(handle);
         pipelines = null; device = null; pending = false; failed = false; unsupported = false;
     };
@@ -250,12 +256,16 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
                 colorWrite: [true, true, true, true], stencil: COVER_STENCIL }),
             owner.createPipeline({ ...base, topology: 'triangle-strip', shader: COVER_SHADER, blend: 'add',
                 colorWrite: [true, true, true, true], stencil: COVER_RESET_STENCIL }),
-        ]).then(([increment, decrement, invert, union, cover, coverAdd]) => {
+            // The multiply cover: the device's fixed-function dst·src step writes k into every covered sample, so a white
+            // slice is multiplied by each item in turn with no backdrop copy.
+            owner.createPipeline({ ...base, topology: 'triangle-strip', shader: COVER_SHADER, blend: 'modulate',
+                colorWrite: [true, true, true, true], stencil: COVER_STENCIL }),
+        ]).then(([increment, decrement, invert, union, cover, coverAdd, coverModulate]) => {
             if (disposed || incarnation !== serial || device !== owner) {
-                for (const handle of [increment, decrement, invert, union, cover, coverAdd]) owner.destroy(handle);
+                for (const handle of [increment, decrement, invert, union, cover, coverAdd, coverModulate]) owner.destroy(handle);
                 return;
             }
-            pipelines = { increment, decrement, invert, union, cover, coverAdd };
+            pipelines = { increment, decrement, invert, union, cover, coverAdd, coverModulate };
             pending = false; host.invalidate('path-coverage-ready');
         }, error => {
             if (incarnation !== serial) return;
@@ -323,7 +333,8 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
                 drawWinding(pipelines.increment, 0, prepared.positiveVertices);
                 drawWinding(pipelines.decrement, prepared.positiveVertices, prepared.negativeVertices);
             }
-            pass.draw({ pipeline: pipelines.cover, bindings: { uniforms: [{ binding: 0, slice: coverUniforms }], textures: [] },
+            pass.draw({ pipeline: prepared.modulate ? pipelines.coverModulate : pipelines.cover,
+                bindings: { uniforms: [{ binding: 0, slice: coverUniforms }], textures: [] },
                 vertices: [], first: 0, count: 4, instances: 1, scissor: bounds });
             }
         } finally { pass.endCoverage(token, output); }
@@ -332,7 +343,13 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
     return {
         warm,
         ready: isReady,
-        memory(): { gpuBytes: number; cpuBytes: number } { return { gpuBytes, cpuBytes: 0 }; },
+        /** The scratch's lease is the device's; this kit reports the share its live composite admissions hold of it, so the
+         * kits on one device sum to the scratch once and a hidden pane's kit reports none. */
+        memory(): { gpuBytes: number; cpuBytes: number } {
+            const shared = device ? deviceScratch.get(device) : undefined;
+            const share = shared && compositeLive > 0 ? Math.round(shared.bytes * compositeLive / shared.refs) : 0;
+            return { gpuBytes: gpuBytes + share, cpuBytes: 0 };
+        },
         /** Admission happens here, in prepare: target, vertices and any clip handle are created before
          * any draw. Failure is permanent for this device incarnation and returns 'unsupported'. */
         admit(request: PathCoverageRequest, budget: FrameBudget): PathCoverageAdmission {
@@ -360,11 +377,9 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
             const vertexBytes = vertexCount * 8;
             const composite = output.kind === 'composite';
             const targetBytes = composite ? 0 : coverageTargetBytes(bounds.width, bounds.height, PATH_COVERAGE_SAMPLES);
-            if (targetBytes > PATH_COVERAGE_MAX_TARGET_BYTES) { auditCount('path-coverage', 'fallback:raster-route'); return { status: 'unsupported' }; }
-            if (composite) {
-                const fits = ensureScratch(owner, bounds.width, bounds.height);
-                if (fits === 'unsupported') { auditCount('path-coverage', 'fallback:raster-route'); return { status: 'unsupported' }; }
-                if (!fits) return { status: 'denied' };
+            if (targetBytes > PATH_COVERAGE_MAX_TARGET_BYTES) { auditCount(audit, 'fallback:raster-route'); return { status: 'unsupported' }; }
+            if (composite && coverageTargetBytes(bounds.width, 1, PATH_COVERAGE_SAMPLES) > PATH_COVERAGE_SCRATCH_BYTES) {
+                auditCount(audit, 'fallback:raster-route'); return { status: 'unsupported' };
             }
             // One vertex buffer per triangle set, uploaded in chunks within each frame's allowance, then shared.
             let entry = shared.get(shapes.positive);
@@ -395,6 +410,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
                     const piece = Math.min(PATH_COVERAGE_UPLOAD_CHUNK_BYTES, up.bytes - up.written);
                     if (!budget.claimUpload(piece)) return { status: 'deferred' };
                     owner.writeBuffer(up.buffer, up.written, up.data.subarray(up.written / 4, (up.written + piece) / 4));
+                    auditCount(audit, 'upload:vertex', 1, { bytes: piece });
                     up.written += piece;
                 }
                 uploading.delete(shapes.positive); host.allocator.cpu.release(up.staging);
@@ -403,6 +419,17 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
             }
             entry.refs++;
             const vertices = entry.buffer;
+            // The scratch is ensured after the buffer: a refused scratch then drops the buffer's hold, and the retry re-uploads.
+            if (composite) {
+                let fits: boolean | 'unsupported';
+                try { fits = ensureScratch(owner, bounds.width); }
+                catch (error) { releaseShared(entry); throw error; }
+                if (fits !== true) {
+                    releaseShared(entry);
+                    if (fits === 'unsupported') { auditCount(audit, 'fallback:raster-route'); return { status: 'unsupported' }; }
+                    return { status: 'denied' };
+                }
+            }
             const targetLease = composite ? null : host.allocator.gpu.reserve(targetBytes);
             if (!composite && !targetLease) { releaseShared(entry); return { status: 'denied' }; }
             let target: CoverageTarget | null = null, clip: ClipHandle | null = null;
@@ -419,8 +446,11 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
                 if (error instanceof ArenaError && error.code === 'unsupported') { unsupported = true; return { status: 'unsupported' }; }
                 throw error;
             }
+            // A modulate composite's source is k = C·c + 1 − α·c at full coverage: premultiplied colour plus one minus alpha.
+            const modulate = output.kind === 'composite' && output.blend === 'modulate';
+            const [pr, pg, pb, alpha] = [request.colour[0] * request.colour[3], request.colour[1] * request.colour[3], request.colour[2] * request.colour[3], request.colour[3]];
             const colour: readonly [number, number, number, number] = output.kind === 'mask' ? [1, 1, 1, 1]
-                : [request.colour[0] * request.colour[3], request.colour[1] * request.colour[3], request.colour[2] * request.colour[3], request.colour[3]];
+                : modulate ? [pr + 1 - alpha, pg + 1 - alpha, pb + 1 - alpha, 1] : [pr, pg, pb, alpha];
             // The vertex buffer's bytes are the shared entry's, counted once; this admission owns only its target.
             const gpu = targetBytes;
             const prepared: PreparedPathCoverage = Object.freeze({ device: owner, target, vertices, clip,
@@ -428,8 +458,9 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
                 viewport: Object.freeze({ width: viewport.width, height: viewport.height }),
                 affine: Object.freeze([...affine]) as unknown as Affine,
                 colour: Object.freeze([...colour]) as unknown as readonly [number, number, number, number], gpuBytes: gpu,
-                supersample: request.supersample === true });
+                supersample: request.supersample === true, modulate });
             live.set(prepared, gpu); gpuBytes += gpu;
+            if (composite) { compositeLive++; deviceScratch.get(owner)!.refs++; }
             return { status: 'ready', value: prepared };
         },
         /** Composite output: borrows the admitted target inside the caller's pass. */

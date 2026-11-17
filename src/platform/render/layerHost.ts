@@ -3,7 +3,7 @@ import type { DamageRecord } from './damage';
 import type { CompositorResources, LayerAllocators, LayerHost, PaneCompositor, TexturedQuadOptions } from './compositor.types';
 import type { GpuPass, TextureHandle, UniformSlice } from './gfx/api';
 import { paintCanvasIsolation } from './canvas2dContext';
-import { auditCount, renderAuditEnabled } from './renderAudit';
+import { auditCount, auditStage, renderAuditEnabled } from './renderAudit';
 import type { GfxDevice } from './gfx/api';
 
 export interface LayerHostBindings {
@@ -53,13 +53,18 @@ export function createLayerHost(bindings: LayerHostBindings): LayerHost {
             view = new Proxy(device, { get(target, key) {
                 const value = Reflect.get(target, key, target) as unknown;
                 if (typeof value !== 'function') return value;
+                // The upload stage is timed here, where the layer's writes enter the device (the view exists only when the audit is on).
                 if (key === 'writeTexture') return (dst: unknown, rect: Rect, src: unknown) => {
                     auditCount(surface, 'upload', 1, { bytes: rect.width * rect.height * 4 });
-                    return (value as (...args: unknown[]) => unknown).call(target, dst, rect, src);
+                    const started = performance.now();
+                    try { return (value as (...args: unknown[]) => unknown).call(target, dst, rect, src); }
+                    finally { auditStage(surface, 'upload', performance.now() - started); }
                 };
                 if (key === 'writeBuffer') return (dst: unknown, offset: number, src: ArrayBufferView) => {
                     auditCount(surface, 'upload', 1, { bytes: src.byteLength });
-                    return (value as (...args: unknown[]) => unknown).call(target, dst, offset, src);
+                    const started = performance.now();
+                    try { return (value as (...args: unknown[]) => unknown).call(target, dst, offset, src); }
+                    finally { auditStage(surface, 'upload', performance.now() - started); }
                 };
                 if (key === 'createTexture' || key === 'createBuffer' || key === 'createCoverageTarget') {
                     return (...args: unknown[]) => { auditCount(surface, String(key)); return (value as (...a: unknown[]) => unknown).apply(target, args); };

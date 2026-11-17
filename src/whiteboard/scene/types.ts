@@ -39,6 +39,9 @@ export interface ScenePaintRequest {
     readonly deviceScale?: number;
     readonly sensitiveNodes?: ReadonlySet<NodeId>;
     readonly allowInkLod?: boolean;
+    /** Strokes realise at the whole-scene stage's precision (the board's default scale, no level of detail), whatever the device
+     * scale of the request: a view stage and the scene stage then key one stroke the same, so a stage switch re-keys nothing. */
+    readonly scenePrecision?: boolean;
     /** Only these nodes are resolved and emitted; a live-only frame carries no other geometry. */
     readonly only?: ReadonlySet<NodeId>;
 }

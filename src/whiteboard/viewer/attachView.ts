@@ -328,8 +328,10 @@ export const attachView: AttachView = options => {
         const liveSet = dense ? (union(precisionNodeIds(sensitive), previewCoverage?.()?.nodeIds ?? null) ?? new Set<string>()) as ReadonlySet<NodeId> : null;
         const sensitiveNodes = (dense ? liveSet : precisionNodeIds(sensitive)) as ReadonlySet<NodeId>;
         // Tile streams reopened by the frame share this request's identity (precision, sensitivity), not its world.
+        // On a device, the view stage realises its strokes at the whole-scene stage's precision (scenePrecision): the two stages
+        // then share one realisation per stroke, and a stage switch re-keys nothing. Canvas2d keeps its request.
         const identity = { sheetId: selectedSheet, theme: view.theme, sensitiveNodes,
-            ...(deviceScale ? { deviceScale, allowInkLod: true } : {}) };
+            ...(deviceScale ? { deviceScale, allowInkLod: true } : {}), ...(onDevice ? { scenePrecision: true } : {}) };
         // The whole-scene stage: asked once per key on a device, after the view frame it follows is up. No world, so the pin
         // does not cull by the camera; no device scale, so the scene's items do not change with the zoom.
         const sceneShape = { sheetId: selectedSheet, theme: view.theme, sensitiveNodes };

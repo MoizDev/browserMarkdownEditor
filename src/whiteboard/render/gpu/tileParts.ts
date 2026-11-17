@@ -23,6 +23,8 @@ interface Grid {
     readonly wide: TilePart[];
     /** Node id → the world rect of each of its parts, for omission and drag. */
     readonly byNode: Map<string, Rect[]>;
+    /** Text items by node and key → their font epoch and the rects of their parts: a font change moves text without a revision. */
+    readonly texts: Map<string, { epoch: number; rects: Rect[] }>;
     count: number;
 }
 /** One index being built: the revision and stamp it describes, and the steps that fill its grid. */
@@ -31,11 +33,12 @@ interface Build {
     readonly stamp: string;
     readonly grid: Grid;
     readonly steps: Generator<void, void, undefined>;
+    readonly prepared: PreparedPaint2d;
     done: boolean;
 }
 
 function newGrid(): Grid {
-    return { cells: new Map(), cellCount: 0, wide: [], byNode: new Map(), count: 0 };
+    return { cells: new Map(), cellCount: 0, wide: [], byNode: new Map(), texts: new Map(), count: 0 };
 }
 /** Theme and raster variant: a frame of another stamp is a different picture at the same revision. */
 function stampOf(prepared: PreparedPaint2d): string {
@@ -45,6 +48,42 @@ function stampOf(prepared: PreparedPaint2d): string {
 function blendOf(item: PaintItem): Blend {
     return (item.kind === 'image' ? item.blend : item.material.blend) === 'multiply' ? 'modulate' : 'over';
 }
+/** The text key of an item: its node and its key, stable across the paint objects of one scene revision. */
+function textKey(item: PaintItem): string {
+    return `${item.nodeId}|${item.key}`;
+}
+/** Whether a paint's text items differ from the ones an index was built from: a new font epoch on any of them, or a
+ * different set. A font change is not a scene change, so this is the only way the index learns of it. */
+function textsChanged(grid: Grid, prepared: PreparedPaint2d): boolean {
+    let seen = 0;
+    for (const window of prepared.windows) {
+        for (const item of window.items) {
+            if (item.kind !== 'text') continue;
+            seen++;
+            const entry = grid.texts.get(textKey(item));
+            if (!entry || entry.epoch !== item.paint.fontEpoch) return true;
+        }
+    }
+    return seen !== grid.texts.size;
+}
+/** Rects whose text changed in font epoch (or appeared, or vanished) between two indexes: both the old and the new extent. */
+function changedTextRects(oldGrid: Grid | null, newGrid: Grid): Rect[] {
+    const out: Rect[] = [];
+    for (const [key, entry] of newGrid.texts) {
+        const old = oldGrid?.texts.get(key);
+        if (old && old.epoch === entry.epoch) continue;
+        for (const rect of entry.rects) out.push(rect);
+        if (old) for (const rect of old.rects) out.push(rect);
+    }
+    if (oldGrid) {
+        for (const [key, old] of oldGrid.texts) {
+            if (newGrid.texts.has(key)) continue;
+            for (const rect of old.rects) out.push(rect);
+        }
+    }
+    return out;
+}
+
 function reachesWorld(rect: Rect, world: Readonly<Rect>): boolean {
     return rect.x <= world.x + world.width && rect.x + rect.width >= world.x
         && rect.y <= world.y + world.height && rect.y + rect.height >= world.y;
@@ -75,11 +114,19 @@ function* indexSteps(prepared: PreparedPaint2d, grid: Grid): Generator<void, voi
     for (const window of prepared.windows) {
         for (const original of window.items) {
             const blend = blendOf(original);
+            let text: { epoch: number; rects: Rect[] } | undefined;
+            if (original.kind === 'text') {
+                text = { epoch: original.paint.fontEpoch, rects: [] };
+                grid.texts.set(textKey(original), text);
+            }
             for (const part of paintContributions(original)) {
                 const job = new PaintBoundsJob(part);
                 while (!job.step(256)) yield;
                 const world = job.result;
-                if (world) insert(grid, { band: window.band, order: order.n++, nodeId: original.nodeId, item: part, world, blend });
+                if (world) {
+                    insert(grid, { band: window.band, order: order.n++, nodeId: original.nodeId, item: part, world, blend });
+                    text?.rects.push(world);
+                }
                 yield;
             }
         }
@@ -88,7 +135,7 @@ function* indexSteps(prepared: PreparedPaint2d, grid: Grid): Generator<void, voi
 
 export const createTileParts: CreateTileParts = (_host, audit) => {
     // The published index: what partsFor answers from. `building` is the next one, until its steps run out.
-    let indexed: { readonly revision: number; readonly stamp: string; readonly grid: Grid } | null = null;
+    let indexed: { readonly revision: number; readonly stamp: string; readonly grid: Grid; prepared: PreparedPaint2d } | null = null;
     let building: Build | null = null;
     // Changes from the published index to the one being built. Reported once, when that build is published.
     let pending: readonly Rect[] | 'all' = NO_RECTS;
@@ -103,11 +150,17 @@ export const createTileParts: CreateTileParts = (_host, audit) => {
     return {
         sync(prepared: PreparedPaint2d, budget: FrameBudget): boolean {
             const stamp = stampOf(prepared), revision = prepared.root.sceneRevision;
-            if (!building && indexed && indexed.stamp === stamp && indexed.revision === revision) return true;
+            if (!building && indexed && indexed.stamp === stamp && indexed.revision === revision) {
+                if (indexed.prepared === prepared) return true;
+                // A new paint object of the same revision changes the index only through a text epoch.
+                if (!textsChanged(indexed.grid, prepared)) { indexed.prepared = prepared; return true; }
+            }
+            // An index in progress is finished even if the paint object moved on: its geometry is the same revision's, and a
+            // font change it missed is caught by the next sync, which compares the epochs it published.
             if (!building || building.revision !== revision || building.stamp !== stamp) {
                 pending = changesSince(prepared, stamp);
                 const grid = newGrid();
-                building = { revision, stamp, grid, steps: indexSteps(prepared, grid), done: false };
+                building = { revision, stamp, grid, steps: indexSteps(prepared, grid), prepared, done: false };
             }
             const build = building;
             // At least one checkpoint per call: an exhausted budget still moves the index forward.
@@ -115,7 +168,9 @@ export const createTileParts: CreateTileParts = (_host, audit) => {
                 if (build.steps.next().done) { build.done = true; break; }
             } while (!budget.shouldYield());
             if (!build.done) return false;
-            indexed = { revision: build.revision, stamp: build.stamp, grid: build.grid };
+            // Font changes count as changes: the rects of text whose epoch moved, before and after, join the reported set.
+            if (pending !== 'all') pending = pending.concat(changedTextRects(indexed?.grid ?? null, build.grid));
+            indexed = { revision: build.revision, stamp: build.stamp, grid: build.grid, prepared: build.prepared };
             building = null;
             completed = true;
             auditCount(audit, 'parts:indexed', build.grid.count);

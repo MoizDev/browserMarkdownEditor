@@ -207,8 +207,14 @@ type GpuEvicting = { evictGpu?(bytes: number, frameId: number): number };
 type LayerEvicting = { evictGpu?(bytes: number, frameId: number): number };
 /** The grain of a device's direct-frame charge (see chargeDirect): densePlan's DIRECT_CHUNK, the dense direct phase's own grain. */
 const DIRECT_CHUNK = 64 * 1024;
-/** The composer's prepare takes the drag's omitted set (PLAN §3.3, wave 2). Today's adapter ignores the third argument. */
-type OmitAwarePrepare = { prepare(view: ViewState, budget: FrameBudget, omit?: ReadonlySet<string>): void };
+/** The coverage a layer reports while it cannot draw the frame: shared, so the per-frame check allocates nothing. */
+const INCOMPLETE: LayerCoverage = Object.freeze({ complete: false, sharp: false });
+const STALE: LayerCoverage = Object.freeze({ complete: false, sharp: false, staleVersion: true });
+/** The revision a frame asks a layer for: a loop, since this runs every frame and `find` would allocate a closure. */
+function requestedRevisionOf(frame: ScheduledFrame, layer: Layer): number | undefined {
+    for (const entry of frame.layers) if (entry.layer === layer) return entry.sceneRevision;
+    return undefined;
+}
 export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     const hosts = new Map<PaintBand, LayerHost>();
     let adapter: CanvasPaintAdapter | null = null, allocatorHost: LayerHost | null = null;
@@ -225,10 +231,10 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     // `opaqueWorld` in wave 2, and until then today's adapter ignores it.
     const gpuOptions = () => ({ audit: options.auditSurface ?? 'board',
         ...(typeof options.opaqueWorld === 'function' ? { opaqueWorld: options.opaqueWorld } : {}) });
-    // The drag's omitted set reaches the tiles the adapter builds. The draw still takes it too (drawGpu's omit argument) until
-    // the composer owns omission; the two must agree, and they do while both read the same omitNodes(frame).
+    // The drag's omitted set is applied where the tiles are built: prepare takes it, and each prepare reads the current
+    // omitNodes(frame). The draw never took it (the composer's draw has no omission), so it is not passed there.
     const prepareGpu = (view: ViewState, budget: FrameBudget, frame: PaintSource): void =>
-        (gpu as OmitAwarePrepare | null)?.prepare(view, withFirstUnit(budget), options.omitNodes?.(frame) ?? undefined);
+        gpu?.prepare(view, withFirstUnit(budget), options.omitNodes?.(frame) ?? undefined);
     const liveSets = new WeakMap<PaintSource, { omit: ReadonlySet<string> | null | undefined; wet: ReadonlySet<string> | undefined; live: ReadonlySet<string> }>();
     const liveFor = (frame: PaintSource): ReadonlySet<string> | undefined => {
         const omit = options.omitNodes?.(frame), wet = options.liveNodeIds?.();
@@ -703,14 +709,14 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     const coverageOf = (layer: Layer, frame: ScheduledFrame, backend: CompositorBackend): LayerCoverage => {
         const gpuCoverage = backend !== 'canvas2d' ? gpu?.coverage(frame.view) : null;
         const ready = backend === 'canvas2d' ? adapter?.readyFrame() : gpu?.readyFrame();
-        const requested = frame.layers.find(item => item.layer === layer)?.sceneRevision;
+        const requested = requestedRevisionOf(frame, layer);
         const denseCoverage = useDense && ready ? dense?.coverage(frame.view, liveFor(ready)) : null;
-        if (useDense && !denseCoverage?.complete) return { complete: false, sharp: false };
-        if (backend !== 'canvas2d' && !gpuCoverage?.complete) return { complete: false, sharp: false };
-        if (!ready || !sameToken(ready.token, frame.token)) return { complete: false, sharp: false };
+        if (useDense && !denseCoverage?.complete) return INCOMPLETE;
+        if (backend !== 'canvas2d' && !gpuCoverage?.complete) return INCOMPLETE;
+        if (!ready || !sameToken(ready.token, frame.token)) return INCOMPLETE;
         const current = ready.sceneRevision === requested && ready.sceneRevision === options.requestedRevision()
             && ready.theme === options.requestedTheme() && options.frames.isCurrent(ready);
-        return current ? { complete: true, sharp: (gpuCoverage?.sharp ?? true) && (denseCoverage?.sharp ?? true) } : { complete: false, sharp: false, staleVersion: true };
+        return current ? { complete: true, sharp: (gpuCoverage?.sharp ?? true) && (denseCoverage?.sharp ?? true) } : STALE;
     };
     const definition = (band: PaintBand): PlatformLayerDefinition => ({
         id: `board-${band}`, group: 'document',
@@ -728,7 +734,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     const ink = gpu!.readyInkNodeIds() ?? frame.inkNodeIds;
                     if (!prepareToken) return;
                     const actualView = copyView(view);
-                    gpu!.drawGpu(pass, shift ? shiftedView(view, shift) : view, band, omit ?? undefined);
+                    gpu!.drawGpu(pass, shift ? shiftedView(view, shift) : view, band);
                     // Borrowed right after the draw read its snapshot, before anything else can move the adapter on.
                     const hold = captureDraw(frame, omit);
                     const context = Object.freeze({ view: actualView, frameId: prepareFrameId,

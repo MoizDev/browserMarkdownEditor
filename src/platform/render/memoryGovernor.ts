@@ -477,6 +477,7 @@ export class MemoryGovernor {
             }
         }
         if (unmet) this.degrade();
+        this.trimPanesOverGrant();
         const cool = this.cool() && !liveGesture;
         if (!cool) this.belowRecoverySince = null;
         else if (this.belowRecoverySince === null) this.belowRecoverySince = now;
@@ -679,6 +680,30 @@ export class MemoryGovernor {
                 kind === 'canvas-working' ? other.registration.kind === 'canvas-working' :
                 !['surface', 'program', 'context', 'live-input', 'canvas-working'].includes(other.registration.kind)))
             .reduce((sum, other) => sum + other.bytes, 0);
+    }
+
+    /** A pane's GPU layer caches above its grant give back what they can rebuild, off view first, now: a grant that shrank
+     * (or a spare that was never granted) must not wait for a refusal, which the layer's own cache never raises. */
+    private trimPanesOverGrant(): void {
+        if (this.trimming) return;
+        this.trimming = true;
+        try {
+            for (const [paneId, grant] of this.grants) {
+                let excess = this.paneUsed(paneId, 'gpu', 'working') - grant.gpuCacheBytes;
+                if (excess <= 0) continue;
+                const candidates = [...this.caches.values()].filter(other => other.registration.paneId === paneId &&
+                    other.registration.pool === 'gpu' && other.bytes > 0 && other.activity.hiddenAt === null &&
+                    !['surface', 'program', 'context', 'mirror', 'mirror-retiring', 'live-input', 'canvas-working'].includes(other.registration.kind))
+                    .sort((a, b) => a.activity.lastVisibleAt - b.activity.lastVisibleAt || a.activity.lastUsedAt - b.activity.lastUsedAt ||
+                        stableId(a.registration.id, b.registration.id));
+                for (const other of candidates) {
+                    if (excess <= 0) break;
+                    const freed = this.evictCache(other, excess, false);
+                    if (freed > 0) auditCount('governor', `grant-trim:gpu:${other.registration.id}`, 1, { bytes: freed });
+                    excess -= freed;
+                }
+            }
+        } finally { this.trimming = false; }
     }
 
     /** A refused CPU reservation inside a pane asks the pane's own owners to give back what they can rebuild: the owner

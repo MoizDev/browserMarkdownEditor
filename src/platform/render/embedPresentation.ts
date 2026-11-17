@@ -31,6 +31,10 @@ function sameToken(a: FrameToken, b: FrameToken): boolean {
 function sameDocument(a: FrameToken, b: FrameToken): boolean {
     return a.vaultEpoch === b.vaultEpoch && a.documentId === b.documentId && a.bytesGeneration === b.bytesGeneration && a.session === b.session;
 }
+function sameRectOrNull(a: Rect | null, b: Rect | null): boolean {
+    if (a === null || b === null) return a === b;
+    return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
+}
 function sameNumbers(a: readonly number[], b: readonly number[]): boolean {
     return a === b || a.length === b.length && a.every((value, i) => value === b[i]);
 }
@@ -156,6 +160,8 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
             setInteractionRect(rect) {
                 if (slot.closed) return;
                 if (rect && (![rect.x, rect.y, rect.width, rect.height].every(Number.isFinite) || rect.width <= 0 || rect.height <= 0)) throw new RangeError('Invalid interaction rectangle');
+                // The overlay reports its rectangle on each pointer update; only a different rectangle changes what is drawn.
+                if (sameRectOrNull(slot.interaction, rect)) return;
                 slot.interaction = rect ? { ...rect } : null; hide(slot); wake();
             },
             async dispose() { close(slot); },

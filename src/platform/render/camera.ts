@@ -274,6 +274,11 @@ export function wheelDelta(sample: WheelSample, viewport: Viewport): Point {
 export class CameraController {
     private cameraValue: Readonly<Camera>;
     private viewportValue: Readonly<Viewport>;
+    /** The display's own device-pixel ratio, which rest snapping aligns to. The viewport's dpr is the BACKING ratio and
+     * carries the quality scale, so snapping to it moved a resting camera whenever quality changed: content shifted by up
+     * to half a backing pixel at a soft↔sharp swap (logged: −0.78/−0.66 world units, ~0.3 px at 40%, no camera input). */
+    private snapDpr: number | null = null;
+    private lastIdeal: Camera | null = null;
     private resizeReference: Readonly<Viewport>;
     private constraint: CameraConstraint;
     private epoch = 0;
@@ -312,8 +317,9 @@ export class CameraController {
     /** Paged resize keeps page/offset/userZoom; free resize keeps the centre world point (§8:732–737).
      * During a gesture the caller supplies its CURRENT world/surface anchor instead of an old down point.
      */
-    setViewport(viewport: Viewport, anchor?: CameraAnchor, geometryChanged = false): void {
+    setViewport(viewport: Viewport, anchor?: CameraAnchor, geometryChanged = false, snapDpr?: number): void {
         validateViewport(viewport);
+        if (snapDpr !== undefined && Number.isFinite(snapDpr) && snapDpr > 0) this.snapDpr = snapDpr;
         const previous = this.viewportValue;
         if (previous.width === viewport.width && previous.height === viewport.height && previous.dpr === viewport.dpr) {
             // A new physical geometry may quantize to the same budgeted viewport. It still
@@ -387,12 +393,23 @@ export class CameraController {
         this.setCamera({ x, y, z: this.cameraValue.z });
     }
 
+    private snapViewport(): Readonly<Viewport> {
+        return this.snapDpr === null || this.snapDpr === this.viewportValue.dpr ? this.viewportValue : { ...this.viewportValue, dpr: this.snapDpr };
+    }
+
     beginFrame(frameId: number): ViewState {
         if (!Number.isSafeInteger(frameId) || frameId < 0 || frameId < this.frameId) throw new RangeError('Frame ids must be monotonic nonnegative integers');
         if (frameId === this.frameId && this.frameState) return this.frameState;
         const ideal = constrainCamera(this.cameraValue, this.viewportValue, this.constraint);
         this.publishCamera(ideal);
-        const next = this.moving ? ideal : snapCamera(ideal, this.viewportValue, this.constraint.bounds(ideal, this.viewportValue));
+        // The presented camera depends on the logical camera and the display's pixel grid only. A frame is left unsnapped
+        // only while the camera itself is travelling (sub-pixel glide); 'moving' alone is not enough, because a press with
+        // no camera input marks frames moving, and the ink pane then hopped by the snap difference at every press and back
+        // at release (measured on canvas2d, img8 at 262%: 0.05/0.19 world units against the page, which did not move).
+        const travelling = this.moving && this.lastIdeal !== null &&
+            (ideal.x !== this.lastIdeal.x || ideal.y !== this.lastIdeal.y || ideal.z !== this.lastIdeal.z);
+        this.lastIdeal = ideal;
+        const next = travelling ? ideal : snapCamera(ideal, this.snapViewport(), this.constraint.bounds(ideal, this.viewportValue));
         validateCamera(next, this.viewportValue);
         // Rest snapping is presentation, not a new semantic input. Writing it back made a
         // fractional scroll alternate raw→snapped every frame (epoch +2), cancelling CPU bands

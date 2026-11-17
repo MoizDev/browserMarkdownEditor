@@ -531,7 +531,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
             try { buffer = owner.createBuffer(vertexBytes, ['vertex', 'copy-dst'], lease); }
             catch (error) {
                 host.allocator.gpu.release(lease); host.allocator.cpu.release(staging);
-                if (error instanceof ArenaError && error.code === 'unsupported') { unsupported = true; return 'unsupported'; }
+                if (error instanceof ArenaError && error.code === 'unsupported') { unsupported = true; auditCount(audit, 'fallback:path-coverage:vertex-buffer'); return 'unsupported'; }
                 throw error;
             }
             up = { device: owner, buffer, data, staging, written: 0, negative: set.negative, bytes: vertexBytes };
@@ -560,17 +560,22 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
     /** Admission happens here, in prepare: targets, vertex buffers and any clip handle are created before any draw. Failure is
      * permanent for this device incarnation and returns 'unsupported'. A set uploaded by an admission that is then refused
      * keeps its buffer at zero refs, so the retry uploads nothing; release() frees it. */
+    /** The kit's own fallback, named by its reason: the caller's route draws the item exactly, and the counter says why it could not. */
+    const unsupportedBecause = (reason: string): PathCoverageAdmission => {
+        auditCount(audit, `fallback:path-coverage:${reason}`);
+        return { status: 'unsupported' };
+    };
     const admitSets = (request: PathCoverageSetsRequest, budget: FrameBudget): PathCoverageAdmission => {
         // Failure is permanent for this device incarnation: the caller's exact route takes the item.
-        if (disposed || failed || unsupported) return { status: 'unsupported' };
+        if (disposed || failed || unsupported) return unsupportedBecause(disposed ? 'disposed' : failed ? 'failed' : 'device-unsupported');
         warm();
         // Pipelines still compiling are a wait, not a fallback; ready invalidates the frame.
-        if (!isReady()) return { status: pending || !device ? 'denied' : 'unsupported' };
+        if (!isReady()) return pending || !device ? { status: 'denied' } : unsupportedBecause('not-ready');
         const owner = device!, { sets, rule, affine, viewport, output } = request;
         if (owner.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration) return { status: 'denied' };
         let edges = 0;
         for (const set of sets) edges += set.edges;
-        if (rule === 'nonzero' && edges > PATH_COVERAGE_STENCIL_MAX_EDGES) return { status: 'unsupported' };
+        if (rule === 'nonzero' && edges > PATH_COVERAGE_STENCIL_MAX_EDGES) return unsupportedBecause('stencil-edges');
         if (!Number.isSafeInteger(viewport.width) || !Number.isSafeInteger(viewport.height) || viewport.width <= 0 || viewport.height <= 0) {
             throw new RangeError('Invalid path coverage viewport');
         }
@@ -586,7 +591,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         const x1 = Math.min(viewport.width, Math.ceil(mx1)), y1 = Math.min(viewport.height, Math.ceil(my1));
         if (x1 <= x0 || y1 <= y0) return { status: 'empty' };
         const bounds: RectI = { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
-        if (bounds.width > owner.limits.maxRenderTargetSize || bounds.height > owner.limits.maxRenderTargetSize) return { status: 'unsupported' };
+        if (bounds.width > owner.limits.maxRenderTargetSize || bounds.height > owner.limits.maxRenderTargetSize) return unsupportedBecause('bounds');
         const composite = output.kind === 'composite';
         // A 'grid4' composite is ink's: one sample per subsample of the 4×4 grid, resolved by its 'paint' output. A mask is always MSAA.
         const grid: CompositeGrid = composite && request.sampling === 'grid4' ? 4 : 1;
@@ -629,7 +634,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
             if (target) { owner.destroy(target.target); owner.destroy(target.texture); }
             if (!targetAttached && targetLease) host.allocator.gpu.release(targetLease);
             for (const part of parts) releaseShared(part);
-            if (error instanceof ArenaError && error.code === 'unsupported') { unsupported = true; return { status: 'unsupported' }; }
+            if (error instanceof ArenaError && error.code === 'unsupported') { unsupported = true; return unsupportedBecause('device-refused'); }
             throw error;
         }
         // A modulate composite's source is k = C·c + 1 − α·c at full coverage: premultiplied colour plus one minus alpha.

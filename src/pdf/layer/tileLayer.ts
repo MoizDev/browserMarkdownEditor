@@ -137,6 +137,9 @@ export class PdfTileLayer implements Layer {
     /** Published mirror crops by tile version (geometry, mirror revision, tile key). A version still held is reused with no
      * copy: the copy is the whole tile, so it is the same for every view that shows the tile. Cleared on a source change. */
     private readonly mirrorIds = new Map<string, string>();
+    /** One outstanding capacity waiter per pool: a refused tile asks the governor to wake the layer when its bytes fit. */
+    private awaitingGpu = false;
+    private awaitingCpu = false;
     /** Drawable tile rects by page, for one device. Planning asks `covered` for every visible tile; the uncached version
      * scanned every entry and built a fresh array per tile, so one frame cost tiles × entries (by reading: a zoom step
      * plans hundreds of tiles). Dropped wherever an entry's drawability changes; a new unsettled entry is never drawable. */
@@ -267,7 +270,7 @@ export class PdfTileLayer implements Layer {
                     let texture: PooledTexture | null;
                     try { texture = this.acquireTexture(device, existing.bitmap.width, existing.bitmap.height); }
                     catch (error) { this.onError(error, request); continue; }
-                    if (!texture) continue;
+                    if (!texture) { this.awaitGpuCapacity(existing.bitmap.width * existing.bitmap.height * 4); continue; }
                     // The reclaim may have taken this very tile when it was off view (a prefetch).
                     if (this.entries.get(key) !== existing || !existing.bitmap) { this.texturePool.release(texture); continue; }
                     if (!budget.claimUpload(existing.bitmap.width * existing.bitmap.height * 4)) {
@@ -293,7 +296,7 @@ export class PdfTileLayer implements Layer {
                 this.evictUnneeded(input.viewport, bytes);
                 lease = this.host.allocator.cpu.reserve(bytes);
             }
-            if (!lease) continue;
+            if (!lease) { this.awaitCpuCapacity(bytes); continue; }
             const entry: Entry = { request, lease, controller: new AbortController(), used: ++this.sequence };
             this.entries.set(key, entry); running++;
             void Promise.resolve().then(() => this.producer.render(request, entry.controller.signal)).then(bitmap => {
@@ -690,7 +693,7 @@ export class PdfTileLayer implements Layer {
                 this.bridgeReady.add(item.entry.id); continue;
             }
             const texture = this.acquireTexture(device, bitmap.width, bitmap.height);
-            if (!texture) break;
+            if (!texture) { this.awaitGpuCapacity(bitmap.width * bitmap.height * 4); break; }
             if (!budget.claimUpload(bitmap.width * bitmap.height * 4)) { this.texturePool.release(texture); this.pendingFrame = true; break; }
             try {
                 device.writeTexture(texture.handle, { x: 0, y: 0, width: bitmap.width, height: bitmap.height },
@@ -713,6 +716,22 @@ export class PdfTileLayer implements Layer {
         return job.entries.every(({ request }) => request.key.documentToken === token && request.key.sourceRole === input.source &&
             request.key.colourVersion === current.colourVersion && request.key.contentRevision === pdfVariantRevision(
                 input.variant === 'plain' ? 'plain' : input.pageVariant?.(request.page) ?? input.variant, input.fontEpoch ?? 0));
+    }
+
+    /** A refused texture wakes the layer when the governor would admit its bytes. Without this a visible tile waited for
+     * some unrelated frame: nothing requested another prepare after the refusal (by reading). */
+    private awaitGpuCapacity(bytes: number): void {
+        const allocator = this.host.allocator.gpu;
+        if (this.awaitingGpu || !allocator.whenAvailable) return;
+        this.awaitingGpu = true;
+        allocator.whenAvailable(() => { this.awaitingGpu = false; this.host.invalidate('pdf-gpu-capacity'); }, bytes);
+    }
+
+    private awaitCpuCapacity(bytes: number): void {
+        const allocator = this.host.allocator.cpu;
+        if (this.awaitingCpu || !allocator.whenAvailable) return;
+        this.awaitingCpu = true;
+        allocator.whenAvailable(() => { this.awaitingCpu = false; this.host.invalidate('pdf-cpu-capacity'); }, bytes);
     }
 
     /** The held crop of this tile version, or null when none is held (or the pixels were released). */

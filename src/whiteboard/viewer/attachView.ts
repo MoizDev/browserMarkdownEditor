@@ -230,9 +230,20 @@ export const attachView: AttachView = options => {
             layers: definitions,
             backendPreference: BOARD_BACKEND_PREFERENCE };
     }
-    function publish(): void {
+    function sameSnapshot(a: ViewerSnapshot, b: ViewerSnapshot): boolean {
+        return a.state === b.state && a.readOnlyReason === b.readOnlyReason && a.sceneRevision === b.sceneRevision
+            && a.layout === b.layout && a.palette === b.palette && a.layers === b.layers && a.backendPreference === b.backendPreference
+            && a.appearance.background === b.appearance.background && a.appearance.inverted === b.appearance.inverted
+            && JSON.stringify(a.paint) === JSON.stringify(b.paint);
+    }
+    // The native view repaints on every listener call, so listeners hear only a change the snapshot can show. `force` is for a
+    // change the snapshot does not carry (the selection), which the caller has already seen change.
+    function publish(force = false): void {
         if (disposed) return;
-        snapshot = makeSnapshot(); accessibility.invalidate();
+        const next = makeSnapshot();
+        accessibility.invalidate();
+        if (!force && snapshot && sameSnapshot(snapshot, next)) return;
+        snapshot = next;
         for (const listener of listeners) listener();
     }
     // The whole-sheet world: board coordinates are bounded by the 1e12 world limit (as boardLayers' WHOLE_PLANE).
@@ -363,7 +374,7 @@ export const attachView: AttachView = options => {
     const stopSelection = runtime.selection.subscribe(() => {
         const currentSheet = sheet();
         if (currentSheet !== previousSheet) { previousSheet = currentSheet; clearPreview?.(); }
-        cancelReveal(); publish(); requestPaint();
+        cancelReveal(); publish(true); requestPaint();
     });
     let previousRevision = options.session.doc.rev;
     const stopSession = options.session.subscribe(() => {

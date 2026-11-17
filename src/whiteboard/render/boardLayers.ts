@@ -84,7 +84,8 @@ const NO_IMAGES: readonly PresentedImage[] = Object.freeze([]);
  * The composer asks once per tile: a layer's claim array keeps its identity while the claim is unchanged, so the reader
  * rebuilds its answer only when one of those arrays changes, and allocates nothing while they hold. */
 export function createDrawnPagesReader(): (layers: readonly unknown[]) => readonly Rect[] {
-    let sources: (readonly Rect[])[] = [], result: readonly Rect[] = NO_RECTS;
+    const sources: (readonly Rect[])[] = [];
+    let result: readonly Rect[] = NO_RECTS;
     return layers => {
         let changed = sources.length !== layers.length;
         for (let i = 0; i < layers.length; i++) {
@@ -862,9 +863,12 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 prepareUrgent() {
                     return !disposed && !ended && presented === null;
                 },
+                // The work progressNow counts, so a board with nothing left to compose asks for no frame. An idle ancestor
+                // pass is not work the board waits on, and the composer's needs belong to the active host alone.
                 needsFrame() {
-                    return !disposed && !ended && (options.frames.needsFrame() || (!denied && (!!estimate && !estimate.done || density.pending() || !!adapter?.needsFrame()
-                        || !!host.device() && !!gpu?.needsFrame())));
+                    const idleOnly = useDense && !!dense?.idleOnly();
+                    return !disposed && !ended && (options.frames.needsFrame() || (!denied && (!!estimate && !estimate.done || density.pending()
+                        || (!idleOnly && !!adapter?.needsFrame()) || !!activeHost()?.device() && !!gpu?.needsFrame())));
                 },
                 onFramePresented(revision, token) { acknowledge(band, revision, token); },
                 dispose() {

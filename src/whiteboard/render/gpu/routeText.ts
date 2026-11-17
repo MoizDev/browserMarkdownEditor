@@ -222,8 +222,9 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
     let white: TextureHandle | null = null, whiteLease: ByteLease | null = null, sampler: SamplerHandle | null = null;
     /** The RGBA staging texture the mono bitmaps are written into, one frame's worth at a time, reset after its conversion. */
     let stage: { texture: TextureHandle; lease: ByteLease; packer: ShelfPacker; height: number } | null = null;
-    /** When the last conversion through the staging texture ended: the idle release counts from here, or null while one is pending. */
-    let stageIdleSince: number | null = null;
+    /** The idle release: a timer, armed when a conversion ends and cancelled when one begins. A timer asks for no frame, so an
+     * idle board stays idle; deleting a texture needs no pass, so it runs outside the frame. */
+    let stageTimer: ReturnType<typeof setTimeout> | null = null;
     /** The conversion's instance buffer and its CPU twin: grown to the pending count, never shrunk. */
     let convertBuffer: BufferHandle | null = null, convertLease: ByteLease | null = null, convertCapacity = 0;
     let convertScratch: Float32Array<ArrayBuffer> = new Float32Array(0), convertScratchLease: ByteLease | null = null;
@@ -276,7 +277,7 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         pipelines = [undefined, undefined, undefined, undefined]; convertPipeline = null;
         pipelinesReady = false; pipelinesPending = false; failed = false;
         mono = null; colour = null; white = null; whiteLease = null; sampler = null;
-        stage = null; stageIdleSince = null; convertBuffer = null; convertLease = null; convertCapacity = 0; pendingCount = 0; pageRunCount = 0;
+        clearStageTimer(); stage = null; convertBuffer = null; convertLease = null; convertCapacity = 0; pendingCount = 0; pageRunCount = 0;
         // Stand-in records name the atlases this device just disposed: none may be drawn from again.
         standIns.clear();
         releaseRaster();
@@ -379,22 +380,28 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         try { texture = owner.createTexture(STAGE_WIDTH, height, 'rgba8', ['sample', 'copy-dst'], lease); }
         catch (error) { host.allocator.gpu.release(lease); throw error; }
         stage = { texture, lease, packer: new ShelfPacker(STAGE_WIDTH, height), height };
+        armStageIdle();
         return true;
+    };
+    const clearStageTimer = (): void => {
+        if (stageTimer !== null) clearTimeout(stageTimer);
+        stageTimer = null;
     };
     const releaseStage = (): void => {
         if (!stage) return;
+        clearStageTimer();
         device!.destroy(stage.texture);
         host.allocator.gpu.release(stage.lease);
-        stage = null; stageIdleSince = null;
+        stage = null;
     };
-    /** Releases the staging texture once it has been idle for STAGE_IDLE_MS; until then it asks for the frame that releases it. */
-    const releaseIdleStage = (): void => {
-        if (!stage) return;
-        const now = performance.now();
-        // A texture no conversion ever followed starts its idle count here, so it too is released.
-        if (stageIdleSince === null) stageIdleSince = now;
-        if (now - stageIdleSince >= STAGE_IDLE_MS) releaseStage();
-        else host.wakeAt(stageIdleSince + STAGE_IDLE_MS);
+    /** Arms the idle release: after STAGE_IDLE_MS with no conversion pending, the texture is destroyed from the timer. */
+    const armStageIdle = (): void => {
+        clearStageTimer();
+        stageTimer = setTimeout(() => {
+            stageTimer = null;
+            // A cell admitted since the timer was armed is still pending: its conversion ends the idle period, so nothing is freed.
+            if (pendingCount === 0) releaseStage();
+        }, STAGE_IDLE_MS);
     };
     /** A place in the staging texture for a w × h cell. Null when this frame's cells fill it (the run waits for the conversion); 'denied'
      * when the grant refuses the texture. The texture doubles only when nothing is pending, so the frame's cells are never copied. */
@@ -754,8 +761,8 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
             }
         },
         encodeOffscreen(passes: OffscreenPasses): void {
-            if (pendingCount === 0) { releaseIdleStage(); return; }
-            stageIdleSince = null;
+            if (pendingCount === 0) return;
+            clearStageTimer();
             const owner = device, staged = stage, pipeline = convertPipeline;
             if (!owner || !staged || !pipeline || !convertBuffer || !sampler || !mono) throw new Error('Text conversion without its objects');
             // Gather this frame's live cells per page, in page order, into the conversion buffer: one instance range per page.
@@ -796,8 +803,7 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
             // The staging texture is free again: its cells are on their pages. Its shelves reset, and so does the pending list.
             staged.packer.reset();
             pendingCount = 0; pageRunCount = 0;
-            stageIdleSince = performance.now();
-            host.wakeAt(stageIdleSince + STAGE_IDLE_MS);
+            armStageIdle();
         },
         retire(prepared: PreparedRun): void { retireRun(prepared as TextRun); },
         release(): void { releaseGpu(); },

@@ -60,3 +60,17 @@ export class PdfTexturePool {
         if (!lost) for (const item of free) item.device.destroy(item.handle);
     }
 }
+
+/** A tile's own texture, created for a tile and destroyed when the tile leaves the GPU. Not pooled: a free texture is charged
+ * bytes that nothing draws, so a pool of them is memory the tile model does not need. */
+export function createTileTexture(allocator: MemoryAllocator, device: GfxDevice, width: number, height: number): PooledTexture | null {
+    const bytes = width * height * 4;
+    const lease = allocator.reserve(bytes);
+    if (!lease) return null;
+    try {
+        return { device, handle: device.createTexture(width, height, 'rgba8', ['sample', 'copy-dst'], lease), width, height, bytes };
+    } catch (error) {
+        allocator.release(lease);
+        throw error;
+    }
+}

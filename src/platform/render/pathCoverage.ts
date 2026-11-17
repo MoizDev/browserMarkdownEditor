@@ -213,7 +213,10 @@ interface Pipelines {
 /** Platform stencil-coverage executor. Winding or union triangles fill an admitted stencil target,
  * one cover quad paints the colour under the not-equal test, and the scope composites once (or
  * leaves an R-channel clip mask). Admission and uploads happen in admit(); draws only borrow. */
-export function createPathCoverageKit(host: LayerHost, report: (error: unknown) => void, audit = 'path-coverage') {
+/** `onFreed(key)` runs when the kit stops holding a triangle array it was given (its shared set and its upload are the only
+ * holders), so an owner that leases the array's memory can release the lease then, not before. */
+export function createPathCoverageKit(host: LayerHost, report: (error: unknown) => void, audit = 'path-coverage',
+    onFreed?: (key: Float64Array) => void) {
     let device: GfxDevice | null = null, pipelines: Pipelines | null = null, pending = false, failed = false, unsupported = false;
     let incarnation = 0, disposed = false, gpuBytes = 0, compositeLive = 0, gridLive = 0;
     const live = new Map<PreparedPathCoverage, number>();
@@ -232,6 +235,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         const up = uploading.get(key);
         if (!up) return;
         uploading.delete(key); gpuBytes -= up.bytes;
+        if (!shared.has(key)) onFreed?.(key);
         host.allocator.cpu.release(up.staging); up.device.destroy(up.buffer);
     };
     // A set with no live admission stays on the GPU: the next tile that draws the same stroke then uploads nothing. The
@@ -242,6 +246,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
     let idleBytes = 0, frame = 0;
     const destroySet = (entry: VertexSet) => {
         shared.delete(entry.key); gpuBytes -= entry.bytes; entry.device.destroy(entry.buffer);
+        if (!uploading.has(entry.key)) onFreed?.(entry.key);
     };
     const unidle = (entry: VertexSet) => { if (idle.delete(entry.key)) idleBytes -= entry.bytes; };
     /** Destroys idle sets, oldest first, until `bytes` are freed, skipping any used in the current frame. Returns the bytes freed;
@@ -324,7 +329,9 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         incarnation++;
         for (const prepared of [...live.keys()]) retireOwned(prepared);
         for (const entry of shared.values()) { gpuBytes -= entry.bytes; entry.device.destroy(entry.buffer); }
+        const held = [...shared.keys()];
         shared.clear(); idle.clear(); idleBytes = 0;
+        for (const key of held) if (!uploading.has(key)) onFreed?.(key);
         for (const key of [...uploading.keys()]) dropUpload(key);
         if (pipelines && device) for (const handle of Object.values(pipelines)) device.destroy(handle);
         pipelines = null; device = null; pending = false; failed = false; unsupported = false;
@@ -607,6 +614,8 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         ready: isReady,
         /** Marks the frame the calls that follow belong to. An idle set used in this frame is never reclaimed. */
         beginFrame(next: number): void { frame = next; },
+        /** Whether the kit still holds this triangle array (a shared set or an upload in progress). */
+        holds(key: Float64Array): boolean { return shared.has(key) || uploading.has(key); },
         /** The governor's reclaim for this kit's idle triangle buffers: destroys the oldest unused ones until `bytes` are freed,
          * and returns the bytes actually freed (their leases return to the device's allocator as they retire). */
         evict(bytes: number): number { return reclaimIdle(bytes); },

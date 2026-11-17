@@ -4,7 +4,7 @@
 // Triangles are keyed by the commands' content and a band; the device affine is a uniform of the coverage kit.
 import type { Affine, PathCommand, ViewState } from '../../../platform/types';
 import type { LayerHost } from '../../../platform/render/compositor.types';
-import type { ClipToken, GpuPass, RectI } from '../../../platform/render/gfx/api';
+import type { ByteLease, ClipToken, GpuPass, RectI } from '../../../platform/render/gfx/api';
 import type { FrameBudget } from '../../../platform/render/types';
 import { auditCount } from '../../../platform/render/renderAudit';
 import { createPathCoverageKit, type PathCoverageAdmission, type PreparedPathCoverage } from '../../../platform/render/pathCoverage';
@@ -26,12 +26,16 @@ type Origin = Readonly<{ x: number; y: number }>;
 type Bounds = Readonly<{ x0: number; y0: number; x1: number; y1: number }>;
 interface Shapes { readonly positive: Float64Array; readonly negative: Float64Array; readonly edges: number; readonly bounds: Bounds }
 /** One triangle set in item-local space, origin-relative. Its arrays are the kit's shared-buffer keys: the cache holds them. */
-interface Outline extends Shapes { readonly origin: Origin; readonly bytes: number }
+/** Its triangle arrays are CPU memory leased from the pane's CPU allocator; the lease lives while the cache or the coverage kit holds
+ * the array (see createPath), so `bytes` is always accounted. */
+interface Outline extends Shapes { readonly origin: Origin; readonly bytes: number; usedFrame: number }
+/** An outline the CPU grant refused: its admission is denied on the CPU pool, and nothing is built or held for it. */
+interface Refused { readonly refused: number }
 interface LocalRect { readonly x0: number; readonly x1: number; readonly y0: number; readonly y1: number }
 interface Viewport { readonly width: number; readonly height: number }
 /** The composite blend a path run is drawn with: the kit's normal cover, or the multiply-slice modulate cover. */
 type CoverBlend = 'normal' | 'modulate';
-type Stop = { readonly status: 'empty' } | { readonly status: 'denied'; readonly bytes: number } | { readonly status: 'deferred' }
+type Stop = { readonly status: 'empty' } | { readonly status: 'denied'; readonly bytes: number; readonly pool: 'cpu' | 'gpu' } | { readonly status: 'deferred' }
     | { readonly status: 'unsupported'; readonly why: string };
 
 /** The clips of one item (or one list of clips), admitted for one view. Rectangle clips are scissors; the others are the coverage
@@ -195,7 +199,7 @@ export const withClips: WithClips = (pass, clips, view, draw) => {
 /** Prepared coverage and prepared clips carry no `status`; every stop does. */
 const isStop = (value: object): value is Stop => 'status' in value;
 function stopAdmission(stop: Stop): Admission<never> {
-    if (stop.status === 'denied') return { status: 'denied', pool: 'gpu', bytes: stop.bytes };
+    if (stop.status === 'denied') return { status: 'denied', pool: stop.pool, bytes: stop.bytes };
     if (stop.status === 'unsupported') return { status: 'unsupported', why: stop.why };
     return { status: stop.status };
 }
@@ -209,16 +213,53 @@ export function createPath(host: LayerHost, audit: string): {
     readonly route: ItemRoute<PaintPathItem>;
     readonly admitClips: AdmitClips;
     readonly coverage: ReturnType<typeof createPathCoverageKit>;
+    readonly beginFrame: (frame: number) => void;
+    readonly evictCpu: (bytes: number) => number;
 } {
-    const kit = createPathCoverageKit(host, () => auditCount(audit, 'kit:pipeline-failed'), audit);
-    // Triangles by content and band, most recently used last.
+    // Triangles by content and band, most recently used last. An array's CPU lease lives while the cache or the kit holds the array:
+    // the last holder to let go releases it, so the lease is never released over memory still alive, and no array is alive without one.
     const outlines = new Map<string, Outline>();
-    let outlineBytes = 0;
+    const cachedArrays = new Set<Float64Array>();
+    const leases = new Map<Float64Array, { readonly lease: ByteLease; readonly bytes: number }>();
+    let outlineBytes = 0, leasedBytes = 0, frame = 0;
+    /** Releases the lease of an array nothing holds; returns the bytes given back to the CPU grant. */
+    const releaseLease = (array: Float64Array): number => {
+        const held = leases.get(array);
+        if (!held) return 0;
+        leases.delete(array); leasedBytes -= held.bytes; host.allocator.cpu.release(held.lease);
+        return held.bytes;
+    };
+    const kit = createPathCoverageKit(host, () => auditCount(audit, 'kit:pipeline-failed'), audit,
+        // The kit has let go of an array: its lease goes unless the cache still holds the array.
+        array => { if (!cachedArrays.has(array)) releaseLease(array); });
+    /** Takes an outline out of the cache. Its lease goes now unless the kit still holds the array; if it does, the kit's
+     * release (onFreed) returns the lease. Returns the bytes given back now. */
+    const dropFromCache = (key: string, old: Outline): number => {
+        outlines.delete(key); cachedArrays.delete(old.positive); outlineBytes -= old.bytes;
+        return kit.holds(old.positive) ? 0 : releaseLease(old.positive);
+    };
+    /** Frees unused outlines the kit does not hold, oldest first, until `bytes` are given back to the CPU grant. */
+    const reclaimLeases = (bytes: number): number => {
+        let freed = 0;
+        for (const [key, old] of outlines) {
+            if (freed >= bytes) break;
+            if (old.usedFrame >= frame || kit.holds(old.positive)) continue;
+            freed += dropFromCache(key, old);
+        }
+        return freed;
+    };
+    /** Reserves `bytes` of CPU grant for an outline. A refusal reclaims what unused outlines hold, then tries once more. */
+    const leaseBytes = (bytes: number): ByteLease | null => {
+        let lease = host.allocator.cpu.reserve(bytes);
+        if (!lease && reclaimLeases(bytes) > 0) lease = host.allocator.cpu.reserve(bytes);
+        return lease;
+    };
+    const isRefused = (geometry: Outline | Refused | null): geometry is Refused => geometry !== null && 'refused' in geometry;
     const outlineFor = (key: string, d: readonly PathCommand[], band: number,
-        build: (tolerance: number, origin: Origin) => Shapes | null): Outline | null => {
+        build: (tolerance: number, origin: Origin) => Shapes | null): Outline | Refused | null => {
         const cached = outlines.get(key);
         if (cached) {
-            outlines.delete(key); outlines.set(key, cached);
+            outlines.delete(key); outlines.set(key, cached); cached.usedFrame = frame;
             auditCount(audit, 'geom:hit');
             return cached;
         }
@@ -227,11 +268,18 @@ export function createPath(host: LayerHost, audit: string): {
         if (!shapes) return null;
         auditCount(audit, 'geom:build');
         const bytes = shapes.positive.byteLength + shapes.negative.byteLength;
-        const outline: Outline = { origin, positive: shapes.positive, negative: shapes.negative, edges: shapes.edges, bounds: shapes.bounds, bytes };
-        outlines.set(key, outline); outlineBytes += bytes;
-        for (const [oldKey, old] of outlines) {
-            if (outlineBytes <= GEOMETRY_CACHE_BYTES || oldKey === key) break;
-            outlines.delete(oldKey); outlineBytes -= old.bytes;
+        const lease = leaseBytes(bytes);
+        if (!lease) { auditCount(audit, 'geom:refused'); return { refused: bytes }; }
+        leases.set(shapes.positive, { lease, bytes }); leasedBytes += bytes;
+        const outline: Outline = { origin, positive: shapes.positive, negative: shapes.negative, edges: shapes.edges, bounds: shapes.bounds,
+            bytes, usedFrame: frame };
+        outlines.set(key, outline); cachedArrays.add(shapes.positive); outlineBytes += bytes;
+        // The bound is soft: an outline used this frame is never dropped, so the cache is trimmed by what other frames left behind.
+        if (outlineBytes > GEOMETRY_CACHE_BYTES) {
+            for (const [oldKey, old] of outlines) {
+                if (outlineBytes <= GEOMETRY_CACHE_BYTES) break;
+                if (old.usedFrame < frame && oldKey !== key) dropFromCache(oldKey, old);
+            }
         }
         return outline;
     };
@@ -239,7 +287,7 @@ export function createPath(host: LayerHost, audit: string): {
     /** Takes the kit's result into `acquired`, or says why not. */
     const take = (result: PathCoverageAdmission, acquired: PreparedPathCoverage[], bytes: number): PreparedPathCoverage | Stop => {
         if (result.status === 'ready') { acquired.push(result.value); return result.value; }
-        if (result.status === 'denied') return { status: 'denied', bytes };
+        if (result.status === 'denied') return { status: 'denied', bytes, pool: 'gpu' };
         if (result.status === 'deferred') return { status: 'deferred' };
         if (result.status === 'empty') return { status: 'empty' };
         return { status: 'unsupported', why: 'coverage kit' };
@@ -267,6 +315,7 @@ export function createPath(host: LayerHost, audit: string): {
             if (band === null) return { status: 'unsupported', why: 'clip transform' };
             const key = `clip|${commandKey(clip.d)}|${band}`;
             const geometry = outlineFor(key, clip.d, band, (tolerance, origin) => pathFillTriangles(clip.d, { tolerance, origin: [origin.x, origin.y] }));
+            if (isRefused(geometry)) return { status: 'denied', bytes: geometry.refused, pool: 'cpu' };
             const affine = geometry && deviceAffine(clip.localToWorld, geometry.origin, view);
             if (!geometry || !affine) return { status: 'unsupported', why: 'clip geometry' };
             const taken = take(kit.admit({ shapes: geometry, rule: clip.fillRule, affine, viewport, colour: WHITE, output: { kind: 'mask' } }, budget),
@@ -289,6 +338,7 @@ export function createPath(host: LayerHost, audit: string): {
             if (band === null) return { status: 'unsupported', why: 'path transform' };
             const geometry = outlineFor(`fill|${commandKey(item.d)}|${band}`, item.d, band,
                 (tolerance, origin) => pathFillTriangles(item.d, { tolerance, origin: [origin.x, origin.y] }));
+            if (isRefused(geometry)) return { status: 'denied', bytes: geometry.refused, pool: 'cpu' };
             const affine = geometry && deviceAffine(item.localToWorld, geometry.origin, view);
             if (!geometry || !affine) return { status: 'unsupported', why: 'path geometry' };
             const taken = take(kit.admit({ shapes: geometry, rule: item.fillRule, affine, viewport, colour: item.material.fill,
@@ -308,6 +358,7 @@ export function createPath(host: LayerHost, audit: string): {
                     ...(style.dash ? { dash: style.dash } : {}), tolerance, origin: [origin.x, origin.y] });
                 return outline && { positive: outline.triangles, negative: NO_TRIANGLES, edges: 0, bounds: outline.bounds };
             });
+            if (isRefused(geometry)) return { status: 'denied', bytes: geometry.refused, pool: 'cpu' };
             const affine = geometry && deviceAffine(item.localToWorld, geometry.origin, view);
             if (!geometry || !affine) return { status: 'unsupported', why: 'stroke geometry' };
             const taken = take(kit.admit({ shapes: geometry, rule: 'union', affine, viewport, colour: style.color,
@@ -368,11 +419,13 @@ export function createPath(host: LayerHost, audit: string): {
             }
         },
         release(): void {
+            // The cache lets go first, so the kit's releases return every lease (a lease is kept while the cache holds its array).
+            outlines.clear(); cachedArrays.clear(); outlineBytes = 0;
             kit.release();
-            outlines.clear(); outlineBytes = 0;
+            for (const array of [...leases.keys()]) releaseLease(array);
         },
         memory(): { gpuBytes: number; cpuBytes: number } {
-            return { gpuBytes: kit.memory().gpuBytes, cpuBytes: outlineBytes };
+            return { gpuBytes: kit.memory().gpuBytes, cpuBytes: leasedBytes };
         },
     };
     const admitClips: AdmitClips = (clips, view, budget) => {
@@ -384,7 +437,13 @@ export function createPath(host: LayerHost, audit: string): {
         }
         return { status: 'ready', value: result };
     };
-    return { route, admitClips, coverage: kit };
+    return {
+        route, admitClips, coverage: kit,
+        /** Marks the frame for both caches: a triangle set or outline used in this frame is never reclaimed. Call once per frame. */
+        beginFrame(next: number): void { frame = next; kit.beginFrame(next); },
+        /** The governor's CPU reclaim for the outline cache: frees unused outlines oldest first and returns the bytes freed. */
+        evictCpu(bytes: number): number { return reclaimLeases(bytes); },
+    };
 }
 
 export const createPathRoute: CreatePathRoute = (host, audit) => createPath(host, audit).route;

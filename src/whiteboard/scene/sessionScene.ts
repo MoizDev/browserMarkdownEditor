@@ -262,6 +262,7 @@ export class SessionScene implements SceneSpatial {
             renderer = binding.retainRenderer?.();
             return createSceneSnapshot({ token: binding.token, revision, records, metadata, bounds, occupiedBounds,
                 changes: from => this.boundsVersions.changedRegionsSince(from, revision),
+                changedNodes: from => this.boundsVersions.changedNodesSince(from, revision),
                 renderer, prepare: binding.preparePaint, prepareStream: binding.preparePaintStream,
                 cooperate: this.options.cooperate ?? yieldToHost, onError: this.options.onError });
         } catch (error) { try { records.release(); } finally { renderer?.release(); } throw error; }

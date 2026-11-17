@@ -39,6 +39,7 @@ interface Owner {
     readonly rasterVariant?: string;
     readonly sourceWorld?: Readonly<Rect>;
     readonly regionChangesSince?: (from: number) => RegionChanges;
+    readonly changedNodesSince?: (from: number) => ReadonlySet<string> | null;
     readonly sensitiveMayMeet?: (world: Readonly<Rect>, nodes: ReadonlySet<string>) => boolean;
     readonly mayPaint?: (world: Readonly<Rect>) => boolean;
     readonly occupiedRoot?: Readonly<Rect>;
@@ -136,6 +137,7 @@ function streamOwner(pin: PinnedPaintStream): Owner {
         get rasterVariant() { return stream.rasterVariant; },
         get sourceWorld() { return stream.sourceWorld; },
         get regionChangesSince() { return stream.regionChangesSince; },
+        get changedNodesSince() { return stream.changedNodesSince; },
         get sensitiveMayMeet() { return stream.sensitiveMayMeet; },
         get mayPaint() { return stream.mayPaint; },
         get occupiedRoot() { return stream.occupiedRoot; },
@@ -318,7 +320,7 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
         const root = { token: o.token, sceneRevision: o.sceneRevision,
             theme: o.theme, sourceDoc: o.sourceDoc, sensitiveNodes: o.sensitiveNodes,
             sessionRasters: o.sessionRasters, rasterVariant: o.rasterVariant, sourceWorld: o.sourceWorld, openTile: o.openTile,
-            regionChangesSince: o.regionChangesSince, sensitiveMayMeet: o.sensitiveMayMeet, mayPaint: o.mayPaint, occupiedRoot: o.occupiedRoot,
+            regionChangesSince: o.regionChangesSince, changedNodesSince: o.changedNodesSince, sensitiveMayMeet: o.sensitiveMayMeet, mayPaint: o.mayPaint, occupiedRoot: o.occupiedRoot,
             inkNodeIds: work.inkNodeIds };
         const frame: PaintSource = staged.kind === 'windows'
             ? Object.freeze({ ...root, liveOnly: true as const, windows: Object.freeze([...staged.underlay.finish(), ...staged.content.finish()]) })

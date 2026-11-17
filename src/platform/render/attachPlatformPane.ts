@@ -129,6 +129,10 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                 auditCount('governor', `evict-partial:${layerSet.definition(layer)?.id ?? 'unnamed'}`, 1, { bytes: partial });
             }
             if (partial >= want) break;
+            // A layer that frees part of itself has already given every position it does not need on screen. What it keeps
+            // is its visible set, which is pinned: releasing it whole here dropped a board's on-screen tiles under a trim.
+            // Such a layer is refused instead, and the refused position is composed at a lower level (h1's 'lower').
+            if (layer.evictGpu) continue;
             const remaining = layer.memory().gpuBytes;
             if (remaining <= 0) continue;
             victims.push(layer);

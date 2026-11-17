@@ -154,8 +154,12 @@ class GpuTileStore implements NumericTileStore {
     /** Bytes of every target this store holds, in entries or on the free list. The governor charges the same bytes through
      * each target's lease; this readout drops to zero the moment the store gives a target up. */
     private gpuBytes = 0;
+    /** The device generation whose targets the store holds; see adopt. */
+    private current: GfxDevice | null = null;
+    private readonly host: LayerHost;
 
     constructor(host: LayerHost, audit: string) {
+        this.host = host;
         this.allocator = host.allocator.gpu;
         this.audit = audit;
     }
@@ -317,13 +321,8 @@ class GpuTileStore implements NumericTileStore {
             auditCount(this.audit, 'tile:out-of-reach');
             return null;
         }
+        this.adopt(device);
         let slot = this.find(key);
-        if (slot?.target && slot.target.device !== device) {
-            // A new device generation: the old one abandoned this target and returned its bytes, so only forget it.
-            this.forget(slot.target);
-            slot.target = null;
-            slot.composed = false;
-        }
         if (slot?.target) {
             if (slot.blend !== blend) throw new RangeError('Tile blend changed while its target is live');
             return slot;
@@ -349,14 +348,11 @@ class GpuTileStore implements NumericTileStore {
 
     /** A kept target if one is free, else a new target on the governor's lease. */
     private takeTarget(device: GfxDevice): TileTarget | null {
-        let kept = this.free.pop();
-        while (kept) {
-            if (kept.device === device) {
-                auditCount(this.audit, 'tile:target-reuse');
-                return kept;
-            }
-            this.forget(kept);
-            kept = this.free.pop();
+        // The free list holds only the current generation's targets (adopt drops the rest), so its top is reusable as it is.
+        const kept = this.free.pop();
+        if (kept) {
+            auditCount(this.audit, 'tile:target-reuse');
+            return kept;
         }
         const made = createTileTarget(device, this.allocator, TILE_SIZE);
         if (!made) return null;
@@ -378,6 +374,32 @@ class GpuTileStore implements NumericTileStore {
     /** Drops the count of a target whose device generation is gone. The arena returned its bytes at abandonment. */
     private forget(target: TileTarget): void {
         this.gpuBytes -= target.bytes;
+    }
+
+    /** Makes `device` the generation the store holds targets of. When it changes, every target of the old generation is
+     * stale: its lease was returned when the arena abandoned that generation, so the store forgets its bytes now, and
+     * unlinks it from its entry (no later call forgets it again). Destroying it is not attempted: its handles are gone.
+     * Runs at the change, not at the next acquire, so the readout never counts a lease the arena no longer holds. */
+    private adopt(device: GfxDevice): void {
+        if (device === this.current) return;
+        this.current = device;
+        let stale = 0;
+        for (const slot of this.byNum.values()) {
+            const target = slot.target;
+            if (!target || target.device === device) continue;
+            this.forget(target);
+            slot.target = null;
+            slot.composed = false;
+            slot.dirty = true;
+            stale++;
+        }
+        let kept = 0;
+        for (const target of this.free) {
+            if (target.device === device) this.free[kept++] = target;
+            else { this.forget(target); stale++; }
+        }
+        this.free.length = kept;
+        if (stale > 0) auditCount(this.audit, 'tile:target-stale', stale);
     }
 
     /** Destroys a target and returns its bytes. ResourceArena.abandon drops every record of a lost generation, so a
@@ -479,8 +501,12 @@ class GpuTileStore implements NumericTileStore {
         if (this.gpuBytes !== 0) throw new Error('Tile store byte ledger is out of step after release');
     }
 
-    /** The store holds no CPU memory: its composed content lives in GPU targets only. */
+    /** The GPU bytes of the targets held on the current device, and no CPU bytes: composed content lives in GPU targets only.
+     * With no device the store reports zero and keeps its ledger, so a device that returns resumes the same count. */
     memory(): { gpuBytes: number; cpuBytes: number } {
+        const device = this.host.device();
+        if (device === null) return { gpuBytes: 0, cpuBytes: 0 };
+        this.adopt(device);
         return { gpuBytes: this.gpuBytes, cpuBytes: 0 };
     }
 

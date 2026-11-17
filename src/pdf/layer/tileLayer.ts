@@ -48,6 +48,13 @@ interface Entry {
 
 const NO_BOXES: readonly Readonly<Rect>[] = [];
 
+/** Mirror crops kept by version; past this many, the versions the session no longer holds are dropped. */
+const MIRROR_VERSION_LIMIT = 256;
+
+function mirrorVersionKey(view: MirrorView, request: PdfTileRequest): string {
+    return JSON.stringify([view.geometryDigest, view.contentRevision, request.text]);
+}
+
 /** The part of `box` inside `viewport`, or null when none of it is visible. */
 function clipped(box: Readonly<Rect>, viewport: Readonly<Rect>): Rect | null {
     const x = Math.max(box.x, viewport.x), y = Math.max(box.y, viewport.y);
@@ -127,6 +134,9 @@ export class PdfTileLayer implements Layer {
      * paper covers the whole page, so these areas are opaque. Cleared on a source change, on releaseGpu and on dispose. */
     private readonly drawnPages = new Map<number, Readonly<Rect>>();
     private drawnStack: Readonly<PageStack> | null = null;
+    /** Published mirror crops by tile version (geometry, mirror revision, tile key). A version still held is reused with no
+     * copy: the copy is the whole tile, so it is the same for every view that shows the tile. Cleared on a source change. */
+    private readonly mirrorIds = new Map<string, string>();
     /** Drawable tile rects by page, for one device. Planning asks `covered` for every visible tile; the uncached version
      * scanned every entry and built a fresh array per tile, so one frame cost tiles × entries (by reading: a zoom step
      * plans hundreds of tiles). Dropped wherever an entry's drawability changes; a new unsettled entry is never drawable. */
@@ -174,6 +184,7 @@ export class PdfTileLayer implements Layer {
             this.contentIdentity = identity;
             this.drawnPages.clear();
             this.drawnStack = null;
+            this.mirrorIds.clear();
             this.lastMotionScale = undefined;
             this.motionScaleAt = 0;
         }
@@ -704,6 +715,36 @@ export class PdfTileLayer implements Layer {
                 input.variant === 'plain' ? 'plain' : input.pageVariant?.(request.page) ?? input.variant, input.fontEpoch ?? 0));
     }
 
+    /** The held crop of this tile version, or null when none is held (or the pixels were released). */
+    private heldMirrorId(entry: Entry | undefined, view: MirrorView): string | null {
+        if (!entry || !this.mirror) return null;
+        const id = this.mirrorIds.get(mirrorVersionKey(view, entry.request));
+        return id && this.mirror.store.holds(id) ? id : null;
+    }
+
+    private mirrorHeld(entry: Entry | undefined, view: MirrorView): boolean {
+        return this.heldMirrorId(entry, view) !== null;
+    }
+
+    /** Entries whose crop is still held are taken in order, with no copy, before the next crop starts. */
+    private reuseHeldMirrors(job: MirrorJob): void {
+        while (job.index < job.entries.length) {
+            const entry = job.entries[job.index];
+            const id = this.heldMirrorId(entry, job.view);
+            if (!id) return;
+            job.ids.push(id);
+            if (entry.request.level === 'low') job.lowIds.add(id);
+            job.index++;
+        }
+    }
+
+    /** Drops versions whose crops the session no longer holds. */
+    private pruneMirrorIds(): void {
+        for (const [version, id] of this.mirrorIds) {
+            if (!this.mirror?.store.holds(id)) this.mirrorIds.delete(version);
+        }
+    }
+
     private prepareMirror(view: ViewState, input: Omit<PdfDemandInput, 'covered' | 'previousMotionScale'>,
         requests: readonly PdfTileRequest[], budget: FrameBudget): void {
         const mirror = this.mirror;
@@ -715,7 +756,7 @@ export class PdfTileLayer implements Layer {
             const exact = requests.filter(request => request.level === 'exact' && intersects(rect(request), input.viewport));
             const entries = exact.map(request => this.entries.get(request.text));
             if (!entries.length || entries.some(entry => !entry?.settled)) { this.mirrorJob = null; return; }
-            if (entries.some(entry => !entry?.bitmap)) {
+            if (entries.some(entry => !entry?.bitmap && !this.mirrorHeld(entry, snapshot))) {
                 // The 2D mirror is the hidden/rebind stand-in, never this view's pixels; re-rastering to refresh it would
                 // cost more than a slightly older stand-in, which the cover already treats as non-current.
                 if (this.mirrorSkipped !== key) auditCount('pdf-page', 'fallback:mirror-kept-older');
@@ -730,6 +771,7 @@ export class PdfTileLayer implements Layer {
         const job = this.mirrorJob;
         if (!job || job.pending || budget.shouldYield()) return;
         if (!this.mirrorJobCurrent(job)) { this.mirrorJob = null; return; }
+        this.reuseHeldMirrors(job);
         if (job.index === job.entries.length) {
             const mirrors = mirror.store.mirrors;
             mirrors.commitFrame(job.view, job.ids, true, job.lowIds);
@@ -747,10 +789,10 @@ export class PdfTileLayer implements Layer {
         const entry = job.entries[job.index];
         const bitmap = entry.bitmap;
         if (!bitmap || this.entries.get(entry.request.text) !== entry) { this.mirrorJob = null; return; }
-        const bounds = rect(entry.request), viewport = input.viewport;
-        const left = Math.max(bounds.x, viewport.x), top = Math.max(bounds.y, viewport.y);
-        const right = Math.min(bounds.x + bounds.width, viewport.x + viewport.width);
-        const bottom = Math.min(bounds.y + bounds.height, viewport.y + viewport.height);
+        // The whole tile, not the part the view shows: the copy then belongs to the tile version and serves every view
+        // that shows it (by reading: the per-view crop was copied again for each view). The destination rectangle places it.
+        const bounds = rect(entry.request);
+        const left = bounds.x, top = bounds.y, right = bounds.x + bounds.width, bottom = bounds.y + bounds.height;
         const scale = entry.request.scale.scale, edges = entry.request.tile.edges;
         const sx = Math.max(0, Math.floor(1 + (left - edges.left) * scale) - 1);
         const sy = Math.max(0, Math.floor(1 + (top - edges.top) * scale) - 1);
@@ -782,6 +824,8 @@ export class PdfTileLayer implements Layer {
             if (!id) { copy.close(); this.host.allocator.cpu.release(lease); this.mirrorJob = null; return; }
             job.ids.push(id);
             if (entry.request.level === 'low') job.lowIds.add(id);
+            this.mirrorIds.set(mirrorVersionKey(job.view, entry.request), id);
+            if (this.mirrorIds.size > MIRROR_VERSION_LIMIT) this.pruneMirrorIds();
             job.index++;
             job.pending = false;
             this.host.invalidate('pdf-mirror-arrived');

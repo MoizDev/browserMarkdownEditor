@@ -208,7 +208,8 @@ export interface CoverageTarget {
     readonly samples: Samples;
 }
 export interface CoverageToken { readonly id: number }
-export type CoverageOutput = { readonly kind: 'composite'; readonly blend: 'normal' | 'multiply' } | { readonly kind: 'mask' };
+// 'modulate' lays the resolved slice on the surface by fixed-function dst·src (see PipelineDesc.blend), not by backdrop copy.
+export type CoverageOutput = { readonly kind: 'composite'; readonly blend: 'normal' | 'multiply' | 'modulate' } | { readonly kind: 'mask' };
 // Exact charge for a coverage target: RGBA8 colour, multisample colour where requested, and at
 // least 8 B/px/sample of stencil (the backend's own rule, matching webgl2 #targetBytes).
 export function coverageTargetBytes(width: number, height: number, samples: Samples): number {

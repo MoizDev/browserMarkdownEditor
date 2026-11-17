@@ -173,6 +173,14 @@ interface GroupEntry {
     readonly isolation: Isolation;
 }
 
+/** Scratch for packing one composition uniform block (32 floats). `uniforms()` copies the bytes into the ring before it
+ * returns, and the slice it hands back points into the ring, so one array serves every composite. By reading: a fresh
+ * array and a literal per vector allocated on every composite, and a frame composes once per isolated group. */
+const blockScratch = new Float32Array(32);
+function setVec4(into: Float32Array, at: number, x: number, y: number, z: number, w: number): void {
+    into[at] = x; into[at + 1] = y; into[at + 2] = z; into[at + 3] = w;
+}
+
 function integer(value: number): void {
     if (!Number.isSafeInteger(value) || value < 0 || value > 0x7fffffff) throw new ArenaError('invalid-input');
 }
@@ -528,19 +536,19 @@ class DeviceFrame implements ControlledFrame {
         }
         let backdrop: { lease: TargetLease; texture: FrameTexture } | null = null;
         if (options.blend === 'multiply') backdrop = this.snapshot(scope, area);
-        const data = new Float32Array(32);
-        data.set([scope.viewport.x, scope.viewport.y, scope.viewport.width, scope.viewport.height], 0);
-        data.set([bounds.x, bounds.y, bounds.width, bounds.height], 4);
-        data.set([sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height], 8);
-        data.set([source.width, source.height, options.opacity, options.colourEffect === 'page-invert' ? 1 : 0], 12);
-        data.set([area.x, area.y, backdrop?.texture.width ?? 1, backdrop?.texture.height ?? 1], 16);
+        const data = blockScratch;
+        setVec4(data, 0, scope.viewport.x, scope.viewport.y, scope.viewport.width, scope.viewport.height);
+        setVec4(data, 4, bounds.x, bounds.y, bounds.width, bounds.height);
+        setVec4(data, 8, sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height);
+        setVec4(data, 12, source.width, source.height, options.opacity, options.colourEffect === 'page-invert' ? 1 : 0);
+        setVec4(data, 16, area.x, area.y, backdrop?.texture.width ?? 1, backdrop?.texture.height ?? 1);
         if (mask) {
-            data.set([mask.bounds.x, mask.bounds.y, mask.bounds.width, mask.bounds.height], 20);
-            data.set([mask.source.width / mask.texture.width, mask.source.height / mask.texture.height,
-                mask.source.x / mask.texture.width, 1 - mask.source.y / mask.texture.height], 24);
+            setVec4(data, 20, mask.bounds.x, mask.bounds.y, mask.bounds.width, mask.bounds.height);
+            setVec4(data, 24, mask.source.width / mask.texture.width, mask.source.height / mask.texture.height,
+                mask.source.x / mask.texture.width, 1 - mask.source.y / mask.texture.height);
         }
-        data.set([options.blend === 'multiply' ? 1 : 0, mask ? 1 : 0, scope.coverage ? 1 : 0,
-            __BME_BENCH__ ? (source.coverage ? 1 : 0) + (backdrop?.texture.coverage ? 2 : 0) : 0], 28);
+        setVec4(data, 28, options.blend === 'multiply' ? 1 : 0, mask ? 1 : 0, scope.coverage ? 1 : 0,
+            __BME_BENCH__ ? (source.coverage ? 1 : 0) + (backdrop?.texture.coverage ? 2 : 0) : 0);
         const packed = this.uniforms(data);
         const command: QuadCommand = {
             context: scope, source, backdrop: backdrop?.texture ?? this.#backend.white(), mask: mask?.texture ?? this.#backend.white(),
@@ -564,13 +572,13 @@ class DeviceFrame implements ControlledFrame {
         if (source.texture === scope.target.color?.texture || source.width < bounds.width * grid || source.height < bounds.height * grid) {
             throw new ArenaError('invalid-resource');
         }
-        const data = new Float32Array(32);
-        data.set([scope.viewport.x, scope.viewport.y, scope.viewport.width, scope.viewport.height], 0);
-        data.set([area.x, area.y, area.width, area.height], 4);
-        data.set([bounds.x, bounds.y, grid, 0], 8);
-        data.set([source.width, source.height, 1, 0], 12);
-        data.set([output.rgb[0], output.rgb[1], output.rgb[2], output.alpha], 16);
-        data.set([output.blend === 'modulate' ? 1 : 0, 0, 0, 0], 28);
+        const data = blockScratch;
+        setVec4(data, 0, scope.viewport.x, scope.viewport.y, scope.viewport.width, scope.viewport.height);
+        setVec4(data, 4, area.x, area.y, area.width, area.height);
+        setVec4(data, 8, bounds.x, bounds.y, grid, 0);
+        setVec4(data, 12, source.width, source.height, 1, 0);
+        setVec4(data, 16, output.rgb[0], output.rgb[1], output.rgb[2], output.alpha);
+        setVec4(data, 28, output.blend === 'modulate' ? 1 : 0, 0, 0, 0);
         const packed = this.uniforms(data);
         const command: QuadCommand = {
             context: scope, source, backdrop: this.#backend.white(), mask: this.#backend.white(),

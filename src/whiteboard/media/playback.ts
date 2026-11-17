@@ -1,5 +1,6 @@
 import type { ByteLease } from '../../platform/render/gfx/api';
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
+import { auditCount } from '../../platform/render/renderAudit';
 import type { NodeId } from '../model/ids';
 import type { MediaEntry, MediaId } from '../model/media';
 import type { VideoFrameRegistry } from './videoFrames';
@@ -29,11 +30,17 @@ interface Player {
     readonly url: string;
     readonly memory: ByteLease;
     callback: number | null;
+    /** The frame callback, made once per player: arming it allocates nothing. */
+    readonly deliver: VideoFrameRequestCallback;
     closed: boolean;
-    /** One snapshot at a time: a frame that arrives while the last is copying is the next one to be shown. */
+    /** One snapshot at a time. A frame that arrives while one copies is uploaded when that copy settles (see presentFrame). */
     snapshotting: boolean;
     /** The copy in flight. The source it reads (object URL and charge) is dropped only after this settles. */
     copying: Promise<void> | null;
+    /** The element's presented-frame count at the last callback, and the count the last upload started for. The video advancing is
+     * `presentedSeen` moving; an upload happens once per such advance, so a paused picture uploads nothing. */
+    presentedSeen: number;
+    uploadedFor: number;
 }
 interface State { playing: boolean; muted: boolean; time: number; visible: boolean; initialized: boolean; mediaId?: MediaId; player?: Player }
 let soundOwner: Player | null = null;
@@ -130,7 +137,9 @@ export class BoardVideoPlayback {
                 url = URL.createObjectURL(source.blob);
                 const video = document.createElement('video'); cleanupVideo = video;
                 video.preload = 'auto'; video.playsInline = true; video.loop = true; video.muted = true;
-                const player: Player = { id, mediaId: source.entry.id, video, url, memory, callback: null, closed: false, snapshotting: false, copying: null };
+                const player: Player = { id, mediaId: source.entry.id, video, url, memory, callback: null,
+                    deliver: (_now, metadata) => this.deliver(player, metadata), closed: false, snapshotting: false, copying: null,
+                    presentedSeen: 0, uploadedFor: 0 };
                 state.player = player; state.muted = true;
                 if (this.host.mode === 'hidden-dom') {
                     if (!this.host.overlay || !this.host.videoRect) throw new Error('Video fallback overlay is unavailable');
@@ -143,16 +152,15 @@ export class BoardVideoPlayback {
                     if (state.time > 0) video.currentTime = Number.isFinite(video.duration) ? Math.min(state.time, video.duration) : state.time;
                     this.host.invalidate(id);
                 });
-                video.addEventListener('loadeddata', () => { if (!player.closed && this.host.current()) this.host.invalidate(id); });
+                // The picture changes on load and on a seek, paused or not: each arms one frame callback (see arm).
+                video.addEventListener('loadeddata', () => {
+                    if (player.closed || !this.host.current()) return;
+                    this.arm(player); this.host.invalidate(id);
+                });
+                video.addEventListener('seeked', () => { if (!player.closed) this.arm(player); });
                 video.addEventListener('error', () => { if (!player.closed) this.host.error(id, 'This video could not be played'); });
                 video.src = url;
-                const frame = () => {
-                    if (player.closed || !this.visible || !state.visible || !this.host.current()) return;
-                    if (this.host.source(id)?.entry.id !== player.mediaId) { this.close(state); return; }
-                    if (this.host.frames) this.presentFrame(player); else this.host.invalidate(id);
-                    player.callback = video.requestVideoFrameCallback(frame);
-                };
-                player.callback = video.requestVideoFrameCallback(frame);
+                this.arm(player);
             } catch (error) {
                 try { if (cleanupVideo) { cleanupVideo.pause(); cleanupVideo.removeAttribute('src'); cleanupVideo.load(); cleanupVideo.remove(); } }
                 finally { if (url) URL.revokeObjectURL(url); this.host.memory.release(memory); state.player = undefined; }
@@ -169,24 +177,52 @@ export class BoardVideoPlayback {
         }
         if (state.playing) {
             const player = state.player;
+            this.arm(player);
             void player.video.play().catch(() => { if (!player.closed && this.host.current()) this.host.error(id, 'Video playback was blocked'); });
         } else state.player.video.pause();
+    }
+    /** Asks the element for its next presented frame, once. Playing, every frame is asked for; paused, a callback is armed only by
+     * an event that changes the picture (load, seek), so an idle paused video requests no frames. */
+    private arm(player: Player): void {
+        if (player.closed || player.callback !== null) return;
+        player.callback = player.video.requestVideoFrameCallback(player.deliver);
+    }
+    /** A presented frame reached the callback. The picture is uploaded only when the element's count moved: a repeat is no new picture. */
+    private deliver(player: Player, metadata: VideoFrameCallbackMetadata): void {
+        player.callback = null;
+        const state = this.states.get(player.id);
+        if (player.closed || !state || !this.visible || !state.visible || !this.host.current()) return;
+        if (this.host.source(player.id)?.entry.id !== player.mediaId) { this.close(state); return; }
+        if (metadata.presentedFrames !== player.presentedSeen) {
+            player.presentedSeen = metadata.presentedFrames;
+            if (this.host.frames) this.presentFrame(player); else this.host.invalidate(player.id);
+        }
+        if (state.playing) this.arm(player);
     }
     /** Copies the element's current frame out as an immutable bitmap. Its lifetime is the registry's, not the element's. */
     private presentFrame(player: Player): void {
         const frames = this.host.frames, video = player.video;
-        if (!frames || player.closed || player.snapshotting || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
-        // Charged before the copy allocates. A refused charge defers this frame; the next frame callback asks again.
-        const lease = frames.admitFrame(video.videoWidth * video.videoHeight * 4);
+        if (!frames || player.closed || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
+        // A frame that arrives during a copy is not dropped: the copy's settle uploads the newest count (see the finally below).
+        if (player.snapshotting) return;
+        const bytes = video.videoWidth * video.videoHeight * 4;
+        // Charged before the copy allocates. A refused charge defers this frame; the next advance of the video asks again.
+        const lease = frames.admitFrame(bytes);
         if (!lease) return;
         player.snapshotting = true;
+        player.uploadedFor = player.presentedSeen;
+        auditCount('media', 'upload', 1, { bytes });
         const copy: Promise<void> = createImageBitmap(video).then(bitmap => {
             if (player.closed || !this.host.current() || this.host.source(player.id)?.entry.id !== player.mediaId) { bitmap.close(); frames.release(lease); return; }
             frames.present(player.id, bitmap, lease);
         }, () => {
             frames.release(lease);
             if (!player.closed && this.host.current()) this.host.error(player.id, 'This video frame could not be shown');
-        }).finally(() => { player.snapshotting = false; if (player.copying === copy) player.copying = null; });
+        }).finally(() => {
+            player.snapshotting = false; if (player.copying === copy) player.copying = null;
+            // The video advanced while this copy ran: its newest frame is the next picture, and it uploads once.
+            if (!player.closed && player.uploadedFor !== player.presentedSeen) this.presentFrame(player);
+        });
         player.copying = copy;
     }
     private close(state: State): void {

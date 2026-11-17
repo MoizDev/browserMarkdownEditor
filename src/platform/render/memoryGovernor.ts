@@ -69,6 +69,9 @@ export interface PaneMemoryDemand {
     readonly focused: boolean;
     readonly requestedPixels: number;
     readonly gpuNeedBytes: number;
+    /** The GPU bytes this pane's visible positions at the current scale pin: granted before the surface share and before any
+     * other scale or off-view ring, and never trimmed while the pane is visible. Absent: nothing is pinned. */
+    readonly gpuPinnedBytes?: number;
     readonly cpuNeedBytes: number;
     /** Visible working set; optional excess in cpuNeedBytes is shared only after mandatory demand. */
     readonly cpuMandatoryBytes?: number;
@@ -200,6 +203,7 @@ function stableId(a: string, b: string): number { return a < b ? -1 : a > b ? 1 
 function samePaneDemand(a: PaneMemoryDemand, b: PaneMemoryDemand | undefined): boolean {
     return b !== undefined && a.paneId === b.paneId && a.visible === b.visible && a.focused === b.focused &&
         a.requestedPixels === b.requestedPixels && a.gpuNeedBytes === b.gpuNeedBytes && a.cpuNeedBytes === b.cpuNeedBytes &&
+        a.gpuPinnedBytes === b.gpuPinnedBytes &&
         a.cpuMandatoryBytes === b.cpuMandatoryBytes && a.cpuPinned === b.cpuPinned;
 }
 
@@ -866,6 +870,14 @@ export class MemoryGovernor {
             supported.push(pane);
             remaining -= minimum;
         }
+        // Pinned first. Arithmetic, DPR 2, a 1280×800 CSS pane (2560×1600 device px): 5×4 = 20 visible positions; a 514² RGBA
+        // tile is 514·514·4 = 1,056,784 B ≈ 1.06 MB, so one band's visible set is ≈ 21 MB. On a low device (128 MB pool) the
+        // trim target is 102.4 MB, the surface share is at most 41 MB, leaving ≈ 61 MB of cache for the pool; five such panes
+        // pin ≈ 105 MB per band, which does not fit. So the pinned sets are shared by focus weight up to what the pool holds,
+        // and a position past its pane's share is refused and composed at a lower level (h1), never trimmed from the screen.
+        const pinned = waterFill(supported.map(pane => ({ id: pane.paneId, weight: weight(pane),
+            need: Math.max(0, Math.min(pane.gpuPinnedBytes ?? 0, pane.gpuNeedBytes - minimum)) })), remaining);
+        remaining -= [...pinned.values()].reduce((sum, value) => sum + value, 0);
         const surfaceBytes = Math.min(Math.floor(this.target.gpu * POLICY.memoryTrimTargetRatio * POLICY.surfaceMaxGpuGrantFraction), remaining);
         // Denying GL must not deny a 2D drawing buffer (§6.3:641); both paths share this cap.
         const pixels = waterFill(visible.map(pane => ({ id: pane.paneId, weight: weight(pane),
@@ -873,7 +885,7 @@ export class MemoryGovernor {
         Math.floor(surfaceBytes / POLICY.surfaceReserveBytesPerPixel));
         const assignedSurface = [...pixels.values()].reduce((sum, value) => sum + value, 0) * POLICY.surfaceReserveBytesPerPixel;
         const cache = waterFill(supported.map(pane => ({ id: pane.paneId, weight: weight(pane),
-            need: Math.max(0, pane.gpuNeedBytes - minimum) })), Math.max(0, remaining - assignedSurface));
+            need: Math.max(0, pane.gpuNeedBytes - minimum - (pinned.get(pane.paneId) ?? 0)) })), Math.max(0, remaining - assignedSurface));
         // Demand is reported from what layers already hold, so a grant of exactly that had no room for the next tile: the
         // committed board layers were refused with the pool half empty and a finished stroke never drew (measured: 1 MB
         // tiles refused at 33 of 64 MB). The plannable remainder is shared by weight; the total stays inside the plan.
@@ -883,6 +895,7 @@ export class MemoryGovernor {
         if (spare > 0 && totalWeight > 0) {
             for (const pane of supported) cache.set(pane.paneId, (cache.get(pane.paneId) ?? 0) + Math.floor(spare * weight(pane) / totalWeight));
         }
+        for (const [id, bytes] of pinned) cache.set(id, (cache.get(id) ?? 0) + bytes);
         const cpu = waterFill(visible.map(pane => ({ id: pane.paneId, weight: weight(pane),
             need: pane.cpuMandatoryBytes ?? pane.cpuNeedBytes })), this.target.cpu);
         const mandatoryAssigned = [...cpu.values()].reduce((sum, value) => sum + value, 0);

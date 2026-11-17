@@ -242,7 +242,14 @@ interface PaneEntry {
     damage: DamageAccumulator;
     fullDamage: boolean;
     presented: { token: FrameToken; epoch: number; geometry: number } | null;
+    /** The last frame that detached this pane; the layer-driven pass skips a pane already taken by the reason-driven pass. */
+    lastFrame: number;
+    /** Last scene revisions and their tag string, so an unchanged pane reuses its string (see revisionKey). */
+    revisionValues: number[];
+    revisionKey: string;
 }
+
+const NO_REASONS: readonly string[] = Object.freeze([]);
 
 interface DamageBatch { entry: PaneEntry; damage: DamageAccumulator; full: boolean; submitted: boolean }
 interface FrameWork { entry: PaneEntry; frame: ScheduledFrame; batch: DamageBatch; geometry: number; hadInput: boolean; platformPrepared: boolean; platformBudget?: FrameBudget;
@@ -348,17 +355,28 @@ export class FrameScheduler {
             pane, layers: Object.freeze([...pane.layers]), reasons: new Set(['show']), wakes: new Map(), focused: pane.focused,
             inputPriority: false, renderable: false, dormantNotified: false, optionalBytes: 0, motion: null, binding: null,
             damage: new DamageAccumulator(), fullDamage: true, presented: null,
+            lastFrame: -1, revisionValues: [], revisionKey: '[]',
         };
         this.panes.set(pane.paneId, entry);
         if (this.running && this.suspended) this.call(entry, () => pane.suspend('window-hidden'));
         this.ensureFrame();
         return Object.freeze({
             invalidate: (reason: string, damage?: DamageRecord) => { if (this.live(entry)) this.invalidate(pane.paneId, reason, damage); },
-            setFocused: (focused: boolean) => { if (this.live(entry)) { entry.focused = focused; this.mark(entry, 'focus'); } },
+            // Focus is not visibility: a change of focus alone is a real change (the focus chrome), a repeat of the same value is not.
+            setFocused: (focused: boolean) => {
+                if (!this.live(entry) || entry.focused === focused) return;
+                entry.focused = focused; this.mark(entry, 'focus');
+            },
             wakeAt: (layer: Layer, deadlineMs: number | null) => this.wakeAt(entry, layer, deadlineMs),
             startFling: (samples: readonly TouchPanSample[]) => this.startFling(entry, samples),
             animateZoom: (targetZ: number, anchor?: Point) => this.animateZoom(entry, targetZ, anchor),
-            cancelMotion: () => { if (this.live(entry)) { this.cancelMotion(entry); this.mark(entry, 'settle'); } },
+            // Settling a camera that is not moving changes nothing; only a motion that was running is a change.
+            cancelMotion: () => {
+                if (!this.live(entry)) return;
+                const moving = entry.motion !== null;
+                this.cancelMotion(entry);
+                if (moving) this.mark(entry, 'settle');
+            },
             dispose: () => this.unregister(entry),
         });
     }
@@ -419,6 +437,8 @@ export class FrameScheduler {
     }
 
     setReducedMotion(reduced: boolean): void {
+        // The platform reports this at start and on every media-query event; only a change alters any pane.
+        if (this.reducedMotion === reduced) return;
         this.reducedMotion = reduced;
         if (!reduced) return;
         for (const entry of this.panes.values()) {
@@ -454,6 +474,30 @@ export class FrameScheduler {
     }
 
     private live(entry: PaneEntry): boolean { return this.panes.get(entry.pane.paneId) === entry; }
+
+    /** Takes the pane's reasons, damage and full flag for this frame. Called before any callback of this pane in the frame. */
+    private detach(entry: PaneEntry, frameId: number, batches: DamageBatch[], audit: boolean):
+        { entry: PaneEntry; batch: DamageBatch; reasons: readonly string[]; cause: string } {
+        const batch: DamageBatch = { entry, damage: entry.damage, full: entry.fullDamage, submitted: false };
+        const reasons: readonly string[] = entry.reasons.size ? Object.freeze([...entry.reasons]) : NO_REASONS;
+        batches.push(batch);
+        entry.damage = new DamageAccumulator(); entry.fullDamage = false; entry.reasons.clear();
+        entry.lastFrame = frameId;
+        return { entry, batch, reasons, cause: audit ? this.presentCause(entry, reasons) : '' };
+    }
+
+    /** The scene revisions as a damage tag, rebuilt only when one of them moved: a board at rest repeated the JSON per pane per frame. */
+    private revisionKey(entry: PaneEntry, layers: readonly ScheduledLayerSnapshot[]): string {
+        const values = entry.revisionValues;
+        let same = values.length === layers.length;
+        for (let i = 0; same && i < layers.length; i++) same = values[i] === layers[i].sceneRevision;
+        if (!same) {
+            values.length = 0;
+            for (const layer of layers) values.push(layer.sceneRevision);
+            entry.revisionKey = JSON.stringify(values);
+        }
+        return entry.revisionKey;
+    }
 
     private mark(entry: PaneEntry, reason: string, preserveDamage = false): void {
         if (!this.live(entry)) return;
@@ -538,7 +582,7 @@ export class FrameScheduler {
     }
 
     /** Every true answer names a cause: a pending poll or acknowledgement (frames only, no present), a pane's reason or
-     * motion, or a renderable layer that needs a frame. Called on every mark, so it must not allocate. */
+     * motion, or a renderable layer that needs a frame. Called on every mark: it scans the pane list and copies nothing. */
     private needsWork(): boolean {
         if (this.polls.size || this.acknowledgements.length) return true;
         for (const entry of this.panes.values()) {
@@ -580,14 +624,6 @@ export class FrameScheduler {
                     entry.fullDamage = true;
                 }
             }
-            // Detach every pane before callbacks: cross-pane invalidations during this frame
-            // belong to the next frame, regardless of which candidate is visited first.
-            const pending = [...this.panes.values()].map(entry => {
-                const batch: DamageBatch = { entry, damage: entry.damage, full: entry.fullDamage, submitted: false };
-                const reasons = Object.freeze([...entry.reasons]);
-                batches.push(batch); entry.damage = new DamageAccumulator(); entry.fullDamage = false; entry.reasons.clear();
-                return { entry, batch, reasons };
-            });
             targetMs = Math.min(RENDER_CONSTANTS.frameTargetMaxMs, RENDER_CONSTANTS.frameTargetIntervalFraction * this.intervalMs);
             const allowance = this.options.uploadAllowance(this.intervalMs);
             if (!Number.isSafeInteger(allowance) || allowance < 0) throw new RangeError('Upload allowance must be nonnegative safe bytes');
@@ -600,11 +636,19 @@ export class FrameScheduler {
             // 1–2: consume reported geometry/lifecycle first, then input and time-integrated cameras.
             // The cause is read here, where the frame is requested: a camera that stops in advanceMotion, or a layer that
             // stops needing a frame during its own preparation, would otherwise leave a presented frame with no cause.
+            // A pane with nothing to do is never detached, so it costs one test and no allocation. Panes with a reason or a
+            // camera in motion are detached before any callback runs: cross-pane invalidations during this frame belong to the
+            // next frame, whichever candidate is visited first. Layers that need a frame are tested afterwards, so a callback
+            // there cannot pull a reason forward; a pane detached here is skipped by that second pass (lastFrame).
             const candidates: Array<{ entry: PaneEntry; batch: DamageBatch; reasons: readonly string[]; cause: string }> = [];
-            for (const { entry, batch, reasons } of pending) {
-                const requested = reasons.length > 0 || entry.motion !== null ||
-                    (entry.renderable && this.call(entry, () => entry.layers.some(layer => layer.needsFrame())) === true);
-                if (requested) candidates.push({ entry, batch, reasons, cause: renderAuditEnabled() ? this.presentCause(entry, reasons) : '' });
+            for (const entry of this.panes.values()) {
+                if (entry.reasons.size === 0 && entry.motion === null) continue;
+                candidates.push(this.detach(entry, frameId, batches, renderAuditEnabled()));
+            }
+            for (const entry of this.panes.values()) {
+                if (entry.lastFrame === frameId || entry.reasons.size !== 0 || entry.motion !== null || !entry.renderable) continue;
+                if (this.call(entry, () => entry.layers.some(layer => layer.needsFrame())) !== true) continue;
+                candidates.push(this.detach(entry, frameId, batches, renderAuditEnabled()));
             }
             // A frame with no candidate presents nothing; it exists only because a poll or an unfinished acknowledgement
             // keeps the loop alive. Naming it keeps every requested frame accounted for ('none' would be a fault).
@@ -676,7 +720,7 @@ export class FrameScheduler {
                     const layers = Object.freeze(entry.layers.map(layer => Object.freeze({
                         layer, sceneRevision: entry.pane.sceneRevision(layer), critical: entry.pane.isCritical(layer, view),
                     })));
-                    const revision = JSON.stringify(layers.map(item => item.sceneRevision));
+                    const revision = this.revisionKey(entry, layers);
                     const tags = { reasonBits: 0, contentRevision: revision.length <= 4096 ? revision : '', cameraEpoch: view.epoch };
                     const previous = entry.presented;
                     if (batch.full || !batch.damage.freeze() || revision.length > 4096 || !previous ||
@@ -907,14 +951,20 @@ export class FrameScheduler {
         }
     }
 
+    /** One array per call: the rotation is written straight into it, not sliced and spread. */
     private rotate<T>(items: readonly T[], cursor: number): T[] {
-        if (!items.length) return [];
+        const ordered: T[] = [];
+        if (!items.length) return ordered;
         const split = cursor % items.length;
-        return [...items.slice(split), ...items.slice(0, split)];
+        for (let i = 0; i < items.length; i++) ordered.push(items[(split + i) % items.length]);
+        return ordered;
     }
 
     private focusFirst(work: readonly FrameWork[]): FrameWork[] {
-        return [...work.filter(item => item.entry.focused || item.hadInput), ...work.filter(item => !item.entry.focused && !item.hadInput)];
+        const ordered: FrameWork[] = [];
+        for (const item of work) if (item.entry.focused || item.hadInput) ordered.push(item);
+        for (const item of work) if (!(item.entry.focused || item.hadInput)) ordered.push(item);
+        return ordered;
     }
 
     private runPolls(deadline: number): void {

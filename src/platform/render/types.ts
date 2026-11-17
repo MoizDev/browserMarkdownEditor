@@ -50,6 +50,10 @@ export interface OffscreenPasses {
 export interface Layer {
     /** Benchmark denominator classification; absent for vector-only layers. */
     readonly benchmarkRaster?: boolean;
+    /** Opt-in (default off): this layer's offscreen tiles are drawn into regions of one shared atlas target instead of one target
+     * each, which removes a framebuffer switch per tile. Only clear passes without stencil use the atlas; anything else draws
+     * its own target and is counted as a fallback. */
+    readonly atlas?: boolean;
     /** Schedule work without blocking; preparation is split into resumable units (design:677–679). */
     prepare(view: ViewState, budget: FrameBudget): void;
     drawGpu(pass: GpuPass, view: ViewState): void;

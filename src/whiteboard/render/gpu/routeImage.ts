@@ -9,7 +9,8 @@ import type { FrameBudget } from '../../../platform/render/types';
 import type { PaintImageItem } from '../paintStream';
 import type { PaintResources2d } from '../reference/paint2d';
 import type { Admission, Blend, CreateImageRoute, ItemRoute, PreparedRun } from './contracts';
-import { createImageTextures, IMAGE_FILTER, MAX_BOARD_ZOOM, type ImageTextures } from './imageTextures';
+import { createImageTextures, IMAGE_FILTER, type ImageTextures } from './imageTextures';
+import type { PaintImageHold } from '../reference/canvasPaintAdapter';
 
 /** The picture route as the composer sees it. `useResources` gives it the paint's image lookup for the revision being
  * composed: the ItemRoute contract has no place for it (see the report to gpu), so the composer binds it. */
@@ -113,6 +114,19 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
     // One pipeline per blend: 'over' is premultiplied source-over; 'modulate' is the multiply slice's fixed-function dst · src.
     let overPipeline: PipelineHandle | null = null, modulatePipeline: PipelineHandle | null = null;
     let pending = 0, failed = false, incarnation = 0;
+    // The paint's hold on picture bitmaps, when its resources carry one (the reference adapter's do; a dense plan's spread keeps it).
+    let hold: PaintImageHold | null = null;
+    // Pictures some item was refused for: their CPU draw needs the bitmap, so the bitmap is never released for them.
+    const cpuKeys = new Set<string>();
+    /** A run refused before its items were admitted: every picture of it is a CPU draw candidate. */
+    const refuseAll = (items: readonly PaintImageItem[], admission: Exclude<Admission<PreparedRun>, { status: 'ready' }>): Admission<PreparedRun> => {
+        let waiting = false;
+        for (const item of items) {
+            cpuKeys.add(item.imageKey);
+            if (hold && hold.imageState(item.imageKey) !== 'ready') { hold.reacquireImage(item.imageKey); waiting = true; }
+        }
+        return waiting ? { status: 'deferred' } : admission;
+    };
 
     const release = (): void => {
         incarnation++;
@@ -156,11 +170,11 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
         accepts(item): item is PaintImageItem { return item.kind === 'image'; },
         admit(items: readonly PaintImageItem[], view: ViewState, blend: Blend, budget: FrameBudget): Admission<PreparedRun> {
             const current = host.device();
-            if (!current) return unsupported('no-device');
+            if (!current) return refuseAll(items, unsupported('no-device'));
             if (current.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration) return { status: 'deferred' };
             if (!resources) throw new Error('The image route has no paint resources: useResources must run before admit');
             warm(current);
-            if (failed) return unsupported('pipeline-failed');
+            if (failed) return refuseAll(items, unsupported('pipeline-failed'));
             if (!overPipeline || !modulatePipeline || !sampler) return { status: 'deferred' };
             const multiply = blend === 'modulate' ? 1 : 0;
 
@@ -172,28 +186,37 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
                 for (const key of holds) textures.unhold(key);
                 return admission;
             };
+            // A refusal is a CPU draw of the picture, and the CPU draws it from its bitmap: a released bitmap is asked for again
+            // first, and the picture waits for it (deferred), so the CPU never meets a released one.
+            const refuse = (key: string, admission: Exclude<Admission<PreparedRun>, { status: 'ready' }>): Admission<PreparedRun> => {
+                cpuKeys.add(key);
+                if (hold && hold.imageState(key) !== 'ready') { hold.reacquireImage(key); return reject({ status: 'deferred' }); }
+                return reject(admission);
+            };
             for (const item of items) {
                 const { rect } = item;
                 if (!(rect.width > 0 && rect.height > 0) || !(item.opacity > 0)) continue;
                 const [a, b, c, d, e, f] = item.localToWorld;
                 // Axis-aligned and unflipped: the device rect is the affine's scale and translation applied to the rect.
-                if (b !== 0 || c !== 0 || !(a > 0) || !(d > 0)) return reject(unsupported('transform'));
+                if (b !== 0 || c !== 0 || !(a > 0) || !(d > 0)) return refuse(item.imageKey, unsupported('transform'));
                 // Routes never clip (gpu's rule): the composer applies the item's clips around this draw.
-                if (item.retainedTile) return reject(unsupported('retained'));
-                // The texels this picture can show: its device size at the largest zoom a board reaches (not the camera's zoom, which a
-                // later zoom would outgrow and re-upload). By reading: a picture kept at its full source size is more than any zoom shows.
-                const zoom = Math.max(view.camera.z, MAX_BOARD_ZOOM) * view.viewport.dpr;
-                const need = { shown: { width: rect.width * a * zoom, height: rect.height * d * zoom },
-                    crop: item.sourceRect ? { width: item.sourceRect.width, height: item.sourceRect.height } : null };
-                const admitted = textures.acquire(item.imageKey, resources.image(item.imageKey), budget, need);
+                if (item.retainedTile) return refuse(item.imageKey, unsupported('retained'));
+                const key = item.imageKey;
+                const state = hold ? hold.imageState(key) : 'ready';
+                if (hold && state !== 'ready' && textures.needsSource(key)) { hold.reacquireImage(key); return reject({ status: 'deferred' }); }
+                const admitted = textures.acquire(key, state === 'ready' ? resources.image(key) : null, budget);
                 if (admitted.status === 'empty') continue;
+                if (admitted.status === 'unsupported') return refuse(key, admitted);
                 if (admitted.status !== 'ready') return reject(admitted);
-                holds.push(item.imageKey);
+                holds.push(key);
+                // The texture holds the pixels now, so the bitmap is no longer needed. A picture some item of it was refused
+                // for stays held: its CPU draw needs the bitmap.
+                if (hold && !cpuKeys.has(key) && hold.imageState(key) === 'ready') hold.releaseImage(key);
                 const tex = admitted.value;
 
                 const src = item.sourceRect ?? { x: 0, y: 0, width: tex.sourceWidth, height: tex.sourceHeight };
                 if (!(src.width > 0 && src.height > 0) || src.x < 0 || src.y < 0 || src.x + src.width > tex.sourceWidth || src.y + src.height > tex.sourceHeight) {
-                    return reject(unsupported('crop'));
+                    return refuse(key, unsupported('crop'));
                 }
                 // The device rect of the picture, fractional: the shader measures the pixels it covers.
                 const x0 = (e + a * rect.x - view.camera.x) * scale, y0 = (f + d * rect.y - view.camera.y) * scale;
@@ -235,9 +258,16 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
         },
         release,
         memory(): { gpuBytes: number; cpuBytes: number } { return textures.memory(); },
-        useResources(next: PaintResources2d): void { resources = next; },
+        useResources(next: PaintResources2d): void { resources = next; hold = imageHoldOf(next); },
         evictTextures(bytes: number, frameId: number): number { return textures.evict(bytes, frameId); },
     };
+}
+
+/** The paint's picture hold, when the resources carry one: a structural check, so a resources object without it simply keeps every bitmap. */
+function imageHoldOf(resources: PaintResources2d): PaintImageHold | null {
+    const candidate = resources as Partial<PaintImageHold>;
+    return typeof candidate.imageState === 'function' && typeof candidate.releaseImage === 'function' && typeof candidate.reacquireImage === 'function'
+        ? candidate as PaintImageHold : null;
 }
 
 /** The factory the contract names (contracts.ts CreateImageRoute): a compile-time check that the route matches it. */

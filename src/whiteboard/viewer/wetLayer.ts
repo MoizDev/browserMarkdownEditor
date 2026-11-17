@@ -606,10 +606,11 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                     if (!begin(next, view)) { denied = true; break; }
                 }
                 step();
-                // Publish the exact next admission to demand() before attempting it.
-                // A finalized span is not on the published path, so it does not gate this frame's publication:
-                // only the tail chunk, which the next publication shows, yields here (measured: a per-finalize break was a hold every 16 samples).
-                if (denied || (work?.chunk?.retained && !work.chunk.finalizing)) break;
+                // A retained tail chunk is folded into the publication by the next step of this same prepare, so the newest
+                // tip is admitted in the frame that follows its input. Stopping after the tail chunk left that publication one
+                // frame behind (the drawing's paced draw answered 49% on the GPU against 98% on canvas2d). A denied reservation
+                // still ends the frame's work.
+                if (denied) break;
             }
         } catch (error) { dropWork(); denied = true; report(error); }
         if (owner.device() && sameToken(options.token, budget.token)) {

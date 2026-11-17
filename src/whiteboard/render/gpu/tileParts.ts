@@ -15,7 +15,8 @@ import { auditCount } from '../../../platform/render/renderAudit';
 import type { PaintBand } from '../material';
 import { PaintBoundsJob } from '../paintBounds';
 import { paintContributions } from '../paintContributions';
-import type { PaintItem } from '../paintStream';
+import type { PaintItem, PaintSource } from '../paintStream';
+import { originalOf } from '../../media/videoFrames';
 import type { PreparedPaint2d } from '../reference/canvasPaintAdapter';
 import type { Blend, CreateTileParts, TilePart, TileParts } from './contracts';
 
@@ -65,6 +66,8 @@ interface Grid {
 interface Index {
     version: number;
     revision: number;
+    /** The original frame the index was built from (a decorated video frame maps to its original): same original, same content. */
+    original: PaintSource | null;
     theme: Root['theme'];
     variant: Root['rasterVariant'];
     windows: Windows;
@@ -75,6 +78,7 @@ interface Index {
 }
 /** One index being built: the cursor through the windows, the entries it has kept or derived, and what it will report. */
 interface Build {
+    readonly original: PaintSource;
     readonly revision: number;
     readonly theme: Root['theme'];
     readonly variant: Root['rasterVariant'];
@@ -290,13 +294,13 @@ export const createTileParts: CreateTileParts = (_host, audit) => {
         let regionBox: Rect | null = null;
         for (const region of regions) regionBox = unionOf(regionBox, region);
         const target: Index = full || !index
-            ? { version: 0, revision, theme: root.theme, variant: root.rasterVariant, windows: prepared.windows,
+            ? { version: 0, revision, original: null, theme: root.theme, variant: root.rasterVariant, windows: prepared.windows,
                 entries: [], byNode: new Map(), grid: newGrid() }
             : index;
         const next = spare;
         next.length = 0;
         spare = [];
-        return { revision, theme: root.theme, variant: root.rasterVariant, windows: prepared.windows,
+        return { original: originalOf(prepared.sourceFrame), revision, theme: root.theme, variant: root.rasterVariant, windows: prepared.windows,
             old: full ? null : index, target, full, regions, regionBox, pass: ++passes, next, added: [],
             window: 0, item: 0, seq: 0, replaced: 0, epochs: 0, rederived: 0 };
     };
@@ -367,6 +371,7 @@ export const createTileParts: CreateTileParts = (_host, audit) => {
         target.theme = build.theme;
         target.variant = build.variant;
         target.windows = build.windows;
+        target.original = build.original;
         index = target;
         changesReady = true;
     };
@@ -374,8 +379,13 @@ export const createTileParts: CreateTileParts = (_host, audit) => {
     return {
         sync(prepared: PreparedPaint2d, budget: FrameBudget): boolean {
             const root = prepared.root;
-            if (!building && index && index.windows === prepared.windows && index.revision === root.sceneRevision
-                && index.theme === root.theme && index.variant === root.rasterVariant) return true;
+            if (!building && index && index.revision === root.sceneRevision && index.theme === root.theme && index.variant === root.rasterVariant
+                && (index.windows === prepared.windows || index.original === originalOf(prepared.sourceFrame))) {
+                // The same original paint, under a new object: a decorated video frame indexes as the frame it decorates, so a
+                // video advance costs nothing here. The index adopts the object; its parts stay as they were.
+                index.windows = prepared.windows;
+                return true;
+            }
             // An index in progress is finished first, as the paint it was started from; the next call indexes the newer one.
             if (!building) building = startBuild(prepared);
             const build = building;

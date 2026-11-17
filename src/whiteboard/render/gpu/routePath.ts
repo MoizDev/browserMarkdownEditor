@@ -7,8 +7,8 @@ import type { LayerHost } from '../../../platform/render/compositor.types';
 import type { ByteLease, ClipToken, GpuPass, RectI } from '../../../platform/render/gfx/api';
 import type { FrameBudget } from '../../../platform/render/types';
 import { auditCount } from '../../../platform/render/renderAudit';
-import { createPathCoverageKit, type PathCoverageAdmission, type PreparedPathCoverage } from '../../../platform/render/pathCoverage';
-import { pathFillTriangles, type PathFillTriangles } from '../pathFillTriangles';
+import { createPathCoverageKit, type PathCoverageAdmission, type PathCoverageShapes, type PreparedPathCoverage } from '../../../platform/render/pathCoverage';
+import { pathFillTriangles } from '../pathFillTriangles';
 import { pathStrokeTriangles } from '../pathStrokeTriangles';
 import type { PaintClip, PaintPathItem } from '../paintStream';
 import type { Admission, CreatePathRoute, ItemRoute, PreparedRun, WithClips } from './contracts';
@@ -21,8 +21,8 @@ const GEOMETRY_CACHE_BYTES = 16 * 2 ** 20;
 const NO_TRIANGLES = new Float64Array(0);
 const ORIGIN = Object.freeze({ x: 0, y: 0 });
 const WHITE = Object.freeze([1, 1, 1, 1] as const);
-/** Most items one grouped coverage pass takes. A group is one geometry build and one admission, so a bound keeps a long run's
- * build and its cache key bounded. */
+/** Most items one grouped coverage pass takes. A group is one admission with one set per member, so the bound keeps one
+ * admission's set list and its per-tile buffer count bounded on a long run. */
 const GROUP_MAX_ITEMS = 512;
 /** Device pixels two grouped items' bounds must be apart. Closer, their anti-aliased edges share pixels, and one union coverage
  * over both differs from two composites along the shared edge (a seam). By reading: the notebook's ruling lines are 10+ px apart. */
@@ -68,8 +68,10 @@ function bandOf(localToWorld: Affine, view: ViewState): number | null {
     const [a, b, c, d] = localToWorld;
     const scale = view.camera.z * view.viewport.dpr * Math.hypot(a, b, c, d);
     if (!(scale > 0) || !Number.isFinite(scale)) return null;
-    // The ladder's scales are exact powers of 2^(1/2), and log2 of such a value can land an ulp below its integer; the floor
-    // would then put the same zoom in the band below, under its own cache key (by reading: a band split at a ladder step).
+    // The composer's ladderScale (tileComposer.ts) composes at powers of 2^(1/2), each exactly a band's lower edge, so one ladder
+    // step opens one band and a zoom inside a band keeps its triangles. log2 of such a value can land an ulp below its integer,
+    // and the floor would then put the same zoom in the band below, under its own cache key: the epsilon keeps it in its band
+    // (by reading: a band split at a ladder step).
     return Math.floor(2 * Math.log2(scale) + 1e-9);
 }
 function flattenTolerance(band: number): number {
@@ -143,10 +145,13 @@ function commandBounds(d: readonly PathCommand[]): Bounds | null {
 interface DeviceBox { readonly x0: number; readonly x1: number; readonly y0: number; readonly y1: number }
 function deviceBoxOf(item: PaintPathItem, view: ViewState): DeviceBox | null {
     const bounds = commandBounds(item.d);
-    const affine = bounds && deviceAffine(item.localToWorld, ORIGIN, view);
-    if (!bounds || !affine) return null;
-    const [a, , , d, e, f] = affine;
-    const ax = a * bounds.x0 + e, bx = a * bounds.x1 + e, ay = d * bounds.y0 + f, by = d * bounds.y1 + f;
+    if (!bounds) return null;
+    // deviceAffine at the origin, without its array: this runs for every item of every group admission.
+    const [a, b, c, d, e, f] = item.localToWorld;
+    const scale = view.camera.z * view.viewport.dpr;
+    if (!(Math.hypot(a, b, c, d) > 0) || !Number.isFinite(scale) || scale <= 0) return null;
+    const ax = scale * a * bounds.x0 + scale * (e - view.camera.x), bx = scale * a * bounds.x1 + scale * (e - view.camera.x);
+    const ay = scale * d * bounds.y0 + scale * (f - view.camera.y), by = scale * d * bounds.y1 + scale * (f - view.camera.y);
     return { x0: Math.min(ax, bx), x1: Math.max(ax, bx), y0: Math.min(ay, by), y1: Math.max(ay, by) };
 }
 /** Whether an item may join a coverage group: an opaque, unclipped, fill-only item under an axis-aligned transform. */
@@ -167,33 +172,6 @@ function separated(a: DeviceBox, b: DeviceBox): boolean {
     return a.x1 + GROUP_GAP_DEVICE_PX <= b.x0 || b.x1 + GROUP_GAP_DEVICE_PX <= a.x0 || a.y1 + GROUP_GAP_DEVICE_PX <= b.y0 || b.y1 + GROUP_GAP_DEVICE_PX <= a.y0;
 }
 
-/** The fill triangles of several items in one origin: each item's own triangles, offset to `origin`, so one admission draws them
- * all. Null when any item cannot be tessellated; the caller then admits the items one by one. */
-function mergedFillTriangles(members: readonly PaintPathItem[], origin: Origin, tolerance: number): Shapes | null {
-    const parts: { readonly t: PathFillTriangles; readonly dx: number; readonly dy: number }[] = [];
-    let positive = 0, negative = 0, edges = 0, any = false;
-    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (const member of members) {
-        const mo = pathOrigin(member.d);
-        const t = pathFillTriangles(member.d, { tolerance, origin: [mo.x, mo.y] });
-        if (!t) return null;
-        const dx = mo.x - origin.x, dy = mo.y - origin.y;
-        parts.push({ t, dx, dy }); positive += t.positive.length; negative += t.negative.length; edges += t.edges;
-        if (t.positive.length + t.negative.length > 0) {
-            any = true;
-            x0 = Math.min(x0, t.bounds.x0 + dx); x1 = Math.max(x1, t.bounds.x1 + dx);
-            y0 = Math.min(y0, t.bounds.y0 + dy); y1 = Math.max(y1, t.bounds.y1 + dy);
-        }
-    }
-    const pos = new Float64Array(positive), neg = new Float64Array(negative);
-    let p = 0, n = 0;
-    for (const { t, dx, dy } of parts) { p = copyOffset(t.positive, pos, p, dx, dy); n = copyOffset(t.negative, neg, n, dx, dy); }
-    return { positive: pos, negative: neg, edges, bounds: any ? { x0, y0, x1, y1 } : { x0: 0, y0: 0, x1: 0, y1: 0 } };
-}
-function copyOffset(src: Float64Array, dst: Float64Array, at: number, dx: number, dy: number): number {
-    for (let i = 0; i < src.length; i += 2) { dst[at + i] = src[i] + dx; dst[at + i + 1] = src[i + 1] + dy; }
-    return at + src.length;
-}
 
 
 const localRects = new WeakMap<PaintClip, LocalRect | null>();
@@ -230,16 +208,25 @@ function rectangleOf(clip: PaintClip): LocalRect | null {
  * not a coverage mask: a notebook page's clip asked a 52 B/px MSAA mask larger than any target the pane grants, and every
  * paper item fell back to a CPU raster (measured: 330 fallbacks in one pan). Edges round to the nearest device pixel, as the
  * canvas2d path clip's half-covered edge column would read. */
-function clipDeviceRect(clip: PaintClip, view: ViewState): RectI | null {
+/** A rectangle the caller owns and writes into: the shape the device's scissor takes, copied by the device when pushed. */
+interface MutableRect { x: number; y: number; width: number; height: number }
+/** Writes the clip's device rectangle for this view into `out`; false when the clip is not a rectangle or the view cannot place it. */
+function writeClipDeviceRect(clip: PaintClip, view: ViewState, out: MutableRect): boolean {
     const local = clipLocalRect(clip);
-    if (!local) return null;
+    if (!local) return false;
     const [a, , , d, e, f] = clip.localToWorld;
     const scale = view.camera.z * view.viewport.dpr;
-    if (!(scale > 0) || !Number.isFinite(scale)) return null;
+    if (!(scale > 0) || !Number.isFinite(scale)) return false;
     const ax = scale * a * local.x0 + scale * (e - view.camera.x), bx = scale * a * local.x1 + scale * (e - view.camera.x);
     const ay = scale * d * local.y0 + scale * (f - view.camera.y), by = scale * d * local.y1 + scale * (f - view.camera.y);
     const rx0 = Math.round(Math.min(ax, bx)), ry0 = Math.round(Math.min(ay, by));
-    return { x: rx0, y: ry0, width: Math.round(Math.max(ax, bx)) - rx0, height: Math.round(Math.max(ay, by)) - ry0 };
+    out.x = rx0; out.y = ry0; out.width = Math.round(Math.max(ax, bx)) - rx0; out.height = Math.round(Math.max(ay, by)) - ry0;
+    return true;
+}
+/** The clip's device rectangle for this view, as a new object for the admission that keeps it. */
+function clipDeviceRect(clip: PaintClip, view: ViewState): RectI | null {
+    const out: MutableRect = { x: 0, y: 0, width: 0, height: 0 };
+    return writeClipDeviceRect(clip, view, out) ? out : null;
 }
 
 /** The clip stack shared by every draw that pushes clips. Draws do not nest on one pass, and each restores the stack to its base. */
@@ -262,24 +249,31 @@ export function withPreparedClips(pass: GpuPass, prepared: PreparedClips, draw: 
 /** Draws `draw` under an item's rectangle clips as scissors. A clip that is not a rectangle needs its coverage mask, which only
  * an admission makes; this route's `withPreparedClips` takes prepared masks. With the signature fixed, this returns 'unsupported'
  * without drawing for such a clip, and the caller counts that fallback. */
+/** The scissor a draw pushes. The device copies the rectangle it is given (webgl2Frame.ts rect), so one object serves every push
+ * and a draw allocates none. */
+const drawScissor: MutableRect = { x: 0, y: 0, width: 0, height: 0 };
+const CLIP_UNSUPPORTED: Admission<void> = Object.freeze({ status: 'unsupported' as const, why: 'clip not a rectangle or view unplaceable' });
+const CLIP_EMPTY: Admission<void> = Object.freeze({ status: 'empty' as const });
+const CLIP_READY: Admission<void> = Object.freeze({ status: 'ready' as const, value: undefined });
 export const withClips: WithClips = (pass, clips, view, draw) => {
-    for (const clip of clips) if (!clipLocalRect(clip)) return { status: 'unsupported', why: 'clip mask not admitted' };
-    const viewport = { width: Math.round(view.viewport.width * view.viewport.dpr), height: Math.round(view.viewport.height * view.viewport.dpr) };
+    for (const clip of clips) if (!clipLocalRect(clip)) return CLIP_UNSUPPORTED;
+    const width = Math.round(view.viewport.width * view.viewport.dpr), height = Math.round(view.viewport.height * view.viewport.dpr);
     const base = clipTokens.length;
     try {
         for (const clip of clips) {
-            const rect = clipDeviceRect(clip, view)!;
-            const x0 = Math.max(0, rect.x), y0 = Math.max(0, rect.y);
-            const x1 = Math.min(viewport.width, rect.x + rect.width), y1 = Math.min(viewport.height, rect.y + rect.height);
-            if (x1 <= x0 || y1 <= y0) return { status: 'empty' };
-            clipTokens.push(pass.pushClip({ x: x0, y: y0, width: x1 - x0, height: y1 - y0 }));
+            if (!writeClipDeviceRect(clip, view, drawScissor)) return CLIP_UNSUPPORTED;
+            const x0 = Math.max(0, drawScissor.x), y0 = Math.max(0, drawScissor.y);
+            const x1 = Math.min(width, drawScissor.x + drawScissor.width), y1 = Math.min(height, drawScissor.y + drawScissor.height);
+            if (x1 <= x0 || y1 <= y0) return CLIP_EMPTY;
+            drawScissor.x = x0; drawScissor.y = y0; drawScissor.width = x1 - x0; drawScissor.height = y1 - y0;
+            clipTokens.push(pass.pushClip(drawScissor));
         }
         draw();
     } finally {
         for (let i = clipTokens.length - 1; i >= base; i--) pass.popClip(clipTokens[i]);
         clipTokens.length = base;
     }
-    return { status: 'ready', value: undefined };
+    return CLIP_READY;
 };
 
 /** Prepared coverage and prepared clips carry no `status`; every stop does. */
@@ -386,21 +380,36 @@ export function createPath(host: LayerHost, audit: string): {
     });
     /** The clips of an item that has none: one frozen value, so a grouped item builds no clips. */
     const noClips = makeClips([], []);
-    /** One coverage pass for a group of items that share colour, rule and transform, with disjoint device bounds: their triangles
-     * are one set. Null when the group's geometry cannot be built (the caller admits its items one by one). */
+    /** One coverage pass for a group of items that share colour, rule and transform, with disjoint device bounds: one admission
+     * with one set per member. Each member keeps its own cached triangles, keyed by its content and band exactly as a lone item's
+     * are, and the kit moves each set onto the group's origin by its shift, so nothing is copied into a merged set. Null when a
+     * member's geometry cannot be built or the kit calls the group unsupported (a nonzero stencil over its edge bound): the caller
+     * then admits the items one by one, which the same kit takes. */
     const admitGroup = (members: readonly PaintPathItem[], view: ViewState, viewport: Viewport, cover: CoverBlend, budget: FrameBudget,
         acquired: PreparedPathCoverage[]): ItemAdmission | null => {
         const lead = members[0];
         const band = bandOf(lead.localToWorld, view);
         if (band === null) return null;
-        const key = `group|${band}|${lead.fillRule}|${textKey(members.map(member => commandKey(member.d)).join(';'))}`;
-        const geometry = outlineFor(key, lead.d, band, (tolerance, origin) => mergedFillTriangles(members, origin, tolerance));
-        if (isRefused(geometry)) return { status: 'denied', bytes: geometry.refused, pool: 'cpu' };
-        if (!geometry) return null;
-        const affine = deviceAffine(lead.localToWorld, geometry.origin, view);
+        const outlines: Outline[] = [];
+        let bytes = 0;
+        for (const member of members) {
+            const geometry = outlineFor(`fill|${commandKey(member.d)}|${band}`, member.d, band,
+                (tolerance, origin) => pathFillTriangles(member.d, { tolerance, origin: [origin.x, origin.y] }));
+            if (isRefused(geometry)) return { status: 'denied', bytes: geometry.refused, pool: 'cpu' };
+            if (!geometry) return null;
+            outlines.push(geometry); bytes += geometry.bytes;
+        }
+        const groupOrigin = outlines[0].origin;
+        const sets: PathCoverageShapes[] = outlines.map(outline => ({ positive: outline.positive, negative: outline.negative,
+            edges: outline.edges, bounds: outline.bounds,
+            shift: [outline.origin.x - groupOrigin.x, outline.origin.y - groupOrigin.y] as const }));
+        const affine = deviceAffine(lead.localToWorld, groupOrigin, view);
         if (!affine) return { status: 'unsupported', why: 'path geometry' };
-        const taken = take(kit.admit({ shapes: geometry, rule: lead.fillRule, affine, viewport, colour: lead.material.fill!,
-            output: { kind: 'composite', blend: cover } }, budget), acquired, geometry.bytes);
+        const result = kit.admitSets({ sets, rule: lead.fillRule, affine, viewport, colour: lead.material.fill!,
+            output: { kind: 'composite', blend: cover } }, budget);
+        // The kit's 'unsupported' is the group's alone (its nonzero edge bound): null makes the caller admit the members one by one.
+        if (result.status === 'unsupported') return null;
+        const taken = take(result, acquired, bytes);
         if (isStop(taken)) return taken;
         auditCount(audit, 'route:path-group', members.length);
         return { status: 'ready', value: { clips: noClips, fill: taken, stroke: null } };
@@ -409,6 +418,8 @@ export function createPath(host: LayerHost, audit: string): {
     /** Admits a clip list. Masks it acquires go into `acquired`; the caller retires them on any stop. */
     const admitClipList = (clips: readonly PaintClip[], view: ViewState, viewport: Viewport, budget: FrameBudget,
         acquired: PreparedPathCoverage[]): PreparedClips | Stop => {
+        // Most items have no clip: they share the frozen empty clips, so an unclipped admission builds no arrays.
+        if (!clips.length) return noClips;
         const scissors: RectI[] = [], masks: PreparedPathCoverage[] = [];
         for (const clip of clips) {
             const rect = clipDeviceRect(clip, view);

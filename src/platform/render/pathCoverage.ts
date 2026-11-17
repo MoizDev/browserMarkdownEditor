@@ -1,7 +1,7 @@
 import { auditCount } from './renderAudit';
 import type { Affine, Rgba } from '../types';
 import type { LayerHost } from './compositor.types';
-import type { BufferHandle, ClipHandle, CoverageOutput, CoverageTarget, GfxDevice, GpuPass, PipelineHandle, RectI, Samples, ShaderModule, StencilOp, StencilState, ByteLease, UniformSlice } from './gfx/api';
+import type { BufferHandle, BufferSlice, ClipHandle, CoverageOutput, CoverageTarget, GfxDevice, GpuPass, PipelineHandle, RectI, Samples, ShaderModule, StencilOp, StencilState, ByteLease, UniformSlice } from './gfx/api';
 import { coverageTargetBytes } from './gfx/api';
 import { ArenaError } from './resourceArena';
 import type { FrameBudget } from './types';
@@ -102,6 +102,8 @@ export interface PreparedPathPart {
     readonly vertices: BufferHandle;
     readonly positiveVertices: number;
     readonly negativeVertices: number;
+    /** The part's whole buffer as the one vertex binding of every draw of it, built once at admission. */
+    readonly bindings: readonly BufferSlice[];
     /** The buffer's shared entry; the admission holds one reference on it. */
     readonly set: VertexSet;
 }
@@ -436,12 +438,13 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         return { x0, y0, x1, y1 };
     };
     /** One winding draw of one triangle set's range, under the band's scissor. A kit-level function, so a draw builds no closure. */
+    // Draws bind no texture and, for a cover, no vertices: one shared empty list each, so a draw builds only its uniform entry.
+    const NO_TEXTURES: readonly never[] = Object.freeze([]), NO_VERTICES: readonly never[] = Object.freeze([]);
     const drawWinding = (pass: GpuPass, part: PreparedPathPart, pipeline: PipelineHandle, windingUniforms: UniformSlice, bounds: RectI,
         first: number, count: number): void => {
         if (!count) return;
-        pass.draw({ pipeline, bindings: { uniforms: [{ binding: 0, slice: windingUniforms }], textures: [] },
-            vertices: [{ buffer: part.vertices, offset: 0, bytes: (part.positiveVertices + part.negativeVertices) * 8 }],
-            first, count, instances: 1, scissor: bounds });
+        pass.draw({ pipeline, bindings: { uniforms: [{ binding: 0, slice: windingUniforms }], textures: NO_TEXTURES },
+            vertices: part.bindings, first, count, instances: 1, scissor: bounds });
     };
     const render = (pass: GpuPass, prepared: PreparedPathCoverage): void => {
         if (disposed || !live.has(prepared) || !pipelines || prepared.device !== device || host.device() !== device ||
@@ -473,8 +476,8 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
                     for (const part of prepared.parts) {
                         drawWinding(pass, part, union, jitteredUniforms, bounds, 0, part.positiveVertices);
                     }
-                    pass.draw({ pipeline: set.coverAdd, bindings: { uniforms: [{ binding: 0, slice: quarterUniforms }], textures: [] },
-                        vertices: [], first: 0, count: 4, instances: 1, scissor: bounds });
+                    pass.draw({ pipeline: set.coverAdd, bindings: { uniforms: [{ binding: 0, slice: quarterUniforms }], textures: NO_TEXTURES },
+                        vertices: NO_VERTICES, first: 0, count: 4, instances: 1, scissor: bounds });
                 }
             } else {
                 for (const part of prepared.parts) {
@@ -486,8 +489,8 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
                     }
                 }
                 pass.draw({ pipeline: coverPipeline,
-                    bindings: { uniforms: [{ binding: 0, slice: coverUniforms }], textures: [] },
-                    vertices: [], first: 0, count: 4, instances: 1, scissor: bounds });
+                    bindings: { uniforms: [{ binding: 0, slice: coverUniforms }], textures: NO_TEXTURES },
+                    vertices: NO_VERTICES, first: 0, count: 4, instances: 1, scissor: bounds });
             }
         } finally { pass.endCoverage(token, output); }
         }
@@ -643,7 +646,8 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         // The vertex buffers' bytes are the shared sets', counted once; this admission owns only its target.
         const prepared: PreparedPathCoverage = Object.freeze({ device: owner, target, clip, rule, output: preparedOutput, bounds, grid,
             parts: Object.freeze(parts.map(set => Object.freeze({ vertices: set.buffer, positiveVertices: set.positiveVertices,
-                negativeVertices: set.negativeVertices, set }))),
+                negativeVertices: set.negativeVertices,
+                bindings: Object.freeze([{ buffer: set.buffer, offset: 0, bytes: (set.positiveVertices + set.negativeVertices) * 8 }]), set }))),
             viewport: Object.freeze({ width: viewport.width, height: viewport.height }),
             affine: Object.freeze([...affine]) as unknown as Affine,
             colour: Object.freeze([...colour]) as unknown as readonly [number, number, number, number], gpuBytes: targetBytes,

@@ -536,7 +536,13 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         }
         while (up.written < up.bytes) {
             const piece = Math.min(PATH_COVERAGE_UPLOAD_CHUNK_BYTES, up.bytes - up.written);
-            if (!budget.claimUpload(piece)) { auditCount(audit, 'upload:deferred', 1, { bytes: piece }); return 'deferred'; }
+            if (!budget.claimUpload(piece)) {
+                // By cause, so a repeat is visible as its cause. 'room': the frame's allowance still had the piece, so the scheduler
+                // refused it for another reason (the layer's optional share); that is the case that must not repeat.
+                const cause = budget.shouldYield() ? 'yield' : budget.upload.remainingBytes >= piece ? 'room' : 'allowance';
+                auditCount(audit, `upload:deferred:${cause}`, 1, { bytes: piece });
+                return 'deferred';
+            }
             owner.writeBuffer(up.buffer, up.written, up.data.subarray(up.written / 4, (up.written + piece) / 4));
             auditCount(audit, 'upload:vertex', 1, { bytes: piece });
             up.written += piece;
@@ -592,6 +598,8 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
             if (!Number.isSafeInteger(vertexCount) || vertexCount % 3) throw new RangeError('Invalid path triangle storage');
             if (vertexCount === 0) continue;
             const entry = vertexSetFor(owner, set, vertexCount, budget);
+            // One count per refused admission: the admission returns here, so a repeat is one more admission, not more pieces.
+            if (entry === 'deferred') auditCount(audit, 'upload:deferred:admission');
             if (typeof entry === 'string') return { status: entry };
             parts.push(entry);
         }

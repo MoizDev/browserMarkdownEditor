@@ -316,6 +316,8 @@ export function createPath(host: LayerHost, audit: string): {
      * release (onFreed) returns the lease. Returns the bytes given back now. */
     const dropFromCache = (key: string, old: Outline): number => {
         outlines.delete(key); cachedArrays.delete(old.positive); outlineBytes -= old.bytes;
+        // The kit's packs of this outline (a group's pack, built from its triangles) go with it, unless a draw still reads them.
+        kit.forgetTriangles(old.positive);
         return kit.holds(old.positive) ? 0 : releaseLease(old.positive);
     };
     /** Frees unused outlines the kit does not hold, oldest first, until `bytes` are given back to the CPU grant. */
@@ -364,10 +366,11 @@ export function createPath(host: LayerHost, audit: string): {
         return outline;
     };
 
-    /** Takes the kit's result into `acquired`, or says why not. */
-    const take = (result: PathCoverageAdmission, acquired: PreparedPathCoverage[], bytes: number): PreparedPathCoverage | Stop => {
+    /** Takes the kit's result into `acquired`, or says why not. A denial is the kit's own: the pool and bytes it needs, so the caller
+     * waits on the pool that frees them (a CPU staging copy or pack is not a GPU wait). */
+    const take = (result: PathCoverageAdmission, acquired: PreparedPathCoverage[]): PreparedPathCoverage | Stop => {
         if (result.status === 'ready') { acquired.push(result.value); return result.value; }
-        if (result.status === 'denied') return { status: 'denied', bytes, pool: 'gpu' };
+        if (result.status === 'denied') return { status: 'denied', pool: result.pool, bytes: result.bytes };
         if (result.status === 'deferred') return { status: 'deferred' };
         if (result.status === 'empty') return { status: 'empty' };
         return { status: 'unsupported', why: 'coverage kit' };
@@ -391,13 +394,12 @@ export function createPath(host: LayerHost, audit: string): {
         const band = bandOf(lead.localToWorld, view);
         if (band === null) return null;
         const outlines: Outline[] = [];
-        let bytes = 0;
         for (const member of members) {
             const geometry = outlineFor(`fill|${commandKey(member.d)}|${band}`, member.d, band,
                 (tolerance, origin) => pathFillTriangles(member.d, { tolerance, origin: [origin.x, origin.y] }));
             if (isRefused(geometry)) return { status: 'denied', bytes: geometry.refused, pool: 'cpu' };
             if (!geometry) return null;
-            outlines.push(geometry); bytes += geometry.bytes;
+            outlines.push(geometry);
         }
         const groupOrigin = outlines[0].origin;
         const sets: PathCoverageShapes[] = outlines.map(outline => ({ positive: outline.positive, negative: outline.negative,
@@ -409,7 +411,7 @@ export function createPath(host: LayerHost, audit: string): {
             output: { kind: 'composite', blend: cover } }, budget);
         // The kit's 'unsupported' is the group's alone (its nonzero edge bound): null makes the caller admit the members one by one.
         if (result.status === 'unsupported') return null;
-        const taken = take(result, acquired, bytes);
+        const taken = take(result, acquired);
         if (isStop(taken)) return taken;
         auditCount(audit, 'route:path-group', members.length);
         return { status: 'ready', value: { clips: noClips, fill: taken, stroke: null } };
@@ -438,7 +440,7 @@ export function createPath(host: LayerHost, audit: string): {
             const affine = geometry && deviceAffine(clip.localToWorld, geometry.origin, view);
             if (!geometry || !affine) return { status: 'unsupported', why: 'clip geometry' };
             const taken = take(kit.admit({ shapes: geometry, rule: clip.fillRule, affine, viewport, colour: WHITE, output: { kind: 'mask' } }, budget),
-                acquired, geometry.bytes);
+                acquired);
             if (isStop(taken)) return taken;
             masks.push(taken);
         }
@@ -461,7 +463,7 @@ export function createPath(host: LayerHost, audit: string): {
             const affine = geometry && deviceAffine(item.localToWorld, geometry.origin, view);
             if (!geometry || !affine) return { status: 'unsupported', why: 'path geometry' };
             const taken = take(kit.admit({ shapes: geometry, rule: item.fillRule, affine, viewport, colour: item.material.fill,
-                output: { kind: 'composite', blend: cover } }, budget), acquired, geometry.bytes);
+                output: { kind: 'composite', blend: cover } }, budget), acquired);
             if (isStop(taken)) { if (taken.status !== 'empty') return taken; }
             else fill = taken;
         }
@@ -481,7 +483,7 @@ export function createPath(host: LayerHost, audit: string): {
             const affine = geometry && deviceAffine(item.localToWorld, geometry.origin, view);
             if (!geometry || !affine) return { status: 'unsupported', why: 'stroke geometry' };
             const taken = take(kit.admit({ shapes: geometry, rule: 'union', affine, viewport, colour: style.color,
-                output: { kind: 'composite', blend: cover } }, budget), acquired, geometry.bytes);
+                output: { kind: 'composite', blend: cover } }, budget), acquired);
             if (isStop(taken)) { if (taken.status !== 'empty') return taken; }
             else stroke = taken;
         }

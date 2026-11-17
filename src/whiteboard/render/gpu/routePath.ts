@@ -11,7 +11,7 @@ import { createPathCoverageKit, type PathCoverageAdmission, type PreparedPathCov
 import { pathFillTriangles } from '../pathFillTriangles';
 import { pathStrokeTriangles } from '../pathStrokeTriangles';
 import type { PaintClip, PaintPathItem } from '../paintStream';
-import type { Admission, Blend, CreatePathRoute, ItemRoute, PreparedRun } from './contracts';
+import type { Admission, Blend, CreatePathRoute, ItemRoute, PreparedRun, WithClips } from './contracts';
 
 /** Device pixels of flattening error allowed for a stencil-covered path (design §5.1: ≤0.1 px). */
 const FLATTEN_DEVICE_PX = 0.1;
@@ -285,4 +285,27 @@ export const createPathRoute: CreatePathRoute = (host: LayerHost, audit: string)
         },
     };
     return route;
+};
+
+/** Draws `draw` under an item's clips, through the clip stack the path route uses. Rectangle clips are scissors. A clip that is
+ * not a rectangle needs its coverage mask, which only an admission can make (the path route admits its own item's masks in
+ * prepare); with the signature fixed, this returns 'unsupported' without drawing and the caller counts that fallback. */
+export const withClips: WithClips = (pass, clips, view, draw) => {
+    for (const clip of clips) if (!clipLocalRect(clip)) return { status: 'unsupported', why: 'clip mask not admitted' };
+    const viewport = { width: Math.round(view.viewport.width * view.viewport.dpr), height: Math.round(view.viewport.height * view.viewport.dpr) };
+    const base = clipTokens.length;
+    try {
+        for (const clip of clips) {
+            const rect = clipDeviceRect(clip, view);
+            const x0 = Math.max(0, rect!.x), y0 = Math.max(0, rect!.y);
+            const x1 = Math.min(viewport.width, rect!.x + rect!.width), y1 = Math.min(viewport.height, rect!.y + rect!.height);
+            if (x1 <= x0 || y1 <= y0) return { status: 'empty' };
+            clipTokens.push(pass.pushClip({ x: x0, y: y0, width: x1 - x0, height: y1 - y0 }));
+        }
+        draw();
+    } finally {
+        for (let i = clipTokens.length - 1; i >= base; i--) pass.popClip(clipTokens[i]);
+        clipTokens.length = base;
+    }
+    return { status: 'ready', value: undefined };
 };

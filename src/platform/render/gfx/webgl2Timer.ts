@@ -1,4 +1,5 @@
 import { RENDER_CONSTANTS } from '../constants';
+import { auditStage, renderAuditEnabled } from '../renderAudit';
 
 type TimerExtension = { readonly TIME_ELAPSED_EXT: number; readonly GPU_DISJOINT_EXT: number };
 
@@ -11,6 +12,8 @@ export class Webgl2Timer {
     readonly #report: ((p95Ms: number, samples: number, disjoint: boolean) => void) | undefined;
     readonly #pending: WebGLQuery[] = [];
     readonly #samples: number[] = [];
+    /** Reused for the p95 over a full window, so each report sorts in place rather than copying the window. */
+    readonly #sorted = new Float64Array(RENDER_CONSTANTS.slowGpuSampleCount);
     #active: WebGLQuery | null = null;
 
     constructor(gl: WebGL2RenderingContext, report?: (p95Ms: number, samples: number, disjoint: boolean) => void) {
@@ -36,27 +39,36 @@ export class Webgl2Timer {
         this.#active = null;
     }
 
+    /** Never waits on the GPU: a result is read only once its availability says it is ready. By reading: the disjoint flag
+     * used to be read on every poll tick while any query was pending, a synchronous round trip for nothing, so it is read
+     * only when a result is ready to be judged, and a flag set earlier is kept until then (conservative: it can only drop
+     * samples, never admit an invalid one). */
     poll(): void {
         const ext = this.#extension;
         if (!ext || !this.#pending.length) return;
         const gl = this.#gl;
-        if (gl.getParameter(ext.GPU_DISJOINT_EXT) === true) {
-            for (const query of this.#pending) gl.deleteQuery(query);
-            this.#pending.length = 0;
-            this.#samples.length = 0;
-            this.#report?.(0, 0, true);
-            return;
-        }
+        let disjoint: boolean | null = null;
         while (this.#pending.length && gl.getQueryParameter(this.#pending[0], gl.QUERY_RESULT_AVAILABLE) === true) {
+            disjoint ??= gl.getParameter(ext.GPU_DISJOINT_EXT) === true;
+            if (disjoint) {
+                for (const query of this.#pending) gl.deleteQuery(query);
+                this.#pending.length = 0;
+                this.#samples.length = 0;
+                this.#report?.(0, 0, true);
+                return;
+            }
             const query = this.#pending.shift()!;
             const nanos: unknown = gl.getQueryParameter(query, gl.QUERY_RESULT);
             gl.deleteQuery(query);
             if (typeof nanos !== 'number' || !Number.isFinite(nanos) || nanos < 0) continue;
-            this.#samples.push(nanos / 1_000_000);
+            const ms = nanos / 1_000_000;
+            if (renderAuditEnabled()) auditStage('gpu', 'gpu-time', ms);
+            this.#samples.push(ms);
             if (this.#samples.length > RENDER_CONSTANTS.slowGpuSampleCount) this.#samples.shift();
             if (this.#samples.length === RENDER_CONSTANTS.slowGpuSampleCount) {
-                const sorted = [...this.#samples].sort((a, b) => a - b);
-                this.#report?.(sorted[Math.ceil(sorted.length * 0.95) - 1], sorted.length, false);
+                this.#sorted.set(this.#samples);
+                this.#sorted.sort();
+                this.#report?.(this.#sorted[Math.ceil(this.#sorted.length * 0.95) - 1], this.#sorted.length, false);
             }
         }
     }

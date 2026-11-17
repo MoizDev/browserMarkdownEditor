@@ -1,6 +1,6 @@
 import type { Rect, ViewState } from '../types';
 import type { DamageRecord } from './damage';
-import type { CompositorResources, LayerAllocators, LayerHost, PaneCompositor, TexturedQuadOptions } from './compositor.types';
+import type { CompositorResources, LayerAllocators, LayerHost, PaneCompositor, TexturedQuadOptions, TexturedQuadPlacement } from './compositor.types';
 import type { GpuPass, TextureHandle, UniformSlice } from './gfx/api';
 import { paintCanvasIsolation } from './canvas2dContext';
 import { auditCount, auditStage, renderAuditEnabled } from './renderAudit';
@@ -43,6 +43,14 @@ export function createLayerHost(bindings: LayerHostBindings): LayerHost {
         source: Readonly<Rect>, dest: Readonly<Rect>, options: TexturedQuadOptions): void {
         if ('drawImage' in target) { auditCount(surface, 'canvas2d-quad'); compositor().resources.drawTexturedQuad(target, image as ImageBitmap, source, dest, options); }
         else { auditCount(surface, 'gpu-quad'); resources().drawTexturedQuad(target, image as TextureHandle, source, dest, options); }
+    }
+    function drawTexturedQuads(pass: GpuPass, texture: TextureHandle, quads: readonly TexturedQuadPlacement[], options: TexturedQuadOptions): void;
+    function drawTexturedQuads(ctx: CanvasRenderingContext2D, image: ImageBitmap, quads: readonly TexturedQuadPlacement[], options: TexturedQuadOptions): void;
+    function drawTexturedQuads(target: GpuPass | CanvasRenderingContext2D, image: TextureHandle | ImageBitmap,
+        quads: readonly TexturedQuadPlacement[], options: TexturedQuadOptions): void {
+        // One counter per batch, with its quad count: the batch is the unit the GPU sees, the quads are what the layer drew.
+        if ('drawImage' in target) { auditCount(surface, 'canvas2d-quad', quads.length); compositor().resources.drawTexturedQuads(target, image as ImageBitmap, quads, options); }
+        else { auditCount(surface, 'gpu-quad-batch', 1, { quads: quads.length }); resources().drawTexturedQuads(target, image as TextureHandle, quads, options); }
     }
     // Audit only: a per-layer view of the shared device that counts what this layer creates and uploads.
     const audited = new WeakMap<GfxDevice, GfxDevice>();
@@ -94,5 +102,6 @@ export function createLayerHost(bindings: LayerHostBindings): LayerHost {
         paneTransform: (view, frameId) => bindings.compositor()?.paneTransform(view, frameId) ?? null,
         uniforms: (bytes: ArrayBufferView): UniformSlice => resources().uniforms(bytes),
         drawTexturedQuad,
+        drawTexturedQuads,
     };
 }

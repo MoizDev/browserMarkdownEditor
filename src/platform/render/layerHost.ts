@@ -1,6 +1,7 @@
 import type { Rect, ViewState } from '../types';
 import type { DamageRecord } from './damage';
 import type { CompositorResources, LayerAllocators, LayerHost, PaneCompositor, TexturedQuadOptions, TexturedQuadSpec } from './compositor.types';
+import type { LayerTrouble } from './types';
 import type { GpuPass, TextureHandle, UniformSlice } from './gfx/api';
 import { paintCanvasIsolation } from './canvas2dContext';
 import { auditCount, auditStage, renderAuditEnabled } from './renderAudit';
@@ -20,6 +21,8 @@ export interface LayerHostBindings {
     wakeAt(deadlineMs: number | null): void;
     demandChanged?(): void;
     refreshDemandNow?(): void;
+    /** The pane's governor trouble state (memoryGovernor's getter); absent means 'none'. */
+    trouble?(): LayerTrouble;
 }
 
 /** One stable host per layer. Accessors consult the live qualified generation, never the
@@ -103,5 +106,6 @@ export function createLayerHost(bindings: LayerHostBindings): LayerHost {
         uniforms: (bytes: ArrayBufferView): UniformSlice => resources().uniforms(bytes),
         drawTexturedQuad,
         drawTexturedQuads,
+        trouble: () => bindings.trouble?.() ?? 'none',
     };
 }

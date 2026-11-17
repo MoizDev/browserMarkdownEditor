@@ -9,7 +9,7 @@ import type { PageStack } from './pageStack';
 import type { ReadySurfaceMetrics, SurfaceCommitTarget } from './surfaceMetrics';
 import type { GpuGrant } from './surfaceBroker.types';
 import type { ScheduledEncoding, ScheduledFrame } from './scheduler';
-import type { FrameBudget, FrameToken, GpuReleaseReason, Layer } from './types';
+import type { FrameBudget, FrameToken, GpuReleaseReason, Layer, LayerTrouble } from './types';
 
 /** Both drawing paths implement one host boundary (contracts.md C4.2:492–507). */
 export type CompositorBackend = 'canvas2d' | Backend;
@@ -114,6 +114,8 @@ export interface LayerHost {
     paneTransform(view: ViewState, frameId: number): Affine | null;
     /** DrawGpu-only packing into the active encoder's fenced ring, never a layer-owned ring. */
     uniforms(bytes: ArrayBufferView): UniformSlice;
+    /** Read-only governor state for this pane: a layer may shed work under 'slow-gpu' or 'pressure'. Allocates nothing. */
+    trouble(): LayerTrouble;
     drawTexturedQuad(pass: GpuPass, texture: TextureHandle, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
     drawTexturedQuad(ctx: CanvasRenderingContext2D, image: ImageBitmap, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
     drawTexturedQuads(pass: GpuPass, texture: TextureHandle, quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void;

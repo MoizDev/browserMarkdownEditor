@@ -15,6 +15,11 @@ import type { Admission, Blend, CreateTextRoute, ItemRoute, PreparedRun } from '
 export interface TextRoute extends ItemRoute<PaintTextItem> {
     evictTextures(bytes: number, frameId: number): number;
     encodeOffscreen(passes: OffscreenPasses): void;
+    /** The composer's zoom flag for the frame (its `zoomingFrame`). While it is true a missing exact mask is never rastered: the cached
+     * stand-in of its glyphs is drawn scaled, counted as text:mask:zoom-scaled. Until the composer calls it, the flag stays false. */
+    setZoom(zooming: boolean): void;
+    /** False when a stand-in was drawn into the run. Its tile must recompose exact once the camera rests: the composer's dirty signal. */
+    exact(prepared: PreparedRun): boolean;
 }
 
 // The board's text route. A text run is drawn from exact-size mask cells (textMasks.ts) that live on atlas pages
@@ -197,6 +202,8 @@ interface TextRun extends PreparedRun {
     readonly viewH: number;
     readonly scissor: RectI;
     readonly bytes: number;
+    /** A stand-in was drawn into the run: not exact until its tile recomposes. */
+    readonly inexact: boolean;
 }
 type Stop = Exclude<Admission<PreparedRun>, { status: 'ready' }>;
 /** The run under construction. Its arrays and batch objects are reused by every composition; a finished run takes its own copies. */
@@ -207,6 +214,7 @@ interface Build {
     pinAtlas: TextAtlas[];
     pinEntry: AtlasEntry[];
     x0: number; y0: number; x1: number; y1: number;
+    inexact: boolean;
 }
 type Writable<T> = { -readonly [K in keyof T]: T[K] };
 
@@ -232,6 +240,8 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
     /** The idle release: a timer, armed when a conversion ends and cancelled when one begins. A timer asks for no frame, so an
      * idle board stays idle; deleting a texture needs no pass, so it runs outside the frame. */
     let stageTimer: ReturnType<typeof setTimeout> | null = null;
+    /** The composer's zoom flag, set once per frame before its admits. */
+    let zooming = false;
     /** The conversion's instance buffer and its CPU twin: grown to the pending count, never shrunk. */
     let convertBuffer: BufferHandle | null = null, convertLease: ByteLease | null = null, convertCapacity = 0;
     let convertScratch: Float32Array<ArrayBuffer> = new Float32Array(0), convertScratchLease: ByteLease | null = null;
@@ -249,7 +259,8 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
     const deviceMap = new Float64Array(6);
     const slot: Slot = { entry: null, rgba: false, standIn: false, x: 0, y: 0, w: 0, h: 0 };
     const cell: MaskCell = { x: 0, y: 0, w: 0, h: 0 };
-    const build: Build = { count: 0, batches: [], batchCount: 0, pinAtlas: [], pinEntry: [], x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+    const build: Build = { count: 0, batches: [], batchCount: 0, pinAtlas: [], pinEntry: [], x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity,
+        inexact: false };
 
     const atlasHost = { reserve: (bytes: number) => host.allocator.gpu.reserve(bytes), release: (lease: ByteLease) => host.allocator.gpu.release(lease) };
 
@@ -616,6 +627,13 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         const emoji = needsColourMask(req.text);
         const exact = (emoji ? colour! : mono!).lookup(fillIdentity(probe, req, cellIndex, emoji ? colourOf : null), frame);
         if (exact) { slot.entry = exact; slot.rgba = emoji; slot.standIn = false; return null; }
+        // While the zoom is live a missing exact cell is never rastered: its glyphs' cached mask is drawn at the frame's scale, at any
+        // ratio (the nearest cached size). A cell with no such mask waits for the rest. The run is then inexact (see drawSlot).
+        if (zooming) {
+            if (!standInFor(req, label, colourOf, emoji, true)) return { status: 'deferred' };
+            auditCount(audit, 'text:mask:zoom-scaled');
+            return null;
+        }
         // Motion draws what exists: a missing exact cell is a stand-in, not a raster, until the view settles.
         if (moving && geometry.slices === 1 && standInFor(req, label, colourOf, emoji, false)) return null;
         if (budget.shouldYield()) return { status: 'deferred' };
@@ -633,6 +651,7 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         // A colour run is tinted by nothing: its own colour is in the texels, so the instance carries white.
         if (!put(slot.rgba ? 'colour' : 'mono', e.page.texture, x, y, w, h, u0, v0, u1, v1, slot.rgba ? WHITE : colourOf)) return denied();
         widen(x, y, x + w, y + h);
+        if (slot.standIn) build.inexact = true;
         build.pinAtlas.push(slot.rgba ? colour! : mono!);
         build.pinEntry.push(e);
         return null;
@@ -724,7 +743,7 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
             const viewW = Math.round(view.viewport.width * dpr), viewH = Math.round(view.viewport.height * dpr);
             const scale = view.camera.z * dpr;
             if (!ensureUniformData()) return { status: 'denied', pool: 'cpu', bytes: 16 };
-            build.count = 0; build.batchCount = 0;
+            build.count = 0; build.batchCount = 0; build.inexact = false;
             build.pinAtlas.length = 0; build.pinEntry.length = 0;
             build.x0 = Infinity; build.y0 = Infinity; build.x1 = -Infinity; build.y1 = -Infinity;
             const frame = budget.frameId;
@@ -770,7 +789,7 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
             const pinAtlases = build.pinAtlas.slice(), pinEntries = build.pinEntry.slice();
             for (let i = 0; i < pinEntries.length; i++) pinAtlases[i].pin(pinEntries[i]);
             const run: TextRun = { route: 'text', blend, device: owner, buffer, bufferLease: lease,
-                batches, pinAtlases, pinEntries, viewW, viewH, scissor, bytes };
+                batches, pinAtlases, pinEntries, viewW, viewH, scissor, bytes, inexact: build.inexact };
             live.add(run);
             auditCount(audit, 'route:text');
             return { status: 'ready', value: run };
@@ -834,6 +853,8 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         },
         retire(prepared: PreparedRun): void { retireRun(prepared as TextRun); },
         release(): void { releaseGpu(); },
+        setZoom(value: boolean): void { zooming = value; },
+        exact(prepared: PreparedRun): boolean { return !(prepared as TextRun).inexact; },
         evictTextures(bytes: number, frameId: number): number {
             // The staging texture goes first, and only when no conversion is pending in it: nothing it holds is drawn in this frame.
             const freedStage = stage && pendingCount === 0 && bytes > 0 ? stage.lease.bytes : 0;

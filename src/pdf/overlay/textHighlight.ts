@@ -3,6 +3,7 @@ import type { FrameBudget, GpuReleaseReason, Layer } from '../../platform/render
 import type { LayerHost } from '../../platform/render/compositor.types';
 import type { ByteLease, GfxDevice, GpuPass, TextureHandle } from '../../platform/render/gfx/api';
 import { QuadList } from '../layer/quadList';
+import { auditCount } from '../../platform/render/renderAudit';
 
 export interface PdfHighlightRects {
     /** World-space rectangles, already clipped to their physical pages. */
@@ -42,6 +43,10 @@ export class PdfTextHighlightLayer implements Layer {
     private readonly scratch: Rect = { x: 0, y: 0, width: 0, height: 0 };
     /** Every highlight of a frame, in find, current, selection order, drawn as one batch from the palette texture. */
     private readonly quads = new QuadList();
+    /** A palette the device refused: counted once, and drawn without highlights until the palette changes. */
+    private paletteRefused = false;
+    /** A governor waiter for the palette's 12 bytes is outstanding. */
+    private awaiting = false;
 
     constructor(private readonly host: LayerHost, private palette: PdfHighlightPalette) {}
 
@@ -57,20 +62,23 @@ export class PdfTextHighlightLayer implements Layer {
     }
     setPalette(palette: PdfHighlightPalette): void {
         this.palette = palette;
+        this.paletteRefused = false;
         this.releaseGpu('pressure');
         this.host.invalidate('pdf-text-highlight-colours');
     }
     prepare(_view: ViewState, budget: FrameBudget): void {
         this.pending = false;
         const device = this.host.device();
-        if (!device || this.disposed || this.texture?.device === device) return;
+        if (!device || this.disposed || this.texture?.device === device || this.paletteRefused) return;
         if (this.texture) this.releaseGpu('pressure');
-        if (budget.shouldYield() || !budget.claimUpload(12)) { this.pending = true; return; }
+        if (budget.shouldYield()) { this.pending = true; return; }
+        // Storage before budget: a claim spent on a refused reservation starves the next upload (see tileLayer uploadTile).
         const lease = this.host.allocator.gpu.reserve(12);
-        if (!lease) return;
+        if (!lease) { this.awaitCapacity(); return; }
+        if (!budget.claimUpload(12)) { this.host.allocator.gpu.release(lease); this.pending = true; return; }
         let handle: TextureHandle;
         try { handle = device.createTexture(3, 1, 'rgba8', ['sample', 'copy-dst'], lease); }
-        catch (error) { this.host.allocator.gpu.release(lease); throw error; }
+        catch { this.host.allocator.gpu.release(lease); this.refusePalette(); return; }
         const colors = [this.palette.find, this.palette.current, this.palette.selection];
         const pixels = new Uint8Array(12);
         colors.forEach((color, index) => {
@@ -84,7 +92,20 @@ export class PdfTextHighlightLayer implements Layer {
             device.writeTexture(handle, { x: 0, y: 0, width: 3, height: 1 },
                 { source: pixels, rowBytes: 12, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
             this.texture = { device, handle };
-        } catch (error) { device.destroy(handle); throw error; }
+        } catch { device.destroy(handle); this.refusePalette(); }
+    }
+    /** A refused or failed palette is counted and not retried per frame: the layer draws no highlights until setPalette. */
+    private refusePalette(): void {
+        this.paletteRefused = true;
+        auditCount('pdf-text-highlight', 'palette-refused');
+    }
+    /** A refused reservation wakes the layer when the governor would admit its 12 bytes. Without a waiter it retries each frame. */
+    private awaitCapacity(): void {
+        const allocator = this.host.allocator.gpu;
+        if (!allocator.whenAvailable) { this.pending = true; return; }
+        if (this.awaiting) return;
+        this.awaiting = true;
+        allocator.whenAvailable(() => { this.awaiting = false; this.host.invalidate('pdf-text-highlight-capacity'); }, 12);
     }
     drawGpu(pass: GpuPass, view: ViewState): void {
         const texture = this.texture;

@@ -198,6 +198,8 @@ export interface BoardLayerPair extends Readonly<[PlatformLayerDefinition, Platf
 type OffscreenEncoder = { encodeOffscreen?(passes: OffscreenPasses, view: ViewState, band: PaintBand): void };
 /** The grain of a device's direct-frame charge (see chargeDirect): densePlan's DIRECT_CHUNK, the dense direct phase's own grain. */
 const DIRECT_CHUNK = 64 * 1024;
+/** The composer's prepare takes the drag's omitted set (PLAN §3.3, wave 2). Today's adapter ignores the third argument. */
+type OmitAwarePrepare = { prepare(view: ViewState, budget: FrameBudget, omit?: ReadonlySet<string>): void };
 export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     const hosts = new Map<PaintBand, LayerHost>();
     let adapter: CanvasPaintAdapter | null = null, allocatorHost: LayerHost | null = null;
@@ -212,6 +214,10 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     // `opaqueWorld` in wave 2, and until then today's adapter ignores it.
     const gpuOptions = () => ({ audit: options.auditSurface ?? 'board',
         ...(typeof options.opaqueWorld === 'function' ? { opaqueWorld: options.opaqueWorld } : {}) });
+    // The drag's omitted set reaches the tiles the adapter builds. The draw still takes it too (drawGpu's omit argument) until
+    // the composer owns omission; the two must agree, and they do while both read the same omitNodes(frame).
+    const prepareGpu = (view: ViewState, budget: FrameBudget, frame: PaintSource): void =>
+        (gpu as OmitAwarePrepare | null)?.prepare(view, withFirstUnit(budget), options.omitNodes?.(frame) ?? undefined);
     const liveSets = new WeakMap<PaintSource, { omit: ReadonlySet<string> | null | undefined; wet: ReadonlySet<string> | undefined; live: ReadonlySet<string> }>();
     const liveFor = (frame: PaintSource): ReadonlySet<string> | undefined => {
         const omit = options.omitNodes?.(frame), wet = options.liveNodeIds?.();
@@ -529,7 +535,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 // Charged before the build (the grant may already refuse) and after it (what this step built is held).
                 if (!chargeDirect(frame)) return;
                 adapter.prepare(view, budget);
-                gpu?.prepare(view, withFirstUnit(budget));
+                prepareGpu(view, budget, frame);
                 chargeDirect(frame);
                 prune(frame, adapter.readyFrame());
                 options.onPrepared?.();
@@ -621,7 +627,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             }
             denied = false;
             adapter.prepare(view, budget);
-            gpu?.prepare(view, withFirstUnit(budget));
+            prepareGpu(view, budget, frame);
             prune(frame, adapter.readyFrame());
             options.onPrepared?.();
         } catch (error) { report(error); }

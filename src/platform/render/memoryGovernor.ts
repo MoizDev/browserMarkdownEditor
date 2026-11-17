@@ -524,6 +524,10 @@ export class MemoryGovernor {
         // return to a 1% overview of ~5,400 items, degraded the governor before the board fell back to dense tiles.
         if (bytes > this.target[pool]) return null;
         const allowed = () => this.fits(cache, bytes);
+        // A pane with no demand yet holds a zero grant, so its first allocation is refused without being over anything.
+        // That is not pressure: nothing is trimmed and no quality is stepped. The refused work waits, and the replan that
+        // grants the pane's demand wakes it. Seen: a new arrow's first 64 KB working buffer degraded a near-empty canvas2d pane.
+        if (!allowed() && !this.overPool(pool, bytes) && !this.hasDemand(cache)) return null;
         if (!allowed()) {
             this.state = 'trimming';
             this.belowRecoverySince = null;
@@ -549,6 +553,19 @@ export class MemoryGovernor {
         if (kind === 'context' || kind === 'program') this.plan();
         if (this.charged[pool] > this.target[pool] * POLICY.memorySoftPressureRatio) this.onPressureChange?.();
         return lease;
+    }
+
+    /** The pool itself cannot take the bytes: the only refusal that is pressure without a pane's own demand. */
+    private overPool(pool: MemoryPool, bytes: number): boolean {
+        return this.charged[pool] + bytes > this.target[pool];
+    }
+
+    /** A visible, shown pane that asked for pixels. A pane-less cache (the app's own) always has demand. */
+    private hasDemand(cache: CacheRecord): boolean {
+        const { paneId } = cache.registration;
+        if (paneId === undefined) return true;
+        const pane = this.panes.find(item => item.paneId === paneId);
+        return !!pane && pane.visible && pane.requestedPixels > 0 && cache.activity.hiddenAt === null;
     }
 
     private fits(cache: CacheRecord, bytes: number): boolean {

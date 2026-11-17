@@ -112,6 +112,8 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
     let mono: TextAtlas | null = null, colour: TextAtlas | null = null;
     let white: TextureHandle | null = null, whiteLease: ByteLease | null = null, sampler: SamplerHandle | null = null;
     const colourRuns = new Set<string>();
+    /** The font epoch the atlases were last filled under. A change retires the old faces' masks (their keys carry the old epoch). */
+    let seenEpoch = -1;
     const live = new Set<TextRun>();
     const quad = new Float32Array(12);
     let scratch: Float32Array<ArrayBuffer> = new Float32Array(12 * 64);
@@ -301,6 +303,15 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         return null;
     };
 
+    /** A font change (fontEpoch) makes every mask key new: the old faces' entries retire now and free as their pins drop. The
+     * tiles that showed the old glyphs are dirtied by the parts' takeChanges (h2), not here. */
+    const noteEpoch = (it: PaintTextItem): void => {
+        if (it.paint.fontEpoch === seenEpoch) return;
+        for (const face of it.faces.faces) { mono?.retireFace(face.css); colour?.retireFace(face.css); }
+        colourRuns.clear();
+        seenEpoch = it.paint.fontEpoch;
+    };
+
     const item = (build: Build, it: PaintTextItem, frame: number, viewW: number, viewH: number, scale: number, view: { camera: { x: number; y: number } }, budget: FrameBudget): Stop | null => {
         // Routes never clip: the composer applies the item's clips around whatever this draws.
         const [a, b, c, d, e, f] = it.localToWorld;
@@ -328,6 +339,7 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
             const build: Build = { data: scratch, count: 0, batches: [], pins: [], x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
             const frame = budget.frameId;
             for (const it of items) {
+                noteEpoch(it);
                 const stop = item(build, it, frame, viewW, viewH, scale, view, budget);
                 if (stop) return stop;
             }

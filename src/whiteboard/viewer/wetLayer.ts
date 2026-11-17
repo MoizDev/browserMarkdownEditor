@@ -59,12 +59,9 @@ export interface BoardWetRenderer extends BoardWetLayer {
 function sameToken(a: RenderToken, b: RenderToken): boolean {
     return a.vaultEpoch === b.vaultEpoch && a.documentId === b.documentId && a.bytesGeneration === b.bytesGeneration && a.session === b.session;
 }
+/** The presented-frame test the acknowledgement uses: this token's frame holds the node at a current revision. */
 function available(frame: PaintSource | null | undefined, identity: DryInkIdentity, token: RenderToken): boolean {
     return !!frame && sameToken(frame.token, token) && frame.sceneRevision >= identity.nodeRevision && frame.inkNodeIds.has(identity.nodeId);
-}
-function visuallyCovered(frame: PaintSource | null | undefined, identity: DryInkIdentity, token: RenderToken): boolean {
-    return available(frame, identity, token) || !!frame && sameToken(frame.token, token)
-        && frame.sceneRevision >= identity.nodeRevision && !!frame.occludedInkNodeIds?.has(identity.nodeId);
 }
 function unionBounds(a: Bounds | null, next: Bounds): Bounds {
     if (!a) return { x: next.x, y: next.y, w: next.w, h: next.h };
@@ -360,9 +357,9 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
     // layer's refusal refused the whole frame). Only a band with nothing admitted yet is incomplete. `sharp` says the
     // shown runs are the current publication's, for this token and view; a deferred or denied tip is not sharp.
     const routedCoverage = (token: FrameToken, view: ViewState): { complete: boolean; sharp: boolean; why: string } => {
-        const palette = options.palette(), frame = options.readyFrame(), viewKey = viewKeyOf(view);
+        const palette = options.palette(), viewKey = viewKeyOf(view);
         let sharp = true;
-        for (const snapshot of handover?.forFrame(identity => visuallyCovered(frame, identity, options.token)) ?? []) {
+        for (const snapshot of handover?.forFrame(() => false) ?? []) {
             const gesture = snapshot.identity.gestureSequence, source = prepared.get(gesture);
             if (!source) return { complete: false, sharp: false, why: 'unprepared' };
             for (const band of BANDS) {
@@ -380,11 +377,11 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
     };
     const drawRouted = (pass: GpuPass, view: ViewState, band: WetBand): void => {
         if (disposed || !options.current() || !inkRoutes || !owner) return;
-        const frame = options.readyFrame(), host = owner;
+        const host = owner;
         let drawn = 0;
         drawCall.pass = pass; drawCall.view = view; drawCall.host = host;
         try {
-            for (const snapshot of handover?.forFrame(identity => visuallyCovered(frame, identity, options.token)) ?? []) {
+            for (const snapshot of handover?.forFrame(() => false) ?? []) {
                 const gesture = snapshot.identity.gestureSequence, source = prepared.get(gesture);
                 if (!source || source.snapshot.identity.nodeId !== snapshot.identity.nodeId
                     || offScreen(source.bounds, source.snapshot.presentation.localToWorld, view)) continue;
@@ -518,7 +515,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                 drawGpu(pass, view) { drawRouted(pass, view, band); },
                 draw2d(ctx, view) {
                     if (disposed || !options.current()) return;
-                    const frame = options.readyFrame(), snapshots = handover?.forFrame(identity => visuallyCovered(frame, identity, options.token)) ?? [];
+                    const snapshots = handover?.forFrame(() => false) ?? [];
                     host.paintWorld(ctx, view, () => {
                         for (const snapshot of snapshots) {
                             const item = prepared.get(snapshot.identity.gestureSequence);
@@ -572,10 +569,10 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         // which took two frames per plan (measured: every other screencast frame held the same ink). Only while ink is in
         // flight: an idle layer that still wanted a frame kept every frame critical, which starves the other layers' upload
         // share (measured: drawing pan 204 → 78 presents, notebook pan 38).
-        critical: () => (!!owner?.device() && runsPending()) || (handover?.forFrame(identity => visuallyCovered(options.readyFrame(), identity, options.token)) ?? [])
+        critical: () => (!!owner?.device() && runsPending()) || (handover?.forFrame(() => false) ?? [])
             .some(item => !prepared.has(item.identity.gestureSequence)),
         coverage: (_layer, frame, backend) => {
-            const missing = (handover?.forFrame(identity => visuallyCovered(options.readyFrame(), identity, options.token)) ?? [])
+            const missing = (handover?.forFrame(() => false) ?? [])
                 .some(item => !prepared.has(item.identity.gestureSequence));
             if (missing) { auditCount('wet', 'cover:incomplete:unprepared'); return { complete: false, sharp: false }; }
             if (backend === 'canvas2d') return { complete: true, sharp: true };

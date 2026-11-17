@@ -54,6 +54,8 @@ export interface PaintImageHold {
     imageState(key: string): 'ready' | 'released' | 'absent';
     /** Gives up the bitmap of a held picture; returns true when there was one to give up. */
     releaseImage(key: string): boolean;
+    /** The held picture's size and, for a video node, the version of the frame its lease holds (0 for a picture). Null when not held. */
+    imageFact(key: string): { readonly width: number; readonly height: number; readonly version: number } | null;
     /** Requests a released or absent picture again; its settlement invalidates the frame. A request already in flight is kept. */
     reacquireImage(key: string): void;
 }
@@ -230,6 +232,12 @@ export function createCanvasPaintAdapter(
     function imageHold(s: Snapshot): PaintImageHold {
         return {
             imageState(key) { return s.images.get(key) ? 'ready' : s.released.has(key) ? 'released' : 'absent'; },
+            imageFact(key) {
+                const lease = s.images.get(key);
+                if (!lease) return null;
+                const version = (lease as { readonly version?: unknown }).version;
+                return { width: lease.width, height: lease.height, version: typeof version === 'number' ? version : 0 };
+            },
             releaseImage(key) {
                 const lease = s.images.get(key);
                 if (!lease) return false;

@@ -3,13 +3,14 @@
 // not land on whole pixels (b39411ce, measured against the canvas2d control). Design: PLAN §4 gpu-h7, §3.2.
 import type { ViewState } from '../../../platform/types';
 import type { LayerHost } from '../../../platform/render/compositor.types';
-import type { GfxDevice, GpuPass, PipelineHandle, RectI, SamplerHandle, ShaderModule, TextureHandle } from '../../../platform/render/gfx/api';
+import type { DrawableImage, GfxDevice, GpuPass, PipelineHandle, RectI, SamplerHandle, ShaderModule, TextureHandle } from '../../../platform/render/gfx/api';
 import { auditCount } from '../../../platform/render/renderAudit';
 import type { FrameBudget } from '../../../platform/render/types';
 import type { PaintImageItem } from '../paintStream';
 import type { PaintResources2d } from '../reference/paint2d';
 import type { Admission, Blend, CreateImageRoute, ItemRoute, PreparedRun } from './contracts';
-import { createImageTextures, IMAGE_FILTER, type ImageTextures } from './imageTextures';
+import { createImageTextures, IMAGE_FILTER, type ImageTexture, type ImageTextures } from './imageTextures';
+import { VIDEO_FRAME_PREFIX } from '../../media/videoFrames';
 import type { PaintImageHold } from '../reference/canvasPaintAdapter';
 
 /** The picture route as the composer sees it. `useResources` gives it the paint's image lookup for the revision being
@@ -202,16 +203,29 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
                 // Routes never clip (gpu's rule): the composer applies the item's clips around this draw.
                 if (item.retainedTile) return refuse(item.imageKey, unsupported('retained'));
                 const key = item.imageKey;
-                const state = hold ? hold.imageState(key) : 'ready';
-                if (hold && state !== 'ready' && textures.needsSource(key)) { hold.reacquireImage(key); return reject({ status: 'deferred' }); }
-                const admitted = textures.acquire(key, state === 'ready' ? resources.image(key) : null, budget);
+                // A video node is one live picture: its key is stable and its lease names the frame it shows now. The node's
+                // texture is the picture, re-uploaded only when that version moves; the frame is the registry's, never released here.
+                const video = key.startsWith(VIDEO_FRAME_PREFIX);
+                let admitted: Admission<ImageTexture>;
+                if (video) {
+                    const fact = hold ? hold.imageFact(key) : null;
+                    if (hold && !fact) { hold.reacquireImage(key); return reject({ status: 'deferred' }); }
+                    if (!fact) return refuse(key, unsupported('video-without-hold'));
+                    const source = resources.image(key);
+                    if (!isDrawable(source)) return refuse(key, unsupported('video-source'));
+                    admitted = textures.acquireVideo(key, { version: fact.version, source, width: fact.width, height: fact.height }, budget);
+                } else {
+                    const state = hold ? hold.imageState(key) : 'ready';
+                    if (hold && state !== 'ready' && textures.needsSource(key)) { hold.reacquireImage(key); return reject({ status: 'deferred' }); }
+                    admitted = textures.acquire(key, state === 'ready' ? resources.image(key) : null, budget);
+                }
                 if (admitted.status === 'empty') continue;
                 if (admitted.status === 'unsupported') return refuse(key, admitted);
                 if (admitted.status !== 'ready') return reject(admitted);
                 holds.push(key);
                 // The texture holds the pixels now, so the bitmap is no longer needed. A picture some item of it was refused
                 // for stays held: its CPU draw needs the bitmap.
-                if (hold && !cpuKeys.has(key) && hold.imageState(key) === 'ready') hold.releaseImage(key);
+                if (!video && hold && !cpuKeys.has(key) && hold.imageState(key) === 'ready') hold.releaseImage(key);
                 const tex = admitted.value;
 
                 const src = item.sourceRect ?? { x: 0, y: 0, width: tex.sourceWidth, height: tex.sourceHeight };
@@ -267,7 +281,12 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
 function imageHoldOf(resources: PaintResources2d): PaintImageHold | null {
     const candidate = resources as Partial<PaintImageHold>;
     return typeof candidate.imageState === 'function' && typeof candidate.releaseImage === 'function' && typeof candidate.reacquireImage === 'function'
-        ? candidate as PaintImageHold : null;
+        && typeof candidate.imageFact === 'function' ? candidate as PaintImageHold : null;
+}
+
+/** A source the device reads directly: a bitmap, or a video frame. */
+function isDrawable(source: CanvasImageSource): source is DrawableImage {
+    return (typeof ImageBitmap !== 'undefined' && source instanceof ImageBitmap) || (typeof VideoFrame !== 'undefined' && source instanceof VideoFrame);
 }
 
 /** The factory the contract names (contracts.ts CreateImageRoute): a compile-time check that the route matches it. */

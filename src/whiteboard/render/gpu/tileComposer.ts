@@ -532,15 +532,10 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
 
     /** The compose pass of one frame, in priority order: dirty visible positions, then missing visible ones, then the
      * missing positions one ring outside the view. The frame's limit is the number of tiles it may compose. */
-    const compose = (view: ViewState, budget: FrameBudget, gpu: GfxDevice, target: number, span: Span, zooming: boolean, demand: number): void => {
+    const compose = (view: ViewState, budget: FrameBudget, gpu: GfxDevice, target: number, span: Span): void => {
         let limit = view.moving ? 2 : 8;
         if (options.slowGpu?.()) limit = Math.max(1, limit >> 1);
         let composed = 0;
-        // While zooming, a missing position may wait for a stand-in that is at most 2× magnified (the stand-in is drawn meanwhile).
-        const magnifiedAtMost2 = (band: PaintBand, x: number, y: number): boolean => {
-            const list = standInsOf(band, target, x, y);
-            return list.length > 0 && list[0].key.scale >= demand / 2;
-        };
         // Advances one position. False when this frame's compose is spent (limit, budget, a wait); true when the pass goes on.
         const drive = (position: Position, key: number, pass: 'held' | 'dirty' | 'missing' | 'ring'): boolean => {
             if (position.parked) return true;
@@ -617,7 +612,6 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         if (!position) {
                             const status = statusAt(band, target, x, y);
                             if (pass === 'dirty' ? status !== 'dirty' : status !== 'missing') continue;
-                            if (pass !== 'dirty' && zooming && magnifiedAtMost2(band, x, y)) continue;
                             const started = begin(band, target, x, y, view);
                             if (!started) continue;
                             position = started;
@@ -852,6 +846,20 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         }
     };
 
+    /** Every visible position of both bands has its tile at `scale`, or one finished this frame (encoded before the draw). */
+    const exactReady = (view: ViewState, scale: number): boolean => {
+        const span = spanAt(view, scale);
+        for (const band of BANDS) {
+            for (let y = span.y0; y < span.y1; y++) {
+                for (let x = span.x0; x < span.x1; x++) {
+                    const status = statusAt(band, scale, x, y);
+                    if (status !== 'ok' && !(status === 'missing' && finishedAt(band, scale, x, y))) return false;
+                }
+            }
+        }
+        return true;
+    };
+
     /** Every visible position of both bands has its exact tile at `exact`, or no content: the band's picture is current. */
     const allExact = (view: ViewState, exact: number): boolean => {
         const span = spanAt(view, exact);
@@ -941,8 +949,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             if (!zooming) zoomScale = 0;
             else if (!(zoomScale >= demand && zoomScale <= demand * 1.2 * SQRT2)) zoomScale = ladderScale(demand);
             const exact = exactScale(demand);
-            const target = zooming ? zoomScale : exact;
-            drawnTarget = target;
+            // Compose targets the exact scale every frame, visible positions first (exact-first zoom, gpu).
+            const target = exact;
             drawnCamX = view.camera.x; drawnCamY = view.camera.y; drawnCamZ = view.camera.z;
 
             indexing = !parts.sync(prepared, budget);
@@ -980,14 +988,19 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     else cancel(position);
                 }
                 finished = kept;
-                if (device) compose(view, budget, device, target, span, zooming, demand);
+                if (device) compose(view, budget, device, target, span);
                 // A held node stays live while a tile under it is dirty, or a visible one under it has nothing yet.
                 for (const id of heldNodes.keys()) if (!heldStillMissing(id, target, span)) heldNodes.delete(id);
             } else {
                 for (const position of finished) cancel(position);
                 finished = [];
             }
-            buildDraws(view, target, zooming, budget);
+            // Drawn at the exact scale once its visible tiles are all there. While zooming and not yet, the bucket's composed tiles
+            // are drawn (they are the stand-ins), so a zoom frame never waits on the exact compose (gpu's cost rule).
+            const drawTarget = zooming && zoomScale > 0 && !exactReady(view, target) ? zoomScale : target;
+            drawnTarget = drawTarget;
+            if (zooming) auditCount(audit, drawTarget === target ? 'compose:zoom:exact' : 'compose:zoom:standin');
+            buildDraws(view, drawTarget, zooming, budget);
             settled = !indexing && allExact(view, target);
         },
         encodeOffscreen(passes: OffscreenPasses, _view: ViewState, band: PaintBand): void {

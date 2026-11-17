@@ -377,7 +377,7 @@ class SurfaceBroker {
                 if (!valid()) return { kind: 'stale' };
                 this.abandon(entry, 'creation-failed');
                 entry.failed = 'creation-failed';
-                if (capabilityUnavailable) entry.callbacks.onCapabilityFailure?.();
+                if (capabilityUnavailable && deviceHasWebGL2()) entry.callbacks.onCapabilityFailure?.();
                 return this.fallback(entry, 'creation-failed');
             }
             if (!valid() || !drawable(entry)) {
@@ -627,6 +627,23 @@ function stampOf(entry: SurfaceEntry): SurfaceStamp {
 function zeroCanvas(canvas: HTMLCanvasElement): void {
     canvas.width = 0;
     canvas.height = 0;
+}
+
+// Measured (gpu-h13): a browser with no WebGL2 returns null for every canvas, and each new GPU generation (every quality change)
+// reported that null as capability pressure, so each raise dropped the quality again. A device that cannot make any WebGL2 context
+// is a fallback, not pressure; a fresh canvas tells that apart from a pane that merely got no context. Only success is cached: a
+// null here is re-checked, so a transient refusal stays pressure.
+let webgl2Device = false;
+function deviceHasWebGL2(): boolean {
+    if (webgl2Device) return true;
+    try {
+        const probe = document.createElement('canvas');
+        const context = probe.getContext('webgl2');
+        if (!context) return false;
+        destroyContext(context);
+        webgl2Device = true;
+        return true;
+    } catch { return false; }
 }
 
 function destroyContext(context: WebGL2RenderingContext): void {

@@ -1,4 +1,6 @@
-import type { Affine, ViewState } from '../../platform/types';
+import type { Affine, Rect, ViewState } from '../../platform/types';
+import type { HostBlock } from '../model/doc';
+import { boardPageStack } from '../model/pages';
 import type { PlatformLayerDefinition } from '../../platform/render/attachPlatformPane.types';
 import { awaitCapacity, isBudgetRefusal } from './budgetRefusal';
 import type { CompositorBackend, LayerCoverage, LayerHost } from '../../platform/render/compositor.types';
@@ -74,6 +76,16 @@ export interface BoardLayersOptions {
     /** An overlay whose absence is not a view failure (a preview). Until its current frame is ready it reports complete
      * and draws nothing, and it never draws a superseded frame, so it cannot hold back the pane's other layers. */
     readonly optional?: boolean;
+    /** The world rects under which the surface beneath board content is opaque (PLAN §3.3). Absent or empty: no claim,
+     * so a multiply keeps today's isolation composite. Supplied per host by `opaqueWorldOf`. */
+    readonly opaqueWorld?: () => readonly Rect[];
+}
+/** The opaque world of a host's board content: its page rects, which a notebook's paper and a PDF's pages fill with an opaque
+ * colour (paper: notebookPaper.ts, a full-page white path; PDF: render.ts fills each tile white before it renders). The gaps
+ * between pages are opaque only while the view is not inverted, so the rects are exact for an inverted view and conservative
+ * otherwise (C1, c1-opaque.md). A whiteboard has no page rects and claims none. */
+export function opaqueWorldOf(host: HostBlock): readonly Rect[] {
+    return boardPageStack(host)?.rects ?? [];
 }
 interface Estimate {
     readonly frame: PaintSource;
@@ -195,6 +207,10 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     let useDense = false, deferredClear = false;
     // The route the last prepare took: true while the pane has a device (the GPU composer draws the direct paint).
     let onDeviceRoute = false;
+    // The composer's adapter options (PLAN §3.3). Built as a value, not a literal: the adapter's option type gains
+    // `opaqueWorld` in wave 2, and until then today's adapter ignores it.
+    const gpuOptions = () => ({ audit: options.auditSurface ?? 'board',
+        ...(typeof options.opaqueWorld === 'function' ? { opaqueWorld: options.opaqueWorld } : {}) });
     const liveSets = new WeakMap<PaintSource, { omit: ReadonlySet<string> | null | undefined; wet: ReadonlySet<string> | undefined; live: ReadonlySet<string> }>();
     const liveFor = (frame: PaintSource): ReadonlySet<string> | undefined => {
         const omit = options.omitNodes?.(frame), wet = options.liveNodeIds?.();
@@ -427,7 +443,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 needsFrame: () => current().needsFrame(), memory: () => current().memory(),
                 dispose: () => { direct!.dispose(); dense!.dispose(); },
             };
-            gpu = createGpuPaintAdapter(adapter, host, report, { audit: options.auditSurface ?? 'board' });
+            gpu = createGpuPaintAdapter(adapter, host, report, gpuOptions());
         }
         return adapter;
     };
@@ -737,7 +753,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                         const oldDense = dense!; oldDense.dispose(); retiringDense.add(oldDense);
                         dense = createDensePaintAdapter({ frames: options.frames, images: options.images,
                             invalidate: () => { collectRetired(); activeHost()?.invalidate('board-resource'); } }, allocatorHost, report, memoryGate);
-                        gpu?.dispose(); gpu = createGpuPaintAdapter(adapter!, allocatorHost, report, { audit: options.auditSurface ?? 'board' });
+                        gpu?.dispose(); gpu = createGpuPaintAdapter(adapter!, allocatorHost, report, gpuOptions());
                     }
                 },
             };

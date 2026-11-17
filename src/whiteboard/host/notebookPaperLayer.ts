@@ -84,7 +84,9 @@ class NotebookPaperLayer implements Layer {
     };
     private readonly gpu: ReturnType<typeof createGpuPaintAdapter>;
     constructor(private readonly host: LayerHost, private readonly options: NotebookPaperLayerOptions) {
-        this.gpu = createGpuPaintAdapter(this.gpuReference, host, error => this.report(error), { audit: 'notebook-paper' });
+        // The paper's own opaque world: its page rects, which the paper fills (notebookPaper.ts), exact for an inverted view.
+        const gpuOptions = { audit: 'notebook-paper', opaqueWorld: () => this.ready?.stack.rects ?? [] };
+        this.gpu = createGpuPaintAdapter(this.gpuReference, host, error => this.report(error), gpuOptions);
     }
     private report(error: unknown): void {
         if (isBudgetRefusal(error)) {

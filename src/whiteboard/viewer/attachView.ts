@@ -155,6 +155,7 @@ export const attachView: AttachView = options => {
         return opaqueWorldOf(host, view.inverted, drawnPages(pageLayers));
     };
     const layers = createBoardLayers({ frames, images, onError: report, requestedRevision: () => options.session.doc.rev, requestedTheme: () => view.theme, omitNodes: omitPreview,
+        changedNodesSince: (from, to) => runtime.scene?.changedNodesSince(from, to) ?? null,
         opaqueWorld,
         liveNodeIds, candidates: () => lastCandidates,
         onDensityMode(mode) { if (densityMode !== mode && !disposed) { densityMode = mode; requestPaint(); } },

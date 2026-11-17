@@ -368,6 +368,11 @@ export function createBoardRenderServices(options: {
             result = { key, vector, bounds: { ink: bounds.ink, hit: bounds.hit } };
         }
         check(signal);
+        // The build awaited: another stream may have stored the same realization meanwhile. One realization per node, precision
+        // and signature is kept, so every stream that asks gets the same geometry key (a second key would make an unchanged node
+        // look changed to the composer's index, which reports the parts whose key moved).
+        const twin = variantFor(node.id, before, value => value.inkPrecision === precision?.key);
+        if (twin) { cached.delete(twin.key); cached.set(twin.key, twin); auditCount(AUDIT, 'geometry:twin'); return twin; }
         const prepared: Prepared = { ...result, signature: before,
             ...(precision ? { inkPrecision: precision.key, inkLod: precision.lod } : {}) };
         // Retained source items own their geometry by reference after eviction.

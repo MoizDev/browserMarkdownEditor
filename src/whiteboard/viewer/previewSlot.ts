@@ -56,7 +56,14 @@ export function createPreviewSlot(id: string, base: PlatformLayerDefinition): Pr
             }
             return this.inner;
         }
-        prepare(...args: Parameters<Layer['prepare']>) { this.sync()?.prepare(...args); }
+        // A swapped-in or absent preview changed what is drawn, whatever its instance answers: the answer says nothing about a
+        // picture that was presented from the replaced layer, so a slot that swapped (or has nothing) reports changed.
+        prepare(...args: Parameters<Layer['prepare']>): boolean | void {
+            const swapped = this.innerEpoch !== epoch;
+            const inner = this.sync();
+            const answer = inner?.prepare(...args);
+            return swapped || !inner ? undefined : answer;
+        }
         drawGpu(...args: Parameters<Layer['drawGpu']>) { this.sync()?.drawGpu(...args); }
         // Without this the compositor skips the preview's offscreen tiles entirely: nothing it composes is ever drawn.
         encodeOffscreen(...args: Parameters<NonNullable<Layer['encodeOffscreen']>>) { this.sync()?.encodeOffscreen?.(...args); }

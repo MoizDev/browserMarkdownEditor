@@ -542,7 +542,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             return list.length > 0 && list[0].key.scale >= demand / 2;
         };
         // Advances one position. False when this frame's compose is spent (limit, budget, a wait); true when the pass goes on.
-        const drive = (position: Position, key: number, pass: 'dirty' | 'missing' | 'ring'): boolean => {
+        const drive = (position: Position, key: number, pass: 'held' | 'dirty' | 'missing' | 'ring'): boolean => {
             if (position.parked) return true;
             // Why a frame composes nothing is the zoom question: each exit is counted (pass and cause).
             if (composed >= limit) { auditCount(audit, `compose:limit:${pass}`); return false; }
@@ -582,6 +582,29 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             auditCount(audit, `compose:wait:${pass}`);
             return false;
         };
+        // The positions under a held node come first: it stays live until they are composed, so they shorten every hold, and
+        // a held node's content is composed before any other tile in the frame's budget (gpu).
+        for (const id of heldNodes.keys()) {
+            for (const rect of parts.boundsOfNodes(new Set([id]))) {
+                const x0 = Math.max(span.x0, Math.floor(rect.x * target / EDGE)), x1 = Math.min(span.x1, Math.ceil((rect.x + rect.width) * target / EDGE));
+                const y0 = Math.max(span.y0, Math.floor(rect.y * target / EDGE)), y1 = Math.min(span.y1, Math.ceil((rect.y + rect.height) * target / EDGE));
+                for (const band of BANDS) {
+                    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+                        const key = positionKey(band, target, x, y);
+                        let position = building.get(key);
+                        if (!position) {
+                            const status = statusAt(band, target, x, y);
+                            if (status !== 'dirty' && !(status === 'missing' && !finishedAt(band, target, x, y))) continue;
+                            const started = begin(band, target, x, y, view);
+                            if (!started) continue;
+                            position = started;
+                            building.set(key, position);
+                        }
+                        if (!drive(position, key, 'held')) return;
+                    }
+                }
+            }
+        }
         for (const pass of ['dirty', 'missing', 'ring'] as const) {
             const margin = pass === 'ring' ? 1 : 0;
             for (const band of BANDS) {

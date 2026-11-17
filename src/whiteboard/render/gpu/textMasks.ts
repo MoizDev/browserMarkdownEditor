@@ -99,10 +99,26 @@ export function sliceCell(geometry: MaskGeometry, sliceIndex: number, into: Mask
     return into;
 }
 
+/** One rastered cell as an ImageBitmap, which the GPU copies without a readback. `cell` is where the bitmap sits in its mask (mask px);
+ * the bitmap is exactly `cell.w × cell.h`. Alpha is the coverage (mono) or the premultiplied colour alpha (colour). The caller closes it. */
+export interface MaskBitmap {
+    readonly bitmap: ImageBitmap;
+    readonly cell: MaskCell;
+}
+
+/** Whether a run may draw colour glyphs, judged from its text alone: a colour font is chosen only for emoji code points and
+ * their joiners, selectors, keycaps, flags and tags. A run this says yes to is rastered in its ink colour, which is always
+ * correct for a mono run too, only larger. Read from the text, because a pixel check would be a readback. */
+const COLOUR_CANDIDATE = /[\p{Extended_Pictographic}\p{Regional_Indicator}‍️⃣\u{e0020}-\u{e007f}]/u;
+export function needsColourMask(text: string): boolean { return COLOUR_CANDIDATE.test(text); }
+
 export interface MaskRaster {
     measure(req: MaskRequest): MaskMeasure;
-    /** One cell of a measured mask. Called only after `measure` answered 'ok' and the caller's budget allows a raster. */
+    /** One cell of a measured mask, read back to the CPU as pixels. Kept until the GPU route no longer needs it. */
     rasterise(req: MaskRequest, geometry: MaskGeometry, sliceIndex: number, colour: Rgba | null): GlyphMask;
+    /** One cell of a measured mask as an ImageBitmap: no readback. `colour` null is a mono run (R8 once the GPU converts it), and
+     * is refused for a run that `needsColourMask`; pass the ink colour for those, so the bitmap is RGBA. */
+    rasteriseBitmap(req: MaskRequest, geometry: MaskGeometry, sliceIndex: number, colour: Rgba | null): MaskBitmap;
     /** Frees the offscreen canvas and the memo: the bytes return to the pool, and the next raster creates the canvas again. */
     release(): void;
 }
@@ -270,6 +286,20 @@ export function createMaskRaster(account?: CpuAccount): MaskRaster {
         return { status: 'ok', geometry: { left: horizontal.near, top: vertical.near, w, h, fracX, fracY,
             originX: fracX - horizontal.near, originY: fracY - vertical.near, columns, rows, slices: columns * rows } };
     };
+    /** Draws one cell with the same chain paint2d draws with: the item's device map, translate to the origin, scale size/64, then
+     * fillText at 0,0. The canvas is sized to the cell first: setting a size clears it and resets its state, so no clear is needed
+     * and a bitmap taken from it is exactly the cell. The cell's origin is the mask's origin less the cell's offset, so glyphs
+     * outside the cell fall off the canvas. Mono runs are opaque white, so the pixels carry coverage; colour runs use their ink. */
+    const drawCell = (req: MaskRequest, geometry: MaskGeometry, cell: MaskCell, colour: Rgba | null): OffscreenCanvasRenderingContext2D => {
+        // A fallback face's css is its fallback family: rastering it would store the wrong glyphs under the loaded face's key.
+        if (!req.loaded) throw new Error('A text mask is rastered only from a loaded face');
+        const rasterCtx = context();
+        rasterCtx.canvas.width = cell.w; rasterCtx.canvas.height = cell.h;
+        rasterCtx.setTransform(req.a, req.b, req.c, req.d, geometry.originX - cell.x, geometry.originY - cell.y);
+        setup(rasterCtx, req, colour ? colourCss(colour) : '#ffffff');
+        rasterCtx.fillText(req.text, 0, 0);
+        return rasterCtx;
+    };
     return {
         measure(req: MaskRequest): MaskMeasure {
             // A fallback face is not a measurement of this run: it is deferred, and nothing about it is kept.
@@ -292,18 +322,9 @@ export function createMaskRaster(account?: CpuAccount): MaskRaster {
             return result;
         },
         rasterise(req: MaskRequest, geometry: MaskGeometry, sliceIndex: number, colour: Rgba | null): GlyphMask {
-            if (!req.loaded) throw new Error('A text mask is rastered only from a loaded face');
-            const rasterCtx = context();
             const cell = sliceCell(geometry, sliceIndex, scratchCell);
             const { w, h } = cell;
-            rasterCtx.setTransform(1, 0, 0, 1, 0, 0);
-            rasterCtx.clearRect(0, 0, w, h);
-            // The same chain paint2d draws with: the item's device map, translate to the origin, scale size/64, then fillText at 0,0.
-            // The cell's origin is the mask's origin less the cell's offset, so glyphs outside the cell fall off the canvas.
-            rasterCtx.setTransform(req.a, req.b, req.c, req.d, geometry.originX - cell.x, geometry.originY - cell.y);
-            // Opaque white for coverage, so the probe reads alpha; a colour run is drawn in its own colour, colour glyphs included.
-            setup(rasterCtx, req, colour ? colourCss(colour) : '#ffffff');
-            rasterCtx.fillText(req.text, 0, 0);
+            const rasterCtx = drawCell(req, geometry, cell, colour);
             const data = rasterCtx.getImageData(0, 0, w, h).data;
             const count = w * h;
             if (colour) {
@@ -328,6 +349,16 @@ export function createMaskRaster(account?: CpuAccount): MaskRaster {
                 if (alpha >= 32 && (255 - data[i * 4] > 16 || 255 - data[i * 4 + 1] > 16 || 255 - data[i * 4 + 2] > 16)) colourGlyphs = true;
             }
             return { w, h, rgba: false, colourGlyphs, pixels };
+        },
+        rasteriseBitmap(req: MaskRequest, geometry: MaskGeometry, sliceIndex: number, colour: Rgba | null): MaskBitmap {
+            // A mono bitmap of a run that may draw colour glyphs would hold their colour as coverage: refuse it, so the
+            // route passes the ink colour for those runs instead of getting a wrong R8 mask.
+            if (colour === null && needsColourMask(req.text)) throw new Error('A run that may draw colour glyphs is rastered with its ink colour');
+            const cell: MaskCell = { x: 0, y: 0, w: 0, h: 0 };
+            sliceCell(geometry, sliceIndex, cell);
+            drawCell(req, geometry, cell, colour);
+            // Hands the canvas's buffer to the bitmap: no copy and no readback. The canvas allocates a new buffer on its next draw.
+            return { bitmap: context().canvas.transferToImageBitmap(), cell };
         },
         release(): void {
             // Setting the size to zero is what frees a canvas's backing store; dropping the reference alone waits for GC.

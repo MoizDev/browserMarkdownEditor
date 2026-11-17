@@ -148,6 +148,11 @@ function worldBox(bounds: Bounds, m: readonly [number, number, number, number, n
     return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
 }
 /** The part of the world the viewport shows. */
+/** Device pixels per world unit of the item's own transform, at this view. */
+function scaleAt(view: ViewState, item: WetInkSnapshot): number {
+    const m = item.presentation.localToWorld;
+    return view.camera.z * view.viewport.dpr * Math.hypot(m[0], m[1], m[2], m[3]);
+}
 function viewWorld(view: ViewState): Bounds {
     return { x: view.camera.x, y: view.camera.y, w: view.viewport.width / view.camera.z, h: view.viewport.height / view.camera.z };
 }
@@ -493,10 +498,11 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                 if (item.dry && !options.exists(item.dry)) handover?.clear(item.identity);
             }
             const snapshots = handover?.pendingSnapshots() ?? [];
-            const ids = new Set(snapshots.map(item => item.identity.gestureSequence));
-            for (const [id, item] of prepared) if (!ids.has(id)) { dropPrepared(item); prepared.delete(id); publicationVersion++; }
-            for (const gesture of [...stables.keys()]) if (!ids.has(gesture)) dropStable(gesture);
-            const scaleFor = (item: WetInkSnapshot) => { const m = item.presentation.localToWorld; return view.camera.z * view.viewport.dpr * Math.hypot(m[0], m[1], m[2], m[3]); };
+            // The pending list is short, so membership is a scan: a Set built here was a fresh allocation every frame.
+            const pendingGesture = (gesture: number) => snapshots.some(item => item.identity.gestureSequence === gesture);
+            for (const [id, item] of prepared) if (!pendingGesture(id)) { dropPrepared(item); prepared.delete(id); publicationVersion++; }
+            for (const gesture of stables.keys()) if (!pendingGesture(gesture)) dropStable(gesture);
+            const scaleFor = (item: WetInkSnapshot) => scaleAt(view, item);
             if (work && (!snapshots.some(item => item.identity.gestureSequence === work!.snapshot.identity.gestureSequence
                 && item.identity.nodeId === work!.snapshot.identity.nodeId) || work.scale < scaleFor(work.snapshot))) dropWork();
             while (!budget.shouldYield()) {

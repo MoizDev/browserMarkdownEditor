@@ -80,6 +80,18 @@ interface Index {
     readonly grid: Grid;
 }
 /** One index being built: the cursor through the windows, the entries it has kept or derived, and what it will report. */
+/** An item's bounds derivation in progress: its contributions are measured one budgeted unit at a time. */
+interface Derivation {
+    readonly band: PaintBand;
+    readonly item: PaintItem;
+    readonly blend: Blend;
+    readonly seq: number;
+    readonly contributions: readonly PaintItem[];
+    index: number;
+    job: PaintBoundsJob | null;
+    readonly parts: IndexedPart[];
+    bounds: Rect | null;
+}
 interface Build {
     readonly original: PaintSource;
     readonly revision: number;
@@ -92,6 +104,8 @@ interface Build {
     readonly target: Index;
     /** A rebuild from nothing: theme or raster variant moved, or there is no index. */
     readonly full: boolean;
+    /** The item whose bounds are being derived, one budgeted unit per step (see advanceDerive); null between items. */
+    deriving: Derivation | null;
     /** Whether an index was published before this build started: only then has anything been drawn from one. */
     readonly prior: boolean;
     /** The span has no usable region history: an item is reused only by identity, and every other item is re-derived. */
@@ -272,19 +286,30 @@ export const createTileParts: CreateTileParts = (_host, audit) => {
     };
 
     /** Derives an item's parts: the contributions of its paint, with their world bounds. Build-time only. */
-    const derive = (band: PaintBand, item: PaintItem, blend: Blend): Entry => {
-        const parts: IndexedPart[] = [];
-        let bounds: Rect | null = null;
-        for (const contribution of paintContributions(item)) {
-            const job = new PaintBoundsJob(contribution);
-            while (!job.step(256));
-            const world = job.result;
-            if (!world) continue;
-            parts.push({ band, order: 0, nodeId: item.nodeId, item: contribution, world, blend, mark: 0 });
-            bounds = unionOf(bounds, world);
+    /** Begins an item's bounds derivation. Its contributions are measured by advanceDerive, one budgeted unit per step, so a
+     * path with very many segments or a text item with very many glyph runs never spends a frame's budget in one call. */
+    const startDerive = (build: Build, band: PaintBand, item: PaintItem, blend: Blend, seq: number): void => {
+        build.deriving = { band, item, blend, seq, contributions: paintContributions(item), index: 0, job: null, parts: [], bounds: null };
+    };
+    /** Measures one unit of the item in progress; when its last contribution is measured, the entry joins the build. */
+    const advanceDerive = (build: Build): void => {
+        const d = build.deriving!;
+        if (d.index >= d.contributions.length) {
+            const item = d.item;
+            const entry: Entry = { item, band: d.band, nodeId: item.nodeId, key: item.key, blend: d.blend,
+                epoch: item.kind === 'text' ? item.paint.fontEpoch : -1, parts: d.parts, bounds: d.bounds, seq: d.seq, placed: -1, stamp: 0 };
+            build.deriving = null;
+            build.next.push(entry);
+            build.added.push(entry);
+            return;
         }
-        return { item, band, nodeId: item.nodeId, key: item.key, blend, epoch: item.kind === 'text' ? item.paint.fontEpoch : -1,
-            parts, bounds, seq: 0, placed: -1, stamp: 0 };
+        d.job ??= new PaintBoundsJob(d.contributions[d.index]);
+        if (!d.job.step(256)) return;
+        const world = d.job.result;
+        d.job = null; d.index++;
+        if (!world) return;
+        d.parts.push({ band: d.band, order: 0, nodeId: d.item.nodeId, item: d.contributions[d.index - 1], world, blend: d.blend, mark: 0 });
+        d.bounds = unionOf(d.bounds, world);
     };
 
     /** Handles one item of the build's walk: reuses its old entry when nothing a region or a font epoch changed reaches it,
@@ -312,10 +337,7 @@ export const createTileParts: CreateTileParts = (_host, audit) => {
             else build.rederived++;
             build.replaced++;
         }
-        const entry = derive(band, item, blend);
-        entry.seq = seq;
-        build.next.push(entry);
-        build.added.push(entry);
+        startDerive(build, band, item, blend, seq);
     };
 
     const startBuild = (prepared: PreparedPaint2d): Build => {
@@ -341,12 +363,13 @@ export const createTileParts: CreateTileParts = (_host, audit) => {
         spare = [];
         if (unknown) auditCount(audit, 'index:unknown-span');
         return { original: originalOf(prepared.sourceFrame), revision, theme: root.theme, variant: root.rasterVariant, windows: prepared.windows,
-            old: full ? null : index, target, full, prior: index !== null, unknown, regions, regionBox, pass: ++passes, next, added: [],
+            old: full ? null : index, target, full, deriving: null, prior: index !== null, unknown, regions, regionBox, pass: ++passes, next, added: [],
             window: 0, item: 0, seq: 0, replaced: 0, epochs: 0, rederived: 0 };
     };
 
     /** One item of the walk; true once every window has been visited. */
     const step = (build: Build): boolean => {
+        if (build.deriving) { advanceDerive(build); return false; }
         const windows = build.windows;
         while (build.window < windows.length && build.item >= windows[build.window].items.length) { build.window++; build.item = 0; }
         if (build.window >= windows.length) return true;

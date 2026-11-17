@@ -943,11 +943,15 @@ export class PdfTileLayer implements Layer {
         if (!lost) texture.device.destroy(texture.handle);
     }
 
-    /** A tile loses its texture but stays in the layer: with no bitmap left it has nothing to draw, so it stops being settled
-     * (re-rastered if the plan still wants it, dropped at the next prepare if not). */
+    /** A tile loses its texture. A settled tile with no bitmap is GPU-only: its pixels went with its texture, so it leaves the
+     * layer, and the next prepare rasters it again if the plan still wants it. Kept in the map it was 'in flight' for good:
+     * prepare counts it as running (three of them stopped every new raster) and never re-requests it (measured: evicted
+     * off-view tiles stayed blank on pan). A tile with a bitmap stays settled and is re-uploaded. An unsettled tile has its
+     * producer running, and its own callback retires it. */
     private releaseTile(entry: Entry, lost = false): void {
         this.dropTexture(entry, lost);
-        if (!entry.bitmap) entry.settled = false;
+        if (entry.bitmap || !entry.settled) return;
+        this.remove(entry.request.text, entry);
     }
 
     private dropAllTiles(lost: boolean): void {

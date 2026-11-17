@@ -48,6 +48,14 @@ interface Entry {
 
 const NO_BOXES: readonly Readonly<Rect>[] = [];
 
+/** The part of `box` inside `viewport`, or null when none of it is visible. */
+function clipped(box: Readonly<Rect>, viewport: Readonly<Rect>): Rect | null {
+    const x = Math.max(box.x, viewport.x), y = Math.max(box.y, viewport.y);
+    const right = Math.min(box.x + box.width, viewport.x + viewport.width);
+    const bottom = Math.min(box.y + box.height, viewport.y + viewport.height);
+    return right > x && bottom > y ? { x, y, width: right - x, height: bottom - y } : null;
+}
+
 /** Pixels this backend can draw: the device's texture, or the CPU bitmap (which a GPU backend can still upload). */
 /** A zoom gesture's scale changes every few frames; this long without a change, it has settled enough to raster. */
 const ZOOM_SETTLE_MS = 150;
@@ -179,6 +187,15 @@ export class PdfTileLayer implements Layer {
         this.lastMotionScale = planned.motionScale;
         this.desired = new Set(planned.requests.map(request => tileKeyString(request.key)));
         const exactScale = planned.requests.find(request => request.level === 'exact')?.scale.scale;
+        // Built at most once per prepare, and only when an other-scale stand-in asks: removals below touch only entries
+        // outside the plan, so the plan's drawable tiles do not change during the loop.
+        let planBoxes: Map<number, Readonly<Rect>[]> | null = null;
+        const replaceable = (entry: Entry): boolean => {
+            const area = clipped(rect(entry.request), input.viewport);
+            if (!area) return true;
+            planBoxes ??= this.drawablePlanBoxes(device);
+            return covers(area, planBoxes.get(entry.request.page) ?? []);
+        };
         for (const [key, entry] of this.entries) {
             // A running off-window render is cancelled; settled older scales
             // remain available as stand-ins until the allocator needs space.
@@ -190,15 +207,19 @@ export class PdfTileLayer implements Layer {
                 auditCount('pdf-page', 'fallback:raster-unused');
                 this.remove(key, entry);
             }
-            // Once settled, another scale's off-plan texture is no stand-in for anything: the plan covers the view at
-            // its own scale. Same-scale tiles stay as the scroll cache. Measured: one zoom left 34 MB of old-scale
+            // Another scale's off-plan texture stays as a stand-in until the plan's own tiles cover its visible part.
+            // Dropping it at once showed a blank page while the replacement rastered (by reading: a non-moving zoom
+            // evicted every old-scale tile in the frame the new scale was planned). Off-view ones go at once, as
+            // before. Same-scale tiles stay as the scroll cache. Measured: one zoom left 34 MB of old-scale
             // textures, and the next window resize pushed the pool over its target and degraded the pane to 0.64.
             // Motion tiles stay: the next scroll draws them again. Scales compare with a tolerance, since the same zoom
             // recomputes its scale with float noise (1.4379084967320261 vs ...255).
             else if (!input.moving && entry.settled && !this.desired.has(key) && exactScale !== undefined &&
                 entry.request.level === 'exact' && Math.abs(entry.request.scale.scale / exactScale - 1) > 1e-6) {
-                auditCount('pdf-page', 'evict-other-scale');
-                this.remove(key, entry);
+                if (replaceable(entry)) {
+                    auditCount('pdf-page', 'evict-other-scale');
+                    this.remove(key, entry);
+                } else auditCount('pdf-page', 'stand-in-held');
             }
         }
         let running = [...this.entries.values()].filter(entry => !entry.settled).length;
@@ -730,6 +751,18 @@ export class PdfTileLayer implements Layer {
         additional: readonly Readonly<Rect>[] = []): boolean {
         const own = this.coverBoxes(device).get(page) ?? NO_BOXES;
         return covers(area, additional.length ? [...additional, ...own] : own);
+    }
+
+    /** The drawable tiles of the current plan, by page: what a stand-in must wait for before it may go. */
+    private drawablePlanBoxes(device: GfxDevice | null): Map<number, Readonly<Rect>[]> {
+        const boxes = new Map<number, Readonly<Rect>[]>();
+        for (const [key, entry] of this.entries) {
+            if (!this.desired.has(key) || !drawableOn(entry, device) || (device && entry.texture?.device !== device)) continue;
+            const list = boxes.get(entry.request.page) ?? [];
+            list.push(rect(entry.request));
+            boxes.set(entry.request.page, list);
+        }
+        return boxes;
     }
 
     private coverBoxes(device: GfxDevice | null): ReadonlyMap<number, readonly Readonly<Rect>[]> {

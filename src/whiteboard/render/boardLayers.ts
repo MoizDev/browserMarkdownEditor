@@ -67,6 +67,8 @@ export interface BoardLayersOptions {
     /** The world rects under which the surface beneath board content is opaque (PLAN §3.3). Absent or empty: no claim,
      * so a multiply keeps today's isolation composite. Supplied per host by `opaqueWorldOf`. */
     readonly opaqueWorld?: () => readonly Rect[];
+    /** An overlay (a drag's preview): its few plain parts are drawn live with no tiles, so no tile grant can stall it. */
+    readonly liveOverlay?: boolean;
 }
 /** The whole plane, in world units: board coordinates are bounded by the 1e12 world limit (services.ts inverse). */
 const WHOLE_PLANE: readonly Rect[] = Object.freeze([Object.freeze({ x: -1e12, y: -1e12, width: 2e12, height: 2e12 })]);
@@ -263,12 +265,17 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     let onDeviceRoute = false;
     // The composer's adapter options (PLAN §3.3). Built as a value, not a literal: the adapter's option type gains
     // `opaqueWorld` in wave 2, and until then today's adapter ignores it.
-    const gpuOptions = () => ({ audit: options.auditSurface ?? 'board',
+    const gpuOptions = () => ({ audit: options.auditSurface ?? 'board', ...(options.liveOverlay ? { liveOverlay: true } : {}),
         ...(typeof options.opaqueWorld === 'function' ? { opaqueWorld: options.opaqueWorld } : {}) });
     // The drag's omitted set is applied where the tiles are built: prepare takes it, and each prepare reads the current
     // omitNodes(frame). The draw never took it (the composer's draw has no omission), so it is not passed there.
-    const prepareGpu = (view: ViewState, budget: FrameBudget, frame: PaintSource): void =>
-        gpu?.prepare(view, withFirstUnit(budget), options.omitNodes?.(frame) ?? undefined);
+    // A live-only overlay admits its parts at the view they are drawn at (its live runs are baked at prepare, and only tiles take
+    // the draw-time shift), so its offset is applied here as well as at draw; the draw keeps the same shift, so both agree.
+    const prepareGpu = (view: ViewState, budget: FrameBudget, frame: PaintSource): void => {
+        const shift = options.liveOverlay ? options.drawOffset?.(frame) : null;
+        const at = shift && (shift.x !== 0 || shift.y !== 0) ? shiftedView(view, shift) : view;
+        gpu?.prepare(at, withFirstUnit(budget), options.omitNodes?.(frame) ?? undefined);
+    };
     const liveSets = new WeakMap<PaintSource, { omit: ReadonlySet<string> | null | undefined; wet: ReadonlySet<string> | undefined; live: ReadonlySet<string> }>();
     const liveFor = (frame: PaintSource): ReadonlySet<string> | undefined => {
         const omit = options.omitNodes?.(frame), wet = options.liveNodeIds?.();
@@ -906,12 +913,15 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         // Critical (its missing positions refuse the frame) only while the board has nothing drawable at all: no presented
         // frame and no prepared tile to stand in. Anything drawable makes it non-critical, so a large board whose coverage is
         // never complete still presents its stand-ins (measured: 129 refusals, 0 presents, all from incomplete coverage).
-        critical() { return presented === null && !adapter?.readyFrame() && !gpu?.readyFrame(); },
+        // A layer waiting on a refused GPU admission defers instead: holding every frame for memory the governor has not freed
+        // froze the pane (a board whose ink tile could not be admitted refused every frame, and nothing requested another).
+        critical() { return presented === null && !adapter?.readyFrame() && !gpu?.readyFrame() && !gpu?.memoryBlocked(); },
         coverage(layer, frame, backend) {
             const actual = coverageOf(layer, frame, backend);
-            // What this band draws besides the current picture, for the present audit: a previous frame or a scaled tile is a
-            // stand-in; nothing drawable at all is a hole. One unit per band per frame (the band's tiles are not counted apart).
-            if (!actual.complete || !actual.sharp) auditDrawn(!actual.complete && presented === null ? 'hole' : 'stand-in');
+            // What the board draws besides the current picture, for the present audit: a previous frame or a scaled tile is a
+            // stand-in; nothing drawable at all is a hole. Both bands read the same composer and adapter, so their coverage is one
+            // state: it is reported once per frame, from the underlay band, not once per band.
+            if (band === 'underlay' && (!actual.complete || !actual.sharp)) auditDrawn(!actual.complete && presented === null ? 'hole' : 'stand-in');
             return options.optional && !actual.complete ? { complete: true, sharp: true } : actual;
         },
     });

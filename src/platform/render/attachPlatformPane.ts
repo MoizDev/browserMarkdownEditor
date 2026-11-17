@@ -110,10 +110,15 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     const releasing = new Set<Layer>();
     /** Frees this pane's GPU residency, up to `bytes`, from its layers in order (or only `only`). The bytes are decided and
      * returned now, so the governor can count them; the release waits for a microtask, outside any reservation, and only
-     * then invalidates the pane. A pane in this frame, or with nothing resident, frees 0 and is not invalidated. */
+     * then invalidates the pane. A pane with nothing resident frees 0 and is not invalidated. */
     const trimGpu = (bytes: number, only?: Layer): number => {
-        if (disposed || !visible || touchedThisFrame()) return 0;
+        if (disposed || !visible) return 0;
         const frameId = runtime.scheduler.currentFrame();
+        // A pane this frame has already prepared still gives its partial relief: each layer's evictGpu keeps what this frame
+        // uses (frame-keyed for the board, drawn-tile-keyed for the PDF). Only a whole-layer release waits for a frame that is
+        // not in progress, since that is what drops what the frame is composing. Gated whole, the pane refused a notebook's
+        // board ink tile in every frame it painted its paper, and the paper's off-view tiles were never offered (measured: ~2 in 10 runs).
+        const touched = touchedThisFrame();
         const victims: Layer[] = [];
         let freed = 0;
         for (const layer of only ? [only] : layerSet.layers) {
@@ -134,7 +139,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             // A layer that frees part of itself has already given every position it does not need on screen. What it keeps
             // is its visible set, which is pinned: releasing it whole here dropped a board's on-screen tiles under a trim.
             // Such a layer is refused instead, and the refused position is composed at a lower level (h1's 'lower').
-            if (layer.evictGpu) continue;
+            if (layer.evictGpu || touched) continue;
             const remaining = layer.memory().gpuBytes;
             if (remaining <= 0) continue;
             victims.push(layer);

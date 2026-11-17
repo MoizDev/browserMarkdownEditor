@@ -148,6 +148,8 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
                 if (!scene) { deferred = null; break; }
                 if (scene.ready && scene.revision === runtime.session.doc.rev) {
                     const args = deferred; deferred = null;
+                    // A commit awaiting presentation owns the overlay; a request deferred before it is superseded by it.
+                    if (commitRevision !== null) break;
                     resuming = true;
                     try { start(...args); } catch (error) { clear(); report(error); } finally { resuming = false; }
                     break;
@@ -177,14 +179,25 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
     // Only the in-flight job's own frame releases the gate. The layer acknowledges every drawn frame, and a frame of an
     // older request released it at once: each new start then replaced the staging before the frame was built (measured:
     // no overlay frame ever built while the pointer moved; the screencast showed the old spot until release).
+    // The layers' ready frame is a wrapper (ink set attached) that the assembler never tagged, so lookups go through the
+    // assembler's own frame, matched to the wrapper by revision, theme and token.
+    const assemblerFrameOf = (shown: PaintSource | null): PaintSource | null => {
+        const own = frames?.readFrame() ?? null;
+        return shown && own && own.sceneRevision === shown.sceneRevision && own.theme === shown.theme && own.token === shown.token ? own : null;
+    };
     const presentedOverlay = () => {
         if (disposed || !inFlight || !pair) return;
-        const ready = pair.readyFrame();
+        const ready = assemblerFrameOf(pair.readyFrame());
         if (!ready || frameGenerations.get(ready) !== inFlightSeq) return;
         inFlight = false;
         const next = queued; queued = null;
-        if (!next) return;
-        try { start(...next); } catch (error) { clear(); report(error); }
+        // A commit awaiting presentation owns the overlay: a held request made before it is superseded by it.
+        if (!next || commitRevision !== null) return;
+        // The drained request supersedes nothing: the overlay in flight was already presented. Its start must not
+        // reject the waiters of the request that queued it (a shape commit waits on exactly that overlay); measured:
+        // the commit was rejected as "Board preview was superseded" and the tool fell back to Select, with no shape.
+        resuming = true;
+        try { start(...next); } catch (error) { clear(); report(error); } finally { resuming = false; }
     };
     const start = (changes: Map<NodeId, Node>, textOverlay?: Readonly<{ node: NodeId; paint: TextPaint; faces: FaceTable; localToWorld: Affine }>,
         paper?: Readonly<import('../../utils/paper').NotebookPaper>, meta: TranslationMeta | null = null) => {
@@ -360,11 +373,14 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
                         // a request made after a draw is one frame late (measured: the ink trailed the pointer by three frames).
                         onPrepared: () => queueMicrotask(presentedOverlay),
                         drawOffset, drawVersion: () => offsetVersion,
-                        onOffsetUnsupported: () => queueMicrotask(rebuildTranslation) });
+                        onOffsetUnsupported: () => queueMicrotask(rebuildTranslation),
+                        // The overlay's few nodes are drawn live at the view: a refused tile store cannot stall the drag's preview.
+                        liveOverlay: true });
                     frames = assembler; pair = layers;
                     engine.setPreviewLayers({ underlay: { ...layers[0], id: 'board-preview-underlay' },
                         content: { ...layers[1], id: 'board-preview-content' } }, () => {
-                        const frame = layers.readyFrame();
+                        // Keyed on the layers' wrapper the lookup missed on every drag of an ink node (measured: 84 of 84 calls).
+                        const frame = assemblerFrameOf(layers.readyFrame());
                         const ids = frame && frameIds.get(frame);
                         if (frame && ids && assembler.isCurrent(frame)) {
                             if (frameGenerations.get(frame) === generation) settle();

@@ -46,8 +46,9 @@ export interface MemoryCacheRegistration extends CacheActivity {
     readonly paneId?: string;
     readonly owner?: MemorySessionOwner;
     readonly memory: () => ArenaMemory;
-    /** Eviction request for up to `bytes`; returns the bytes it frees, or 0 when it frees nothing (a touched entry).
-     * An owner that returns nothing is counted as having freed its ask, up to its cache's size: see evictCache. */
+    /** Eviction request for up to `bytes`; returns the bytes it frees, or 0 when it frees nothing (a touched entry). An owner
+     * whose release is asynchronous returns the bytes it has released (retiring), since its charge falls only later. An owner
+     * that returns nothing is counted by the bytes its cache's reservation drops synchronously, and nothing more: see evictCache. */
     readonly evict: (bytes: number) => number | void;
 }
 
@@ -214,6 +215,9 @@ function samePaneDemand(a: PaneMemoryDemand, b: PaneMemoryDemand | undefined): b
 
 /** Residency a pane grant may reclaim before it refuses a reservation: never critical, hidden, surface or context. */
 const RECLAIMABLE: readonly MemoryClass[] = ['redundant-level', 'prefetch', 'scene-cache'];
+/** How long after a slow GPU window the layers keep bounding their per-frame work. Windows come once per POLICY.slowGpuSampleCount
+ * timed frames, so a sustained slow GPU keeps the bound on only while the windows keep arriving; one window is held for a second. */
+const SLOW_GPU_HOLD_MS = 1000;
 
 /** No navigator/DOM/timers: the app passes the coarsened hint once and advances the clock explicitly. */
 export class MemoryGovernor {
@@ -251,6 +255,8 @@ export class MemoryGovernor {
     private qualityLimit = 1;
     private belowRecoverySince: number | null = null;
     private degradedAt = Number.NEGATIVE_INFINITY;
+    /** The governor clock at the last slow GPU window: timing evidence for the layers, never a trim or a quality step. */
+    private slowGpuAt = Number.NEGATIVE_INFINITY;
     // The level that last failed under trouble, the earliest time it may be retried, and the current back-off.
     private failedQuality: number | null = null;
     private failedUntil = Number.NEGATIVE_INFINITY;
@@ -526,7 +532,16 @@ export class MemoryGovernor {
             throw new MemoryAdmissionError('invalid-input');
         }
         count(samples);
-        if (samples >= POLICY.slowGpuSampleCount && p95Ms > frameIntervalMs) this.signalTrouble('slow-gpu');
+        if (samples >= POLICY.slowGpuSampleCount && p95Ms > frameIntervalMs) this.signalSlowGpu();
+    }
+
+    /** A slow GPU window is a time problem, not memory: it never trims a cache and never steps quality. It is recorded so the
+     * layers bound their own work per frame (`trouble()` reports 'slow-gpu' for a hold after it). A quality step answers memory
+     * pressure only, through the pool paths. Measured: a trim on the window evicted a notebook's visible-set tiles mid-zoom, and
+     * the rebuild was more GPU work in that same zoom. */
+    private signalSlowGpu(): void {
+        auditCount('governor', 'slow-gpu', 1);
+        this.slowGpuAt = this.now;
     }
 
     observeFence(oldestPendingMs: number, mainThreadInputHealthy: boolean): void {
@@ -574,12 +589,14 @@ export class MemoryGovernor {
     }
 
     /** Render audit only: every cache's charge with its pane, and each pane's grant. */
-    auditCaches(): { caches: { id: string; pane: string | null; pool: MemoryPool; kind: MemoryKind; bytes: number; hidden: boolean }[];
+    auditCaches(): { caches: { id: string; pane: string | null; pool: MemoryPool; kind: MemoryKind; bytes: number; hidden: boolean;
+        waiters: number; refused: number | null }[];
         grants: { pane: string; cpuBytes: number; gpuCacheBytes: number }[] } {
         return {
             caches: [...this.caches.values()].filter(cache => cache.bytes > 0).map(cache => ({ id: cache.registration.id,
                 pane: cache.registration.paneId ?? null, pool: cache.registration.pool, kind: cache.registration.kind,
-                bytes: cache.bytes, hidden: cache.activity.hiddenAt !== null })),
+                bytes: cache.bytes, hidden: cache.activity.hiddenAt !== null,
+                waiters: this.capacityWaiters.get(cache)?.size ?? 0, refused: cache.refusal?.bytes ?? null })),
             grants: [...this.grants].map(([pane, grant]) => ({ pane, cpuBytes: grant.cpuBytes, gpuCacheBytes: grant.gpuCacheBytes })),
         };
     }
@@ -729,7 +746,7 @@ export class MemoryGovernor {
                         stableId(a.registration.id, b.registration.id));
                 for (const other of candidates) {
                     if (excess <= 0) break;
-                    const freed = this.evictCache(other, excess, false);
+                    const freed = this.evictCache(other, excess);
                     if (freed > 0) auditCount('governor', `grant-trim:gpu:${other.registration.id}`, 1, { bytes: freed });
                     excess -= freed;
                 }
@@ -762,22 +779,23 @@ export class MemoryGovernor {
         try {
             for (const other of candidates) {
                 if (excess <= 0) break;
-                const freed = this.evictCache(other, excess, false);
+                const freed = this.evictCache(other, excess);
                 if (freed > 0) auditCount('governor', `reclaim:${pool}:${other.registration.id}`, 1, { bytes: freed });
                 excess -= freed;
             }
         } finally { this.trimming = false; }
     }
 
-    /** Asks one cache for up to `bytes` and returns the bytes it freed. A returned count is believed: an owner that releases
-     * asynchronously cannot show its drop yet. An owner that returns nothing is counted by its synchronous drop, or, in a
-     * trim, by the ask up to its cache's size: a mirror closes entries whose bytes stay charged until retirement, and
-     * counting only the drop asked every candidate (measured earlier: four caches, 45 MB, evicted for a 0.47 MB excess). */
-    private evictCache(cache: CacheRecord, bytes: number, unreportedCountsAsk: boolean): number {
+    /** Asks one cache for up to `bytes` and returns the bytes it freed: the larger of what it reports and what its reservation
+     * drops synchronously. A void return is 0, so no ask is ever counted as freed (it was, for a cache that freed nothing: a
+     * context revoke with no hidden pane counted 4 MB on every trim and never reached the tiles). An owner whose release is
+     * asynchronous reports the bytes it released, as the mirror set does with its retiring entries. */
+    private evictCache(cache: CacheRecord, bytes: number): number {
         const before = cache.bytes;
         const returned = cache.registration.evict(bytes);
-        const reported = typeof returned === 'number' ? (Number.isFinite(returned) ? Math.max(0, returned) : 0) :
-            unreportedCountsAsk ? Math.min(before, bytes) : 0;
+        // Never assumed: a void return is 0 here, so a trim that asked for bytes is not credited with them. What the owner
+        // reports (an asynchronous release) and what its reservation drops now are the only freed bytes.
+        const reported = typeof returned === 'number' && Number.isFinite(returned) ? Math.max(0, returned) : 0;
         return Math.max(before - cache.bytes, reported);
     }
 
@@ -908,7 +926,7 @@ export class MemoryGovernor {
             for (const cache of candidates) {
                 if (excess <= 0) break;
                 // The owner protects its last visible coverage provider and capture/live-input pins.
-                const freed = this.evictCache(cache, excess, true);
+                const freed = this.evictCache(cache, excess);
                 if (freed > 0) auditCount('governor', `trim:${pool}:${cache.registration.id}`, 1, { bytes: freed });
                 excess -= freed;
             }
@@ -923,7 +941,10 @@ export class MemoryGovernor {
     }
 
     /** What a layer reads through its host: a pure mapping of the state fields, so the read allocates nothing. */
-    trouble(): LayerTrouble { return layerTroubleOf(this.state, this.lastTrouble); }
+    trouble(): LayerTrouble {
+        if (this.now - this.slowGpuAt < SLOW_GPU_HOLD_MS) return 'slow-gpu';
+        return layerTroubleOf(this.state, this.lastTrouble);
+    }
 
     /** Usage low enough to step quality back up. GPU grants are planned up to the trim target, so a pane using its own
      * grant sits there; the CPU's 0.6 ratio applied to the GPU never came once it was degraded (measured: a PDF held at

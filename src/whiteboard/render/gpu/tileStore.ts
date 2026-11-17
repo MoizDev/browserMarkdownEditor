@@ -14,9 +14,40 @@ import { TILE_EDGE, TILE_GUTTER, TILE_SIZE } from '../imageSampling';
 import type { Blend, TileEntry, TileIdFn, TileKey, TileStore, TileWorldFn } from './contracts';
 import { TILE_KEY_REACH, TILE_KEY_SCALES, TILE_KEY_SLICES, TileKeyMap, tileKeyNum } from './tileKeys';
 
+/** One scale's share of the store, from breakdown(). Bytes are the targets' bytes; an entry without a target counts in
+ * `entries` only. */
+export interface TileScaleBreakdown {
+    scale: number;
+    atViewScale: boolean;
+    entries: number;
+    composed: number;
+    targets: number;
+    bytes: number;
+    onView: number;
+    offView: number;
+    onViewBytes: number;
+    offViewBytes: number;
+}
+
+/** What the store holds, for the audit surface (auditCaches): the free list apart from the entries, and each scale split on and
+ * off the last view. See NumericTileStore.breakdown. */
+export interface TileStoreBreakdown {
+    viewScale: number;
+    gpuBytes: number;
+    heldTargets: number;
+    heldBytes: number;
+    freeTargets: number;
+    freeBytes: number;
+    ledgerOk: boolean;
+    scales: TileScaleBreakdown[];
+}
+
 /** The numeric face of the store, beside the TileStore contract. The composer and adapter reach entries through it, so a
  * frame builds no string id: a key packs to one integer (tileKeyNum) once its scale has a registry index. */
 export interface NumericTileStore extends TileStore {
+    /** Audit only: the store's breakdown against the last view the caller composed for. Walks every entry and allocates, so it
+     * is never called from the frame path. */
+    breakdown(view: ViewState): TileStoreBreakdown;
     /** The entry at a packed key, or undefined. Allocates nothing. */
     getByNum(num: number): TileEntry | undefined;
     /** The packed key of `key`, or −1 when the key cannot be stored (outside the packed range) or its scale holds no entry. */
@@ -561,6 +592,46 @@ class GpuTileStore implements NumericTileStore {
         if (device === null) return { gpuBytes: 0, cpuBytes: 0 };
         this.adopt(device);
         return { gpuBytes: this.gpuBytes, cpuBytes: 0 };
+    }
+
+    /** Audit only, never the frame path: walks every entry, so it is called from the audit surface. `view` is the last view the
+     * caller composed for: an entry is on view when its tile overlaps that view's world rect, and the scale of that view is
+     * `atViewScale`. `ledgerOk` says the held and free bytes sum to gpuBytes and the target count matches the ledger. */
+    breakdown(view: ViewState): TileStoreBreakdown {
+        const shown = viewWorld(view), scale = viewScale(view);
+        const rows = new Map<number, TileScaleBreakdown>();
+        let heldTargets = 0, heldBytes = 0;
+        for (const slot of this.byNum.values()) {
+            let row = rows.get(slot.key.scale);
+            if (!row) {
+                row = { scale: slot.key.scale, atViewScale: slot.key.scale === scale, entries: 0, composed: 0, targets: 0,
+                    bytes: 0, onView: 0, offView: 0, onViewBytes: 0, offViewBytes: 0 };
+                rows.set(slot.key.scale, row);
+            }
+            const on = overlapsKey(slot.key, shown);
+            row.entries++;
+            if (slot.composed) row.composed++;
+            if (on) row.onView++; else row.offView++;
+            const target = slot.target;
+            if (!target) continue;
+            row.targets++;
+            row.bytes += target.bytes;
+            heldTargets++;
+            heldBytes += target.bytes;
+            if (on) row.onViewBytes += target.bytes; else row.offViewBytes += target.bytes;
+        }
+        let freeBytes = 0;
+        for (const target of this.free) freeBytes += target.bytes;
+        return {
+            viewScale: scale,
+            gpuBytes: this.gpuBytes,
+            heldTargets,
+            heldBytes,
+            freeTargets: this.free.length,
+            freeBytes,
+            ledgerOk: heldBytes + freeBytes === this.gpuBytes && heldTargets + this.free.length === this.targetsHeld,
+            scales: [...rows.values()].sort((a, b) => a.scale - b.scale),
+        };
     }
 
     private link(slot: Slot): void {

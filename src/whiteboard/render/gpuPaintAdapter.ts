@@ -220,6 +220,8 @@ export interface GpuPaintAdapter {
     coverage(view: ViewState): { complete: boolean; sharp: boolean; staleVersion?: boolean };
     release(reason: GpuReleaseReason): void;
     needsFrame(): boolean;
+    /** True while the layer waits on a refused GPU admission with nothing else to do (see the composer's memoryBlocked). */
+    memoryBlocked(): boolean;
     memory(): { gpuBytes: number; cpuBytes: number };
     cpuWorkingSet(): { mandatoryBytes: number; prefetchBytes: number };
     /** The governor's GPU pressure: frees up to `bytes` of idle GPU memory, path coverage sets first, then composed tiles
@@ -244,6 +246,8 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         readonly audit?: string;
         /** Rects whose surface is opaque: a multiply slice inside one composes by modulate, elsewhere by isolation. */
         readonly opaqueWorld?: () => readonly Rect[];
+        /** An overlay: its few plain parts are drawn live each frame, with no tile grant (see the composer's liveOverlay). */
+        readonly liveOverlay?: boolean;
     } = {}): GpuPaintAdapter {
     const surface = options.audit ?? 'board';
     if (options.streaming) auditCount(surface, 'option:streaming-ignored');
@@ -262,7 +266,21 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
     const ink = createInkRoutes(host, surface);
     // One path route and its clip admission share one coverage kit: the composer admits every route's clips through it.
     const pathRoute = createPath(host, surface);
-    const store = createTileStore(host, surface);
+    // The layer has one wake slot, and the store (the free list's trim) and the composer (a refused position's retry) both arm
+    // deadlines on it. The slot takes the earliest armed one, so neither cancels the other (gpu). A slot is cleared by its owner:
+    // the store's on each frame before the trim, the composer's when its retry is handled or satisfied.
+    const wakes: Record<'store' | 'retry', number | null> = { store: null, retry: null };
+    const armWake = (slot: 'store' | 'retry', deadline: number | null): void => {
+        wakes[slot] = deadline;
+        let first: number | null = null;
+        for (const at of [wakes.store, wakes.retry]) if (at !== null && (first === null || at < first)) first = at;
+        host.wakeAt(first);
+    };
+    const withWake = (slot: 'store' | 'retry'): LayerHost => new Proxy(host, {
+        // The host's other members are read on the host itself, so its getters (the generation) stay live.
+        get: (target, key) => key === 'wakeAt' ? (deadline: number | null) => armWake(slot, deadline) : Reflect.get(target, key, target),
+    });
+    const store = createTileStore(withWake('store'), surface);
     const imageRoute = createImageRoute(host, surface);
     // The factory is typed as the generic item route; the text route's own type carries its zoom hooks (setZoom, exact).
     const textRoute = createTextRoute(host, surface) as TextRoute;
@@ -275,10 +293,11 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         cpu,
     };
     const composer = createTileComposer({
-        host, audit: surface, parts: createTileParts(host, surface), store, routes,
+        host: withWake('retry'), audit: surface, parts: createTileParts(host, surface), store, routes,
         tileWorld, inkRouteFor, lay, admitClips: pathRoute.admitClips, withPreparedClips,
         layQuads: (pass, texture, quads) => host.drawTexturedQuads(pass, texture, quads, QUAD),
         ...(options.opaqueWorld ? { opaqueWorld: options.opaqueWorld } : {}),
+        ...(options.liveOverlay ? { liveOverlay: true } : {}),
         // The compose limit halves while the host reports a slow GPU, read each frame (PLAN 3.1).
         slowGpu: () => host.trouble() === 'slow-gpu',
     });
@@ -297,6 +316,8 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             }
             omitPrepared = omit?.size ? omit : null;
             ledger = { device, generation: host.generation };
+            // The frame has come: the store's deadline is handled (its trim runs in the composer's prepare, and re-arms if not due).
+            armWake('store', null);
             try {
                 timed(surface, 'prepare', () => composer.prepare(view, budget, prepared, omit));
             } catch (error) {
@@ -341,6 +362,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             presented = null; omitPrepared = null; lastFrame = -1; ledger = null;
         },
         needsFrame(): boolean { return !disposed && composer.needsFrame(); },
+        memoryBlocked(): boolean { return !disposed && composer.memoryBlocked(); },
         drawnInkNodeIds(): ReadonlySet<string> { return disposed ? NO_INK : composer.drawnInkNodeIds(); },
         gpuMandatoryBytes(viewport: { width: number; height: number }): number {
             return disposed || !presented ? 0 : composer.mandatoryBytes(viewport.width, viewport.height);

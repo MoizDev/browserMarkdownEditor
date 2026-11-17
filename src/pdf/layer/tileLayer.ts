@@ -5,8 +5,7 @@ import type { PdfVersionBridge } from './versionBridge';
 import type { BorrowedMirror } from '../../platform/render';
 import { covers, intersects } from './coverage';
 import { PdfTileCache } from './tileCache';
-import { PdfTexturePool, type PooledTexture } from './texturePool';
-import { ATLAS_SLOT_EDGE, TileAtlas, type AtlasPage, type AtlasSlot } from './tileAtlas';
+import { createTileTexture, PdfTexturePool, type PooledTexture } from './texturePool';
 import { planPdfTileDemand } from './tileDemand';
 import type { PdfDemandInput, PdfTileRequest } from './tileDemand';
 import { getPdfFontEpoch, pdfMirrorProfilePrefix, pdfVariantRevision } from '../fonts/profiles';
@@ -44,8 +43,10 @@ interface Entry {
     /** The producer settled with pixels: they live in `bitmap`, `texture` or both. */
     settled?: boolean;
     bitmap?: ImageBitmap;
-    /** Where the pixels live on the GPU: one slot of a shared atlas page. */
-    slot?: AtlasSlot<Entry>;
+    /** Where the pixels live on the GPU: the tile's own texture, sized to its bitmap. */
+    texture?: PooledTexture;
+    /** The last prepared frame that drew this tile: its pixels are never a trim's to take while that frame is the last one. */
+    drawnFrame?: number;
     used: number;
 }
 
@@ -67,8 +68,6 @@ function clipped(box: Readonly<Rect>, viewport: Readonly<Rect>): Rect | null {
 }
 
 /** Pixels this backend can draw: the device's texture, or the CPU bitmap (which a GPU backend can still upload). */
-/** A zoom gesture's scale changes every few frames; this long without a change, it has settled enough to raster. */
-const ZOOM_SETTLE_MS = 150;
 
 /** A tile or mirror drawn at a scale other than the frame's is a stand-in. The two scales are computed separately, so one zoom can
  * differ in its last float bits (1.4379084967320261 vs ...255): a relative tolerance, as the supersession check uses, not equality. */
@@ -103,8 +102,11 @@ function leavesUncovered(area: Readonly<Rect>, cover: readonly Readonly<Rect>[])
     return pieces.length > 0;
 }
 
+/** The largest tile texture: the 512 interior plus the one-texel gutter on each side. */
+const TILE_EDGE = 514;
+
 function drawableOn(entry: Entry, device: GfxDevice | null): boolean {
-    return device ? entry.slot?.page.device === device || !!entry.bitmap : !!entry.bitmap;
+    return device ? entry.texture?.device === device || !!entry.bitmap : !!entry.bitmap;
 }
 
 function contentFamily(input: Omit<PdfDemandInput, 'covered' | 'previousMotionScale'>): string {
@@ -154,9 +156,8 @@ export class PdfTileLayer implements Layer {
     private readonly pageScratch: number[] = [];
     private readonly retiring = new Set<Entry>();
     private readonly texturePool: PdfTexturePool;
-    private readonly tileAtlas: TileAtlas<Entry>;
-    /** One batch per atlas page within the scale group being drawn; the list is reused, so a frame allocates no batch. */
-    private readonly tileBatches: { page: AtlasPage<Entry>; quads: QuadList }[] = [];
+    /** Bytes of the tiles' own textures, kept as they are created and destroyed. */
+    private tileBytes = 0;
     private readonly bridgeTextures = new Map<string, PooledTexture>();
     private bridgeReady = new Set<string>();
     private desired = new Set<string>();
@@ -174,8 +175,8 @@ export class PdfTileLayer implements Layer {
     private contentIdentity = '';
     private lastMotionScale: PdfDemandInput['previousMotionScale'];
     private motionScaleAt = 0;
-    private lastZoomValue = 0;
-    private scaleChangedAt = 0;
+    /** The raster scale the previous prepare planned for: a zoom is a prepare whose scale differs from it. */
+    private lastRasterScale = 0;
     private latestDemand: Omit<PdfDemandInput, 'covered' | 'previousMotionScale'> | null = null;
     private latestView: ViewState | null = null;
     private mirrorJob: MirrorJob | null = null;
@@ -213,7 +214,6 @@ export class PdfTileLayer implements Layer {
         private readonly mirror?: PdfLayerMirror, private readonly bridge?: PdfVersionBridge | null) {
         if (__BME_BENCH__) this.benchmarkRaster = true;
         this.texturePool = new PdfTexturePool(host.allocator.gpu);
-        this.tileAtlas = new TileAtlas<Entry>(host.allocator.gpu, entry => { entry.slot = undefined; this.coverCache = null; });
     }
 
     prepare(view: ViewState, budget: FrameBudget): void {
@@ -242,7 +242,7 @@ export class PdfTileLayer implements Layer {
             }
         }
         // Pages of another device hold tiles no backend can draw: they go, and their owners are re-uploaded.
-        if (device) this.tileAtlas.dropForeign(device);
+        if (device) this.dropForeignTiles(device);
         const input = this.demand(view);
         this.latestDemand = input;
         this.latestView = view;
@@ -266,14 +266,13 @@ export class PdfTileLayer implements Layer {
             motionScaleOverride: holdMotionScale ? this.lastMotionScale : undefined,
             covered: (page, area) => this.covered(page, area, device) });
         if (input.moving && !holdMotionScale) this.motionScaleAt = now;
-        // The camera's zoom, not the tile scale's kind: a pan or drag flips between motion and exact tiles at about the
-        // same scale, and counting that as a zoom deferred tiles during plain drags (measured: 40 per drag).
-        const zoomValue = input.rasterScale;
-        if (!this.lastZoomValue || Math.abs(zoomValue / this.lastZoomValue - 1) > 0.01) { this.lastZoomValue = zoomValue; this.scaleChangedAt = now; }
-        // While a zoom is still changing the scale, a tile whose area a stand-in already shows is not started: it
-        // usually finishes after the zoom has moved past its scale and is thrown away (measured on a 1000-page PDF:
-        // 18-32 of 66 rasters per zoom gesture dropped unused). Uncovered area is still rastered at once.
-        const zooming = !!device && now - this.scaleChangedAt < ZOOM_SETTLE_MS;
+        // A zoom is a frame whose raster scale differs from the previous frame's. On the GPU a tile a stand-in covers is
+        // not started in such a frame: the stand-in is scaled from the nearest cached size meanwhile, and a raster started
+        // there finishes after the scale has moved on and is thrown away. The first frame the scale rests starts it, so a
+        // rest costs one frame, not a settle time (a 150 ms hold here doubled the time to exact against canvas2d).
+        const zooming = !!device && this.lastRasterScale !== 0 && Math.abs(input.rasterScale / this.lastRasterScale - 1) > 1e-6;
+        this.lastRasterScale = input.rasterScale;
+        // A spare page is kept only for a zoom that is still changing: at rest it is 4 MB of empty texture.
         this.lastMotionScale = planned.motionScale;
         this.desired = new Set(planned.requests.map(request => request.text));
         if (!input.moving) {
@@ -298,7 +297,7 @@ export class PdfTileLayer implements Layer {
             // On a GPU backend a stand-in is a texture. A bitmap that arrived after the plan moved on was never
             // uploaded and never will be (measured: a 40-step zoom rastered 51 tiles, uploaded 18, and left 31 MB
             // of such bitmaps charged until the pane stopped at cpu-floor-denied).
-            else if (device && entry.settled && entry.slot?.page.device !== device && !this.desired.has(key)) {
+            else if (device && entry.settled && entry.texture?.device !== device && !this.desired.has(key)) {
                 auditCount('pdf-page', 'fallback:raster-unused');
                 this.remove(key, entry);
             }
@@ -317,6 +316,18 @@ export class PdfTileLayer implements Layer {
                 } else auditCount('pdf-page', 'stand-in-held');
             }
         }
+        // A landed visible exact tile goes up before anything else in the frame. Until it does, a stand-in shows in its place,
+        // and the plan's low previews and speculative tiles come first in the loop below, so they took the frame's one
+        // progress grant ahead of it. Prefetch and low previews still upload in the loop, with whatever allowance is left.
+        if (device) {
+            for (const request of planned.requests) {
+                if (request.level !== 'exact' || request.priority === 'prefetch') continue;
+                const landed = this.entries.get(request.text);
+                if (!landed?.bitmap || landed.texture?.device === device || this.failed.has(request.text)) continue;
+                if (budget.shouldYield()) { this.pendingFrame = true; break; }
+                if (this.uploadTile(device, request.text, landed, budget) === 'budget') { this.pendingFrame = true; break; }
+            }
+        }
         let running = [...this.entries.values()].filter(entry => !entry.settled).length;
         for (const request of planned.requests) {
             const key = request.text;
@@ -329,17 +340,18 @@ export class PdfTileLayer implements Layer {
                 this.remove(key, existing); existing = undefined;
             }
             if (existing) {
-                if (device && existing.slot?.page.device === device) auditCount('pdf-page', 'cache-hit');
+                if (device && existing.texture?.device === device) auditCount('pdf-page', 'cache-hit');
                 existing.used = ++this.sequence;
-                if (device && existing.bitmap && existing.slot?.page.device !== device && !this.failed.has(key)) {
+                if (device && existing.bitmap && existing.texture?.device !== device && !this.failed.has(key)) {
                     if (budget.shouldYield()) { this.pendingFrame = true; break; }
-                    // Storage before budget: a claim whose slot was then refused still spent the frame's upload
+                    // Storage before budget: a claim whose texture was then refused still spent the frame's upload
                     // allowance, so the next tile never fit it, frame after frame, and the page stayed blurred.
                     if (this.uploadTile(device, key, existing, budget) === 'budget') break;
                 }
                 continue;
             }
             if (this.failed.has(key) || running >= 3) continue;
+            // Held for the frame the scale rests; pendingFrame keeps the next frame coming so the rest is not missed.
             if (zooming && this.covered(request.page, rect(request), device)) { auditCount('pdf-page', 'zoom-deferred'); this.pendingFrame = true; continue; }
             if (budget.shouldYield()) { this.pendingFrame = true; break; }
             const bytes = request.tile.textureWidth * request.tile.textureHeight * 4;
@@ -394,7 +406,7 @@ export class PdfTileLayer implements Layer {
         const snapshotKey = snapshot ? mirrorViewKey(snapshot) : '';
         const mirrored = !snapshot || snapshotKey === this.mirrorKey || snapshotKey === this.mirrorSkipped;
         for (const [key, entry] of this.entries) {
-            if (!entry.bitmap || entry.slot?.page.device !== device) continue;
+            if (!entry.bitmap || entry.texture?.device !== device) continue;
             // Only the current plan's visible tiles feed the mirror; an older scale kept as a stand-in never does
             // (measured: a zoom left 31 MB of visible stand-in bitmaps charged and the pane at cpu-floor-denied).
             if (!mirrored && this.desired.has(key) && intersects(rect(entry.request), viewport)) continue;
@@ -437,7 +449,7 @@ export class PdfTileLayer implements Layer {
         if (!plan || plan.view !== view) return { complete: true, sharp: false };
         for (const key of plan.exactKeys) {
             const entry = this.entries.get(key);
-            if (!entry || !drawableOn(entry, device) || (device && entry.slot?.page.device !== device)) return { complete: true, sharp: false };
+            if (!entry || !drawableOn(entry, device) || (device && entry.texture?.device !== device)) return { complete: true, sharp: false };
         }
         return { complete: true, sharp: true };
     }
@@ -474,6 +486,7 @@ export class PdfTileLayer implements Layer {
         }
         const device = this.host.device();
         const tiles = this.drawable(view, current);
+        for (const entry of tiles) entry.drawnFrame = this.preparedFrame;
         // Scale order is kept between groups, since different scales overlap; same-scale tiles are batched by page.
         let start = 0;
         while (start < tiles.length) {
@@ -506,37 +519,21 @@ export class PdfTileLayer implements Layer {
         }
     }
 
-    /** Tiles of one scale, one draw per atlas page. Same-scale tiles are disjoint cells of one grid, so their order is free.
-     * The scale also fixes the benchmark classification, so the whole group shares one set of draw options. */
+    /** Tiles of one scale, one draw each: a tile is its own texture. The scale fixes the benchmark classification of its tiles. */
     private drawTileGroup(pass: GpuPass, tiles: readonly Entry[], start: number, end: number, stack: Readonly<PageStack>,
         rasterScale: number, view: ViewState, device: GfxDevice | null): void {
-        let used = 0;
         for (let index = start; index < end; index++) {
             const entry = tiles[index];
-            const slot = entry.slot;
-            if (!slot || slot.page.device !== device) continue;
-            let batch: { page: AtlasPage<Entry>; quads: QuadList } | undefined;
-            for (let b = 0; b < used; b++) if (this.tileBatches[b].page === slot.page) { batch = this.tileBatches[b]; break; }
-            if (!batch) {
-                if (used === this.tileBatches.length) this.tileBatches.push({ page: slot.page, quads: new QuadList() });
-                batch = this.tileBatches[used++];
-                batch.page = slot.page;
-                batch.quads.reset();
-            }
-            const { source, destination } = this.quad(entry.request, stack.rects[entry.request.page], view, slot);
-            batch.quads.add(source, destination);
-            this.markQuad(destination, scaleDiffers(entry.request.scale.scale, rasterScale));
-            this.tileAtlas.touch(slot);
-        }
-        if (!used) return;
-        const sample = tiles[start];
-        const options = { opacity: 1, sampling: 'linear' as const, ...(__BME_BENCH__ ? {
-            coverage: scaleDiffers(sample.request.scale.scale, rasterScale) ? 'standin' as const : 'current' as const,
-            standInRatio: sample.request.scale.scale / rasterScale,
-        } : {}) };
-        for (let b = 0; b < used; b++) {
-            const batch = this.tileBatches[b];
-            batch.quads.drawAll(quads => this.host.drawTexturedQuads(pass, batch.page.handle, quads, options));
+            const texture = entry.texture;
+            if (!texture || texture.device !== device) continue;
+            const { source, destination } = this.quad(entry.request, stack.rects[entry.request.page], view);
+            const stand = scaleDiffers(entry.request.scale.scale, rasterScale);
+            this.markQuad(destination, stand);
+            this.host.drawTexturedQuad(pass, texture.handle, source, destination, { opacity: 1, sampling: 'linear',
+                ...(__BME_BENCH__ ? {
+                    coverage: stand ? 'standin' as const : 'current' as const,
+                    standInRatio: entry.request.scale.scale / rasterScale,
+                } : {}) });
         }
     }
 
@@ -589,7 +586,7 @@ export class PdfTileLayer implements Layer {
         this.drawnStack = null;
         if (this.frameTexture && reason !== 'context-lost') this.frameTexture.device.destroy(this.frameTexture.handle);
         this.frameTexture = null;
-        this.tileAtlas.clear(reason === 'context-lost');
+        this.dropAllTiles(reason === 'context-lost');
         for (const texture of this.bridgeTextures.values()) {
             if (reason !== 'context-lost') texture.device.destroy(texture.handle);
         }
@@ -627,33 +624,44 @@ export class PdfTileLayer implements Layer {
      * this layer prepared: for any other frame the plan does not say what is on screen, so nothing is freed. */
     evictGpu(bytes: number, frameId: number): number {
         const input = this.latestDemand;
-        if (this.disposed || !input || frameId !== this.preparedFrame) return 0;
+        if (this.disposed || !input) return 0;
+        // Between frames as well as inside one: the trim runs when the scheduler has moved on, and a layer that did not prepare
+        // that frame (a settled pane) used to answer 0 here, so the pool stayed over target. What may go is decided by the tile,
+        // not by the frame id: nothing on screen, and nothing the last prepared frame drew (see evictableTile).
         let freed = 0;
         const pooled = this.texturePool.memory();
         if (pooled > 0) {
             this.texturePool.clear(false);
             freed += pooled;
         }
-        freed += this.tileAtlas.dropSpare();
-        // Whole pages only: a page with a planned or bitmap-less tile on it frees no bytes, so it stays. A freed tile
-        // keeps its CPU bitmap, so it is uploaded again later rather than rastered.
-        if (freed < bytes) freed += this.tileAtlas.evictPages(bytes - freed, entry => this.evictableTile(entry, input));
+        // Off-view and other-scale tiles go first, farthest first; a tile on screen or drawn by the last prepared frame stays.
+        if (freed < bytes) freed += this.evictTiles(bytes - freed, input);
         if (freed) auditCount('pdf-page', 'evict-gpu', 1, { bytes: freed });
         return freed;
     }
 
-    /** A tile whose pixels can be restored without a raster (a CPU bitmap) and that the plan does not show on screen now. */
-    private evictableTile(entry: Entry, input: Omit<PdfDemandInput, 'covered' | 'previousMotionScale'>): boolean {
-        return !!entry.bitmap && !(this.desired.has(entry.request.text) && intersects(rect(entry.request), input.viewport));
+    /** Larger is evicted first: off the view, then another scale than the one drawn, then farther from the view's centre. */
+    private evictionRank(entry: Entry, input: Omit<PdfDemandInput, 'covered' | 'previousMotionScale'>): number {
+        const box = rect(entry.request), view = input.viewport;
+        const offView = intersects(box, view) ? 0 : 1;
+        const otherScale = scaleDiffers(entry.request.scale.scale, input.rasterScale) ? 1 : 0;
+        const dx = box.x + box.width / 2 - (view.x + view.width / 2), dy = box.y + box.height / 2 - (view.y + view.height / 2);
+        return offView * 1e12 + otherScale * 1e9 + Math.hypot(dx, dy);
     }
 
-    /** The atlas's answer to a refused page: free the least recently used page the plan does not show, then the layer's own
-     * off-plan slots. Returns whether the caller may try again. */
-    private reclaimAtlas(): boolean {
+    /** A tile a trim may take: not on the view (a tile on screen is part of every frame that draws it), and not drawn by the
+     * last prepared frame. Its pixels come back by a bitmap upload, or a raster if the plan still wants it. */
+    private evictableTile(entry: Entry, input: Omit<PdfDemandInput, 'covered' | 'previousMotionScale'>): boolean {
+        return !intersects(rect(entry.request), input.viewport) && entry.drawnFrame !== this.preparedFrame;
+    }
+
+    /** The GPU's answer to a refused tile texture: free one tile the plan does not show, then the layer's own off-plan
+     * textures. Returns whether the caller may try again. */
+    private reclaimTile(): boolean {
         const input = this.latestDemand;
         if (!input) return false;
-        if (this.tileAtlas.evictPages(1, entry => this.evictableTile(entry, input)) > 0) {
-            auditCount('pdf-page', 'atlas-page-evict');
+        if (this.evictTiles(1, input) > 0) {
+            auditCount('pdf-page', 'tile-reclaim');
             return true;
         }
         return this.releaseUnneededGpu(true);
@@ -664,7 +672,7 @@ export class PdfTileLayer implements Layer {
         if (!input) return false;
         let freed = false;
         for (const [key, entry] of this.entries) {
-            if (!entry.slot || this.desired.has(key) && intersects(rect(entry.request), input.viewport)) continue;
+            if (!entry.texture || this.desired.has(key) && intersects(rect(entry.request), input.viewport)) continue;
             auditCount('pdf-page', 'pressure-evict');
             this.remove(key, entry);
             freed = true;
@@ -773,7 +781,7 @@ export class PdfTileLayer implements Layer {
     }
 
     memory(): { gpuBytes: number; cpuBytes: number } {
-        let gpuBytes = (this.frameTexture ? 8 : 0) + this.texturePool.memory() + this.tileAtlas.bytes(), cpuBytes = 0;
+        let gpuBytes = (this.frameTexture ? 8 : 0) + this.texturePool.memory() + this.tileBytes, cpuBytes = 0;
         for (const texture of this.bridgeTextures.values()) gpuBytes += texture.bytes;
         for (const entry of this.entries.values()) {
             cpuBytes += entry.lease?.bytes ?? 0;
@@ -851,35 +859,78 @@ export class PdfTileLayer implements Layer {
                 input.variant === 'plain' ? 'plain' : input.pageVariant?.(request.page) ?? input.variant, input.fontEpoch ?? 0));
     }
 
-    /** Uploads a settled tile's bitmap into an atlas slot, as a sub-rectangle of its page. 'capacity' when the governor refused
-     * a new page (the layer waits for it), 'budget' when this frame's upload allowance is spent (the frame stops here). */
+    /** Uploads a settled tile's bitmap into the tile's own texture, sized to the bitmap. 'capacity' when the governor refused
+     * the texture (the layer waits for it), 'budget' when this frame's upload allowance is spent (the frame stops here). */
     private uploadTile(device: GfxDevice, key: string, entry: Entry, budget: FrameBudget): 'done' | 'capacity' | 'budget' {
         const bitmap = entry.bitmap!;
-        const width = bitmap.width, height = bitmap.height;
-        if (width > ATLAS_SLOT_EDGE || height > ATLAS_SLOT_EDGE) {
+        const width = bitmap.width, height = bitmap.height, bytes = width * height * 4;
+        if (width > TILE_EDGE || height > TILE_EDGE) {
             this.failed.add(key);
-            this.onError(new RangeError('PDF tile is larger than an atlas slot'), entry.request);
+            this.onError(new RangeError('PDF tile is larger than a tile texture'), entry.request);
             return 'done';
         }
-        const again = !!entry.slot;
-        if (entry.slot) { this.tileAtlas.free(entry.slot); entry.slot = undefined; }
-        let slot: AtlasSlot<Entry> | null;
-        try { slot = this.tileAtlas.place(device, entry, () => this.reclaimAtlas()); }
-        catch (error) { this.failed.add(key); this.onError(error, entry.request); return 'done'; }
-        if (!slot) { this.awaitGpuCapacity(width * height * 4); return 'capacity'; }
-        // The reclaim may have taken this very tile when it was off view (a prefetch).
-        if (this.entries.get(key) !== entry || !entry.bitmap) { this.tileAtlas.free(slot); return 'done'; }
-        if (!budget.claimUpload(width * height * 4)) { this.tileAtlas.free(slot); this.pendingFrame = true; return 'budget'; }
+        const again = !!entry.texture;
+        this.dropTexture(entry);
+        let texture: PooledTexture | null;
         try {
-            device.writeTexture(slot.page.handle, { x: slot.x, y: slot.y, width, height },
+            texture = createTileTexture(this.host.allocator.gpu, device, width, height);
+            if (!texture && this.reclaimTile()) texture = createTileTexture(this.host.allocator.gpu, device, width, height);
+        } catch (error) { this.failed.add(key); this.onError(error, entry.request); return 'done'; }
+        if (!texture) { this.awaitGpuCapacity(bytes); return 'capacity'; }
+        // The reclaim may have taken this very tile when it was off view (a prefetch).
+        if (this.entries.get(key) !== entry || !entry.bitmap) { texture.device.destroy(texture.handle); return 'done'; }
+        if (!budget.claimUpload(bytes)) { texture.device.destroy(texture.handle); this.pendingFrame = true; return 'budget'; }
+        try {
+            device.writeTexture(texture.handle, { x: 0, y: 0, width, height },
                 { source: bitmap, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
-        } catch (error) { this.tileAtlas.free(slot); this.failed.add(key); this.onError(error, entry.request); return 'done'; }
-        entry.slot = slot;
+        } catch (error) { texture.device.destroy(texture.handle); this.failed.add(key); this.onError(error, entry.request); return 'done'; }
+        entry.texture = texture;
+        this.tileBytes += bytes;
         this.coverCache = null;
         if (again) auditCount('pdf-page', 're-upload');
-        auditCount('pdf-page', 'atlas-upload', 1, { px: width * height });
+        auditCount('pdf-page', 'tile-upload', 1, { px: width * height });
         consumePdfTileArrival(bitmap);
         return 'done';
+    }
+
+    /** Destroys a tile's texture and returns its charge. The entry stays; see releaseTile for the rule on its pixels. */
+    private dropTexture(entry: Entry, lost = false): void {
+        const texture = entry.texture;
+        if (!texture) return;
+        entry.texture = undefined;
+        this.tileBytes -= texture.bytes;
+        this.coverCache = null;
+        if (!lost) texture.device.destroy(texture.handle);
+    }
+
+    /** A tile loses its texture but stays in the layer: with no bitmap left it has nothing to draw, so it stops being settled
+     * (re-rastered if the plan still wants it, dropped at the next prepare if not). */
+    private releaseTile(entry: Entry, lost = false): void {
+        this.dropTexture(entry, lost);
+        if (!entry.bitmap) entry.settled = false;
+    }
+
+    private dropAllTiles(lost: boolean): void {
+        for (const entry of this.entries.values()) this.releaseTile(entry, lost);
+    }
+
+    private dropForeignTiles(device: GfxDevice): void {
+        for (const entry of this.entries.values()) if (entry.texture && entry.texture.device !== device) this.releaseTile(entry);
+    }
+
+    /** Frees at least `bytes` by destroying whole tiles the rule allows, highest rank first (see evictionRank). */
+    private evictTiles(bytes: number, input: Omit<PdfDemandInput, 'covered' | 'previousMotionScale'>): number {
+        const candidates = [...this.entries.values()].filter(entry => entry.texture && this.evictableTile(entry, input))
+            .map(entry => ({ entry, rank: this.evictionRank(entry, input) }))
+            .sort((a, b) => b.rank - a.rank);
+        let freed = 0;
+        for (const { entry } of candidates) {
+            if (freed >= bytes) break;
+            const size = entry.texture!.bytes;
+            this.releaseTile(entry);
+            freed += size;
+        }
+        return freed;
     }
 
     /** A refused texture wakes the layer when the governor would admit its bytes. Without this a visible tile waited for
@@ -1028,7 +1079,7 @@ export class PdfTileLayer implements Layer {
     private drawablePlanBoxes(device: GfxDevice | null): Map<number, Readonly<Rect>[]> {
         const boxes = new Map<number, Readonly<Rect>[]>();
         for (const [key, entry] of this.entries) {
-            if (!this.desired.has(key) || !drawableOn(entry, device) || (device && entry.slot?.page.device !== device)) continue;
+            if (!this.desired.has(key) || !drawableOn(entry, device) || (device && entry.texture?.device !== device)) continue;
             const list = boxes.get(entry.request.page) ?? [];
             list.push(rect(entry.request));
             boxes.set(entry.request.page, list);
@@ -1041,7 +1092,7 @@ export class PdfTileLayer implements Layer {
         if (cached && cached.device === device) return cached.boxes;
         const boxes = new Map<number, Readonly<Rect>[]>();
         for (const entry of this.entries.values()) {
-            if (!drawableOn(entry, device) || (device && entry.slot?.page.device !== device)) continue;
+            if (!drawableOn(entry, device) || (device && entry.texture?.device !== device)) continue;
             const list = boxes.get(entry.request.page) ?? [];
             list.push(rect(entry.request));
             boxes.set(entry.request.page, list);
@@ -1087,10 +1138,10 @@ export class PdfTileLayer implements Layer {
     }
 
     /** The tile's source and destination, written into one reused pair: drawTexturedQuad consumes them before it returns. */
-    private quad(request: PdfTileRequest, page: Readonly<Rect>, view: ViewState, slot?: AtlasSlot<Entry>): { source: Rect; destination: Rect } {
+    private quad(request: PdfTileRequest, page: Readonly<Rect>, view: ViewState): { source: Rect; destination: Rect } {
         const bounds = rect(request), edges = request.tile.edges, scale = request.scale.scale, out = this.tileQuad;
-        out.source.x = (slot?.x ?? 0) + 1 + (bounds.x - edges.left) * scale;
-        out.source.y = (slot?.y ?? 0) + 1 + (bounds.y - edges.top) * scale;
+        out.source.x = 1 + (bounds.x - edges.left) * scale;
+        out.source.y = 1 + (bounds.y - edges.top) * scale;
         out.source.width = bounds.width * scale;
         out.source.height = bounds.height * scale;
         projectInto(bounds, page, view, out.destination);
@@ -1114,7 +1165,7 @@ export class PdfTileLayer implements Layer {
         if (this.entries.get(key) !== entry) return;
         this.entries.delete(key);
         entry.controller.abort();
-        if (entry.slot) { this.tileAtlas.free(entry.slot); entry.slot = undefined; }
+        this.dropTexture(entry);
         if (entry.settled) {
             this.contentRevision++;
             this.settledOrder = null;

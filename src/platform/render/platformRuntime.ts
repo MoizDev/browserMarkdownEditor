@@ -52,7 +52,9 @@ export class PlatformRuntime {
             id: 'platform:native-contexts', pool: 'gpu', kind: 'context', class: 'scene-cache',
             hiddenAt: null, lastVisibleAt: 0, lastUsedAt: 0,
             memory: () => ({ live: surfaceBroker.contextBudget.platform * POLICY.keptContextReserveBytes, retiring: 0 }),
-            evict: bytes => { surfaceBroker.revokeHiddenContexts(Math.ceil(bytes / POLICY.keptContextReserveBytes)); },
+            // Returns the bytes it revoked, not nothing: a void return is counted by the governor as the whole ask, so a trim
+            // with no hidden context to revoke claimed 4 MB freed on every pass (36 passes, 149 MB) and never reached the tiles.
+            evict: bytes => surfaceBroker.revokeHiddenContexts(Math.ceil(bytes / POLICY.keptContextReserveBytes)) * POLICY.keptContextReserveBytes,
         });
         surfaceBroker.configure({ contextAllocator: context });
         surfaceBroker.setTerminalContextActive(getTerminalContextActive());

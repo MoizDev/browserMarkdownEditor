@@ -218,6 +218,9 @@ export interface TileComposer {
     /** The nodes whose live parts this composite lays in one band (a live part deferred or denied this frame is absent). Filled in
      * drawGpu, cleared in prepare, one set per band for the composer's life. */
     drawnLiveNodeIds(band: PaintBand): ReadonlySet<string>;
+    /** The nodes whose live parts this prepare planned to lay in one band: the draw list's live draws, known once prepare returns, before
+     * any draw. Cleared at the next prepare. The board reads it for coverage, which runs before the composite's own draw. */
+    plannedLiveNodeIds(band: PaintBand): ReadonlySet<string>;
     /** The GPU bytes the visible tiles at the drawn scale hold, for a viewport of `width` by `height` (view units): one
      * tile target per slice of each visible position that is composed. The governor's mandatory working set. */
     mandatoryBytes(width: number, height: number): number;
@@ -322,6 +325,9 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     // The nodes whose live parts the composite lays, per band: filled in drawGpu beside the live draw, cleared in prepare. The board
     // trusts a changed node as drawn only when it is in this set, so a live part that was deferred or denied is not counted.
     const drawnLive: Record<PaintBand, Set<string>> = { underlay: new Set<string>(), content: new Set<string>() };
+    // The same nodes as the prepare planned them: filled as buildDraws adds each live draw, cleared at the next prepare. A deferred or
+    // denied part never reaches a draw, so it is absent here too. drawnLive stays the truth check for what the composite laid.
+    const plannedLive: Record<PaintBand, Set<string>> = { underlay: new Set<string>(), content: new Set<string>() };
     // Live parts: admitted each frame through the image route, released at the next prepare. Scratch holds the ones of the
     // position being drawn, in paint order.
     const liveRuns: LiveAdmission[] = [];
@@ -933,6 +939,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         draw.band = band; draw.texture = null; draw.mode = 'over'; draw.clipOn = true;
         draw.cx = clip.x; draw.cy = clip.y; draw.cw = clip.width; draw.ch = clip.height;
         draw.ink = NO_IDS; draw.live = run; draw.liveRoute = route; draw.node = nodeId;
+        plannedLive[band].add(nodeId);
         auditCount(audit, 'tile:live-part');
     };
 
@@ -1135,6 +1142,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             frame = budget.frameId;
             drawnInk.clear();
             drawnLive.underlay.clear(); drawnLive.content.clear();
+            plannedLive.underlay.clear(); plannedLive.content.clear();
             retireLive();
             // The interned scales only name the positions in progress: with none in progress they are forgotten now, so a zoom's
             // scales are not kept after it ends (gpu: the churn cannot hold memory). The restart at 60 stays for a long zoom.
@@ -1383,6 +1391,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         },
         drawnInkNodeIds(): ReadonlySet<string> { return drawnInk; },
         drawnLiveNodeIds(band: PaintBand): ReadonlySet<string> { return drawnLive[band]; },
+        plannedLiveNodeIds(band: PaintBand): ReadonlySet<string> { return plannedLive[band]; },
         mandatoryBytes(width: number, height: number): number {
             if (disposed || !presenting) return 0;
             const target = drawnTarget;

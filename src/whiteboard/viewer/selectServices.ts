@@ -495,21 +495,34 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         writeGuides(frame.view.camera);
         writeRegion(frame.view.camera);
     };
+    // One line per guide, kept and moved: a frame writes a line's ends only when they changed. By reading: the frame used to
+    // replace every line with a new element each time it was written, which is what the drag's guides did at every move.
+    let guideLines: { readonly line: SVGLineElement; readonly last: Float64Array }[] = [];
     const writeGuides = (camera: ViewState['camera']) => {
-        if (guides.length) {
-            if (!guideSvg) { guideSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-                guideSvg.setAttribute('aria-hidden', 'true'); guideSvg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible';
-                options.overlay.append(guideSvg); }
-            guideSvg.replaceChildren();
-            for (const guide of guides) {
-                const from = guide.axis === 'x' ? { x: guide.value, y: guide.from } : { x: guide.from, y: guide.value };
-                const to = guide.axis === 'x' ? { x: guide.value, y: guide.to } : { x: guide.to, y: guide.value };
-                const a = worldToSurface(from, camera), b = worldToSurface(to, camera);
+        if (!guides.length) { guideSvg?.remove(); guideSvg = null; guideLines = []; return; }
+        if (!guideSvg) {
+            guideSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            guideSvg.setAttribute('aria-hidden', 'true'); guideSvg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible';
+            options.overlay.append(guideSvg); guideLines = [];
+        }
+        for (let i = 0; i < guides.length; i++) {
+            const guide = guides[i];
+            const from = guide.axis === 'x' ? { x: guide.value, y: guide.from } : { x: guide.from, y: guide.value };
+            const to = guide.axis === 'x' ? { x: guide.value, y: guide.to } : { x: guide.to, y: guide.value };
+            const a = worldToSurface(from, camera), b = worldToSurface(to, camera);
+            let entry = guideLines[i];
+            if (!entry) {
                 const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-                line.setAttribute('x1', String(a.x)); line.setAttribute('y1', String(a.y)); line.setAttribute('x2', String(b.x)); line.setAttribute('y2', String(b.y));
                 line.setAttribute('stroke', '#f276bd'); line.setAttribute('stroke-width', '1'); guideSvg.append(line);
+                entry = { line, last: new Float64Array(4).fill(Number.NaN) }; guideLines.push(entry);
             }
-        } else { guideSvg?.remove(); guideSvg = null; }
+            const v = entry.last;
+            if (v[0] !== a.x) { v[0] = a.x; entry.line.setAttribute('x1', String(a.x)); }
+            if (v[1] !== a.y) { v[1] = a.y; entry.line.setAttribute('y1', String(a.y)); }
+            if (v[2] !== b.x) { v[2] = b.x; entry.line.setAttribute('x2', String(b.x)); }
+            if (v[3] !== b.y) { v[3] = b.y; entry.line.setAttribute('y2', String(b.y)); }
+        }
+        while (guideLines.length > guides.length) guideLines.pop()!.line.remove();
     };
     const beginHandle = (sample: RealSample, modifiers: Modifiers): GestureOwner | null => {
         // A card's chips need no write right: consent to load an embed, and opening a link, change no document.

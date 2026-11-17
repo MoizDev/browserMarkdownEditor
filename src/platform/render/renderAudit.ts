@@ -170,6 +170,36 @@ export function auditGauges(): Record<string, number> {
     return values;
 }
 
+/** The first GPU error of each pane, audit only: what failed (its code and message), the arguments its throw site named as
+ * failing validation (ArenaError.detail), and the top of its stack. Read with __bmeRenderAudit.gpuErrors(); never read by the device. */
+export interface GpuErrorRecord { readonly pane: string | null; readonly where: string; readonly code: string; readonly message: string;
+    readonly detail: unknown; readonly stack: readonly string[] }
+const gpuErrors = new Map<string, GpuErrorRecord>();
+export function auditGpuError(pane: string | null, where: string, error: unknown): void {
+    if (!enabled) return;
+    const key = pane ?? '';
+    if (gpuErrors.has(key)) return;
+    const record = (typeof error === 'object' && error !== null ? error : {}) as { code?: unknown; message?: unknown; detail?: unknown; stack?: unknown };
+    gpuErrors.set(key, { pane, where, code: typeof record.code === 'string' ? record.code : 'unknown',
+        message: typeof record.message === 'string' ? record.message : String(error), detail: record.detail ?? null,
+        stack: typeof record.stack === 'string' ? record.stack.split('\n').slice(0, 16) : [] });
+}
+export function auditGpuErrors(): GpuErrorRecord[] { return [...gpuErrors.values()]; }
+
+/** Every 'invalid-input' ArenaError constructed while the audit is on, in order (the first ARENA_LOG_CAPACITY; the rest counted),
+ * with its arguments when the site named them and the top of its stack. Audit only. */
+const ARENA_LOG_CAPACITY = 32;
+const arenaLog: { code: string; detail: unknown; stack: readonly string[] }[] = [];
+let arenaDropped = 0;
+export function auditArenaError(code: string, detail: unknown, stack: string | undefined): void {
+    if (!enabled) return;
+    if (arenaLog.length >= ARENA_LOG_CAPACITY) { arenaDropped++; return; }
+    arenaLog.push({ code, detail: detail ?? null, stack: (stack ?? '').split('\n').slice(0, 12) });
+}
+export function auditArenaErrors(): { dropped: number; records: readonly { code: string; detail: unknown; stack: readonly string[] }[] } {
+    return { dropped: arenaDropped, records: arenaLog.slice() };
+}
+
 export function auditSnapshot(): RenderAuditSnapshot {
     return { enabled, since, counters: Object.fromEntries(counters),
         frames: Object.fromEntries([...frames].map(([key, value]) => [key, { ...value }])),
@@ -178,10 +208,10 @@ export function auditSnapshot(): RenderAuditSnapshot {
 
 export function auditReset(): void {
     counters = new Map(); frames = new Map(); stages = new Map();
-    presentRing.fill(undefined); presentTotal = 0; drawn = { standIns: 0, standInsRaster: 0, holes: 0 };
+    presentRing.fill(undefined); presentTotal = 0; drawn = { standIns: 0, standInsRaster: 0, holes: 0 }; gpuErrors.clear(); arenaLog.length = 0; arenaDropped = 0;
     since = typeof performance !== 'undefined' ? performance.now() : 0;
 }
 
 if (enabled && typeof window !== 'undefined') {
-    (window as unknown as { __bmeRenderAudit?: unknown }).__bmeRenderAudit = { snapshot: auditSnapshot, reset: auditReset, presents: auditPresents, gauges: auditGauges };
+    (window as unknown as { __bmeRenderAudit?: unknown }).__bmeRenderAudit = { snapshot: auditSnapshot, reset: auditReset, presents: auditPresents, gauges: auditGauges, gpuErrors: auditGpuErrors, arenaErrors: auditArenaErrors };
 }

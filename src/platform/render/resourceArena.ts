@@ -3,6 +3,7 @@ import type {
     SamplerHandle, TargetHandle, TextureHandle,
 } from './gfx/api';
 import type { GpuReleaseReason } from './types';
+import { auditArenaError } from './renderAudit';
 
 // rendering-design.md:88: kind brands are public; device/generation/slot are not.
 export interface ArenaHandleMap {
@@ -38,11 +39,15 @@ export interface ResourceArenaOptions<D extends ArenaResourceMap, O extends Aren
 /** Runtime product refusal, not a verification assertion (design:114–115, 603). */
 export class ArenaError extends Error {
     readonly code: GfxError;
+    /** The arguments a throw site found failing validation. Audit only: the device never reads it, and a site passes it only on the throw. */
+    readonly detail: Readonly<Record<string, unknown>> | undefined;
 
-    constructor(code: GfxError) {
+    constructor(code: GfxError, detail?: Readonly<Record<string, unknown>>) {
         super(code);
         this.name = 'ArenaError';
         this.code = code;
+        this.detail = detail;
+        if (code === 'invalid-input') auditArenaError(code, detail, this.stack);
     }
 }
 

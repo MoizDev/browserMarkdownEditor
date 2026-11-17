@@ -20,6 +20,8 @@ import { appendPath2d, path2d } from '../render/reference/coverage2d';
 // Provenance: wet/dry ink handover, bounded ink outline and C4 layer contracts;
 // independently wired renderer, no third-party source.
 const CHUNK = 256, FINAL_SPANS = 16, TEMP_BYTES = 4 * 1024 * 1024, PATH_BLOCK = 256 * 1024;
+/** The tip's upload grant past a frame's yield: one kit upload piece (64 KiB), so a chunk's append always fits. */
+const TIP_UPLOAD_BYTES = 64 * 1024;
 type Bounds = { x: number; y: number; w: number; h: number };
 type Prepared = { readonly snapshot: WetInkSnapshot; path: Path2D | null; readonly origin: readonly [number, number]; readonly leases: ByteLease[];
     readonly scale: number; readonly bounds: Bounds | null; readonly coverageChunks: readonly InkCoverage[]; readonly serial: number };
@@ -376,13 +378,29 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         runs.set(key, slot);
         return slot;
     };
-    // Admits every band of every pending stroke whose run is not current. A live stroke is one input ahead of its
+    // The newest publication's admission never waits for the frame's yield. A publication is tessellated in the same prepare, and that
+    // tessellation spends the frame's time, so the budget reads yielded at this point on nearly every drawing frame (traced: 95% of the
+    // frames that published). The kit refuses every upload claim once a frame yields, so skipping the admission was the same as deferring
+    // it: the tip reached the screen one frame late on every other frame, and the paced draw answered 48% of its inputs (96% on the
+    // frames that did not yield). The tip is admitted with a bounded grant instead (tipBudget). A live stroke is one input ahead of its
     // tessellation, so the run admitted is the last completed publication of the node (the same match draw2d uses), and
     // the newest publication is admitted once it completes. Only the tip is new work: the route keys its geometry by chunk.
+    // A frame's tip grant: the frame's own claims first, then TIP_UPLOAD_BYTES past a yield. The bytes the device then writes are
+    // reported to the scheduler like any upload, so the overshoot is measured, not hidden. One counter per frame, shared by this layer's
+    // admissions; a media claim is never granted here (it has its own grant).
+    let tipFrame = -1, tipBytes = 0;
+    const tipBudget = (budget: FrameBudget): FrameBudget => {
+        if (tipFrame !== budget.frameId) { tipFrame = budget.frameId; tipBytes = 0; }
+        return { ...budget, shouldYield: () => false, claimUpload: (bytes: number, kind?: 'media') => {
+            if (budget.claimUpload(bytes, kind)) return true;
+            if (kind === 'media' || tipBytes + bytes > TIP_UPLOAD_BYTES) return false;
+            tipBytes += bytes; return true;
+        } };
+    };
     const admitRuns = (host: LayerHost, view: ViewState, budget: FrameBudget): void => {
         const routes = inkRoutes ??= gpuRoutes.createInkRoutes(host, 'board-wet');
         const palette = options.palette(), pending = handover?.pendingSnapshots() ?? [], viewKey = viewKeyOf(view);
-        const audited = renderAuditEnabled();
+        const audited = renderAuditEnabled(), tip = tipBudget(budget);
         // Deleting the entry being visited is safe in a Map's iteration; a slot whose stroke is gone is dropped here.
         for (const [key, slot] of runs) if (!isPending(pending, slot.gesture)) dropSlot(key);
         for (const snapshot of pending) {
@@ -396,7 +414,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                     && (!current.viewBound || current.viewKey === viewKey)) { if (audited) auditCount('wet', 'admit-skip:fresh'); continue; }
                 // A band with nothing shown yet is admitted even past the frame's budget: the tessellation spent it, and until
                 // it is admitted the frame presents without the newest tip (measured: 41 yields left drawing frames unsharp).
-                if (current?.shown && budget.shouldYield()) { if (audited) auditCount('wet', 'admit-skip:yield'); return; }
+                if (audited && current?.shown && budget.shouldYield()) auditCount('wet', 'admit-tip:yielded');
                 const reuse = current && current.serial === source.serial && current.palette === palette ? current : null;
                 const material = reuse ? reuse.material : bandMaterial(shown, band, palette);
                 if (!material) {
@@ -410,7 +428,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                     clips: shown.presentation.clips ?? [], coverage: source.coverageChunks, material } satisfies PaintInkItem;
                 const route = gpuRoutes.inkRouteFor(item) === 'ink-analytic' ? routes.analytic : routes.union;
                 const before = audited ? route.memory().gpuBytes : 0;
-                const admission = route.admit([item], view, 'over', budget);
+                const admission = route.admit([item], view, 'over', tip);
                 if (audited) {
                     auditCount('wet', `admit:${admission.status}`, 1, { [route.id]: 1 });
                     const grown = route.memory().gpuBytes - before; if (grown > 0) auditCount('wet', 'upload:vertex', 1, { bytes: grown });

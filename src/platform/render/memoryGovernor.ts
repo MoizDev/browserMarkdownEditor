@@ -46,8 +46,9 @@ export interface MemoryCacheRegistration extends CacheActivity {
     readonly paneId?: string;
     readonly owner?: MemorySessionOwner;
     readonly memory: () => ArenaMemory;
-    /** Eviction request for up to `bytes`; returns the bytes it frees, or 0 when it frees nothing (a touched entry).
-     * An owner that returns nothing is counted as having freed its ask, up to its cache's size: see evictCache. */
+    /** Eviction request for up to `bytes`; returns the bytes it frees, or 0 when it frees nothing (a touched entry). An owner
+     * whose release is asynchronous returns the bytes it has released (retiring), since its charge falls only later. An owner
+     * that returns nothing is counted by the bytes its cache's reservation drops synchronously, and nothing more: see evictCache. */
     readonly evict: (bytes: number) => number | void;
 }
 
@@ -729,7 +730,7 @@ export class MemoryGovernor {
                         stableId(a.registration.id, b.registration.id));
                 for (const other of candidates) {
                     if (excess <= 0) break;
-                    const freed = this.evictCache(other, excess, false);
+                    const freed = this.evictCache(other, excess);
                     if (freed > 0) auditCount('governor', `grant-trim:gpu:${other.registration.id}`, 1, { bytes: freed });
                     excess -= freed;
                 }
@@ -762,22 +763,23 @@ export class MemoryGovernor {
         try {
             for (const other of candidates) {
                 if (excess <= 0) break;
-                const freed = this.evictCache(other, excess, false);
+                const freed = this.evictCache(other, excess);
                 if (freed > 0) auditCount('governor', `reclaim:${pool}:${other.registration.id}`, 1, { bytes: freed });
                 excess -= freed;
             }
         } finally { this.trimming = false; }
     }
 
-    /** Asks one cache for up to `bytes` and returns the bytes it freed. A returned count is believed: an owner that releases
-     * asynchronously cannot show its drop yet. An owner that returns nothing is counted by its synchronous drop, or, in a
-     * trim, by the ask up to its cache's size: a mirror closes entries whose bytes stay charged until retirement, and
-     * counting only the drop asked every candidate (measured earlier: four caches, 45 MB, evicted for a 0.47 MB excess). */
-    private evictCache(cache: CacheRecord, bytes: number, unreportedCountsAsk: boolean): number {
+    /** Asks one cache for up to `bytes` and returns the bytes it freed: the larger of what it reports and what its reservation
+     * drops synchronously. A void return is 0, so no ask is ever counted as freed (it was, for a cache that freed nothing: a
+     * context revoke with no hidden pane counted 4 MB on every trim and never reached the tiles). An owner whose release is
+     * asynchronous reports the bytes it released, as the mirror set does with its retiring entries. */
+    private evictCache(cache: CacheRecord, bytes: number): number {
         const before = cache.bytes;
         const returned = cache.registration.evict(bytes);
-        const reported = typeof returned === 'number' ? (Number.isFinite(returned) ? Math.max(0, returned) : 0) :
-            unreportedCountsAsk ? Math.min(before, bytes) : 0;
+        // Never assumed: a void return is 0 here, so a trim that asked for bytes is not credited with them. What the owner
+        // reports (an asynchronous release) and what its reservation drops now are the only freed bytes.
+        const reported = typeof returned === 'number' && Number.isFinite(returned) ? Math.max(0, returned) : 0;
         return Math.max(before - cache.bytes, reported);
     }
 
@@ -908,7 +910,7 @@ export class MemoryGovernor {
             for (const cache of candidates) {
                 if (excess <= 0) break;
                 // The owner protects its last visible coverage provider and capture/live-input pins.
-                const freed = this.evictCache(cache, excess, true);
+                const freed = this.evictCache(cache, excess);
                 if (freed > 0) auditCount('governor', `trim:${pool}:${cache.registration.id}`, 1, { bytes: freed });
                 excess -= freed;
             }

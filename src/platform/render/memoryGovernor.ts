@@ -147,8 +147,8 @@ interface Share {
 }
 
 export class MemoryAdmissionError extends Error {
-    constructor(readonly code: 'invalid-input' | 'invalid-lease' | 'foreign-owner' | 'unaccounted') {
-        super(code);
+    constructor(readonly code: 'invalid-input' | 'invalid-lease' | 'foreign-owner' | 'unaccounted', message: string = code) {
+        super(message);
         this.name = 'MemoryAdmissionError';
     }
 }
@@ -531,7 +531,13 @@ export class MemoryGovernor {
         count(live);
         count(retiring);
         // Publication without a covering reservation is a product failure, not a test hook.
-        if (live + retiring > cache.bytes) throw new MemoryAdmissionError('unaccounted');
+        // Named by cache: the owner that published bytes its reservation does not cover is the one this error must point at.
+        if (live + retiring > cache.bytes) {
+            const id = cache.registration.id;
+            auditCount('governor', `unaccounted:${id}`);
+            throw new MemoryAdmissionError('unaccounted',
+                `unaccounted: ${id} live ${live} retiring ${retiring} reserved ${cache.bytes}`);
+        }
         return { live, retiring, reservedBytes: cache.bytes, leaseCount: cache.leaseCount, closed: cache.closed };
     }
 

@@ -58,6 +58,18 @@ function timedStage<T>(surface: string, stage: AuditStage, fn: () => T): T {
  * (fixed-function, so no backdrop copy); `isolated` is an over-composed tile laid by a multiply group, used where the
  * backdrop under it is not opaque (a multiply over transparency is not a multiply). */
 type Mode = 'over' | 'modulate' | 'isolated';
+
+/** A stable small number per object, for the draw signature: a texture or route is named by identity, not by its contents. */
+const objectIds = new WeakMap<object, number>();
+let nextObjectId = 1;
+const idOfObject = (object: object | null): number => {
+    if (!object) return 0;
+    let id = objectIds.get(object);
+    if (id === undefined) { id = nextObjectId++; objectIds.set(object, id); }
+    return id;
+};
+const hashMix = (hash: number, value: number): number => Math.imul(hash ^ value, 16777619);
+const hashText = (text: string): number => { let hash = 2166136261; for (let i = 0; i < text.length; i++) hash = hashMix(hash, text.charCodeAt(i)); return hash; };
 /** A position's status at a scale: `missing` has no complete picture; `dirty` shows a picture a change has overtaken. */
 type Status = 'missing' | 'dirty' | 'ok';
 /** Per composed entry, kept beside the store so a store entry that is evicted and replaced starts with no slot. */
@@ -181,7 +193,10 @@ export interface TileComposerOptions {
 export interface TileComposer {
     /** Indexes `prepared`, composes what the view needs within the frame's limit, and fixes what this frame draws. `null`
      * (nothing presented) draws nothing. `omit` is the nodes a drag previews elsewhere: their tiles are composed without them. */
-    prepare(view: ViewState, budget: FrameBudget, prepared: PreparedPaint2d | null, omit?: ReadonlySet<string>): void;
+    /** Prepares one frame. True when anything visible changed since the previous call: a position composed, cancelled or dropped, a
+     * store slot freed for it, an invalidation, an index still settling, or a different draw list. False only when the frame draws
+     * exactly what the previous one drew. The caller must still treat a frame it did not present as changed. */
+    prepare(view: ViewState, budget: FrameBudget, prepared: PreparedPaint2d | null, omit?: ReadonlySet<string>): boolean;
     /** Encodes the composed targets of one band; the frame's surface pass then draws them with `drawGpu`. */
     encodeOffscreen(passes: OffscreenPasses, view: ViewState, band: PaintBand): void;
     /** Lays the frame's tiles of one band. Draws only: no allocation, no upload, no readback. */
@@ -308,6 +323,13 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     let disposed = false, presenting = false, indexing = false;
     // This frame's zoom, set in prepare: while zooming, coverage does not hold the frame for a position with nothing (see coverage).
     let zoomingFrame = false;
+    // Visible edits: counted wherever the composer changes what it draws or holds for drawing (a position composed, cancelled or
+    // dropped, a store slot freed for it, an invalidation). prepare reports whether any happened since its last call, together with
+    // a signature of the draw list it laid, so a frame that draws what the last one drew is reported unchanged.
+    let visibleEdits = 0;
+    let drawSignature = 0;
+    // The visible span at the compose scale while zooming, null otherwise: the positions a superseded entry must be exact under to be dropped.
+    let zoomSpan: Span | null = null;
     let routesEncodedFrame = -1;
     const omitTracker = new OmitTracker();
     let denied = false, settled = false, preparedSharp = true;
@@ -409,6 +431,34 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             content = true; geometry ||= slot.geometry; cpu ||= slot.cpu;
         }
         return content && (!geometry || cpu);
+    };
+
+    /** Whether every visible position under a stored entry is exact at `scale` (composed, or finished this frame). */
+    const exactUnder = (band: PaintBand, scale: number, entry: TileEntry, span: Span): boolean => {
+        const world = tileWorld(entry.key);
+        const x0 = Math.max(span.x0, Math.floor(world.x * scale / EDGE)), x1 = Math.min(span.x1, Math.ceil((world.x + world.width) * scale / EDGE));
+        const y0 = Math.max(span.y0, Math.floor(world.y * scale / EDGE)), y1 = Math.min(span.y1, Math.ceil((world.y + world.height) * scale / EDGE));
+        for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+            if (statusAt(band, scale, x, y) !== 'ok' && !finishedAt(band, scale, x, y)) return false;
+        }
+        return true;
+    };
+    /** While zooming, a position encoded at its exact scale supersedes its stand-ins at other scales. Each such entry, once every visible
+     * position under it is exact, is dropped: its target goes to the free list, and the next composition takes it. A zoom then keeps one
+     * scale's targets, not one set per frame (gpu's zoom memory rule). An entry that still stands in for a position not yet exact stays. */
+    const dropSuperseded = (band: PaintBand, scale: number, x: number, y: number): void => {
+        const span = zoomSpan;
+        if (!span) return;
+        for (let guard = 0; guard < 16; guard++) {
+            let victim: TileEntry | null = null;
+            for (const entry of standInsOf(band, scale, x, y)) {
+                if (slots.has(entry) && exactUnder(band, scale, entry, span)) { victim = entry; break; }
+            }
+            if (!victim) return;
+            store.remove(victim.key);
+            visibleEdits++;
+            auditCount(audit, 'compose:zoom:superseded');
+        }
     };
 
     /** The admitted, not yet encoded position at (x, y) of `scale`, when its entries are still stored with targets. The compositor
@@ -540,6 +590,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         let live = 0;
         for (const part of raw) if (isLivePart(part.item)) live++;
         if (!cut.length) {
+            visibleEdits++;
             const entry = store.putEmpty(key0);
             slots.set(entry, { mode: 'over', count: 0, inkNodes: NO_IDS, firstOrder: NO_ORDERS, live, geometry: false, cpu: false });
             auditCount(audit, 'tile:empty');
@@ -582,6 +633,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
 
     /** Releases what a position admitted; its acquired targets stay in the store, still missing their slots. */
     const cancel = (position: Position): void => {
+        visibleEdits++;
         for (const slice of position.slices) {
             for (const run of slice.runs) { run.prepared?.retire(); run.prepared = null; }
             for (const { route, run, clips } of slice.admitted) { route.retire(run); clips?.retire(); }
@@ -595,6 +647,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
      * the exact scale stays. A lowered position still building is cancelled first: its entries are at another scale. Returns
      * whether any bytes were freed. */
     const freeOwn = (view: ViewState, target: number): boolean => {
+        visibleEdits++;
         if (store.evict(FREE_FOR_REFUSAL, -1, view) > 0) return true;
         for (const position of building.values()) if (position.lowered) { cancel(position); building.delete(position.key); }
         for (const band of BANDS) store.dropScalesExcept(target, band);
@@ -634,6 +687,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 outcome = advance(position, budget, gpu);
             }
             if (outcome === 'done') {
+                visibleEdits++;
                 auditCount(audit, `compose:done:${pass}`);
                 building.delete(key);
                 finished.push(position);
@@ -691,6 +745,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             }
         }
         for (const pass of ['dirty', 'missing', 'ring'] as const) {
+            // While zooming only the visible positions are composed: the ring is the next view's, and the zoom's compose is its cost.
+            if (pass === 'ring' && zoomingFrame) continue;
             const margin = pass === 'ring' ? 1 : 0;
             for (const band of BANDS) {
                 for (let y = span.y0 - margin; y < span.y1 + margin; y++) {
@@ -889,7 +945,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             for (let y = span.y0; y < span.y1 && complete; y++) {
                 for (let x = span.x0; x < span.x1 && complete; x++) if (statusAt(band, target, x, y) === 'missing') complete = false;
             }
-            if (!zooming && complete) store.dropScalesExcept(target, band);
+            if (!zooming && complete && store.dropScalesExcept(target, band) > 0) visibleEdits++;
             for (let y = span.y0; y < span.y1; y++) {
                 for (let x = span.x0; x < span.x1; x++) {
                     const status = statusAt(band, target, x, y);
@@ -1026,8 +1082,9 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     };
 
     return {
-        prepare(view: ViewState, budget: FrameBudget, prepared: PreparedPaint2d | null, omit?: ReadonlySet<string>): void {
-            if (disposed) return;
+        prepare(view: ViewState, budget: FrameBudget, prepared: PreparedPaint2d | null, omit?: ReadonlySet<string>): boolean {
+            if (disposed) return true;
+            const editsBefore = visibleEdits;
             frame = budget.frameId;
             drawnInk.clear();
             retireLive();
@@ -1045,7 +1102,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             if (!prepared || !device || !(demand > 0) || !Number.isFinite(demand)) {
                 for (const position of finished) cancel(position);
                 finished = [];
-                drawCount = 0; presenting = false; return;
+                drawCount = 0; presenting = false; drawSignature = 0; return true;
             }
             presenting = true;
             preparedSharp = prepared.sharp !== false;
@@ -1064,6 +1121,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             const exact = exactScale(demand);
             // Compose targets the exact scale every frame, visible positions first (exact-first zoom, gpu).
             const target = exact;
+            zoomSpan = zooming ? spanAt(view, target) : null;
             drawnCamX = view.camera.x; drawnCamY = view.camera.y; drawnCamZ = view.camera.z;
 
             indexing = !parts.sync(prepared, budget);
@@ -1086,6 +1144,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     omitIds = nextOmit ? new Set(nextOmit) : null;
                     invalidated = true;
                 }
+                if (invalidated) visibleEdits++;
                 // A position admitted against the old content or omission would be encoded stale (it is not in the store
                 // yet, so markDirty cannot reach it): every position in progress restarts when either changes.
                 const span = spanAt(view, target);
@@ -1133,6 +1192,22 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             drawnTarget = target;
             buildDraws(view, target, zooming, budget);
             settled = !indexing && (paintLiveOnly || allExact(view, target));
+            // Changed unless the frame drew what the last one drew: no edit, the same draw list, and a settled index.
+            let signature = hashMix(drawCount, paintLiveOnly ? 1 : 0);
+            for (let i = 0; i < drawCount; i++) {
+                const draw = draws[i];
+                signature = hashMix(signature, draw.band === 'underlay' ? 1 : 2);
+                signature = hashMix(signature, hashText(String(draw.mode)));
+                signature = hashMix(signature, Math.round(draw.x * 64)); signature = hashMix(signature, Math.round(draw.y * 64));
+                signature = hashMix(signature, Math.round(draw.w * 64)); signature = hashMix(signature, Math.round(draw.h * 64));
+                signature = hashMix(signature, draw.clipOn ? Math.round(draw.cx) * 4 + Math.round(draw.cy) * 8 + Math.round(draw.cw) * 16 + Math.round(draw.ch) * 32 : 0);
+                signature = hashMix(signature, idOfObject(draw.texture));
+                signature = hashMix(signature, draw.live ? 1 + idOfObject(draw.liveRoute) : 0);
+                if (draw.ink.length) signature = hashMix(signature, hashText(draw.ink.join('\u0001')));
+            }
+            const changed = indexing || visibleEdits !== editsBefore || signature !== drawSignature;
+            drawSignature = signature;
+            return changed;
         },
         encodeOffscreen(passes: OffscreenPasses, _view: ViewState, band: PaintBand): void {
             // A route that converts its own inputs on the GPU (the text masks) does it once per frame, before any tile pass reads them.
@@ -1145,6 +1220,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             for (const position of finished) {
                 if (position.band !== band) { finished[kept++] = position; continue; }
                 encodePosition(passes, position);
+                if (zoomSpan) dropSuperseded(position.band, position.scale, position.x, position.y);
             }
             finished.length = kept;
         },

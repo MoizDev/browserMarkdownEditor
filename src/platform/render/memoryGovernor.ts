@@ -514,6 +514,11 @@ export class MemoryGovernor {
             this.belowRecoverySince = now;
             this.replan();
         }
+        // Pressure is over once the cool window has held, whether or not the raise is allowed: the label then follows the quality
+        // (degraded while it is lowered). Measured: a raise refused at 1.0 left 'trimming' for the whole run at 0.8.
+        if (this.state === 'trimming' && cool && this.belowRecoverySince !== null && now - this.belowRecoverySince >= POLICY.memoryRecoveryDelayMs) {
+            this.state = this.qualityLimit < 1 ? 'degraded' : 'normal';
+        }
         if (this.failedQuality !== null && now - this.levelSince >= POLICY.qualityFailureResetMs) {
             this.failedQuality = null;
             this.failureBackoffMs = POLICY.qualityFailureBackoffMinMs;

@@ -570,13 +570,16 @@ export class FrameScheduler {
     }
 
     /** The pane handled its own error (a GPU failure): it stays registered and its work for this frame is skipped. A pane
-     * that cannot handle it, or whose handler throws, is unregistered as before. */
+     * that cannot handle it, or whose handler throws, is unregistered as before. Its encodings for this frame are dropped
+     * (valid() is false for a demoted pane, so step 6 discards them unsubmitted). The next frame repaints it in full, under
+     * reason 'recover': with no reason recorded, a pane whose failed frame delivered nothing stayed blank after the stroke. */
     private recovers(entry: PaneEntry, error: unknown): boolean {
         let handled = false;
         try { handled = entry.pane.recover?.(error) === true; }
         catch { handled = false; }
         if (!handled || !this.live(entry)) return false;
         this.demoted.add(entry);
+        this.mark(entry, 'recover');
         return true;
     }
 

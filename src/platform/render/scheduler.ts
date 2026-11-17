@@ -293,6 +293,8 @@ function sameToken(a: FrameToken, b: FrameToken | null): boolean {
 }
 
 let schedulerStarted = false;
+/** Consecutive frames that may throw outside a pane's callback before the loop stops. One stray throw does not freeze the board. */
+const FRAME_FAILURE_LIMIT = 3;
 
 /** One app-wide rAF owner, explicitly started; importing it installs no listeners (C4.6:624–628).
  * Sanctioned deadline path: wakeAt coalesces future layer work into one timer that ONLY invalidates,
@@ -312,6 +314,8 @@ export class FrameScheduler {
     private wakeTimer: ReturnType<typeof setTimeout> | null = null;
     private wakeDeadline: number | null = null;
     private wakeEpoch = 0;
+    /** Frames in a row that threw outside every pane's callback; a successful frame resets it. */
+    private frameFailures = 0;
     private hiddenTimer: ReturnType<typeof setTimeout> | null = null;
     private hiddenAt: number | null = null;
     private retainedReleased = false;
@@ -908,9 +912,17 @@ export class FrameScheduler {
             const maintenanceStart = performance.now();
             this.runPolls(started + targetMs);
             this.maintenanceMs = performance.now() - maintenanceStart;
+            this.frameFailures = 0;
         } catch (error) {
-            this.stop();
+            // A frame that throws outside every pane's callback is reported and the loop goes on: stopping froze every pane for
+            // the rest of the session, with no restart (start() is one-shot). The pane callbacks are already contained by call(),
+            // so a throw here is the frame's own. Only a run of failing frames stops the loop, and then the owner is told why.
             this.options.onError(null, error);
+            this.frameFailures++;
+            if (this.frameFailures >= FRAME_FAILURE_LIMIT) {
+                this.stop();
+                this.options.onError(null, new Error(`Frame scheduler stopped after ${FRAME_FAILURE_LIMIT} failing frames in a row`));
+            }
         } finally {
             for (const item of encodings) if (!item.done) this.discard(item.work.entry, item.encoding);
             for (const batch of batches) if (!batch.submitted && this.live(batch.entry)) {
@@ -930,11 +942,14 @@ export class FrameScheduler {
                     const complete = meter.reportedCalls > 0 && meter.admittedBytes === meter.reportedBytes;
                     const missingMeasurement = !complete && (meter.admittedBytes > 0 || meter.reportedBytes > 0);
                     if (elapsedMs > targetMs || prepareOvershootMs > 0 || bytes > meter.allowance || meter.callMs > meter.sliceMs || missingMeasurement) {
-                        this.options.onPressure(Object.freeze({ frameId, targetMs, elapsedMs, prepareOvershootMs,
-                            admittedUploadBytes: meter.admittedBytes, uploadByteAllowance: meter.allowance,
-                            uploadByteOvershoot: Math.max(0, bytes - meter.allowance), reportedUploadBytes: meter.reportedBytes,
-                            reportedUploadCalls: meter.reportedCalls, uploadCallMs: meter.callMs, uploadTimeAllowanceMs: meter.sliceMs,
-                            uploadTimeOvershootMs: Math.max(0, meter.callMs - meter.sliceMs), uploadMeasurementsComplete: complete }));
+                        // The pressure report is the owner's code: its throw is reported without leaving the frame's bookkeeping.
+                        try {
+                            this.options.onPressure(Object.freeze({ frameId, targetMs, elapsedMs, prepareOvershootMs,
+                                admittedUploadBytes: meter.admittedBytes, uploadByteAllowance: meter.allowance,
+                                uploadByteOvershoot: Math.max(0, bytes - meter.allowance), reportedUploadBytes: meter.reportedBytes,
+                                reportedUploadCalls: meter.reportedCalls, uploadCallMs: meter.callMs, uploadTimeAllowanceMs: meter.sliceMs,
+                                uploadTimeOvershootMs: Math.max(0, meter.callMs - meter.sliceMs), uploadMeasurementsComplete: complete }));
+                        } catch (error) { this.options.onError(null, error); }
                     }
                 }
             } finally { this.refreshWakeTimer(); this.ensureFrame(); }

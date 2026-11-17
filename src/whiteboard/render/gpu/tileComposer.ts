@@ -431,6 +431,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     /** This frame's draws, per band. A band whose visible positions all have their exact tile swaps to them in one frame;
      * until then (and while zooming) each position shows its exact tile if it has one, else a stand-in clipped to it. */
     const buildDraws = (view: ViewState, target: number, zooming: boolean): void => {
+        const surfaceW = Math.round(view.viewport.width * view.viewport.dpr), surfaceH = Math.round(view.viewport.height * view.viewport.dpr);
         drawCount = 0;
         const cam = view.camera, scale = cam.z * view.viewport.dpr;
         const span = spanAt(view, target);
@@ -455,8 +456,11 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         auditCount(audit, 'tile:hit');
                         continue;
                     }
-                    const left = Math.round((x * EDGE / target - cam.x) * scale), top = Math.round((y * EDGE / target - cam.y) * scale);
-                    const right = Math.round(((x + 1) * EDGE / target - cam.x) * scale), bottom = Math.round(((y + 1) * EDGE / target - cam.y) * scale);
+                    // The stand-in's clip is the part of its position on the surface: a scissor outside the surface, or with a
+                    // negative origin, is refused by the device (measured: 'invalid-input' on open).
+                    const left = Math.max(0, Math.round((x * EDGE / target - cam.x) * scale)), top = Math.max(0, Math.round((y * EDGE / target - cam.y) * scale));
+                    const right = Math.min(surfaceW, Math.round(((x + 1) * EDGE / target - cam.x) * scale));
+                    const bottom = Math.min(surfaceH, Math.round(((y + 1) * EDGE / target - cam.y) * scale));
                     if (right <= left || bottom <= top) continue;
                     const clip: Rect = { x: left, y: top, width: right - left, height: bottom - top };
                     for (const entry of standInsOf(band, target, x, y)) {
@@ -586,6 +590,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         drawGpu(pass: GpuPass, view: ViewState, band: PaintBand): void {
             if (!drawCount) return;
             const cam = view.camera, scale = cam.z * view.viewport.dpr;
+            const surfaceW = Math.round(view.viewport.width * view.viewport.dpr), surfaceH = Math.round(view.viewport.height * view.viewport.dpr);
             // Scratch rectangles, rewritten per draw: the pass reads them before this loop moves on.
             const dest: Rect = { x: 0, y: 0, width: 0, height: 0 };
             const scissor: RectI = { x: 0, y: 0, width: 0, height: 0 };
@@ -595,6 +600,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 if (draw.band !== band) continue;
                 dest.x = (draw.x - cam.x) * scale; dest.y = (draw.y - cam.y) * scale;
                 dest.width = draw.w * scale; dest.height = draw.h * scale;
+                // A draw wholly off the surface draws nothing; it is skipped before any clip or group is pushed.
+                if (dest.x + dest.width <= 0 || dest.y + dest.height <= 0 || dest.x >= surfaceW || dest.y >= surfaceH) continue;
                 let clip: ReturnType<GpuPass['pushClip']> | null = null;
                 if (draw.clipOn) {
                     scissor.x = draw.cx; scissor.y = draw.cy; scissor.width = draw.cw; scissor.height = draw.ch;
@@ -602,9 +609,10 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 }
                 let group: GroupToken | null = null;
                 if (draw.mode === 'isolated') {
-                    bounds.x = Math.floor(dest.x); bounds.y = Math.floor(dest.y);
-                    bounds.width = Math.ceil(dest.x + dest.width) - bounds.x;
-                    bounds.height = Math.ceil(dest.y + dest.height) - bounds.y;
+                    // A group's bounds are on the surface too: a negative origin is refused like a negative scissor.
+                    bounds.x = Math.max(0, Math.floor(dest.x)); bounds.y = Math.max(0, Math.floor(dest.y));
+                    bounds.width = Math.min(surfaceW, Math.ceil(dest.x + dest.width)) - bounds.x;
+                    bounds.height = Math.min(surfaceH, Math.ceil(dest.y + dest.height)) - bounds.y;
                     group = pass.beginGroup(bounds, GROUP);
                 }
                 lay(pass, draw.texture, CROP, dest, draw.mode === 'modulate' ? 'modulate' : 'over');

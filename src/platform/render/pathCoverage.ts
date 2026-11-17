@@ -67,6 +67,10 @@ export interface PathCoverageShapes {
     readonly edges: number;
     /** Origin-relative bounds of the shapes, in the same units as the triangles. */
     readonly bounds: Readonly<{ x0: number; y0: number; x1: number; y1: number }>;
+    /** Where this set's origin sits relative to the request's origin, in the request's local units (default 0,0). A request's sets
+     * may then each keep their own origin and cache entry: the kit moves each by this shift on the device, so a group of paths is
+     * one stencil and one cover without copying their triangles into one set. */
+    readonly shift?: readonly [number, number];
 }
 
 export interface PathCoverageRequest {
@@ -108,6 +112,9 @@ export interface PreparedPathPart {
     readonly negativeVertices: number;
     /** The part's whole buffer as the one vertex binding of every draw of it, built once at admission. */
     readonly bindings: readonly BufferSlice[];
+    /** The set's device-pixel shift (its `shift` under the admission's affine): zero for the request's own origin. */
+    readonly shiftX: number;
+    readonly shiftY: number;
     /** The buffer's shared entry; the admission holds one reference on it. */
     readonly set: VertexSet;
 }
@@ -429,6 +436,14 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
     };
     const isReady = (): boolean => !disposed && !failed && !unsupported && !!pipelines && !!device &&
         host.device() === device && host.generation === device.generation;
+    /** A set's shift in device pixels: the affine's linear part applied to its local shift (a translation maps to the same offset). */
+    const deviceShift = (shift: readonly [number, number] | undefined, affine: Affine): [number, number] => {
+        if (!shift || (shift[0] === 0 && shift[1] === 0)) return [0, 0];
+        const [a, b, c, d] = affine;
+        return [a * shift[0] + c * shift[1], b * shift[0] + d * shift[1]];
+    };
+    /** Whether a part draws under its own winding uniforms (it has a shift) rather than the request's. */
+    const partShifted = (part: PreparedPathPart): boolean => part.shiftX !== 0 || part.shiftY !== 0;
     const mapBounds = (bounds: PathCoverageShapes['bounds'], affine: Affine): { x0: number; y0: number; x1: number; y1: number } => {
         const [a, b, c, d, e, f] = affine;
         const corners = [[bounds.x0, bounds.y0], [bounds.x1, bounds.y0], [bounds.x0, bounds.y1], [bounds.x1, bounds.y1]];
@@ -477,18 +492,20 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
                 for (const [dx, dy] of UNION_JITTER) {
                     const jitteredUniforms = windingSlice(viewport, affine, dx, dy);
                     for (const part of prepared.parts) {
-                        drawWinding(pass, part, union, jitteredUniforms, bounds, 0, part.positiveVertices);
+                        const uniforms = partShifted(part) ? windingSlice(viewport, affine, dx + part.shiftX, dy + part.shiftY) : jitteredUniforms;
+                        drawWinding(pass, part, union, uniforms, bounds, 0, part.positiveVertices);
                     }
                     pass.draw({ pipeline: set.coverAdd, bindings: { uniforms: [{ binding: 0, slice: quarterUniforms }], textures: NO_TEXTURES },
                         vertices: NO_VERTICES, first: 0, count: 4, instances: 1, scissor: bounds });
                 }
             } else {
                 for (const part of prepared.parts) {
-                    if (prepared.rule === 'evenodd') drawWinding(pass, part, invert, windingUniforms, bounds, 0, part.positiveVertices + part.negativeVertices);
-                    else if (prepared.rule === 'union') drawWinding(pass, part, union, windingUniforms, bounds, 0, part.positiveVertices);
+                    const uniforms = partShifted(part) ? windingSlice(viewport, affine, part.shiftX, part.shiftY) : windingUniforms;
+                    if (prepared.rule === 'evenodd') drawWinding(pass, part, invert, uniforms, bounds, 0, part.positiveVertices + part.negativeVertices);
+                    else if (prepared.rule === 'union') drawWinding(pass, part, union, uniforms, bounds, 0, part.positiveVertices);
                     else {
-                        drawWinding(pass, part, increment, windingUniforms, bounds, 0, part.positiveVertices);
-                        drawWinding(pass, part, decrement, windingUniforms, bounds, part.positiveVertices, part.negativeVertices);
+                        drawWinding(pass, part, increment, uniforms, bounds, 0, part.positiveVertices);
+                        drawWinding(pass, part, decrement, uniforms, bounds, part.positiveVertices, part.negativeVertices);
                     }
                 }
                 pass.draw({ pipeline: coverPipeline,
@@ -587,7 +604,8 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         let mx0 = Infinity, my0 = Infinity, mx1 = -Infinity, my1 = -Infinity;
         for (const set of sets) {
             if (set.positive.length + set.negative.length === 0) continue;
-            const mapped = mapBounds(set.bounds, affine);
+            const mapped = mapBounds(set.bounds, affine), [sx, sy] = deviceShift(set.shift, affine);
+            mapped.x0 += sx; mapped.x1 += sx; mapped.y0 += sy; mapped.y1 += sy;
             mx0 = Math.min(mx0, mapped.x0); my0 = Math.min(my0, mapped.y0); mx1 = Math.max(mx1, mapped.x1); my1 = Math.max(my1, mapped.y1);
         }
         if (mx0 === Infinity) return { status: 'empty' };
@@ -604,7 +622,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         if (composite && coverageTargetBytes(bounds.width, 1, grid === 4 ? 1 : PATH_COVERAGE_SAMPLES, grid) > PATH_COVERAGE_SCRATCH_BYTES) {
             auditCount(audit, 'fallback:raster-route'); return { status: 'unsupported' };
         }
-        const parts: VertexSet[] = [];
+        const parts: VertexSet[] = [], shifts: [number, number][] = [];
         for (const set of sets) {
             const vertexCount = (set.positive.length + set.negative.length) / 2;
             if (!Number.isSafeInteger(vertexCount) || vertexCount % 3) throw new RangeError('Invalid path triangle storage');
@@ -614,6 +632,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
             if (entry === 'deferred') auditCount(audit, 'upload:deferred:admission');
             if (typeof entry === 'string') return { status: entry };
             parts.push(entry);
+            shifts.push(deviceShift(set.shift, affine));
         }
         if (!parts.length) return { status: 'empty' };
         // The scratch is ensured after the buffers, and before any reference is taken: a refusal leaves nothing held.
@@ -654,9 +673,10 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
             : output;
         // The vertex buffers' bytes are the shared sets', counted once; this admission owns only its target.
         const prepared: PreparedPathCoverage = Object.freeze({ device: owner, target, clip, rule, output: preparedOutput, bounds, grid,
-            parts: Object.freeze(parts.map(set => Object.freeze({ vertices: set.buffer, positiveVertices: set.positiveVertices,
+            parts: Object.freeze(parts.map((set, i) => Object.freeze({ vertices: set.buffer, positiveVertices: set.positiveVertices,
                 negativeVertices: set.negativeVertices,
-                bindings: Object.freeze([{ buffer: set.buffer, offset: 0, bytes: (set.positiveVertices + set.negativeVertices) * 8 }]), set }))),
+                bindings: Object.freeze([{ buffer: set.buffer, offset: 0, bytes: (set.positiveVertices + set.negativeVertices) * 8 }]),
+                shiftX: shifts[i][0], shiftY: shifts[i][1], set }))),
             viewport: Object.freeze({ width: viewport.width, height: viewport.height }),
             affine: Object.freeze([...affine]) as unknown as Affine,
             colour: Object.freeze([...colour]) as unknown as readonly [number, number, number, number], gpuBytes: targetBytes,

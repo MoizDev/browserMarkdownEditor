@@ -88,6 +88,11 @@ export function opaqueWorldOf(host: HostBlock, inverted: boolean, drawnPages?: r
     if (host.kind === 'whiteboard') return inverted ? [] : WHOLE_PLANE;
     return drawnPages ?? [];
 }
+/** The pages the host's own layers have painted at least once, read from each layer that reports them (`drawnPageRects`: a
+ * notebook's paper, a PDF's page layer). A layer that reports none contributes nothing, so a claim is never made early. */
+export function drawnPagesOf(layers: readonly unknown[]): readonly Rect[] {
+    return layers.flatMap(layer => (layer as { drawnPageRects?: () => readonly Rect[] }).drawnPageRects?.() ?? []);
+}
 interface Estimate {
     readonly frame: PaintSource;
     // A resumable walk of the source's items in draw order: no copy of the item list is made for the estimate.

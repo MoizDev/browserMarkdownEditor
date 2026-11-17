@@ -321,16 +321,20 @@ export interface GfxDevice {
     readonly limits: GfxLimits;
     createBuffer(bytes: number, uses: readonly BufferUse[], lease: ByteLease): BufferHandle;
     writeBuffer(dst: BufferHandle, offset: number, src: ArrayBufferView): void;
+    // `mips` allocates the full chain down to 1×1, charged to the lease in full (about a third more than level 0).
     createTexture(
         width: number,
         height: number,
         format: TextureFormat,
         uses: readonly TextureUse[],
         lease: ByteLease,
+        options?: { mips?: boolean },
     ): TextureHandle;
     writeTexture(dst: TextureHandle, rect: RectI, src: BitmapUpload | PixelUpload): void;
-    // Clamp at the edge; no mip levels.
-    createSampler(filter: 'nearest' | 'linear'): SamplerHandle;
+    // Fills levels 1… from level 0 on the GPU. Only for a texture created with `mips`; call after each write to level 0.
+    generateMips(texture: TextureHandle): void;
+    // Clamp at the edge. 'linear-mipmap' trilinear-filters across the chain; it reads level 0 alone when there is none.
+    createSampler(filter: 'nearest' | 'linear' | 'linear-mipmap'): SamplerHandle;
     createClip(mask: TextureHandle, deviceBounds: RectI): ClipHandle;
     // Admitted in prepare on the same lease (texture then stencil target). Destroy both to retire it.
     createCoverageTarget(width: number, height: number, samples: Samples, lease: ByteLease): CoverageTarget;

@@ -813,9 +813,11 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     // by their live layer). A drag moves only those, so its base picture stays current (measured: stale:revision on 186 of 186
     // drag-sat frames). Unknown history (null, or a structural change) is stale.
     const undrawnChangeSince = (from: number, to: number): boolean => {
-        const changed = options.changedNodesSince?.(from, to);
-        if (!changed) return false;
+        // The live scene history first (it names the revisions a frame lags behind); the pinned frame's own history when the
+        // live one is not retained for this span.
         const now = options.frames.readFrame();
+        const changed = options.changedNodesSince?.(from, to) ?? (now && now.sceneRevision === to ? now.changedNodesSince?.(from) : null);
+        if (!changed) return false;
         const omitted = now ? options.omitNodes?.(now) ?? null : null, live = options.liveNodeIds?.();
         for (const id of changed) if (!omitted?.has(id) && !live?.has(id)) return false;
         return true;

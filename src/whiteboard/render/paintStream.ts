@@ -99,6 +99,8 @@ export interface PaintFrameRoot {
     readonly sourceWorld?: Readonly<Rect>;
     /** Changed regions since an older raster revision; absent means the cache must invalidate fully. */
     readonly regionChangesSince?: (from: number) => RegionChanges;
+    /** The node ids changed since an older revision of this frame's scene; absent or null means unknown. */
+    readonly changedNodesSince?: (from: number) => ReadonlySet<string> | null;
     /** False only when provably no node of `nodes` paints inside `world`; unknown is true. */
     readonly sensitiveMayMeet?: (world: Readonly<Rect>, nodes: ReadonlySet<string>) => boolean;
     readonly mayPaint?: (world: Readonly<Rect>) => boolean;

@@ -31,7 +31,7 @@ import type { MediaId } from '../../whiteboard/model/media';
 import type { ComposedBoardSession } from '../../whiteboard/session/factoryTypes';
 import { attachView } from '../../whiteboard/viewer/attachView';
 import { createBoardNavigationHost } from '../../whiteboard/viewer/navigationHost';
-import type { ViewerEngine, ViewerViewParams } from '../../whiteboard/viewer/types';
+import type { ViewerEngine, ViewerSnapshot, ViewerViewParams } from '../../whiteboard/viewer/types';
 import { paintKey, type BoardViewLease, type BoardViewParameters, type BoardViewSnapshot } from './boardHostRuntime';
 import { createNativeViewPlatform } from './nativeViewPlatform';
 import { createNativeEditingLease, type NativeEditingToolOptions, type NativeEmbedInfrastructure } from './nativeEditingLease';
@@ -199,7 +199,25 @@ export function createNativeViewLease(options: {
     // The viewer's 'paint' (paint progress) reaches this lease's listeners, and the board's own listener, but it does not redraw
     // the native pane: the pane's picture did not change.
     const publish = (change?: string) => { if (!disposed) for (const listener of [...listeners]) listener(change); };
-    const invalidate = (change?: string) => { if (change !== 'paint') platformPane?.invalidate('native-view'); publish(change); };
+    // What the platform pane last drew, as the viewer snapshot it was drawn from. A viewer 'state' publish repaints the pane only
+    // when a field the pane draws from has moved since then (layers, scene revision, layout, palette, appearance, readiness,
+    // backend, paint progress). Selection, accessibility and the read-only reason are state-only: the picture of a selection
+    // is drawn by the interaction layers, which invalidate themselves, so a selection publish here repaints nothing new.
+    // The viewer is attached below; until then no snapshot exists and every invalidation is taken as a change.
+    let snapshotNow: () => ViewerSnapshot | null = () => null;
+    let drawn: ViewerSnapshot | null = null;
+    const invalidatePane = () => { drawn = snapshotNow(); platformPane?.invalidate('native-view'); };
+    const drawsChanged = (): boolean => {
+        const next = snapshotNow();
+        if (!next || !drawn) return true;
+        return drawn.state !== next.state || drawn.sceneRevision !== next.sceneRevision || drawn.layout !== next.layout ||
+            drawn.palette !== next.palette || drawn.appearance.background !== next.appearance.background ||
+            drawn.appearance.inverted !== next.appearance.inverted || drawn.layers !== next.layers ||
+            drawn.backendPreference !== next.backendPreference || paintKey(drawn.state, drawn.paint) !== paintKey(next.state, next.paint);
+    };
+    // Direct callers (navigation, camera, the lease's own refreshes) always repaint; only the viewer's state publishes are filtered.
+    const invalidate = (change?: string) => { if (change !== 'paint') invalidatePane(); publish(change); };
+    const viewerChanged = (change?: string) => { if (change !== 'paint' && drawsChanged()) invalidatePane(); publish(change); };
     const cameraPorts: CameraPorts = { currentPath: () => current() ? host.identity(identity.documentId)?.path : undefined,
         invalidate, onError: options.onError };
     const cameraClaim = options.cameraHandoff ? claimCamera(options.cameraHandoff, runtime, limits, insets, cameraPorts) : null;
@@ -326,6 +344,7 @@ export function createNativeViewLease(options: {
         animation.setVisible(parameters.visible && current(), performance.now());
         viewer = attachView({ session: board, token, view: viewParameters(), images, liveFrames: videoFrameOverlay(images.frames, syncAnimation, keys => images.setDemand(keys)),
             reveal, onError: options.onError });
+        snapshotNow = () => viewer.getSnapshot();
     } catch (error) { animation.dispose(); video.dispose(); backdrop?.dispose(); images.dispose(); if (!cameraClaim) cameraOwner.dispose(); throw error; }
     let presentedView: ViewState | null = null, presentedFrame: number | null = null, qualityNotice: string | null = null,
         qualityTimer: ReturnType<typeof setTimeout> | null = null;
@@ -515,7 +534,7 @@ export function createNativeViewLease(options: {
         recordNativeAgentViewport(boardRuntime, { camera: camera.camera, viewport: camera.viewport, insets, focused: parameters.focused,
             inverted: parameters.inverted });
     }
-    const stopViewer = viewer.subscribe(invalidate);
+    const stopViewer = viewer.subscribe(viewerChanged);
     const stopSelection = runtime.selection.subscribe(() => { viewer.setView(viewParameters()); publish(); });
     let resize: ResizeObserver | undefined;
     const detachSurface = () => { resize?.disconnect(); resize = undefined; surface = null; };

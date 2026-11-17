@@ -39,6 +39,7 @@ interface Owner {
     readonly rasterVariant?: string;
     readonly sourceWorld?: Readonly<Rect>;
     readonly regionChangesSince?: (from: number) => RegionChanges;
+    readonly changedNodesSince?: (from: number) => ReadonlySet<string> | null;
     readonly sensitiveMayMeet?: (world: Readonly<Rect>, nodes: ReadonlySet<string>) => boolean;
     readonly mayPaint?: (world: Readonly<Rect>) => boolean;
     readonly occupiedRoot?: Readonly<Rect>;
@@ -87,29 +88,9 @@ const sameSet = (a: ReadonlySet<string> | undefined, b: ReadonlySet<string> | un
     for (const id of a) if (!b.has(id)) return false;
     return true;
 };
-// Plain data (items, path commands, transforms, clips, rects) compares by value. Anything else — a class instance, a
-// handle, a function — compares by identity, so an unknown kind of value is treated as a change, never as the same.
-const MAX_SAME_DEPTH = 24;
-const sameValue = (a: unknown, b: unknown, depth = 0): boolean => {
-    if (Object.is(a, b)) return true;
-    if (depth > MAX_SAME_DEPTH || typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false;
-    if (Array.isArray(a)) {
-        if (!Array.isArray(b) || a.length !== b.length) return false;
-        for (let i = 0; i < a.length; i++) if (!sameValue(a[i], b[i], depth + 1)) return false;
-        return true;
-    }
-    if (Object.getPrototypeOf(a) !== Object.prototype || Object.getPrototypeOf(b) !== Object.prototype) return false;
-    const keys = Object.keys(a);
-    if (keys.length !== Object.keys(b).length) return false;
-    for (const key of keys) {
-        if (!Object.prototype.hasOwnProperty.call(b, key)) return false;
-        if (!sameValue((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key], depth + 1)) return false;
-    }
-    return true;
-};
 const sameItems = (a: readonly PaintItem[], b: readonly PaintItem[]): boolean => {
     if (a.length !== b.length) return false;
-    for (let i = 0; i < a.length; i++) if (!sameValue(a[i], b[i])) return false;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
     return true;
 };
 const sameWindows = (a: readonly PaintWindow[], b: readonly PaintWindow[]): boolean => {
@@ -117,15 +98,12 @@ const sameWindows = (a: readonly PaintWindow[], b: readonly PaintWindow[]): bool
     for (let i = 0; i < a.length; i++) if (a[i].band !== b[i].band || !sameItems(a[i].items, b[i].items)) return false;
     return true;
 };
-// A source hands out a new document object for the same revision on every stream; the revision is the document's identity.
-const sameDocument = (a: BoardDoc | undefined, b: BoardDoc | undefined): boolean =>
-    a === b || (!!a && !!b && a.rev === b.rev);
 /** Whether two staged frames would draw the same picture: the same scene, theme, variant, token and sensitivity set,
- * and the same items in the same order, compared by value. A source rebuilds its items for each stream, so identity
- * alone would call an unchanged scene new; measured in a drag tail, that made 2 of 3 republishes pixel-identical. */
+ * and the same items in the same order. Items compare by identity, which is what a republish of an unchanged scene
+ * reuses from its source; a republish that does not reuse them is conservatively treated as a change. */
 function sameFrame(a: PaintSource, b: PaintSource): boolean {
     if (a.liveOnly !== b.liveOnly || a.sceneRevision !== b.sceneRevision || a.theme !== b.theme ||
-        a.rasterVariant !== b.rasterVariant || !sameDocument(a.sourceDoc, b.sourceDoc) || !sameValue(a.sourceWorld, b.sourceWorld) ||
+        a.rasterVariant !== b.rasterVariant || a.sourceDoc !== b.sourceDoc || a.sourceWorld !== b.sourceWorld ||
         !sameSet(a.sensitiveNodes, b.sensitiveNodes) || !sameShallow(a.token, b.token)) return false;
     return a.liveOnly
         ? sameWindows((a as { windows: readonly PaintWindow[] }).windows, (b as { windows: readonly PaintWindow[] }).windows)
@@ -159,6 +137,7 @@ function streamOwner(pin: PinnedPaintStream): Owner {
         get rasterVariant() { return stream.rasterVariant; },
         get sourceWorld() { return stream.sourceWorld; },
         get regionChangesSince() { return stream.regionChangesSince; },
+        get changedNodesSince() { return stream.changedNodesSince; },
         get sensitiveMayMeet() { return stream.sensitiveMayMeet; },
         get mayPaint() { return stream.mayPaint; },
         get occupiedRoot() { return stream.occupiedRoot; },
@@ -341,7 +320,7 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
         const root = { token: o.token, sceneRevision: o.sceneRevision,
             theme: o.theme, sourceDoc: o.sourceDoc, sensitiveNodes: o.sensitiveNodes,
             sessionRasters: o.sessionRasters, rasterVariant: o.rasterVariant, sourceWorld: o.sourceWorld, openTile: o.openTile,
-            regionChangesSince: o.regionChangesSince, sensitiveMayMeet: o.sensitiveMayMeet, mayPaint: o.mayPaint, occupiedRoot: o.occupiedRoot,
+            regionChangesSince: o.regionChangesSince, changedNodesSince: o.changedNodesSince, sensitiveMayMeet: o.sensitiveMayMeet, mayPaint: o.mayPaint, occupiedRoot: o.occupiedRoot,
             inkNodeIds: work.inkNodeIds };
         const frame: PaintSource = staged.kind === 'windows'
             ? Object.freeze({ ...root, liveOnly: true as const, windows: Object.freeze([...staged.underlay.finish(), ...staged.content.finish()]) })

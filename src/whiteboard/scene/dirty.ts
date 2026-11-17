@@ -10,6 +10,9 @@ export interface SceneDirty {
     readonly nodes: ReadonlyMap<NodeId, number>;
     readonly sheets: ReadonlySet<SheetId>;
     readonly pages: boolean;
+    /** A sheet itself was created, changed or removed: the scene's regions of that revision are unknown. A node edit inside
+     * a sheet is not this: its sheet is in `sheets` only because the sheet holds the node. */
+    readonly structure: boolean;
 }
 const GEOMETRY = SceneDirtyFlag.Paint | SceneDirtyFlag.Geometry | SceneDirtyFlag.Bounds;
 const STRUCTURE = GEOMETRY | SceneDirtyFlag.Structure | SceneDirtyFlag.Order | SceneDirtyFlag.Placement | SceneDirtyFlag.Inherited;
@@ -34,7 +37,7 @@ export function sceneDirty(applied: Applied, doc: BoardDoc): SceneDirty {
         const old = nodes.get(id) ?? 0, next = old | flags;
         if (next !== old) { nodes.set(id, next); queue.push(id); }
     };
-    let pages = false;
+    let pages = false, structure = false;
     for (const op of applied.forward) {
         switch (op.t) {
             case 'create': add(op.node.id, STRUCTURE); break;
@@ -42,11 +45,12 @@ export function sceneDirty(applied: Applied, doc: BoardDoc): SceneDirty {
             case 'set': add(op.id, property(op.key, doc.nodes.get(op.id)?.kind === 'stroke')); break;
             case 'splice': add(op.id, GEOMETRY | SceneDirtyFlag.Text); break;
             case 'board': if (op.key === 'host.paper') pages = true; break;
-            case 'sheet': sheets.add(op.op === 'create' ? op.sheet.id : op.id); break;
+            case 'sheet': sheets.add(op.op === 'create' ? op.sheet.id : op.id); structure = true; break;
             case 'media':
                 for (const id of doc.mediaRefs.get(op.op === 'add' ? op.entry.id : op.id) ?? []) add(id, SceneDirtyFlag.Paint);
                 break;
-            case 'ext': break; // Preserved unknown tokens are not a second authoring/style channel.
+            // Preserved unknown tokens are not a second authoring/style channel; an extension that names a sheet is a sheet change.
+            case 'ext': if (op.target === 'sheet') structure = true; break;
         }
     }
     for (const id of applied.touched.nodes) if (!nodes.has(id)) add(id, SceneDirtyFlag.Paint);
@@ -56,5 +60,5 @@ export function sceneDirty(applied: Applied, doc: BoardDoc): SceneDirty {
             for (const attached of doc.attachedTo.get(id) ?? []) add(attached, GEOMETRY);
         }
     }
-    return { nodes, sheets, pages };
+    return { nodes, sheets, pages, structure };
 }

@@ -20,6 +20,8 @@ import { appendPath2d, path2d } from '../render/reference/coverage2d';
 // Provenance: wet/dry ink handover, bounded ink outline and C4 layer contracts;
 // independently wired renderer, no third-party source.
 const CHUNK = 256, FINAL_SPANS = 16, TEMP_BYTES = 4 * 1024 * 1024, PATH_BLOCK = 256 * 1024;
+/** The tip's upload grant past a frame's yield: one kit upload piece (64 KiB), so a chunk's append always fits. */
+const TIP_UPLOAD_BYTES = 64 * 1024;
 type Bounds = { x: number; y: number; w: number; h: number };
 type Prepared = { readonly snapshot: WetInkSnapshot; path: Path2D | null; readonly origin: readonly [number, number]; readonly leases: ByteLease[];
     readonly scale: number; readonly bounds: Bounds | null; readonly coverageChunks: readonly InkCoverage[]; readonly serial: number };
@@ -376,13 +378,29 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         runs.set(key, slot);
         return slot;
     };
-    // Admits every band of every pending stroke whose run is not current. A live stroke is one input ahead of its
+    // The newest publication's admission never waits for the frame's yield. A publication is tessellated in the same prepare, and that
+    // tessellation spends the frame's time, so the budget reads yielded at this point on nearly every drawing frame (traced: 95% of the
+    // frames that published). The kit refuses every upload claim once a frame yields, so skipping the admission was the same as deferring
+    // it: the tip reached the screen one frame late on every other frame, and the paced draw answered 48% of its inputs (96% on the
+    // frames that did not yield). The tip is admitted with a bounded grant instead (tipBudget). A live stroke is one input ahead of its
     // tessellation, so the run admitted is the last completed publication of the node (the same match draw2d uses), and
     // the newest publication is admitted once it completes. Only the tip is new work: the route keys its geometry by chunk.
+    // A frame's tip grant: the frame's own claims first, then TIP_UPLOAD_BYTES past a yield. The bytes the device then writes are
+    // reported to the scheduler like any upload, so the overshoot is measured, not hidden. One counter per frame, shared by this layer's
+    // admissions; a media claim is never granted here (it has its own grant).
+    let tipFrame = -1, tipBytes = 0;
+    const tipBudget = (budget: FrameBudget): FrameBudget => {
+        if (tipFrame !== budget.frameId) { tipFrame = budget.frameId; tipBytes = 0; }
+        return { ...budget, shouldYield: () => false, claimUpload: (bytes: number, kind?: 'media') => {
+            if (budget.claimUpload(bytes, kind)) return true;
+            if (kind === 'media' || tipBytes + bytes > TIP_UPLOAD_BYTES) return false;
+            tipBytes += bytes; return true;
+        } };
+    };
     const admitRuns = (host: LayerHost, view: ViewState, budget: FrameBudget): void => {
         const routes = inkRoutes ??= gpuRoutes.createInkRoutes(host, 'board-wet');
         const palette = options.palette(), pending = handover?.pendingSnapshots() ?? [], viewKey = viewKeyOf(view);
-        const audited = renderAuditEnabled();
+        const audited = renderAuditEnabled(), tip = tipBudget(budget);
         // Deleting the entry being visited is safe in a Map's iteration; a slot whose stroke is gone is dropped here.
         for (const [key, slot] of runs) if (!isPending(pending, slot.gesture)) dropSlot(key);
         for (const snapshot of pending) {
@@ -396,7 +414,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                     && (!current.viewBound || current.viewKey === viewKey)) { if (audited) auditCount('wet', 'admit-skip:fresh'); continue; }
                 // A band with nothing shown yet is admitted even past the frame's budget: the tessellation spent it, and until
                 // it is admitted the frame presents without the newest tip (measured: 41 yields left drawing frames unsharp).
-                if (current?.shown && budget.shouldYield()) { if (audited) auditCount('wet', 'admit-skip:yield'); return; }
+                if (audited && current?.shown && budget.shouldYield()) auditCount('wet', 'admit-tip:yielded');
                 const reuse = current && current.serial === source.serial && current.palette === palette ? current : null;
                 const material = reuse ? reuse.material : bandMaterial(shown, band, palette);
                 if (!material) {
@@ -410,7 +428,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                     clips: shown.presentation.clips ?? [], coverage: source.coverageChunks, material } satisfies PaintInkItem;
                 const route = gpuRoutes.inkRouteFor(item) === 'ink-analytic' ? routes.analytic : routes.union;
                 const before = audited ? route.memory().gpuBytes : 0;
-                const admission = route.admit([item], view, 'over', budget);
+                const admission = route.admit([item], view, 'over', tip);
                 if (audited) {
                     auditCount('wet', `admit:${admission.status}`, 1, { [route.id]: 1 });
                     const grown = route.memory().gpuBytes - before; if (grown > 0) auditCount('wet', 'upload:vertex', 1, { bytes: grown });
@@ -580,9 +598,33 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
             bounds: w.tail.bounds ? unionBounds(s.bounds, w.tail.bounds) : s.bounds, coverageChunks: [...s.chunks, ...w.tail.chunks], serial: ++publicationVersion });
         work = null; return true;
     };
-    const prepare = (view: ViewState, budget: FrameBudget) => {
-        if (disposed || !owner || !options.current() || lastPrepareFrame === budget.frameId) return;
+    // The Layer contract's answer: `false` only when the picture this band draws is the one it last drew. The picture is fingerprinted
+    // from everything the band draws (each run and what it shows, the pending strokes and whether the board draws them, the view, and the
+    // live state). A shown object is named once, so a replaced shown changes the fingerprint. The answer is per band: the shared prepare
+    // tells whether the stroke's state is final for the frame, and each band compares it with its own last draw.
+    const shownIds = new WeakMap<object, number>();
+    let nextShownId = 0;
+    const shownIdOf = (shown: WetShown | null): number => {
+        if (!shown) return 0;
+        let id = shownIds.get(shown);
+        if (id === undefined) shownIds.set(shown, id = ++nextShownId);
+        return id;
+    };
+    const fingerprintOf = (view: ViewState): string => {
+        const drawn = options.boardDrawnInk(), parts: string[] = [viewKeyOf(view), options.current() ? 'c' : 'x', disposed ? 'd' : 'l'];
+        for (const snapshot of handover?.pendingSnapshots() ?? []) parts.push(`s${snapshot.identity.gestureSequence}:${drawn.has(snapshot.identity.nodeId) ? 1 : 0}`);
+        for (const [key, slot] of runs) {
+            parts.push(`${key}:${slot.state}:${slot.serial}:${slot.scale}:${slot.viewBound ? slot.viewKey : '-'}:${slot.token.viewLease}:${slot.token.deviceGeneration}:${shownIdOf(slot.shown)}`);
+        }
+        return parts.join('|');
+    };
+    const drawnKey: Partial<Record<WetBand, string>> = {};
+    let frameAnswer = false;
+    const prepareShared = (view: ViewState, budget: FrameBudget): boolean => {
+        if (disposed || !owner || !options.current()) return false;
+        if (lastPrepareFrame === budget.frameId) return frameAnswer;
         lastPrepareFrame = budget.frameId;
+        let complete = false;
         // A denied reservation waits for a genuine scheduler wake, not another polling frame.
         denied = false;
         try {
@@ -602,20 +644,26 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                         const old = prepared.get(item.identity.gestureSequence);
                         if (old?.snapshot !== item || old.scale < scaleAt(view, item)) { next = item; break; }
                     }
-                    if (!next) { dirty = false; break; }
+                    if (!next) { dirty = false; complete = true; break; }
                     if (!begin(next, view)) { denied = true; break; }
                 }
                 step();
-                // A retained tail chunk is folded into the publication by the next step of this same prepare, so the newest
-                // tip is admitted in the frame that follows its input. Stopping after the tail chunk left that publication one
-                // frame behind (the drawing's paced draw answered 49% on the GPU against 98% on canvas2d). A denied reservation
-                // still ends the frame's work.
-                if (denied) break;
+                // Publish the exact next admission to demand() before attempting it.
+                // A finalized span is not on the published path, so it does not gate this frame's publication:
+                // only the tail chunk, which the next publication shows, yields here (measured: a per-finalize break was a hold every 16 samples).
+                if (denied || (work?.chunk?.retained && !work.chunk.finalizing)) break;
             }
         } catch (error) { dropWork(); denied = true; report(error); }
+        let admitted = false;
         if (owner.device() && sameToken(options.token, budget.token)) {
-            try { admitRuns(owner, view, budget); } catch (error) { report(error); }
+            try { admitRuns(owner, view, budget); admitted = true; } catch (error) { report(error); }
         } else auditCount('wet', 'admit-skip:device-or-token');
+        frameAnswer = complete && admitted && !denied && routedCoverage(budget.token, view) === VERDICT_SHARP;
+        return frameAnswer;
+    };
+    const prepareBand = (band: WetBand) => (view: ViewState, budget: FrameBudget): boolean | undefined => {
+        if (!prepareShared(view, budget)) return undefined;
+        return drawnKey[band] === fingerprintOf(view) ? false : undefined;
     };
     const make = (band: WetBand): PlatformLayerDefinition => ({
         id: `board-wet-${band}`, group: 'document', liveInput: true,
@@ -627,10 +675,11 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
             // flight is prepared before the pane's other critical layers (fd3c12a6). The Layer contract itself is unchanged.
             const layer: Layer & { prepareFirst(): boolean } = {
                 prepareFirst: () => !!owner?.device() && runsPending(),
-                prepare,
-                drawGpu(pass, view) { drawRouted(pass, view, band); },
+                prepare: prepareBand(band),
+                drawGpu(pass, view) { drawRouted(pass, view, band); drawnKey[band] = fingerprintOf(view); },
                 draw2d(ctx, view) {
                     if (disposed || !options.current()) return;
+                    drawnKey[band] = fingerprintOf(view);
                     // The CPU reference path: counted, so a device session that draws here is visible in the audit.
                     if (renderAuditEnabled()) auditCount('wet', 'draw:canvas2d');
                     const boardDrawn = options.boardDrawnInk();

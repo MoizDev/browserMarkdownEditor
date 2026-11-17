@@ -7,7 +7,10 @@
 //   • index:members            items that entered or left the prepared paint (its item set changed, not its content);
 //   • index:epoch              text items whose font epoch moved;
 //   • index:rederive           items re-derived because a changed region reaches them;
-//   • index:rebuild-all        the index was rebuilt from nothing (unknown revision span, or theme/raster variant changed).
+//   • index:unknown-span       the revision span has no region history (a sync source, or a span the scene cannot bound):
+//                              items are compared by identity and only the parts that changed are reported;
+//   • index:rebuild-all        the index was rebuilt from nothing (no index yet, or theme/raster variant changed).
+// The span's regions are never a reason to report the whole index: a changed item's old and new bounds are exactly what moved.
 // A new paint object with the same revision and the same items reports nothing: its items are reused by identity.
 import type { Rect } from '../../../platform/types';
 import type { FrameBudget } from '../../../platform/render/types';
@@ -87,7 +90,12 @@ interface Build {
     readonly old: Index | null;
     /** The index it becomes: the old one (incremental) or a new one (full). */
     readonly target: Index;
+    /** A rebuild from nothing: theme or raster variant moved, or there is no index. */
     readonly full: boolean;
+    /** Whether an index was published before this build started: only then has anything been drawn from one. */
+    readonly prior: boolean;
+    /** The span has no usable region history: an item is reused only by identity, and every other item is re-derived. */
+    readonly unknown: boolean;
     readonly regions: readonly Rect[];
     readonly regionBox: Rect | null;
     readonly pass: number;
@@ -105,6 +113,32 @@ function newGrid(): Grid {
     return { cells: new Map(), populated: [], wide: [], count: 0 };
 }
 /** A paint item's blend as a tile sees it: a multiply item is laid by `modulate`, everything else by `over`. */
+/** Whether two number arrays hold the same values (an affine, a rect). */
+function sameNumbers(a: readonly number[], b: readonly number[]): boolean {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
+}
+/** The content of an item beyond its paint's named parts: its material and bounds, and an image's placement. */
+function contentTail(item: PaintItem): unknown {
+    if (item.kind === 'image') return [item.imageKey, item.rect, item.sourceRect ?? null, item.opacity, item.inverted, item.blend,
+        item.retainedTile ?? false, item.allocationBounds ?? null];
+    return [item.material, item.allocationBounds ?? null];
+}
+/**
+ * Whether two items paint the same content. A source rebuilds its item objects on every stream, so identity says nothing about
+ * content. The geometry is named by geometryKey, which names a node revision (its commands and coverage follow from it), so a
+ * matching key, geometry key, placement, clips and material is the same paint.
+ */
+export function sameItemContent(a: PaintItem, b: PaintItem): boolean {
+    if (a.kind !== b.kind || a.nodeId !== b.nodeId || a.key !== b.key || a.geometryKey !== b.geometryKey) return false;
+    if (!sameNumbers(a.localToWorld, b.localToWorld) || a.clips.length !== b.clips.length) return false;
+    for (let i = 0; i < a.clips.length; i++) {
+        const x = a.clips[i], y = b.clips[i];
+        if (x.key !== y.key || x.fillRule !== y.fillRule || !sameNumbers(x.localToWorld, y.localToWorld) || JSON.stringify(x.d) !== JSON.stringify(y.d)) return false;
+    }
+    return JSON.stringify(contentTail(a)) === JSON.stringify(contentTail(b));
+}
 export function blendOf(item: PaintItem): Blend {
     return (item.kind === 'image' ? item.blend : item.material.blend) === 'multiply' ? 'modulate' : 'over';
 }
@@ -266,7 +300,9 @@ export const createTileParts: CreateTileParts = (_host, audit) => {
         if (candidate) {
             const sameEpoch = candidate.epoch === epoch;
             if (sameEpoch && candidate.band === band && candidate.blend === blend) {
-                if (candidate.item === item || !reachesAnyRegion(candidate, build)) {
+                // An item is reused when its content is the same, or, with region history, when no changed region reaches it.
+                // Without region history only the content decides: a new object for the same paint is not a change.
+                if (candidate.item === item || sameItemContent(candidate.item, item) || (!build.unknown && !reachesAnyRegion(candidate, build))) {
                     candidate.item = item; candidate.seq = seq; candidate.stamp = build.pass;
                     build.next.push(candidate);
                     return;
@@ -286,9 +322,12 @@ export const createTileParts: CreateTileParts = (_host, audit) => {
         const root = prepared.root, revision = root.sceneRevision;
         let full = !index || index.theme !== root.theme || index.variant !== root.rasterVariant;
         let regions: readonly Rect[] = NO_RECTS;
+        // A span without region history (no regionChangesSince on the source, or one the scene cannot bound) is not a rebuild:
+        // the items are diffed against the index, so only the parts that actually changed are reported.
+        let unknown = false;
         if (!full && index) {
             const changes = root.regionChangesSince?.(index.revision);
-            if (!changes || changes.full) full = true;
+            if (!changes || changes.full) unknown = true;
             else regions = changes.regions;
         }
         let regionBox: Rect | null = null;
@@ -300,8 +339,9 @@ export const createTileParts: CreateTileParts = (_host, audit) => {
         const next = spare;
         next.length = 0;
         spare = [];
+        if (unknown) auditCount(audit, 'index:unknown-span');
         return { original: originalOf(prepared.sourceFrame), revision, theme: root.theme, variant: root.rasterVariant, windows: prepared.windows,
-            old: full ? null : index, target, full, regions, regionBox, pass: ++passes, next, added: [],
+            old: full ? null : index, target, full, prior: index !== null, unknown, regions, regionBox, pass: ++passes, next, added: [],
             window: 0, item: 0, seq: 0, replaced: 0, epochs: 0, rederived: 0 };
     };
 
@@ -318,8 +358,9 @@ export const createTileParts: CreateTileParts = (_host, audit) => {
     const publish = (build: Build): void => {
         const target = build.target, old = build.old;
         if (build.full) {
-            // A full rebuild has no old entries to take out: its target is new, and the old index is dropped.
-            pendingAll = true;
+            // A full rebuild has no old entries to take out: its target is new, and the old index is dropped. Only an index that
+            // was published before can have drawn anything; the first build has nothing to invalidate.
+            if (build.prior) pendingAll = true;
             pending = [];
         } else {
             const regions = build.regions;
@@ -428,10 +469,16 @@ export const createTileParts: CreateTileParts = (_host, audit) => {
         takeChanges(): readonly Rect[] | 'all' {
             if (!changesReady) return NO_RECTS;
             changesReady = false;
-            if (pendingAll) { pendingAll = false; pending = []; return 'all'; }
+            // What each take reports, counted: an 'all' is one event, and a rect list is its size and its total area, so a
+            // drag that reports every item as changed shows as a large count and area, not only as 'all'.
+            if (pendingAll) { pendingAll = false; pending = []; auditCount(audit, 'index:take-all'); return 'all'; }
             if (!pending.length) return NO_RECTS;
             const taken = pending;
             pending = [];
+            let area = 0;
+            for (const rect of taken) area += rect.width * rect.height;
+            auditCount(audit, 'index:take-rects', taken.length);
+            auditCount(audit, 'index:take-area', area);
             return taken;
         },
         boundsOfNodes(ids: ReadonlySet<string>): readonly Rect[] {

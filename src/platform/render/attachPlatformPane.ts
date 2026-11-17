@@ -145,8 +145,16 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             if (disposed || !visible || touchedThisFrame()) return;
             // Releasing a visible pane's whole working set dropped the plans on screen (a notebook's paper and board) on each
             // eviction, so only the layers the governor asked for are released, and only while they are off this frame.
-            for (const layer of victims) if (layerSet.layers.includes(layer)) lifecycle?.releaseLayerGpu(layer, 'pressure');
-            lifecycle?.invalidate('budget');
+            // The pane is repainted for the budget only when a release actually freed bytes: a layer that is already gone, or
+            // one the lifecycle refused to release, leaves the picture as it is and asks for no frame.
+            let released = false;
+            for (const layer of victims) {
+                if (!layerSet.layers.includes(layer)) continue;
+                const before = layer.memory().gpuBytes;
+                lifecycle?.releaseLayerGpu(layer, 'pressure');
+                if (layer.memory().gpuBytes < before) released = true;
+            }
+            if (released) lifecycle?.invalidate('budget');
         });
         return freed;
     };

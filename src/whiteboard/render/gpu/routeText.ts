@@ -37,6 +37,11 @@ const MEMO_CHUNK = 64 * 1024;
 const SCRATCH_FLOOR = 12 * 64;
 /** The conversion's instance buffer starts at this many cells and doubles, as the scratch does. */
 const CONVERT_FLOOR = 64;
+/** The staging texture is one page wide and as tall as the frame's cells need: it starts a quarter page tall and doubles, and
+ * grows only while nothing is pending in it (a resize recreates it). */
+const STAGE_WIDTH = ATLAS_PAGE, STAGE_MIN_HEIGHT = ATLAS_PAGE / 8, STAGE_MAX_HEIGHT = ATLAS_PAGE;
+/** Idle time, in ms, before a staging texture that no frame converts through is released. */
+const STAGE_IDLE_MS = 5000;
 
 const ATTRIBUTES: ShaderModule['layout']['attributes'] = [
     { location: 0, bufferSlot: 0, offset: 0, stride: INSTANCE_BYTES, format: 'float32x4', step: 'instance' },
@@ -216,7 +221,9 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
     let mono: TextAtlas | null = null, colour: TextAtlas | null = null;
     let white: TextureHandle | null = null, whiteLease: ByteLease | null = null, sampler: SamplerHandle | null = null;
     /** The RGBA staging texture the mono bitmaps are written into, one frame's worth at a time, reset after its conversion. */
-    let stage: { texture: TextureHandle; lease: ByteLease; packer: ShelfPacker } | null = null;
+    let stage: { texture: TextureHandle; lease: ByteLease; packer: ShelfPacker; height: number } | null = null;
+    /** When the last conversion through the staging texture ended: the idle release counts from here, or null while one is pending. */
+    let stageIdleSince: number | null = null;
     /** The conversion's instance buffer and its CPU twin: grown to the pending count, never shrunk. */
     let convertBuffer: BufferHandle | null = null, convertLease: ByteLease | null = null, convertCapacity = 0;
     let convertScratch: Float32Array<ArrayBuffer> = new Float32Array(0), convertScratchLease: ByteLease | null = null;
@@ -269,7 +276,7 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         pipelines = [undefined, undefined, undefined, undefined]; convertPipeline = null;
         pipelinesReady = false; pipelinesPending = false; failed = false;
         mono = null; colour = null; white = null; whiteLease = null; sampler = null;
-        stage = null; convertBuffer = null; convertLease = null; convertCapacity = 0; pendingCount = 0; pageRunCount = 0;
+        stage = null; stageIdleSince = null; convertBuffer = null; convertLease = null; convertCapacity = 0; pendingCount = 0; pageRunCount = 0;
         // Stand-in records name the atlases this device just disposed: none may be drawn from again.
         standIns.clear();
         releaseRaster();
@@ -315,15 +322,6 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
             white = owner.createTexture(1, 1, 'r8', ['sample', 'copy-dst'], lease);
             owner.writeTexture(white, { x: 0, y: 0, width: 1, height: 1 },
                 { source: new Uint8Array([255]), rowBytes: 1, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
-        }
-        if (!stage) {
-            const bytes = ATLAS_PAGE * ATLAS_PAGE * 4;
-            const lease = host.allocator.gpu.reserve(bytes);
-            if (!lease) return { status: 'denied', pool: 'gpu', bytes };
-            let texture: TextureHandle;
-            try { texture = owner.createTexture(ATLAS_PAGE, ATLAS_PAGE, 'rgba8', ['sample', 'copy-dst'], lease); }
-            catch (error) { host.allocator.gpu.release(lease); throw error; }
-            stage = { texture, lease, packer: new ShelfPacker(ATLAS_PAGE, ATLAS_PAGE) };
         }
         return null;
     };
@@ -372,6 +370,48 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         convertScratch = new Float32Array(capacity * 12); convertScratchLease = cpuLease;
         return true;
     };
+    /** Makes the staging texture `height` rows tall. Nothing may be pending in the old one: its cells would be lost. False when the grant
+     * refuses it. */
+    const createStage = (owner: GfxDevice, height: number): boolean => {
+        const lease = host.allocator.gpu.reserve(STAGE_WIDTH * height * 4);
+        if (!lease) return false;
+        let texture: TextureHandle;
+        try { texture = owner.createTexture(STAGE_WIDTH, height, 'rgba8', ['sample', 'copy-dst'], lease); }
+        catch (error) { host.allocator.gpu.release(lease); throw error; }
+        stage = { texture, lease, packer: new ShelfPacker(STAGE_WIDTH, height), height };
+        return true;
+    };
+    const releaseStage = (): void => {
+        if (!stage) return;
+        device!.destroy(stage.texture);
+        host.allocator.gpu.release(stage.lease);
+        stage = null; stageIdleSince = null;
+    };
+    /** Releases the staging texture once it has been idle for STAGE_IDLE_MS; until then it asks for the frame that releases it. */
+    const releaseIdleStage = (): void => {
+        if (!stage) return;
+        const now = performance.now();
+        // A texture no conversion ever followed starts its idle count here, so it too is released.
+        if (stageIdleSince === null) stageIdleSince = now;
+        if (now - stageIdleSince >= STAGE_IDLE_MS) releaseStage();
+        else host.wakeAt(stageIdleSince + STAGE_IDLE_MS);
+    };
+    /** A place in the staging texture for a w × h cell. Null when this frame's cells fill it (the run waits for the conversion); 'denied'
+     * when the grant refuses the texture. The texture doubles only when nothing is pending, so the frame's cells are never copied. */
+    const stageSpot = (w: number, h: number): { x: number; y: number } | null | 'denied' => {
+        if (!stage && !createStage(device!, STAGE_MIN_HEIGHT)) return 'denied';
+        const spot = stage!.packer.place(w, h);
+        if (spot) return spot;
+        if (pendingCount > 0) return null;
+        let height = stage!.height;
+        while (height < STAGE_MAX_HEIGHT && height < h) height = Math.min(STAGE_MAX_HEIGHT, height * 2);
+        while (height < STAGE_MAX_HEIGHT && height <= stage!.height) height = Math.min(STAGE_MAX_HEIGHT, height * 2);
+        if (height <= stage!.height || height < h) return null;
+        releaseStage();
+        if (!createStage(device!, height)) return 'denied';
+        return stage!.packer.place(w, h);
+    };
+
     const WHITE: Rgba = [1, 1, 1, 1];
 
     /** One instance: its device rect, page uv rect and premultiplied colour, appended to the run in paint order. */
@@ -514,10 +554,11 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         const at = sliceCell(geometry, cellIndex, cell);
         const bytes = at.w * at.h * 4;
         if (!budget.claimUpload(bytes)) return { status: 'deferred' };
-        const staged = stage!;
-        const spot = staged.packer.place(at.w, at.h);
+        const spot = stageSpot(at.w, at.h);
+        if (spot === 'denied') return { status: 'denied', pool: 'gpu', bytes };
         // A full staging texture is the frame's limit: the run waits for the next frame, which starts with the staging reset.
         if (!spot) { host.invalidate('text-stage-full'); return { status: 'deferred' }; }
+        const staged = stage!;
         if (!ensureConvertCapacity(pendingCount + 1)) return { status: 'denied', pool: 'gpu', bytes };
         const made = raster.rasteriseBitmap(req, geometry, cellIndex, null);
         try {
@@ -713,7 +754,8 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
             }
         },
         encodeOffscreen(passes: OffscreenPasses): void {
-            if (pendingCount === 0) return;
+            if (pendingCount === 0) { releaseIdleStage(); return; }
+            stageIdleSince = null;
             const owner = device, staged = stage, pipeline = convertPipeline;
             if (!owner || !staged || !pipeline || !convertBuffer || !sampler || !mono) throw new Error('Text conversion without its objects');
             // Gather this frame's live cells per page, in page order, into the conversion buffer: one instance range per page.
@@ -733,8 +775,8 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
                 run.fill++;
                 const e = p.entry;
                 convertScratch[o] = e.x; convertScratch[o + 1] = e.y; convertScratch[o + 2] = e.w; convertScratch[o + 3] = e.h;
-                convertScratch[o + 4] = p.x / ATLAS_PAGE; convertScratch[o + 5] = 1 - p.y / ATLAS_PAGE;
-                convertScratch[o + 6] = (p.x + e.w) / ATLAS_PAGE; convertScratch[o + 7] = 1 - (p.y + e.h) / ATLAS_PAGE;
+                convertScratch[o + 4] = p.x / ATLAS_PAGE; convertScratch[o + 5] = 1 - p.y / staged.height;
+                convertScratch[o + 6] = (p.x + e.w) / ATLAS_PAGE; convertScratch[o + 7] = 1 - (p.y + e.h) / staged.height;
                 convertScratch[o + 8] = 0; convertScratch[o + 9] = 0; convertScratch[o + 10] = 0; convertScratch[o + 11] = 0;
             }
             if (total > 0) owner.writeBuffer(convertBuffer, 0, convertScratch.subarray(0, total * 12));
@@ -754,13 +796,19 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
             // The staging texture is free again: its cells are on their pages. Its shelves reset, and so does the pending list.
             staged.packer.reset();
             pendingCount = 0; pageRunCount = 0;
+            stageIdleSince = performance.now();
+            host.wakeAt(stageIdleSince + STAGE_IDLE_MS);
         },
         retire(prepared: PreparedRun): void { retireRun(prepared as TextRun); },
         release(): void { releaseGpu(); },
         evictTextures(bytes: number, frameId: number): number {
-            // Mono pages first: they hold most of the bytes. A page pinned or drawn this frame is never freed.
-            const freedMono = mono?.evict(bytes, frameId) ?? 0;
-            const freed = freedMono + (colour?.evict(Math.max(0, bytes - freedMono), frameId) ?? 0);
+            // The staging texture goes first, and only when no conversion is pending in it: nothing it holds is drawn in this frame.
+            const freedStage = stage && pendingCount === 0 && bytes > 0 ? stage.lease.bytes : 0;
+            if (freedStage > 0) releaseStage();
+            // Mono pages next: they hold most of the bytes. A page pinned or drawn this frame is never freed.
+            const left = Math.max(0, bytes - freedStage);
+            const freedMono = mono?.evict(left, frameId) ?? 0;
+            const freed = freedStage + freedMono + (colour?.evict(Math.max(0, left - freedMono), frameId) ?? 0);
             // Under pressure the canvas goes too: it is the route's largest CPU holding, and the next raster creates it again.
             if (freed > 0) releaseRaster();
             return freed;

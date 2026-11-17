@@ -17,15 +17,30 @@ export interface RenderAuditSnapshot {
     readonly since: number;
     readonly counters: Readonly<Record<string, number>>;
     readonly frames: Readonly<Record<string, { count: number; totalMs: number; maxMs: number; over16: number }>>;
+    /** Keyed `surface:stage`; `sum` and `max` are milliseconds, `count` the timed calls. */
+    readonly stages: Readonly<Record<string, { sum: number; count: number; max: number }>>;
 }
+
+/** The phases a GPU frame's main-thread time is split into; one name per stage keeps the table comparable across surfaces. */
+export type AuditStage = 'parts' | 'admit' | 'upload' | 'prepare' | 'encodeOffscreen' | 'draw' | 'submit' | 'frame';
 
 let enabled = false;
 try { enabled = typeof localStorage !== 'undefined' && localStorage.getItem('bme.renderAudit') === '1'; } catch { enabled = false; }
 let since = typeof performance !== 'undefined' ? performance.now() : 0;
 let counters = new Map<string, number>();
 let frames = new Map<string, { count: number; totalMs: number; maxMs: number; over16: number }>();
+let stages = new Map<string, { sum: number; count: number; max: number }>();
 
 export function renderAuditEnabled(): boolean { return enabled; }
+
+/** Records one timed call of a stage. Callers read the clock only when `renderAuditEnabled()`, so this costs nothing off. */
+export function auditStage(surface: string, stage: AuditStage, ms: number): void {
+    if (!enabled || !Number.isFinite(ms)) return;
+    const key = `${surface}:${stage}`;
+    const entry = stages.get(key) ?? { sum: 0, count: 0, max: 0 };
+    entry.sum += ms; entry.count++; entry.max = Math.max(entry.max, ms);
+    stages.set(key, entry);
+}
 
 /** Counts one event of a surface; `amount` adds to the `surface:event` count, `extra` to `surface:event:<key>`. */
 export function auditCount(surface: string, event: string, amount = 1, extra?: Readonly<Record<string, number>>): void {
@@ -55,11 +70,13 @@ export function auditTimed(surface: string, work: () => void): void {
 }
 
 export function auditSnapshot(): RenderAuditSnapshot {
-    return { enabled, since, counters: Object.fromEntries(counters), frames: Object.fromEntries([...frames].map(([key, value]) => [key, { ...value }])) };
+    return { enabled, since, counters: Object.fromEntries(counters),
+        frames: Object.fromEntries([...frames].map(([key, value]) => [key, { ...value }])),
+        stages: Object.fromEntries([...stages].map(([key, value]) => [key, { ...value }])) };
 }
 
 export function auditReset(): void {
-    counters = new Map(); frames = new Map();
+    counters = new Map(); frames = new Map(); stages = new Map();
     since = typeof performance !== 'undefined' ? performance.now() : 0;
 }
 

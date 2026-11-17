@@ -1,5 +1,5 @@
 import { pageAt, pagePresentation, renderTokenKey, tileKeyString } from '../../platform/render';
-import type { ByteLease, FrameBudget, GfxDevice, GpuPass, GpuReleaseReason, Layer, LayerHost, MirrorView, Rect, TextureHandle, ViewState } from '../../platform/render';
+import type { ByteLease, FrameBudget, GfxDevice, GpuPass, GpuReleaseReason, Layer, LayerHost, MirrorView, PageStack, Rect, TextureHandle, ViewState } from '../../platform/render';
 import type { PdfMirrorPixels, PdfSessionMirrors } from './tileMirror';
 import type { PdfVersionBridge } from './versionBridge';
 import type { BorrowedMirror } from '../../platform/render';
@@ -107,6 +107,10 @@ export class PdfTileLayer implements Layer {
     private criticalMemo: { view: ViewState; revision: number; value: boolean } | null = null;
     /** A settled view whose mirror cannot be cropped because a visible tile is GPU-only; it keeps its older mirror. */
     private mirrorSkipped = '';
+    /** Pages whose paper went down at the current source and layout, by page index, with the world rect painted. The
+     * paper covers the whole page, so these areas are opaque. Cleared on a source change, on releaseGpu and on dispose. */
+    private readonly drawnPages = new Map<number, Readonly<Rect>>();
+    private drawnStack: Readonly<PageStack> | null = null;
 
     constructor(private readonly host: LayerHost, private readonly producer: PdfTileProducer,
         private readonly demand: (view: ViewState) => Omit<PdfDemandInput, 'covered' | 'previousMotionScale'>,
@@ -146,6 +150,8 @@ export class PdfTileLayer implements Layer {
             for (const [key, entry] of this.entries) this.remove(key, entry);
             this.failed.clear();
             this.contentIdentity = identity;
+            this.drawnPages.clear();
+            this.drawnStack = null;
             this.lastMotionScale = undefined;
             this.motionScaleAt = 0;
         }
@@ -325,16 +331,20 @@ export class PdfTileLayer implements Layer {
 
     drawGpu(pass: GpuPass, view: ViewState): void {
         if (this.disposed || !this.isCurrent()) return;
+        const input = this.demand(view);
+        const { stack, rasterScale } = input;
         const texture = this.frameTexture;
-        if (texture && texture.device === this.host.device()) for (const page of this.visiblePages(view)) {
+        const current = contentFamily(input) === this.contentIdentity;
+        if (texture && texture.device === this.host.device()) for (const index of this.visiblePageIndices(input)) {
+            const page = stack.rects[index];
             const destination = project(page, page, view);
             this.host.drawTexturedQuad(pass, texture.handle, { x: 0, y: 0, width: 1, height: 1 },
                 { x: destination.x - 1, y: destination.y - 1, width: destination.width + 2, height: destination.height + 2 },
                 { opacity: 1, sampling: 'nearest' });
             this.host.drawTexturedQuad(pass, texture.handle, { x: 1, y: 0, width: 1, height: 1 },
                 destination, { opacity: 1, sampling: 'nearest' });
+            if (current) this.notePaper(stack, index);
         }
-        const { stack, rasterScale } = this.demand(view);
         for (const item of this.currentBridge(view)) {
             const texture = this.bridgeTextures.get(item.entry.id);
             const snapshot = this.mirror?.view(view);
@@ -356,12 +366,16 @@ export class PdfTileLayer implements Layer {
 
     draw2d(ctx: CanvasRenderingContext2D, view: ViewState): void {
         if (this.disposed || !this.isCurrent()) return;
-        for (const page of this.visiblePages(view)) {
+        const input = this.demand(view);
+        const { stack, rasterScale } = input;
+        const current = contentFamily(input) === this.contentIdentity;
+        for (const index of this.visiblePageIndices(input)) {
+            const page = stack.rects[index];
             const box = project(page, page, view);
             ctx.fillStyle = '#bebebe'; ctx.fillRect(box.x - 1, box.y - 1, box.width + 2, box.height + 2);
             ctx.fillStyle = '#fff'; ctx.fillRect(box.x, box.y, box.width, box.height);
+            if (current) this.notePaper(stack, index);
         }
-        const { stack, rasterScale } = this.demand(view);
         for (const item of this.currentBridge(view)) {
             const snapshot = this.mirror?.view(view);
             if (!snapshot || !this.bridgeReady.has(item.entry.id)) continue;
@@ -381,7 +395,16 @@ export class PdfTileLayer implements Layer {
         }
     }
 
+    /** The world rects of the pages painted at least once at the current source and layout, in page order. Empty until a
+     * draw paints a page, and empty again after a source change, a layout change, a releaseGpu or dispose. */
+    drawnPageRects(): readonly Rect[] {
+        if (!this.drawnStack || this.drawnStack !== this.latestDemand?.stack) return [];
+        return [...this.drawnPages].sort((a, b) => a[0] - b[0]).map(([, rect]) => rect);
+    }
+
     releaseGpu(reason: GpuReleaseReason): void {
+        this.drawnPages.clear();
+        this.drawnStack = null;
         if (reason === 'pressure' && this.releaseUnneededGpu()) return;
         if (this.frameTexture && reason !== 'context-lost') this.frameTexture.device.destroy(this.frameTexture.handle);
         this.frameTexture = null;
@@ -540,7 +563,15 @@ export class PdfTileLayer implements Layer {
     }
     revision(): number { return this.contentRevision; }
     needsFrame(): boolean { return this.pendingFrame; }
-    dispose(): void { if (!this.disposed) { this.disposed = true; this.mirrorJob = null; this.hide(); this.failed.clear(); } }
+    dispose(): void {
+        if (this.disposed) return;
+        this.disposed = true;
+        this.mirrorJob = null;
+        this.hide();
+        this.failed.clear();
+        this.drawnPages.clear();
+        this.drawnStack = null;
+    }
 
     private currentBridge(view: ViewState): readonly BorrowedMirror<PdfMirrorPixels>[] {
         const snapshot = this.mirror?.view(view);
@@ -689,14 +720,25 @@ export class PdfTileLayer implements Layer {
         return covers(area, boxes);
     }
 
-    private visiblePages(view: ViewState): readonly Rect[] {
-        const input = this.demand(view), result: Rect[] = [];
+    private visiblePageIndices(input: Omit<PdfDemandInput, 'covered' | 'previousMotionScale'>): readonly number[] {
+        const result: number[] = [];
         for (let index = Math.max(0, pageAt(input.stack, input.viewport.y)); index < input.stack.rects.length; index++) {
             const page = input.stack.rects[index];
             if (page.y >= input.viewport.y + input.viewport.height) break;
-            if (intersects(page, input.viewport)) result.push(page);
+            if (intersects(page, input.viewport)) result.push(index);
         }
         return result;
+    }
+
+    /** A visible page's paper went down at the current source. A new stack object is a new layout: its old record is dropped. */
+    private notePaper(stack: Readonly<PageStack>, index: number): void {
+        if (this.drawnStack !== stack) {
+            this.drawnPages.clear();
+            this.drawnStack = stack;
+        }
+        if (this.drawnPages.has(index)) return;
+        const page = stack.rects[index];
+        this.drawnPages.set(index, Object.freeze({ x: page.x, y: page.y, width: page.width, height: page.height }));
     }
 
     private drawable(view: ViewState): Entry[] {

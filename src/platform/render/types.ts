@@ -60,6 +60,10 @@ export interface Layer {
     encodeOffscreen?(passes: OffscreenPasses, view: ViewState): void;
     draw2d(ctx: CanvasRenderingContext2D, view: ViewState): void;
     releaseGpu(reason: GpuReleaseReason): void;
+    /** Optional, GPU only. Partial eviction under memory pressure: frees up to `bytes` of GPU memory, least recently used
+     * first, and returns the bytes actually freed. It never releases anything drawn or referenced in `frameId`, so the
+     * frame being encoded stays whole; a layer that cannot free anything outside that frame returns 0. */
+    evictGpu?(bytes: number, frameId: number): number;
     /** Cheap byte accounting, called every frame (C4.3:521–522). */
     memory(): { gpuBytes: number; cpuBytes: number };
     /** Awaiting a worker alone is not executable work and must return false (design:661). */

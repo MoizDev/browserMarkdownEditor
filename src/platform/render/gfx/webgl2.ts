@@ -1,6 +1,6 @@
 import { coverageTargetBytes } from './api';
 import type {
-    BitmapUpload, BufferHandle, BufferUse, ByteLease, ClipHandle, CoverageTarget, GfxDevice, GfxError,
+    BitmapUpload, BufferHandle, BufferUse, ByteLease, ClipHandle, CoverageTarget, CoverageTargetOptions, GfxDevice, GfxError,
     FrameEncoder, GfxLimits, Handle, PipelineDesc, PipelineHandle, PixelUpload, RectI, SamplerHandle,
     Samples, ShaderLayout, ShaderModule, TargetHandle, TargetLease, TextureFormat, TextureHandle, TextureUse, UniformSlice,
 } from './api';
@@ -9,7 +9,7 @@ import { createWebgl2Frame } from './webgl2Frame';
 import type { ControlledFrame, DrawContext, EncodedDraw, FrameBackend, FrameTarget, FrameTexture, QuadCommand, TargetRequest } from './webgl2Frame';
 import { Webgl2TargetPool } from './webgl2Pool';
 import type { PoolStorage } from './webgl2Pool';
-import { COMPOSITION_SHADER } from './webgl2Shaders';
+import { COMPOSITION_SHADER, GRID_RESOLVE_SHADER, MODULATE_COMPOSITE_SHADER } from './webgl2Shaders';
 import { Webgl2IndexMirror } from './webgl2Index';
 import { Webgl2Timer } from './webgl2Timer';
 import { Webgl2IsolationPool } from './webgl2Isolation';
@@ -88,10 +88,11 @@ export interface Webgl2Owner extends BrokerGpuOwner, GpuIsolationAdmission {
 }
 
 type BufferDesc = { bytes: number; uses: readonly BufferUse[]; pack?: boolean };
-type TextureDesc = { width: number; height: number; format: TextureFormat; uses: readonly TextureUse[] } | { reference: TextureHandle };
+type TextureDesc = { width: number; height: number; format: TextureFormat; uses: readonly TextureUse[]; levels?: number } | { reference: TextureHandle };
 type TargetDesc = { color: TextureHandle; samples: Samples; stencil: boolean; coverage?: TextureHandle } |
     { reference: TargetHandle; color: TextureHandle; purpose: TargetRequest['purpose'] };
-type SamplerDesc = { filter: 'nearest' | 'linear' } | { reference: SamplerHandle };
+type SamplerDesc = { filter: SamplerFilter } | { reference: SamplerHandle };
+type SamplerFilter = 'nearest' | 'linear' | 'linear-mipmap';
 type PipelineCreate = { role: 'program'; shader: ShaderModule } |
     { role: 'pipeline'; program: PipelineHandle; descriptor: PipelineDesc };
 interface Descriptors {
@@ -116,6 +117,7 @@ interface NativeTexture {
     height: number;
     format: TextureFormat;
     uses: readonly TextureUse[];
+    levels?: number;
     reference?: TextureHandle;
     usedRect?: RectI;
 }
@@ -224,6 +226,20 @@ function byteSize(...factors: number[]): number {
     count(bytes);
     return bytes;
 }
+
+/** Levels of a full chain: halve each axis down to 1 texel. */
+function mipLevels(width: number, height: number): number {
+    return Math.floor(Math.log2(Math.max(width, height))) + 1;
+}
+
+/** Bytes of a full chain. Each level is charged at its own extent, never as a fixed fraction of level 0. */
+function mipChainBytes(width: number, height: number, channels: number, levels: number): number {
+    let bytes = 0;
+    for (let level = 0; level < levels; level++) {
+        bytes += byteSize(Math.max(1, Math.floor(width / 2 ** level)), Math.max(1, Math.floor(height / 2 ** level)), channels);
+    }
+    return bytes;
+}
 function rectangle(rect: RectI, width: number, height: number): void {
     for (const value of [rect.x, rect.y, rect.width, rect.height]) count(value);
     if (rect.x > width - rect.width || rect.y > height - rect.height) throw new ArenaError('invalid-input');
@@ -253,6 +269,18 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     readonly #timer: Webgl2Timer;
     readonly #isolation: Webgl2IsolationPool;
     readonly #sampleCounts = new Map<number, ReadonlySet<number>>();
+    // The GL state the replay has issued, so a draw that repeats it issues nothing. Each entry is unknown (undefined or
+    // false) until the replay sets it. #forgetState clears them, and every raw write outside the helpers below calls it.
+    #cProgram: WebGLProgram | null | undefined;
+    #cFramebuffer: WebGLFramebuffer | null | undefined;
+    #cBlend: PipelineDesc['blend'] | undefined;
+    readonly #cViewport = new Int32Array(4);
+    #cViewportKnown = false;
+    readonly #cScissor = new Int32Array(4);
+    #cScissorKnown = false;
+    #cMask = -1;
+    // Program, blend and framebuffer changes the current replay issued (the audit's gl:state).
+    #replaySwitches = 0;
     readonly #uniformBindings: number;
     readonly #maxAttributes: number;
     readonly #maxElementIndex: number;
@@ -262,7 +290,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     #cpuBytes = 0;
     readonly #programs = new Map<string, Promise<PipelineHandle>>();
     readonly #programSignatures = new Map<string, string>();
-    readonly #samplers = new Map<'nearest' | 'linear', SamplerHandle>();
+    readonly #samplers = new Map<SamplerFilter, SamplerHandle>();
     readonly #attachments = new Map<TextureHandle, TargetHandle>();
     get #coverageTextures() { return this.#aux().textures; }
     set #coverageTextures(value: WeakMap<WebGLTexture, TextureHandle>) { this.#aux().textures = value; }
@@ -293,6 +321,8 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     #uniformBytes = 1 << 20;
     #surfaceRevision = 0;
     #composition: PipelineHandle | null = null;
+    #gridComposition: PipelineHandle | null = null;
+    #modulateComposition: PipelineHandle | null = null;
     #white: TextureHandle | null = null;
     readonly #fences = new Map<number, WebGLSync | null>();
     readonly #fenceTimes = new Map<number, number>();
@@ -587,18 +617,27 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
      * could not close their grants (GfxDevice had no closeLease), so every destroyed tile stayed charged (measured: 17 wet
      * tile leases, 18 MB, held for one stroke while its texture count was 1). Internal multi-resource paths use the
      * private variants and close their own. */
-    createTexture(width: number, height: number, format: TextureFormat, uses: readonly TextureUse[], lease: ByteLease): TextureHandle {
-        const handle = this.#createTexture(width, height, format, uses, lease);
+    createTexture(width: number, height: number, format: TextureFormat, uses: readonly TextureUse[], lease: ByteLease,
+        options?: { mips?: boolean }): TextureHandle {
+        if (options !== undefined && (typeof options !== 'object' || options.mips !== undefined && typeof options.mips !== 'boolean')) {
+            throw new ArenaError('invalid-input');
+        }
+        const handle = this.#createTexture(width, height, format, uses, lease, options?.mips === true);
         this.#arena.closeLease(lease);
         return handle;
     }
 
-    #createTexture(width: number, height: number, format: TextureFormat, uses: readonly TextureUse[], lease: ByteLease): TextureHandle {
+    #createTexture(width: number, height: number, format: TextureFormat, uses: readonly TextureUse[], lease: ByteLease,
+        mips = false): TextureHandle {
         this.#usable();
         this.#extent(width, height, this.limits.maxTexture2D);
         if (format !== 'rgba8' && format !== 'r8') throw new ArenaError('invalid-input');
+        if (mips && (width < 1 || height < 1)) throw new ArenaError('invalid-input');
         const checked = uniqueUses(uses, ['sample', 'render', 'copy-src', 'copy-dst']);
-        return this.#allocate('texture', { width, height, format, uses: checked }, byteSize(width, height, format === 'r8' ? 1 : 4), lease);
+        const channels = format === 'r8' ? 1 : 4;
+        const levels = mips ? mipLevels(width, height) : 1;
+        return this.#allocate('texture', { width, height, format, uses: checked, levels },
+            mipChainBytes(width, height, channels, levels), lease);
     }
 
     writeTexture(dst: TextureHandle, rect: RectI, src: BitmapUpload | PixelUpload): void {
@@ -610,6 +649,9 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         if (!texture.uses.includes('copy-dst') || src.premultiplied !== true || src.colorSpace !== 'srgb' || src.origin !== 'top-left') {
             throw new ArenaError('invalid-input');
         }
+        // An r8 texture takes its single channel from a PixelUpload only. A bitmap is RGBA: blitting it into R8 would
+        // keep one channel without any error, so it is refused here rather than after the staging copy.
+        if (texture.format === 'r8' && !('rowBytes' in src)) throw new ArenaError('invalid-input');
         if (!rect.width || !rect.height) return;
         const encoding = this.#arena.beginEncoding();
         let cpu: ByteLease | null = null;
@@ -642,6 +684,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 const dest = this.#pin(encoding, this.#attachment(dst), 'target');
                 gl.bindTexture(gl.TEXTURE_2D, stageTexture.texture);
                 gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, src.source);
+                this.#forgetState();
                 gl.bindFramebuffer(gl.READ_FRAMEBUFFER, stageTarget.framebuffer);
                 gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, dest.framebuffer);
                 gl.blitFramebuffer(0, 0, rect.width, rect.height, rect.x, texture.height - rect.y,
@@ -661,9 +704,31 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         }
     }
 
-    createSampler(filter: 'nearest' | 'linear'): SamplerHandle {
+    generateMips(texture: TextureHandle): void {
+        const gl = this.#usable();
+        this.#beforeUpload();
+        const native = this.#arena.validate(texture, 'texture');
+        // A view of another texture's storage cannot own a chain: filling it would rewrite the base texture's levels.
+        if (native.reference || (native.levels ?? 1) < 2) throw new ArenaError('invalid-input');
+        const encoding = this.#arena.beginEncoding();
+        try {
+            this.#pin(encoding, texture, 'texture');
+            gl.bindTexture(gl.TEXTURE_2D, native.texture);
+            gl.generateMipmap(gl.TEXTURE_2D);
+            this.#checkUpload();
+            this.#issue(encoding);
+            this.#usable();
+        } catch (error) {
+            this.#cancelEncoding(encoding);
+            throw this.#failure(error);
+        } finally {
+            this.#reset();
+        }
+    }
+
+    createSampler(filter: SamplerFilter): SamplerHandle {
         this.#usable();
-        if (filter !== 'nearest' && filter !== 'linear') throw new ArenaError('invalid-input');
+        if (filter !== 'nearest' && filter !== 'linear' && filter !== 'linear-mipmap') throw new ArenaError('invalid-input');
         let cached = this.#samplers.get(filter);
         if (!cached) {
             cached = this.#owned('sampler', { filter }, 0, this.#services.program);
@@ -705,6 +770,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             const encoding = this.#arena.beginEncoding();
             try {
                 const target = this.#pin(encoding, handle, 'target');
+                this.#forgetState();
                 gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer);
                 gl.disable(gl.SCISSOR_TEST);
                 gl.stencilMask(255);
@@ -720,14 +786,18 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         return handle;
     }
 
-    createCoverageTarget(width: number, height: number, samples: Samples, lease: ByteLease): CoverageTarget {
+    createCoverageTarget(width: number, height: number, samples: Samples, lease: ByteLease, options?: CoverageTargetOptions): CoverageTarget {
         this.#usable();
-        if (lease.bytes < coverageTargetBytes(width, height, samples)) throw new ArenaError('out-of-budget');
-        const texture = this.#createTexture(width, height, 'rgba8', ['render', 'sample'], lease);
+        const grid = options?.grid ?? 1;
+        if (grid !== 1 && grid !== 4) throw new ArenaError('invalid-input');
+        if (grid !== 1 && samples !== 1) throw new ArenaError('invalid-input');
+        if (lease.bytes < coverageTargetBytes(width, height, samples, grid)) throw new ArenaError('out-of-budget');
+        // A grid target holds one r8 texel per subsample (no MSAA); the device-size rgba8 colour target is unchanged.
+        const texture = this.#createTexture(width * grid, height * grid, grid === 1 ? 'rgba8' : 'r8', ['render', 'sample'], lease);
         try {
             const target = this.createTarget(texture, { samples, stencil: true }, lease);
             this.#arena.closeLease(lease);
-            return { target, texture, width, height, samples };
+            return { target, texture, width, height, samples, grid };
         } catch (error) {
             this.destroy(texture);
             throw error;
@@ -849,6 +919,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             if (canvas.height !== height) canvas.height = height;
             this.#surfaceRevision++;
         }
+        this.#forgetState();
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
         const complete = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
         this.#healthy();
@@ -901,13 +972,14 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             () => { for (const handle of this.#handles) this.#arena.release(handle); },
             () => this.#handles.clear(), () => this.#programs.clear(), () => this.#programSignatures.clear(),
             () => this.#samplers.clear(), () => this.#attachments.clear(),
-            () => { this.#white = null; this.#composition = null; }, () => this.#collect(),
+            () => { this.#white = null; this.#composition = null; this.#gridComposition = null; this.#modulateComposition = null; }, () => this.#collect(),
         ]);
     }
 
     abandon(): void {
         if (this.#lost) return;
         this.#lost = true;
+        this.#forgetState();
         if (__BME_BENCH__) this.#releaseCoverage(true);
         this.#work.abort();
         try {
@@ -918,7 +990,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 () => { this.#uniformSlots.length = 0; },
                 ...[...this.#indexBuffers].map(buffer => () => this.#dropIndexData(buffer)),
                 () => this.#pipelines.clear(), () => this.#pollCancel?.(),
-                () => { this.#pollCancel = null; this.#white = null; this.#composition = null; },
+                () => { this.#pollCancel = null; this.#white = null; this.#composition = null; this.#gridComposition = null; this.#modulateComposition = null; },
                 () => { this.#fences.clear(); this.#fenceTimes.clear(); }, () => this.#handles.clear(), () => this.#programs.clear(),
                 () => this.#programSignatures.clear(), () => this.#samplers.clear(), () => this.#attachments.clear(),
                 () => this.#textureUnits.clear(), () => this.#uniformUnits.clear(),
@@ -954,6 +1026,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             const encoding = this.#arena.beginEncoding();
             try {
                 const output = this.#pin(encoding, target, 'target');
+                this.#forgetState();
                 this.#pin(encoding, programHandle, 'pipeline');
                 gl.bindFramebuffer(gl.FRAMEBUFFER, output.framebuffer);
                 gl.viewport(0, 0, 2, 2);
@@ -984,6 +1057,8 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
 
     async #prepareComposition(signal: AbortSignal): Promise<void> {
         this.#composition = await this.#program(COMPOSITION_SHADER, AbortSignal.any([signal, this.#work.signal]));
+        this.#gridComposition = await this.#program(GRID_RESOLVE_SHADER, AbortSignal.any([signal, this.#work.signal]));
+        this.#modulateComposition = await this.#program(MODULATE_COMPOSITE_SHADER, AbortSignal.any([signal, this.#work.signal]));
         const sampler = this.createSampler('linear');
         this.destroy(sampler);
         if (__BME_BENCH__) {
@@ -1002,6 +1077,9 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             this.writeTexture(handle, { x: 0, y: 0, width: 1, height: 1 }, {
                 source: new Uint8Array([255]), rowBytes: 1, premultiplied: true, colorSpace: 'srgb', origin: 'top-left',
             });
+            // Once per device: the single-channel upload path is proven here, not on every upload.
+            const gl = this.#healthy();
+            if (gl.getError() !== gl.NO_ERROR) throw new ArenaError('unsupported');
             this.#white = handle;
             return handle;
         } catch (error) { if (handle) this.destroy(handle); throw error; }
@@ -1011,7 +1089,11 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     #checkUpload(): void {
         // Upload admission is separate from draw submission. A failed copy must not
         // publish a new CPU index summary or stale uniforms as if the GPU accepted it.
+        // Production does not read the GL error flag here: gl.getError is a synchronous round trip to the GPU process, paid on
+        // every upload in the frame path. Arguments are validated before each call; a lost context is seen by #healthy with
+        // no read. The benchmark build keeps the read. The device proves its r8 upload path once, in #ensureWhite.
         const gl = this.#healthy();
+        if (!__BME_BENCH__) return;
         const error = gl.getError();
         if (error !== gl.NO_ERROR) {
             this.#healthy();
@@ -1147,7 +1229,8 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         };
         return {
             signal: work.signal, uniformAlignment: this.limits.uniformAlignment, maxViewport: this.limits.maxViewport,
-            healthy: check, gl: () => { check(); return this.#healthy(); }, reset: () => this.#reset(),
+            // The frame's raw GL writes (scissor, colour mask, blits, clears) all come through here, so the cache forgets first.
+            healthy: check, gl: () => { check(); this.#forgetState(); return this.#healthy(); }, reset: () => this.#reset(),
             buffer: handle => {
                 const native = this.#pin(work.encoding, handle, 'buffer');
                 return { handle, buffer: native.buffer, bytes: native.bytes, uses: native.uses,
@@ -1182,9 +1265,13 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             white: () => texture(this.#white!),
             uniforms: bytes => this.#frameUniforms(work, bytes),
             uploadUniforms: () => { if (work.surface) this.#timer.begin(); this.#uploadUniforms(work); },
+            beginReplay: () => this.#beginReplay(),
+            endReplay: () => this.#endReplay(),
+            bindTarget: framebuffer => this.#bindTarget(framebuffer),
             quad: command => {
-                if (!this.#composition) throw new ArenaError('invalid-resource');
-                const program = this.#pin(work.encoding, this.#composition, 'pipeline');
+                const handle = command.variant === 'grid' ? this.#gridComposition : command.variant === 'modulate' ? this.#modulateComposition : this.#composition;
+                if (!handle) throw new ArenaError('invalid-resource');
+                const program = this.#pin(work.encoding, handle, 'pipeline');
                 const samplerHandle = this.#samplers.get('linear');
                 if (program.role !== 'program' || !samplerHandle) throw new ArenaError('invalid-resource');
                 const sampler = this.#pin(work.encoding, samplerHandle, 'sampler');
@@ -1222,6 +1309,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             failure: error => this.#failure(error), onPass: surface => { work.passes = true; work.surface ||= surface; },
             ...(__BME_BENCH__ ? { afterClear: (target: FrameTarget) => {
                 if (target.handle !== 'surface' || !work.coverage?.root || !target.coverage) return;
+                this.#forgetState();
                 const gl = this.#usable();
                 gl.drawBuffers([gl.NONE, gl.COLOR_ATTACHMENT1]);
                 gl.enable(gl.SCISSOR_TEST);
@@ -1245,6 +1333,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         if (!root) return { commit: drop, cancel: () => {} };
         const gl = this.#usable();
         const target = this.#arena.validate(root.target, 'target');
+        this.#forgetState();
         let ticket: { commit(): void; cancel(): void; retireAfter?(completed: () => boolean): void } | null = null;
         try {
             gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer);
@@ -1391,13 +1480,72 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         }
     }
 
-    #viewport(context: DrawContext, scissor: RectI): void {
+    /** Every GL state the cache holds is unknown again: the next draw issues it. Called wherever the state may have moved. */
+    #forgetState(): void {
+        this.#cProgram = undefined;
+        this.#cFramebuffer = undefined;
+        this.#cBlend = undefined;
+        this.#cViewportKnown = false;
+        this.#cScissorKnown = false;
+        this.#cMask = -1;
+    }
+
+    #beginReplay(): void {
+        this.#forgetState();
+        this.#replaySwitches = 0;
+    }
+
+    #endReplay(): number {
+        this.#forgetState();
+        return this.#replaySwitches;
+    }
+
+    #bindTarget(framebuffer: WebGLFramebuffer | null): void {
+        if (framebuffer === this.#cFramebuffer) return;
         const gl = this.#usable();
-        gl.bindFramebuffer(gl.FRAMEBUFFER, context.target.framebuffer);
-        gl.viewport(context.viewport.x - context.originX, context.target.height - (context.viewport.y - context.originY) - context.viewport.height,
-            context.viewport.width, context.viewport.height);
-        gl.enable(gl.SCISSOR_TEST);
-        gl.scissor(scissor.x - context.originX, context.target.height - (scissor.y - context.originY) - scissor.height, scissor.width, scissor.height);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+        this.#cFramebuffer = framebuffer;
+        this.#replaySwitches++;
+    }
+
+    #useProgram(program: WebGLProgram): void {
+        if (program === this.#cProgram) return;
+        const gl = this.#usable();
+        gl.useProgram(program);
+        this.#cProgram = program;
+        this.#replaySwitches++;
+    }
+
+    #colorMask(red: boolean, green: boolean, blue: boolean, alpha: boolean): void {
+        const mask = (red ? 1 : 0) | (green ? 2 : 0) | (blue ? 4 : 0) | (alpha ? 8 : 0);
+        if (mask === this.#cMask) return;
+        this.#usable().colorMask(red, green, blue, alpha);
+        this.#cMask = mask;
+    }
+
+    #viewport(context: DrawContext, scissor: RectI): void {
+        this.#bindTarget(context.target.framebuffer);
+        const gl = this.#usable();
+        // Viewport and scissor are held as device rectangles; a repeated rectangle issues nothing (a draw in a pass mostly repeats it).
+        // A grid scope rasterises device geometry at `scale` texels per pixel: the same rectangle, scaled about its origin.
+        const s = context.scale;
+        const vw = context.viewport.width * s, vh = context.viewport.height * s;
+        const vx = (context.viewport.x - context.originX) * s, vy = context.target.height - (context.viewport.y - context.originY) * s - vh;
+        const view = this.#cViewport;
+        if (!this.#cViewportKnown || view[0] !== vx || view[1] !== vy || view[2] !== vw || view[3] !== vh) {
+            gl.viewport(vx, vy, vw, vh);
+            view[0] = vx; view[1] = vy; view[2] = vw; view[3] = vh;
+            this.#cViewportKnown = true;
+        }
+        const sw = scissor.width * s, sh = scissor.height * s;
+        const sx = (scissor.x - context.originX) * s, sy = context.target.height - (scissor.y - context.originY) * s - sh;
+        const box = this.#cScissor;
+        if (!this.#cScissorKnown || box[0] !== sx || box[1] !== sy || box[2] !== sw || box[3] !== sh) {
+            gl.enable(gl.SCISSOR_TEST);
+            gl.scissor(sx, sy, sw, sh);
+            box[0] = sx; box[1] = sy; box[2] = sw; box[3] = sh;
+            this.#cScissorKnown = true;
+        }
     }
 
     #bindUniform(binding: number, buffer: WebGLBuffer, offset: number, bytes: number): void {
@@ -1414,10 +1562,19 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         this.#textureUnits.add(binding);
     }
 
-    #blend(blend: 'replace' | 'source-over' | 'mask-max' | 'add'): void {
+    #blend(blend: PipelineDesc['blend']): void {
+        if (blend === this.#cBlend) return;
         const gl = this.#usable();
+        this.#cBlend = blend;
+        this.#replaySwitches++;
         if (blend === 'replace') gl.disable(gl.BLEND);
-        else {
+        else if (blend === 'modulate') {
+            // Multiply by the source colour and keep the destination alpha: one fixed-function step per fragment, so a
+            // multiply slice's items accumulate without a shader pass or a backdrop copy.
+            gl.enable(gl.BLEND);
+            gl.blendEquation(gl.FUNC_ADD);
+            gl.blendFuncSeparate(gl.ZERO, gl.SRC_COLOR, gl.ZERO, gl.ONE);
+        } else {
             gl.enable(gl.BLEND);
             gl.blendEquation(blend === 'mask-max' ? gl.MAX : gl.FUNC_ADD);
             // 'add' sums premultiplied colour (ONE, ONE): jittered coverage passes accumulate into one supersampled result.
@@ -1433,7 +1590,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 gl.drawBuffers(context.target.coverage && pipeline.descriptor.shader.id === 'platform-textured-quad'
                     ? [gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1] : [gl.COLOR_ATTACHMENT0]);
             }
-            gl.useProgram(program.program);
+            this.#useProgram(program.program);
             gl.bindVertexArray(this.#ensureVao(pipeline));
             const bindings = pipeline.vertexBindings;
             if (!bindings || bindings.length !== command.vertices.length ||
@@ -1455,7 +1612,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             for (const uniform of command.uniforms) this.#bindUniform(uniform.binding, uniform.buffer.buffer, uniform.offset, uniform.bytes);
             for (const texture of command.textures) this.#bindTexture(texture.binding, texture.texture.texture, texture.sampler.sampler);
             this.#blend(pipeline.descriptor.blend);
-            gl.colorMask(...pipeline.descriptor.colorWrite);
+            this.#colorMask(...pipeline.descriptor.colorWrite);
             if (pipeline.descriptor.alphaToCoverage) gl.enable(gl.SAMPLE_ALPHA_TO_COVERAGE);
             else gl.disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
             const stencil = pipeline.descriptor.stencil;
@@ -1492,7 +1649,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             if (__BME_BENCH__ && command.context.target.framebuffer) {
                 gl.drawBuffers(command.context.target.coverage ? [gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1] : [gl.COLOR_ATTACHMENT0]);
             }
-            gl.useProgram(program.program);
+            this.#useProgram(program.program);
             gl.bindVertexArray(null);
             this.#bindUniform(0, command.uniforms.buffer.buffer, command.uniforms.slice.offset, 128);
             this.#bindTexture(0, command.source.texture, sampler.sampler);
@@ -1506,7 +1663,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 this.#bindTexture(4, command.backdrop.coverage ?? command.mask.texture, nearest.sampler);
             }
             this.#blend(command.blend);
-            gl.colorMask(true, true, true, true);
+            this.#colorMask(true, true, true, true);
             gl.disable(gl.STENCIL_TEST);
             gl.disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
             gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
@@ -1629,7 +1786,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             typeof desc.shader.glsl.fragment !== 'string' || !desc.shader.glsl.fragment) throw new ArenaError('invalid-input');
         count(desc.shader.revision);
         if (!['triangles', 'triangle-strip'].includes(desc.topology) || !['rgba8', 'r8'].includes(desc.colorFormat) ||
-            ![1, 4].includes(desc.samples) || !['replace', 'source-over', 'mask-max', 'add'].includes(desc.blend) ||
+            ![1, 4].includes(desc.samples) || !['replace', 'source-over', 'mask-max', 'add', 'modulate'].includes(desc.blend) ||
             typeof desc.alphaToCoverage !== 'boolean' ||
             desc.colorWrite.length !== 4 || desc.colorWrite.some(value => typeof value !== 'boolean')) throw new ArenaError('invalid-input');
         const gl = this.#healthy();
@@ -1704,6 +1861,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 if (signal.aborted) throw new ArenaError('aborted');
                 const gl = this.#healthy();
                 if (!gl.getProgramParameter(native.program, gl.LINK_STATUS)) throw new ArenaError('unsupported');
+                this.#forgetState();
                 gl.useProgram(native.program);
                 for (const uniform of shader.layout.uniforms) {
                     const index = gl.getUniformBlockIndex(native.program, `GfxUniforms${uniform.binding}`);
@@ -1745,6 +1903,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             const pack = this.#pin(encoding, buffer, 'buffer');
             const target = this.#pin(encoding, this.#attachment(src), 'target');
             this.#pin(encoding, src, 'texture');
+            this.#forgetState();
             gl.bindFramebuffer(gl.READ_FRAMEBUFFER, target.framebuffer);
             gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pack.buffer);
             gl.pixelStorei(gl.PACK_ALIGNMENT, 1);
@@ -1936,14 +2095,14 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 if (!texture) throw new ArenaError('allocation');
                 try {
                     gl.bindTexture(gl.TEXTURE_2D, texture);
-                    gl.texStorage2D(gl.TEXTURE_2D, 1, desc.format === 'rgba8' ? gl.RGBA8 : gl.R8, desc.width, desc.height);
+                    gl.texStorage2D(gl.TEXTURE_2D, desc.levels ?? 1, desc.format === 'rgba8' ? gl.RGBA8 : gl.R8, desc.width, desc.height);
                     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
                     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
                     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
                     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
                     // Allocation only, never per draw: refuse OOM before publishing a texture.
                     if (gl.getError() !== gl.NO_ERROR) { this.#healthy(); throw new ArenaError('allocation'); }
-                    object = { ...desc, texture };
+                    object = { ...desc, levels: desc.levels ?? 1, texture };
                 } catch (error) { if (!gl.isContextLost()) gl.deleteTexture(texture); throw error; }
                 break;
             }
@@ -1957,7 +2116,8 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 const sampler = gl.createSampler();
                 if (!sampler) throw new ArenaError('allocation');
                 try {
-                    gl.samplerParameteri(sampler, gl.TEXTURE_MIN_FILTER, filter === 'nearest' ? gl.NEAREST : gl.LINEAR);
+                    gl.samplerParameteri(sampler, gl.TEXTURE_MIN_FILTER, filter === 'nearest' ? gl.NEAREST
+                        : filter === 'linear' ? gl.LINEAR : gl.LINEAR_MIPMAP_LINEAR);
                     gl.samplerParameteri(sampler, gl.TEXTURE_MAG_FILTER, filter === 'nearest' ? gl.NEAREST : gl.LINEAR);
                     gl.samplerParameteri(sampler, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
                     gl.samplerParameteri(sampler, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
@@ -2002,6 +2162,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             releaseDependency: this.#retainTextureDependency(desc.color), multisample: null, depthStencil: null,
             width: texture.width, height: texture.height, format: texture.format, colorStored: false, stencilStored: false };
         try {
+            this.#forgetState();
             gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
             if (desc.samples === 4) {
                 target.multisample = gl.createRenderbuffer();
@@ -2025,6 +2186,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 const resolve = gl.createFramebuffer();
                 if (!resolve) throw new ArenaError('allocation');
                 target.resolveFramebuffer = resolve;
+                this.#forgetState();
                 gl.bindFramebuffer(gl.FRAMEBUFFER, resolve);
                 gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture.texture, 0);
                 this.#assertFramebuffer();
@@ -2128,6 +2290,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
      * Touched binding sets are bounded by device limits; cached VAOs never keep a deleted buffer alive.
      */
     #reset(): void {
+        this.#forgetState();
         const gl = this.#gl;
         if (!gl || this.#lost || gl.isContextLost()) return;
         gl.bindBuffer(gl.COPY_WRITE_BUFFER, null);

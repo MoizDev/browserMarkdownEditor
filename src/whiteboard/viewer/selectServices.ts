@@ -118,8 +118,19 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         }
         return ops.length ? { x: dx, y: dy } : null;
     };
-    const showTransform = (ops: readonly Op[], live = false) => { transformPreview = true; transformOffset = translationOf(ops); options.preview.showOps(ops, live); requestFrame(); };
-    const clearTransform = () => { transformPreview = false; transformOffset = null; options.preview.clear(); requestFrame(); };
+    // The handles and guides are written by a presented frame (writeOverlays), so a drag whose board stops presenting froze
+    // them: a move that no frame wrote since the previous move is written here, with the live camera. A frame that did
+    // write them clears the flag, so a board that presents every move (canvas2d) never takes this path.
+    let overlaysFramed = true;
+    const followMove = () => {
+        const framed = overlaysFramed; overlaysFramed = false;
+        if (framed || !current()) return;
+        const view = options.camera();
+        selectionHandles.writeLive(view, transformPreview ? transformOffset ?? 'hidden' : null);
+        writeGuides(view.camera);
+    };
+    const showTransform = (ops: readonly Op[], live = false) => { transformPreview = true; transformOffset = translationOf(ops); options.preview.showOps(ops, live); followMove(); requestFrame(); };
+    const clearTransform = () => { transformPreview = false; transformOffset = null; options.preview.clear(); followMove(); requestFrame(); };
     const toSurface = (point: Vec2) => worldToSurface(point, options.camera().camera);
     const physicalSurface = (sample: RealSample) => sampleSurface(sample, options.sampleToSurface);
     const attachments = createBoardAttachmentResolver({ runtime, render: runtime.render, point: options.point, camera: options.camera, current: mutable });
@@ -466,8 +477,13 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const writeOverlays = (frame: ScheduledFrame) => {
         if (!current() || frame.token.vaultEpoch !== token.vaultEpoch || frame.token.documentId !== token.documentId
             || frame.token.bytesGeneration !== token.bytesGeneration || frame.token.session !== token.session) return;
+        overlaysFramed = true;
         drawGrid(frame);
         navigation.present(frame); selectionHandles.write(frame, transformPreview ? transformOffset ?? 'hidden' : null); shapeHandles.write(frame); stickyHandles.write(frame); cardControls.write(frame); backToContent.update(frame);
+        writeGuides(frame.view.camera);
+        writeRegion(frame.view.camera);
+    };
+    const writeGuides = (camera: ViewState['camera']) => {
         if (guides.length) {
             if (!guideSvg) { guideSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
                 guideSvg.setAttribute('aria-hidden', 'true'); guideSvg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible';
@@ -476,13 +492,12 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             for (const guide of guides) {
                 const from = guide.axis === 'x' ? { x: guide.value, y: guide.from } : { x: guide.from, y: guide.value };
                 const to = guide.axis === 'x' ? { x: guide.value, y: guide.to } : { x: guide.to, y: guide.value };
-                const a = worldToSurface(from, frame.view.camera), b = worldToSurface(to, frame.view.camera);
+                const a = worldToSurface(from, camera), b = worldToSurface(to, camera);
                 const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
                 line.setAttribute('x1', String(a.x)); line.setAttribute('y1', String(a.y)); line.setAttribute('x2', String(b.x)); line.setAttribute('y2', String(b.y));
                 line.setAttribute('stroke', '#f276bd'); line.setAttribute('stroke-width', '1'); guideSvg.append(line);
             }
         } else { guideSvg?.remove(); guideSvg = null; }
-        writeRegion(frame.view.camera);
     };
     const beginHandle = (sample: RealSample, modifiers: Modifiers): GestureOwner | null => {
         // A card's chips need no write right: consent to load an embed, and opening a link, change no document.

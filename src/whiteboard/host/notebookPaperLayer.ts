@@ -4,11 +4,12 @@ import type { CompositorBackend, LayerCoverage, LayerHost } from '../../platform
 import type { ByteLease, GpuPass } from '../../platform/render/gfx/api';
 import { pageAt, type PageStack } from '../../platform/render/pageStack';
 import type { ScheduledFrame } from '../../platform/render/scheduler';
-import type { FrameBudget, FrameToken, GpuReleaseReason, Layer } from '../../platform/render/types';
+import type { FrameBudget, FrameToken, GpuReleaseReason, Layer, OffscreenPasses } from '../../platform/render/types';
 import { boardPageStack } from '../model/pages';
 import type { HostBlock } from '../model/doc';
 import type { PaintPalette } from '../render/colour';
 import type { PaintFrame, PaintPathItem } from '../render/paintStream';
+import type { PaintBand } from '../render/material';
 import { awaitCapacity, isBudgetRefusal } from '../render/budgetRefusal';
 import { createGpuPaintAdapter } from '../render/gpuPaintAdapter';
 import { preparedOfFrame, type CanvasPaintAdapter, type PreparedPaint2d } from '../render/reference/canvasPaintAdapter';
@@ -16,6 +17,8 @@ import { Path2dJob } from '../render/reference/coverage2d';
 import { paintItem2d, type PaintResources2d, type PreparedPath2d } from '../render/reference/paint2d';
 import { notebookBackdrop } from './notebookBackdrop';
 
+/** The composer's offscreen encode (PLAN §3.3, wave 2). Today's adapter has none, so the layer's call is guarded: a no-op. */
+type OffscreenEncoder = { encodeOffscreen?(passes: OffscreenPasses, view: ViewState, band: PaintBand): void };
 export type NotebookHost = Extract<HostBlock, { kind: 'notebook' }>;
 export interface NotebookPaperSnapshot {
     /** Changes whenever paper properties or page geometry change. */
@@ -23,6 +26,8 @@ export interface NotebookPaperSnapshot {
     readonly host: Readonly<NotebookHost>;
     readonly pages: readonly PageGeometry[];
 }
+/** A page's identity while it is drawn: its rect, so a page that moved or resized is not yet drawn. */
+const pageKey = (rect: Readonly<Rect>): string => `${rect.x},${rect.y},${rect.width},${rect.height}`;
 export interface NotebookPaperLayerOptions {
     /** Return the same immutable snapshot until its revision changes. */
     readonly read: () => NotebookPaperSnapshot;
@@ -74,6 +79,8 @@ class NotebookPaperLayer implements Layer {
     };
     private gpuPrepared: PreparedPaint2d | null = null;
     private gpuSource: { ready: Ready; first: number; last: number; token: FrameToken } | null = null;
+    /** Pages whose paper has been drawn at least once since the GPU route was last released: the pages a board may claim opaque. */
+    private readonly drawn = new Set<string>();
     private readonly gpuReference: CanvasPaintAdapter = {
         prepare: () => {}, readyFrame: () => this.gpuPrepared?.sourceFrame ?? null,
         borrowPrepared: () => this.gpuPrepared, retainPrepared: () => null, draw2d: () => {}, release: () => {},
@@ -81,7 +88,9 @@ class NotebookPaperLayer implements Layer {
     };
     private readonly gpu: ReturnType<typeof createGpuPaintAdapter>;
     constructor(private readonly host: LayerHost, private readonly options: NotebookPaperLayerOptions) {
-        this.gpu = createGpuPaintAdapter(this.gpuReference, host, error => this.report(error), { audit: 'notebook-paper' });
+        // The paper's own opaque world: its page rects, which the paper fills (notebookPaper.ts), exact for an inverted view.
+        const gpuOptions = { audit: 'notebook-paper', opaqueWorld: () => this.drawnRects() };
+        this.gpu = createGpuPaintAdapter(this.gpuReference, host, error => this.report(error), gpuOptions);
     }
     private report(error: unknown): void {
         if (isBudgetRefusal(error)) {
@@ -205,7 +214,24 @@ class NotebookPaperLayer implements Layer {
         });
         this.gpuSource = { ready, first, last, token: { ...token } };
     }
-    drawGpu(pass: GpuPass, view: ViewState): void { this.gpu.drawGpu(pass, view, 'content'); }
+    drawGpu(pass: GpuPass, view: ViewState): void {
+        this.gpu.drawGpu(pass, view, 'content');
+        // Drawn only when the adapter's ready tiles are the ones prepared for this paper (the coverage test below).
+        const source = this.gpuSource;
+        if (source && this.gpuPrepared && this.gpu.readyPaint() === this.gpuPrepared) {
+            for (let page = source.first; page <= source.last; page++) this.drawn.add(pageKey(source.ready.stack.rects[page]));
+        }
+    }
+    /** The current pages whose paper has been drawn at least once: the only pages a board may claim opaque (C1 readiness). */
+    drawnRects(): readonly Rect[] {
+        if (this.disposed || !this.ready) return [];
+        return this.ready.stack.rects.filter(rect => this.drawn.has(pageKey(rect)));
+    }
+    /** Forwards the composer's offscreen encode; a no-op until the adapter has one (PLAN §3.3, wave 2). */
+    encodeOffscreen(passes: OffscreenPasses, view: ViewState): void {
+        const encoder = this.gpu as OffscreenEncoder;
+        if (!this.disposed && typeof encoder.encodeOffscreen === 'function') encoder.encodeOffscreen(passes, view, 'content');
+    }
     draw2d(ctx: CanvasRenderingContext2D, view: ViewState): void {
         const ready = this.ready;
         if (!ready || this.disposed) return;
@@ -224,11 +250,12 @@ class NotebookPaperLayer implements Layer {
                     ctx.translate(box.x, box.y); ctx.beginPath(); ctx.rect(0, 0, box.width, box.height); ctx.clip();
                     for (const item of ready.items) paintItem2d(ctx, item.item, this.resources);
                 } finally { ctx.restore(); }
+                this.drawn.add(pageKey(box));
             }
         });
     }
     releaseGpu(reason: GpuReleaseReason): void {
-        this.gpu.release(reason); this.gpuPrepared = null; this.gpuSource = null;
+        this.gpu.release(reason); this.gpuPrepared = null; this.gpuSource = null; this.drawn.clear();
         // Pressure takes GPU memory only. The CPU paths stay: dropping them made every pressure release a
         // full rebuild (measured: 788 rebuilds in one notebook stroke), and the rebuild asked for the same tiles again.
         if (reason === 'pressure') return;
@@ -266,11 +293,18 @@ class NotebookPaperLayer implements Layer {
     }
 }
 
+/** The paper's definition, with the pages it has drawn (the board's opaque claim, C1). */
+export interface NotebookPaperDefinition extends PlatformLayerDefinition {
+    /** The current pages whose paper has been drawn at least once; none until this paper's layer exists. */
+    drawnRects(): readonly Rect[];
+}
 /** Page/paper colour stays print-light, independently of the shell's palette. */
-export function createNotebookPaperLayer(options: NotebookPaperLayerOptions): PlatformLayerDefinition {
+export function createNotebookPaperLayer(options: NotebookPaperLayerOptions): NotebookPaperDefinition {
+    let live: NotebookPaperLayer | null = null;
     return {
         id: 'notebook-paper', group: 'document',
-        create: host => new NotebookPaperLayer(host, options),
+        create: host => { live = new NotebookPaperLayer(host, options); return live; },
+        drawnRects: () => live?.drawnRects() ?? [],
         revision: layer => (layer as NotebookPaperLayer).currentRevision(),
         cpuWorkingSet: layer => ({ mandatoryBytes: (layer as NotebookPaperLayer).demand(), prefetchBytes: 0 }),
         critical: layer => (layer as NotebookPaperLayer).critical(),

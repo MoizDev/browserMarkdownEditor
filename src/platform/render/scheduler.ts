@@ -293,8 +293,9 @@ function sameToken(a: FrameToken, b: FrameToken | null): boolean {
 }
 
 let schedulerStarted = false;
-/** Consecutive frames that may throw outside a pane's callback before the loop stops. One stray throw does not freeze the board. */
-const FRAME_FAILURE_LIMIT = 3;
+/** A failed frame holds the loop for this back-off before it runs again: doubling from the minimum, capped at the maximum. */
+const FRAME_RETRY_MIN_MS = 1000;
+const FRAME_RETRY_MAX_MS = 30000;
 
 /** One app-wide rAF owner, explicitly started; importing it installs no listeners (C4.6:624–628).
  * Sanctioned deadline path: wakeAt coalesces future layer work into one timer that ONLY invalidates,
@@ -316,6 +317,8 @@ export class FrameScheduler {
     private wakeEpoch = 0;
     /** Frames in a row that threw outside every pane's callback; a successful frame resets it. */
     private frameFailures = 0;
+    /** The back-off timer after a failed frame: while it runs, no frame is requested. */
+    private frameHold: ReturnType<typeof setTimeout> | null = null;
     private hiddenTimer: ReturnType<typeof setTimeout> | null = null;
     private hiddenAt: number | null = null;
     private retainedReleased = false;
@@ -356,6 +359,7 @@ export class FrameScheduler {
         this.running = false;
         schedulerStarted = false;
         this.cancelFrame();
+        if (this.frameHold !== null) { clearTimeout(this.frameHold); this.frameHold = null; }
         this.clearWakeTimer();
         this.clearHiddenTimer();
         document.removeEventListener('visibilitychange', this.visibilityChanged);
@@ -630,8 +634,15 @@ export class FrameScheduler {
 
     private cancelFrame(): void { if (this.raf !== null) { cancelAnimationFrame(this.raf); this.raf = null; } }
 
+    /** Requests the back-off after a failed frame: no frame is requested until it runs out, then the loop resumes as needed. */
+    private holdFrames(ms: number): void {
+        if (this.frameHold !== null) clearTimeout(this.frameHold);
+        this.cancelFrame();
+        this.frameHold = setTimeout(() => { this.frameHold = null; this.ensureFrame(); }, ms);
+    }
+
     private ensureFrame(): void {
-        if (this.inFrame) return;
+        if (this.inFrame || this.frameHold !== null) return;
         if (!this.running || this.suspended || !this.needsWork()) { this.cancelFrame(); return; }
         if (this.raf === null) this.raf = requestAnimationFrame(this.runFrame);
     }
@@ -914,15 +925,14 @@ export class FrameScheduler {
             this.maintenanceMs = performance.now() - maintenanceStart;
             this.frameFailures = 0;
         } catch (error) {
-            // A frame that throws outside every pane's callback is reported and the loop goes on: stopping froze every pane for
-            // the rest of the session, with no restart (start() is one-shot). The pane callbacks are already contained by call(),
-            // so a throw here is the frame's own. Only a run of failing frames stops the loop, and then the owner is told why.
-            this.options.onError(null, error);
+            // The scheduler never stops for good: a stopped scheduler freezes every pane, healthy ones included, and start() is
+            // one-shot. A pane's own callbacks are contained by call(), which names the pane it demotes or unregisters; an error
+            // that reaches here escaped every pane, so it names no pane. The loop holds for a back-off (1 s, doubling, to 30 s)
+            // and resumes; the first failure of a streak is reported, the rest are counted.
             this.frameFailures++;
-            if (this.frameFailures >= FRAME_FAILURE_LIMIT) {
-                this.stop();
-                this.options.onError(null, new Error(`Frame scheduler stopped after ${FRAME_FAILURE_LIMIT} failing frames in a row`));
-            }
+            if (this.frameFailures === 1) this.options.onError(null, error);
+            else if (renderAuditEnabled()) auditCount('scheduler', 'frame-failed');
+            this.holdFrames(Math.min(FRAME_RETRY_MAX_MS, FRAME_RETRY_MIN_MS * 2 ** Math.min(this.frameFailures - 1, 5)));
         } finally {
             for (const item of encodings) if (!item.done) this.discard(item.work.entry, item.encoding);
             for (const batch of batches) if (!batch.submitted && this.live(batch.entry)) {

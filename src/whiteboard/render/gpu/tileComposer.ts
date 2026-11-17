@@ -327,6 +327,10 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     // dropped, a store slot freed for it, an invalidation). prepare reports whether any happened since its last call, together with
     // a signature of the draw list it laid, so a frame that draws what the last one drew is reported unchanged.
     let visibleEdits = 0;
+    // The kinds of edit this prepare made (one bit each), so a 'changed' answer names its reason as audit counters.
+    let editBits = 0;
+    const EDIT_SUPERSEDED = 1, EDIT_EMPTY = 2, EDIT_CANCEL = 4, EDIT_FREE = 8, EDIT_DONE = 16, EDIT_SCALES = 32, EDIT_INVALID = 64;
+    const editEvent = (bit: number): void => { visibleEdits++; editBits |= bit; };
     let drawSignature = 0;
     // The visible span at the compose scale while zooming, null otherwise: the positions a superseded entry must be exact under to be dropped.
     let zoomSpan: Span | null = null;
@@ -456,7 +460,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             }
             if (!victim) return;
             store.remove(victim.key);
-            visibleEdits++;
+            editEvent(EDIT_SUPERSEDED);
             auditCount(audit, 'compose:zoom:superseded');
         }
     };
@@ -590,7 +594,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         let live = 0;
         for (const part of raw) if (isLivePart(part.item)) live++;
         if (!cut.length) {
-            visibleEdits++;
+            editEvent(EDIT_EMPTY);
             const entry = store.putEmpty(key0);
             slots.set(entry, { mode: 'over', count: 0, inkNodes: NO_IDS, firstOrder: NO_ORDERS, live, geometry: false, cpu: false });
             auditCount(audit, 'tile:empty');
@@ -633,7 +637,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
 
     /** Releases what a position admitted; its acquired targets stay in the store, still missing their slots. */
     const cancel = (position: Position): void => {
-        visibleEdits++;
+        editEvent(EDIT_CANCEL);
         for (const slice of position.slices) {
             for (const run of slice.runs) { run.prepared?.retire(); run.prepared = null; }
             for (const { route, run, clips } of slice.admitted) { route.retire(run); clips?.retire(); }
@@ -647,7 +651,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
      * the exact scale stays. A lowered position still building is cancelled first: its entries are at another scale. Returns
      * whether any bytes were freed. */
     const freeOwn = (view: ViewState, target: number): boolean => {
-        visibleEdits++;
+        editEvent(EDIT_FREE);
         if (store.evict(FREE_FOR_REFUSAL, -1, view) > 0) return true;
         for (const position of building.values()) if (position.lowered) { cancel(position); building.delete(position.key); }
         for (const band of BANDS) store.dropScalesExcept(target, band);
@@ -687,7 +691,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 outcome = advance(position, budget, gpu);
             }
             if (outcome === 'done') {
-                visibleEdits++;
+                editEvent(EDIT_DONE);
                 auditCount(audit, `compose:done:${pass}`);
                 building.delete(key);
                 finished.push(position);
@@ -945,7 +949,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             for (let y = span.y0; y < span.y1 && complete; y++) {
                 for (let x = span.x0; x < span.x1 && complete; x++) if (statusAt(band, target, x, y) === 'missing') complete = false;
             }
-            if (!zooming && complete && store.dropScalesExcept(target, band) > 0) visibleEdits++;
+            if (!zooming && complete && store.dropScalesExcept(target, band) > 0) editEvent(EDIT_SCALES);
             for (let y = span.y0; y < span.y1; y++) {
                 for (let x = span.x0; x < span.x1; x++) {
                     const status = statusAt(band, target, x, y);
@@ -1085,6 +1089,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         prepare(view: ViewState, budget: FrameBudget, prepared: PreparedPaint2d | null, omit?: ReadonlySet<string>): boolean {
             if (disposed) return true;
             const editsBefore = visibleEdits;
+            editBits = 0;
             frame = budget.frameId;
             drawnInk.clear();
             retireLive();
@@ -1144,7 +1149,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     omitIds = nextOmit ? new Set(nextOmit) : null;
                     invalidated = true;
                 }
-                if (invalidated) visibleEdits++;
+                if (invalidated) editEvent(EDIT_INVALID);
                 // A position admitted against the old content or omission would be encoded stale (it is not in the store
                 // yet, so markDirty cannot reach it): every position in progress restarts when either changes.
                 const span = spanAt(view, target);
@@ -1205,8 +1210,21 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 signature = hashMix(signature, draw.live ? 1 + idOfObject(draw.liveRoute) : 0);
                 if (draw.ink.length) signature = hashMix(signature, hashText(draw.ink.join('\u0001')));
             }
-            const changed = indexing || visibleEdits !== editsBefore || signature !== drawSignature;
+            const sigChanged = signature !== drawSignature;
+            const changed = indexing || visibleEdits !== editsBefore || sigChanged;
             drawSignature = signature;
+            // Why it answered changed, as audit counters (gh14): a prepare names every condition that held.
+            if (changed && renderAuditEnabled()) {
+                if (indexing) auditCount(audit, 'prepare:changed:indexing');
+                if (editBits & EDIT_SUPERSEDED) auditCount(audit, 'prepare:changed:superseded');
+                if (editBits & EDIT_EMPTY) auditCount(audit, 'prepare:changed:empty');
+                if (editBits & EDIT_CANCEL) auditCount(audit, 'prepare:changed:cancelled');
+                if (editBits & EDIT_FREE) auditCount(audit, 'prepare:changed:freed');
+                if (editBits & EDIT_DONE) auditCount(audit, 'prepare:changed:composed');
+                if (editBits & EDIT_SCALES) auditCount(audit, 'prepare:changed:scales-dropped');
+                if (editBits & EDIT_INVALID) auditCount(audit, 'prepare:changed:invalidated');
+                if (sigChanged) auditCount(audit, 'prepare:changed:draw-list');
+            }
             return changed;
         },
         encodeOffscreen(passes: OffscreenPasses, _view: ViewState, band: PaintBand): void {

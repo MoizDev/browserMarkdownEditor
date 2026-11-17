@@ -230,8 +230,20 @@ export class AnalyticInkRun implements PreparedRun {
 export function createAnalyticInkRuns(host: LayerHost, audit: string) {
     let device: GfxDevice | null = null, pipeline: PipelineHandle | null = null, pending = false, failed = false, incarnation = 0;
     let gpuBytes = 0;
-    // One packing scratch, reused across admissions: writeBuffer copies its bytes before it returns.
-    let staging = new Float32Array(0);
+    // One packing scratch, reused across admissions: writeBuffer copies its bytes before it returns. It is a CPU lease like
+    // any other: the governor requires every byte a route reports to be reserved, so the scratch reports exactly its lease.
+    let staging = new Float32Array(0), stagingLease: ByteLease | null = null;
+    const growStaging = (instances: number): boolean => {
+        if (staging.length >= instances * 12) return true;
+        const bytes = Math.max(instances * STRIDE, staging.byteLength * 2);
+        const lease = host.allocator.cpu.reserve(bytes);
+        if (!lease) return false;
+        const next = new Float32Array(bytes / 4);
+        next.set(staging); staging = next;
+        if (stagingLease) host.allocator.cpu.release(stagingLease);
+        stagingLease = lease;
+        return true;
+    };
     const live = new Set<AnalyticInkRun>();
     const destroyRun = (run: AnalyticInkRun): void => {
         if (!live.delete(run)) return;
@@ -241,7 +253,9 @@ export function createAnalyticInkRuns(host: LayerHost, audit: string) {
         incarnation++;
         for (const run of [...live]) destroyRun(run);
         if (pipeline && device) device.destroy(pipeline);
-        pipeline = null; device = null; pending = false; failed = false; staging = new Float32Array(0);
+        pipeline = null; device = null; pending = false; failed = false;
+        if (stagingLease) host.allocator.cpu.release(stagingLease);
+        stagingLease = null; staging = new Float32Array(0);
     };
     const ensurePipeline = (owner: GfxDevice): boolean => {
         if (pipeline) return true;
@@ -277,10 +291,7 @@ export function createAnalyticInkRuns(host: LayerHost, audit: string) {
                 if (!paint) return { status: 'unsupported', why: 'analytic-unpackable' };
                 if (!paint.bounds.width || !paint.bounds.height) continue;
                 const n = rects.length;
-                if (staging.length < (n + 1) * 12) {
-                    const next = new Float32Array(Math.max((n + 1) * 12, staging.length * 2));
-                    next.set(staging); staging = next;
-                }
+                if (!growStaging(n + 1)) return { status: 'denied', pool: 'cpu', bytes: (n + 1) * STRIDE };
                 staging.set(paint.data.subarray(4, 16), n * 12);
                 rects.push(paint.bounds);
             }
@@ -330,7 +341,7 @@ export function createAnalyticInkRuns(host: LayerHost, audit: string) {
         },
         retire: destroyRun,
         release,
-        memory(): { gpuBytes: number; cpuBytes: number } { return { gpuBytes, cpuBytes: staging.byteLength }; },
+        memory(): { gpuBytes: number; cpuBytes: number } { return { gpuBytes, cpuBytes: stagingLease?.bytes ?? 0 }; },
     };
 }
 function width(view: ViewState): number { return Math.round(view.viewport.width * view.viewport.dpr); }

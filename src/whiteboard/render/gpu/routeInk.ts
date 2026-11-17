@@ -7,7 +7,7 @@ import { auditCount } from '../../../platform/render/renderAudit';
 import type { PaintInkItem, PaintItem } from '../paintStream';
 import { analyticCapsule } from '../analyticInk';
 import { AnalyticInkRun, createAnalyticInkRuns } from '../analyticInkBatch';
-import { inkStrokeTriangles, inkToleranceBand } from '../inkGeometry';
+import { inkStrokeSets, inkToleranceBand } from '../inkGeometry';
 import type { Admission, Blend, CreateInkRoutes, InkRouteFor, ItemRoute, PreparedRun } from './contracts';
 
 /** The only place an ink route is chosen; wet and committed ink both call it, so a stroke cannot change route between
@@ -71,11 +71,12 @@ export const createInkRoutes: CreateInkRoutes = (host: LayerHost, audit: string)
                 const [a, b, c, d] = item.localToWorld;
                 const deviceScale = view.camera.z * view.viewport.dpr * Math.hypot(a, b, c, d);
                 if (!(deviceScale > 0) || !Number.isFinite(deviceScale)) { retireAll(); return { status: 'unsupported', why: 'scale' }; }
-                const stroke = inkStrokeTriangles(item, inkToleranceBand(deviceScale), audit);
+                // One set per chunk, all under one affine and one stencil cover: a publication uploads only the chunks it adds.
+                const stroke = inkStrokeSets(item, inkToleranceBand(deviceScale), audit);
                 if (!stroke) { retireAll(); return { status: 'unsupported', why: 'outline-refused' }; }
-                const result: PathCoverageAdmission = kit.admit({
-                    shapes: { positive: stroke.triangles, negative: NO_TRIANGLES, edges: stroke.edges, bounds: stroke.bounds },
-                    rule: 'union', affine: affineAt(item.localToWorld, stroke.origin, view), viewport: pixels(view),
+                const sets = stroke.sets.map(set => ({ positive: set.triangles, negative: NO_TRIANGLES, edges: set.edges, bounds: set.bounds }));
+                const result: PathCoverageAdmission = kit.admitSets({
+                    sets, rule: 'union', affine: affineAt(item.localToWorld, stroke.origin, view), viewport: pixels(view),
                     colour: item.material.color, output: { kind: 'composite', blend: modulate ? 'modulate' : 'normal' },
                     sampling: 'grid4',
                 }, budget);
@@ -83,7 +84,11 @@ export const createInkRoutes: CreateInkRoutes = (host: LayerHost, audit: string)
                 else if (result.status !== 'empty') {
                     retireAll();
                     // The kit's own upload: two doubles per vertex are eight bytes, so a double is four bytes.
-                    if (result.status === 'denied') return { status: 'denied', pool: 'gpu', bytes: stroke.triangles.length * 4 };
+                    if (result.status === 'denied') {
+                        let bytes = 0;
+                        for (const set of stroke.sets) bytes += set.triangles.length * 4;
+                        return { status: 'denied', pool: 'gpu', bytes };
+                    }
                     if (result.status === 'deferred') return { status: 'deferred' };
                     return { status: 'unsupported', why: 'coverage-kit' };
                 }

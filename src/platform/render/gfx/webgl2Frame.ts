@@ -217,6 +217,7 @@ function slice(buffer: FrameBuffer, value: BufferSlice | UniformSlice): void {
 }
 function clearDescriptor(desc: PassDesc, target: FrameTarget, retained: Retention): void {
     rect(desc.viewport);
+    if (desc.clearViewport) rect(desc.clearViewport);
     if (!['store', 'discard'].includes(desc.store)) throw new ArenaError('invalid-input');
     if (desc.load.kind === 'clear') colour(desc.load.color);
     else if (desc.load.kind !== 'load' || target.handle === 'surface' || !retained.colorStored) throw new ArenaError('invalid-input');
@@ -278,6 +279,9 @@ class DeviceFrame implements ControlledFrame {
     }
     uniforms(bytes: ArrayBufferView): UniformSlice {
         return this.guard(() => this.#backend.uniforms(bytes));
+    }
+    acquireTarget(desc: TargetRequest): TargetLease | null {
+        return this.guard(() => this.#backend.acquireTarget(desc));
     }
     beginPass(desc: PassDesc): GpuPass {
         return this.guard(() => {
@@ -491,7 +495,13 @@ class DeviceFrame implements ControlledFrame {
                     gl.clearStencil(desc.stencil.load.value);
                     bits |= gl.STENCIL_BUFFER_BIT;
                 }
+                // A region clear is limited to its rectangle; the scissor is turned off again before any draw of the pass.
+                if (bits && desc.clearViewport) {
+                    gl.enable(gl.SCISSOR_TEST);
+                    gl.scissor(desc.clearViewport.x, target.height - desc.clearViewport.y - desc.clearViewport.height, desc.clearViewport.width, desc.clearViewport.height);
+                }
                 if (bits) gl.clear(bits);
+                if (bits && desc.clearViewport) gl.disable(gl.SCISSOR_TEST);
                 if (__BME_BENCH__ && target.coverage && desc.load.kind === 'clear') {
                     gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
                     gl.clearBufferfv(gl.COLOR, 1, new Float32Array([0, 0, 0, 0]));

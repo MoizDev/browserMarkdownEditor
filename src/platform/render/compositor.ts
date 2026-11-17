@@ -10,7 +10,7 @@ import { paintPageScope, paintWorldScope, paneCssTransform, projectPage } from '
 import { TEXTURED_QUAD_SHADER } from './compositorShader';
 import { GpuIsolationPlan } from './gpuIsolationPlan';
 import { IsolationShortfall } from './gfx/webgl2Isolation';
-import type { ClipToken, CoverageOutput, CoverageToken, FrameEncoder, GpuPass, GroupToken, PipelineDesc, PipelineHandle, RectI, SamplerHandle, ShaderModule, TextureHandle, UniformSlice } from './gfx/api';
+import type { ClipToken, CoverageOutput, CoverageToken, FrameEncoder, GpuPass, GroupToken, PipelineDesc, PipelineHandle, RectI, RgbaP, SamplerHandle, ShaderModule, TargetHandle, TargetLease, TextureHandle, UniformSlice } from './gfx/api';
 import type { Webgl2Owner } from './gfx/webgl2';
 import type { PageStack } from './pageStack';
 import { ArenaError } from './resourceArena';
@@ -22,6 +22,9 @@ import type { FrameBudget, FrameToken, GpuReleaseReason } from './types';
 const benchmarkDomain = __BME_BENCH__ ? await import('./benchmarkPaintDomain') : null;
 
 /** The textured-quad pipeline, typed as PipelineDesc so its literal stencil state stays `enabled: false`. */
+/** The shared atlas side (Layer.atlas): one rgba8 target of this size, 17 MB, leased once per frame and shelf-packed. */
+const ATLAS_SIZE = 2064;
+
 function quadDescriptor(shader: ShaderModule): PipelineDesc {
     return { shader, topology: 'triangle-strip', colorFormat: 'rgba8', samples: 1, blend: 'source-over', alphaToCoverage: false,
         colorWrite: [true, true, true, true], stencil: { enabled: false } };
@@ -136,6 +139,10 @@ export class GpuCompositor implements PaneCompositor {
     /** Batched quads: one instance record (dst x0,y0,x1,y1 and src x,y,w,h) per quad, grown to the largest batch so far, and the batch's uniform block. */
     #batchData = new Float32Array(64 * 8);
     readonly #batchUniforms = new Float32Array(16);
+    /** This frame's atlas (Layer.atlas): its lease and shelf cursor, created by the first atlas tile; null until then. */
+    #atlas: { lease: TargetLease | null; x: number; y: number; rowH: number } | null = null;
+    /** Layer tile texture → its region of the atlas, for the samples that follow in this frame. */
+    readonly #atlasRegions = new Map<TextureHandle, { texture: TextureHandle; x: number; y: number }>();
 
     constructor(options: GpuCompositorOptions) {
         if (options.target.generation !== options.owner.resources.generation || options.target.limits !== options.owner.limits) {
@@ -263,6 +270,11 @@ export class GpuCompositor implements PaneCompositor {
             plan.own((inverted && binding.group === 'document' ? 1 : 0) + 1,
                 binding.isolation.blend === 'multiply', binding.isolation.bounds?.(frame) ?? full);
         }
+        // Admitted at prepare, like every other target: the frame borrows the atlas from these slots and never allocates it.
+        if (snapshot.layers.some(binding => binding.layer.atlas === true)) {
+            const bounds = { x: 0, y: 0, width: ATLAS_SIZE, height: ATLAS_SIZE };
+            plan.declare({ depth: 0, maskDepth: 0, bounds, targets: { count: 1, bounds } });
+        }
         for (const shortfall of this.#shortfalls) plan.shortfall(shortfall);
         this.#isolationPlan = plan;
         try {
@@ -334,6 +346,8 @@ export class GpuCompositor implements PaneCompositor {
             // Every layer's offscreen passes are recorded before the surface pass; the frame replays independent ones grouped
             // by program and target (webgl2Frame.ts #order), since a layer's own draws are not reordered here.
             let offscreen = 0;
+            this.#atlas = null;
+            this.#atlasRegions.clear();
             try { offscreen = this.#encodeOffscreen(snapshot, frame, encoder, drawScope); } finally { this.#active = null; }
             auditCount('compositor', 'offscreen-passes', offscreen);
             const pass = encoder.beginPass({ target: 'surface', viewport: bounds,
@@ -508,8 +522,14 @@ export class GpuCompositor implements PaneCompositor {
         const height = Math.round(active.view.viewport.height * active.view.viewport.dpr);
         const scissor = envelope(destRect, width, height);
         if (!scissor.width || !scissor.height) return;
+        // A tile drawn into the shared atlas is sampled from its region: the same texels, shifted by the region's origin.
+        const region = this.#atlasRegions.get(gpuTexture);
+        const sampledTexture = region ? region.texture : gpuTexture;
+        const sampled = region ? this.#options.owner.textureInfo(region.texture) : info;
+        const sample = region ? { x: sourceRect.x + region.x, y: sourceRect.y + region.y, width: sourceRect.width, height: sourceRect.height } : sourceRect;
+        if (region) auditCount('compositor', 'atlas-sample');
         this.#quadData.set([0, 0, width, height, destRect.x, destRect.y, destRect.x + destRect.width, destRect.y + destRect.height,
-            sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height, info.width, info.height, opacity,
+            sample.x, sample.y, sample.width, sample.height, sampled.width, sampled.height, opacity,
             __BME_BENCH__ ? options.coverage === 'current' ? 3 : options.coverage === 'standin' ? 2 : 0 : 0]);
         const slice = this.uniforms(this.#quadData);
         pass.draw({ pipeline: this.#quad, vertices: [], first: 0, count: 4, instances: 1, scissor,
@@ -518,7 +538,7 @@ export class GpuCompositor implements PaneCompositor {
                 ...(options.coverage === 'standin' ? { standInRatio: options.standInRatio ?? Math.min(1,
                     sourceRect.width / destRect.width, sourceRect.height / destRect.height) } : {}),
             } : {}),
-            bindings: { uniforms: [{ binding: 0, slice }], textures: [{ binding: 0, texture: gpuTexture,
+            bindings: { uniforms: [{ binding: 0, slice }], textures: [{ binding: 0, texture: sampledTexture,
                 sampler: options.sampling === 'nearest' ? this.#nearest : this.#linear }] } });
     }
 
@@ -541,6 +561,12 @@ export class GpuCompositor implements PaneCompositor {
             options.sampling !== undefined && !['nearest', 'linear'].includes(options.sampling)) throw new ArenaError('invalid-input');
         const info = this.#options.owner.textureInfo(gpuTexture);
         if (info.format !== 'rgba8') throw new ArenaError('invalid-input');
+        // An atlas tile's quads sample its region of the shared texture: one texture for the whole batch, shifted per quad.
+        const region = this.#atlasRegions.get(gpuTexture);
+        const ox = region ? region.x : 0, oy = region ? region.y : 0;
+        const sampledTexture = region ? region.texture : gpuTexture;
+        const sampledInfo = region ? this.#options.owner.textureInfo(region.texture) : info;
+        if (region) auditCount('compositor', 'atlas-sample', quads.length);
         const width = Math.round(active.view.viewport.width * active.view.viewport.dpr);
         const height = Math.round(active.view.viewport.height * active.view.viewport.dpr);
         // Every quad is checked before anything is drawn, so a bad quad refuses the whole batch and draws none of it.
@@ -558,14 +584,14 @@ export class GpuCompositor implements PaneCompositor {
             if (!scissor.width || !scissor.height) continue;
             const at = count * 8;
             batch[at] = dst.x; batch[at + 1] = dst.y; batch[at + 2] = dst.x + dst.width; batch[at + 3] = dst.y + dst.height;
-            batch[at + 4] = src.x; batch[at + 5] = src.y; batch[at + 6] = src.width; batch[at + 7] = src.height;
+            batch[at + 4] = src.x + ox; batch[at + 5] = src.y + oy; batch[at + 6] = src.width; batch[at + 7] = src.height;
             count++;
             left = Math.min(left, scissor.x); top = Math.min(top, scissor.y);
             right = Math.max(right, scissor.x + scissor.width); bottom = Math.max(bottom, scissor.y + scissor.height);
         }
         if (!count) return;
         // The block is the single quad's layout: viewport, then texture size with opacity (the coverage class is bench-only).
-        this.#batchUniforms.set([0, 0, width, height, 0, 0, 0, 0, 0, 0, 0, 0, info.width, info.height, opacity,
+        this.#batchUniforms.set([0, 0, width, height, 0, 0, 0, 0, 0, 0, 0, 0, sampledInfo.width, sampledInfo.height, opacity,
             __BME_BENCH__ ? options.coverage === 'current' ? 3 : options.coverage === 'standin' ? 2 : 0 : 0]);
         const uniforms = this.uniforms(this.#batchUniforms);
         const vertices = this.uniforms(batch.subarray(0, count * 8));
@@ -576,7 +602,7 @@ export class GpuCompositor implements PaneCompositor {
                 // A batch shares one stand-in ratio; the single path measures it per quad, so this is the declared one.
                 ...(options.coverage === 'standin' ? { standInRatio: options.standInRatio ?? 1 } : {}),
             } : {}),
-            bindings: { uniforms: [{ binding: 0, slice: uniforms }], textures: [{ binding: 0, texture: gpuTexture,
+            bindings: { uniforms: [{ binding: 0, slice: uniforms }], textures: [{ binding: 0, texture: sampledTexture,
                 sampler: options.sampling === 'nearest' ? this.#nearest! : this.#linear! }] } });
     }
 
@@ -604,6 +630,33 @@ export class GpuCompositor implements PaneCompositor {
     }
 
     /** Each layer's offscreen passes, in layer order, before the surface pass: one pass open at a time, every scope closed. */
+    /** Places one offscreen tile in this frame's shared atlas (Layer.atlas, default off). A tile the atlas cannot take draws its
+     * own target as before, counted under fallback:atlas-* by its reason. The atlas is one lease per frame; each tile takes a
+     * shelf region with a one-texel margin, and the margin is cleared with the region, so sampling at a tile's edge reads
+     * transparent texels, never the neighbour. Only clear passes without stencil use it: a load pass would read stale texels. */
+    #atlasRegion(encoder: FrameEncoder, target: TargetHandle, viewport: RectI, options: { clear: RgbaP | null; stencil: boolean }):
+        { target: TargetHandle; viewport: RectI; clear: RectI } | null {
+        if (!options.clear) { auditCount('compositor', 'fallback:atlas-load'); return null; }
+        if (options.stencil) { auditCount('compositor', 'fallback:atlas-stencil'); return null; }
+        if (!this.#atlas) {
+            this.#atlas = { lease: encoder.acquireTarget({ width: ATLAS_SIZE, height: ATLAS_SIZE, samples: 1, format: 'rgba8', stencil: false, purpose: 'group' }),
+                x: 0, y: 0, rowH: 0 };
+        }
+        const atlas = this.#atlas;
+        if (!atlas.lease) { auditCount('compositor', 'fallback:atlas-unavailable'); return null; }
+        const pad = 1, w = viewport.width + 2 * pad, h = viewport.height + 2 * pad;
+        if (w > ATLAS_SIZE || h > ATLAS_SIZE) { auditCount('compositor', 'fallback:atlas-oversize'); return null; }
+        if (atlas.x + w > ATLAS_SIZE) { atlas.x = 0; atlas.y += atlas.rowH; atlas.rowH = 0; }
+        if (atlas.y + h > ATLAS_SIZE) { auditCount('compositor', 'fallback:atlas-full'); return null; }
+        const origin = { x: atlas.x, y: atlas.y };
+        atlas.x += w; atlas.rowH = Math.max(atlas.rowH, h);
+        const region = { x: origin.x + pad, y: origin.y + pad, width: viewport.width, height: viewport.height };
+        // The layer keeps sampling its own texture; the registry sends those samples to the region for the rest of the frame.
+        this.#atlasRegions.set(this.#options.owner.targetTexture(target), { texture: atlas.lease.texture, x: region.x, y: region.y });
+        auditCount('compositor', 'atlas-region');
+        return { target: atlas.lease.target, viewport: region, clear: { x: origin.x, y: origin.y, width: w, height: h } };
+    }
+
     #encodeOffscreen(snapshot: Snapshot, frame: ScheduledFrame, encoder: FrameEncoder, drawScope: DrawScope): number {
         let passes = 0;
         for (const binding of snapshot.layers) {
@@ -623,7 +676,9 @@ export class GpuCompositor implements PaneCompositor {
                 layer.encodeOffscreen({
                     begin: (target, viewport, options) => {
                         if (open) throw new ArenaError('invalid-input');
-                        const raw = encoder.beginPass({ target, viewport,
+                        const atlas = layer.atlas === true ? this.#atlasRegion(encoder, target, viewport, options) : null;
+                        const raw = encoder.beginPass({ target: atlas ? atlas.target : target, viewport: atlas ? atlas.viewport : viewport,
+                            ...(atlas ? { clearViewport: atlas.clear } : {}),
                             load: options.clear ? { kind: 'clear', color: options.clear } : { kind: 'load' }, store: 'store',
                             ...(options.stencil ? { stencil: { load: { kind: 'clear', value: 0 }, store: 'discard' } as const } : {}) });
                         const scope = layerPass(raw);

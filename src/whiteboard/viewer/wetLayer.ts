@@ -147,6 +147,8 @@ interface WetRunSlot {
     viewBound: boolean; viewKey: string;
     /** The first refusal of this stroke is reported; a refusal is never reported per frame. */
     reported: boolean;
+    /** The upload meter a deferred admission used: its retry waits until the frame's meter holds that much (admitRuns). */
+    waitBytes: number;
 }
 interface WetScrap { readonly device: GfxDevice; readonly texture: TextureHandle; readonly world: Bounds; readonly pw: number; readonly ph: number }
 /** A run's key: no string per band per frame. Gesture sequences are small sequential integers. */
@@ -383,9 +385,9 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
     const stamp = (key: number, gesture: number, current: WetRunSlot | undefined, source: Prepared, palette: PaintPalette,
         token: FrameToken, viewKey: string, material: InkMaterial | null, item: PaintInkItem | null): WetRunSlot => {
         const slot: WetRunSlot = current ?? { gesture, serial: 0, scale: 0, palette: null, material: null, item: null,
-            token, state: 'pending', shown: null, viewBound: false, viewKey: '', reported: false };
+            token, state: 'pending', shown: null, viewBound: false, viewKey: '', reported: false, waitBytes: 0 };
         slot.serial = source.serial; slot.scale = source.scale; slot.palette = palette; slot.material = material; slot.item = item;
-        slot.token = { ...token }; slot.viewBound = false; slot.viewKey = viewKey;
+        slot.token = { ...token }; slot.viewBound = false; slot.viewKey = viewKey; slot.waitBytes = 0;
         runs.set(key, slot);
         return slot;
     };
@@ -426,6 +428,10 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                 // A band with nothing shown yet is admitted even past the frame's budget: the tessellation spent it, and until
                 // it is admitted the frame presents without the newest tip (measured: 41 yields left drawing frames unsharp).
                 if (audited && current?.shown && budget.shouldYield()) auditCount('wet', 'admit-tip:yielded');
+                // A deferred run waits for the upload meter to hold the bytes its last attempt used. Re-admitting it every frame
+                // re-uploads the stroke each time and spends the meter the board needs (measured as a feedback loop).
+                if (current && current.state === 'pending' && current.waitBytes > 0 && current.serial === source.serial && current.palette === palette
+                    && (budget.shouldYield() || budget.upload.remainingBytes < current.waitBytes)) { if (audited) auditCount('wet', 'admit-wait:meter'); continue; }
                 const reuse = current && current.serial === source.serial && current.palette === palette ? current : null;
                 const material = reuse ? reuse.material : bandMaterial(shown, band, palette);
                 if (!material) {
@@ -439,7 +445,9 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                     clips: shown.presentation.clips ?? [], coverage: source.coverageChunks, material } satisfies PaintInkItem;
                 const route = gpuRoutes.inkRouteFor(item) === 'ink-analytic' ? routes.analytic : routes.union;
                 const before = audited ? route.memory().gpuBytes : 0;
+                const meterBefore = budget.upload.remainingBytes;
                 const admission = route.admit([item], view, 'over', tip);
+                const meterUsed = meterBefore - budget.upload.remainingBytes;
                 if (audited) {
                     auditCount('wet', `admit:${admission.status}`, 1, { [route.id]: 1 });
                     const grown = route.memory().gpuBytes - before; if (grown > 0) auditCount('wet', 'upload:vertex', 1, { bytes: grown });
@@ -453,7 +461,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                     }
                     // A replaced shown is disposed only when its successor is admitted: a deferred or denied admission keeps the last tip.
                     case 'empty': slot.viewBound = true; setShown(slot, null, 'empty'); break;
-                    case 'deferred': slot.state = 'pending'; break;
+                    case 'deferred': slot.state = 'pending'; slot.waitBytes = Math.max(1, meterUsed); break;
                     case 'denied': slot.state = 'denied'; denied = true; awaitSizedCapacity(host, invalidate, { pool: admission.pool, bytes: admission.bytes }); break;
                     case 'unsupported': {
                         // The route refused the stroke: it is drawn through the CPU path, and the refusal is reported once.

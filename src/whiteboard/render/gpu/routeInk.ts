@@ -17,7 +17,10 @@ import type { Admission, Blend, CreateInkRoutes, InkRouteFor, ItemRoute, Prepare
  * packing, and that refusal is reported, not re-routed. */
 export const inkRouteFor: InkRouteFor = (item: PaintInkItem) => analyticCapsule(item) ? 'ink-analytic' : 'ink-union';
 
-/** A union run: one stencil cover per stroke, so a translucent stroke is never blended with itself. */
+/** A union run: one stencil cover per stroke, so a translucent stroke is never blended with itself. By reading, the item's
+ * chunks are one kit admission (admitSets), so the stroke's cover is one cover however many chunks it has. Across tiles, each
+ * tile's admission covers only its own viewport, so a stroke spanning two tiles blends each pixel once. This route admits an
+ * item the same way wet or committed; the hand-over between the two is the pane's logic, not checked here. */
 class UnionInkRun implements PreparedRun {
     readonly route = 'ink-union' as const;
     constructor(readonly blend: Blend, readonly strokes: readonly PreparedPathCoverage[]) {}

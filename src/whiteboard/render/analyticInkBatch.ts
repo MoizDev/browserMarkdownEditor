@@ -214,6 +214,7 @@ export function createAnalyticInkBatch(host: LayerHost, report: (error: unknown)
 // The run route (gpu-h5): a run of analytic capsules is packed once, uploaded in slabs, and drawn as one instanced draw
 // per slab. It is the route behind inkRouteFor's 'ink-analytic'; the batch above stays only for the running adapter.
 
+const NO_TEXTURES: readonly never[] = [];
 /** Slabs are bounded so one upload stays inside a frame's allowance; a run larger than a slab takes several. */
 const RUN_SLAB_BYTES = 256 * 1024;
 /** One uploaded slab. Its vertex slice is built once, at admission, so a draw builds only the command that uses it. */
@@ -336,8 +337,9 @@ export function createAnalyticInkRuns(host: LayerHost, audit: string) {
             if (!live.has(run) || !ready || run.device !== device || host.device() !== device || host.generation !== run.device.generation) {
                 throw new Error('Stale analytic ink run');
             }
-            // The uniform slice is per frame, so one is taken per draw and shared by the run's slabs; nothing else is built here.
-            const bindings = { uniforms: [{ binding: 0, slice: host.uniforms(run.viewport) }], textures: [] };
+            // The uniform slice is per frame, so one is taken per draw and shared by the run's slabs; the empty texture list
+            // is shared too, since no ink draw binds a texture. By reading, each draw otherwise built both on every frame.
+            const bindings = { uniforms: [{ binding: 0, slice: host.uniforms(run.viewport) }], textures: NO_TEXTURES };
             for (const slab of run.slabs) {
                 pass.draw({ pipeline: ready, bindings, vertices: slab.vertices, first: 0, count: 4, instances: slab.count, scissor: slab.bounds });
             }

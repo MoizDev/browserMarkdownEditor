@@ -337,7 +337,9 @@ function buildLocal(chunk: InkCoverage, band: number, audit: string): InkTriangl
         throw error;
     }
 }
-/** The device-px errors this chunk's outline may have: a fraction of its thinnest device radius, each under its ceiling. */
+/** The device-px errors this chunk's outline may have: a fraction of its thinnest device radius, each under its ceiling.
+ * By reading, every chunk reaches this one builder, so the F1 bound holds for the wet stroke, the committed stroke and every LOD
+ * level alike: a LOD level's chunks are InkCoverage objects of their own, tessellated here at their own radius. */
 function inkTolerances(chunk: InkCoverage, band: number): { arcPx: number; flattenPx: number } {
     const radius = inkMinRadius(chunk);
     if (!(radius < Infinity)) return { arcPx: INK_CAP_ERROR_DEVICE_PX, flattenPx: INK_FLATTEN_DEVICE_PX };

@@ -32,7 +32,9 @@ export interface FrameBudget {
     prepareDeadline: number;
     upload: { remainingBytes: number; deadline: number };
     shouldYield(): boolean;
-    claimUpload(bytes: number): boolean;
+    /** Claims upload bytes against this prepare's allowance. A 'media' claim (a VideoFrame being uploaded) is granted once per
+     * prepare call per layer, outside the allowance, so one decoded frame never waits behind the layer's other uploads. */
+    claimUpload(bytes: number, kind?: 'media'): boolean;
 }
 
 /** Idempotent cache teardown causes, never document mutations (contracts.md C4.3:519–520). */

@@ -1,7 +1,7 @@
 import type { Affine, Rect, Rgba, ViewState } from '../types';
 import type { PagePresentation } from './camera';
 import type { DamageRecord } from './damage';
-import type { Backend, GfxDevice, GpuPass, RectI, Samples, TextureFormat, TextureHandle, UniformSlice } from './gfx/api';
+import type { Backend, DrawableImage, GfxDevice, GpuPass, RectI, Samples, TextureFormat, TextureHandle, UniformSlice } from './gfx/api';
 import type { MemoryAllocator, MemoryGovernor } from './memoryGovernor';
 import type { BorrowedMirror, MirrorView } from './mirrorSet';
 import type { Pane2DPresenter } from './paneLifecycle';
@@ -117,9 +117,9 @@ export interface LayerHost {
     /** Read-only governor state for this pane: a layer may shed work under 'slow-gpu' or 'pressure'. Allocates nothing. */
     trouble(): LayerTrouble;
     drawTexturedQuad(pass: GpuPass, texture: TextureHandle, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
-    drawTexturedQuad(ctx: CanvasRenderingContext2D, image: ImageBitmap, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
+    drawTexturedQuad(ctx: CanvasRenderingContext2D, image: DrawableImage, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
     drawTexturedQuads(pass: GpuPass, texture: TextureHandle, quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void;
-    drawTexturedQuads(ctx: CanvasRenderingContext2D, image: ImageBitmap, quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void;
+    drawTexturedQuads(ctx: CanvasRenderingContext2D, image: DrawableImage, quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void;
 }
 
 /** The attach actor forwards these capabilities into its stable LayerHost objects. */
@@ -131,9 +131,9 @@ export interface CompositorResources {
     /** Throws outside active GPU encoding; never returns a fictitious slice. */
     uniforms(bytes: ArrayBufferView): UniformSlice;
     drawTexturedQuad(pass: GpuPass, texture: TextureHandle, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
-    drawTexturedQuad(ctx: CanvasRenderingContext2D, image: ImageBitmap, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
+    drawTexturedQuad(ctx: CanvasRenderingContext2D, image: DrawableImage, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
     drawTexturedQuads(pass: GpuPass, texture: TextureHandle, quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void;
-    drawTexturedQuads(ctx: CanvasRenderingContext2D, image: ImageBitmap, quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void;
+    drawTexturedQuads(ctx: CanvasRenderingContext2D, image: DrawableImage, quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void;
 }
 
 /** Final clear is opaque; inversion applies once to composited document colour (C2.5). */

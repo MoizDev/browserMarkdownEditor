@@ -190,9 +190,13 @@ function setVec4(into: Float32Array, at: number, x: number, y: number, z: number
 function integer(value: number): void {
     if (!Number.isSafeInteger(value) || value < 0 || value > 0x7fffffff) throw new ArenaError('invalid-input');
 }
-function rect(value: RectI): RectI {
+/** Validates a rectangle without copying it, for a caller that only reads it (intersect() copies what it keeps). */
+function checkRect(value: RectI): void {
     for (const n of [value.x, value.y, value.width, value.height]) integer(n);
     if (!Number.isSafeInteger(value.x + value.width) || !Number.isSafeInteger(value.y + value.height)) throw new ArenaError('invalid-input');
+}
+function rect(value: RectI): RectI {
+    checkRect(value);
     return { ...value };
 }
 function intersect(a: RectI, b: RectI): RectI {
@@ -648,6 +652,14 @@ class DevicePass implements GpuPass {
     readonly #root: FrameTarget;
     readonly #desc: PassDesc;
     readonly #clips: ClipEntry[] = [];
+    /** One frozen token per depth, reused by every push at that depth. The stack is LIFO, so one token per depth is live at a
+     * time; popClip still rejects a token that is not the live entry's or whose depth is not current. What it cannot tell
+     * apart is a stale copy of a token for a depth that is live again: callers pair pushes with pops, so that is their error.
+     * By reading the clip path: a push allocated a token each time. */
+    readonly #clipTokens: ClipToken[] = [];
+    /** Mask bounds per depth, written in place. composite() reads them synchronously when the mask pops, so a later push at
+     * the same depth cannot change what an earlier composite used. By reading composite(). */
+    readonly #maskBounds: RectI[] = [];
     readonly #groups: GroupEntry[] = [];
     #scope: Scope;
     #clip: RectI;
@@ -757,19 +769,25 @@ class DevicePass implements GpuPass {
         this.#frame.markBarrier();
         return this.#guard(() => {
             if (this.#clips.length >= 64) throw new ArenaError('invalid-input');
-            const token = Object.freeze({ depth: this.#clips.length + 1 });
+            const depth = this.#clips.length + 1;
+            const token = this.#clipTokens[depth - 1] ??= Object.freeze({ depth });
             const previous = this.#clip;
             let isolation: Isolation | null = null;
             if ('kind' in value) {
                 const clip = this.#backend.clip(value);
-                const mask: Mask = { texture: clip.mask, bounds: { ...clip.bounds }, source: clip.mask.usedRect };
+                const bounds = this.#maskBounds[depth - 1] ??= { x: 0, y: 0, width: 0, height: 0 };
+                bounds.x = clip.bounds.x; bounds.y = clip.bounds.y; bounds.width = clip.bounds.width; bounds.height = clip.bounds.height;
+                const mask: Mask = { texture: clip.mask, bounds, source: clip.mask.usedRect };
                 // Each nested isolation applies only its LOCAL mask when it pops.
                 // Precombining parent*child here, then applying the parent's mask again
                 // at its own pop, would square soft parent coverage (vr-lead ruling).
                 isolation = this.#isolate(intersect(previous, clip.bounds), { opacity: 1, blend: 'normal', colourEffect: 'none' }, mask);
                 this.#scope = isolation.child;
                 this.#clip = intersect(previous, isolation.child.bounds);
-            } else this.#clip = intersect(previous, rect(value));
+            } else {
+                checkRect(value);
+                this.#clip = intersect(previous, value);
+            }
             this.#clips.push({ token, previous, groupDepth: this.#groups.length, isolation });
             return token;
         });

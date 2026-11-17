@@ -296,7 +296,9 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                 if (current && current.serial === source.serial && current.scale === source.scale && current.colour === colour
                     && sameFrameToken(current.token, budget.token) && (current.state === 'ready' || current.state === 'empty')
                     && (!current.viewBound || current.viewKey === viewKey)) { auditCount('wet', 'admit-skip:fresh'); continue; }
-                if (budget.shouldYield()) { auditCount('wet', 'admit-skip:yield'); return; }
+                // A band with nothing shown yet is admitted even past the frame's budget: the tessellation spent it, and a
+                // stroke with no run is refused by coverage (measured: 41 yields left drawing frames incomplete).
+                if (current?.shown && budget.shouldYield()) { auditCount('wet', 'admit-skip:yield'); return; }
                 const item: PaintInkItem = { kind: 'ink', key: `wet/${gesture}/${band}`, nodeId: shown.identity.nodeId,
                     geometryKey: `wet/${gesture}/${source.serial}`, localToWorld: shown.presentation.localToWorld,
                     clips: shown.presentation.clips ?? [], coverage: source.coverageChunks, material };

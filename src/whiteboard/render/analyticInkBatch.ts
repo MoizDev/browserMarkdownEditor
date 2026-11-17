@@ -9,7 +9,7 @@ import type { PaintInkItem } from './paintStream';
 import { ANALYTIC_INK_BATCH_SHADER, ANALYTIC_INK_RUN_SHADER, ANALYTIC_INK_RUN_STRIDE } from './analyticInkBatchShader';
 
 const STRIDE = 48, SLABS = [64 * 1024, 128 * 1024, 256 * 1024] as const;
-type Slab = Readonly<{ buffer: BufferHandle; count: number; size: number; firstPaintIndex: number; bounds: RectI }>;
+type Slab = Readonly<{ buffer: BufferHandle; count: number; size: number; lease: ByteLease; firstPaintIndex: number; bounds: RectI }>;
 export interface PreparedAnalyticInkBatch {
     readonly paints: readonly AnalyticInkPaint[];
     readonly token: FrameToken;
@@ -35,6 +35,11 @@ function sameToken(a: FrameToken, b: FrameToken): boolean {
     return a.vaultEpoch === b.vaultEpoch && a.documentId === b.documentId && a.bytesGeneration === b.bytesGeneration &&
         a.session === b.session && a.viewLease === b.viewLease && a.deviceGeneration === b.deviceGeneration;
 }
+/** A device's slabs count toward a route's GPU bytes only while that device is the host's current one at its generation. After a
+ * loss or a generation change the old device's slabs are not reported, and none are until they are leased again. */
+function isCurrent(host: LayerHost, device: GfxDevice): boolean {
+    return device === host.device() && device.generation === host.generation;
+}
 function union(a: RectI | null, b: RectI): RectI {
     if (!a) return { ...b };
     const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y);
@@ -49,22 +54,42 @@ export function createAnalyticInkBatch(host: LayerHost, report: (error: unknown)
         host.allocator.cpu.whenAvailable?.(wake); host.allocator.gpu.whenAvailable?.(wake);
     };
     let device: GfxDevice | null = null, pipeline: PipelineHandle | null = null, pendingPipeline = false, failed = false, incarnation = 0;
-    let building: Build | null = null, disposed = false, denied = false, gpuBytes = 0, cpuBytes = 0;
+    let building: Build | null = null, disposed = false, denied = false;
     let currentToken: FrameToken | null = null, currentCameraEpoch = -1;
     const live = new Map<PreparedAnalyticInkBatch, { viewport: Float32Array; lease: ByteLease; mapLease: ByteLease; nodeIndices: Map<string, number[]> }>();
     const dropBuild = () => {
         const old = building; building = null;
         if (!old) return;
-        if (old.pending) { host.allocator.cpu.release(old.pending.lease); cpuBytes -= old.pending.lease.bytes; }
-        if (old.mapLease) { host.allocator.cpu.release(old.mapLease); cpuBytes -= old.mapLease.bytes; }
-        for (const slab of old.slabs) { old.device.destroy(slab.buffer); gpuBytes -= slab.size; }
+        if (old.pending) host.allocator.cpu.release(old.pending.lease);
+        if (old.mapLease) host.allocator.cpu.release(old.mapLease);
+        for (const slab of old.slabs) old.device.destroy(slab.buffer);
     };
     const retire = (batch: PreparedAnalyticInkBatch) => {
         const owned = live.get(batch);
         if (!owned) return;
         live.delete(batch); host.allocator.cpu.release(owned.lease); host.allocator.cpu.release(owned.mapLease);
-        cpuBytes -= owned.lease.bytes + owned.mapLease.bytes;
-        for (const slab of batch.slabs) { batch.device.destroy(slab.buffer); gpuBytes -= slab.size; }
+        for (const slab of batch.slabs) batch.device.destroy(slab.buffer);
+    };
+    // Read from the slabs' own leases, never from a counter: the device returns a slab's lease when its buffer is destroyed,
+    // so the bytes reported are exactly the bytes still leased through this host on the current device and generation.
+    const gpuHeld = (): number => {
+        let bytes = 0;
+        for (const batch of live.keys()) if (isCurrent(host, batch.device)) for (const slab of batch.slabs) bytes += slab.lease.bytes;
+        const pending = building;
+        if (pending && isCurrent(host, pending.device)) for (const slab of pending.slabs) bytes += slab.lease.bytes;
+        return bytes;
+    };
+    // The CPU leases this route holds: each live batch's index and bookkeeping, and the building batch's in-flight leases.
+    // A lease is reported while it is held, so a release takes it out of the figure at the same moment it is returned.
+    const cpuHeld = (): number => {
+        let bytes = 0;
+        for (const owned of live.values()) bytes += owned.lease.bytes + owned.mapLease.bytes;
+        const pending = building;
+        if (pending) {
+            if (pending.mapLease) bytes += pending.mapLease.bytes;
+            if (pending.pending) bytes += pending.pending.lease.bytes;
+        }
+        return bytes;
     };
     const release = () => {
         incarnation++; dropBuild(); for (const batch of live.keys()) retire(batch);
@@ -97,9 +122,9 @@ export function createAnalyticInkBatch(host: LayerHost, report: (error: unknown)
         ready(): boolean { return !disposed && !failed && !!pipeline && !!device && host.device() === device && host.generation === device.generation; },
         failed(): boolean { return failed; },
         needsFrame(): boolean { return !disposed && !failed && !!pipeline && !!building && !denied; },
-        memory(): { gpuBytes: number; cpuBytes: number } { return { gpuBytes, cpuBytes }; },
+        memory(): { gpuBytes: number; cpuBytes: number } { return { gpuBytes: gpuHeld(), cpuBytes: cpuHeld() }; },
         cpuWorkingSet(nextPaintCount = 0): { mandatoryBytes: number; prefetchBytes: number } {
-            return { mandatoryBytes: cpuBytes + SLABS[2] + 16 + (building?.mapLease ? 0 : mapBytes(nextPaintCount)), prefetchBytes: 0 };
+            return { mandatoryBytes: cpuHeld() + SLABS[2] + 16 + (building?.mapLease ? 0 : mapBytes(nextPaintCount)), prefetchBytes: 0 };
         },
         prepare(paints: readonly AnalyticInkPaint[], view: ViewState, budget: FrameBudget): PreparedAnalyticInkBatch | null {
             if (disposed) return null;
@@ -120,7 +145,7 @@ export function createAnalyticInkBatch(host: LayerHost, report: (error: unknown)
                 if (!build.mapLease) {
                     const lease = host.allocator.cpu.reserve(mapBytes(paints.length));
                     if (!lease) { denied = true; awaitCapacity(); return null; }
-                    cpuBytes += lease.bytes; build.mapLease = lease; build.nodeIndices = new Map();
+                    build.mapLease = lease; build.nodeIndices = new Map();
                 }
                 if (!build.pending && build.index < paints.length) {
                     if (budget.shouldYield()) return null;
@@ -128,10 +153,9 @@ export function createAnalyticInkBatch(host: LayerHost, report: (error: unknown)
                     const size = SLABS.find(bytes => Math.floor(bytes / STRIDE) >= remaining) ?? SLABS[2];
                     const lease = host.allocator.cpu.reserve(size);
                     if (!lease) { denied = true; awaitCapacity(); return null; }
-                    cpuBytes += lease.bytes;
                     try { build.pending = { data: new Float32Array(size / 4), lease, size,
                         count: Math.min(remaining, Math.floor(size / STRIDE)), index: 0, bounds: null }; }
-                    catch (error) { host.allocator.cpu.release(lease); cpuBytes -= lease.bytes; throw error; }
+                    catch (error) { host.allocator.cpu.release(lease); throw error; }
                 }
                 const slab = build.pending;
                 if (slab) {
@@ -154,24 +178,23 @@ export function createAnalyticInkBatch(host: LayerHost, report: (error: unknown)
                     try {
                         buffer = device.createBuffer(slab.size, ['vertex', 'copy-dst'], gpuLease); attached = true;
                         device.writeBuffer(buffer, 0, slab.data.subarray(0, slab.count * 12));
-                        build.slabs.push({ buffer, count: slab.count, size: slab.size, firstPaintIndex: build.index, bounds: slab.bounds ?? { x: 0, y: 0, width: 0, height: 0 } });
-                        gpuBytes += slab.size; buffer = null;
+                        build.slabs.push({ buffer, count: slab.count, size: slab.size, lease: gpuLease, firstPaintIndex: build.index, bounds: slab.bounds ?? { x: 0, y: 0, width: 0, height: 0 } });
+                        buffer = null;
                     } finally {
                         if (buffer) device.destroy(buffer);
                         if (!attached) host.allocator.gpu.release(gpuLease);
                     }
-                    build.index += slab.count; host.allocator.cpu.release(slab.lease); cpuBytes -= slab.lease.bytes; build.pending = null;
+                    build.index += slab.count; host.allocator.cpu.release(slab.lease); build.pending = null;
                     if (build.index < paints.length) return null;
                 }
                 const lease = host.allocator.cpu.reserve(16);
                 if (!lease) { denied = true; awaitCapacity(); return null; }
-                cpuBytes += lease.bytes;
                 try {
                     const viewport = new Float32Array([Math.round(view.viewport.width * view.viewport.dpr), Math.round(view.viewport.height * view.viewport.dpr), 0, 0]);
                     const batch: PreparedAnalyticInkBatch = Object.freeze({ paints, token: Object.freeze({ ...build.token }), cameraEpoch: build.cameraEpoch,
                         projection: key, device, slabs: Object.freeze(build.slabs) });
                     live.set(batch, { viewport, lease, mapLease: build.mapLease!, nodeIndices: build.nodeIndices! }); building = null; return batch;
-                } catch (error) { host.allocator.cpu.release(lease); cpuBytes -= lease.bytes; throw error; }
+                } catch (error) { host.allocator.cpu.release(lease); throw error; }
             } catch (error) { dropBuild(); failed = true; report(error); return null; }
         },
         draw(pass: GpuPass, batch: PreparedAnalyticInkBatch, view: ViewState, omitNodes?: ReadonlySet<string>): void {
@@ -220,7 +243,7 @@ const RUN_SLAB_BYTES = 256 * 1024;
 const RUN_STRIDE = ANALYTIC_INK_RUN_STRIDE;
 /** One uploaded slab, of one colour group. Its vertex slice is built once, at admission, so a draw builds only the command. */
 interface AnalyticSlab {
-    readonly buffer: BufferHandle; readonly count: number; readonly bytes: number; readonly bounds: RectI;
+    readonly buffer: BufferHandle; readonly count: number; readonly bytes: number; readonly lease: ByteLease; readonly bounds: RectI;
     readonly vertices: readonly BufferSlice[]; readonly group: number;
 }
 /** Consecutive items of one colour, in item order: a draw's colour is one uniform, so a colour change starts a group. The
@@ -238,7 +261,6 @@ export class AnalyticInkRun implements PreparedRun {
  * run's pixels are the single item's pixels; only the upload and the draw are batched. */
 export function createAnalyticInkRuns(host: LayerHost, audit: string) {
     let device: GfxDevice | null = null, pipeline: PipelineHandle | null = null, pending = false, failed = false, incarnation = 0;
-    let gpuBytes = 0;
     // One packing scratch, reused across admissions: writeBuffer copies its bytes before it returns. It is a CPU lease like
     // any other: the governor requires every byte a route reports to be reserved, so the scratch reports exactly its lease.
     const FLOATS = RUN_STRIDE / 4;
@@ -255,9 +277,15 @@ export function createAnalyticInkRuns(host: LayerHost, audit: string) {
         return true;
     };
     const live = new Set<AnalyticInkRun>();
+    // The slabs' own leases, for the current device and generation only (see isCurrent).
+    const gpuHeld = (): number => {
+        let bytes = 0;
+        for (const run of live) if (isCurrent(host, run.device)) for (const slab of run.slabs) bytes += slab.lease.bytes;
+        return bytes;
+    };
     const destroyRun = (run: AnalyticInkRun): void => {
         if (!live.delete(run)) return;
-        for (const slab of run.slabs) { run.device.destroy(slab.buffer); gpuBytes -= slab.bytes; }
+        for (const slab of run.slabs) run.device.destroy(slab.buffer);
     };
     const release = (): void => {
         incarnation++;
@@ -316,7 +344,7 @@ export function createAnalyticInkRuns(host: LayerHost, audit: string) {
             const perSlab = Math.floor(RUN_SLAB_BYTES / RUN_STRIDE);
             const created: AnalyticSlab[] = [];
             const rollback = (): void => {
-                for (const slab of created) { current.destroy(slab.buffer); gpuBytes -= slab.bytes; }
+                for (const slab of created) current.destroy(slab.buffer);
             };
             for (let start = 0; start < rects.length;) {
                 if (start > 0 && budget.shouldYield()) { rollback(); return { status: 'deferred' }; }
@@ -338,9 +366,8 @@ export function createAnalyticInkRuns(host: LayerHost, audit: string) {
                 }
                 let bounds: RectI | null = null;
                 for (let i = start; i < end; i++) bounds = union(bounds, rects[i]);
-                created.push({ buffer, count: end - start, bytes, bounds: bounds!, group,
+                created.push({ buffer, count: end - start, bytes, lease, bounds: bounds!, group,
                     vertices: [{ buffer, offset: 0, bytes }] });
-                gpuBytes += bytes;
                 auditCount(audit, 'upload:vertex', 1, { bytes });
                 start = end;
             }
@@ -366,7 +393,7 @@ export function createAnalyticInkRuns(host: LayerHost, audit: string) {
         },
         retire: destroyRun,
         release,
-        memory(): { gpuBytes: number; cpuBytes: number } { return { gpuBytes, cpuBytes: stagingLease?.bytes ?? 0 }; },
+        memory(): { gpuBytes: number; cpuBytes: number } { return { gpuBytes: gpuHeld(), cpuBytes: stagingLease?.bytes ?? 0 }; },
     };
 }
 function width(view: ViewState): number { return Math.round(view.viewport.width * view.viewport.dpr); }

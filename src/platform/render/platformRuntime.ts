@@ -15,6 +15,19 @@ export interface RuntimePane {
     error(error: unknown): void;
 }
 
+/** Whether two demand lists plan the same: the same panes in the same order, each with the same fields the governor reads.
+ * A NaN field compares unequal, which only ever means one extra plan. */
+function sameDemands(a: readonly PaneMemoryDemand[], b: readonly PaneMemoryDemand[]): boolean {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+        const x = a[i], y = b[i];
+        if (x.paneId !== y.paneId || x.visible !== y.visible || x.focused !== y.focused || x.requestedPixels !== y.requestedPixels ||
+            x.gpuNeedBytes !== y.gpuNeedBytes || x.cpuNeedBytes !== y.cpuNeedBytes || x.cpuMandatoryBytes !== y.cpuMandatoryBytes ||
+            x.cpuPinned !== y.cpuPinned) return false;
+    }
+    return true;
+}
+
 /** Private app-lifetime services. Creating a session mirror does not start a view or listeners. */
 export class PlatformRuntime {
     readonly governor = new MemoryGovernor((navigator as Navigator & { deviceMemory?: number }).deviceMemory,
@@ -31,6 +44,8 @@ export class PlatformRuntime {
     private memoryAdvanceQueued = false;
     private recoveryTimer: ReturnType<typeof setTimeout> | null = null;
     private motion: MediaQueryList | null = null;
+    /** The inputs of the last plan: every pane's demand as it was planned, and the live-gesture flag. Null until the first plan. */
+    private planned: { demands: readonly PaneMemoryDemand[]; liveGesture: boolean } | null = null;
 
     constructor() {
         const context = this.governor.register({
@@ -95,9 +110,24 @@ export class PlatformRuntime {
         };
     }
 
+    /** Re-plans only when a plan input changed: the pane set, any pane's demand (visibility, focus, viewport, needs) or whether
+     * a live gesture is running. Grants are the plan's output, not an input, so they are not compared. The demands themselves are
+     * still read from each pane, because only the pane knows whether they moved; an unchanged refresh then costs no governor
+     * plan and no budget pass. Checked by reading: advance's time-based progress runs from its recovery timer, and a live gesture
+     * is compared here because it is an input to advancePressure. Not measured (no runs). */
     refresh(): void {
-        const demands = [...this.panes.values()].map(pane => pane.demand());
-        this.governor.updatePanes(demands);
+        const demands: PaneMemoryDemand[] = [];
+        let liveGesture = false;
+        for (const pane of this.panes.values()) {
+            demands.push(pane.demand());
+            if (!liveGesture && pane.interacting()) liveGesture = true;
+        }
+        const planned = this.planned;
+        const changed = planned === null || planned.liveGesture !== liveGesture || !sameDemands(planned.demands, demands);
+        if (changed) {
+            this.governor.updatePanes(demands);
+            this.planned = { demands, liveGesture };
+        }
         for (const demand of demands) {
             const denied = demand.visible && (this.governor.grant(demand.paneId)?.cpuBytes ?? 0) < (demand.cpuMandatoryBytes ?? 0);
             if (denied && !this.deniedCpuFloor.has(demand.paneId)) {
@@ -105,7 +135,7 @@ export class PlatformRuntime {
                 this.panes.get(demand.paneId)?.notice('cpu-floor-denied');
             } else if (!denied) this.deniedCpuFloor.delete(demand.paneId);
         }
-        this.advance();
+        if (changed) this.advance();
     }
 
     trouble(reason: MemoryTrouble): void {

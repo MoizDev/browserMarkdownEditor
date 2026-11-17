@@ -629,7 +629,14 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         VertexSet | Denial | 'deferred' | 'unsupported' => {
         const vertexBytes = vertexCount * 8;
         const found = shared.get(set.positive);
-        if (found) return found.device !== owner || found.negative !== set.negative || found.bytes !== vertexBytes ? 'unsupported' : found;
+        if (found && found.device === owner && found.negative === set.negative && found.bytes === vertexBytes) return found;
+        if (found) {
+            // The same positive array with another negative or size (or a stale device) holds a buffer this set cannot draw. A held set
+            // cannot be replaced while a draw reads it: that is a fallback, counted. An idle one is replaced by a fresh upload; the array
+            // stays held here, so the owner is not told it was freed (destroySet would tell it).
+            if (found.refs > 0) { auditCount(audit, 'fallback:path-coverage:shared-mismatch'); return 'unsupported'; }
+            unidle(found); shared.delete(set.positive); gpuBytes -= found.bytes; found.device.destroy(found.buffer);
+        }
         let up = uploading.get(set.positive);
         if (up && (up.device !== owner || up.negative !== set.negative || up.bytes !== vertexBytes)) { dropUpload(set.positive); up = undefined; }
         if (up) up.usedFrame = frame;

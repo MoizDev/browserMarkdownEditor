@@ -116,6 +116,8 @@ export interface LayerHost {
     uniforms(bytes: ArrayBufferView): UniformSlice;
     /** Read-only governor state for this pane: a layer may shed work under 'slow-gpu' or 'pressure'. Allocates nothing. */
     trouble(): LayerTrouble;
+    /** Routes a device-path error the layer hit to the pane's GPU error channel; the pane demotes or reports as it does for its own. */
+    reportGpuError(error: unknown): void;
     drawTexturedQuad(pass: GpuPass, texture: TextureHandle, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
     drawTexturedQuad(ctx: CanvasRenderingContext2D, image: DrawableImage, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
     drawTexturedQuads(pass: GpuPass, texture: TextureHandle, quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void;

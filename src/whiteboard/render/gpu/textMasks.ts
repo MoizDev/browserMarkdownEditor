@@ -109,7 +109,8 @@ export interface MaskBitmap {
 /** Whether a run may draw colour glyphs, judged from its text alone: a colour font is chosen only for emoji code points and
  * their joiners, selectors, keycaps, flags and tags. A run this says yes to is rastered in its ink colour, which is always
  * correct for a mono run too, only larger. Read from the text, because a pixel check would be a readback. */
-const COLOUR_CANDIDATE = /[\p{Extended_Pictographic}\p{Regional_Indicator}‍️⃣\u{e0020}-\u{e007f}]/u;
+// Each joiner or selector is its own alternative: inside one class, a combining mark after a base is a misleading sequence.
+const COLOUR_CANDIDATE = /[\p{Extended_Pictographic}\p{Regional_Indicator}\u{e0020}-\u{e007f}]|\u200D|\uFE0F|\u20E3/u;
 export function needsColourMask(text: string): boolean { return COLOUR_CANDIDATE.test(text); }
 
 export interface MaskRaster {

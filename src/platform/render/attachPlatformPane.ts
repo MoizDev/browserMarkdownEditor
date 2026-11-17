@@ -258,7 +258,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             created.presenter.releaseSurface();
             if (!gpu.backing.promote()) {
                 const surface = lifecycle?.surface;
-                surface?.failGpu(surface.stamp, grant.generation, 'out-of-budget');
+                surface?.failGpu(surface.stamp, grant.generation, 'out-of-budget', false);
                 return false;
             }
             surfaceHost.select(gpu.bundle.compositor);
@@ -433,7 +433,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                         const failedGeneration = gpu?.grant.generation;
                         runtime.trouble('framebuffer');
                         if (drawing === compositor || !lifecycle) return result;
-                        if (failedGeneration !== undefined) lifecycle.surface.failGpu(lifecycle.surface.stamp, failedGeneration, 'creation-failed');
+                        if (failedGeneration !== undefined) lifecycle.surface.failGpu(lifecycle.surface.stamp, failedGeneration, 'creation-failed', false);
                         const fallback = computeSurfaceMetrics(size.physical, size.nominalDpr, compositor.target.limits,
                             runtime.governor.grant(options.paneId)?.pixelGrant ?? 0);
                         const cpu = cpuMetrics.commit(frameId, size.generation, fallback, compositor.target);

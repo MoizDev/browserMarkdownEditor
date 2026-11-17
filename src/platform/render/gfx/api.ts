@@ -382,7 +382,7 @@ export interface GfxDevice {
     createCoverageTarget(width: number, height: number, samples: Samples, lease: ByteLease, options?: CoverageTargetOptions): CoverageTarget;
     /** A sampleable rgba8 texture with its own single-sample, stencil-less render target, charged through one lease
      * (width × height × 4): a layer's offscreen tile, composed on the GPU and then sampled by the layer. */
-    createRenderTexture(width: number, height: number, lease: ByteLease): { texture: TextureHandle; target: TargetHandle };
+    createRenderTexture(width: number, height: number, lease: ByteLease, options?: { format?: 'rgba8' | 'r8'; copyDst?: boolean }): { texture: TextureHandle; target: TargetHandle };
     createPipeline(desc: PipelineDesc): Promise<PipelineHandle>;
     createTarget(
         color: TextureHandle,

@@ -79,7 +79,6 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     let gpu: QualifiedGpuPane | null = null;
     let cpuPresented = false;
     let gpuRequested = false;
-    let trimQueued = false;
     const drawCompositor = (): PaneCompositor | null => gpu && cpuPresented ? gpu.bundle.compositor : compositorRef.current;
     const activeMetrics = (): SurfaceMetricsCommitter => gpu && cpuPresented ? gpuMetrics : cpuMetrics;
 
@@ -104,16 +103,35 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     // prepared the next frame and evicted again (measured: 170 'budget' invalidations per 3 s on the large seed).
     let touchedFrame = -1;
     const touchedThisFrame = (): boolean => touchedFrame === runtime.scheduler.currentFrame();
-    const queueTrim = (): void => {
-        if (trimQueued || touchedThisFrame()) return;
-        trimQueued = true;
+    // Layers whose GPU release is already scheduled. Several caches of one pane can ask in the same trim; the second must not
+    // count residency the first has already promised to free.
+    const releasing = new Set<Layer>();
+    /** Frees this pane's GPU residency, up to `bytes`, from its layers in order (or only `only`). The bytes are decided and
+     * returned now, so the governor can count them; the release waits for a microtask, outside any reservation, and only
+     * then invalidates the pane. A pane in this frame, or with nothing resident, frees 0 and is not invalidated. */
+    const trimGpu = (bytes: number, only?: Layer): number => {
+        if (disposed || !visible || touchedThisFrame()) return 0;
+        const victims: Layer[] = [];
+        let freed = 0;
+        for (const layer of only ? [only] : layerSet.layers) {
+            if (freed >= bytes) break;
+            if (releasing.has(layer)) continue;
+            const live = layer.memory().gpuBytes;
+            if (live <= 0) continue;
+            victims.push(layer);
+            releasing.add(layer);
+            freed += live;
+        }
+        if (!victims.length) return 0;
         queueMicrotask(() => {
-            trimQueued = false;
+            for (const layer of victims) releasing.delete(layer);
             if (disposed || !visible || touchedThisFrame()) return;
-            // A visible pane's device working set is trimmed by its owner; releasing every layer for it dropped the plans on
-            // screen (a notebook's paper and board) on each eviction, and nothing presented until they were rebuilt.
+            // Releasing a visible pane's whole working set dropped the plans on screen (a notebook's paper and board) on each
+            // eviction, so only the layers the governor asked for are released, and only while they are off this frame.
+            for (const layer of victims) if (layerSet.layers.includes(layer)) lifecycle?.releaseLayerGpu(layer, 'pressure');
             lifecycle?.invalidate('budget');
         });
+        return freed;
     };
     // A layer's declared demand changes between refreshes (a plan starts, a session bitmap is kept or dropped, a run is
     // refused). Each change marks the pane dirty; one refresh runs on the next microtask, however many changes landed.
@@ -146,20 +164,8 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             gpuCache = runtime.governor.register({ ...common, id: `${cacheId}:gpu`, pool: 'gpu',
                 kind: definition.liveInput ? 'live-input' : 'working',
                 memory: () => ({ live: current()?.memory().gpuBytes ?? 0, retiring: 0 }),
-                evict: () => {
-                    // Evict this layer's GPU cache, not the pane's: the governor names the cache it wants back. The bytes are
-                    // returned now and released after the frame; a layer with nothing resident, or one in this frame, frees 0.
-                    const layer = current();
-                    if (!layer || disposed || !visible || touchedThisFrame()) return 0;
-                    const freed = layer.memory().gpuBytes;
-                    if (freed <= 0) return 0;
-                    queueMicrotask(() => {
-                        if (disposed || !visible || current() !== layer || touchedThisFrame()) return;
-                        lifecycle?.releaseLayerGpu(layer, 'pressure');
-                        lifecycle?.invalidate('budget');
-                    });
-                    return freed;
-                } });
+                // Evict this layer's GPU cache, not the pane's: the governor names the cache it wants back.
+                evict: bytes => { const layer = current(); return layer ? trimGpu(bytes, layer) : 0; } });
         } catch (error) { cpu.close(); throw error; }
         caches.push({ cpu, gpu: gpuCache, layer: current });
         return createLayerHost({
@@ -300,7 +306,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         invalidate: reason => lifecycle?.invalidate(reason), onError: options.onError,
         inputHealthy: () => healthyInputAt !== null && performance.now() - healthyInputAt <= RENDER_CONSTANTS.stalledFenceMs,
         frameInterval: () => lastFrameInterval,
-        onEvict: queueTrim,
+        onEvict: bytes => trimGpu(bytes),
         onReady: ready => {
             if (disposed || !visible) return;
             gpu = ready;

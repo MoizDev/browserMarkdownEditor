@@ -2,6 +2,7 @@ import type { Rect, Rgba, ViewState } from '../../platform/types';
 import type { FrameBudget, GpuReleaseReason, Layer } from '../../platform/render/types';
 import type { LayerHost } from '../../platform/render/compositor.types';
 import type { ByteLease, GfxDevice, GpuPass, TextureHandle } from '../../platform/render/gfx/api';
+import { QuadList } from '../layer/quadList';
 
 export interface PdfHighlightRects {
     /** World-space rectangles, already clipped to their physical pages. */
@@ -39,6 +40,8 @@ export class PdfTextHighlightLayer implements Layer {
     private pending = false;
     private lease: ByteLease | null = null;
     private readonly scratch: Rect = { x: 0, y: 0, width: 0, height: 0 };
+    /** Every highlight of a frame, in find, current, selection order, drawn as one batch from the palette texture. */
+    private readonly quads = new QuadList();
 
     constructor(private readonly host: LayerHost, private palette: PdfHighlightPalette) {}
 
@@ -87,9 +90,12 @@ export class PdfTextHighlightLayer implements Layer {
         const texture = this.texture;
         if (!texture || texture.device !== this.host.device() || this.disposed) return;
         // Each group samples its own texel of the 3×1 palette texture (find, current, selection).
-        this.drawGpuGroup(pass, texture.handle, view, this.rects.find, 0);
-        this.drawGpuGroup(pass, texture.handle, view, this.rects.current, 1);
-        this.drawGpuGroup(pass, texture.handle, view, this.rects.selection, 2);
+        const quads = this.quads;
+        quads.reset();
+        this.addGpuGroup(quads, view, this.rects.find, 0);
+        this.addGpuGroup(quads, view, this.rects.current, 1);
+        this.addGpuGroup(quads, view, this.rects.selection, 2);
+        quads.drawAll(batch => this.host.drawTexturedQuads(pass, texture.handle, batch, { opacity: 1, sampling: 'nearest' }));
     }
     draw2d(ctx: CanvasRenderingContext2D, view: ViewState): void {
         if (this.disposed) return;
@@ -100,12 +106,12 @@ export class PdfTextHighlightLayer implements Layer {
             this.draw2dGroup(ctx, view, this.rects.selection, this.palette.selection);
         } finally { ctx.restore(); }
     }
-    /** Drawn one rect at a time through one scratch rect: drawTexturedQuad consumes its rects before it returns. */
-    private drawGpuGroup(pass: GpuPass, handle: TextureHandle, view: ViewState, rects: readonly Readonly<Rect>[], texel: number): void {
+    /** Queues the visible rects of one group, each sampling its texel. One scratch rect serves every rect. */
+    private addGpuGroup(quads: QuadList, view: ViewState, rects: readonly Readonly<Rect>[], texel: number): void {
         const source = { x: texel, y: 0, width: 1, height: 1 };
         for (const rect of rects) {
             deviceRect(rect, view, this.scratch);
-            if (visible(this.scratch, view)) this.host.drawTexturedQuad(pass, handle, source, this.scratch, { opacity: 1, sampling: 'nearest' });
+            if (visible(this.scratch, view)) quads.add(source, this.scratch);
         }
     }
     private draw2dGroup(ctx: CanvasRenderingContext2D, view: ViewState, rects: readonly Readonly<Rect>[], color: Rgba): void {

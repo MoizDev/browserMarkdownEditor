@@ -137,7 +137,7 @@ export class PaneLifecycle<T extends object> {
     private readyGrant: GpuGrant | null = null;
     private uploadGeneration: number | null = null;
     private uploaded = new WeakSet<T>();
-    private budgetKey = '';
+    private budget: { pixel: number; eligible: boolean; state: MemoryPressureState; quality: number } | null = null;
     private presentationEpoch = 0;
     private prepareSerial = 0;
     private readonly detachHost: () => void;
@@ -173,6 +173,8 @@ export class PaneLifecycle<T extends object> {
 
     showPane(view: SurfaceView): void {
         if (this.disposed) throw new Error('Cannot show a disposed pane');
+        const wasVisible = this.visible;
+        const previous = this.view;
         const wasDrawable = this.visible && this.view.cssWidth > 0 && this.view.cssHeight > 0;
         const drawable = view.cssWidth > 0 && view.cssHeight > 0;
         this.visible = true;
@@ -188,7 +190,10 @@ export class PaneLifecycle<T extends object> {
         if (!this.binding) this.binding = this.options.registerFrames();
         this.binding.setFocused(view.focused);
         this.options.setInputEnabled(!this.suspended);
-        this.binding.invalidate(wasDrawable ? 'geometry' : 'show-mirror');
+        // The size observer and visibility both call here, often with the geometry they already drew. Only a change presents.
+        if (!wasVisible || previous.cssWidth !== view.cssWidth || previous.cssHeight !== view.cssHeight) {
+            this.binding.invalidate(wasDrawable ? 'geometry' : 'show-mirror');
+        }
     }
 
     setFocused(focused: boolean): void {
@@ -306,7 +311,11 @@ export class PaneLifecycle<T extends object> {
         try {
             all([() => this.releaseGpu('pressure'), () => this.discard2D(), () => this.returnBorrow(), () => this.options.presenter.releaseSurface()]);
         } finally { this.uploaded = new WeakSet<T>(); this.uploadGeneration = null; }
-        if (this.visible && !this.suspended) this.begin2D();
+        if (this.visible && !this.suspended) {
+            this.begin2D();
+            // The 2D backing was just released, so the picture on screen is gone: this present is the real change.
+            this.binding?.invalidate('retained-released');
+        }
     }
 
     /** Layer.prepare only; the compositor later submits this admitted frame without a second claim. */
@@ -443,10 +452,20 @@ export class PaneLifecycle<T extends object> {
         return true;
     }
 
+    /** Only what changes the picture presents: the surface's pixel grant, eligibility, pressure state and quality scale.
+     * Cache-byte targets move on every refresh under pressure, and a board at rest presented every tick while the governor
+     * was 'trimming' (large seed, 114 of 114). Their unblocking comes from the capacity waiters and their shrink from the
+     * eviction that freed the bytes, so neither needs a frame here. */
     applyBudget(grant: PaneMemoryGrant | null): void {
-        const key = grant ? JSON.stringify([grant.pixelGrant, grant.gpuCacheBytes, grant.cpuBytes, grant.state]) : '';
-        if (key === this.budgetKey) return;
-        this.budgetKey = key;
+        const seen = this.budget;
+        if (grant === null) {
+            if (seen === null) return;
+            this.budget = null;
+        } else {
+            if (seen !== null && seen.pixel === grant.pixelGrant && seen.eligible === grant.gpuEligible &&
+                seen.state === grant.state && seen.quality === grant.qualityScale) return;
+            this.budget = { pixel: grant.pixelGrant, eligible: grant.gpuEligible, state: grant.state, quality: grant.qualityScale };
+        }
         if (this.canDraw()) this.binding?.invalidate('budget');
     }
 
@@ -454,14 +473,17 @@ export class PaneLifecycle<T extends object> {
         return this.visible && !this.sealing && !this.suspended && !this.disposed && this.view.cssWidth > 0 && this.view.cssHeight > 0;
     }
 
+    /** A switch to 2D presents only when the picture actually changes: leaving the GPU, or no 2D picture shown yet. A repeat
+     * (a fallback reported again while already on 2D) changes nothing on screen. */
     private begin2D(): void {
+        const changesPicture = this.usingGpu || !this.first2DPresented;
         this.presentationEpoch++;
         this.usingGpu = false;
         this.first2DPresented = false;
         this.options.presenter.select2D();
         const view = this.options.currentView();
         if (!this.borrow && view && this.canDraw()) this.borrow = this.options.session.mirrors?.borrow(view, this.options.now()) ?? null;
-        this.binding?.invalidate('mirror');
+        if (changesPicture) this.binding?.invalidate('mirror');
     }
 
     private seal(reason: PaneSuspendReason, unregister: boolean): void {

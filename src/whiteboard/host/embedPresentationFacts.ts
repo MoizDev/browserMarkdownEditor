@@ -2,8 +2,9 @@ import type { PlatformPresentation } from '../../platform/render/attachPlatformP
 import type { EmbedClippedCoverage, EmbedCoveragePath, EmbedLaterPaint, EmbedPresentationFrame, EmbedPresentationPort,
     EmbedPresentedNode } from '../../platform/render/embedPresentation.types';
 import type { ByteLease } from '../../platform/render/gfx/api';
+import { auditCount } from '../../platform/render/renderAudit';
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
-import type { RenderToken } from '../../platform/render/types';
+import type { FrameToken, RenderToken } from '../../platform/render/types';
 import type { Affine, PathCommand, Rect } from '../../platform/types';
 import type { AlphaTraceReply, AlphaTraceRequest } from '../export/alphaWorkerHandler';
 import { createStreamingExportTextPieces } from '../export/textStreamResolver';
@@ -265,6 +266,8 @@ async function traceImage(cx: Coverage, source: ImageBitmap, region: Rect, opaqu
     const reservation = cx.memory.reserve(region.width * region.height * 5 + RESULT_BYTES);
     if (!reservation) return null;
     cx.holds.reservations.push(reservation);
+    // Counted, not hidden: this is a CPU copy of drawn board pixels, and it runs only for a draw whose later-paint facts changed.
+    auditCount('embed', 'facts:copy', 1, { bytes: region.width * region.height * 4 });
     const copy = await createImageBitmap(source, region.x, region.y, region.width, region.height);
     return send(cx, { bitmap: copy, opaqueAlpha }, [copy]);
 }
@@ -272,6 +275,7 @@ async function traceRaster(cx: Coverage, png: Uint8Array): Promise<AlphaTraceRep
     const reservation = cx.memory.reserve(RASTER_TILE_BYTES + png.byteLength + RESULT_BYTES);
     if (!reservation) return null;
     cx.holds.reservations.push(reservation);
+    auditCount('embed', 'facts:trace-raster', 1, { bytes: png.byteLength });
     return send(cx, { png, opaqueAlpha: true }, []);
 }
 /** Maps a traced reply into coverage. Opaque pixels are certified only inside `cover`; partial pixels are real translucency
@@ -397,6 +401,7 @@ async function prepareLater(doc: BoardDoc, frame: PaintSource, source: PaintNode
         if (!overlapping.length) continue;
         if (item.kind === 'image' && item.retainedTile) {
             const drawn = cx.drawn.get(item);
+            if (drawn) auditCount('embed', 'facts:readback', 1, { bytes: drawn.source.width * drawn.source.height * 4 });
             const read = drawn ? readAlphaPlane(drawn.source, drawn.source.width, drawn.source.height, cx.memory) : null;
             if (read) cx.holds.reservations.push(read.lease);
             for (const card of overlapping) {
@@ -425,6 +430,53 @@ function deviceRect(world: Rect, cx: Coverage): DeviceRect {
     return { x0: pane.x * cx.dpr, y0: pane.y * cx.dpr, x1: (pane.x + pane.width) * cx.dpr, y1: (pane.y + pane.height) * cx.dpr };
 }
 
+/** Everything a built packet depends on. A draw that matches the last handed packet on every field needs no copy, readback,
+ * trace or glyph stream: an idle board presented every tick, and each present rebuilt its later-paint facts. */
+interface BuildKey {
+    readonly doc: PaintSource['sourceDoc'];
+    readonly revision: number;
+    readonly token: FrameToken;
+    readonly epoch: number;
+    readonly width: number;
+    readonly height: number;
+    readonly dpr: number;
+    readonly x: number;
+    readonly y: number;
+    readonly z: number;
+    readonly pane: Affine | null;
+    readonly omitted: ReadonlySet<string> | null;
+    readonly images: readonly PresentedImage[] | null;
+}
+function buildKeyOf(pending: Pending, presentation: PlatformPresentation): BuildKey {
+    const view = pending.context.view;
+    return {
+        doc: pending.frame.sourceDoc, revision: pending.revision, token: presentation.token, epoch: view.epoch,
+        width: view.viewport.width, height: view.viewport.height, dpr: view.viewport.dpr,
+        x: view.camera.x, y: view.camera.y, z: view.camera.z,
+        pane: pending.context.paneTransform, omitted: pending.context.omittedNodeIds, images: pending.drawn?.images ?? null,
+    };
+}
+function sameFrameToken(a: FrameToken, b: FrameToken): boolean {
+    return a.vaultEpoch === b.vaultEpoch && a.documentId === b.documentId && a.bytesGeneration === b.bytesGeneration &&
+        a.session === b.session && a.viewLease === b.viewLease && a.deviceGeneration === b.deviceGeneration;
+}
+function sameBuild(a: BuildKey, b: BuildKey): boolean {
+    if (a.doc !== b.doc || a.revision !== b.revision || !sameFrameToken(a.token, b.token) || a.epoch !== b.epoch ||
+        a.width !== b.width || a.height !== b.height || a.dpr !== b.dpr || a.x !== b.x || a.y !== b.y || a.z !== b.z) return false;
+    if (a.pane !== b.pane && (!a.pane || !b.pane || a.pane.some((value, i) => value !== b.pane![i]))) return false;
+    if (a.omitted !== b.omitted) {
+        if (!a.omitted || !b.omitted || a.omitted.size !== b.omitted.size) return false;
+        for (const id of a.omitted) if (!b.omitted.has(id)) return false;
+    }
+    if (a.images !== b.images) {
+        if (!a.images || !b.images || a.images.length !== b.images.length) return false;
+        for (let i = 0; i < a.images.length; i++) {
+            if (a.images[i].item !== b.images[i].item || a.images[i].source !== b.images[i].source) return false;
+        }
+    }
+    return true;
+}
+
 /** The raw frame as a pinned PaintNodeSource: the export text resolver reads only its identity and liveness guard. */
 function frameSource(frame: PaintSource, live: () => boolean): PaintNodeSource {
     // A live frame is read one window per node, so the text resolver never receives a whole-frame array.
@@ -450,12 +502,15 @@ function frameSource(frame: PaintSource, live: () => boolean): PaintNodeSource {
  */
 export function createNativeEmbedPresentationProducer(options: NativeEmbedPresentationOptions): NativeEmbedPresentationProducer {
     let pending: Pending | null = null, building: Building | null = null, accepted: PlatformPresentation | null = null, disposed = false;
+    /** What the port holds now: the key of the last packet handed to it, cleared when the pane lets its packet go. */
+    let handedKey: BuildKey | null = null;
     const releaseQuietly = (value: Pending) => {
         try { value.releaseRaw(); } catch (error) { options.onError(error); }
         try { value.drawn?.release(); } catch (error) { options.onError(error); }
     };
-    const run = async (value: Pending, presentation: PlatformPresentation, controller: AbortController): Promise<void> => {
+    const run = async (value: Pending, presentation: PlatformPresentation, controller: AbortController, key: BuildKey): Promise<void> => {
         const { frame, context, drawn } = value, signal = controller.signal;
+        auditCount('embed', 'facts:build');
         const holds: Holds = { reservations: [], requests: [] };
         const releaseHeld = () => {
             releaseQuietly(value);
@@ -484,6 +539,7 @@ export function createNativeEmbedPresentationProducer(options: NativeEmbedPresen
                 viewport: Object.freeze({ width: context.view.viewport.width, height: context.view.viewport.height }),
                 nodes: presentedEmbeds(doc, drawnFrame, context.omittedNodeIds, pane, later), release: releaseHeld };
             handed = true;
+            handedKey = key;
             options.port.present(packet);
         } catch (error) {
             if (!handed) {
@@ -499,9 +555,20 @@ export function createNativeEmbedPresentationProducer(options: NativeEmbedPresen
         if (!presentation || !value || disposed || presentation.frameId !== value.context.frameId
             || presentation.viewEpoch !== value.context.view.epoch || !sameRender(presentation.token, value.token)) return;
         pending = null;
+        const key = buildKeyOf(value, presentation);
+        // The port already holds a packet built from exactly this content: nothing is copied, read back or traced again.
+        if (handedKey && sameBuild(handedKey, key)) { releaseQuietly(value); auditCount('embed', 'facts:reuse'); return; }
         const controller = new AbortController();
         building = { pending: value, controller };
-        void run(value, presentation, controller);
+        // The build runs in a task of its own. Its copies and readbacks are not part of the frame that presented the draw.
+        setTimeout(() => {
+            if (controller.signal.aborted) {
+                releaseQuietly(value);
+                if (building?.controller === controller) building = null;
+                return;
+            }
+            void run(value, presentation, controller, key);
+        }, 0);
     };
     return {
         presented(revision, token, frame, context) {
@@ -520,6 +587,8 @@ export function createNativeEmbedPresentationProducer(options: NativeEmbedPresen
             if (disposed) return;
             accepted = presentation;
             if (!presentation) {
+                // The pane let its packet go (hidden or suspended), so the next accepted draw must be built again.
+                handedKey = null;
                 const value = pending; pending = null;
                 if (value) releaseQuietly(value);
                 building?.controller.abort();
@@ -532,7 +601,7 @@ export function createNativeEmbedPresentationProducer(options: NativeEmbedPresen
             pair();
         },
         dispose() {
-            disposed = true; accepted = null;
+            disposed = true; accepted = null; handedKey = null;
             const value = pending; pending = null;
             if (value) releaseQuietly(value);
             building?.controller.abort();

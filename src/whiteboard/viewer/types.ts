@@ -88,6 +88,8 @@ export interface ViewerEngine {
     /** The requested or accepted embed set changed: repaint with the live barriers that set implies. */
     embedsChanged(): void;
     readyPaintFrame(): PaintSource | null;
+    /** The ink nodes the board's GPU tiles drew in the last composite: the live stroke hands over to them. */
+    boardDrawnInk(): ReadonlySet<string>;
     setInteractionLayers(layers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null): void;
     setPreviewLayers(layers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null,
         coverage?: () => Readonly<{ frame: PaintSource; nodeIds: ReadonlySet<string> }> | null): void;

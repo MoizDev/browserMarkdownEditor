@@ -65,6 +65,9 @@ function createLay(host: LayerHost): TileLay {
     };
 }
 
+/** A route that keeps a cache the governor can reclaim (the text atlas pages, the image textures); absent when it keeps none. */
+interface EvictingRoute extends ItemRoute { evictTextures?(bytes: number, frameId: number): number }
+
 /** A run the CPU route rasters: one tile-sized texture, uploaded once. */
 interface CpuRun extends PreparedRun {
     readonly route: 'cpu';
@@ -232,18 +235,22 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
     // One path route and its clip admission share one coverage kit: the composer admits every route's clips through it.
     const pathRoute = createPath(host, surface);
     const store = createTileStore(host, surface);
+    const imageRoute = createImageRoute(host, surface);
+    const textRoute: EvictingRoute = createTextRoute(host, surface);
     const routes: TileRoutes = {
         path: pathRoute.route,
         inkAnalytic: ink.analytic,
         inkUnion: ink.union,
-        image: createImageRoute(host, surface),
-        text: createTextRoute(host, surface),
+        image: imageRoute,
+        text: textRoute,
         cpu,
     };
     const composer = createTileComposer({
         host, audit: surface, parts: createTileParts(host, surface), store, routes,
         tileId, tileWorld, inkRouteFor, lay, admitClips: pathRoute.admitClips, withPreparedClips,
         ...(options.opaqueWorld ? { opaqueWorld: options.opaqueWorld } : {}),
+        // The compose limit halves while the host reports a slow GPU, read each frame (PLAN 3.1).
+        slowGpu: () => host.trouble() === 'slow-gpu',
     });
 
     return {
@@ -303,8 +310,11 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         needsFrame(): boolean { return !disposed && composer.needsFrame(); },
         evictGpu(bytes: number, frameId: number): number {
             if (disposed || !(bytes > 0)) return 0;
+            // Route caches first, then composed tiles: each frees only what this frame did not use. The sum is what was freed.
             pathRoute.coverage.beginFrame(frameId);
             let freed = pathRoute.coverage.evict(bytes);
+            if (freed < bytes) freed += imageRoute.evictTextures(bytes - freed, frameId);
+            if (freed < bytes) freed += textRoute.evictTextures?.(bytes - freed, frameId) ?? 0;
             if (freed < bytes && lastView) freed += store.evict(bytes - freed, frameId, lastView);
             return freed;
         },

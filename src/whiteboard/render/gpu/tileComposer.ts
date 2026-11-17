@@ -12,6 +12,7 @@ import { TILE_EDGE, TILE_GUTTER, TILE_SIZE } from '../imageSampling';
 import type { PaintBand } from '../material';
 import type { PaintClip, PaintInkItem, PaintItem } from '../paintStream';
 import type { AdmitClips, PreparedClips } from './routePath';
+import { lowerTileKey } from './tileStore';
 import type { PreparedPaint2d } from '../reference/canvasPaintAdapter';
 import type { PaintResources2d } from '../reference/paint2d';
 import type {
@@ -82,6 +83,10 @@ interface Position {
     readonly y: number;
     readonly slices: Slice[];
     cursor: number;
+    /** Refused by a pool: not advanced again until the governor's wake (no per-frame retry of a refusal). */
+    parked: boolean;
+    /** A visible position the governor refused, composed one level down (half the scale) until the store admits it. */
+    lowered: boolean;
 }
 /** Tile positions across a view, as integer coordinates with exclusive ends. */
 interface Span { readonly x0: number; readonly y0: number; readonly x1: number; readonly y1: number }
@@ -210,11 +215,15 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     // ladder scale, and coverage asked about the exact one, where nothing is composed, so every frame of a zoom read incomplete.
     let drawnTarget = 0;
 
-    const wake = (): void => { host.invalidate('tile-composer-capacity'); };
+    // The governor's wake for a refusal: the parked positions may be advanced again, and the board is asked for a frame.
+    const wake = (): void => {
+        for (const position of building.values()) position.parked = false;
+        host.invalidate('tile-composer-capacity');
+    };
     const refuseTarget = (): void => { denied = true; auditCount(audit, 'tile:denied'); store.wait(TARGET_BYTES, wake); };
     const refuseAdmission = (pool: 'gpu' | 'cpu', bytes: number): void => {
         denied = true; auditCount(audit, 'tile:denied');
-        if (pool === 'gpu') store.wait(bytes, wake); else host.allocator.cpu.whenAvailable?.(wake);
+        if (pool === 'gpu') store.wait(bytes, wake); else host.allocator.cpu.whenAvailable?.(wake, bytes);
     };
 
     const keyOf = (band: PaintBand, scale: number, x: number, y: number, slice: number): TileKey => ({ band, scale, x, y, slice });
@@ -249,7 +258,10 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
      * encodes it this frame, before it draws, so it is covered now. Null for any other position. */
     const finishedAt = (band: PaintBand, scale: number, x: number, y: number): Position | null => {
         for (const position of finished) {
-            if (position.band !== band || position.scale !== scale || position.x !== x || position.y !== y) continue;
+            if (position.band !== band) continue;
+            const covers = position.scale === scale ? position.x === x && position.y === y
+                : position.lowered && position.scale * 2 === scale && position.x === Math.floor(x / 2) && position.y === Math.floor(y / 2);
+            if (!covers) continue;
             for (const slice of position.slices) {
                 const entry = slice.entry;
                 if (!entry || !entry.target || store.get(slice.id) !== entry) return null;
@@ -353,11 +365,11 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 next: 0, admitted: [], entry: existing && existing.target ? existing : null,
             };
         });
-        return { band, scale, x, y, slices, cursor: 0 };
+        return { band, scale, x, y, slices, cursor: 0, parked: false, lowered: false };
     };
 
     /** Admits and acquires a position's slices in order. 'wait' resumes next frame; 'denied' waits for memory. */
-    const advance = (position: Position, budget: FrameBudget, gpu: GfxDevice): 'done' | 'wait' | 'denied' => {
+    const advance = (position: Position, budget: FrameBudget, gpu: GfxDevice): 'done' | 'wait' | 'denied' | 'refused' => {
         for (; position.cursor < position.slices.length; position.cursor++) {
             const slice = position.slices[position.cursor];
             if (slice.next < slice.runs.length) {
@@ -367,7 +379,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             }
             if (!slice.entry) {
                 const entry = store.acquire(slice.key, slice.blend, gpu);
-                if (!entry) { refuseTarget(); return 'denied'; }
+                if (!entry) return 'refused';
                 slice.entry = entry;
             }
         }
@@ -383,6 +395,17 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         }
     };
 
+    /** Whether a building or finished position is still wanted at `target` for the visible `ring`: a position at the target
+     * scale by its own cell, a lowered one (half the scale) by any of the four target cells it covers. */
+    const stillWanted = (position: Position, target: number, ring: Span): boolean => {
+        if (!position.lowered) return position.scale === target && inSpan(ring, position.x, position.y);
+        if (position.scale * 2 !== target) return false;
+        for (let dy = 0; dy < 2; dy++) for (let dx = 0; dx < 2; dx++) {
+            if (inSpan(ring, position.x * 2 + dx, position.y * 2 + dy)) return true;
+        }
+        return false;
+    };
+
     /** The compose pass of one frame, in priority order: dirty visible positions, then missing visible ones, then the
      * missing positions one ring outside the view. The frame's limit is the number of tiles it may compose. */
     const compose = (view: ViewState, budget: FrameBudget, gpu: GfxDevice, target: number, span: Span, zooming: boolean, demand: number): void => {
@@ -393,6 +416,42 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         const magnifiedAtMost2 = (band: PaintBand, x: number, y: number): boolean => {
             const list = standInsOf(band, target, x, y);
             return list.length > 0 && list[0].key.scale >= demand / 2;
+        };
+        // Advances one position. False when this frame's compose is spent (limit, budget, a wait); true when the pass goes on.
+        const drive = (position: Position, key: string, pass: 'dirty' | 'missing' | 'ring'): boolean => {
+            if (position.parked) return true;
+            // Why a frame composes nothing is the zoom question: each exit is counted (pass and cause).
+            if (composed >= limit) { auditCount(audit, `compose:limit:${pass}`); return false; }
+            if (budget.shouldYield()) { auditCount(audit, `compose:yield:${pass}`); return false; }
+            const outcome = advance(position, budget, gpu);
+            if (outcome === 'done') {
+                auditCount(audit, `compose:done:${pass}`);
+                building.delete(key);
+                finished.push(position);
+                composed += position.slices.length;
+                return true;
+            }
+            if (outcome === 'refused' && pass !== 'ring' && !position.lowered) {
+                // The governor refused a visible position: it composes one level down, at half the scale, which covers this
+                // position and three others. The stand-in keeps it on screen meanwhile; a second refusal waits.
+                cancel(position); building.delete(key);
+                const low = lowerTileKey(keyOf(position.band, position.scale, position.x, position.y, 0));
+                const lowKey = positionKey(low.band, low.scale, low.x, low.y);
+                let lower = building.get(lowKey);
+                if (!lower) {
+                    const started = begin(low.band, low.scale, low.x, low.y, view);
+                    if (!started) { auditCount(audit, 'compose:lower-empty'); return true; }
+                    started.lowered = true;
+                    building.set(lowKey, started);
+                    lower = started;
+                }
+                auditCount(audit, `compose:lowered:${pass}`);
+                return drive(lower, lowKey, pass);
+            }
+            if (outcome === 'refused') { refuseTarget(); position.parked = true; auditCount(audit, `compose:refused:${pass}`); return true; }
+            if (outcome === 'denied') { position.parked = true; auditCount(audit, `compose:denied:${pass}`); return true; }
+            auditCount(audit, `compose:wait:${pass}`);
+            return false;
         };
         for (const pass of ['dirty', 'missing', 'ring'] as const) {
             const margin = pass === 'ring' ? 1 : 0;
@@ -412,19 +471,19 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                             position = started;
                             building.set(key, position);
                         }
-                        // Why a frame composes nothing is the zoom question: each exit is counted (pass and cause).
-                        if (composed >= limit) { auditCount(audit, `compose:limit:${pass}`); return; }
-                        if (budget.shouldYield()) { auditCount(audit, `compose:yield:${pass}`); return; }
-                        const outcome = advance(position, budget, gpu);
-                        if (outcome !== 'done') { auditCount(audit, `compose:${outcome}:${pass}`); return; }
-                        auditCount(audit, `compose:done:${pass}`);
-                        building.delete(key);
-                        finished.push(position);
-                        composed += position.slices.length;
+                        if (!drive(position, key, pass)) return;
                     }
                 }
             }
         }
+    };
+
+    // The run an encode draws, set by the encode loop: one object for the composer's life, so no closure is built per run.
+    const encodeDraw: { pass: GpuPass | null; route: ItemRoute | null; run: PreparedRun | null } = { pass: null, route: null, run: null };
+    const drawEncoded = (): void => {
+        const { pass, route, run } = encodeDraw;
+        if (!pass || !route || !run) throw new Error('Encode draw without a run');
+        route.draw(pass, run);
     };
 
     const addDraw = (band: PaintBand, entry: TileEntry, slot: Slot, clip: Rect | null): void => {
@@ -452,6 +511,13 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         drawCount = 0;
         const cam = view.camera, scale = cam.z * view.viewport.dpr;
         const span = spanAt(view, target);
+        // The surface rectangle a position of `target` covers, clamped to the surface; null when none of it is on the surface.
+        const clipAt = (x: number, y: number): Rect | null => {
+            const left = Math.max(0, Math.round((x * EDGE / target - cam.x) * scale)), top = Math.max(0, Math.round((y * EDGE / target - cam.y) * scale));
+            const right = Math.min(surfaceW, Math.round(((x + 1) * EDGE / target - cam.x) * scale));
+            const bottom = Math.min(surfaceH, Math.round(((y + 1) * EDGE / target - cam.y) * scale));
+            return right <= left || bottom <= top ? null : { x: left, y: top, width: right - left, height: bottom - top };
+        };
         for (const band of BANDS) {
             let complete = true;
             for (let y = span.y0; y < span.y1 && complete; y++) {
@@ -464,7 +530,10 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     // Admitted and encoded this frame: its fresh entries are drawn now, as the exact tile they will be.
                     const pending = status === 'missing' ? finishedAt(band, target, x, y) : null;
                     if (pending) {
-                        for (const slice of pending.slices) if (slice.entry) addDraw(band, slice.entry, { mode: slice.mode, count: pending.slices.length }, null);
+                        // A lowered tile covers four positions: each draw is clipped to the position it shows.
+                        const pendingClip = pending.lowered ? clipAt(x, y) : null;
+                        if (pending.lowered && !pendingClip) continue;
+                        for (const slice of pending.slices) if (slice.entry) addDraw(band, slice.entry, { mode: slice.mode, count: pending.slices.length }, pendingClip);
                         auditCount(audit, 'tile:encoding');
                         continue;
                     }
@@ -482,11 +551,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     }
                     // The stand-in's clip is the part of its position on the surface: a scissor outside the surface, or with a
                     // negative origin, is refused by the device (measured: 'invalid-input' on open).
-                    const left = Math.max(0, Math.round((x * EDGE / target - cam.x) * scale)), top = Math.max(0, Math.round((y * EDGE / target - cam.y) * scale));
-                    const right = Math.min(surfaceW, Math.round(((x + 1) * EDGE / target - cam.x) * scale));
-                    const bottom = Math.min(surfaceH, Math.round(((y + 1) * EDGE / target - cam.y) * scale));
-                    if (right <= left || bottom <= top) continue;
-                    const clip: Rect = { x: left, y: top, width: right - left, height: bottom - top };
+                    const clip = clipAt(x, y);
+                    if (!clip) continue;
                     for (const entry of standInsOf(band, target, x, y)) {
                         const slot = slots.get(entry);
                         if (slot) addDraw(band, entry, slot, clip);
@@ -515,13 +581,17 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 const target = entry.target;
                 const pass = passes.begin(target.target, { x: 0, y: 0, width: target.size, height: target.size },
                     { clear: slice.blend === 'modulate' ? WHITE : CLEAR, stencil: false });
+                const audited = renderAuditEnabled();
                 for (const { route, run, clips } of slice.admitted) {
-                    timedStage(audit, 'draw', () => {
-                        if (clips) withPreparedClips(pass, clips, () => route.draw(pass, run));
-                        else route.draw(pass, run);
-                    });
+                    // Drawn through the shared `drawEncoded` with the run in `encodeDraw`: no closure is built per run.
+                    const t0 = audited ? performance.now() : 0;
+                    encodeDraw.pass = pass; encodeDraw.route = route; encodeDraw.run = run;
+                    if (clips) withPreparedClips(pass, clips, drawEncoded);
+                    else drawEncoded();
+                    if (audited) auditStage(audit, 'draw', performance.now() - t0);
                     auditCount(audit, `route:${route.id}`);
                 }
+                encodeDraw.pass = null; encodeDraw.route = null; encodeDraw.run = null;
                 pass.end();
                 auditCount(audit, 'tile:compose', 1, { px: target.size * target.size });
                 entry.dirty = false; entry.composed = true; entry.revision = validRevision;
@@ -593,13 +663,13 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 const span = spanAt(view, target);
                 const ring: Span = { x0: span.x0 - 1, y0: span.y0 - 1, x1: span.x1 + 1, y1: span.y1 + 1 };
                 for (const [key, position] of building) {
-                    if (!invalidated && position.scale === target && inSpan(ring, position.x, position.y)) continue;
+                    if (!invalidated && stillWanted(position, target, ring)) continue;
                     cancel(position); building.delete(key);
                 }
                 // A finished position still valid for this content and scale waits for this frame's encode, so it is kept.
                 const kept: Position[] = [];
                 for (const position of finished) {
-                    if (!invalidated && position.scale === target && inSpan(ring, position.x, position.y)) kept.push(position);
+                    if (!invalidated && stillWanted(position, target, ring)) kept.push(position);
                     else cancel(position);
                 }
                 finished = kept;

@@ -111,16 +111,29 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
      * then invalidates the pane. A pane in this frame, or with nothing resident, frees 0 and is not invalidated. */
     const trimGpu = (bytes: number, only?: Layer): number => {
         if (disposed || !visible || touchedThisFrame()) return 0;
+        const frameId = runtime.scheduler.currentFrame();
         const victims: Layer[] = [];
         let freed = 0;
         for (const layer of only ? [only] : layerSet.layers) {
             if (freed >= bytes) break;
             if (releasing.has(layer)) continue;
-            const live = layer.memory().gpuBytes;
-            if (live <= 0) continue;
+            if (layer.memory().gpuBytes <= 0) continue;
+            // A layer that can give back part of its residency does so first, synchronously, and the whole layer is released
+            // only when that falls short of the ask. Without the hook the layer is released whole, as before.
+            const want = bytes - freed;
+            // A layer without the hook frees nothing here and is released whole; a non-finite report counts as nothing freed.
+            const reported = layer.evictGpu ? layer.evictGpu(want, frameId) : 0;
+            const partial = Number.isFinite(reported) ? Math.max(0, reported) : 0;
+            if (partial > 0) {
+                freed += partial;
+                auditCount('governor', `evict-partial:${layerSet.definition(layer)?.id ?? 'unnamed'}`, 1, { bytes: partial });
+            }
+            if (partial >= want) break;
+            const remaining = layer.memory().gpuBytes;
+            if (remaining <= 0) continue;
             victims.push(layer);
             releasing.add(layer);
-            freed += live;
+            freed += remaining;
         }
         if (!victims.length) return 0;
         queueMicrotask(() => {

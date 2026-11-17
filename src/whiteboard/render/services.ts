@@ -40,7 +40,10 @@ import { createBoardTextGeometry, type PreparedBoardText } from './textGeometry'
 import type { BoardFonts } from '../text/fonts';
 import { prepareBoardVectorGeometry, prepareBoardVectorGeometryNow, prepareOpaqueGeometry, type BoardVectorGeometry } from './vectorGeometry';
 import { connectorBytes, inkChunkBytes, vectorBytes } from './residentBytes';
-import type { ResolvedNodeCache } from './resolvedNodeCache';
+import { ResolvedNodeCache } from './resolvedNodeCache';
+import { auditCount } from '../../platform/render/renderAudit';
+/** The audit surface of the board's paint services: every counter below is `board-paint:<event>`. */
+const AUDIT = 'board-paint';
 /** A link card's stored preview picture and favicon, as the document holds them; other nodes have none. */
 function previewMediaOf(doc: Pick<BoardDoc, 'media'>, node: Readonly<Node>): PreviewMedia | undefined {
     if (node.kind !== 'linkcard' || !node.preview) return undefined;
@@ -188,6 +191,11 @@ export function createBoardRenderServices(options: {
         if (freed < bytes) evictInkLadders(bytes - freed);
     };
     const derived = options.derivedMemory?.(evictDerived);
+    // The session's resolved paint, one revision at a time. A node resolves to the same items in every stream and frame of one
+    // variant (revision, sheet, theme, precision, fonts), so a direct frame, a candidate pass and a dense plan of one revision each
+    // paint a node once. By reading: the paint re-ran per stream, and the first picture of a 5,400-item board prepared each candidate
+    // three times (solo/whiteboard.md). Its charge is the derived handle's, released with the session.
+    const sessionResolved = derived ? new ResolvedNodeCache(derived) : undefined;
     const inkLadder = (id: NodeId, signature: readonly unknown[]): InkLodLadder | undefined => {
         if (!derived || disposed) return undefined;
         const entry = inkLadders.get(id);
@@ -231,6 +239,7 @@ export function createBoardRenderServices(options: {
         if (--holders !== 0) return;
         disposed = true; text.dispose(); for (const id of [...cached.keys()]) forgetIdle(id); textIds.clear(); listeners.clear(); sessionRasters.dispose();
         for (const id of [...inkLadders.keys()]) dropInkLadder(id);
+        sessionResolved?.dispose();
         derived?.close();
     };
     const signature = (node: Readonly<Node>, doc: BoardDoc): readonly unknown[] => {
@@ -258,7 +267,10 @@ export function createBoardRenderServices(options: {
         check(signal);
         const node = createNode(borrowed), before = signature(node, doc), old = cached.get(node.id);
         const precision = node.kind === 'stroke' ? inkPrecision(context) : undefined;
-        if (old && sameGeometrySignature(old.signature, before) && old.inkPrecision === precision?.key) { cached.delete(node.id); cached.set(node.id, old); return old; }
+        if (old && sameGeometrySignature(old.signature, before) && old.inkPrecision === precision?.key) {
+            cached.delete(node.id); cached.set(node.id, old); auditCount(AUDIT, 'geometry:hit'); return old;
+        }
+        auditCount(AUDIT, 'geometry:build');
         const key = `${options.token.session}:${node.id}:geometry:${++serial}`;
         let result: Omit<Prepared, 'signature'>;
         if (node.kind === 'group') throw new TypeError('Groups aggregate child geometry in Scene');
@@ -330,7 +342,10 @@ export function createBoardRenderServices(options: {
         check(signal);
         const node = createNode(borrowed), before = signature(node, doc), old = cached.get(node.id);
         const precision = node.kind === 'stroke' ? inkPrecision(context ? { ...context, allowInkLod: false } : undefined) : undefined;
-        if (old && sameGeometrySignature(old.signature, before) && old.inkPrecision === precision?.key) { cached.delete(node.id); cached.set(node.id, old); return old; }
+        if (old && sameGeometrySignature(old.signature, before) && old.inkPrecision === precision?.key) {
+            cached.delete(node.id); cached.set(node.id, old); auditCount(AUDIT, 'geometry:hit'); return old;
+        }
+        auditCount(AUDIT, 'geometry:build');
         const key = `${options.token.session}:${node.id}:geometry:${++serial}`;
         let result: Omit<Prepared, 'signature'>;
         if (node.kind === 'group' || node.kind === 'opaque') throw new TypeError('Copy geometry requires a supported non-container leaf');
@@ -393,7 +408,8 @@ export function createBoardRenderServices(options: {
                 // A picture's tiles depend on the stream's own world, so only world-independent resolutions are shared.
                 const reuse = shared && node.kind !== 'picture' ? shared : undefined;
                 const known = reuse?.cache.get(reuse.variant, node.id, context.sensitive);
-                if (known) return known;
+                if (known) { auditCount(AUDIT, 'paint:resolve-hit'); return known; }
+                auditCount(AUDIT, 'paint:resolve-built');
                 const geometry = await prepare(node, doc, itemSignal, context);
                 const paint = node.kind === 'stroke' ? paintStrokeNode(node, geometry.ink!, geometry.key, context, palette)
                     : node.kind === 'connector' ? paintConnector(node, geometry.connector!, context, palette, text.faces)
@@ -413,7 +429,7 @@ export function createBoardRenderServices(options: {
     const paint = async (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder, sourceToken: RenderToken = options.token): Promise<PaintNodeSource> => {
         const epoch = text.fonts.epoch, variant = rasterVariant(doc, request, epoch, sourceToken);
         const world = request.world ? Object.freeze({ ...request.world }) : undefined;
-        const source = await prepareScenePaintSource(doc, sourceToken, request, asyncPaintPorts(doc, request, orderedIds), signal);
+        const source = await prepareScenePaintSource(doc, sourceToken, request, asyncPaintPorts(doc, request, orderedIds, sharedResolution(doc, request, sourceToken)), signal);
         return { ...source, sessionRasters, sourceWorld: world,
             ...(text.fonts.epoch === epoch ? { rasterVariant: variant } : {}) };
     };
@@ -423,13 +439,18 @@ export function createBoardRenderServices(options: {
         request.sheetId, request.theme, request.deviceScale ?? null, !!request.allowInkLod,
         palettes[doc.kind === 'whiteboard' ? request.theme : 'light'].revision, text.fonts.epoch,
     ]);
+    /** The resolution a paint shares: the caller's dense-plan cache when it names one, else the session's cache of this revision. */
+    const sharedResolution = (doc: BoardDoc, request: ScenePaintRequest, sourceToken: RenderToken, given?: ResolvedNodeCache): SharedResolution | undefined => {
+        const cache = given ?? sessionResolved;
+        return cache ? { cache, variant: resolutionVariant(doc, request, sourceToken) } : undefined;
+    };
     // Frame identity matches `paint`: the variant is withdrawn if the font epoch moved while the
     // stream was being consumed, so a frame never claims a raster from a superseded face set.
     const paintStream = (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder,
         sourceToken: RenderToken = options.token, resolved?: ResolvedNodeCache): ScenePaintNodeStream => {
         const epoch = text.fonts.epoch, variant = rasterVariant(doc, request, epoch, sourceToken);
         const world = request.world ? Object.freeze({ ...request.world }) : undefined;
-        const shared = resolved ? { cache: resolved, variant: resolutionVariant(doc, request, sourceToken) } : undefined;
+        const shared = sharedResolution(doc, request, sourceToken, resolved);
         const stream = createScenePaintNodeStream(doc, sourceToken, request, asyncPaintPorts(doc, request, orderedIds, shared), signal);
         return {
             token: stream.token, theme: request.theme, sceneRevision: stream.sceneRevision, sourceDoc: stream.sourceDoc, sensitiveNodes: stream.sensitiveNodes,

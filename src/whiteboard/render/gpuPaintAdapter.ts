@@ -80,7 +80,7 @@ type CpuRoute = ItemRoute & ResourcedRoute;
 /** The route for what no GPU route draws: each run is rastered on the CPU, once, into a tile-sized scrap and drawn as a quad.
  * A modulate run is painted multiply over white, which is exactly the k the modulate cover produces; an over run is painted
  * over transparency. The composer counts every such run as fallback:item-cpu, so this route counts only its raster and upload. */
-function createCpuRoute(host: LayerHost, surface: string, lay: TileLay, report: (error: unknown) => void): CpuRoute {
+function createCpuRoute(host: LayerHost, surface: string, lay: TileLay): CpuRoute {
     let resources: PaintResources2d | null = null;
     let scratch: OffscreenCanvas | null = null;
     // The scratch canvas is CPU memory the governor must see: it is leased on the layer's CPU pool, and only that lease is reported.
@@ -161,7 +161,8 @@ function createCpuRoute(host: LayerHost, surface: string, lay: TileLay, report: 
                 if (texture) device.destroy(texture); else host.allocator.gpu.release(lease);
                 if (isBudgetRefusal(error)) return { status: 'denied', pool: 'gpu', bytes: TILE_BYTES };
                 auditCount(surface, 'fallback:cpu-failed', 1, { px: SIZE * SIZE });
-                report(error);
+                // A device's non-budget failure goes to the GPU error channel: the pane demotes to canvas2d instead of failing the open.
+                host.reportGpuError(error);
                 return { status: 'denied', pool: 'gpu', bytes: TILE_BYTES };
             } finally {
                 bitmap?.close();
@@ -242,7 +243,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
     let lastView: ViewState | null = null;
     let inkMemo: { frame: number; paint: PreparedPaint2d; set: ReadonlySet<string> } | null = null;
     const lay = createLay(host);
-    const cpu = createCpuRoute(host, surface, lay, report);
+    const cpu = createCpuRoute(host, surface, lay);
     const ink = createInkRoutes(host, surface);
     // One path route and its clip admission share one coverage kit: the composer admits every route's clips through it.
     const pathRoute = createPath(host, surface);
@@ -284,7 +285,8 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             } catch (error) {
                 if (isBudgetRefusal(error)) return;
                 // Reported, not rethrown: a throw here aborted the board's frame on every prepare while the content stayed in view.
-                report(error);
+                // On a device the error goes to the GPU channel, so the pane demotes to canvas2d instead of failing the open.
+                host.reportGpuError(error);
                 return;
             }
             presented = prepared;

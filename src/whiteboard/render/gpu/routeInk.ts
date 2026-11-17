@@ -17,8 +17,6 @@ import type { Admission, Blend, CreateInkRoutes, InkRouteFor, ItemRoute, Prepare
  * packing, and that refusal is reported, not re-routed. */
 export const inkRouteFor: InkRouteFor = (item: PaintInkItem) => analyticCapsule(item) ? 'ink-analytic' : 'ink-union';
 
-const NO_TRIANGLES = new Float64Array(0);
-
 /** A union run: one stencil cover per stroke, so a translucent stroke is never blended with itself. */
 class UnionInkRun implements PreparedRun {
     readonly route = 'ink-union' as const;
@@ -77,9 +75,8 @@ export const createInkRoutes: CreateInkRoutes = (host: LayerHost, audit: string)
                 const stroke = geometry.strokeSets(item, inkToleranceBand(deviceScale));
                 if (stroke && 'denied' in stroke) { retireAll(); return { status: 'denied', pool: 'cpu', bytes: stroke.denied }; }
                 if (!stroke) { retireAll(); return { status: 'unsupported', why: 'outline-refused' }; }
-                const sets = stroke.sets.map(set => ({ positive: set.triangles, negative: NO_TRIANGLES, edges: set.edges, bounds: set.bounds }));
                 const result: PathCoverageAdmission = kit.admitSets({
-                    sets, rule: 'union', affine: affineAt(item.localToWorld, stroke.origin, view), viewport: pixels(view),
+                    sets: stroke.shapes, rule: 'union', affine: affineAt(item.localToWorld, stroke.origin, view), viewport: pixels(view),
                     colour: item.material.color, output: { kind: 'composite', blend: modulate ? 'modulate' : 'normal' },
                     sampling: 'grid4',
                 }, budget);

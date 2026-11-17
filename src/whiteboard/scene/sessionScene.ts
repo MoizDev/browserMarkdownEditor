@@ -56,6 +56,8 @@ export class SessionScene implements SceneSpatial {
     private readonly pendingNodes = new Map<NodeId, number>();
     private readonly pendingSheets = new Set<SheetId>();
     private pages = false;
+    /** Whether a pending change is a sheet change (see SceneDirty.structure); cleared with the pending sets. */
+    private pendingStructure = false;
     private serial = 0;
     private disposed = false;
     private active: { readonly serial: number; readonly dirty: SceneDirty; readonly job: Generator<void, BootstrappedScene> } | undefined;
@@ -154,13 +156,14 @@ export class SessionScene implements SceneSpatial {
         }
         for (const sheet of dirty.sheets) this.pendingSheets.add(sheet);
         this.pages ||= dirty.pages;
+        this.pendingStructure ||= dirty.structure;
         this.serial++;
         this.options.invalidate();
     }
     private *update(dirty: SceneDirty): Generator<void, BootstrappedScene> {
         const next = yield* updateScene(this.options.doc, this.state, dirty, this.provider, 1, this.invalidateGeometry);
         yield* this.boundsVersions.updateSteps(next.revision, next.boundsChanges,
-            { ids: dirty.nodes.keys(), structural: dirty.sheets.size > 0 || dirty.pages });
+            { ids: dirty.nodes.keys(), structural: dirty.structure || dirty.pages });
         return next;
     }
     /** Called by the platform's bounded CPU preparation task, including after a
@@ -178,7 +181,7 @@ export class SessionScene implements SceneSpatial {
                     if (this.state.index.needsRebuild) this.rebuild.start(this.controller.signal);
                     return 'complete';
                 }
-                const dirty = { nodes: new Map(this.pendingNodes), sheets: new Set(this.pendingSheets), pages: this.pages };
+                const dirty = { nodes: new Map(this.pendingNodes), sheets: new Set(this.pendingSheets), pages: this.pages, structure: this.pendingStructure };
                 this.active = { serial: this.serial, dirty, job: this.update(dirty) };
             }
             const active = this.active;
@@ -187,7 +190,7 @@ export class SessionScene implements SceneSpatial {
                 if (!next.done) continue;
                 this.state = next.value;
                 if (active.serial !== this.serial || this.state.revision !== this.options.doc.rev) { this.active = undefined; continue; }
-                this.pendingNodes.clear(); this.pendingSheets.clear(); this.pages = false; this.invalidated.clear();
+                this.pendingNodes.clear(); this.pendingSheets.clear(); this.pages = false; this.pendingStructure = false; this.invalidated.clear();
                 this.active = undefined;
                 this.live.replace(this.state);
                 this.notify();

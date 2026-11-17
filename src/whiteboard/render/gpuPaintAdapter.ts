@@ -27,10 +27,9 @@ const SIZE = TILE_SIZE;
 const TILE_BYTES = SIZE * SIZE * 4;
 /** The quad that lays a composed tile: the whole texture onto its destination, linear, no coverage classification. */
 const QUAD = Object.freeze({ opacity: 1, sampling: 'linear', coverage: 'none' } as const);
-/** A modulate tile is an opaque white-based picture, so a multiply group of it multiplies the surface by it: dst·src. The
- * fixed-function 'modulate' group (no backdrop copy) is the goal; GpuPass.beginGroup does not yet type it (h10), so until
- * then the copy is counted as isolation:copy. */
-const MULTIPLY_GROUP = Object.freeze({ opacity: 1, blend: 'multiply', colourEffect: 'none' } as const);
+/** A modulate tile is laid as an isolated group composited by fixed-function modulate (dst·k, h10): no backdrop copy. The
+ * composer draws the other multiply slices, the ones not over opaque rects, through its own multiply group (counted). */
+const MODULATE_GROUP = Object.freeze({ opacity: 1, blend: 'modulate', colourEffect: 'none' } as const);
 
 type DocumentIdentity = Pick<FrameToken, 'vaultEpoch' | 'documentId' | 'bytesGeneration' | 'session'>;
 function documentMatches(source: { readonly token: DocumentIdentity }, token: FrameToken): boolean {
@@ -51,15 +50,14 @@ function timed<T>(surface: string, stage: AuditStage, fn: () => T): T {
     try { return fn(); } finally { auditStage(surface, stage, performance.now() - t0); }
 }
 
-/** Lays a composed tile on the surface. A modulate tile is wrapped in a multiply group, so it multiplies what is under it. */
-function createLay(host: LayerHost, surface: string): TileLay {
+/** Lays a composed tile on the surface. A modulate tile is wrapped in a modulate group, so it multiplies what is under it. */
+function createLay(host: LayerHost): TileLay {
     const bounds: RectI = { x: 0, y: 0, width: 0, height: 0 };
     return (pass: GpuPass, texture: TextureHandle, source: Readonly<Rect>, dest: Readonly<Rect>, blend: Blend): void => {
         if (blend !== 'modulate') { host.drawTexturedQuad(pass, texture, source, dest, QUAD); return; }
-        auditCount(surface, 'isolation:copy');
         bounds.x = Math.floor(dest.x); bounds.y = Math.floor(dest.y);
         bounds.width = Math.ceil(dest.x + dest.width) - bounds.x; bounds.height = Math.ceil(dest.y + dest.height) - bounds.y;
-        const group = pass.beginGroup(bounds, MULTIPLY_GROUP);
+        const group = pass.beginGroup(bounds, MODULATE_GROUP);
         host.drawTexturedQuad(pass, texture, source, dest, QUAD);
         pass.endGroup(group);
     };
@@ -211,7 +209,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
     let lastFrame = -1;
     let presented: PreparedPaint2d | null = null;
     let omitPrepared: ReadonlySet<string> | null = null;
-    const lay = createLay(host, surface);
+    const lay = createLay(host);
     const cpu = createCpuRoute(host, surface, lay);
     const ink = createInkRoutes(host, surface);
     // One path route and its clip admission share one coverage kit: the composer admits every route's clips through it.

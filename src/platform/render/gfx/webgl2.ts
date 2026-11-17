@@ -33,8 +33,8 @@ const benchmarkMemory = __BME_BENCH__ ? await import('../benchmarkMemory') : nul
 // One native storage convention (rendering-design.md §2.2/2.5; vr-lead ruling):
 // textures and render targets are GL-native bottom-left. Canonical top-left bitmaps
 // upload into budgeted, fenced staging targets, then Y-reversed framebuffer blits.
-// Byte uploads reverse rows; readback reverses once. No ImageBitmap pixel-store flip
-// is assumed: WebGL explicitly ignores that flag for ImageBitmap sources.
+// Byte uploads reverse rows; readback reverses once. No pixel-store flip is assumed for
+// ImageBitmap or VideoFrame sources: both are staged top-left and reversed by the blit, as bitmaps always were.
 
 /** Cache-bound allocators reserve actual bytes before any native/CPU allocation (design:603).
  * returnLease is the governor's FINAL return, not the layer-facing close adapter.
@@ -681,7 +681,9 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 this.#checkUpload();
                 this.#issue(encoding);
             } else {
-                if (src.source.width !== rect.width || src.source.height !== rect.height) throw new ArenaError('invalid-input');
+                // A VideoFrame has no width or height of its own; its display size is the size WebGL reads it at.
+                const size = 'displayWidth' in src.source ? { width: src.source.displayWidth, height: src.source.displayHeight } : src.source;
+                if (size.width !== rect.width || size.height !== rect.height) throw new ArenaError('invalid-input');
                 staging = this.acquireTarget({ width: rect.width, height: rect.height, format: 'rgba8', samples: 1, stencil: false, purpose: 'group' });
                 if (!staging) throw new ArenaError('out-of-budget');
                 const stageTexture = this.#pin(encoding, staging.texture, 'texture');
@@ -1269,6 +1271,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             attachment: value => target(this.#attachment(value.handle)),
             white: () => texture(this.#white!),
             uniforms: bytes => this.#frameUniforms(work, bytes),
+            uniformsInto: (bytes, into) => this.#frameUniformsInto(work, bytes, into),
             uploadUniforms: () => { if (work.surface) this.#timer.begin(); this.#uploadUniforms(work); },
             beginReplay: () => this.#beginReplay(),
             endReplay: () => this.#endReplay(),
@@ -1382,6 +1385,20 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     }
 
     #frameUniforms(work: FrameWork, bytes: ArrayBufferView): UniformSlice {
+        const slot = this.#writeUniforms(work, bytes);
+        // The write leaves work.offset just past the bytes it copied, so their offset is that minus their length.
+        return { buffer: slot.handle, offset: work.offset - bytes.byteLength, bytes: bytes.byteLength };
+    }
+
+    /** Rewrites a caller-owned record to name the bytes, with no allocation. Fields change only after the write succeeds. */
+    #frameUniformsInto(work: FrameWork, bytes: ArrayBufferView, into: UniformSlice): void {
+        const slot = this.#writeUniforms(work, bytes);
+        into.buffer = slot.handle;
+        into.offset = work.offset - bytes.byteLength;
+        into.bytes = bytes.byteLength;
+    }
+
+    #writeUniforms(work: FrameWork, bytes: ArrayBufferView): UniformSlot {
         count(bytes.byteLength, true);
         if (!work.slot) work.slot = this.#uniformSlot(work);
         const offset = Math.ceil(work.offset / this.limits.uniformAlignment) * this.limits.uniformAlignment;
@@ -1398,7 +1415,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         work.slot.data.set(new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength), offset);
         work.offset = offset + bytes.byteLength;
         this.#pin(work.encoding, work.slot.handle, 'buffer');
-        return { buffer: work.slot.handle, offset, bytes: bytes.byteLength };
+        return work.slot;
     }
 
     #uniformSlot(work: FrameWork): UniformSlot {
@@ -1420,7 +1437,10 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             let handle: BufferHandle | null = null;
             try {
                 const data = new Uint8Array(this.#uniformBytes);
-                handle = this.#owned('buffer', { bytes: this.#uniformBytes, uses: ['uniform', 'copy-dst'] }, this.#uniformBytes, this.#services.working);
+                // 'vertex' too: a batched textured-quad draw binds its instance records as a vertex slice from this same ring
+                // (compositor.ts drawTexturedQuads). The device refuses a vertex slice whose buffer lacks the use, which demoted
+                // the pane mid-draw (seen in the final run's audit: pane:fallback:pane-2d:gpu-error:invalid-input).
+                handle = this.#owned('buffer', { bytes: this.#uniformBytes, uses: ['uniform', 'vertex', 'copy-dst'] }, this.#uniformBytes, this.#services.working);
                 slot = { handle, native: this.#arena.validate(handle, 'buffer'), data, lease: cpu, serial: 0, owner: null, valid: true };
                 this.#uniformSlots.push(slot);
             } catch (error) { if (handle) this.destroy(handle); this.#returnCpu(cpu); throw error; }

@@ -1,7 +1,7 @@
 import type { Affine, Rect, Rgba, ViewState } from '../types';
 import type { PagePresentation } from './camera';
 import type { DamageRecord } from './damage';
-import type { Backend, GfxDevice, GpuPass, RectI, Samples, TextureFormat, TextureHandle, UniformSlice } from './gfx/api';
+import type { Backend, DrawableImage, GfxDevice, GpuPass, RectI, Samples, TextureFormat, TextureHandle, UniformSlice } from './gfx/api';
 import type { MemoryAllocator, MemoryGovernor } from './memoryGovernor';
 import type { BorrowedMirror, MirrorView } from './mirrorSet';
 import type { Pane2DPresenter } from './paneLifecycle';
@@ -51,6 +51,9 @@ export interface CompositorLayer {
 export interface LayerAllocators {
     readonly cpu: MemoryAllocator;
     readonly gpu: MemoryAllocator;
+    /** The pane's current CPU grant in bytes: read-only, allocates nothing. Optional so a construction site that does not yet supply it
+     * still typechecks; absent, a layer reads 0 (no grant known). */
+    cpuGrantBytes?(): number;
 }
 
 /** Source is intrinsic texture/bitmap texels including its real gutter; destination is DEVICE pixels. */
@@ -114,12 +117,16 @@ export interface LayerHost {
     paneTransform(view: ViewState, frameId: number): Affine | null;
     /** DrawGpu-only packing into the active encoder's fenced ring, never a layer-owned ring. */
     uniforms(bytes: ArrayBufferView): UniformSlice;
+    /** As uniforms, but rewrites a caller-owned record in place: a batch keeps one DrawCommand and rewrites its slice per draw. */
+    uniformsInto(bytes: ArrayBufferView, into: UniformSlice): void;
     /** Read-only governor state for this pane: a layer may shed work under 'slow-gpu' or 'pressure'. Allocates nothing. */
     trouble(): LayerTrouble;
+    /** Routes a device-path error the layer hit to the pane's GPU error channel; the pane demotes or reports as it does for its own. */
+    reportGpuError(error: unknown): void;
     drawTexturedQuad(pass: GpuPass, texture: TextureHandle, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
-    drawTexturedQuad(ctx: CanvasRenderingContext2D, image: ImageBitmap, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
+    drawTexturedQuad(ctx: CanvasRenderingContext2D, image: DrawableImage, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
     drawTexturedQuads(pass: GpuPass, texture: TextureHandle, quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void;
-    drawTexturedQuads(ctx: CanvasRenderingContext2D, image: ImageBitmap, quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void;
+    drawTexturedQuads(ctx: CanvasRenderingContext2D, image: DrawableImage, quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void;
 }
 
 /** The attach actor forwards these capabilities into its stable LayerHost objects. */
@@ -130,10 +137,11 @@ export interface CompositorResources {
     paintIsolation(ctx: CanvasRenderingContext2D, bounds: Readonly<RectI>, options: IsolationPaintOptions, paint: (isolatedCtx: CanvasRenderingContext2D) => void): void;
     /** Throws outside active GPU encoding; never returns a fictitious slice. */
     uniforms(bytes: ArrayBufferView): UniformSlice;
+    uniformsInto(bytes: ArrayBufferView, into: UniformSlice): void;
     drawTexturedQuad(pass: GpuPass, texture: TextureHandle, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
-    drawTexturedQuad(ctx: CanvasRenderingContext2D, image: ImageBitmap, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
+    drawTexturedQuad(ctx: CanvasRenderingContext2D, image: DrawableImage, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
     drawTexturedQuads(pass: GpuPass, texture: TextureHandle, quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void;
-    drawTexturedQuads(ctx: CanvasRenderingContext2D, image: ImageBitmap, quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void;
+    drawTexturedQuads(ctx: CanvasRenderingContext2D, image: DrawableImage, quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void;
 }
 
 /** Final clear is opaque; inversion applies once to composited document colour (C2.5). */

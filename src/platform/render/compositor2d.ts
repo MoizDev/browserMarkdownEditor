@@ -1,4 +1,4 @@
-import { auditCount } from './renderAudit';
+import { auditCount, auditDrawnStart, auditDrawnTake, auditPresent, renderAuditEnabled } from './renderAudit';
 import type { Rect, ViewState } from '../types';
 import { deviceContext, imageExtent, paintCanvasIsolation, registerCanvasIsolation } from './canvas2dContext';
 import { createColourGroup2d } from './colourGroup2d';
@@ -6,7 +6,7 @@ import type { ColourGroup2d } from './colourGroup2d';
 import { paintPageScope, paintWorldScope, paneCssTransform, projectPage } from './compositorProjection';
 import type { Compositor2DOptions, CompositorAppearance, CompositorCoverage, CompositorLayer, CreatedCompositor2D, IsolationPaintOptions, IsolationReservation, PaneCompositor, PaneSurfaceHost, TexturedQuadOptions, TexturedQuadSpec } from './compositor.types';
 import { RENDER_CONSTANTS as POLICY } from './constants';
-import type { ByteLease, GfxLimits, GpuPass, RectI, TextureHandle } from './gfx/api';
+import type { ByteLease, DrawableImage, GfxLimits, GpuPass, RectI, TextureHandle } from './gfx/api';
 import type { MemoryCacheHandle } from './memoryGovernor';
 import type { BorrowedMirror } from './mirrorSet';
 import type { MirrorFrame, MirrorPresentation, PreparedMirrorPresentation } from './paneLifecycle';
@@ -186,6 +186,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             reserveIsolation: (request: IsolationReservation) => this.reserveIsolation(request),
             paintIsolation: paintCanvasIsolation,
             uniforms: () => { throw new Error('Uniforms require an active GPU draw scope'); },
+            uniformsInto: () => { throw new Error('Uniforms require an active GPU draw scope'); },
             drawTexturedQuad: this.quad.bind(this) as PaneCompositor['resources']['drawTexturedQuad'],
             drawTexturedQuads: this.quads.bind(this) as PaneCompositor['resources']['drawTexturedQuads'] });
     }
@@ -427,8 +428,13 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         this.activeKey = key;
         this.beginSources(key);
         const availability = snapshot.layers.map(binding => binding.coverage(frame, this.backend));
-        if (availability.some(item => !item.complete)) return null;
+        if (availability.some(item => !item.complete)) {
+            if (renderAuditEnabled()) auditPresent({ pane: this.options.paneId, frame: frame.frameId, rawTick: frame.timestamp, backend: 'canvas2d',
+                complete: false, canvas: null, standIns: 0, holes: 0, refusal: 'availability' });
+            return null;
+        }
         this.missing = false;
+        if (renderAuditEnabled()) auditDrawnStart();
         this.busy++;
         try {
             if (this.job && this.job.key !== key) this.cancelJob();
@@ -448,6 +454,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             this.busy++;
             const encodedSources = new Set(this.pendingSources), encodedCrops = new Set(this.pendingCrops);
             this.encodedSources.add(encodedSources); this.encodedCrops.add(encodedCrops);
+            const tally = renderAuditEnabled() ? auditDrawnTake() : null;
             let done = false;
             const release = () => { done = true; this.busy--; this.encodedSources.delete(encodedSources);
                 this.encodedCrops.delete(encodedCrops); this.pruneSources(); };
@@ -462,6 +469,8 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
                     this.report = Object.freeze({ frameId: frame.frameId, token: frame.token, presented: true,
                         complete: true, sharp: snapshot.metrics!.qualityScale === 1 && availability.every(item => item.sharp && !item.staleVersion),
                         staleVersion: availability.some(item => item.staleVersion), qualityScale: snapshot.metrics!.qualityScale });
+                    if (tally) auditPresent({ pane: this.options.paneId, frame: frame.frameId, rawTick: frame.timestamp, backend: 'canvas2d',
+                        complete: tally.standIns === 0 && tally.holes === 0, canvas: this.surface, standIns: tally.standIns, holes: tally.holes, refusal: null });
                     return { drawn: frame.layers.map(item => ({ layer: item.layer, sceneRevision: item.sceneRevision })),
                         ...(__BME_BENCH__ ? { commitObservation: () => {
                             if (__BME_BENCH__ && benchmarkDomain) benchmarkCanvas?.managers.get(this)?.observe(back.native, frame, benchmarkDomain.benchmarkPaintDomain(snapshot, frame));
@@ -872,13 +881,15 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
     }
 
     /** A batch on the canvas path is its quads in order: each one is the single drawImage it always was. */
-    private quads(ctx: CanvasRenderingContext2D | GpuPass, image: ImageBitmap | TextureHandle,
+    private quads(ctx: CanvasRenderingContext2D | GpuPass, image: DrawableImage | TextureHandle,
         quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void {
         for (const quad of quads) this.quad(ctx, image, quad.sourceRect, quad.destRect, options);
     }
-    private quad(ctx: CanvasRenderingContext2D | GpuPass, image: ImageBitmap | TextureHandle,
+    private quad(ctx: CanvasRenderingContext2D | GpuPass, image: DrawableImage | TextureHandle,
         sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void {
-        if (!('drawImage' in ctx) || !(image instanceof ImageBitmap)) throw new TypeError('A CPU quad needs a 2D context and ImageBitmap');
+        if (!('drawImage' in ctx) || !(image instanceof ImageBitmap || typeof VideoFrame !== 'undefined' && image instanceof VideoFrame)) {
+            throw new TypeError('A CPU quad needs a 2D context and an ImageBitmap or VideoFrame');
+        }
         if (!validRect(sourceRect) || !validRect(destRect) || !Number.isFinite(options.opacity) || options.opacity < 0 || options.opacity > 1) throw new TypeError('Invalid image quad');
         const previousCoverage = __BME_BENCH__ ? benchmarkCanvas?.coverageKinds.get(this) : undefined;
         const previousRatio = __BME_BENCH__ ? benchmarkCanvas?.scaleRatios.get(this) : undefined;

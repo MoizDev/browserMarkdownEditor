@@ -60,6 +60,12 @@ export interface PathCoverageRequest {
     readonly supersample?: boolean;
 }
 
+/** A multi-set request: several triangle sets drawn as one coverage, each with its own buffer (a growing stroke appends a
+ * chunk per input frame, and only the new chunk's triangles are uploaded). Same rules as `PathCoverageRequest`. */
+export interface PathCoverageSetsRequest extends Omit<PathCoverageRequest, 'shapes'> {
+    readonly sets: readonly PathCoverageShapes[];
+}
+
 export type PathCoverageAdmission =
     | { readonly status: 'ready'; readonly value: PreparedPathCoverage }
     | { readonly status: 'empty' }
@@ -68,15 +74,36 @@ export type PathCoverageAdmission =
     | { readonly status: 'deferred' }
     | { readonly status: 'unsupported' };
 
-/** A pre-admitted vertex buffer, plus the mask's own target and clip handle when the output is a mask. A composite
+/** One triangle set of an admission: its shared buffer (positive triangles first, then negative), and how many of each. */
+export interface PreparedPathPart {
+    readonly vertices: BufferHandle;
+    readonly positiveVertices: number;
+    readonly negativeVertices: number;
+    /** The buffer's shared entry; the admission holds one reference on it. */
+    readonly set: VertexSet;
+}
+
+/** One triangle set's buffer, shared by every admission of that set. Its `refs` count the live admissions holding it; a set
+ * whose refs reach zero is freed. A set uploaded by an admission that was then refused stays at zero refs, so the retry
+ * uploads nothing, and release() frees it. */
+interface VertexSet {
+    readonly key: Float64Array;
+    readonly device: GfxDevice;
+    readonly buffer: BufferHandle;
+    readonly negative: Float64Array;
+    readonly positiveVertices: number;
+    readonly negativeVertices: number;
+    refs: number;
+    readonly bytes: number;
+}
+
+/** Pre-admitted vertex buffers, plus the mask's own target and clip handle when the output is a mask. A composite
  * owns no target: it draws through the kit's shared scratch, one band at a time. */
 export interface PreparedPathCoverage {
     readonly device: GfxDevice;
     readonly target: CoverageTarget | null;
-    readonly vertices: BufferHandle;
+    readonly parts: readonly PreparedPathPart[];
     readonly clip: ClipHandle | null;
-    readonly positiveVertices: number;
-    readonly negativeVertices: number;
     readonly rule: PathCoverageRule;
     readonly output: CoverageOutput;
     readonly bounds: RectI;
@@ -168,7 +195,10 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
     // One vertex buffer per triangle set, shared by every admission of it: the triangles are origin-relative, so all tile
     // views of an item at one scale draw the same buffer under their own affine. A buffer per admission uploaded and
     // charged a stroke once per tile it crossed, and the notebook's paper was refused for the room (267 refusals).
-    const shared = new Map<Float64Array, { device: GfxDevice; buffer: BufferHandle; negative: Float64Array; refs: number; bytes: number }>();
+    const shared = new Map<Float64Array, VertexSet>();
+    // Uniform data is filled and copied into the frame's ring by host.uniforms before the next fill (the ring copies it
+    // synchronously), so one array serves every uniform a draw needs.
+    const uniformScratch = new Float32Array(12);
     // A buffer larger than one frame's upload allowance fills across frames. Refused whole each frame, a stroke's outline
     // at 332% never uploaded and the board never presented again (measured: claimUpload refused 73 of 73 admissions).
     const uploading = new Map<Float64Array, { device: GfxDevice; buffer: BufferHandle; data: Float32Array; staging: ByteLease;
@@ -179,13 +209,10 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         uploading.delete(key); gpuBytes -= up.bytes;
         host.allocator.cpu.release(up.staging); up.device.destroy(up.buffer);
     };
-    const releaseShared = (entry: { device: GfxDevice; buffer: BufferHandle; refs: number; bytes: number }) => {
+    const releaseShared = (entry: VertexSet) => {
         if (--entry.refs > 0) return;
-        for (const [key, value] of shared) if (value === entry) { shared.delete(key); break; }
+        shared.delete(entry.key);
         gpuBytes -= entry.bytes; entry.device.destroy(entry.buffer);
-    };
-    const releaseVertices = (prepared: PreparedPathCoverage) => {
-        for (const entry of shared.values()) if (entry.buffer === prepared.vertices) { releaseShared(entry); return; }
     };
     const retireOwned = (prepared: PreparedPathCoverage) => {
         const bytes = live.get(prepared);
@@ -194,7 +221,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         if (prepared.output.kind === 'composite') { compositeLive--; releaseScratch(prepared.device); }
         if (prepared.clip) prepared.device.destroy(prepared.clip);
         if (prepared.target) { prepared.device.destroy(prepared.target.target); prepared.device.destroy(prepared.target.texture); }
-        releaseVertices(prepared);
+        for (const part of prepared.parts) releaseShared(part.set);
     };
     // The composite scratch is one per DEVICE (a pane's context), shared by every kit there: coverage draws are sequential
     // within a frame. One per kit held 2 MiB for each of paper, board and wet, and the pane's working grant refused the
@@ -297,48 +324,190 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         const { affine, colour, viewport, output } = prepared;
         const target = prepared.target ?? scratchOf(prepared.device)?.target;
         if (!target || target.width < prepared.bounds.width) throw new Error('Stale path coverage');
-        const windingData = new Float32Array(12);
-        windingData.set([viewport.width, viewport.height, 0, 0, affine[0], affine[1], affine[2], affine[3], affine[4], affine[5], 0, 0]);
-        const windingUniforms = host.uniforms(windingData);
+        // Each uniform is copied into the frame's ring by host.uniforms before the scratch is filled for the next one.
+        const windingUniforms = windingSlice(viewport, affine, 0, 0);
         const whole = prepared.bounds;
         for (let y = whole.y; y < whole.y + whole.height; y += target.height) {
         const bounds: RectI = { x: whole.x, y, width: whole.width, height: Math.min(target.height, whole.y + whole.height - y) };
-        const coverData = new Float32Array(12);
-        coverData.set([viewport.width, viewport.height, 0, 0, bounds.x, bounds.y, bounds.width, bounds.height, ...colour]);
-        const coverUniforms = host.uniforms(coverData);
+        const coverUniforms = coverSlice(viewport, bounds, colour, 1);
         const token = pass.beginCoverage(target, bounds);
         try {
-            const total = prepared.positiveVertices + prepared.negativeVertices;
-            const drawWinding = (pipeline: PipelineHandle, first: number, count: number) => {
+            const drawWinding = (part: PreparedPathPart, pipeline: PipelineHandle, first: number, count: number) => {
                 if (!count) return;
                 pass.draw({ pipeline, bindings: { uniforms: [{ binding: 0, slice: windingUniforms }], textures: [] },
-                    vertices: [{ buffer: prepared.vertices, offset: 0, bytes: total * 8 }], first, count, instances: 1, scissor: bounds });
+                    vertices: [{ buffer: part.vertices, offset: 0, bytes: (part.positiveVertices + part.negativeVertices) * 8 }],
+                    first, count, instances: 1, scissor: bounds });
             };
             if (prepared.supersample && prepared.rule === 'union' && output.kind === 'composite') {
-                const quarter = new Float32Array(12);
-                quarter.set([viewport.width, viewport.height, 0, 0, bounds.x, bounds.y, bounds.width, bounds.height, ...colour.map(v => v * 0.25)]);
-                const quarterUniforms = host.uniforms(quarter);
+                const quarterUniforms = coverSlice(viewport, bounds, colour, 0.25);
                 for (const [dx, dy] of UNION_JITTER) {
-                    const jittered = new Float32Array(12);
-                    jittered.set([viewport.width, viewport.height, 0, 0, affine[0], affine[1], affine[2], affine[3], affine[4] + dx, affine[5] + dy, 0, 0]);
-                    pass.draw({ pipeline: pipelines.union, bindings: { uniforms: [{ binding: 0, slice: host.uniforms(jittered) }], textures: [] },
-                        vertices: [{ buffer: prepared.vertices, offset: 0, bytes: total * 8 }], first: 0, count: prepared.positiveVertices, instances: 1, scissor: bounds });
+                    const jitteredUniforms = windingSlice(viewport, affine, dx, dy);
+                    for (const part of prepared.parts) {
+                        pass.draw({ pipeline: pipelines.union, bindings: { uniforms: [{ binding: 0, slice: jitteredUniforms }], textures: [] },
+                            vertices: [{ buffer: part.vertices, offset: 0, bytes: (part.positiveVertices + part.negativeVertices) * 8 }],
+                            first: 0, count: part.positiveVertices, instances: 1, scissor: bounds });
+                    }
                     pass.draw({ pipeline: pipelines.coverAdd, bindings: { uniforms: [{ binding: 0, slice: quarterUniforms }], textures: [] },
                         vertices: [], first: 0, count: 4, instances: 1, scissor: bounds });
                 }
             } else {
-            if (prepared.rule === 'evenodd') drawWinding(pipelines.invert, 0, total);
-            else if (prepared.rule === 'union') drawWinding(pipelines.union, 0, prepared.positiveVertices);
-            else {
-                drawWinding(pipelines.increment, 0, prepared.positiveVertices);
-                drawWinding(pipelines.decrement, prepared.positiveVertices, prepared.negativeVertices);
-            }
-            pass.draw({ pipeline: prepared.modulate ? pipelines.coverModulate : pipelines.cover,
-                bindings: { uniforms: [{ binding: 0, slice: coverUniforms }], textures: [] },
-                vertices: [], first: 0, count: 4, instances: 1, scissor: bounds });
+                for (const part of prepared.parts) {
+                    if (prepared.rule === 'evenodd') drawWinding(part, pipelines.invert, 0, part.positiveVertices + part.negativeVertices);
+                    else if (prepared.rule === 'union') drawWinding(part, pipelines.union, 0, part.positiveVertices);
+                    else {
+                        drawWinding(part, pipelines.increment, 0, part.positiveVertices);
+                        drawWinding(part, pipelines.decrement, part.positiveVertices, part.negativeVertices);
+                    }
+                }
+                pass.draw({ pipeline: prepared.modulate ? pipelines.coverModulate : pipelines.cover,
+                    bindings: { uniforms: [{ binding: 0, slice: coverUniforms }], textures: [] },
+                    vertices: [], first: 0, count: 4, instances: 1, scissor: bounds });
             }
         } finally { pass.endCoverage(token, output); }
         }
+    };
+    /** The winding and cover uniforms, written into the kit's one scratch and copied by the frame's ring at once. */
+    const windingSlice = (viewport: Readonly<{ width: number; height: number }>, affine: Affine, dx: number, dy: number) => {
+        const u = uniformScratch;
+        u[0] = viewport.width; u[1] = viewport.height; u[2] = 0; u[3] = 0;
+        u[4] = affine[0]; u[5] = affine[1]; u[6] = affine[2]; u[7] = affine[3]; u[8] = affine[4] + dx; u[9] = affine[5] + dy; u[10] = 0; u[11] = 0;
+        return host.uniforms(u);
+    };
+    const coverSlice = (viewport: Readonly<{ width: number; height: number }>, bounds: RectI, colour: readonly number[], scale: number) => {
+        const u = uniformScratch;
+        u[0] = viewport.width; u[1] = viewport.height; u[2] = 0; u[3] = 0;
+        u[4] = bounds.x; u[5] = bounds.y; u[6] = bounds.width; u[7] = bounds.height;
+        u[8] = colour[0] * scale; u[9] = colour[1] * scale; u[10] = colour[2] * scale; u[11] = colour[3] * scale;
+        return host.uniforms(u);
+    };
+    /** The shared buffer of one triangle set, uploaded in chunks within each frame's allowance. Returns the entry, or why not:
+     * a refused or deferred upload keeps what it wrote, and the retry resumes it. */
+    const vertexSetFor = (owner: GfxDevice, set: PathCoverageShapes, vertexCount: number, budget: FrameBudget):
+        VertexSet | 'denied' | 'deferred' | 'unsupported' => {
+        const vertexBytes = vertexCount * 8;
+        const found = shared.get(set.positive);
+        if (found) return found.device !== owner || found.negative !== set.negative || found.bytes !== vertexBytes ? 'unsupported' : found;
+        let up = uploading.get(set.positive);
+        if (up && (up.device !== owner || up.negative !== set.negative || up.bytes !== vertexBytes)) { dropUpload(set.positive); up = undefined; }
+        if (!up) {
+            const staging = host.allocator.cpu.reserve(vertexBytes);
+            if (!staging) return 'denied';
+            // Positive triangles first, then negative: the draw ranges follow this order.
+            const data = new Float32Array(vertexCount * 2);
+            data.set(set.positive, 0);
+            data.set(set.negative, set.positive.length);
+            const lease = host.allocator.gpu.reserve(vertexBytes);
+            if (!lease) { host.allocator.cpu.release(staging); return 'denied'; }
+            let buffer: BufferHandle;
+            try { buffer = owner.createBuffer(vertexBytes, ['vertex', 'copy-dst'], lease); }
+            catch (error) {
+                host.allocator.gpu.release(lease); host.allocator.cpu.release(staging);
+                if (error instanceof ArenaError && error.code === 'unsupported') { unsupported = true; return 'unsupported'; }
+                throw error;
+            }
+            up = { device: owner, buffer, data, staging, written: 0, negative: set.negative, bytes: vertexBytes };
+            uploading.set(set.positive, up); gpuBytes += vertexBytes;
+        }
+        while (up.written < up.bytes) {
+            const piece = Math.min(PATH_COVERAGE_UPLOAD_CHUNK_BYTES, up.bytes - up.written);
+            if (!budget.claimUpload(piece)) return 'deferred';
+            owner.writeBuffer(up.buffer, up.written, up.data.subarray(up.written / 4, (up.written + piece) / 4));
+            auditCount(audit, 'upload:vertex', 1, { bytes: piece });
+            up.written += piece;
+        }
+        uploading.delete(set.positive); host.allocator.cpu.release(up.staging);
+        const entry: VertexSet = { key: set.positive, device: owner, buffer: up.buffer, negative: set.negative,
+            positiveVertices: set.positive.length / 2, negativeVertices: set.negative.length / 2, refs: 0, bytes: vertexBytes };
+        shared.set(set.positive, entry);
+        return entry;
+    };
+    /** Admission happens here, in prepare: targets, vertex buffers and any clip handle are created before any draw. Failure is
+     * permanent for this device incarnation and returns 'unsupported'. A set uploaded by an admission that is then refused
+     * keeps its buffer at zero refs, so the retry uploads nothing; release() frees it. */
+    const admitSets = (request: PathCoverageSetsRequest, budget: FrameBudget): PathCoverageAdmission => {
+        // Failure is permanent for this device incarnation: the caller's exact route takes the item.
+        if (disposed || failed || unsupported) return { status: 'unsupported' };
+        warm();
+        // Pipelines still compiling are a wait, not a fallback; ready invalidates the frame.
+        if (!isReady()) return { status: pending || !device ? 'denied' : 'unsupported' };
+        const owner = device!, { sets, rule, affine, viewport, output } = request;
+        if (owner.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration) return { status: 'denied' };
+        let edges = 0;
+        for (const set of sets) edges += set.edges;
+        if (rule === 'nonzero' && edges > PATH_COVERAGE_STENCIL_MAX_EDGES) return { status: 'unsupported' };
+        if (!Number.isSafeInteger(viewport.width) || !Number.isSafeInteger(viewport.height) || viewport.width <= 0 || viewport.height <= 0) {
+            throw new RangeError('Invalid path coverage viewport');
+        }
+        if (!request.colour.every(Number.isFinite)) throw new RangeError('Invalid path coverage colour');
+        let mx0 = Infinity, my0 = Infinity, mx1 = -Infinity, my1 = -Infinity;
+        for (const set of sets) {
+            if (set.positive.length + set.negative.length === 0) continue;
+            const mapped = mapBounds(set.bounds, affine);
+            mx0 = Math.min(mx0, mapped.x0); my0 = Math.min(my0, mapped.y0); mx1 = Math.max(mx1, mapped.x1); my1 = Math.max(my1, mapped.y1);
+        }
+        if (mx0 === Infinity) return { status: 'empty' };
+        const x0 = Math.max(0, Math.floor(mx0)), y0 = Math.max(0, Math.floor(my0));
+        const x1 = Math.min(viewport.width, Math.ceil(mx1)), y1 = Math.min(viewport.height, Math.ceil(my1));
+        if (x1 <= x0 || y1 <= y0) return { status: 'empty' };
+        const bounds: RectI = { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+        if (bounds.width > owner.limits.maxRenderTargetSize || bounds.height > owner.limits.maxRenderTargetSize) return { status: 'unsupported' };
+        const composite = output.kind === 'composite';
+        const targetBytes = composite ? 0 : coverageTargetBytes(bounds.width, bounds.height, PATH_COVERAGE_SAMPLES);
+        if (targetBytes > PATH_COVERAGE_MAX_TARGET_BYTES) { auditCount(audit, 'fallback:raster-route'); return { status: 'unsupported' }; }
+        if (composite && coverageTargetBytes(bounds.width, 1, PATH_COVERAGE_SAMPLES) > PATH_COVERAGE_SCRATCH_BYTES) {
+            auditCount(audit, 'fallback:raster-route'); return { status: 'unsupported' };
+        }
+        const parts: VertexSet[] = [];
+        for (const set of sets) {
+            const vertexCount = (set.positive.length + set.negative.length) / 2;
+            if (!Number.isSafeInteger(vertexCount) || vertexCount % 3) throw new RangeError('Invalid path triangle storage');
+            if (vertexCount === 0) continue;
+            const entry = vertexSetFor(owner, set, vertexCount, budget);
+            if (typeof entry === 'string') return { status: entry };
+            parts.push(entry);
+        }
+        if (!parts.length) return { status: 'empty' };
+        // The scratch is ensured after the buffers, and before any reference is taken: a refusal leaves nothing held.
+        if (composite) {
+            const fits = ensureScratch(owner, bounds.width);
+            if (fits !== true) {
+                if (fits === 'unsupported') { auditCount(audit, 'fallback:raster-route'); return { status: 'unsupported' }; }
+                return { status: 'denied' };
+            }
+        }
+        const targetLease = composite ? null : host.allocator.gpu.reserve(targetBytes);
+        if (!composite && !targetLease) return { status: 'denied' };
+        for (const part of parts) part.refs++;
+        let target: CoverageTarget | null = null, clip: ClipHandle | null = null;
+        let targetAttached = false;
+        try {
+            if (targetLease) target = owner.createCoverageTarget(bounds.width, bounds.height, PATH_COVERAGE_SAMPLES, targetLease);
+            targetAttached = true;
+            if (output.kind === 'mask') clip = owner.createClip(target!.texture, bounds);
+        } catch (error) {
+            if (clip) owner.destroy(clip);
+            if (target) { owner.destroy(target.target); owner.destroy(target.texture); }
+            if (!targetAttached && targetLease) host.allocator.gpu.release(targetLease);
+            for (const part of parts) releaseShared(part);
+            if (error instanceof ArenaError && error.code === 'unsupported') { unsupported = true; return { status: 'unsupported' }; }
+            throw error;
+        }
+        // A modulate composite's source is k = C·c + 1 − α·c at full coverage: premultiplied colour plus one minus alpha.
+        const modulate = output.kind === 'composite' && output.blend === 'modulate';
+        const [pr, pg, pb, alpha] = [request.colour[0] * request.colour[3], request.colour[1] * request.colour[3], request.colour[2] * request.colour[3], request.colour[3]];
+        const colour: readonly [number, number, number, number] = output.kind === 'mask' ? [1, 1, 1, 1]
+            : modulate ? [pr + 1 - alpha, pg + 1 - alpha, pb + 1 - alpha, 1] : [pr, pg, pb, alpha];
+        // The vertex buffers' bytes are the shared sets', counted once; this admission owns only its target.
+        const prepared: PreparedPathCoverage = Object.freeze({ device: owner, target, clip, rule, output, bounds,
+            parts: Object.freeze(parts.map(set => Object.freeze({ vertices: set.buffer, positiveVertices: set.positiveVertices,
+                negativeVertices: set.negativeVertices, set }))),
+            viewport: Object.freeze({ width: viewport.width, height: viewport.height }),
+            affine: Object.freeze([...affine]) as unknown as Affine,
+            colour: Object.freeze([...colour]) as unknown as readonly [number, number, number, number], gpuBytes: targetBytes,
+            supersample: request.supersample === true, modulate });
+        live.set(prepared, targetBytes); gpuBytes += targetBytes;
+        if (composite) { compositeLive++; deviceScratch.get(owner)!.refs++; }
+        return { status: 'ready', value: prepared };
     };
     return {
         warm,
@@ -352,117 +521,12 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         },
         /** Admission happens here, in prepare: target, vertices and any clip handle are created before
          * any draw. Failure is permanent for this device incarnation and returns 'unsupported'. */
+        /** Single-set admission: the sets form of `admitSets` with one set. */
         admit(request: PathCoverageRequest, budget: FrameBudget): PathCoverageAdmission {
-            // Failure is permanent for this device incarnation: the caller's exact route takes the item.
-            if (disposed || failed || unsupported) return { status: 'unsupported' };
-            warm();
-            // Pipelines still compiling are a wait, not a fallback; ready invalidates the frame.
-            if (!isReady()) return { status: pending || !device ? 'denied' : 'unsupported' };
-            const owner = device!, { shapes, rule, affine, viewport, output } = request;
-            if (owner.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration) return { status: 'denied' };
-            if (rule === 'nonzero' && shapes.edges > PATH_COVERAGE_STENCIL_MAX_EDGES) return { status: 'unsupported' };
-            if (!Number.isSafeInteger(viewport.width) || !Number.isSafeInteger(viewport.height) || viewport.width <= 0 || viewport.height <= 0) {
-                throw new RangeError('Invalid path coverage viewport');
-            }
-            if (!request.colour.every(Number.isFinite)) throw new RangeError('Invalid path coverage colour');
-            const mapped = mapBounds(shapes.bounds, affine);
-            const x0 = Math.max(0, Math.floor(mapped.x0)), y0 = Math.max(0, Math.floor(mapped.y0));
-            const x1 = Math.min(viewport.width, Math.ceil(mapped.x1)), y1 = Math.min(viewport.height, Math.ceil(mapped.y1));
-            if (x1 <= x0 || y1 <= y0) return { status: 'empty' };
-            const bounds: RectI = { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
-            if (bounds.width > owner.limits.maxRenderTargetSize || bounds.height > owner.limits.maxRenderTargetSize) return { status: 'unsupported' };
-            const vertexCount = (shapes.positive.length + shapes.negative.length) / 2;
-            if (!Number.isSafeInteger(vertexCount) || vertexCount % 3) throw new RangeError('Invalid path triangle storage');
-            if (vertexCount === 0) return { status: 'empty' };
-            const vertexBytes = vertexCount * 8;
-            const composite = output.kind === 'composite';
-            const targetBytes = composite ? 0 : coverageTargetBytes(bounds.width, bounds.height, PATH_COVERAGE_SAMPLES);
-            if (targetBytes > PATH_COVERAGE_MAX_TARGET_BYTES) { auditCount(audit, 'fallback:raster-route'); return { status: 'unsupported' }; }
-            if (composite && coverageTargetBytes(bounds.width, 1, PATH_COVERAGE_SAMPLES) > PATH_COVERAGE_SCRATCH_BYTES) {
-                auditCount(audit, 'fallback:raster-route'); return { status: 'unsupported' };
-            }
-            // One vertex buffer per triangle set, uploaded in chunks within each frame's allowance, then shared.
-            let entry = shared.get(shapes.positive);
-            if (entry && (entry.device !== owner || entry.negative !== shapes.negative || entry.bytes !== vertexBytes)) return { status: 'unsupported' };
-            if (!entry) {
-                let up = uploading.get(shapes.positive);
-                if (up && (up.device !== owner || up.negative !== shapes.negative || up.bytes !== vertexBytes)) { dropUpload(shapes.positive); up = undefined; }
-                if (!up) {
-                    const staging = host.allocator.cpu.reserve(vertexBytes);
-                    if (!staging) return { status: 'denied' };
-                    // Positive triangles first, then negative: the draw ranges follow this order.
-                    const data = new Float32Array(vertexCount * 2);
-                    data.set(shapes.positive, 0);
-                    data.set(shapes.negative, shapes.positive.length);
-                    const lease = host.allocator.gpu.reserve(vertexBytes);
-                    if (!lease) { host.allocator.cpu.release(staging); return { status: 'denied' }; }
-                    let buffer: BufferHandle;
-                    try { buffer = owner.createBuffer(vertexBytes, ['vertex', 'copy-dst'], lease); }
-                    catch (error) {
-                        host.allocator.gpu.release(lease); host.allocator.cpu.release(staging);
-                        if (error instanceof ArenaError && error.code === 'unsupported') { unsupported = true; return { status: 'unsupported' }; }
-                        throw error;
-                    }
-                    up = { device: owner, buffer, data, staging, written: 0, negative: shapes.negative, bytes: vertexBytes };
-                    uploading.set(shapes.positive, up); gpuBytes += vertexBytes;
-                }
-                while (up.written < up.bytes) {
-                    const piece = Math.min(PATH_COVERAGE_UPLOAD_CHUNK_BYTES, up.bytes - up.written);
-                    if (!budget.claimUpload(piece)) return { status: 'deferred' };
-                    owner.writeBuffer(up.buffer, up.written, up.data.subarray(up.written / 4, (up.written + piece) / 4));
-                    auditCount(audit, 'upload:vertex', 1, { bytes: piece });
-                    up.written += piece;
-                }
-                uploading.delete(shapes.positive); host.allocator.cpu.release(up.staging);
-                entry = { device: owner, buffer: up.buffer, negative: shapes.negative, refs: 0, bytes: vertexBytes };
-                shared.set(shapes.positive, entry);
-            }
-            entry.refs++;
-            const vertices = entry.buffer;
-            // The scratch is ensured after the buffer: a refused scratch then drops the buffer's hold, and the retry re-uploads.
-            if (composite) {
-                let fits: boolean | 'unsupported';
-                try { fits = ensureScratch(owner, bounds.width); }
-                catch (error) { releaseShared(entry); throw error; }
-                if (fits !== true) {
-                    releaseShared(entry);
-                    if (fits === 'unsupported') { auditCount(audit, 'fallback:raster-route'); return { status: 'unsupported' }; }
-                    return { status: 'denied' };
-                }
-            }
-            const targetLease = composite ? null : host.allocator.gpu.reserve(targetBytes);
-            if (!composite && !targetLease) { releaseShared(entry); return { status: 'denied' }; }
-            let target: CoverageTarget | null = null, clip: ClipHandle | null = null;
-            let targetAttached = false;
-            try {
-                if (targetLease) target = owner.createCoverageTarget(bounds.width, bounds.height, PATH_COVERAGE_SAMPLES, targetLease);
-                targetAttached = true;
-                if (output.kind === 'mask') clip = owner.createClip(target!.texture, bounds);
-            } catch (error) {
-                if (clip) owner.destroy(clip);
-                if (target) { owner.destroy(target.target); owner.destroy(target.texture); }
-                if (!targetAttached && targetLease) host.allocator.gpu.release(targetLease);
-                releaseShared(entry);
-                if (error instanceof ArenaError && error.code === 'unsupported') { unsupported = true; return { status: 'unsupported' }; }
-                throw error;
-            }
-            // A modulate composite's source is k = C·c + 1 − α·c at full coverage: premultiplied colour plus one minus alpha.
-            const modulate = output.kind === 'composite' && output.blend === 'modulate';
-            const [pr, pg, pb, alpha] = [request.colour[0] * request.colour[3], request.colour[1] * request.colour[3], request.colour[2] * request.colour[3], request.colour[3]];
-            const colour: readonly [number, number, number, number] = output.kind === 'mask' ? [1, 1, 1, 1]
-                : modulate ? [pr + 1 - alpha, pg + 1 - alpha, pb + 1 - alpha, 1] : [pr, pg, pb, alpha];
-            // The vertex buffer's bytes are the shared entry's, counted once; this admission owns only its target.
-            const gpu = targetBytes;
-            const prepared: PreparedPathCoverage = Object.freeze({ device: owner, target, vertices, clip,
-                positiveVertices: shapes.positive.length / 2, negativeVertices: shapes.negative.length / 2, rule, output, bounds,
-                viewport: Object.freeze({ width: viewport.width, height: viewport.height }),
-                affine: Object.freeze([...affine]) as unknown as Affine,
-                colour: Object.freeze([...colour]) as unknown as readonly [number, number, number, number], gpuBytes: gpu,
-                supersample: request.supersample === true, modulate });
-            live.set(prepared, gpu); gpuBytes += gpu;
-            if (composite) { compositeLive++; deviceScratch.get(owner)!.refs++; }
-            return { status: 'ready', value: prepared };
+            const { shapes, ...rest } = request;
+            return admitSets({ ...rest, sets: [shapes] }, budget);
         },
+        admitSets,
         /** Composite output: borrows the admitted target inside the caller's pass. */
         draw(pass: GpuPass, prepared: PreparedPathCoverage): void {
             if (prepared.output.kind !== 'composite') throw new Error('Mask coverage is drawn with drawMask');

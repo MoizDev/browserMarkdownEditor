@@ -52,6 +52,8 @@ export function createPreviewSlot(id: string, base: PlatformLayerDefinition): Pr
         }
         prepare(...args: Parameters<Layer['prepare']>) { this.sync()?.prepare(...args); }
         drawGpu(...args: Parameters<Layer['drawGpu']>) { this.sync()?.drawGpu(...args); }
+        // Without this the compositor skips the preview's offscreen tiles entirely: nothing it composes is ever drawn.
+        encodeOffscreen(...args: Parameters<NonNullable<Layer['encodeOffscreen']>>) { this.sync()?.encodeOffscreen?.(...args); }
         draw2d(...args: Parameters<Layer['draw2d']>) { this.sync()?.draw2d(...args); }
         releaseGpu(reason: Parameters<Layer['releaseGpu']>[0]) { this.inner?.releaseGpu(reason); }
         memory() { return this.inner?.memory() ?? { gpuBytes: 0, cpuBytes: 0 }; }

@@ -149,15 +149,16 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
                 if (scene.ready && scene.revision === runtime.session.doc.rev) {
                     const args = deferred; deferred = null;
                     // A commit awaiting presentation owns the overlay; a request deferred before it is superseded by it.
-                    if (commitRevision !== null) break;
+                    // The waiters of the superseded request are settled here: nothing else would settle them (a hang otherwise).
+                    if (commitRevision !== null) { settle(interrupted()); break; }
                     resuming = true;
-                    try { start(...args); } catch (error) { clear(); report(error); } finally { resuming = false; }
+                    try { start(...args); } catch (error) { settle(error ?? interrupted()); clear(); report(error); } finally { resuming = false; }
                     break;
                 }
                 scene.step(64, performance.now() + 3);
                 await yieldToHost();
             }
-        } catch (error) { deferred = null; report(error); } finally { driving = false; }
+        } catch (error) { deferred = null; settle(error ?? interrupted()); clear(); report(error); } finally { driving = false; }
     };
     const clearNow = () => {
         deferred = null; queued = null; inFlight = false; inFlightSeq = -1; translation = null; metaBySeq.clear();
@@ -197,7 +198,7 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
         // reject the waiters of the request that queued it (a shape commit waits on exactly that overlay); measured:
         // the commit was rejected as "Board preview was superseded" and the tool fell back to Select, with no shape.
         resuming = true;
-        try { start(...next); } catch (error) { clear(); report(error); } finally { resuming = false; }
+        try { start(...next); } catch (error) { settle(error ?? interrupted()); clear(); report(error); } finally { resuming = false; }
     };
     const start = (changes: Map<NodeId, Node>, textOverlay?: Readonly<{ node: NodeId; paint: TextPaint; faces: FaceTable; localToWorld: Affine }>,
         paper?: Readonly<import('../../utils/paper').NotebookPaper>, meta: TranslationMeta | null = null) => {

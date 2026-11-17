@@ -1,7 +1,7 @@
 import type { Affine, Rect, ViewState } from '../../platform/types';
 import type { HostBlock } from '../model/doc';
 import type { PlatformLayerDefinition } from '../../platform/render/attachPlatformPane.types';
-import { awaitCapacity, isBudgetRefusal } from './budgetRefusal';
+import { awaitCapacity, awaitSizedCapacity, isBudgetRefusal } from './budgetRefusal';
 import type { CompositorBackend, LayerCoverage, LayerHost } from '../../platform/render/compositor.types';
 import type { ScheduledFrame } from '../../platform/render/scheduler';
 import type { ByteLease } from '../../platform/render/gfx/api';
@@ -191,6 +191,8 @@ function estimateStep(state: Estimate): void {
 /** Each invocation belongs to one view; the paired layer definitions share one adapter. */
 export interface BoardLayerPair extends Readonly<[PlatformLayerDefinition, PlatformLayerDefinition]> {
     invalidate(reason?: string): void;
+    /** The ink nodes the board's GPU tiles drew in the last composite: the live stroke's wet layer hands over to them. */
+    drawnInkNodeIds(): ReadonlySet<string>;
     /** Each band's LayerHost deadline; the scheduler's coalesced wake only invalidates, it never draws. */
     wakeAt(deadlineMs: number | null): void;
     readyFrame(): PaintSource | null;
@@ -207,13 +209,25 @@ type GpuEvicting = { evictGpu?(bytes: number, frameId: number): number };
 type LayerEvicting = { evictGpu?(bytes: number, frameId: number): number };
 /** The grain of a device's direct-frame charge (see chargeDirect): densePlan's DIRECT_CHUNK, the dense direct phase's own grain. */
 const DIRECT_CHUNK = 64 * 1024;
-/** The composer's prepare takes the drag's omitted set (PLAN §3.3, wave 2). Today's adapter ignores the third argument. */
-type OmitAwarePrepare = { prepare(view: ViewState, budget: FrameBudget, omit?: ReadonlySet<string>): void };
+/** The coverage a layer reports while it cannot draw the frame: shared, so the per-frame check allocates nothing. */
+const INCOMPLETE: LayerCoverage = Object.freeze({ complete: false, sharp: false });
+const NO_INK: ReadonlySet<string> = Object.freeze(new Set<string>());
+/** The GPU adapter's report of the ink its tiles drew (h2 adds it to the adapter). Until then nothing is reported drawn,
+ * so the live stroke keeps drawing itself, as it does today. */
+type DrawnInkReporter = { drawnInkNodeIds?(): ReadonlySet<string> };
+const STALE: LayerCoverage = Object.freeze({ complete: false, sharp: false, staleVersion: true });
+/** The revision a frame asks a layer for: a loop, since this runs every frame and `find` would allocate a closure. */
+function requestedRevisionOf(frame: ScheduledFrame, layer: Layer): number | undefined {
+    for (const entry of frame.layers) if (entry.layer === layer) return entry.sceneRevision;
+    return undefined;
+}
 export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     const hosts = new Map<PaintBand, LayerHost>();
     let adapter: CanvasPaintAdapter | null = null, allocatorHost: LayerHost | null = null;
     let gpu: ReturnType<typeof createGpuPaintAdapter> | null = null;
     let direct: CanvasPaintAdapter | null = null, dense: ReturnType<typeof createDensePaintAdapter> | null = null;
+    // The dense adapter's resources, kept so the adapter can be built when dense mode is first entered (see ensureDense).
+    let denseResources: Parameters<typeof createDensePaintAdapter>[0] | null = null;
     const retiringDense = new Set<ReturnType<typeof createDensePaintAdapter>>();
     const density = new DensityController();
     let useDense = false, deferredClear = false;
@@ -223,10 +237,10 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     // `opaqueWorld` in wave 2, and until then today's adapter ignores it.
     const gpuOptions = () => ({ audit: options.auditSurface ?? 'board',
         ...(typeof options.opaqueWorld === 'function' ? { opaqueWorld: options.opaqueWorld } : {}) });
-    // The drag's omitted set reaches the tiles the adapter builds. The draw still takes it too (drawGpu's omit argument) until
-    // the composer owns omission; the two must agree, and they do while both read the same omitNodes(frame).
+    // The drag's omitted set is applied where the tiles are built: prepare takes it, and each prepare reads the current
+    // omitNodes(frame). The draw never took it (the composer's draw has no omission), so it is not passed there.
     const prepareGpu = (view: ViewState, budget: FrameBudget, frame: PaintSource): void =>
-        (gpu as OmitAwarePrepare | null)?.prepare(view, withFirstUnit(budget), options.omitNodes?.(frame) ?? undefined);
+        gpu?.prepare(view, withFirstUnit(budget), options.omitNodes?.(frame) ?? undefined);
     const liveSets = new WeakMap<PaintSource, { omit: ReadonlySet<string> | null | undefined; wet: ReadonlySet<string> | undefined; live: ReadonlySet<string> }>();
     const liveFor = (frame: PaintSource): ReadonlySet<string> | undefined => {
         const omit = options.omitNodes?.(frame), wet = options.liveNodeIds?.();
@@ -240,6 +254,13 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     let estimate: Estimate | null = null, denied = false, disposed = false, lastPrepareFrame: number | null = null;
     // One back-off for every refused reservation of this layer pair; the dense plan and the direct estimate both consult it.
     const memoryGate = new MemoryRetryGate();
+    // One sized waiter for the layer pair's refused CPU reservations: a refusal registers it once, until it fires.
+    let capacityWaiting = false;
+    const awaitCpu = (bytes: number): void => {
+        if (capacityWaiting) return;
+        capacityWaiting = true;
+        awaitSizedCapacity(allocatorHost, () => { capacityWaiting = false; allocatorHost?.invalidate('board-memory'); }, { pool: 'cpu', bytes });
+    };
     let memoryRetry: ReturnType<typeof setTimeout> | null = null;
     // The first prepare after a hide drops the session bitmaps the returned view cannot draw, before it plans.
     let returnedFromHide = false;
@@ -432,9 +453,19 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         estimate = null; denied = false; deniedDirectSegments = null; lastPrepareFrame = null; drawn.clear(); drawTokens = new WeakMap(); announced = new WeakMap(); drawSource = null; prepareToken = null; prepareFrameId = -1;
         ackFrame = null; ackOmit = null; ackInk = null; ackMask = 0; ackToken = null; ackContext = null; presentedInk = null;
         if (reason === 'hidden') {
+            const wasDense = useDense;
             deferredClear = true; collectRetired(); presented = null; presentedContext = null; refreshProgress();
             density.reset(); useDense = false; returnedFromHide = true;
+            // The owner's density mode outlives a hide: a board that returns direct must say so, or its owner keeps asking
+            // for live-only frames this board cannot take (by reading: dense-coupling note, the hide-while-dense item).
+            if (wasDense) options.onDensityMode?.('direct');
         }
+    };
+    /** The dense tile adapter, built the first time the board enters dense mode. A device never enters it (its direct paint
+     * is the GPU composer's), so no CPU tile path is constructed there. */
+    const ensureDense = (): ReturnType<typeof createDensePaintAdapter> => {
+        if (!dense) dense = createDensePaintAdapter(denseResources!, allocatorHost!, report, memoryGate);
+        return dense;
     };
     const ensureAdapter = (host: LayerHost): CanvasPaintAdapter => {
         if (!adapter) {
@@ -444,7 +475,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 invalidate: () => { collectRetired(); activeHost()?.invalidate('board-resource'); } };
             direct = createCanvasPaintAdapter(resources,
                 (ctx, view, paint) => { const owner = activeHost(); if (!owner) throw new Error('Board layer is detached'); owner.paintWorld(ctx, view, paint); }, report);
-            dense = createDensePaintAdapter(resources, host, report, memoryGate);
+            denseResources = resources;
             const current = () => useDense ? dense! : direct!;
             adapter = {
                 prepare: (view, budget) => {
@@ -455,9 +486,9 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 readyFrame: () => current().readyFrame(), borrowPrepared: () => current().borrowPrepared(),
                 retainPrepared: () => current().retainPrepared(),
                 draw2d: (ctx, view, band, omit) => current().draw2d(ctx, view, band, omit),
-                release: reason => { direct!.release(reason); dense!.release(reason); },
+                release: reason => { direct!.release(reason); dense?.release(reason); },
                 needsFrame: () => current().needsFrame(), memory: () => current().memory(),
-                dispose: () => { direct!.dispose(); dense!.dispose(); },
+                dispose: () => { direct!.dispose(); dense?.dispose(); },
             };
             gpu = createGpuPaintAdapter(adapter, host, report, gpuOptions());
         }
@@ -494,7 +525,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             if (!lease) {
                 memoryGate.refused(); denied = true;
                 allocatorHost!.demandChanged?.();
-                allocatorHost!.allocator.cpu.whenAvailable?.(() => allocatorHost?.invalidate('board-memory'));
+                awaitCpu(DIRECT_CHUNK);
                 return false;
             }
             memoryGate.admitted();
@@ -531,7 +562,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     // Emitting 'direct' makes the owner request a full frame; the live-only frame in hand is not drawable here.
                     useDense = false; denied = false;
                     allocatorHost?.demandChanged?.();
-                    dense!.release('pressure');
+                    dense?.release('pressure');
                     allocatorHost!.invalidate('board-density-demand-ready');
                     options.onDensityMode?.('direct');
                     return;
@@ -588,7 +619,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             if (deniedDirectSegments !== null && (candidates !== null || !frame.liveOnly) && segments < deniedDirectSegments * 0.5) deniedDirectSegments = null;
             // A live-only frame is the kind dense mode itself requests; it carries no tile stream of its own.
             // A frame whose dense tile jobs failed their bounded retries is drawn direct; the next frame starts over.
-            const mode = dense!.gaveUp(frame) ? 'direct' : useDense && frame.liveOnly && deniedDirectSegments !== null ? 'dense'
+            const mode = dense?.gaveUp(frame) ? 'direct' : useDense && frame.liveOnly && deniedDirectSegments !== null ? 'dense'
                 : frame.openTile ? (deniedDirectSegments !== null ? 'dense' : observed) : 'direct';
             if ((mode === 'dense') !== useDense) {
                 useDense = mode === 'dense';
@@ -597,8 +628,9 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 allocatorHost?.demandChanged?.();
                 if (useDense) {
                     direct!.release('pressure');
+                    ensureDense();
                     for (const old of [...reservations.keys()]) releaseFrame(old);
-                } else dense!.release('pressure');
+                } else dense?.release('pressure');
                 allocatorHost!.invalidate('board-density-demand-ready');
                 options.onDensityMode?.(mode);
                 return;
@@ -627,7 +659,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                         allocatorHost!.demandChanged?.();
                         denied = true;
                         if (frame.openTile && deniedDirectSegments === null) { deniedDirectSegments = segments; allocatorHost!.invalidate('board-density-demand-ready'); }
-                        allocatorHost!.allocator.cpu.whenAvailable?.(() => allocatorHost?.invalidate('board-memory'));
+                        awaitCpu(bytes);
                         return;
                     }
                     memoryGate.admitted();
@@ -683,14 +715,14 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     const coverageOf = (layer: Layer, frame: ScheduledFrame, backend: CompositorBackend): LayerCoverage => {
         const gpuCoverage = backend !== 'canvas2d' ? gpu?.coverage(frame.view) : null;
         const ready = backend === 'canvas2d' ? adapter?.readyFrame() : gpu?.readyFrame();
-        const requested = frame.layers.find(item => item.layer === layer)?.sceneRevision;
+        const requested = requestedRevisionOf(frame, layer);
         const denseCoverage = useDense && ready ? dense?.coverage(frame.view, liveFor(ready)) : null;
-        if (useDense && !denseCoverage?.complete) return { complete: false, sharp: false };
-        if (backend !== 'canvas2d' && !gpuCoverage?.complete) return { complete: false, sharp: false };
-        if (!ready || !sameToken(ready.token, frame.token)) return { complete: false, sharp: false };
+        if (useDense && !denseCoverage?.complete) return INCOMPLETE;
+        if (backend !== 'canvas2d' && !gpuCoverage?.complete) return INCOMPLETE;
+        if (!ready || !sameToken(ready.token, frame.token)) return INCOMPLETE;
         const current = ready.sceneRevision === requested && ready.sceneRevision === options.requestedRevision()
             && ready.theme === options.requestedTheme() && options.frames.isCurrent(ready);
-        return current ? { complete: true, sharp: (gpuCoverage?.sharp ?? true) && (denseCoverage?.sharp ?? true) } : { complete: false, sharp: false, staleVersion: true };
+        return current ? { complete: true, sharp: (gpuCoverage?.sharp ?? true) && (denseCoverage?.sharp ?? true) } : STALE;
     };
     const definition = (band: PaintBand): PlatformLayerDefinition => ({
         id: `board-${band}`, group: 'document',
@@ -708,7 +740,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     const ink = gpu!.readyInkNodeIds() ?? frame.inkNodeIds;
                     if (!prepareToken) return;
                     const actualView = copyView(view);
-                    gpu!.drawGpu(pass, shift ? shiftedView(view, shift) : view, band, omit ?? undefined);
+                    gpu!.drawGpu(pass, shift ? shiftedView(view, shift) : view, band);
                     // Borrowed right after the draw read its snapshot, before anything else can move the adapter on.
                     const hold = captureDraw(frame, omit);
                     const context = Object.freeze({ view: actualView, frameId: prepareFrameId,
@@ -772,9 +804,9 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     } else if (!allocatorHost) {
                         allocatorHost = activeHost()!;
                         options.frames.bindMemory?.(allocatorHost.allocator.cpu);
-                        const oldDense = dense!; oldDense.dispose(); retiringDense.add(oldDense);
-                        dense = createDensePaintAdapter({ frames: options.frames, images: options.images,
-                            invalidate: () => { collectRetired(); activeHost()?.invalidate('board-resource'); } }, allocatorHost, report, memoryGate);
+                        const oldDense = dense; dense = null;
+                        if (oldDense) { oldDense.dispose(); retiringDense.add(oldDense); }
+                        if (useDense) ensureDense();
                         gpu?.dispose(); gpu = createGpuPaintAdapter(adapter!, allocatorHost, report, gpuOptions());
                     }
                 },
@@ -801,6 +833,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     });
     const pair = [definition('underlay'), definition('content')] as unknown as BoardLayerPair;
     pair.invalidate = (reason = 'board-content') => { for (const host of hosts.values()) host.invalidate(reason); };
+    pair.drawnInkNodeIds = () => (gpu as DrawnInkReporter | null)?.drawnInkNodeIds?.() ?? NO_INK;
     pair.wakeAt = deadlineMs => { for (const host of hosts.values()) host.wakeAt(deadlineMs); };
     pair.memory = () => allocatorHost?.allocator.cpu ?? null;
     pair.paintProgress = progressNow;

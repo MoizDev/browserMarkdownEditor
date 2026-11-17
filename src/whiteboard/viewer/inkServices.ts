@@ -59,7 +59,7 @@ export function createBoardInkServices(options: BoardInkServicesOptions): Pick<B
                 invalidate: options.invalidate,
                 error: options.onError,
                 // The acquired input and keyboard cursor already use shared-camera world coordinates.
-                mapPoint: sample => ({ x: sample.x - offset.x, y: sample.y - offset.y }),
+                mapPoint: (sample, out) => { out.x = sample.x - offset.x; out.y = sample.y - offset.y },
                 localToWorld: point => [1, 0, 0, 1, point.x + offset.x, point.y + offset.y],
                 planStroke(node, summary) {
                     if (session.doc.host.kind !== 'notebook' || !summary) return [];

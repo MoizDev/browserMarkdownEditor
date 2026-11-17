@@ -1,12 +1,12 @@
 import type { ViewState } from '../../platform/types';
 import type { LayerHost } from '../../platform/render/compositor.types';
-import type { BufferHandle, ByteLease, GfxDevice, GpuPass, PipelineHandle, RectI } from '../../platform/render/gfx/api';
+import type { BufferHandle, BufferSlice, ByteLease, GfxDevice, GpuPass, PipelineHandle, RectI } from '../../platform/render/gfx/api';
 import type { FrameBudget, FrameToken } from '../../platform/render/types';
 import { analyticInkPaint, type AnalyticInkPaint } from './analyticInk';
 import { auditCount } from '../../platform/render/renderAudit';
 import type { Admission, PreparedRun } from './gpu/contracts';
 import type { PaintInkItem } from './paintStream';
-import { ANALYTIC_INK_BATCH_SHADER } from './analyticInkBatchShader';
+import { ANALYTIC_INK_BATCH_SHADER, ANALYTIC_INK_RUN_SHADER, ANALYTIC_INK_RUN_STRIDE } from './analyticInkBatchShader';
 
 const STRIDE = 48, SLABS = [64 * 1024, 128 * 1024, 256 * 1024] as const;
 type Slab = Readonly<{ buffer: BufferHandle; count: number; size: number; firstPaintIndex: number; bounds: RectI }>;
@@ -214,14 +214,23 @@ export function createAnalyticInkBatch(host: LayerHost, report: (error: unknown)
 // The run route (gpu-h5): a run of analytic capsules is packed once, uploaded in slabs, and drawn as one instanced draw
 // per slab. It is the route behind inkRouteFor's 'ink-analytic'; the batch above stays only for the running adapter.
 
+const NO_TEXTURES: readonly never[] = [];
 /** Slabs are bounded so one upload stays inside a frame's allowance; a run larger than a slab takes several. */
 const RUN_SLAB_BYTES = 256 * 1024;
-interface AnalyticSlab { readonly buffer: BufferHandle; readonly count: number; readonly bytes: number; readonly bounds: RectI }
-/** A run admitted for one view. Its slabs are immutable GPU buffers, drawn in item order. */
+const RUN_STRIDE = ANALYTIC_INK_RUN_STRIDE;
+/** One uploaded slab, of one colour group. Its vertex slice is built once, at admission, so a draw builds only the command. */
+interface AnalyticSlab {
+    readonly buffer: BufferHandle; readonly count: number; readonly bytes: number; readonly bounds: RectI;
+    readonly vertices: readonly BufferSlice[]; readonly group: number;
+}
+/** Consecutive items of one colour, in item order: a draw's colour is one uniform, so a colour change starts a group. The
+ * colour is read from the group's first item at each draw (a run holds its items), and written into `uniforms` in place. */
+interface ColourGroup { readonly items: readonly PaintInkItem[]; readonly uniforms: Float32Array }
+/** A run admitted for one view. Its slabs are immutable GPU buffers, drawn in item order, one colour group at a time. */
 export class AnalyticInkRun implements PreparedRun {
     readonly route = 'ink-analytic' as const;
     readonly blend = 'over' as const;
-    constructor(readonly device: GfxDevice, readonly viewport: Float32Array, readonly slabs: readonly AnalyticSlab[],
+    constructor(readonly device: GfxDevice, readonly slabs: readonly AnalyticSlab[], readonly groups: readonly ColourGroup[],
         readonly instances: number) {}
 }
 
@@ -232,10 +241,11 @@ export function createAnalyticInkRuns(host: LayerHost, audit: string) {
     let gpuBytes = 0;
     // One packing scratch, reused across admissions: writeBuffer copies its bytes before it returns. It is a CPU lease like
     // any other: the governor requires every byte a route reports to be reserved, so the scratch reports exactly its lease.
+    const FLOATS = RUN_STRIDE / 4;
     let staging = new Float32Array(0), stagingLease: ByteLease | null = null;
     const growStaging = (instances: number): boolean => {
-        if (staging.length >= instances * 12) return true;
-        const bytes = Math.max(instances * STRIDE, staging.byteLength * 2);
+        if (staging.length >= instances * FLOATS) return true;
+        const bytes = Math.max(instances * RUN_STRIDE, staging.byteLength * 2);
         const lease = host.allocator.cpu.reserve(bytes);
         if (!lease) return false;
         const next = new Float32Array(bytes / 4);
@@ -262,7 +272,7 @@ export function createAnalyticInkRuns(host: LayerHost, audit: string) {
         if (pending || failed) return false;
         const serial = ++incarnation; pending = true;
         try {
-            owner.createPipeline({ shader: ANALYTIC_INK_BATCH_SHADER, topology: 'triangle-strip', colorFormat: 'rgba8', samples: 1,
+            owner.createPipeline({ shader: ANALYTIC_INK_RUN_SHADER, topology: 'triangle-strip', colorFormat: 'rgba8', samples: 1,
                 blend: 'source-over', alphaToCoverage: false, colorWrite: [true, true, true, true], stencil: { enabled: false } })
                 .then(value => {
                     if (incarnation !== serial || device !== owner) { owner.destroy(value); return; }
@@ -284,34 +294,43 @@ export function createAnalyticInkRuns(host: LayerHost, audit: string) {
             if (failed) return { status: 'unsupported', why: 'analytic-pipeline' };
             if (!ensurePipeline(current)) return { status: 'deferred' };
             if (current.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration) return { status: 'deferred' };
-            // Phase one packs every drawn instance into the scratch; it creates no GPU state, so a refusal here needs no rollback.
-            const rects: RectI[] = [];
+            // Phase one packs every drawn instance's geometry into the scratch and groups consecutive items of one colour, in
+            // item order: the groups change the uniform between draws, never the order the items composite in.
+            const rects: RectI[] = [], groupOf: number[] = [], groupItems: PaintInkItem[][] = [], groupKeys: number[][] = [];
             for (const item of items) {
                 const paint = analyticInkPaint(item, view);
                 if (!paint) return { status: 'unsupported', why: 'analytic-unpackable' };
                 if (!paint.bounds.width || !paint.bounds.height) continue;
                 const n = rects.length;
-                if (!growStaging(n + 1)) return { status: 'denied', pool: 'cpu', bytes: (n + 1) * STRIDE };
-                staging.set(paint.data.subarray(4, 16), n * 12);
+                if (!growStaging(n + 1)) return { status: 'denied', pool: 'cpu', bytes: (n + 1) * RUN_STRIDE };
+                staging.set(paint.data.subarray(4, 12), n * FLOATS);
                 rects.push(paint.bounds);
+                const colour = item.material.color, last = groupKeys.length - 1;
+                if (last < 0 || !sameColour(groupKeys[last], colour)) { groupKeys.push([colour[0], colour[1], colour[2], colour[3]]); groupItems.push([item]); }
+                else groupItems[last].push(item);
+                groupOf.push(groupKeys.length - 1);
             }
             if (!rects.length) return { status: 'empty' };
-            // Phase two uploads one slab at a time; any refusal retires the slabs this admission already made.
-            const perSlab = Math.floor(RUN_SLAB_BYTES / STRIDE);
+            const groups: ColourGroup[] = groupItems.map(items => ({ items, uniforms: Float32Array.of(width(view), height(view), 0, 0, 0, 0, 0, 0) }));
+            // Phase two uploads one slab at a time, never across a colour group; any refusal retires the slabs already made.
+            const perSlab = Math.floor(RUN_SLAB_BYTES / RUN_STRIDE);
             const created: AnalyticSlab[] = [];
             const rollback = (): void => {
                 for (const slab of created) { current.destroy(slab.buffer); gpuBytes -= slab.bytes; }
             };
-            for (let start = 0; start < rects.length; start += perSlab) {
+            for (let start = 0; start < rects.length;) {
                 if (start > 0 && budget.shouldYield()) { rollback(); return { status: 'deferred' }; }
-                const end = Math.min(rects.length, start + perSlab), bytes = (end - start) * STRIDE;
+                const group = groupOf[start];
+                let end = start;
+                while (end < rects.length && groupOf[end] === group && end - start < perSlab) end++;
+                const bytes = (end - start) * RUN_STRIDE;
                 if (!budget.claimUpload(bytes)) { rollback(); return { status: 'deferred' }; }
                 const lease = host.allocator.gpu.reserve(bytes);
                 if (!lease) { rollback(); return { status: 'denied', pool: 'gpu', bytes }; }
                 let buffer: BufferHandle | null = null;
                 try {
                     buffer = current.createBuffer(bytes, ['vertex', 'copy-dst'], lease);
-                    current.writeBuffer(buffer, 0, staging.subarray(start * 12, end * 12));
+                    current.writeBuffer(buffer, 0, staging.subarray(start * FLOATS, end * FLOATS));
                 } catch (error) {
                     if (buffer) current.destroy(buffer); else host.allocator.gpu.release(lease);
                     rollback();
@@ -319,11 +338,13 @@ export function createAnalyticInkRuns(host: LayerHost, audit: string) {
                 }
                 let bounds: RectI | null = null;
                 for (let i = start; i < end; i++) bounds = union(bounds, rects[i]);
-                created.push({ buffer, count: end - start, bytes, bounds: bounds! });
+                created.push({ buffer, count: end - start, bytes, bounds: bounds!, group,
+                    vertices: [{ buffer, offset: 0, bytes }] });
                 gpuBytes += bytes;
                 auditCount(audit, 'upload:vertex', 1, { bytes });
+                start = end;
             }
-            const run = new AnalyticInkRun(current, Float32Array.of(width(view), height(view), 0, 0), created, rects.length);
+            const run = new AnalyticInkRun(current, created, groups, rects.length);
             live.add(run);
             return { status: 'ready', value: run };
         },
@@ -332,10 +353,14 @@ export function createAnalyticInkRuns(host: LayerHost, audit: string) {
             if (!live.has(run) || !ready || run.device !== device || host.device() !== device || host.generation !== run.device.generation) {
                 throw new Error('Stale analytic ink run');
             }
-            const bindings = { uniforms: [{ binding: 0, slice: host.uniforms(run.viewport) }], textures: [] };
+            let drawn = -1;
             for (const slab of run.slabs) {
-                pass.draw({ pipeline: ready, bindings, vertices: [{ buffer: slab.buffer, offset: 0, bytes: slab.bytes }],
-                    first: 0, count: 4, instances: slab.count, scissor: slab.bounds });
+                const group = run.groups[slab.group];
+                // The colour is the group's current colour, read from its first item and premultiplied in place: no allocation.
+                if (slab.group !== drawn) { drawn = slab.group; writeColour(group); }
+                // The uniform slice is per frame, so one is taken per draw; the empty texture list is shared.
+                const bindings = { uniforms: [{ binding: 0, slice: host.uniforms(group.uniforms) }], textures: NO_TEXTURES };
+                pass.draw({ pipeline: ready, bindings, vertices: slab.vertices, first: 0, count: 4, instances: slab.count, scissor: slab.bounds });
             }
             auditCount(audit, 'route:ink-analytic', run.instances);
         },
@@ -346,3 +371,11 @@ export function createAnalyticInkRuns(host: LayerHost, audit: string) {
 }
 function width(view: ViewState): number { return Math.round(view.viewport.width * view.viewport.dpr); }
 function height(view: ViewState): number { return Math.round(view.viewport.height * view.viewport.dpr); }
+function sameColour(key: readonly number[], colour: readonly number[]): boolean {
+    return key[0] === colour[0] && key[1] === colour[1] && key[2] === colour[2] && key[3] === colour[3];
+}
+/** Writes a group's premultiplied colour (the packing's own convention: rgb·α, α) into its uniforms, in place. */
+function writeColour(group: ColourGroup): void {
+    const colour = group.items[0].material.color, alpha = colour[3], u = group.uniforms;
+    u[4] = colour[0] * alpha; u[5] = colour[1] * alpha; u[6] = colour[2] * alpha; u[7] = alpha;
+}

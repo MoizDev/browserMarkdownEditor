@@ -27,6 +27,8 @@ export interface PdfSessionMirrors {
     remember(view: MirrorView): void;
     lastView(): MirrorView | null;
     publish(input: PdfMirrorPublish): string | null;
+    /** Whether session storage still holds these pixels: a crop published earlier can be reused while it does. */
+    holds(id: string): boolean;
     mirrorQuad(item: BorrowedMirror<PdfMirrorPixels>, view: MirrorView): CompositorMirrorQuad;
 }
 
@@ -69,6 +71,7 @@ export function getPdfSessionMirrors(options: {
                 view: { camera: { ...view.view.camera }, viewport: { ...view.view.viewport } } };
         },
         lastView: () => lastView,
+        holds: (id: string) => pixels.has(id),
         /** On success the mirror owns pixels and lease; on refusal both remain with the caller. */
         publish(input: PdfMirrorPublish): string | null {
             if (input.lease.bytes !== input.pixels.bitmap.width * input.pixels.bitmap.height * 4) {

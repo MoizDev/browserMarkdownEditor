@@ -8,6 +8,7 @@ import type { StrokeNode } from '../model/nodes';
 import type { SampleChunk, SampleStoreReader } from '../model/samples';
 import { auditCount } from '../../platform/render/renderAudit';
 import type { ByteLease } from '../../platform/render/gfx/api';
+import type { PathCoverageShapes } from '../../platform/render/pathCoverage';
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import { prepareInkCoverageInWorker } from '../workers/inkCoverageClient';
 import type { BoardJobIdentity } from '../workers/protocol';
@@ -192,6 +193,20 @@ const INK_FLATTEN_DEVICE_PX = 0.1;
  * chunk's smallest device radius, never above the ceiling, never below the floor (a hairline would cost unbounded vertices). */
 const INK_TOLERANCE_RADIUS_FRACTION = 0.01;
 const INK_TOLERANCE_FLOOR_PX = 0.005;
+/** The thinnest radius, in world units, of an outline's segments and discs (`Infinity` when it has none). The F1 bound is
+ * this radius times INK_TOLERANCE_RADIUS_FRACTION, so geometry and the LOD ladder read it from one place. */
+export function inkMinRadius(outline: { readonly segments: Float64Array; readonly discs: Float64Array }): number {
+    let radius = Infinity;
+    const segments = outline.segments, discs = outline.discs;
+    for (let i = 0; i < segments.length; i += 6) radius = Math.min(radius, segments[i + 2], segments[i + 5]);
+    for (let i = 0; i < discs.length; i += 3) radius = Math.min(radius, discs[i + 2]);
+    return radius;
+}
+/** The centre-error bound a level of this radius may take, in world units: the same fraction as the outline's F1 tolerance,
+ * so a LOD level is held to the error its own geometry is built to. The fraction is scale-free, so it holds at every zoom. */
+export function inkRadiusTolerance(radiusWorld: number): number {
+    return radiusWorld > 0 && Number.isFinite(radiusWorld) ? INK_TOLERANCE_RADIUS_FRACTION * radiusWorld : 0;
+}
 /** The adapter's outline ceiling: an outline past it has no triangles, and the route refuses the stroke. */
 const INK_OUTLINE_MAX_COMMANDS = 262144;
 
@@ -207,6 +222,14 @@ export interface InkTriangles {
     readonly origin: Readonly<{ x: number; y: number }>;
     readonly bounds: Readonly<{ x0: number; y0: number; x1: number; y1: number }>;
     readonly edges: number;
+    /** The kit's shape for these triangles, built with them: the kit keys its vertex buffer by `positive`'s identity, and a
+     * new shape object per admission would otherwise be a new allocation on every publication. */
+    readonly shape: PathCoverageShapes;
+}
+const NO_TRIANGLES = new Float64Array(0);
+function triangleSet(triangles: Float64Array, origin: Readonly<{ x: number; y: number }>,
+    bounds: Readonly<{ x0: number; y0: number; x1: number; y1: number }>, edges: number): InkTriangles {
+    return { triangles, origin, bounds, edges, shape: { positive: triangles, negative: NO_TRIANGLES, edges, bounds } };
 }
 const ZERO_BOUNDS: Readonly<{ x0: number; y0: number; x1: number; y1: number }> = Object.freeze({ x0: 0, y0: 0, x1: 0, y1: 0 });
 const ZERO_ORIGIN: Readonly<{ x: number; y: number }> = Object.freeze({ x: 0, y: 0 });
@@ -276,7 +299,7 @@ export function createInkGeometry(memory: MemoryAllocator, audit: string): InkGe
         strokeSets(item: PaintInkItem, band: number): InkStrokeSetsResult {
             epoch++;
             const chunks = inkCoverageChunks(item.coverage);
-            if (!chunks.length) return { origin: ZERO_ORIGIN, sets: [] };
+            if (!chunks.length) return { origin: ZERO_ORIGIN, sets: [], shapes: [] };
             // The first chunk's corner: fixed while a live stroke appends chunks, so the placed sets stay valid across publications.
             const origin = { x: chunks[0].boundsLocal.x, y: chunks[0].boundsLocal.y };
             const sets: InkTriangles[] = [];
@@ -286,7 +309,7 @@ export function createInkGeometry(memory: MemoryAllocator, audit: string): InkGe
                 if (!placed) return null;
                 if (placed.triangles.length) sets.push(placed);
             }
-            return { origin, sets };
+            return { origin, sets, shapes: sets.map(set => set.shape) };
         },
         memory: () => ({ cpuBytes: bytes }),
         release(): void {
@@ -314,12 +337,11 @@ function buildLocal(chunk: InkCoverage, band: number, audit: string): InkTriangl
         throw error;
     }
 }
-/** The device-px errors this chunk's outline may have: a fraction of its thinnest device radius, each under its ceiling. */
+/** The device-px errors this chunk's outline may have: a fraction of its thinnest device radius, each under its ceiling.
+ * By reading, every chunk reaches this one builder, so the F1 bound holds for the wet stroke, the committed stroke and every LOD
+ * level alike: a LOD level's chunks are InkCoverage objects of their own, tessellated here at their own radius. */
 function inkTolerances(chunk: InkCoverage, band: number): { arcPx: number; flattenPx: number } {
-    let radius = Infinity;
-    const segments = chunk.segments, discs = chunk.discs;
-    for (let i = 0; i < segments.length; i += 6) radius = Math.min(radius, segments[i + 2], segments[i + 5]);
-    for (let i = 0; i < discs.length; i += 3) radius = Math.min(radius, discs[i + 2]);
+    const radius = inkMinRadius(chunk);
     if (!(radius < Infinity)) return { arcPx: INK_CAP_ERROR_DEVICE_PX, flattenPx: INK_FLATTEN_DEVICE_PX };
     const fraction = Math.max(INK_TOLERANCE_FLOOR_PX, INK_TOLERANCE_RADIUS_FRACTION * radius * band);
     return { arcPx: Math.min(INK_CAP_ERROR_DEVICE_PX, fraction), flattenPx: Math.min(INK_FLATTEN_DEVICE_PX, fraction) };
@@ -331,7 +353,7 @@ function foldUnion(shapes: PathFillTriangles, origin: Readonly<{ x: number; y: n
         triangles = new Float64Array(positive.length + negative.length);
         triangles.set(positive, 0); triangles.set(negative, positive.length);
     }
-    return { triangles, origin, bounds: triangles.length ? shapes.bounds : ZERO_BOUNDS, edges: shapes.edges };
+    return triangleSet(triangles, origin, triangles.length ? shapes.bounds : ZERO_BOUNDS, shapes.edges);
 }
 /** A chunk's triangles rebased to a stroke's origin, so every chunk of the stroke shares one affine. The copy is the identity
  * the kit shares a vertex buffer by: a publication uploads only the chunks it adds. */
@@ -344,9 +366,14 @@ function rebase(local: InkTriangles, origin: Readonly<{ x: number; y: number }>)
         triangles[i + 1] = source[i + 1] + dy;
     }
     const b = local.bounds;
-    return { triangles, origin, bounds: source.length ? { x0: b.x0 + dx, y0: b.y0 + dy, x1: b.x1 + dx, y1: b.y1 + dy } : ZERO_BOUNDS,
-        edges: local.edges };
+    return triangleSet(triangles, origin, source.length ? { x0: b.x0 + dx, y0: b.y0 + dy, x1: b.x1 + dx, y1: b.y1 + dy } : ZERO_BOUNDS,
+        local.edges);
 }
 
 /** A stroke as its chunks' sets, all relative to `origin`. Only non-empty sets are listed. */
-export interface InkStrokeSets { readonly origin: Readonly<{ x: number; y: number }>; readonly sets: readonly InkTriangles[] }
+export interface InkStrokeSets {
+    readonly origin: Readonly<{ x: number; y: number }>;
+    readonly sets: readonly InkTriangles[];
+    /** `sets`' kit shapes, in the same order: what the union route admits, with no per-admission array of its own. */
+    readonly shapes: readonly PathCoverageShapes[];
+}

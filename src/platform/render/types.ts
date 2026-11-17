@@ -50,6 +50,10 @@ export interface OffscreenPasses {
 export interface Layer {
     /** Benchmark denominator classification; absent for vector-only layers. */
     readonly benchmarkRaster?: boolean;
+    /** Opt-in (default off): this layer's offscreen tiles are drawn into regions of one shared atlas target instead of one target
+     * each, which removes a framebuffer switch per tile. Only clear passes without stencil use the atlas; anything else draws
+     * its own target and is counted as a fallback. */
+    readonly atlas?: boolean;
     /** Schedule work without blocking; preparation is split into resumable units (design:677–679). */
     prepare(view: ViewState, budget: FrameBudget): void;
     drawGpu(pass: GpuPass, view: ViewState): void;
@@ -183,4 +187,15 @@ export interface RenderConstants {
     readonly webGpuMinP95MsImprovement: 1;
     readonly webGpuMinProcessMemoryFractionImprovement: 0.25;
     readonly webGpuMinFamilies: 2;
+}
+
+/** What the memory governor says to a layer, read-only: 'slow-gpu' when the GPU's p95 frame time overran the interval
+ * (a layer halves its compose limit), 'pressure' when the governor is trimming or degraded for any other reason. */
+export type LayerTrouble = 'none' | 'slow-gpu' | 'pressure';
+
+/** The governor's trouble state as one pure mapping, so the governor's getter allocates nothing: a normal governor is
+ * 'none'; a trimming or degraded one names its reason, and only the slow-GPU reason is 'slow-gpu'. */
+export function layerTroubleOf(state: 'normal' | 'trimming' | 'degraded' | 'cpu-pinned', lastTrouble: string | null): LayerTrouble {
+    if (state === 'normal') return 'none';
+    return lastTrouble === 'slow-gpu' ? 'slow-gpu' : 'pressure';
 }

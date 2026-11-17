@@ -352,7 +352,7 @@ export class ResourceArena<
     }
 
     #checkCount(value: number): void {
-        if (!Number.isSafeInteger(value) || value < 0) throw new ArenaError('invalid-input');
+        if (!Number.isSafeInteger(value) || value < 0) throw new ArenaError('invalid-input', { site: 'arena:checkCount', value });
     }
 
     #record(handle: Handle): ResourceRecord<O> {
@@ -404,10 +404,10 @@ export class ResourceArena<
         this.#checkCount(lease.bytes);
         const known = this.#leases.get(lease);
         if (known) {
-            if (known.id !== lease.id || known.bytes !== lease.bytes) throw new ArenaError('invalid-input');
+            if (known.id !== lease.id || known.bytes !== lease.bytes) throw new ArenaError('invalid-input', { site: 'arena:lease-mismatch', id: lease.id, bytes: lease.bytes, knownId: known.id, knownBytes: known.bytes });
             return known;
         }
-        if (this.#leaseIds.has(lease.id)) throw new ArenaError('invalid-input');
+        if (this.#leaseIds.has(lease.id)) throw new ArenaError('invalid-input', { site: 'arena:lease-reused', id: lease.id, bytes: lease.bytes });
         const record: LeaseRecord = {
             lease, id: lease.id, bytes: lease.bytes, live: 0, retiring: 0,
             resources: 0, closed: false, returned: false,

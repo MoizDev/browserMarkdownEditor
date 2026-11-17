@@ -6,7 +6,7 @@ import type { ColourGroup2d } from './colourGroup2d';
 import { paintPageScope, paintWorldScope, paneCssTransform, projectPage } from './compositorProjection';
 import type { Compositor2DOptions, CompositorAppearance, CompositorCoverage, CompositorLayer, CreatedCompositor2D, IsolationPaintOptions, IsolationReservation, PaneCompositor, PaneSurfaceHost, TexturedQuadOptions, TexturedQuadSpec } from './compositor.types';
 import { RENDER_CONSTANTS as POLICY } from './constants';
-import type { ByteLease, GfxLimits, GpuPass, RectI, TextureHandle } from './gfx/api';
+import type { ByteLease, DrawableImage, GfxLimits, GpuPass, RectI, TextureHandle } from './gfx/api';
 import type { MemoryCacheHandle } from './memoryGovernor';
 import type { BorrowedMirror } from './mirrorSet';
 import type { MirrorFrame, MirrorPresentation, PreparedMirrorPresentation } from './paneLifecycle';
@@ -872,13 +872,15 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
     }
 
     /** A batch on the canvas path is its quads in order: each one is the single drawImage it always was. */
-    private quads(ctx: CanvasRenderingContext2D | GpuPass, image: ImageBitmap | TextureHandle,
+    private quads(ctx: CanvasRenderingContext2D | GpuPass, image: DrawableImage | TextureHandle,
         quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void {
         for (const quad of quads) this.quad(ctx, image, quad.sourceRect, quad.destRect, options);
     }
-    private quad(ctx: CanvasRenderingContext2D | GpuPass, image: ImageBitmap | TextureHandle,
+    private quad(ctx: CanvasRenderingContext2D | GpuPass, image: DrawableImage | TextureHandle,
         sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void {
-        if (!('drawImage' in ctx) || !(image instanceof ImageBitmap)) throw new TypeError('A CPU quad needs a 2D context and ImageBitmap');
+        if (!('drawImage' in ctx) || !(image instanceof ImageBitmap || typeof VideoFrame !== 'undefined' && image instanceof VideoFrame)) {
+            throw new TypeError('A CPU quad needs a 2D context and an ImageBitmap or VideoFrame');
+        }
         if (!validRect(sourceRect) || !validRect(destRect) || !Number.isFinite(options.opacity) || options.opacity < 0 || options.opacity > 1) throw new TypeError('Invalid image quad');
         const previousCoverage = __BME_BENCH__ ? benchmarkCanvas?.coverageKinds.get(this) : undefined;
         const previousRatio = __BME_BENCH__ ? benchmarkCanvas?.scaleRatios.get(this) : undefined;

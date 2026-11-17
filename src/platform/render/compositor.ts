@@ -337,7 +337,7 @@ export class GpuCompositor implements PaneCompositor {
                 refuse = true;
                 if (renderAuditEnabled()) auditCount(layer.id, 'incomplete');
             }
-            if (refuse) { auditCount('compositor', 'refuse:coverage'); return null; }
+            if (refuse) { auditCount('compositor', 'refuse:coverage'); return this.#encodeRefused(snapshot, frame); }
             encoder = this.#options.owner.resources.beginFrame();
             this.#encodings.add(encoder);
             const bounds = { x: 0, y: 0, width: snapshot.metrics.backingWidth, height: snapshot.metrics.backingHeight };
@@ -429,6 +429,66 @@ export class GpuCompositor implements PaneCompositor {
                         completed: () => !this.#disposed && epoch === this.#epoch && this.#options.owner.resources.completed(submitted.serial),
                         ...(__BME_BENCH__ ? { commitObservation: () => this.#options.owner.commitCoverage?.(submitted.serial),
                             cancelObservation: () => this.#options.owner.cancelCoverage?.(submitted.serial) } : {}) };
+                    } catch (error) {
+                        done = true;
+                        this.#encodings.delete(owned);
+                        this.#options.owner.discardFrame(owned);
+                        this.#failure(error);
+                        throw error;
+                    }
+                },
+                discard: () => {
+                    if (done) return;
+                    done = true;
+                    this.#encodings.delete(owned);
+                    this.#options.owner.discardFrame(owned);
+                },
+            };
+        } catch (error) {
+            if (encoder) { this.#encodings.delete(encoder); this.#options.owner.discardFrame(encoder); }
+            this.#failure(error);
+            return null;
+        }
+    }
+
+    /** A refused frame still encodes every layer's offscreen passes and submits them, so the tiles they compose land and a later
+     * frame can complete; only the surface pass is skipped. Measured in the notebook pan: 205 refused frames, 1640 tile encodings
+     * and no tile completed, because a refused frame encoded nothing. No report is set for this frame, so coverage() answers
+     * presented: false and the pane never claims it. */
+    #encodeRefused(snapshot: Snapshot, frame: ScheduledFrame): ScheduledEncoding | null {
+        let encoder: FrameEncoder | null = null;
+        try {
+            encoder = this.#options.owner.resources.beginFrame();
+            this.#encodings.add(encoder);
+            const drawScope: DrawScope = { encoder, view: frame.view, passes: new Set() };
+            this.#active = drawScope;
+            let offscreen = 0;
+            this.#atlas = null;
+            this.#atlasRegions.clear();
+            try { offscreen = this.#encodeOffscreen(snapshot, frame, encoder, drawScope); } finally { this.#active = null; }
+            if (!offscreen) {
+                this.#encodings.delete(encoder); this.#options.owner.discardFrame(encoder);
+                return null;
+            }
+            auditCount('compositor', 'offscreen-on-refuse', offscreen);
+            const owned = encoder;
+            let done = false;
+            const epoch = this.#epoch;
+            return {
+                submit: (): ScheduledSubmission | null => {
+                    if (done || this.#disposed || epoch !== this.#epoch || !this.#drawable(snapshot, frame)) {
+                        this.#options.owner.discardFrame(owned);
+                        this.#encodings.delete(owned);
+                        done = true;
+                        return null;
+                    }
+                    try {
+                        const submitted = owned.submit();
+                        auditCount('compositor', 'gl:state', submitted.stateSwitches);
+                        this.#lastSubmissionSerial = submitted.serial;
+                        done = true;
+                        this.#encodings.delete(owned);
+                        return { drawn: [] };
                     } catch (error) {
                         done = true;
                         this.#encodings.delete(owned);

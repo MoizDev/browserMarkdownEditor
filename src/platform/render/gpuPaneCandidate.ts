@@ -139,7 +139,13 @@ export class GpuPaneCandidate {
             }
             generation.disposed = true;
             generation.services.close();
-            if (!preparation.canvas.width && !preparation.canvas.height) generation.backing.close();
+            // A factory that sized the canvas before it failed keeps the backing charged, and the broker zeroes the canvas only
+            // after this rejection: zeroed() then finds no current generation and never releases it. So the failed attempt
+            // zeroes and releases its own backing here, as a normal zeroing does.
+            preparation.canvas.width = 0;
+            preparation.canvas.height = 0;
+            generation.backing.releaseZeroed();
+            generation.backing.close();
             if (this.current === generation) this.current = null;
             throw error;
         }

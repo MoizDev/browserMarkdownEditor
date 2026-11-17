@@ -13,8 +13,20 @@ export const IMAGE_CHUNK_BYTES = 1024 * 1024;
 
 /** Mip levels stay off. IMAGE_SAMPLING_PROFILE is bilinear without mip levels, canvas2d samples that way, and the
  * parity row (pictures within 3 levels of canvas2d) is measured against it; mips would smooth minified pictures away
- * from that reference. Turning this on needs gpu's decision and h10's `createTexture(…, { mips })` (PLAN §3.4). */
+ * from that reference. The path is real (h10's `createTexture(…, { mips })`, `generateMips`): turning this on is gpu's
+ * call, and the sampler the route binds follows it through IMAGE_FILTER. */
 const IMAGE_MIPS = false;
+/** The filter every picture is sampled with: linear, with the mip chain when IMAGE_MIPS is on. */
+export const IMAGE_FILTER: 'linear' | 'linear-mipmap' = IMAGE_MIPS ? 'linear-mipmap' : 'linear';
+
+/** Bytes of a texture's whole chain: level 0 alone, or every level down to 1×1 when mips are on. */
+function textureBytes(width: number, height: number): number {
+    let bytes = 0;
+    for (let w = width, h = height; ; w = Math.max(1, w >> 1), h = Math.max(1, h >> 1)) {
+        bytes += w * h * 4;
+        if (!IMAGE_MIPS || (w === 1 && h === 1)) return bytes;
+    }
+}
 
 /** A picture's texture, the stable value every route draws from. `width`/`height` are its texels: smaller than the
  * source only when the source is larger than the device's texture limit and was downscaled at decode. */
@@ -64,14 +76,6 @@ interface Slot {
     dropped: boolean;
 }
 
-/** PLAN §3.4 (h10): mip levels on `createTexture` and `generateMips`. Until h10 lands them on GfxDevice this view types
- * them, and the cast below is the only place that knows; IMAGE_MIPS keeps it unreached. */
-interface MipDevice {
-    createTexture(width: number, height: number, format: 'rgba8', uses: readonly ('sample' | 'copy-dst')[], lease: ByteLease,
-        options: { mips: boolean }): TextureHandle;
-    generateMips(texture: TextureHandle): void;
-}
-
 /** The largest texture side the device takes: `limits.maxTexture2D`, the field gpu confirmed (PLAN §3.4's
  * `maxTextureSize` is superseded). */
 const maxTextureSide = (device: GfxDevice): number => device.limits.maxTexture2D;
@@ -102,11 +106,6 @@ export function createImageTextures(host: LayerHost, audit: string): ImageTextur
         slot.device.destroy(slot.view.texture);
         host.allocator.gpu.release(slot.lease);
         gpuBytes -= slot.bytes;
-    };
-
-    const createTexture = (device: GfxDevice, width: number, height: number, lease: ByteLease): TextureHandle => {
-        if (!IMAGE_MIPS) return device.createTexture(width, height, 'rgba8', UPLOAD_USES, lease);
-        return (device as unknown as MipDevice).createTexture(width, height, 'rgba8', UPLOAD_USES, lease, { mips: true });
     };
 
     // Decodes the picture down to the texture size. Settlement is an invalidate, so the next prepare finds it.
@@ -152,7 +151,7 @@ export function createImageTextures(host: LayerHost, audit: string): ImageTextur
 
     const finish = (slot: Slot, device: GfxDevice): void => {
         if (slot.scaled) { closeStaged(slot.scaled); slot.scaled = null; }
-        if (IMAGE_MIPS) (device as unknown as MipDevice).generateMips(slot.view.texture);
+        if (IMAGE_MIPS) device.generateMips(slot.view.texture);
         slot.ready = true;
     };
 
@@ -201,11 +200,11 @@ export function createImageTextures(host: LayerHost, audit: string): ImageTextur
                 const max = maxTextureSide(device);
                 const scale = Math.min(1, max / w, max / h);
                 const width = Math.min(max, Math.max(1, Math.round(w * scale))), height = Math.min(max, Math.max(1, Math.round(h * scale)));
-                const bytes = width * height * 4;
+                const bytes = textureBytes(width, height);
                 const lease = host.allocator.gpu.reserve(bytes);
                 if (!lease) { awaitCapacity(); return { status: 'denied', pool: 'gpu', bytes }; }
                 let texture: TextureHandle;
-                try { texture = createTexture(device, width, height, lease); }
+                try { texture = device.createTexture(width, height, 'rgba8', UPLOAD_USES, lease, { mips: IMAGE_MIPS }); }
                 catch (error) { host.allocator.gpu.release(lease); throw error; }
                 const view: ImageTexture = Object.freeze({ key, texture, sourceWidth: w, sourceHeight: h, width, height });
                 slot = { device, view, lease, bytes, refs: 0, usedFrame: budget.frameId, ready: false, chunked: false, uploaded: 0,

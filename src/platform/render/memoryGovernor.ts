@@ -225,6 +225,12 @@ export class MemoryGovernor {
     // Bumped whenever a reservation that was refused could now fit: a lease returned, a grant or demand that moved, a cache
     // that became visible or was transferred. A refusal memo is valid only within the epoch it was taken in.
     private capacityEpoch = 0;
+    // The smallest refused request still standing, per pool (Infinity when none). A release can admit a refusal only if its pool
+    // would then hold that size: fits() checks the pool first. Releases that leave the pool over it do not move the epoch.
+    private readonly refusedFloor: Record<MemoryPool, number> = { gpu: Infinity, cpu: Infinity };
+    // Panes by id, rebuilt with the demand: fits() and the transfer path look one up per call, and a linear find there
+    // ran for every waiter on every release.
+    private readonly paneById = new Map<string, PaneMemoryDemand>();
     // Each pane's quality ceiling. It falls the moment a pane's pixel grant falls short of its need, and rises only in a
     // recovery step (sustained cool use with no gesture): a pane never steps back up on the next plan that frees bytes.
     private readonly paneCeiling = new Map<string, number>();
@@ -284,7 +290,7 @@ export class MemoryGovernor {
                     activityValid(activity);
                     if (cache.closed) return;
                     cache.activity = { ...activity };
-                    this.capacityEpoch++;
+                    this.bumpCapacity();
                     this.trimHiddenMirrors();
                 },
                 close: () => {
@@ -327,9 +333,11 @@ export class MemoryGovernor {
         // move only with the demand, with degradation and recovery (which plan themselves) and with context/program charges.
         const changed = this.panes.length !== panes.length || panes.some((pane, i) => !samePaneDemand(pane, this.panes[i]));
         this.panes = panes.map(pane => ({ ...pane }));
+        this.paneById.clear();
+        for (const pane of this.panes) this.paneById.set(pane.paneId, pane);
         for (const id of this.paneCeiling.keys()) if (!ids.has(id)) this.paneCeiling.delete(id);
         if (changed) {
-            this.capacityEpoch++;
+            this.bumpCapacity();
             this.target.gpu = Math.min(this.ceilings.gpuBytes, Math.max(POLICY.gpuGrantMinBytes,
                 POLICY.gpuGrantBaseBytes + POLICY.gpuGrantPerVisiblePaneBytes * visible + POLICY.gpuGrantPerVisiblePixelBytes * pixels));
             this.target.cpu = Math.min(this.ceilings.cpuRasterBytes, Math.max(POLICY.cpuGrantMinBytes,
@@ -376,7 +384,7 @@ export class MemoryGovernor {
         destination.bytes += record.bytes;
         destination.leaseCount++;
         record.cache = destination;
-        this.capacityEpoch++;
+        this.bumpCapacity();
         if (source.closed && !source.leaseCount) this.caches.delete(source.registration.id);
         return true;
     }
@@ -408,7 +416,7 @@ export class MemoryGovernor {
             }
         }
         const paneId = destination.registration.paneId;
-        const pane = this.panes.find(pane => pane.paneId === paneId);
+        const pane = paneId === undefined ? undefined : this.paneById.get(paneId);
         const grant = paneId === undefined ? undefined : this.grants.get(paneId);
         const bytes = records.reduce((sum, record) => sum + record.bytes, 0);
         const displayed = [...this.caches.values()].filter(cache => cache.registration.paneId === paneId &&
@@ -422,7 +430,7 @@ export class MemoryGovernor {
             destination.bytes += record.bytes;
             destination.leaseCount++;
             record.cache = destination;
-            this.capacityEpoch++;
+            this.bumpCapacity();
             if (source.closed && !source.leaseCount) this.caches.delete(source.registration.id);
         }
         return true;
@@ -604,6 +612,7 @@ export class MemoryGovernor {
                 // so no webgl2 PDF frame was ever sharp and its editing cover never dropped.
                 if (this.charged[pool] + bytes > this.target[pool]) this.refuseReservation(pool);
                 cache.refusal = { epoch: this.capacityEpoch, bytes };
+                this.refusedFloor[pool] = Math.min(this.refusedFloor[pool], bytes);
                 return null;
             }
         }
@@ -630,7 +639,7 @@ export class MemoryGovernor {
             const held = this.kindBytes('context');
             return held + bytes <= (POLICY.maxAppContexts - POLICY.reservedTerminalContexts) * POLICY.keptContextReserveBytes;
         }
-        const pane = this.panes.find(item => item.paneId === paneId);
+        const pane = paneId === undefined ? undefined : this.paneById.get(paneId);
         const grant = paneId === undefined ? undefined : this.grants.get(paneId);
         if (pool === 'gpu' && (cache.activity.hiddenAt !== null || !pane?.visible || !pane.requestedPixels ||
             (pane.cpuPinned && kind !== 'surface' && kind !== 'canvas-working'))) return false;
@@ -727,6 +736,7 @@ export class MemoryGovernor {
         for (const [id, grant] of this.grants) {
             const old = before.get(id);
             if (!old || grant.cpuBytes > old.cpuBytes || grant.gpuCacheBytes > old.gpuCacheBytes || grant.pixelGrant > old.pixelGrant) {
+                this.bumpCapacity();
                 this.notifyCapacity();
                 return;
             }
@@ -735,8 +745,14 @@ export class MemoryGovernor {
 
     /** A sized waiter stays parked until its bytes would be admitted: a closed cache's waiter wakes so its owner sees
      * the closure. Each wake runs once however many of its waiters fired. */
-    private notifyCapacity(): void {
+    /** Every refusal memo dies with the epoch, so the floor they were measured against starts over with it. */
+    private bumpCapacity(): void {
         this.capacityEpoch++;
+        this.refusedFloor.gpu = Infinity;
+        this.refusedFloor.cpu = Infinity;
+    }
+
+    private notifyCapacity(): void {
         if (!this.capacityWaiters.size) return;
         const woken = new Set<() => void>();
         for (const [cache, waiters] of this.capacityWaiters) {
@@ -755,11 +771,13 @@ export class MemoryGovernor {
         if (!record || (expected && record.cache !== expected)) throw new MemoryAdmissionError('invalid-lease');
         if (record.returned) return;
         record.returned = true;
-        this.capacityEpoch++;
         const cache = record.cache;
         cache.bytes -= record.bytes;
         cache.leaseCount--;
-        this.charged[cache.registration.pool] -= record.bytes;
+        const pool = cache.registration.pool;
+        this.charged[pool] -= record.bytes;
+        // Only a release that leaves room for the smallest standing refusal can change its answer (see refusedFloor).
+        if (this.charged[pool] + this.refusedFloor[pool] <= this.target[pool]) this.bumpCapacity();
         this.notifyCapacity();
         if (cache.closed && !cache.leaseCount) this.caches.delete(cache.registration.id);
         if (!this.trimming && ['context', 'program'].includes(cache.registration.kind)) this.plan();

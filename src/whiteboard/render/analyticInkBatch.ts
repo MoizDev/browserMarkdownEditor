@@ -6,7 +6,7 @@ import { analyticInkPaint, type AnalyticInkPaint } from './analyticInk';
 import { auditCount } from '../../platform/render/renderAudit';
 import type { Admission, PreparedRun } from './gpu/contracts';
 import type { PaintInkItem } from './paintStream';
-import { ANALYTIC_INK_BATCH_SHADER } from './analyticInkBatchShader';
+import { ANALYTIC_INK_BATCH_SHADER, ANALYTIC_INK_GRID_SHADER } from './analyticInkBatchShader';
 
 const STRIDE = 48, SLABS = [64 * 1024, 128 * 1024, 256 * 1024] as const;
 type Slab = Readonly<{ buffer: BufferHandle; count: number; size: number; firstPaintIndex: number; bounds: RectI }>;
@@ -262,7 +262,7 @@ export function createAnalyticInkRuns(host: LayerHost, audit: string) {
         if (pending || failed) return false;
         const serial = ++incarnation; pending = true;
         try {
-            owner.createPipeline({ shader: ANALYTIC_INK_BATCH_SHADER, topology: 'triangle-strip', colorFormat: 'rgba8', samples: 1,
+            owner.createPipeline({ shader: ANALYTIC_INK_GRID_SHADER, topology: 'triangle-strip', colorFormat: 'rgba8', samples: 1,
                 blend: 'source-over', alphaToCoverage: false, colorWrite: [true, true, true, true], stencil: { enabled: false } })
                 .then(value => {
                     if (incarnation !== serial || device !== owner) { owner.destroy(value); return; }

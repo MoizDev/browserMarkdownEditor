@@ -124,5 +124,5 @@ export const createInkRoutes: CreateInkRoutes = (host: LayerHost, audit: string)
         },
     };
 
-    return { analytic, union };
+    return { analytic, union, evictCpu: (bytes, keep) => geometry.evictIdle(bytes, keep) };
 };

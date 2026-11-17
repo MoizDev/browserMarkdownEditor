@@ -11,6 +11,7 @@ import type { BoardWetLayer } from '../input/attach';
 import type { DryInkIdentity, WetInkHandover, WetInkSnapshot } from '../input/liveInk';
 import type { Swatch } from '../model/styles';
 import { colourCss, resolveSwatch, withOpacity, type PaintPalette } from '../render/colour';
+import { inkCoverageChunks } from '../render/paintStream';
 import { HIGHLIGHT_OVERLAY_ALPHA, HIGHLIGHT_UNDERLAY_ALPHA, inkMaterial, type InkMaterial } from '../render/material';
 import type { PaintSource, PaintInkItem, PaintClip } from '../render/paintStream';
 import type { Admission, CreateInkRoutes, InkRouteFor, ItemRoute, PreparedRun, WithClips } from '../render/gpu/contracts';
@@ -125,7 +126,8 @@ type WetBand = 'underlay' | 'content';
 const BANDS: readonly WetBand[] = ['underlay', 'content'];
 type InkRoutes = ReturnType<CreateInkRoutes>;
 /** What a slot draws: a route's run, or the CPU scrap of a stroke the route refuses. */
-interface WetShown { readonly clips: readonly PaintClip[]; readonly draw: () => void; readonly dispose: () => void }
+/** `kept` is the geometry chunks a union run maps: they stay cached while it is shown, so a CPU reclaim never frees them. */
+interface WetShown { readonly clips: readonly PaintClip[]; readonly draw: () => void; readonly dispose: () => void; readonly kept?: readonly InkCoverage[] }
 /** One stroke's GPU run for one band. `shown` is what is drawn; the rest says what the current publication needs. A
  * deferred or denied admission keeps drawing the last shown tip while coverage waits for the new one. */
 interface WetRunSlot {
@@ -443,7 +445,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                 switch (admission.status) {
                     case 'ready': {
                         const run = admission.value;
-                        setShown(slot, { clips: item.clips, draw: () => { if (drawCall.pass) route.draw(drawCall.pass, run); }, dispose: () => route.retire(run) }, 'ready');
+                        setShown(slot, { clips: item.clips, kept: inkCoverageChunks(item.coverage), draw: () => { if (drawCall.pass) route.draw(drawCall.pass, run); }, dispose: () => route.retire(run) }, 'ready');
                         break;
                     }
                     // A replaced shown is disposed only when its successor is admitted: a deferred or denied admission keeps the last tip.
@@ -687,6 +689,14 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
     };
     const make = (band: WetBand): PlatformLayerDefinition => ({
         id: `board-wet-${band}`, group: 'document', liveInput: true,
+        // The owner band reclaims for the pane, under cpuWorkingSet's guard: the geometry is one set of bytes for both bands. A chunk a
+        // shown run maps is kept (its triangles are the kit's until the run is retired), so only idle geometry is given back.
+        cpuEvict(layer, bytes) {
+            if (!owner || hostLayers.get(owner) !== layer) return;
+            const keep = new Set<InkCoverage>();
+            for (const slot of runs.values()) for (const chunk of slot.shown?.kept ?? []) keep.add(chunk);
+            inkRoutes?.evictCpu(bytes, keep);
+        },
         create(host) {
             if (disposed) throw new Error('Wet layer disposed');
             hosts.add(host); owner ??= host;

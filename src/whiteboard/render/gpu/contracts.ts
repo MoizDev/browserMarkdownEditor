@@ -10,6 +10,7 @@ import type { TileTarget } from '../../../platform/render/tileTarget';
 import type { PaintBand } from '../material';
 import type { PaintClip, PaintInkItem, PaintItem } from '../paintStream';
 import type { PreparedPaint2d } from '../reference/canvasPaintAdapter';
+import type { InkCoverage } from '../../ink/outline';
 
 /** 'modulate' lays a multiply slice by fixed-function blending: dst · src (rgb ZERO, SRC_COLOR; alpha ZERO, ONE). */
 export type Blend = 'over' | 'modulate';
@@ -117,6 +118,8 @@ export type RouteFactory<R> = (host: LayerHost, audit: string) => R;
 export type CreateTileStore = RouteFactory<TileStore>;
 export type CreateTileParts = RouteFactory<TileParts>;
 export type CreatePathRoute = RouteFactory<ItemRoute>;
-export type CreateInkRoutes = RouteFactory<{ readonly analytic: ItemRoute<PaintInkItem>; readonly union: ItemRoute<PaintInkItem> }>;
+export type CreateInkRoutes = RouteFactory<{ readonly analytic: ItemRoute<PaintInkItem>; readonly union: ItemRoute<PaintInkItem>;
+    /** Frees up to `bytes` of the union route's idle chunk geometry, never a chunk in `keep`; returns the bytes freed. */
+    readonly evictCpu: (bytes: number, keep: ReadonlySet<InkCoverage>) => number }>;
 export type CreateImageRoute = RouteFactory<ItemRoute>;
 export type CreateTextRoute = RouteFactory<ItemRoute>;

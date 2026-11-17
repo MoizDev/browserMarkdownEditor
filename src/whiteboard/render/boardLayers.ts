@@ -5,7 +5,7 @@ import type { CompositorBackend, LayerCoverage, LayerHost } from '../../platform
 import type { ScheduledFrame } from '../../platform/render/scheduler';
 import type { ByteLease } from '../../platform/render/gfx/api';
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
-import type { FrameBudget, FrameToken, GpuReleaseReason, Layer, RenderToken } from '../../platform/render/types';
+import type { FrameBudget, FrameToken, GpuReleaseReason, Layer, OffscreenPasses, RenderToken } from '../../platform/render/types';
 import type { PaintFrameAssembler } from './frameTypes';
 import type { PaintBand } from './material';
 import { inkCoverageChunks, type PaintItem, type PaintSource } from './paintStream';
@@ -181,6 +181,8 @@ export interface BoardLayerPair extends Readonly<[PlatformLayerDefinition, Platf
     /** The canonical CPU allocator of the bound layer host, or null before the first host has drawn. */
     memory(): MemoryAllocator | null;
 }
+/** The composer's offscreen encode (PLAN §3.3, wave 2). Today's adapter has none, so the layer's call is guarded: a no-op. */
+type OffscreenEncoder = { encodeOffscreen?(passes: OffscreenPasses, view: ViewState, band: PaintBand): void };
 export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     const hosts = new Map<PaintBand, LayerHost>();
     let adapter: CanvasPaintAdapter | null = null, allocatorHost: LayerHost | null = null;
@@ -622,6 +624,10 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                         token: Object.freeze({ ...prepareToken }), omittedNodeIds: omit ? new OmittedSnapshot(omit) : null,
                         retain: () => options.frames.retain(frame), retainImages: () => leaseOf(hold) });
                     recordDraw(band, { frame, omit, ink, context, hold });
+                },
+                encodeOffscreen(passes, view) {
+                    const encoder = gpu as OffscreenEncoder | null;
+                    if (typeof encoder?.encodeOffscreen === 'function') encoder.encodeOffscreen(passes, view, band);
                 },
                 draw2d(ctx, view) {
                     const frame = adapter?.readyFrame();

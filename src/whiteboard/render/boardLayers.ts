@@ -223,6 +223,8 @@ type OffscreenEncoder = { encodeOffscreen?(passes: OffscreenPasses, view: ViewSt
  * until impl/gpu merges: an absent method frees nothing. */
 type GpuEvicting = { evictGpu?(bytes: number, frameId: number): number };
 type LayerEvicting = { evictGpu?(bytes: number, frameId: number): number };
+/** The adapter's CPU reclaim (h2, `evictCpu` on impl/lane/gpu-h2): typeof-guarded until it merges, so an absent method frees nothing. */
+type CpuEvicting = { evictCpu?(bytes: number): number };
 /** The grain of a device's direct-frame charge (see chargeDirect): densePlan's DIRECT_CHUNK, the dense direct phase's own grain. */
 const DIRECT_CHUNK = 64 * 1024;
 /** The coverage a layer reports while it cannot draw the frame: shared, so the per-frame check allocates nothing. */
@@ -875,7 +877,11 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         drawVersion() { return options.drawVersion?.() ?? 0; },
         cpuEvict(_layer, bytes) {
             // Only the band that holds the session's memory reclaims it; the other band's grant has nothing of the dense plan.
-            if (hosts.get(band) === allocatorHost) dense?.reclaim(bytes);
+            if (hosts.get(band) !== allocatorHost) return;
+            dense?.reclaim(bytes);
+            // The device's CPU bytes are the direct build's and the GPU composer's scratch: the adapter gives back what it holds.
+            const adapter = gpu as CpuEvicting | null;
+            if (typeof adapter?.evictCpu === 'function') adapter.evictCpu(bytes);
         },
         cpuWorkingSet() {
             const upcoming = !useDense && estimate?.done && !density.pending() && !reservations.has(estimate.frame) ? estimate.bytes : 0;

@@ -172,7 +172,7 @@ export async function createPdfInkBackdrop(options: PdfInkBackdropOptions): Prom
         if (!visible) layer.current()?.hide();
         else layer.current()?.retry();
     };
-    const definition = { ...layer.definition, create(host: Parameters<typeof layer.definition.create>[0]) {
+    const definition = { ...layer.definition, drawnPageRects: () => layer.drawnPageRects(), create(host: Parameters<typeof layer.definition.create>[0]) {
         const instance = layer.definition.create(host), release = instance.releaseGpu.bind(instance);
         instance.releaseGpu = reason => {
             if (reason === 'hidden') setVisible(false);

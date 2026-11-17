@@ -13,12 +13,13 @@ import type { PaintBand } from '../material';
 import type { PaintClip, PaintInkItem, PaintItem } from '../paintStream';
 import type { AdmitClips, PreparedClips } from './routePath';
 import { tileKeyNum, TileKeyMap } from './tileKeys';
-import { lowerTileKey } from './tileStore';
+import { lowerTileKey, type NumericTileStore } from './tileStore';
 import { OmitTracker } from './tileParts';
+import { VIDEO_FRAME_PREFIX } from '../../media/videoFrames';
 import type { PreparedPaint2d } from '../reference/canvasPaintAdapter';
 import type { PaintResources2d } from '../reference/paint2d';
 import type {
-    Blend, InkRouteFor, ItemRoute, PreparedRun, TileEntry, TileIdFn, TileKey, TileParts, TilePart, TileStore, TileWorldFn,
+    Blend, InkRouteFor, ItemRoute, PreparedRun, TileEntry, TileKey, TileParts, TilePart, TileWorldFn,
 } from './contracts';
 
 const EDGE = TILE_EDGE, GUTTER = TILE_GUTTER, SIZE = TILE_SIZE;
@@ -32,6 +33,7 @@ const GROUP = Object.freeze({ opacity: 1, blend: 'multiply', colourEffect: 'none
 /** The most quads one batched call draws: 32 bytes each (8 floats), so 4096 is 128 KiB, a quarter of the 1 MiB uniform slot. */
 const QUAD_BATCH = 4096;
 const NO_IDS: readonly string[] = Object.freeze([]);
+const NO_ORDERS: readonly number[] = Object.freeze([]);
 const NO_OPAQUE: readonly Rect[] = Object.freeze([]);
 
 /** Draws `draw` under prepared clips (masks and scissors); the route's own helper, injected. */
@@ -55,7 +57,13 @@ type Mode = 'over' | 'modulate' | 'isolated';
 /** A position's status at a scale: `missing` has no complete picture; `dirty` shows a picture a change has overtaken. */
 type Status = 'missing' | 'dirty' | 'ok';
 /** Per composed entry, kept beside the store so a store entry that is evicted and replaced starts with no slot. */
-interface Slot { readonly mode: Mode; readonly count: number; readonly inkNodes: readonly string[] }
+interface Slot {
+    readonly mode: Mode; readonly count: number; readonly inkNodes: readonly string[];
+    /** The paint order of each slice's first part, by slice: a live part paints between the slices its order falls between. */
+    readonly firstOrder: readonly number[];
+    /** The position's live parts (video pictures drawn each frame, never composed). */
+    readonly live: number;
+}
 /** A consecutive run of one route's items within a slice. A run the CPU route takes (a GPU route refused it, or it has no route
  * yet, or its clips were refused) carries `why` and `label`, and is counted once as a fallback. A clipped item (on a route that
  * does not clip itself) is a run of its own: its clips are admitted in prepare, into `prepared`, and drawn around its draw. */
@@ -70,7 +78,6 @@ interface Admitted { readonly route: ItemRoute; readonly run: PreparedRun; reado
 /** One slice of a position: what its target draws, in paint order, and how far its admission has got. */
 interface Slice {
     readonly key: TileKey;
-    readonly id: string;
     readonly mode: Mode;
     /** The blend the content is composed with: `modulate` only for a modulate slice, which is laid by fixed-function blending. */
     readonly blend: Blend;
@@ -78,6 +85,8 @@ interface Slice {
     readonly runs: Run[];
     /** The ink nodes of this slice's parts: drawn into the composite's drawn-ink set with the tile. */
     readonly inkNodes: readonly string[];
+    /** The paint order of the slice's first part. */
+    readonly firstOrder: number;
     next: number;
     readonly admitted: Admitted[];
     entry: TileEntry | null;
@@ -96,18 +105,22 @@ interface Position {
     lowered: boolean;
     /** The position's packed building key (tileKeys.ts). */
     readonly key: number;
+    /** Live parts among the position's parts: they are drawn each frame, not composed. */
+    readonly live: number;
 }
 /** Tile positions across a view, as integer coordinates with exclusive ends. */
 interface Span { readonly x0: number; readonly y0: number; readonly x1: number; readonly y1: number }
 /** One tile to lay this frame. Pooled: a steady frame rewrites its fields and allocates nothing. */
 interface Draw {
-    band: PaintBand; texture: TextureHandle; mode: Mode;
+    band: PaintBand; texture: TextureHandle | null; mode: Mode;
     /** The tile's interior, in world units. */
     x: number; y: number; w: number; h: number;
     /** A stand-in is clipped to the position it covers; device pixels. */
     clipOn: boolean; cx: number; cy: number; cw: number; ch: number;
     /** The ink nodes of the tile, added to the drawn-ink set when the draw is laid. */
     ink: readonly string[];
+    /** A live part's admitted run, drawn through the image route under the clip; null for a tile draw. */
+    live: PreparedRun | null;
 }
 
 /** The item routes a composer draws through. `cpu` takes what a GPU route refuses; its own counters name that raster. */
@@ -131,9 +144,8 @@ export interface TileComposerOptions {
     readonly host: LayerHost;
     readonly audit: string;
     readonly parts: TileParts;
-    readonly store: TileStore;
+    readonly store: NumericTileStore;
     readonly routes: TileRoutes;
-    readonly tileId: TileIdFn;
     readonly tileWorld: TileWorldFn;
     readonly inkRouteFor: InkRouteFor;
     readonly lay: TileLay;
@@ -181,13 +193,21 @@ function exactScale(demand: number): number {
 function ladderScale(demand: number): number {
     return Math.pow(SQRT2, Math.ceil(Math.log(demand) / Math.log(SQRT2)));
 }
-/** Cuts a position's parts, in paint order, wherever the blend changes. */
+/** A live part: a video picture, whose image key carries the video prefix. It is never composed into a tile: it is drawn each
+ * frame through the image route, between the slices its paint order falls between. */
+function isLivePart(item: PaintItem): boolean {
+    return item.kind === 'image' && item.blend !== 'multiply' && item.imageKey.startsWith(VIDEO_FRAME_PREFIX);
+}
+/** Cuts a position's parts, in paint order, wherever the blend changes or a live part sits. */
 function cutSlices(parts: readonly TilePart[]): { blend: Blend; parts: TilePart[] }[] {
     const out: { blend: Blend; parts: TilePart[] }[] = [];
+    let barrier = false;
     for (const part of parts) {
+        if (isLivePart(part.item)) { barrier = true; continue; }
         const last = out[out.length - 1];
-        if (last && last.blend === part.blend) last.parts.push(part);
+        if (last && last.blend === part.blend && !barrier) last.parts.push(part);
         else out.push({ blend: part.blend, parts: [part] });
+        barrier = false;
     }
     return out;
 }
@@ -217,7 +237,7 @@ function inSpan(span: Span, x: number, y: number): boolean {
 }
 
 export function createTileComposer(options: TileComposerOptions): TileComposer {
-    const { host, audit, parts, store, routes, tileId, tileWorld, inkRouteFor, lay, layQuads, admitClips, withPreparedClips } = options;
+    const { host, audit, parts, store, routes, tileWorld, inkRouteFor, lay, layQuads, admitClips, withPreparedClips } = options;
     const routeList: ItemRoute[] = [routes.path, routes.inkAnalytic, routes.inkUnion, routes.image, routes.text, routes.cpu]
         .filter((route): route is ItemRoute => route !== undefined);
     let resourcesSeen: PaintResources2d | null = null;
@@ -238,6 +258,12 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     const draws: Draw[] = [];
     // The ink nodes the composite draws, filled in drawGpu and cleared in prepare: one set for the composer's life.
     const drawnInk = new Set<string>();
+    // Live parts: admitted each frame through the image route, released at the next prepare. Scratch holds the ones of the
+    // position being drawn, in paint order.
+    const liveRuns: PreparedRun[] = [];
+    const liveAdmitted = new Map<PaintItem, PreparedRun | null>();
+    const liveScratch: { order: number; run: PreparedRun }[] = [];
+    const standScratch: { order: number; entry: TileEntry; slot: Slot }[] = [];
     // Batch scratch: the quads of one call, reused. The pool holds spec objects for the composer's life.
     const quadPool: { sourceRect: Rect; destRect: Rect }[] = [];
     const quadList: TexturedQuadSpec[] = [];
@@ -268,17 +294,26 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     };
 
     const keyOf = (band: PaintBand, scale: number, x: number, y: number, slice: number): TileKey => ({ band, scale, x, y, slice });
-    const idOf = (band: PaintBand, scale: number, x: number, y: number, slice: number): string => tileId(keyOf(band, scale, x, y, slice));
+    /** The entry stored at a key now, by its packed number. The registry index is read here, per lookup: the store may renumber a
+     * scale when it evicts one (its 65-scale cap), so a number kept across an acquire could name another scale's tile. */
+    const entryAt = (band: PaintBand, scale: number, x: number, y: number, slice: number): TileEntry | undefined => {
+        const index = store.scaleIndexOf(scale);
+        return index < 0 ? undefined : store.getByNum(tileKeyNum(band, index, x, y, slice));
+    };
+    const entryOfKey = (key: TileKey): TileEntry | undefined => {
+        const num = store.numOf(key);
+        return num < 0 ? undefined : store.getByNum(num);
+    };
     const positionKey = (band: PaintBand, scale: number, x: number, y: number): number => tileKeyNum(band, scaleIndexOf(scale), x, y, 0);
 
     /** A position's status at a scale, from its slices: every slice present, none overtaken by a change. */
     const statusAt = (band: PaintBand, scale: number, x: number, y: number): Status => {
-        const first = store.get(idOf(band, scale, x, y, 0));
+        const first = entryAt(band, scale, x, y, 0);
         const slot = first && slots.get(first);
         if (!first || !slot) return 'missing';
         let dirty = first.dirty;
         for (let s = 1; s < slot.count; s++) {
-            const entry = store.get(idOf(band, scale, x, y, s));
+            const entry = entryAt(band, scale, x, y, s);
             if (!entry) return 'missing';
             dirty ||= entry.dirty;
         }
@@ -305,7 +340,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             if (!covers) continue;
             for (const slice of position.slices) {
                 const entry = slice.entry;
-                if (!entry || !entry.target || store.get(slice.id) !== entry) return null;
+                if (!entry || !entry.target || entryOfKey(slice.key) !== entry) return null;
             }
             return position;
         }
@@ -387,10 +422,13 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         const interior = tileWorld(key0);
         const pad = GUTTER / scale;
         const gutter: Rect = { x: interior.x - pad, y: interior.y - pad, width: interior.width + 2 * pad, height: interior.height + 2 * pad };
-        const cut = cutSlices(parts.partsFor(band, gutter, omitIds ?? undefined));
+        const raw = parts.partsFor(band, gutter, omitIds ?? undefined);
+        const cut = cutSlices(raw);
+        let live = 0;
+        for (const part of raw) if (isLivePart(part.item)) live++;
         if (!cut.length) {
             const entry = store.putEmpty(key0);
-            slots.set(entry, { mode: 'over', count: 0, inkNodes: NO_IDS });
+            slots.set(entry, { mode: 'over', count: 0, inkNodes: NO_IDS, firstOrder: NO_ORDERS, live });
             auditCount(audit, 'tile:empty');
             return null;
         }
@@ -399,15 +437,16 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         const onOpaque = opaque.some(rect => covers(rect, interior));
         const slices = cut.map((group, s): Slice => {
             const mode: Mode = group.blend === 'over' ? 'over' : onOpaque ? 'modulate' : 'isolated';
-            const key = keyOf(band, scale, x, y, s), id = tileId(key);
+            const key = keyOf(band, scale, x, y, s);
             // A dirty entry is recomposed into the target it already has; a missing one is acquired once its content is admitted.
-            const existing = store.get(id);
+            const existing = entryOfKey(key);
             return {
-                key, id, mode, blend: mode === 'modulate' ? 'modulate' : 'over', view: tile, runs: runsOf(group.parts),
+                key, mode, blend: mode === 'modulate' ? 'modulate' : 'over', view: tile, runs: runsOf(group.parts),
                 next: 0, admitted: [], entry: existing && existing.target ? existing : null, inkNodes: inkNodesOf(group.parts),
+                firstOrder: group.parts[0].order,
             };
         });
-        return { band, scale, x, y, slices, cursor: 0, parked: false, lowered: false, key: positionKey(band, scale, x, y) };
+        return { band, scale, x, y, slices, cursor: 0, parked: false, lowered: false, key: positionKey(band, scale, x, y), live };
     };
 
     /** Admits and acquires a position's slices in order. 'wait' resumes next frame; 'denied' waits for memory. */
@@ -561,7 +600,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         const world = tileWorld(entry.key);
         let draw = draws[drawCount];
         if (!draw) {
-            draw = { band, texture: target.texture, mode: slot.mode, x: 0, y: 0, w: 0, h: 0, clipOn: false, cx: 0, cy: 0, cw: 0, ch: 0, ink: NO_IDS };
+            draw = { band, texture: target.texture, mode: slot.mode, x: 0, y: 0, w: 0, h: 0, clipOn: false, cx: 0, cy: 0, cw: 0, ch: 0, ink: NO_IDS, live: null };
             draws.push(draw);
         }
         drawCount++;
@@ -569,6 +608,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         draw.x = world.x; draw.y = world.y; draw.w = world.width; draw.h = world.height;
         draw.clipOn = clip !== null;
         draw.ink = slot.inkNodes;
+        draw.live = null;
         if (clip) { draw.cx = clip.x; draw.cy = clip.y; draw.cw = clip.width; draw.ch = clip.height; }
         if (draw.mode === 'isolated') auditCount(audit, 'isolation:copy');
         store.touch(entry, frame);
@@ -576,7 +616,71 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
 
     /** This frame's draws, per band. A band whose visible positions all have their exact tile swaps to them in one frame;
      * until then (and while zooming) each position shows its exact tile if it has one, else a stand-in clipped to it. */
-    const buildDraws = (view: ViewState, target: number, zooming: boolean): void => {
+    /** Retires the live runs admitted for the last frame. Called at the next prepare, after that frame was drawn. */
+    const retireLive = (): void => {
+        const route = routes.image;
+        for (const run of liveRuns) route?.retire(run);
+        liveRuns.length = 0;
+        liveAdmitted.clear();
+    };
+
+    /** A live part's run for this frame, admitted once however many positions show it. A part the image route does not
+     * draw this frame is counted (live:dropped:<why>), never skipped silently. */
+    const admitLive = (item: PaintItem, view: ViewState, budget: FrameBudget): PreparedRun | null => {
+        const known = liveAdmitted.get(item);
+        if (known !== undefined) return known;
+        let run: PreparedRun | null = null;
+        const route = routes.image;
+        if (!route) auditCount(audit, 'live:dropped:route-absent');
+        else {
+            const outcome = route.admit([item], view, 'over', budget);
+            if (outcome.status === 'ready') { run = outcome.value; liveRuns.push(run); }
+            else if (outcome.status === 'unsupported') auditCount(audit, `live:dropped:${outcome.why}`);
+            else if (outcome.status !== 'empty') auditCount(audit, `live:dropped:${outcome.status}`);
+        }
+        liveAdmitted.set(item, run);
+        return run;
+    };
+
+    /** The live parts of a position, in paint order, admitted for this frame into `liveScratch`. Empty unless `wanted`. */
+    const collectLive = (band: PaintBand, target: number, x: number, y: number, view: ViewState, budget: FrameBudget, wanted: boolean): void => {
+        liveScratch.length = 0;
+        if (!wanted) return;
+        const interior = tileWorld(keyOf(band, target, x, y, 0));
+        const pad = GUTTER / target;
+        const gutter: Rect = { x: interior.x - pad, y: interior.y - pad, width: interior.width + 2 * pad, height: interior.height + 2 * pad };
+        // partsFor answers in paint order, so the scratch is too.
+        for (const part of parts.partsFor(band, gutter, omitIds ?? undefined)) {
+            if (!isLivePart(part.item)) continue;
+            const run = admitLive(part.item, view, budget);
+            if (run) liveScratch.push({ order: part.order, run });
+        }
+    };
+
+    /** A live draw: its run under `clip`, in the draw order of the position it shows. */
+    const addLiveDraw = (band: PaintBand, run: PreparedRun, clip: Rect): void => {
+        let draw = draws[drawCount];
+        if (!draw) {
+            draw = { band, texture: null, mode: 'over', x: 0, y: 0, w: 0, h: 0, clipOn: true, cx: 0, cy: 0, cw: 0, ch: 0, ink: NO_IDS, live: null };
+            draws.push(draw);
+        }
+        drawCount++;
+        draw.band = band; draw.texture = null; draw.mode = 'over'; draw.clipOn = true;
+        draw.cx = clip.x; draw.cy = clip.y; draw.cw = clip.width; draw.ch = clip.height;
+        draw.ink = NO_IDS; draw.live = run;
+        auditCount(audit, 'tile:live-part');
+    };
+
+    /** Draws the scratch live parts that paint before `order`, from index `from`, clipped to `clip`. Returns the next index. */
+    const liveBefore = (band: PaintBand, order: number, from: number, clip: Rect | null): number => {
+        let li = from;
+        for (; li < liveScratch.length && liveScratch[li].order < order; li++) {
+            if (clip) addLiveDraw(band, liveScratch[li].run, clip);
+        }
+        return li;
+    };
+
+    const buildDraws = (view: ViewState, target: number, zooming: boolean, budget: FrameBudget): void => {
         const surfaceW = Math.round(view.viewport.width * view.viewport.dpr), surfaceH = Math.round(view.viewport.height * view.viewport.dpr);
         drawCount = 0;
         const cam = view.camera, scale = cam.z * view.viewport.dpr;
@@ -603,19 +707,36 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         // A lowered tile covers four positions: each draw is clipped to the position it shows.
                         const pendingClip = pending.lowered ? clipAt(x, y) : null;
                         if (pending.lowered && !pendingClip) continue;
-                        for (const slice of pending.slices) if (slice.entry) addDraw(band, slice.entry, { mode: slice.mode, count: pending.slices.length, inkNodes: slice.inkNodes }, pendingClip);
+                        collectLive(band, target, x, y, view, budget, pending.live > 0);
+                        const orders = pending.slices.map(part => part.firstOrder);
+                        let li = 0;
+                        for (const slice of pending.slices) {
+                            if (!slice.entry) continue;
+                            li = liveBefore(band, slice.firstOrder, li, pendingClip);
+                            addDraw(band, slice.entry, { mode: slice.mode, count: pending.slices.length, inkNodes: slice.inkNodes, firstOrder: orders, live: pending.live }, pendingClip);
+                        }
+                        liveBefore(band, Infinity, li, pendingClip);
                         auditCount(audit, 'tile:encoding');
                         continue;
                     }
                     const exact = status !== 'missing' && (zooming || complete || standInsOf(band, target, x, y).length === 0);
                     if (exact) {
-                        const first = store.get(idOf(band, target, x, y, 0));
-                        const count = (first && slots.get(first)?.count) ?? 0;
+                        const first = entryAt(band, target, x, y, 0);
+                        const slot0 = first ? slots.get(first) : undefined;
+                        const count = slot0?.count ?? 0;
+                        const withLive = (slot0?.live ?? 0) > 0;
+                        const clip = withLive ? clipAt(x, y) : null;
+                        collectLive(band, target, x, y, view, budget, withLive);
+                        let li = 0;
                         for (let s = 0; s < count; s++) {
-                            const entry = store.get(idOf(band, target, x, y, s));
+                            const entry = entryAt(band, target, x, y, s);
                             const slot = entry && slots.get(entry);
-                            if (entry && slot) addDraw(band, entry, slot, null);
+                            if (entry && slot) {
+                                li = liveBefore(band, slot.firstOrder[s], li, clip);
+                                addDraw(band, entry, slot, null);
+                            }
                         }
+                        liveBefore(band, Infinity, li, clip);
                         auditCount(audit, 'tile:hit');
                         continue;
                     }
@@ -623,10 +744,21 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     // negative origin, is refused by the device (measured: 'invalid-input' on open).
                     const clip = clipAt(x, y);
                     if (!clip) continue;
+                    // The stand-in's entries are drawn in paint order, so its live parts interleave as they do in an exact tile
+                    // (the list is in position order, which is not paint order).
+                    collectLive(band, target, x, y, view, budget, true);
+                    standScratch.length = 0;
                     for (const entry of standInsOf(band, target, x, y)) {
                         const slot = slots.get(entry);
-                        if (slot) addDraw(band, entry, slot, clip);
+                        if (slot) standScratch.push({ order: slot.firstOrder[entry.key.slice] ?? Infinity, entry, slot });
                     }
+                    standScratch.sort((a, b) => a.order - b.order);
+                    let li = 0;
+                    for (const item of standScratch) {
+                        li = liveBefore(band, item.order, li, clip);
+                        addDraw(band, item.entry, item.slot, clip);
+                    }
+                    liveBefore(band, Infinity, li, clip);
                     auditCount(audit, 'tile:standin');
                 }
             }
@@ -647,7 +779,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     const encodePosition = (passes: OffscreenPasses, position: Position): void => {
         for (const slice of position.slices) {
             const entry = slice.entry;
-            if (entry && entry.target && store.get(slice.id) === entry) {
+            if (entry && entry.target && entryOfKey(slice.key) === entry) {
                 const target = entry.target;
                 const pass = passes.begin(target.target, { x: 0, y: 0, width: target.size, height: target.size },
                     { clear: slice.blend === 'modulate' ? WHITE : CLEAR, stencil: false });
@@ -665,7 +797,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 pass.end();
                 auditCount(audit, 'tile:compose', 1, { px: target.size * target.size });
                 entry.dirty = false; entry.composed = true; entry.revision = validRevision;
-                slots.set(entry, { mode: slice.mode, count: position.slices.length, inkNodes: slice.inkNodes });
+                slots.set(entry, { mode: slice.mode, count: position.slices.length, inkNodes: slice.inkNodes,
+                    firstOrder: position.slices.map(part => part.firstOrder), live: position.live });
                 store.touch(entry, frame);
             }
             for (const { route, run, clips } of slice.admitted) { route.retire(run); clips?.retire(); }
@@ -680,6 +813,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         for (const position of finished) cancel(position);
         finished = [];
         drawCount = 0;
+        retireLive();
         store.releaseAll();
         for (const route of routeList) route.release();
         denied = false; settled = false; presenting = false;
@@ -690,6 +824,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             if (disposed) return;
             frame = budget.frameId;
             drawnInk.clear();
+            retireLive();
             if (scaleIndexes.size >= 60) {
                 // The keys' scale indexes are nearly spent: the positions in progress are restarted, which frees their indexes.
                 for (const position of building.values()) cancel(position);
@@ -757,7 +892,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 for (const position of finished) cancel(position);
                 finished = [];
             }
-            buildDraws(view, target, zooming);
+            buildDraws(view, target, zooming, budget);
             settled = !indexing && allExact(view, target);
         },
         encodeOffscreen(passes: OffscreenPasses, _view: ViewState, band: PaintBand): void {
@@ -786,18 +921,31 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             while (i < drawCount) {
                 const draw = draws[i];
                 if (draw.band !== band) { i++; continue; }
+                if (draw.live) {
+                    // A live part: drawn through the image route under its position's clip, in paint order; never batched.
+                    if (draw.clipOn) {
+                        scissor.x = draw.cx; scissor.y = draw.cy; scissor.width = draw.cw; scissor.height = draw.ch;
+                        const clip = pass.pushClip(scissor);
+                        routes.image?.draw(pass, draw.live);
+                        pass.popClip(clip);
+                    }
+                    i++;
+                    continue;
+                }
+                const texture = draw.texture;
+                if (!texture) { i++; continue; }
                 if (draw.mode === 'over') {
                     // Consecutive 'over' draws of one texture are batched, in their order: one call per QUAD_BATCH quads.
                     let count = 0, j = i;
-                    for (; j < drawCount && draws[j].band === band && draws[j].mode === 'over' && draws[j].texture === draw.texture; j++) {
+                    for (; j < drawCount && draws[j].band === band && draws[j].mode === 'over' && draws[j].live === null && draws[j].texture === texture; j++) {
                         const d = draws[j];
                         const spec = quadPool[count] ?? (quadPool[count] = { sourceRect: { x: 0, y: 0, width: 0, height: 0 }, destRect: { x: 0, y: 0, width: 0, height: 0 } });
                         if (!quadOf(d, spec, cam.x, cam.y, scale, surfaceW, surfaceH)) continue;
                         for (const id of d.ink) drawnInk.add(id);
                         count++;
-                        if (count === QUAD_BATCH) { layBatch(pass, draw.texture, count); count = 0; }
+                        if (count === QUAD_BATCH) { layBatch(pass, texture, count); count = 0; }
                     }
-                    if (count) layBatch(pass, draw.texture, count);
+                    if (count) layBatch(pass, texture, count);
                     i = j;
                     continue;
                 }
@@ -820,7 +968,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     bounds.height = Math.min(surfaceH, Math.ceil(dest.y + dest.height)) - bounds.y;
                     group = pass.beginGroup(bounds, GROUP);
                 }
-                lay(pass, draw.texture, CROP, dest, draw.mode === 'modulate' ? 'modulate' : 'over');
+                lay(pass, texture, CROP, dest, draw.mode === 'modulate' ? 'modulate' : 'over');
                 if (group) pass.endGroup(group);
                 if (clip) pass.popClip(clip);
                 i++;
@@ -853,23 +1001,13 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         mandatoryBytes(width: number, height: number): number {
             if (disposed || !presenting) return 0;
             const target = drawnTarget;
-            // The span of the viewport at the drawn scale, as spanAt computes it, without an object.
+            // The span spanAt computes for the drawn camera, counted by the store per band: composed slices only.
+            const index = store.scaleIndexOf(target);
+            if (index < 0) return 0;
             const x0 = Math.floor(drawnCamX * target / EDGE), y0 = Math.floor(drawnCamY * target / EDGE);
             const x1 = Math.ceil((drawnCamX + width / drawnCamZ) * target / EDGE), y1 = Math.ceil((drawnCamY + height / drawnCamZ) * target / EDGE);
             let bytes = 0;
-            for (const band of BANDS) {
-                for (let y = y0; y < y1; y++) {
-                    for (let x = x0; x < x1; x++) {
-                        const first = store.get(idOf(band, target, x, y, 0));
-                        const slot = first && slots.get(first);
-                        if (!slot) continue;
-                        for (let s = 0; s < slot.count; s++) {
-                            const entry = store.get(idOf(band, target, x, y, s));
-                            if (entry && entry.target) bytes += TARGET_BYTES;
-                        }
-                    }
-                }
-            }
+            for (const band of BANDS) bytes += store.countComposed(band, index, x0, y0, x1 - 1, y1 - 1) * TARGET_BYTES;
             return bytes;
         },
         inkComposed(view: ViewState, ids: ReadonlySet<string>): Set<string> {

@@ -193,6 +193,8 @@ export interface BoardLayerPair extends Readonly<[PlatformLayerDefinition, Platf
     invalidate(reason?: string): void;
     /** The ink nodes the board's GPU tiles drew in the last composite: the live stroke's wet layer hands over to them. */
     drawnInkNodeIds(): ReadonlySet<string>;
+    /** Whether the board draws on a device (its GPU composer), so the owner may ask for whole-scene frames. */
+    onDevice(): boolean;
     /** Each band's LayerHost deadline; the scheduler's coalesced wake only invalidates, it never draws. */
     wakeAt(deadlineMs: number | null): void;
     readyFrame(): PaintSource | null;
@@ -215,6 +217,10 @@ const NO_INK: ReadonlySet<string> = Object.freeze(new Set<string>());
 /** The GPU adapter's report of the ink its tiles drew (h2 adds it to the adapter). Until then nothing is reported drawn,
  * so the live stroke keeps drawing itself, as it does today. */
 type DrawnInkReporter = { drawnInkNodeIds?(): ReadonlySet<string> };
+/** The GPU adapter's mandatory bytes for a viewport (h2 adds it to the adapter). Until then a device reports none beyond its
+ * own leases, as before this member existed. */
+type GpuWorkingSetReporter = { gpuMandatoryBytes?(viewport: Readonly<{ width: number; height: number }>): number };
+
 const STALE: LayerCoverage = Object.freeze({ complete: false, sharp: false, staleVersion: true });
 /** The revision a frame asks a layer for: a loop, since this runs every frame and `find` would allocate a closure. */
 function requestedRevisionOf(frame: ScheduledFrame, layer: Layer): number | undefined {
@@ -724,8 +730,15 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             && ready.theme === options.requestedTheme() && options.frames.isCurrent(ready);
         return current ? { complete: true, sharp: (gpuCoverage?.sharp ?? true) && (denseCoverage?.sharp ?? true) } : STALE;
     };
+    // The GPU working set a band reports: only the band that owns the adapter reports it, so one adapter is counted once for the
+    // pair (the rule evictGpu follows). A spread, not a literal member, until the platform type carries gpuWorkingSet (h9).
+    const gpuWorkingSetFor = (band: PaintBand) => ({
+        gpuWorkingSet: (_layer: Layer, viewport: Readonly<{ width: number; height: number }>) => ({
+            mandatoryBytes: hosts.get(band) === allocatorHost ? (gpu as GpuWorkingSetReporter | null)?.gpuMandatoryBytes?.(viewport) ?? 0 : 0,
+        }),
+    });
     const definition = (band: PaintBand): PlatformLayerDefinition => ({
-        id: `board-${band}`, group: 'document',
+        id: `board-${band}`, group: 'document', ...gpuWorkingSetFor(band),
         create(host) {
             if (disposed || hosts.has(band)) throw new Error('Board layer already attached');
             hosts.set(band, host); ensureAdapter(host);
@@ -834,6 +847,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     const pair = [definition('underlay'), definition('content')] as unknown as BoardLayerPair;
     pair.invalidate = (reason = 'board-content') => { for (const host of hosts.values()) host.invalidate(reason); };
     pair.drawnInkNodeIds = () => (gpu as DrawnInkReporter | null)?.drawnInkNodeIds?.() ?? NO_INK;
+    pair.onDevice = () => !!activeHost()?.device();
     pair.wakeAt = deadlineMs => { for (const host of hosts.values()) host.wakeAt(deadlineMs); };
     pair.memory = () => allocatorHost?.allocator.cpu ?? null;
     pair.paintProgress = progressNow;

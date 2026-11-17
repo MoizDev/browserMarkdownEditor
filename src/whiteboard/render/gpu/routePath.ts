@@ -579,7 +579,9 @@ export function createPath(host: LayerHost, audit: string): {
             for (const array of [...leases.keys()]) releaseLease(array);
         },
         memory(): { gpuBytes: number; cpuBytes: number } {
-            return { gpuBytes: kit.memory().gpuBytes, cpuBytes: leasedBytes };
+            // The kit's packs are CPU leases of its own (a group's packed triangles): they are the route's bytes too.
+            const kitMemory = kit.memory();
+            return { gpuBytes: kitMemory.gpuBytes, cpuBytes: leasedBytes + kitMemory.cpuBytes };
         },
     };
     const admitClips: AdmitClips = (clips, view, budget) => {
@@ -591,10 +593,13 @@ export function createPath(host: LayerHost, audit: string): {
         }
         return { status: 'ready', value: result };
     };
+    /** Marks the frame for both caches: a triangle set or outline used in this frame is never reclaimed. The adapter advances the
+     * frame through `coverage` (it holds only the kit), so `coverage` advances this route's frame too: a route frame left at 0 gave
+     * every outline usedFrame 0, and the outline cache never reclaimed one (review R1). */
+    const beginFrameBoth = (next: number): void => { frame = next; kit.beginFrame(next); };
     return {
-        route, admitClips, coverage: kit,
-        /** Marks the frame for both caches: a triangle set or outline used in this frame is never reclaimed. Call once per frame. */
-        beginFrame(next: number): void { frame = next; kit.beginFrame(next); },
+        route, admitClips, coverage: { ...kit, beginFrame: beginFrameBoth },
+        beginFrame: beginFrameBoth,
         /** The governor's CPU reclaim for the outline cache: frees unused outlines oldest first and returns the bytes freed. */
         evictCpu(bytes: number): number { return reclaimLeases(bytes); },
     };

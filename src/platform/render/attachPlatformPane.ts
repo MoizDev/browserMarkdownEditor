@@ -281,8 +281,10 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             // document-colour target until promotion. Inversion is not a free surface effect.
             const frameCopies = 2 + Number(options.readAppearance().inverted) + Number(!!options.session.mirrors) + isolated;
             // The 2D canvas's CPU working cache is charged to this pane, so its bytes are part of the demand the grant covers.
-            let mandatory = created.compositor.cpuWorkingBytes?.() ?? 0, prefetch = 0;
+            let mandatory = created.compositor.cpuWorkingBytes?.() ?? 0, prefetch = 0, pinned = 0;
             for (const layer of layerSet.layers) {
+                // A layer's visible positions are GPU bytes the pane must keep; the governor grants them before any other need.
+                if (requestedPixels > 0) pinned += layerSet.definition(layer)?.gpuWorkingSet?.(layer, size!.physical).mandatoryBytes ?? 0;
                 // An unobserved/zero box has no drawable viewport. Asking a producer for an
                 // artificial 0×0 floor can deny it before ResizeObserver has published its size.
                 const demand = requestedPixels > 0 ? layerSet.definition(layer)?.cpuWorkingSet?.(layer, size!.physical) : undefined;
@@ -302,6 +304,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             return { paneId: options.paneId, visible, focused, requestedPixels,
                 // Needs stay inside G/C: detached CPU completion, staged GPU, mirror/effect targets,
                 // native bitmap residency and one bounded colour band do not raise either cap.
+                gpuPinnedBytes: pinned,
                 gpuNeedBytes: memory.reduce((sum, value) => sum + value.gpuBytes, 0) +
                     (frameCopies * requestedPixels + bandPixels) * RENDER_CONSTANTS.surfaceReserveBytesPerPixel + requestedPixels * 4,
                 // Working-set demand precedes allocations; prefetch competes only after all visible floors.

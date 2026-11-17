@@ -12,6 +12,7 @@ import { getPdfFontEpoch, pdfMirrorProfilePrefix, pdfVariantRevision } from '../
 import { pdfDocKey } from '../worker/protocol';
 import { consumePdfTileArrival, forgetPdfTileArrival } from '../pool/arrivalWindow';
 import { auditCount } from '../../platform/render/renderAudit';
+import { QuadList } from './quadList';
 
 /** The pool returns the requested cell plus its one-pixel apron. Ownership of
  * every returned bitmap transfers to this layer, including cancelled replies. */
@@ -87,10 +88,18 @@ function rect(request: PdfTileRequest): Rect {
 }
 
 function project(box: Readonly<Rect>, page: Readonly<Rect>, view: ViewState): Rect {
+    return projectInto(box, page, view, { x: 0, y: 0, width: 0, height: 0 });
+}
+
+/** Writes the box's device placement into `out`: a frame projects every visible tile, so the draw path reuses one rect. */
+function projectInto(box: Readonly<Rect>, page: Readonly<Rect>, view: ViewState, out: Rect): Rect {
     const scale = view.camera.z * view.viewport.dpr;
     const offset = pagePresentation(page, view).restOffsetDevice;
-    return { x: (box.x - view.camera.x) * scale + offset.x, y: (box.y - view.camera.y) * scale + offset.y,
-        width: box.width * scale, height: box.height * scale };
+    out.x = (box.x - view.camera.x) * scale + offset.x;
+    out.y = (box.y - view.camera.y) * scale + offset.y;
+    out.width = box.width * scale;
+    out.height = box.height * scale;
+    return out;
 }
 
 /**
@@ -140,6 +149,12 @@ export class PdfTileLayer implements Layer {
     /** One outstanding capacity waiter per pool: a refused tile asks the governor to wake the layer when its bytes fit. */
     private awaitingGpu = false;
     private awaitingCpu = false;
+    /** The paper quads of one frame, drawn as one batch: every visible page shares the frame texture. */
+    private readonly paper = new QuadList();
+    private readonly paperRect: Rect = { x: 0, y: 0, width: 0, height: 0 };
+    /** The one tile quad of the draw in progress, reused for every tile of every frame. */
+    private readonly tileQuad: { source: Rect; destination: Rect } = {
+        source: { x: 0, y: 0, width: 0, height: 0 }, destination: { x: 0, y: 0, width: 0, height: 0 } };
     /** Drawable tile rects by page, for one device. Planning asks `covered` for every visible tile; the uncached version
      * scanned every entry and built a fresh array per tile, so one frame cost tiles × entries (by reading: a zoom step
      * plans hundreds of tiles). Dropped wherever an entry's drawability changes; a new unsettled entry is never drawable. */
@@ -395,15 +410,19 @@ export class PdfTileLayer implements Layer {
         const { stack, rasterScale } = input;
         const texture = this.frameTexture;
         const current = contentFamily(input) === this.contentIdentity;
-        if (texture && texture.device === this.host.device()) for (const index of this.visiblePageIndices(input)) {
-            const page = stack.rects[index];
-            const destination = project(page, page, view);
-            this.host.drawTexturedQuad(pass, texture.handle, { x: 0, y: 0, width: 1, height: 1 },
-                { x: destination.x - 1, y: destination.y - 1, width: destination.width + 2, height: destination.height + 2 },
-                { opacity: 1, sampling: 'nearest' });
-            this.host.drawTexturedQuad(pass, texture.handle, { x: 1, y: 0, width: 1, height: 1 },
-                destination, { opacity: 1, sampling: 'nearest' });
-            if (current) this.notePaper(stack, index);
+        if (texture && texture.device === this.host.device()) {
+            // One batch in the paint order of the per-quad calls it replaces: each page's border, then its paper.
+            const paper = this.paper;
+            paper.reset();
+            for (const index of this.visiblePageIndices(input)) {
+                const page = stack.rects[index];
+                const destination = projectInto(page, page, view, this.paperRect);
+                paper.add({ x: 0, y: 0, width: 1, height: 1 },
+                    { x: destination.x - 1, y: destination.y - 1, width: destination.width + 2, height: destination.height + 2 });
+                paper.add({ x: 1, y: 0, width: 1, height: 1 }, destination);
+                if (current) this.notePaper(stack, index);
+            }
+            paper.drawAll(quads => this.host.drawTexturedQuads(pass, texture.handle, quads, { opacity: 1, sampling: 'nearest' }));
         }
         for (const item of this.currentBridge(view)) {
             const texture = this.bridgeTextures.get(item.entry.id);
@@ -915,10 +934,15 @@ export class PdfTileLayer implements Layer {
             .sort((a, b) => a.request.scale.scale - b.request.scale.scale || a.used - b.used);
     }
 
+    /** The tile's source and destination, written into one reused pair: drawTexturedQuad consumes them before it returns. */
     private quad(request: PdfTileRequest, page: Readonly<Rect>, view: ViewState): { source: Rect; destination: Rect } {
-        const bounds = rect(request), edges = request.tile.edges, scale = request.scale.scale;
-        return { source: { x: 1 + (bounds.x - edges.left) * scale, y: 1 + (bounds.y - edges.top) * scale,
-            width: bounds.width * scale, height: bounds.height * scale }, destination: project(bounds, page, view) };
+        const bounds = rect(request), edges = request.tile.edges, scale = request.scale.scale, out = this.tileQuad;
+        out.source.x = 1 + (bounds.x - edges.left) * scale;
+        out.source.y = 1 + (bounds.y - edges.top) * scale;
+        out.source.width = bounds.width * scale;
+        out.source.height = bounds.height * scale;
+        projectInto(bounds, page, view, out.destination);
+        return out;
     }
 
     private evictUnneeded(viewport: Readonly<Rect>, neededBytes: number): void {

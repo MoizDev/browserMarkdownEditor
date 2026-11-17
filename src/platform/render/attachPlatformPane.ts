@@ -449,6 +449,10 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                         const result = activeMetrics().commit(frameId, size.generation, planned, drawing.target);
                         if (result?.kind === 'ready') drawing.setMetrics(result.metrics);
                         if (result?.kind !== 'failed') return result;
+                        // A governor refusal is pressure the governor has already answered with its own quality step. The pane keeps
+                        // its complete picture and waits for capacity; it is neither a framebuffer fault nor a reason to fall back to
+                        // 2D, whose working canvases need more of the same pool (the fallback refused too, and the loop cycled 1.0 <-> 0.8).
+                        if (result.reason === 'refused') return result;
                         const failedGeneration = gpu?.grant.generation;
                         runtime.trouble('framebuffer');
                         if (drawing === compositor || !lifecycle) return result;

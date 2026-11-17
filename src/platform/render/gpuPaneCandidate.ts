@@ -125,7 +125,7 @@ export class GpuPaneCandidate {
                         return { width: 0, height: 0, complete: false, generation: preparation.generation };
                     }
                     return backing.resize(width, height, grant.resizeSurface) ??
-                        { width: 0, height: 0, complete: false, generation: preparation.generation };
+                        { width: 0, height: 0, complete: false, refused: true, generation: preparation.generation };
                 },
                 invalidate: this.options.invalidate,
                 // Every GPU compositor error demotes this pane; none reaches the owner, so a board never fails to open on one.

@@ -36,6 +36,10 @@ export interface SurfaceResizeResult {
     readonly height: number;
     readonly complete: boolean;
     readonly generation: number;
+    /** The memory governor refused the new backing's bytes. That is pressure already signalled to the governor, not a
+     * framebuffer fault: a refusal must not degrade the pane a second time. Measured at DPR 2: the 2D back buffer of a
+     * fallback pane at quality 1.0 was refused and reported as 'incomplete' (the WebGL2 status was complete on all 274 resizes). */
+    readonly refused?: boolean;
 }
 
 export type ResizeSurface = (width: number, height: number) => SurfaceResizeResult;

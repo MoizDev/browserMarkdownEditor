@@ -29,7 +29,9 @@ type Stable = { readonly nodeId: string; readonly scale: number; readonly origin
     chunks: InkCoverage[]; bounds: Bounds | null; dot: boolean; scan: number; buffers: Set<ArrayBufferLike>; leases: ByteLease[];
     /** The tessellation scratch of this stroke, held for its life: one chunk runs at a time, and a publication per input frame
      * reserved and released it again otherwise. */
-    temp: ByteLease | null };
+    temp: ByteLease | null;
+    /** The width of the stroke's chunks: one per stroke, not one per tip. */
+    style: InkWidth | null };
 type Tail = { chunks: InkCoverage[]; bounds: Bounds | null; buffers: Set<ArrayBufferLike>; leases: ByteLease[] };
 type Chunk = { readonly first: number; readonly count: number; readonly finalizing: boolean;
     coverage: InkCoverageJob | null; readonly leases: ByteLease[];
@@ -452,7 +454,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         if (!stable) {
             const samples = snapshot.curve.samples;
             stable = { nodeId: snapshot.identity.nodeId, scale, origin: [samples.x(0), samples.y(0)], spans: 0, chunks: [],
-                bounds: null, dot: true, scan: 1, buffers: new Set(), leases: [], temp: null };
+                bounds: null, dot: true, scan: 1, buffers: new Set(), leases: [], temp: null, style: null };
             stables.set(gesture, stable);
         }
         work = { snapshot, stable, scale, offset: stable.spans, chunk: null,
@@ -503,7 +505,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
             s.temp = temp;
             const geometry = materializeCurveRange(real, { firstSpan: offset, spanCount: count }, publication.parameters);
             w.offset = spans === 0 ? 1 : offset + count;
-            const style: InkWidth = { width: w.snapshot.presentation.width, model: { id: 'uniform' }, pressure: 'none' };
+            const style: InkWidth = s.style ??= { width: w.snapshot.presentation.width, model: { id: 'uniform' }, pressure: 'none' };
             const dot: InkDot | null = offset === 0 && s.dot ? { x: real.x(0), y: real.y(0), radius: DOT_METRIC_PROVISIONAL.radius(style.width, style.width / 2, style.model) } : null;
             w.chunk = { first: offset, count, finalizing, leases: [], retained: null,
                 coverage: new InkCoverageJob(real, geometry, style, { deviceScale: w.scale, dot, maxPrimitives: 4096 }) };

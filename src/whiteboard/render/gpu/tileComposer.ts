@@ -195,6 +195,9 @@ export interface TileComposer {
     mandatoryBytes(width: number, height: number): number;
     /** False while nothing can make progress this frame: composed and settled, or waiting for memory. */
     needsFrame(): boolean;
+    /** True while the composer waits on a refused GPU admission and has no other work (no indexing, nothing finished to encode): a
+     * budget refusal defers the composer, it never holds the frame. */
+    memoryBlocked(): boolean;
     memory(): { gpuBytes: number; cpuBytes: number };
     release(reason: GpuReleaseReason): void;
     dispose(): void;
@@ -308,6 +311,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     // A refusal waits for the governor's wake. Set by a refusal, cleared only by wake (or release): prepare clears `denied`
     // every frame, which let a refused board request a frame every vsync until the wake (measured by gpu's review).
     let waiting = false;
+    // The refusal that set `waiting` was a GPU admission (a budget the governor may free), not a CPU one.
+    let blockedOnGpu = false;
     // The paint's live-part flag, scanned once per paint version: a stand-in position queries the parts index only when set.
     let paintScanned: PreparedPaint2d | null = null, paintHasLive = false, paintLiveOnly = false;
     let device: GfxDevice | null = null;
@@ -327,12 +332,12 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     // The governor's wake for a refusal: the parked positions may be advanced again, and the board is asked for a frame.
     const wake = (): void => {
         for (const position of building.values()) position.parked = false;
-        waiting = false;
+        waiting = false; blockedOnGpu = false;
         host.invalidate('tile-composer-capacity');
     };
-    const refuseTarget = (): void => { denied = true; waiting = true; auditCount(audit, 'tile:denied'); store.wait(TARGET_BYTES, wake); };
+    const refuseTarget = (): void => { denied = true; waiting = true; blockedOnGpu = true; auditCount(audit, 'tile:denied'); store.wait(TARGET_BYTES, wake); };
     const refuseAdmission = (pool: 'gpu' | 'cpu', bytes: number): void => {
-        denied = true; waiting = true; auditCount(audit, 'tile:denied');
+        denied = true; waiting = true; blockedOnGpu = pool === 'gpu'; auditCount(audit, 'tile:denied');
         if (pool === 'gpu') store.wait(bytes, wake); else host.allocator.cpu.whenAvailable?.(wake, bytes);
     };
 
@@ -1002,7 +1007,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         retireLive();
         store.releaseAll();
         for (const route of routeList) route.release();
-        denied = false; waiting = false; settled = false; presenting = false;
+        denied = false; waiting = false; blockedOnGpu = false; settled = false; presenting = false;
         heldNodes.clear();
     };
 
@@ -1245,6 +1250,9 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 if (rects.length && rects.every(exactIn)) out.add(id);
             }
             return out;
+        },
+        memoryBlocked(): boolean {
+            return !disposed && waiting && blockedOnGpu && !indexing && finished.length === 0;
         },
         needsFrame(): boolean {
             if (disposed || denied || !presenting) return false;

@@ -29,7 +29,8 @@ export interface SessionInkServices {
   readonly clearRedoAtDown: () => void
   readonly invalidate: () => void
   readonly error: (error: unknown) => void
-  readonly mapPoint: (sample: RealSample) => { readonly x: number; readonly y: number }
+  /** Writes the sample's point, in shared-camera world coordinates, into `out`. */
+  readonly mapPoint: (sample: RealSample, out: { x: number; y: number }) => void
   readonly localToWorld: (origin: { readonly x: number; readonly y: number }) => readonly [number, number, number, number, number, number]
 }
 
@@ -37,7 +38,8 @@ export interface SessionInkServices {
 // remains alive until apply and history have retained the newly admitted samples.
 export function sessionInkContext(first: RealSample, services: SessionInkServices): LiveInkContext {
   const { session, sheet, page, tool, color, width } = services
-  const origin = services.mapPoint(first), id = newNodeId(session.doc)
+  const origin = { x: 0, y: 0 }, id = newNodeId(session.doc)
+  services.mapPoint(first, origin)
   const pressure = first.source === 'pen' && first.pressureKnown
   const fairTol = 0.25 / (services.declaredMaxScale * 3)
   return {
@@ -45,7 +47,7 @@ export function sessionInkContext(first: RealSample, services: SessionInkService
     presentation: { tool, color, width, fairTol, localToWorld: services.localToWorld(origin) },
     builderOptions: { pressure, declaredMaxScale: services.declaredMaxScale },
     captureDeviceScale: services.captureDeviceScale,
-    toLocal: sample => { const point = services.mapPoint(sample); return { x: point.x - origin.x, y: point.y - origin.y } },
+    toLocal: (sample, out) => { services.mapPoint(sample, out); out.x -= origin.x; out.y -= origin.y },
     clearRedoAtDown: services.clearRedoAtDown,
     invalidate: services.invalidate,
     error: services.error,

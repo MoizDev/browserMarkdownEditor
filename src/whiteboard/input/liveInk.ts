@@ -25,6 +25,9 @@ export interface InkPresentation {
   readonly clips?: readonly PaintClip[]
 }
 
+/** A point the caller owns and reuses: the live stroke maps every pointer sample into one, so the mapping allocates nothing. */
+export interface LocalPoint { x: number; y: number }
+
 export interface LiveInkContext {
   readonly identity: InkIdentity
   readonly presentation: InkPresentation
@@ -32,7 +35,8 @@ export interface LiveInkContext {
   readonly captureDeviceScale: number
   // Capture style, target sheet and local transform at down; implementations write
   // through the session transaction and preserve the same id/lease for undo/redo.
-  toLocal(sample: RealSample): { readonly x: number; readonly y: number }
+  /** Writes the sample's local point into `out`. */
+  toLocal(sample: RealSample, out: LocalPoint): void
   clearRedoAtDown(): void
   invalidate(): void
   commit(builder: SampleBuilder, identity: InkIdentity, undoImmediately: boolean, closed: boolean): DryInkIdentity
@@ -96,6 +100,7 @@ export class LiveInk implements GestureOwner {
   private dirty = true
   private dry: DryInkIdentity | null = null
   private snapshot: CurvePublication | null = null
+  private readonly point: LocalPoint = { x: 0, y: 0 }
   // The delegated bridge reads these once per input frame. One record is updated in place, so a read allocates nothing; the
   // bridge copies the fields it keeps, and the identity and presentation it holds are stable references.
   private readonly read: { identity: InkIdentity; presentation: InkPresentation; sample: RealSample; curveSequence: number }
@@ -176,7 +181,8 @@ export class LiveInk implements GestureOwner {
 
   private append(sample: RealSample, modifiers: Modifiers): void {
     if (this.last && sample.x === this.last.x && sample.y === this.last.y && (!this.context.builderOptions.pressure || sample.pressure === this.last.pressure)) return
-    const point = this.context.toLocal(sample)
+    const point = this.point
+    this.context.toLocal(sample, point)
     const pressure = sample.source === 'pen' && sample.buttons === 0 && sample.pressure === 0 && this.last ? this.last.pressure : sample.pressure
     this.builder.append(point.x, point.y, this.context.builderOptions.pressure ? pressure : undefined, modifiers.shift)
     this.last = sample

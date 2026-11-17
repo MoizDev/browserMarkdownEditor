@@ -148,6 +148,11 @@ function worldBox(bounds: Bounds, m: readonly [number, number, number, number, n
     return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
 }
 /** The part of the world the viewport shows. */
+/** Device pixels per world unit of the item's own transform, at this view. */
+function scaleAt(view: ViewState, item: WetInkSnapshot): number {
+    const m = item.presentation.localToWorld;
+    return view.camera.z * view.viewport.dpr * Math.hypot(m[0], m[1], m[2], m[3]);
+}
 function viewWorld(view: ViewState): Bounds {
     return { x: view.camera.x, y: view.camera.y, w: view.viewport.width / view.camera.z, h: view.viewport.height / view.camera.z };
 }
@@ -493,10 +498,11 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                 if (item.dry && !options.exists(item.dry)) handover?.clear(item.identity);
             }
             const snapshots = handover?.pendingSnapshots() ?? [];
-            const ids = new Set(snapshots.map(item => item.identity.gestureSequence));
-            for (const [id, item] of prepared) if (!ids.has(id)) { dropPrepared(item); prepared.delete(id); publicationVersion++; }
-            for (const gesture of [...stables.keys()]) if (!ids.has(gesture)) dropStable(gesture);
-            const scaleFor = (item: WetInkSnapshot) => { const m = item.presentation.localToWorld; return view.camera.z * view.viewport.dpr * Math.hypot(m[0], m[1], m[2], m[3]); };
+            // The pending list is short, so membership is a scan: a Set built here was a fresh allocation every frame.
+            const pendingGesture = (gesture: number) => snapshots.some(item => item.identity.gestureSequence === gesture);
+            for (const [id, item] of prepared) if (!pendingGesture(id)) { dropPrepared(item); prepared.delete(id); publicationVersion++; }
+            for (const gesture of stables.keys()) if (!pendingGesture(gesture)) dropStable(gesture);
+            const scaleFor = (item: WetInkSnapshot) => scaleAt(view, item);
             if (work && (!snapshots.some(item => item.identity.gestureSequence === work!.snapshot.identity.gestureSequence
                 && item.identity.nodeId === work!.snapshot.identity.nodeId) || work.scale < scaleFor(work.snapshot))) dropWork();
             while (!budget.shouldYield()) {
@@ -527,19 +533,14 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                 drawGpu(pass, view) { drawRouted(pass, view, band); },
                 draw2d(ctx, view) {
                     if (disposed || !options.current()) return;
+                    // The CPU reference path: counted, so a device session that draws here is visible in the audit.
+                    if (renderAuditEnabled()) auditCount('wet', 'draw:canvas2d');
                     const snapshots = handover?.pendingSnapshots() ?? [];
                     host.paintWorld(ctx, view, () => {
                         for (const snapshot of snapshots) {
                             const item = prepared.get(snapshot.identity.gestureSequence);
                             if (!item || item.snapshot.identity.nodeId !== snapshot.identity.nodeId) continue;
-                            if (item.bounds) {
-                                const b = item.bounds, [a, c1, c2, d, e, f] = snapshot.presentation.localToWorld;
-                                const corners = [[b.x, b.y], [b.x + b.w, b.y], [b.x, b.y + b.h], [b.x + b.w, b.y + b.h]];
-                                const xs = corners.map(([x, y]) => a * x + c2 * y + e), ys = corners.map(([x, y]) => c1 * x + d * y + f);
-                                const cam = view.camera;
-                                if (Math.max(...xs) < cam.x || Math.min(...xs) > cam.x + view.viewport.width / cam.z
-                                    || Math.max(...ys) < cam.y || Math.min(...ys) > cam.y + view.viewport.height / cam.z) continue;
-                            }
+                            if (offScreen(item.bounds, snapshot.presentation.localToWorld, view)) continue;
                             const isHighlight = snapshot.presentation.tool === 'highlighter';
                             if (!isHighlight && band === 'underlay') continue;
                             const pigment = resolveSwatch(options.palette(), snapshot.presentation.color as Swatch, isHighlight ? 'highlight' : 'stroke');

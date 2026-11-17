@@ -24,7 +24,8 @@ export interface SurfaceView {
 
 export type ContextDisposeReason = 'disposed' | 'revoked' | 'context-lost' |
     'creation-failed' | 'stale' | 'cpu-pinned' | 'restore-timeout' | 'pressure';
-export type CpuFallbackReason = 'capacity' | 'out-of-budget' | 'creation-failed' | 'context-lost' |
+/** `budget`: the visible-context cap is full, so this pane shows live 2D and upgrades when a context frees. */
+export type CpuFallbackReason = 'capacity' | 'budget' | 'out-of-budget' | 'creation-failed' | 'context-lost' |
     'cpu-pinned' | 'restore-timeout' | 'pressure';
 
 export interface SurfaceResizeResult {

@@ -115,7 +115,7 @@ export class PdfTileLayer implements Layer {
     private readonly failed = new Set<string>();
     private readonly retiring = new Set<Entry>();
     private readonly texturePool: PdfTexturePool;
-    private readonly atlas: TileAtlas<Entry>;
+    private readonly tileAtlas: TileAtlas<Entry>;
     /** One batch per atlas page within the scale group being drawn; the list is reused, so a frame allocates no batch. */
     private readonly tileBatches: { page: AtlasPage<Entry>; quads: QuadList }[] = [];
     private readonly bridgeTextures = new Map<string, PooledTexture>();
@@ -172,7 +172,7 @@ export class PdfTileLayer implements Layer {
         private readonly mirror?: PdfLayerMirror, private readonly bridge?: PdfVersionBridge | null) {
         if (__BME_BENCH__) this.benchmarkRaster = true;
         this.texturePool = new PdfTexturePool(host.allocator.gpu);
-        this.atlas = new TileAtlas<Entry>(host.allocator.gpu, entry => { entry.slot = undefined; this.coverCache = null; });
+        this.tileAtlas = new TileAtlas<Entry>(host.allocator.gpu, entry => { entry.slot = undefined; this.coverCache = null; });
     }
 
     prepare(view: ViewState, budget: FrameBudget): void {
@@ -198,7 +198,7 @@ export class PdfTileLayer implements Layer {
             }
         }
         // Pages of another device hold tiles no backend can draw: they go, and their owners are re-uploaded.
-        if (device) this.atlas.dropForeign(device);
+        if (device) this.tileAtlas.dropForeign(device);
         const input = this.demand(view);
         this.latestDemand = input;
         this.latestView = view;
@@ -456,7 +456,7 @@ export class PdfTileLayer implements Layer {
             }
             const { source, destination } = this.quad(entry.request, stack.rects[entry.request.page], view, slot);
             batch.quads.add(source, destination);
-            this.atlas.touch(slot);
+            this.tileAtlas.touch(slot);
         }
         if (!used) return;
         const sample = tiles[start];
@@ -515,7 +515,7 @@ export class PdfTileLayer implements Layer {
         this.drawnStack = null;
         if (this.frameTexture && reason !== 'context-lost') this.frameTexture.device.destroy(this.frameTexture.handle);
         this.frameTexture = null;
-        this.atlas.clear(reason === 'context-lost');
+        this.tileAtlas.clear(reason === 'context-lost');
         for (const texture of this.bridgeTextures.values()) {
             if (reason !== 'context-lost') texture.device.destroy(texture.handle);
         }
@@ -560,10 +560,10 @@ export class PdfTileLayer implements Layer {
             this.texturePool.clear(false);
             freed += pooled;
         }
-        freed += this.atlas.dropSpare();
+        freed += this.tileAtlas.dropSpare();
         // Whole pages only: a page with a planned or bitmap-less tile on it frees no bytes, so it stays. A freed tile
         // keeps its CPU bitmap, so it is uploaded again later rather than rastered.
-        if (freed < bytes) freed += this.atlas.evictPages(bytes - freed, entry => this.evictableTile(entry, input));
+        if (freed < bytes) freed += this.tileAtlas.evictPages(bytes - freed, entry => this.evictableTile(entry, input));
         if (freed) auditCount('pdf-page', 'evict-gpu', 1, { bytes: freed });
         return freed;
     }
@@ -578,7 +578,7 @@ export class PdfTileLayer implements Layer {
     private reclaimAtlas(): boolean {
         const input = this.latestDemand;
         if (!input) return false;
-        if (this.atlas.evictPages(1, entry => this.evictableTile(entry, input)) > 0) {
+        if (this.tileAtlas.evictPages(1, entry => this.evictableTile(entry, input)) > 0) {
             auditCount('pdf-page', 'atlas-page-evict');
             return true;
         }
@@ -699,7 +699,7 @@ export class PdfTileLayer implements Layer {
     }
 
     memory(): { gpuBytes: number; cpuBytes: number } {
-        let gpuBytes = (this.frameTexture ? 8 : 0) + this.texturePool.memory() + this.atlas.bytes(), cpuBytes = 0;
+        let gpuBytes = (this.frameTexture ? 8 : 0) + this.texturePool.memory() + this.tileAtlas.bytes(), cpuBytes = 0;
         for (const texture of this.bridgeTextures.values()) gpuBytes += texture.bytes;
         for (const entry of this.entries.values()) {
             cpuBytes += entry.lease?.bytes ?? 0;
@@ -779,18 +779,18 @@ export class PdfTileLayer implements Layer {
             return 'done';
         }
         const again = !!entry.slot;
-        if (entry.slot) { this.atlas.free(entry.slot); entry.slot = undefined; }
+        if (entry.slot) { this.tileAtlas.free(entry.slot); entry.slot = undefined; }
         let slot: AtlasSlot<Entry> | null;
-        try { slot = this.atlas.place(device, entry, () => this.reclaimAtlas()); }
+        try { slot = this.tileAtlas.place(device, entry, () => this.reclaimAtlas()); }
         catch (error) { this.onError(error, entry.request); return 'done'; }
         if (!slot) { this.awaitGpuCapacity(width * height * 4); return 'capacity'; }
         // The reclaim may have taken this very tile when it was off view (a prefetch).
-        if (this.entries.get(key) !== entry || !entry.bitmap) { this.atlas.free(slot); return 'done'; }
-        if (!budget.claimUpload(width * height * 4)) { this.atlas.free(slot); this.pendingFrame = true; return 'budget'; }
+        if (this.entries.get(key) !== entry || !entry.bitmap) { this.tileAtlas.free(slot); return 'done'; }
+        if (!budget.claimUpload(width * height * 4)) { this.tileAtlas.free(slot); this.pendingFrame = true; return 'budget'; }
         try {
             device.writeTexture(slot.page.handle, { x: slot.x, y: slot.y, width, height },
                 { source: bitmap, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
-        } catch (error) { this.atlas.free(slot); this.onError(error, entry.request); return 'done'; }
+        } catch (error) { this.tileAtlas.free(slot); this.onError(error, entry.request); return 'done'; }
         entry.slot = slot;
         this.coverCache = null;
         if (again) auditCount('pdf-page', 're-upload');
@@ -1024,7 +1024,7 @@ export class PdfTileLayer implements Layer {
         if (this.entries.get(key) !== entry) return;
         this.entries.delete(key);
         entry.controller.abort();
-        if (entry.slot) { this.atlas.free(entry.slot); entry.slot = undefined; }
+        if (entry.slot) { this.tileAtlas.free(entry.slot); entry.slot = undefined; }
         if (entry.settled) {
             this.contentRevision++;
             if (entry.bitmap) { forgetPdfTileArrival(entry.bitmap); entry.bitmap.close(); }

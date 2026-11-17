@@ -30,8 +30,8 @@ export interface NumericTileStore extends TileStore {
     remove(key: TileKey): boolean;
 }
 
-/** Scales that may hold entries at once: the packed key's scale field. A store refuses a sixty-fifth with a RangeError,
- * because a scale that cannot be named would make its entries unreachable by number. */
+/** Scales that may hold entries at once: the packed key's scale field. A scale past this count takes the index of the least
+ * recently used scale, whose entries are evicted first (tile:evict:scale-cap), so no frame path throws. */
 const SCALE_SLOTS = TILE_KEY_SCALES;
 /** A tile id as `tileId` writes it: `${band}/${slice}/${scale}/${x},${y}`. Parsed only by the compatibility `get(id)`. */
 const TILE_ID = /^(underlay|content)\/(\d+)\/([^/]+)\/(-?\d+),(-?\d+)$/;
@@ -134,6 +134,8 @@ class GpuTileStore implements NumericTileStore {
     private readonly scaleIndexes = new Map<number, number>();
     private readonly scaleValue = new Float64Array(SCALE_SLOTS).fill(NaN);
     private readonly scaleRefs = new Int32Array(SCALE_SLOTS);
+    /** Scratch for recycling: the newest frame each scale index was touched in. Reused, so a recycle allocates nothing. */
+    private readonly scaleNewest = new Float64Array(SCALE_SLOTS);
     /** band → scale → packed position → slots there (one per slice). Queries arrive as world rects at one scale. */
     private readonly byBand = new Map<PaintBand, Map<number, Map<number, Slot[]>>>();
     private readonly allocator: MemoryAllocator;
@@ -542,12 +544,31 @@ class GpuTileStore implements NumericTileStore {
             this.scaleRefs[known]++;
             return known;
         }
-        const free = this.scaleRefs.indexOf(0);
-        if (free < 0) throw new RangeError(`More than ${SCALE_SLOTS} scales hold tiles at once`);
+        let free = this.scaleRefs.indexOf(0);
+        if (free < 0) free = this.recycleScaleIndex();
         this.scaleIndexes.set(scale, free);
         this.scaleValue[free] = scale;
         this.scaleRefs[free] = 1;
         return free;
+    }
+
+    /** Takes the index of the least recently used scale when every index is in use: that scale's entries are evicted, each
+     * counted as tile:evict:scale-cap, and its index is returned with no references. The scale being registered holds no
+     * entry yet, so it can never be the victim. Recency is the newest frame any of a scale's entries was touched in. */
+    private recycleScaleIndex(): number {
+        const newest = this.scaleNewest.fill(-Infinity);
+        for (const slot of this.byNum.values()) {
+            if (slot.scaleIdx >= 0 && slot.usedFrame > newest[slot.scaleIdx]) newest[slot.scaleIdx] = slot.usedFrame;
+        }
+        let victim = -1;
+        for (let index = 0; index < SCALE_SLOTS; index++) {
+            if (this.scaleRefs[index] > 0 && (victim < 0 || newest[index] < newest[victim])) victim = index;
+        }
+        // The scan above read every entry before anything is evicted: an eviction unlinks, and unlinking releases the scale.
+        for (const slot of this.byNum.values()) {
+            if (slot.scaleIdx === victim) this.evictSlot(slot, 'scale-cap');
+        }
+        return victim;
     }
 
     /** Drops one reference to a registry index; the last one frees the index for the next scale. */

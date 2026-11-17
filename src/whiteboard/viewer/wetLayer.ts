@@ -15,7 +15,7 @@ import { HIGHLIGHT_OVERLAY_ALPHA, HIGHLIGHT_UNDERLAY_ALPHA, inkMaterial, type In
 import type { PaintSource, PaintInkItem, PaintClip } from '../render/paintStream';
 import type { Admission, CreateInkRoutes, InkRouteFor, ItemRoute, PreparedRun, WithClips } from '../render/gpu/contracts';
 import { awaitSizedCapacity, isBudgetRefusal } from '../render/budgetRefusal';
-import { appendPath2d } from '../render/reference/coverage2d';
+import { appendPath2d, path2d } from '../render/reference/coverage2d';
 
 // Provenance: wet/dry ink handover, bounded ink outline and C4 layer contracts;
 // independently wired renderer, no third-party source.
@@ -102,6 +102,17 @@ class ImmutableIds implements ReadonlySet<string> {
     }
 }
 const EMPTY_LIVE_IDS: ReadonlySet<string> = new ImmutableIds();
+
+// Frame clips of a continuation stroke as canvas2d paths, built once per clip geometry. Only a continuation of a framed
+// stroke has any, so the table stays tiny; it is cleared past a few dozen entries rather than tracked per stroke.
+const clipPaths = new Map<string, { readonly d: PaintClip['d']; readonly path: Path2D }>();
+function clipPathFor(clip: PaintClip): Path2D {
+    const held = clipPaths.get(clip.key);
+    if (held && held.d === clip.d) return held.path;
+    if (clipPaths.size >= 64) clipPaths.clear();
+    const path = path2d(clip.d); clipPaths.set(clip.key, { d: clip.d, path });
+    return path;
+}
 type WetBand = 'underlay' | 'content';
 const BANDS: readonly WetBand[] = ['underlay', 'content'];
 type InkRoutes = ReturnType<CreateInkRoutes>;
@@ -600,9 +611,18 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                             if (!isHighlight && band === 'underlay') continue;
                             const pigment = resolveSwatch(options.palette(), snapshot.presentation.color as Swatch, isHighlight ? 'highlight' : 'stroke');
                             if (!pigment) continue;
-                            const alpha = isHighlight ? (band === 'underlay' ? HIGHLIGHT_UNDERLAY_ALPHA : HIGHLIGHT_OVERLAY_ALPHA) : 1;
+                            // A continuation inherits its node's opacity and ancestor frame clips, as the committed stroke does. Live ink
+                            // drew without them, so a segment past its frame showed while drawing and vanished at pen-up (feature 6e360790).
+                            const alpha = (isHighlight ? (band === 'underlay' ? HIGHLIGHT_UNDERLAY_ALPHA : HIGHLIGHT_OVERLAY_ALPHA) : 1)
+                                * (snapshot.presentation.opacity ?? 1);
                             ctx.save();
                             try {
+                                // Each clip in its own transform, from the base of the paint world, then the stroke's own transform below.
+                                const base = ctx.getTransform();
+                                for (const clip of snapshot.presentation.clips ?? []) {
+                                    ctx.setTransform(base); ctx.transform(...clip.localToWorld); ctx.clip(clipPathFor(clip), clip.fillRule);
+                                }
+                                ctx.setTransform(base);
                                 const [a, b, c, d, e, f] = snapshot.presentation.localToWorld;
                                 ctx.transform(a, b, c, d, e, f); ctx.translate(item.origin[0], item.origin[1]);
                                 ctx.fillStyle = colourCss(withOpacity(pigment, alpha));

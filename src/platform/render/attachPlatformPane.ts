@@ -316,7 +316,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     const candidate = new GpuPaneCandidate({
         runtime, paneId: options.paneId, viewLease: options.viewLease, owner: options.documentToken,
         surface: () => lifecycle?.surface ?? null,
-        invalidate: reason => lifecycle?.invalidate(reason), onError: options.onError,
+        invalidate: reason => lifecycle?.invalidate(reason),
         inputHealthy: () => healthyInputAt !== null && performance.now() - healthyInputAt <= RENDER_CONSTANTS.stalledFenceMs,
         frameInterval: () => lastFrameInterval,
         onEvict: bytes => trimGpu(bytes),
@@ -335,7 +335,8 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         gpuRequested = true;
         const canvas = host.ownerDocument.createElement('canvas');
         canvas.width = 0; canvas.height = 0;
-        void lifecycle.surface.requestGpu(canvas, lifecycle.surface.stamp).catch(options.onError);
+        // A failed GPU request demotes this pane; it is not the document's failure.
+        void lifecycle.surface.requestGpu(canvas, lifecycle.surface.stamp).catch(error => candidate.fail(error, 'request'));
     };
     try {
         lifecycle = new PaneLifecycle<T>({
@@ -421,6 +422,13 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                         runtime.refresh();
                     },
                     layerId: (layer: Layer) => layerSet.definition(layer)?.id ?? 'unnamed',
+                    // The scheduler offers a pane its own error first. A failure of this pane's GPU work (its compositor, not the 2D path
+                    // or the document) demotes the pane to canvas2d, and the board stays open.
+                    recover: (error: unknown) => {
+                        if (!gpu || !cpuPresented) return false;
+                        candidate.fail(error, 'frame');
+                        return true;
+                    },
                     sceneRevision: (layer: Layer) => layerSet.definition(layer)?.revision(layer) ?? 0,
                     isCritical: (layer: Layer, view: ViewState) => layerSet.definition(layer)?.critical(layer, view) ?? false,
                     prepareFrame: (frame: ScheduledFrame, budget: Parameters<PaneCompositor['prepareFrame']>[1]) => {

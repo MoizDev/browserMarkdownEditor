@@ -91,7 +91,7 @@ class NotebookPaperLayer implements Layer {
     private readonly gpu: ReturnType<typeof createGpuPaintAdapter>;
     constructor(private readonly host: LayerHost, private readonly options: NotebookPaperLayerOptions) {
         // The paper's own opaque world: its page rects, which the paper fills (notebookPaper.ts), exact for an inverted view.
-        const gpuOptions = { audit: 'notebook-paper', opaqueWorld: () => this.drawnRects() };
+        const gpuOptions = { audit: 'notebook-paper', opaqueWorld: () => this.drawnPageRects() };
         this.gpu = createGpuPaintAdapter(this.gpuReference, host, error => this.report(error), gpuOptions);
     }
     private report(error: unknown): void {
@@ -225,7 +225,7 @@ class NotebookPaperLayer implements Layer {
         }
     }
     /** The current pages whose paper has been drawn at least once: the only pages a board may claim opaque (C1 readiness). */
-    drawnRects(): readonly Rect[] {
+    drawnPageRects(): readonly Rect[] {
         if (this.disposed || !this.ready) return [];
         return this.ready.stack.rects.filter(rect => this.drawn.has(pageKey(rect)));
     }
@@ -303,7 +303,7 @@ class NotebookPaperLayer implements Layer {
 /** The paper's definition, with the pages it has drawn (the board's opaque claim, C1). */
 export interface NotebookPaperDefinition extends PlatformLayerDefinition {
     /** The current pages whose paper has been drawn at least once; none until this paper's layer exists. */
-    drawnRects(): readonly Rect[];
+    drawnPageRects(): readonly Rect[];
 }
 /** Page/paper colour stays print-light, independently of the shell's palette. */
 export function createNotebookPaperLayer(options: NotebookPaperLayerOptions): NotebookPaperDefinition {
@@ -311,7 +311,7 @@ export function createNotebookPaperLayer(options: NotebookPaperLayerOptions): No
     return {
         id: 'notebook-paper', group: 'document',
         create: host => { live = new NotebookPaperLayer(host, options); return live; },
-        drawnRects: () => live?.drawnRects() ?? [],
+        drawnPageRects: () => live?.drawnPageRects() ?? [],
         revision: layer => (layer as NotebookPaperLayer).currentRevision(),
         cpuWorkingSet: layer => ({ mandatoryBytes: (layer as NotebookPaperLayer).demand(), prefetchBytes: 0 }),
         critical: layer => (layer as NotebookPaperLayer).critical(),

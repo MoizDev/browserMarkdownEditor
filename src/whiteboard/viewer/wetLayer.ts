@@ -592,7 +592,10 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
             if (disposed) throw new Error('Wet layer disposed');
             hosts.add(host); owner ??= host;
             let ended = false;
-            const layer: Layer = {
+            // prepareFirst is read by the scheduler from the layer object (not the definition): a live stroke with GPU runs in
+            // flight is prepared before the pane's other critical layers (fd3c12a6). The Layer contract itself is unchanged.
+            const layer: Layer & { prepareFirst(): boolean } = {
+                prepareFirst: () => !!owner?.device() && runsPending(),
                 prepare,
                 drawGpu(pass, view) { drawRouted(pass, view, band); },
                 draw2d(ctx, view) {

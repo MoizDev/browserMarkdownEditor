@@ -12,6 +12,8 @@ import type { PaintSource } from '../render/paintStream';
 import type { ViewerPaintPresentation } from '../render/paintPresentation';
 import type { ViewerEngine, ViewerInteractionPorts } from './types';
 import { createBoardWetLayer } from './wetLayer';
+import { createInkRoutes, inkRouteFor } from '../render/gpu/routeInk';
+import { withClips } from '../render/gpu/routePath';
 import { NO_SENSITIVE_IDS } from './sensitiveTargets';
 
 // Provenance: input routing, presented mapping, viewer interaction and shared
@@ -75,7 +77,7 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
     const wet = createBoardWetLayer({ token, palette: () => options.engine.getSnapshot().palette,
         readyFrame: () => options.engine.readyPaintFrame(), current,
         exists: identity => options.session.doc.rev < identity.nodeRevision || options.session.doc.nodes.has(identity.nodeId as import('../model/ids').NodeId),
-        invalidate: options.invalidate, onError: report });
+        invalidate: options.invalidate, onError: report, gpuRoutes: { createInkRoutes, inkRouteFor, withClips } });
     options.engine.setInteractionLayers(wet.layers);
     const mappings = new MappingHistory();
     const interaction: ViewerInteractionPorts = {

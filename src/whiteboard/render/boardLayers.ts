@@ -1,6 +1,5 @@
 import type { Affine, Rect, ViewState } from '../../platform/types';
 import type { HostBlock } from '../model/doc';
-import { boardPageStack } from '../model/pages';
 import type { PlatformLayerDefinition } from '../../platform/render/attachPlatformPane.types';
 import { awaitCapacity, isBudgetRefusal } from './budgetRefusal';
 import type { CompositorBackend, LayerCoverage, LayerHost } from '../../platform/render/compositor.types';
@@ -80,12 +79,14 @@ export interface BoardLayersOptions {
      * so a multiply keeps today's isolation composite. Supplied per host by `opaqueWorldOf`. */
     readonly opaqueWorld?: () => readonly Rect[];
 }
-/** The opaque world of a host's board content: its page rects, which a notebook's paper and a PDF's pages fill with an opaque
- * colour (paper: notebookPaper.ts, a full-page white path; PDF: render.ts fills each tile white before it renders). The gaps
- * between pages are opaque only while the view is not inverted, so the rects are exact for an inverted view and conservative
- * otherwise (C1, c1-opaque.md). A whiteboard has no page rects and claims none. */
-export function opaqueWorldOf(host: HostBlock): readonly Rect[] {
-    return boardPageStack(host)?.rects ?? [];
+/** The whole plane, in world units: board coordinates are bounded by the 1e12 world limit (services.ts inverse). */
+const WHOLE_PLANE: readonly Rect[] = Object.freeze([Object.freeze({ x: -1e12, y: -1e12, width: 2e12, height: 2e12 })]);
+/** The opaque world of a host's board content (C1, c1-opaque.md). A whiteboard's surface beneath its content is the
+ * appearance clear, opaque everywhere unless the view is inverted (the document group then starts transparent). A page
+ * host's surface is opaque only where its pages are drawn: `drawnPages` is the paper's claim, readiness-gated by it. */
+export function opaqueWorldOf(host: HostBlock, inverted: boolean, drawnPages?: readonly Rect[]): readonly Rect[] {
+    if (host.kind === 'whiteboard') return inverted ? [] : WHOLE_PLANE;
+    return drawnPages ?? [];
 }
 interface Estimate {
     readonly frame: PaintSource;
@@ -197,6 +198,8 @@ export interface BoardLayerPair extends Readonly<[PlatformLayerDefinition, Platf
 type OffscreenEncoder = { encodeOffscreen?(passes: OffscreenPasses, view: ViewState, band: PaintBand): void };
 /** The grain of a device's direct-frame charge (see chargeDirect): densePlan's DIRECT_CHUNK, the dense direct phase's own grain. */
 const DIRECT_CHUNK = 64 * 1024;
+/** The composer's prepare takes the drag's omitted set (PLAN §3.3, wave 2). Today's adapter ignores the third argument. */
+type OmitAwarePrepare = { prepare(view: ViewState, budget: FrameBudget, omit?: ReadonlySet<string>): void };
 export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     const hosts = new Map<PaintBand, LayerHost>();
     let adapter: CanvasPaintAdapter | null = null, allocatorHost: LayerHost | null = null;
@@ -211,6 +214,10 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     // `opaqueWorld` in wave 2, and until then today's adapter ignores it.
     const gpuOptions = () => ({ audit: options.auditSurface ?? 'board',
         ...(typeof options.opaqueWorld === 'function' ? { opaqueWorld: options.opaqueWorld } : {}) });
+    // The drag's omitted set reaches the tiles the adapter builds. The draw still takes it too (drawGpu's omit argument) until
+    // the composer owns omission; the two must agree, and they do while both read the same omitNodes(frame).
+    const prepareGpu = (view: ViewState, budget: FrameBudget, frame: PaintSource): void =>
+        (gpu as OmitAwarePrepare | null)?.prepare(view, withFirstUnit(budget), options.omitNodes?.(frame) ?? undefined);
     const liveSets = new WeakMap<PaintSource, { omit: ReadonlySet<string> | null | undefined; wet: ReadonlySet<string> | undefined; live: ReadonlySet<string> }>();
     const liveFor = (frame: PaintSource): ReadonlySet<string> | undefined => {
         const omit = options.omitNodes?.(frame), wet = options.liveNodeIds?.();
@@ -528,7 +535,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 // Charged before the build (the grant may already refuse) and after it (what this step built is held).
                 if (!chargeDirect(frame)) return;
                 adapter.prepare(view, budget);
-                gpu?.prepare(view, withFirstUnit(budget));
+                prepareGpu(view, budget, frame);
                 chargeDirect(frame);
                 prune(frame, adapter.readyFrame());
                 options.onPrepared?.();
@@ -620,7 +627,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             }
             denied = false;
             adapter.prepare(view, budget);
-            gpu?.prepare(view, withFirstUnit(budget));
+            prepareGpu(view, budget, frame);
             prune(frame, adapter.readyFrame());
             options.onPrepared?.();
         } catch (error) { report(error); }

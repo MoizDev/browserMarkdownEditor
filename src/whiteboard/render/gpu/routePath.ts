@@ -4,7 +4,7 @@
 // Triangles are keyed by the commands' content and a band; the device affine is a uniform of the coverage kit.
 import type { Affine, PathCommand, ViewState } from '../../../platform/types';
 import type { LayerHost } from '../../../platform/render/compositor.types';
-import type { ClipToken, GpuPass, RectI } from '../../../platform/render/gfx/api';
+import type { ByteLease, ClipToken, GpuPass, RectI } from '../../../platform/render/gfx/api';
 import type { FrameBudget } from '../../../platform/render/types';
 import { auditCount } from '../../../platform/render/renderAudit';
 import { createPathCoverageKit, type PathCoverageAdmission, type PreparedPathCoverage } from '../../../platform/render/pathCoverage';
@@ -26,7 +26,9 @@ type Origin = Readonly<{ x: number; y: number }>;
 type Bounds = Readonly<{ x0: number; y0: number; x1: number; y1: number }>;
 interface Shapes { readonly positive: Float64Array; readonly negative: Float64Array; readonly edges: number; readonly bounds: Bounds }
 /** One triangle set in item-local space, origin-relative. Its arrays are the kit's shared-buffer keys: the cache holds them. */
-interface Outline extends Shapes { readonly origin: Origin; readonly bytes: number }
+/** Its CPU bytes are leased from the pane's CPU allocator (`lease`), so the governor sees them and can reclaim them. `null` only
+ * for an outline built without a lease, which is never held in the cache. */
+interface Outline extends Shapes { readonly origin: Origin; readonly bytes: number; readonly lease: ByteLease | null; usedFrame: number }
 interface LocalRect { readonly x0: number; readonly x1: number; readonly y0: number; readonly y1: number }
 interface Viewport { readonly width: number; readonly height: number }
 /** The composite blend a path run is drawn with: the kit's normal cover, or the multiply-slice modulate cover. */
@@ -209,16 +211,30 @@ export function createPath(host: LayerHost, audit: string): {
     readonly route: ItemRoute<PaintPathItem>;
     readonly admitClips: AdmitClips;
     readonly coverage: ReturnType<typeof createPathCoverageKit>;
+    readonly beginFrame: (frame: number) => void;
+    readonly evictCpu: (bytes: number) => number;
 } {
     const kit = createPathCoverageKit(host, () => auditCount(audit, 'kit:pipeline-failed'), audit);
     // Triangles by content and band, most recently used last.
     const outlines = new Map<string, Outline>();
-    let outlineBytes = 0;
+    let outlineBytes = 0, frame = 0;
+    /** Drops outlines not used in the current frame, oldest first, until `bytes` are freed; releases their leases. Returns the
+     * bytes freed. The governor's CPU evict and the cache's own bound both come here. */
+    const reclaimOutlines = (bytes: number): number => {
+        let freed = 0;
+        for (const [key, old] of outlines) {
+            if (freed >= bytes) break;
+            if (old.usedFrame >= frame) continue;
+            outlines.delete(key); outlineBytes -= old.bytes; freed += old.bytes;
+            if (old.lease) host.allocator.cpu.release(old.lease);
+        }
+        return freed;
+    };
     const outlineFor = (key: string, d: readonly PathCommand[], band: number,
         build: (tolerance: number, origin: Origin) => Shapes | null): Outline | null => {
         const cached = outlines.get(key);
         if (cached) {
-            outlines.delete(key); outlines.set(key, cached);
+            outlines.delete(key); outlines.set(key, cached); cached.usedFrame = frame;
             auditCount(audit, 'geom:hit');
             return cached;
         }
@@ -227,12 +243,16 @@ export function createPath(host: LayerHost, audit: string): {
         if (!shapes) return null;
         auditCount(audit, 'geom:build');
         const bytes = shapes.positive.byteLength + shapes.negative.byteLength;
-        const outline: Outline = { origin, positive: shapes.positive, negative: shapes.negative, edges: shapes.edges, bounds: shapes.bounds, bytes };
+        // Leased before it is held: a refused lease first reclaims unused outlines; if still refused the outline is used for
+        // this admission only and not cached (counted), so the pane's CPU grant is never exceeded silently.
+        let lease = host.allocator.cpu.reserve(bytes);
+        if (!lease) { reclaimOutlines(bytes); lease = host.allocator.cpu.reserve(bytes); }
+        const outline: Outline = { origin, positive: shapes.positive, negative: shapes.negative, edges: shapes.edges, bounds: shapes.bounds,
+            bytes, lease, usedFrame: frame };
+        if (!lease) { auditCount(audit, 'geom:refused'); return outline; }
         outlines.set(key, outline); outlineBytes += bytes;
-        for (const [oldKey, old] of outlines) {
-            if (outlineBytes <= GEOMETRY_CACHE_BYTES || oldKey === key) break;
-            outlines.delete(oldKey); outlineBytes -= old.bytes;
-        }
+        // The bound is soft: an outline used this frame is never reclaimed, so it is trimmed by what other frames left behind.
+        if (outlineBytes > GEOMETRY_CACHE_BYTES) reclaimOutlines(outlineBytes - GEOMETRY_CACHE_BYTES);
         return outline;
     };
 
@@ -369,6 +389,7 @@ export function createPath(host: LayerHost, audit: string): {
         },
         release(): void {
             kit.release();
+            for (const old of outlines.values()) if (old.lease) host.allocator.cpu.release(old.lease);
             outlines.clear(); outlineBytes = 0;
         },
         memory(): { gpuBytes: number; cpuBytes: number } {
@@ -384,7 +405,13 @@ export function createPath(host: LayerHost, audit: string): {
         }
         return { status: 'ready', value: result };
     };
-    return { route, admitClips, coverage: kit };
+    return {
+        route, admitClips, coverage: kit,
+        /** Marks the frame for both caches: a triangle set or outline used in this frame is never reclaimed. Call once per frame. */
+        beginFrame(next: number): void { frame = next; kit.beginFrame(next); },
+        /** The governor's CPU reclaim for the outline cache: frees unused outlines oldest first and returns the bytes freed. */
+        evictCpu(bytes: number): number { return reclaimOutlines(bytes); },
+    };
 }
 
 export const createPathRoute: CreatePathRoute = (host, audit) => createPath(host, audit).route;

@@ -1,0 +1,226 @@
+// The picture route: one quad per picture, sampled from the picture's own texture (imageTextures.ts). The shader does
+// what the 2D canvas does to a picture: the crop, the invert, the opacity, and the antialiased edge of a rect that does
+// not land on whole pixels (b39411ce, measured against the canvas2d control). Design: PLAN §4 gpu-h7, §3.2.
+import type { ViewState } from '../../../platform/types';
+import type { LayerHost } from '../../../platform/render/compositor.types';
+import type { GfxDevice, GpuPass, PipelineHandle, RectI, SamplerHandle, ShaderModule, TextureHandle } from '../../../platform/render/gfx/api';
+import { auditCount } from '../../../platform/render/renderAudit';
+import type { FrameBudget } from '../../../platform/render/types';
+import type { PaintImageItem } from '../paintStream';
+import type { PaintResources2d } from '../reference/paint2d';
+import type { Admission, Blend, CreateImageRoute, ItemRoute, PreparedRun } from './contracts';
+import { createImageTextures, type ImageTextures } from './imageTextures';
+
+/** The picture route as the composer sees it. `useResources` gives it the paint's image lookup for the revision being
+ * composed: the ItemRoute contract has no place for it (see the report to gpu), so the composer binds it. */
+export interface ImageRoute extends ItemRoute<PaintImageItem> {
+    useResources(resources: PaintResources2d): void;
+    /** Frees picture textures nobody holds, least recently used first; returns bytes freed. For the governor (h9). */
+    evictTextures(bytes: number, frameId: number): number;
+}
+
+/** One draw: a picture's texture over its device rect, its uniforms packed for the shader below. */
+interface ImageDraw {
+    readonly texture: TextureHandle;
+    readonly scissor: RectI;
+    readonly uniforms: Float32Array;
+}
+
+interface ImageRun extends PreparedRun {
+    readonly route: 'image';
+    readonly blend: 'over';
+    readonly device: GfxDevice;
+    readonly calls: readonly ImageDraw[];
+    /** Image keys whose textures this run holds; retire releases them once. */
+    readonly holds: readonly string[];
+    retired: boolean;
+}
+
+const UNIFORM_BYTES = 64;
+
+/** Four vec4 uniforms, 16 floats: viewport (target px w, h), destination (device rect x0, y0, x1, y1), sourceRect (texel
+ * rect u0, v0, u1, v1), params (texture w, h, opacity, invert). The quad covers whole device pixels; every edge pixel is
+ * measured against the rect in the fragment, so the vertices need no antialiasing of their own. */
+const IMAGE_SHADER: ShaderModule = {
+    id: 'board-image-quad', revision: 1,
+    layout: { uniforms: [{ binding: 0, byteSize: UNIFORM_BYTES }], textures: [{ binding: 0, format: 'rgba8' }], attributes: [] },
+    glsl: {
+        vertex: `#version 300 es
+precision highp float;
+layout(std140) uniform GfxUniforms0 {
+    vec4 viewport;
+    vec4 destination;
+    vec4 sourceRect;
+    vec4 params;
+};
+out vec2 pixel;
+void main() {
+    vec2 corner = vec2(float(gl_VertexID & 1), float((gl_VertexID >> 1) & 1));
+    pixel = mix(floor(destination.xy), ceil(destination.zw), corner);
+    vec2 unit = pixel / viewport.xy;
+    gl_Position = vec4(unit.x * 2.0 - 1.0, 1.0 - unit.y * 2.0, 0.0, 1.0);
+}`,
+        fragment: `#version 300 es
+precision highp float;
+layout(std140) uniform GfxUniforms0 {
+    vec4 viewport;
+    vec4 destination;
+    vec4 sourceRect;
+    vec4 params;
+};
+uniform sampler2D gfxTexture0;
+in vec2 pixel;
+layout(location=0) out vec4 gfxColour;
+void main() {
+    // The pixel's footprint is [pixel - 0.5, pixel + 0.5]. Its area inside the rect is the coverage; a corner takes the
+    // smaller of its two edge coverages, not their product (b39411ce, the 0.55-scale corner).
+    vec2 lo = max(pixel - 0.5, destination.xy);
+    vec2 hi = min(pixel + 0.5, destination.zw);
+    vec2 cover = clamp(hi - lo, 0.0, 1.0);
+    float coverage = min(cover.x, cover.y);
+    // The 2D canvas drops an edge pixel covered under a quarter; an interior pixel has coverage 1 and is never dropped.
+    if (coverage < 0.25) discard;
+    // The texel is the picture's linear mapping of the centre of the pixel's visible span: the mean of the texels it covers.
+    vec2 centre = (lo + hi) * 0.5;
+    vec2 texel = sourceRect.xy + (centre - destination.xy) / (destination.zw - destination.xy) * (sourceRect.zw - sourceRect.xy);
+    vec4 p = texture(gfxTexture0, vec2(texel.x / params.x, 1.0 - texel.y / params.y));
+    if (params.w > 0.5 && p.a > 0.0) {
+        // CSS invert(1) then hue-rotate(180deg) on the unpremultiplied colour. The hue matrix's rows sum to 1, so the
+        // pair is exactly 1 - M·c.
+        vec3 c = p.rgb / p.a;
+        vec3 r = vec3(dot(vec3(-0.574, 1.430, 0.144), c), dot(vec3(0.426, 0.430, 0.144), c), dot(vec3(0.426, 1.430, -0.856), c));
+        p = vec4(clamp(1.0 - r, 0.0, 1.0) * p.a, p.a);
+    }
+    gfxColour = p * (params.z * coverage);
+}`,
+    },
+};
+
+const unsupported = (why: string) => ({ status: 'unsupported' as const, why });
+
+export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
+    const textures: ImageTextures = createImageTextures(host, audit);
+    let resources: PaintResources2d | null = null;
+    let device: GfxDevice | null = null, pipeline: PipelineHandle | null = null, sampler: SamplerHandle | null = null;
+    let pending = false, failed = false, incarnation = 0;
+
+    const release = (): void => {
+        incarnation++;
+        textures.release();
+        if (device) {
+            if (pipeline) device.destroy(pipeline);
+            if (sampler) device.destroy(sampler);
+        }
+        device = null; pipeline = null; sampler = null; pending = false; failed = false;
+    };
+
+    // The pipeline compiles asynchronously; a run is admitted only once it exists. A generation change drops everything.
+    const warm = (current: GfxDevice): void => {
+        if (device !== current) { release(); device = current; }
+        if (pipeline || pending || failed) return;
+        sampler ??= current.createSampler('linear');
+        const serial = ++incarnation;
+        pending = true;
+        current.createPipeline({ shader: IMAGE_SHADER, topology: 'triangle-strip', colorFormat: 'rgba8', samples: 1,
+            blend: 'source-over', alphaToCoverage: false, colorWrite: [true, true, true, true], stencil: { enabled: false } })
+            .then(value => {
+                if (incarnation !== serial || device !== current) { current.destroy(value); return; }
+                pipeline = value; pending = false;
+                host.invalidate('image-pipeline-ready');
+            }, () => {
+                if (incarnation !== serial) return;
+                pending = false; failed = true;
+                auditCount(audit, 'image:pipeline-failed');
+                host.invalidate('image-pipeline-failed');
+            });
+    };
+
+    return {
+        id: 'image',
+        accepts(item): item is PaintImageItem { return item.kind === 'image'; },
+        admit(items: readonly PaintImageItem[], view: ViewState, blend: Blend, budget: FrameBudget): Admission<PreparedRun> {
+            const current = host.device();
+            if (!current) return unsupported('no-device');
+            if (current.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration) return { status: 'deferred' };
+            // The 'modulate' pipeline needs h10's blend (PLAN §3.4) on PipelineDesc; until it lands a multiply slice of
+            // pictures is counted as a CPU fallback by the composer, not drawn here.
+            if (blend === 'modulate') return unsupported('modulate-blend');
+            if (!resources) throw new Error('The image route has no paint resources: useResources must run before admit');
+            warm(current);
+            if (failed) return unsupported('pipeline-failed');
+            if (!pipeline || !sampler) return { status: 'deferred' };
+
+            const scale = view.camera.z * view.viewport.dpr;
+            const targetWidth = Math.round(view.viewport.width * view.viewport.dpr), targetHeight = Math.round(view.viewport.height * view.viewport.dpr);
+            const calls: ImageDraw[] = [], holds: string[] = [];
+            // All or nothing: a refused picture takes the whole run to the composer, so the holds taken so far are returned.
+            const reject = (admission: Exclude<Admission<PreparedRun>, { status: 'ready' }>): Admission<PreparedRun> => {
+                for (const key of holds) textures.unhold(key);
+                return admission;
+            };
+            for (const item of items) {
+                const { rect } = item;
+                if (!(rect.width > 0 && rect.height > 0) || !(item.opacity > 0)) continue;
+                const [a, b, c, d, e, f] = item.localToWorld;
+                // Axis-aligned and unflipped: the device rect is the affine's scale and translation applied to the rect.
+                if (b !== 0 || c !== 0 || !(a > 0) || !(d > 0)) return reject(unsupported('transform'));
+                // TODO(h4): clipped pictures draw through withClips (routePath.ts) once it exports it; until then they are a CPU fallback.
+                if (item.clips.length > 0) return reject(unsupported('clip'));
+                if (item.retainedTile) return reject(unsupported('retained'));
+                const admitted = textures.acquire(item.imageKey, resources.image(item.imageKey), budget);
+                if (admitted.status === 'empty') continue;
+                if (admitted.status !== 'ready') return reject(admitted);
+                holds.push(item.imageKey);
+                const tex = admitted.value;
+
+                const src = item.sourceRect ?? { x: 0, y: 0, width: tex.sourceWidth, height: tex.sourceHeight };
+                if (!(src.width > 0 && src.height > 0) || src.x < 0 || src.y < 0 || src.x + src.width > tex.sourceWidth || src.y + src.height > tex.sourceHeight) {
+                    return reject(unsupported('crop'));
+                }
+                // The device rect of the picture, fractional: the shader measures the pixels it covers.
+                const x0 = (e + a * rect.x - view.camera.x) * scale, y0 = (f + d * rect.y - view.camera.y) * scale;
+                const x1 = x0 + a * rect.width * scale, y1 = y0 + d * rect.height * scale;
+                const left = Math.max(0, Math.floor(x0)), top = Math.max(0, Math.floor(y0));
+                const right = Math.min(targetWidth, Math.ceil(x1)), bottom = Math.min(targetHeight, Math.ceil(y1));
+                if (right <= left || bottom <= top) continue;
+                // The crop in source pixels, as texels of the texture (which is smaller only when the source was downscaled).
+                const kx = tex.width / tex.sourceWidth, ky = tex.height / tex.sourceHeight;
+                const uniforms = new Float32Array(UNIFORM_BYTES / 4);
+                uniforms.set([targetWidth, targetHeight, 0, 0, x0, y0, x1, y1,
+                    src.x * kx, src.y * ky, (src.x + src.width) * kx, (src.y + src.height) * ky,
+                    tex.width, tex.height, item.opacity, item.inverted ? 1 : 0]);
+                calls.push({ texture: tex.texture, scissor: { x: left, y: top, width: right - left, height: bottom - top }, uniforms });
+            }
+            if (calls.length === 0) {
+                for (const key of holds) textures.unhold(key);
+                return { status: 'empty' };
+            }
+            const run: ImageRun = { route: 'image', blend: 'over', device: current, calls, holds, retired: false };
+            return { status: 'ready', value: run };
+        },
+        draw(pass: GpuPass, run: PreparedRun): void {
+            const own = run as ImageRun;
+            const drawPipeline = pipeline, drawSampler = sampler;
+            if (!drawPipeline || !drawSampler || device !== own.device || own.retired) throw new Error('Stale image run');
+            for (const call of own.calls) {
+                const slice = host.uniforms(call.uniforms);
+                pass.draw({ pipeline: drawPipeline, vertices: [], first: 0, count: 4, instances: 1, scissor: call.scissor,
+                    bindings: { uniforms: [{ binding: 0, slice }], textures: [{ binding: 0, texture: call.texture, sampler: drawSampler }] } });
+            }
+            auditCount(audit, 'route:image', own.calls.length);
+        },
+        retire(run: PreparedRun): void {
+            const own = run as ImageRun;
+            if (own.retired) return;
+            own.retired = true;
+            for (const key of own.holds) textures.unhold(key);
+        },
+        release,
+        memory(): { gpuBytes: number; cpuBytes: number } { return textures.memory(); },
+        useResources(next: PaintResources2d): void { resources = next; },
+        evictTextures(bytes: number, frameId: number): number { return textures.evict(bytes, frameId); },
+    };
+}
+
+/** The factory the contract names (contracts.ts CreateImageRoute): a compile-time check that the route matches it. */
+export const imageRouteFactory: CreateImageRoute = createImageRoute;

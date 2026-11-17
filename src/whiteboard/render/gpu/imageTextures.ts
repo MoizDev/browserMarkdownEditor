@@ -72,8 +72,8 @@ interface MipDevice {
     generateMips(texture: TextureHandle): void;
 }
 
-/** The largest texture side the device takes. PLAN §3.4 names it `limits.maxTextureSize` (h10); until that lands the
- * existing `maxTexture2D` is the same limit. */
+/** The largest texture side the device takes: `limits.maxTexture2D`, the field gpu confirmed (PLAN §3.4's
+ * `maxTextureSize` is superseded). */
 const maxTextureSide = (device: GfxDevice): number => device.limits.maxTexture2D;
 
 const UPLOAD_USES = ['sample', 'copy-dst'] as const;

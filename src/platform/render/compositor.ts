@@ -2,7 +2,7 @@ import { auditCount, auditStage, renderAuditEnabled } from './renderAudit';
 import type { Rect, ViewState } from '../types';
 import type {
     CompositorAppearance, CompositorCoverage, CompositorLayer, CompositorPage, IsolationReservation, PaneCompositor, PaneSurfaceHost, TexturedQuadOptions,
-    TexturedQuadPlacement,
+    TexturedQuadSpec,
 } from './compositor.types';
 import { TEXTURED_QUAD_BATCH_SHADER } from './gfx/webgl2Shaders';
 import { paintCanvasIsolation } from './canvas2dContext';
@@ -27,10 +27,6 @@ function quadDescriptor(shader: ShaderModule): PipelineDesc {
         colorWrite: [true, true, true, true], stencil: { enabled: false } };
 }
 
-/** Quads per batched draw. A batch's instance data goes through the uniform ring, whose slot is sized by the device; 512
- * records (16 KiB) fit the smallest slot, so a larger batch is simply several draws of this size. By reading: the ring's
- * first slot is 1 MiB, and a batch larger than the slot would be refused as out-of-budget every frame. */
-const BATCH_QUADS_PER_DRAW = 512;
 
 export interface GpuCompositorOptions {
     readonly owner: Webgl2Owner;
@@ -137,8 +133,8 @@ export class GpuCompositor implements PaneCompositor {
     #report: CompositorCoverage | null = null;
     readonly #encodings = new Set<FrameEncoder>();
     readonly #quadData = new Float32Array(16);
-    /** Batched quads: one instance record (dst x0,y0,x1,y1 and src x,y,w,h) per quad, and the batch's uniform block. */
-    readonly #batchData = new Float32Array(BATCH_QUADS_PER_DRAW * 8);
+    /** Batched quads: one instance record (dst x0,y0,x1,y1 and src x,y,w,h) per quad, grown to the largest batch so far, and the batch's uniform block. */
+    #batchData = new Float32Array(64 * 8);
     readonly #batchUniforms = new Float32Array(16);
 
     constructor(options: GpuCompositorOptions) {
@@ -526,14 +522,14 @@ export class GpuCompositor implements PaneCompositor {
                 sampler: options.sampling === 'nearest' ? this.#nearest : this.#linear }] } });
     }
 
-    /** Several quads of one texture in instanced draws (one draw per BATCH_QUADS_PER_DRAW quads). The same options apply to
-     * every quad, and each quad is validated and clipped exactly as drawTexturedQuad does. A canvas target loops its drawImage. */
-    drawTexturedQuads(pass: GpuPass, texture: TextureHandle, quads: readonly TexturedQuadPlacement[], options: TexturedQuadOptions): void;
-    drawTexturedQuads(ctx: CanvasRenderingContext2D, image: ImageBitmap, quads: readonly TexturedQuadPlacement[], options: TexturedQuadOptions): void;
+    /** Several quads of one texture, in one instanced draw. The same options apply to every quad, and each quad is validated
+     * and clipped exactly as drawTexturedQuad does. A canvas target loops its drawImage: each quad is one drawImage, as before. */
+    drawTexturedQuads(pass: GpuPass, texture: TextureHandle, quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void;
+    drawTexturedQuads(ctx: CanvasRenderingContext2D, image: ImageBitmap, quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void;
     drawTexturedQuads(pass: GpuPass | CanvasRenderingContext2D, texture: TextureHandle | ImageBitmap,
-        quads: readonly TexturedQuadPlacement[], options: TexturedQuadOptions): void {
+        quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void {
         if ('drawImage' in pass) {
-            for (const quad of quads) this.drawTexturedQuad(pass, texture as ImageBitmap, quad.src, quad.dst, options);
+            for (const quad of quads) this.drawTexturedQuad(pass, texture as ImageBitmap, quad.sourceRect, quad.destRect, options);
             return;
         }
         const gpuTexture = texture as TextureHandle;
@@ -547,10 +543,11 @@ export class GpuCompositor implements PaneCompositor {
         if (info.format !== 'rgba8') throw new ArenaError('invalid-input');
         const width = Math.round(active.view.viewport.width * active.view.viewport.dpr);
         const height = Math.round(active.view.viewport.height * active.view.viewport.dpr);
-        const batch = this.#batchData;
+        // Every quad is checked before anything is drawn, so a bad quad refuses the whole batch and draws none of it.
+        const batch = this.#batchData.length >= quads.length * 8 ? this.#batchData : (this.#batchData = new Float32Array(quads.length * 8));
         let count = 0, left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
         for (const quad of quads) {
-            const { src, dst } = quad;
+            const { sourceRect: src, destRect: dst } = quad;
             if (!validRect(src) || !validRect(dst)) throw new ArenaError('invalid-input');
             if (src.x < info.usedRect.x || src.y < info.usedRect.y ||
                 src.x + src.width > info.usedRect.x + info.usedRect.width || src.y + src.height > info.usedRect.y + info.usedRect.height) {
@@ -565,28 +562,21 @@ export class GpuCompositor implements PaneCompositor {
             count++;
             left = Math.min(left, scissor.x); top = Math.min(top, scissor.y);
             right = Math.max(right, scissor.x + scissor.width); bottom = Math.max(bottom, scissor.y + scissor.height);
-            if (count === BATCH_QUADS_PER_DRAW) {
-                this.#drawBatch(pass, pipeline, gpuTexture, info, options, opacity, width, height, count, { x: left, y: top, width: right - left, height: bottom - top });
-                count = 0; left = Infinity; top = Infinity; right = -Infinity; bottom = -Infinity;
-            }
         }
-        if (count) this.#drawBatch(pass, pipeline, gpuTexture, info, options, opacity, width, height, count, { x: left, y: top, width: right - left, height: bottom - top });
-    }
-
-    #drawBatch(pass: GpuPass, pipeline: PipelineHandle, texture: TextureHandle, info: ReturnType<Webgl2Owner['textureInfo']>,
-        options: TexturedQuadOptions, opacity: number, width: number, height: number, count: number, scissor: RectI): void {
+        if (!count) return;
         // The block is the single quad's layout: viewport, then texture size with opacity (the coverage class is bench-only).
         this.#batchUniforms.set([0, 0, width, height, 0, 0, 0, 0, 0, 0, 0, 0, info.width, info.height, opacity,
             __BME_BENCH__ ? options.coverage === 'current' ? 3 : options.coverage === 'standin' ? 2 : 0 : 0]);
         const uniforms = this.uniforms(this.#batchUniforms);
-        const vertices = this.uniforms(this.#batchData.subarray(0, count * 8));
-        pass.draw({ pipeline, vertices: [vertices], first: 0, count: 4, instances: count, scissor,
+        const vertices = this.uniforms(batch.subarray(0, count * 8));
+        pass.draw({ pipeline, vertices: [vertices], first: 0, count: 4, instances: count,
+            scissor: { x: left, y: top, width: right - left, height: bottom - top },
             ...(__BME_BENCH__ && options.coverage && options.coverage !== 'none' ? {
                 coverageClass: options.coverage === 'standin' ? 2 as const : 3 as const,
                 // A batch shares one stand-in ratio; the single path measures it per quad, so this is the declared one.
                 ...(options.coverage === 'standin' ? { standInRatio: options.standInRatio ?? 1 } : {}),
             } : {}),
-            bindings: { uniforms: [{ binding: 0, slice: uniforms }], textures: [{ binding: 0, texture,
+            bindings: { uniforms: [{ binding: 0, slice: uniforms }], textures: [{ binding: 0, texture: gpuTexture,
                 sampler: options.sampling === 'nearest' ? this.#nearest! : this.#linear! }] } });
     }
 

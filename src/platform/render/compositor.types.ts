@@ -54,10 +54,11 @@ export interface LayerAllocators {
 }
 
 /** Source is intrinsic texture/bitmap texels including its real gutter; destination is DEVICE pixels. */
-/** One quad of a batch: the source rectangle in texels and the destination in device pixels, as drawTexturedQuad takes them. */
-export interface TexturedQuadPlacement {
-    readonly src: Readonly<Rect>;
-    readonly dst: Readonly<Rect>;
+/** One quad of a batch, in the same units and gutter rules as drawTexturedQuad: the source rectangle in texels and the
+ * destination in device pixels. */
+export interface TexturedQuadSpec {
+    readonly sourceRect: Readonly<Rect>;
+    readonly destRect: Readonly<Rect>;
 }
 export interface TexturedQuadOptions {
     readonly opacity: number;
@@ -115,8 +116,8 @@ export interface LayerHost {
     uniforms(bytes: ArrayBufferView): UniformSlice;
     drawTexturedQuad(pass: GpuPass, texture: TextureHandle, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
     drawTexturedQuad(ctx: CanvasRenderingContext2D, image: ImageBitmap, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
-    drawTexturedQuads(pass: GpuPass, texture: TextureHandle, quads: readonly TexturedQuadPlacement[], options: TexturedQuadOptions): void;
-    drawTexturedQuads(ctx: CanvasRenderingContext2D, image: ImageBitmap, quads: readonly TexturedQuadPlacement[], options: TexturedQuadOptions): void;
+    drawTexturedQuads(pass: GpuPass, texture: TextureHandle, quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void;
+    drawTexturedQuads(ctx: CanvasRenderingContext2D, image: ImageBitmap, quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void;
 }
 
 /** The attach actor forwards these capabilities into its stable LayerHost objects. */
@@ -129,8 +130,8 @@ export interface CompositorResources {
     uniforms(bytes: ArrayBufferView): UniformSlice;
     drawTexturedQuad(pass: GpuPass, texture: TextureHandle, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
     drawTexturedQuad(ctx: CanvasRenderingContext2D, image: ImageBitmap, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
-    drawTexturedQuads(pass: GpuPass, texture: TextureHandle, quads: readonly TexturedQuadPlacement[], options: TexturedQuadOptions): void;
-    drawTexturedQuads(ctx: CanvasRenderingContext2D, image: ImageBitmap, quads: readonly TexturedQuadPlacement[], options: TexturedQuadOptions): void;
+    drawTexturedQuads(pass: GpuPass, texture: TextureHandle, quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void;
+    drawTexturedQuads(ctx: CanvasRenderingContext2D, image: ImageBitmap, quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void;
 }
 
 /** Final clear is opaque; inversion applies once to composited document colour (C2.5). */

@@ -4,7 +4,7 @@ import { deviceContext, imageExtent, paintCanvasIsolation, registerCanvasIsolati
 import { createColourGroup2d } from './colourGroup2d';
 import type { ColourGroup2d } from './colourGroup2d';
 import { paintPageScope, paintWorldScope, paneCssTransform, projectPage } from './compositorProjection';
-import type { Compositor2DOptions, CompositorAppearance, CompositorCoverage, CompositorLayer, CreatedCompositor2D, IsolationPaintOptions, IsolationReservation, PaneCompositor, PaneSurfaceHost, TexturedQuadOptions, TexturedQuadPlacement } from './compositor.types';
+import type { Compositor2DOptions, CompositorAppearance, CompositorCoverage, CompositorLayer, CreatedCompositor2D, IsolationPaintOptions, IsolationReservation, PaneCompositor, PaneSurfaceHost, TexturedQuadOptions, TexturedQuadSpec } from './compositor.types';
 import { RENDER_CONSTANTS as POLICY } from './constants';
 import type { ByteLease, GfxLimits, GpuPass, RectI, TextureHandle } from './gfx/api';
 import type { MemoryCacheHandle } from './memoryGovernor';
@@ -873,8 +873,8 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
 
     /** A batch on the canvas path is its quads in order: each one is the single drawImage it always was. */
     private quads(ctx: CanvasRenderingContext2D | GpuPass, image: ImageBitmap | TextureHandle,
-        quads: readonly TexturedQuadPlacement[], options: TexturedQuadOptions): void {
-        for (const quad of quads) this.quad(ctx, image, quad.src, quad.dst, options);
+        quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void {
+        for (const quad of quads) this.quad(ctx, image, quad.sourceRect, quad.destRect, options);
     }
     private quad(ctx: CanvasRenderingContext2D | GpuPass, image: ImageBitmap | TextureHandle,
         sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void {

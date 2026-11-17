@@ -1,5 +1,6 @@
 import type { Rgba } from '../../../platform/types';
 import type { ByteLease } from '../../../platform/render/gfx/api';
+import { auditCount } from '../../../platform/render/renderAudit';
 import { colourCss } from '../colour';
 
 // Run masks for the board's GPU text route (solo/whiteboard-text-atlas.md, "Decision after step 2"). A run is one
@@ -241,8 +242,9 @@ export function createCpuAccount(allocator: { reserve(bytes: number): ByteLease 
 
 interface MeasureEntry extends Indexed { readonly value: MaskMeasure }
 
-/** `account` charges each memoised measurement; a measurement the pool will not charge is computed and not kept. */
-export function createMaskRaster(account?: CpuAccount): MaskRaster {
+/** `account` charges each memoised measurement; a measurement the pool will not charge is computed and not kept, and each such
+ * recomputation is counted as `text:measure-uncached` on `audit`, so a pool at its limit shows as a count, not as a silent cost. */
+export function createMaskRaster(account?: CpuAccount, audit?: string): MaskRaster {
     // Created on the first raster only: an 8 MB canvas is not worth holding for a board without text.
     let ctx: OffscreenCanvasRenderingContext2D | null = null;
     const measured = new KeyedIndex<MeasureEntry>();
@@ -318,6 +320,9 @@ export function createMaskRaster(account?: CpuAccount): MaskRaster {
             if (!account || account.charge(MEMO_ENTRY_BYTES + 2 * (req.css.length + req.text.length))) {
                 const identity = copyIdentity(key);
                 measured.add({ identity, hash: identityHash(identity), value: result });
+            } else if (audit) {
+                // Not kept: the next prepare of this run measures it again, which is correct and costs one measureText.
+                auditCount(audit, 'text:measure-uncached');
             }
             return result;
         },

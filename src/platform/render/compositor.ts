@@ -126,6 +126,8 @@ export class GpuCompositor implements PaneCompositor {
     #shortfalls: IsolationShortfall[] = [];
     #active: DrawScope | null = null;
     #lastSubmissionSerial = 0;
+    /** Audit only: the camera scale at this compositor's previous encode, for the present's zooming flag. */
+    #lastScale: number | null = null;
     #quad: PipelineHandle | null = null;
     #batchQuad: PipelineHandle | null = null;
     #nearest: SamplerHandle | null = null;
@@ -329,6 +331,7 @@ export class GpuCompositor implements PaneCompositor {
         const timed = renderAuditEnabled();
         const encodeStarted = timed ? performance.now() : 0;
         try {
+            const zooming = timed && this.#zoomStep(frame.view.camera.z);
             if (timed) auditDrawnStart();
             const coverage = snapshot.layers.map(binding => binding.coverage(frame, this.backend));
             // Only a critical layer's missing content refuses the frame. A non-critical layer presents with its stand-in (what it
@@ -347,7 +350,8 @@ export class GpuCompositor implements PaneCompositor {
                 if (timed) {
                     const tally = auditDrawnTake();
                     auditPresent({ pane: this.#options.paneId ?? null, frame: frame.frameId, rawTick: frame.timestamp, backend: this.backend,
-                        complete: false, canvas: null, standIns: tally.standIns, holes: tally.holes, refusal: 'coverage' });
+                        layersComplete: false, canvas: null, standIns: tally.standIns, standInsRaster: tally.standInsRaster, holes: tally.holes,
+                        zooming, refusal: 'coverage' });
                 }
                 return refused;
             }
@@ -439,8 +443,8 @@ export class GpuCompositor implements PaneCompositor {
                             staleVersion: coverage.some(item => item.staleVersion),
                             qualityScale: snapshot.metrics!.qualityScale });
                         if (tally) auditPresent({ pane: this.#options.paneId ?? null, frame: frame.frameId, rawTick: frame.timestamp,
-                            backend: this.backend, complete: coverage.every(item => item.complete) && tally.standIns === 0 && tally.holes === 0,
-                            canvas: this.surface, standIns: tally.standIns, holes: tally.holes, refusal: null });
+                            backend: this.backend, layersComplete: coverage.every(item => item.complete), canvas: this.surface,
+                            standIns: tally.standIns, standInsRaster: tally.standInsRaster, holes: tally.holes, zooming, refusal: null });
                         return { drawn: frame.layers.filter(meta => snapshot.layers.some(binding => binding.layer === meta.layer))
                             .map(meta => ({ layer: meta.layer, sceneRevision: meta.sceneRevision })),
                         completed: () => !this.#disposed && epoch === this.#epoch && this.#options.owner.resources.completed(submitted.serial),
@@ -466,6 +470,13 @@ export class GpuCompositor implements PaneCompositor {
             this.#failure(error);
             return null;
         }
+    }
+
+    /** Audit only: whether the camera scale moved since the previous encode, then remembers this one. */
+    #zoomStep(scale: number): boolean {
+        const zooming = this.#lastScale !== null && scale !== this.#lastScale;
+        this.#lastScale = scale;
+        return zooming;
     }
 
     /** A refused frame still encodes every layer's offscreen passes and submits them, so the tiles they compose land and a later

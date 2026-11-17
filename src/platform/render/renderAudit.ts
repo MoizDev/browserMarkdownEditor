@@ -71,53 +71,74 @@ export function auditTimed(surface: string, work: () => void): void {
 }
 
 /** A frame at its presentation point: presented, or refused (`refusal` names why). `canvas` is the pane's canvas that drew the
- * frame, readable in the same task as the draw; null for a refused frame. */
+ * frame, readable in the same task as the draw; null for a refused frame. Counts are what the layers reported drawing. */
 export interface PresentInfo {
     readonly pane: string | null;
     readonly frame: number;
     readonly rawTick: number;
     readonly backend: 'webgl2' | 'canvas2d';
+    /** Every layer reported complete, and the frame is exact. */
     readonly complete: boolean;
     readonly canvas: HTMLCanvasElement | null;
-    /** Stand-in quads drawn this frame; 0 when no layer reported one. */
+    /** Geometry stand-ins drawn this frame: positions drawn with another scale's geometry. 0 when none was reported. */
     readonly standIns: number;
-    /** Tiles or items left uncovered this frame; 0 when no layer reported one. */
+    /** Raster stand-ins drawn this frame: positions drawn from a raster made at another scale. 0 when none was reported. */
+    readonly standInsRaster: number;
+    /** Positions left with nothing drawn. 0 when none was reported. */
     readonly holes: number;
+    /** A zoom is live: the camera scale changed since this compositor's previous encode. */
+    readonly zooming: boolean;
+    /** No stand-ins of either kind and no holes. */
+    readonly exact: boolean;
     /** Why the frame was refused instead of presented; null for a presented frame. */
     readonly refusal: string | null;
+}
+
+/** What a compositor passes to auditPresent. It states the layers' own verdict; auditPresent derives `exact` and `complete`
+ * from the counts, so no caller can report a frame complete while it drew a stand-in or a hole. */
+export interface PresentInput extends Omit<PresentInfo, 'complete' | 'exact'> {
+    readonly layersComplete: boolean;
 }
 
 /** A recorded present without its canvas reference, so the ring never keeps a canvas alive. */
 export type PresentRecord = Omit<PresentInfo, 'canvas'>;
 
+interface DrawnTally { standIns: number; standInsRaster: number; holes: number }
+
 const PRESENT_CAPACITY = 1024;
 const presentRing: (PresentRecord | undefined)[] = new Array(PRESENT_CAPACITY);
 let presentTotal = 0;
-let drawn = { standIns: 0, holes: 0 };
+let drawn: DrawnTally = { standIns: 0, standInsRaster: 0, holes: 0 };
 
-/** A layer reports, while it draws a frame, the stand-ins it drew and the positions it left with nothing. */
-export function auditDrawn(kind: 'stand-in' | 'hole', count = 1): void {
+/** A layer reports, while it draws a frame, the stand-ins it drew and the positions it left with nothing. `origin` tells a
+ * geometry stand-in (the default) from a raster stand-in; the layer classifies, the platform only counts. */
+export function auditDrawn(kind: 'stand-in' | 'hole', count = 1, origin: 'geometry' | 'raster' = 'geometry'): void {
     if (!enabled || !(count > 0)) return;
-    if (kind === 'stand-in') drawn.standIns += count; else drawn.holes += count;
+    if (kind === 'hole') drawn.holes += count;
+    else if (origin === 'raster') drawn.standInsRaster += count;
+    else drawn.standIns += count;
 }
 
 /** The compositor starts a frame's tally before its layers draw, and takes it once they have drawn. */
-export function auditDrawnStart(): void { drawn = { standIns: 0, holes: 0 }; }
-export function auditDrawnTake(): { standIns: number; holes: number } {
+export function auditDrawnStart(): void { drawn = { standIns: 0, standInsRaster: 0, holes: 0 }; }
+export function auditDrawnTake(): DrawnTally {
     const taken = drawn;
-    drawn = { standIns: 0, holes: 0 };
+    drawn = { standIns: 0, standInsRaster: 0, holes: 0 };
     return taken;
 }
 
 /** Records a frame at its presentation point. Off unless the audit is on: one boolean test. Each record enters a bounded ring
  * (read with auditPresents, exposed as window.__bmeRenderAudit.presents()), and the audit kit's `__bmePresentHook`, if
  * installed, receives the full info, canvas included. */
-export function auditPresent(info: PresentInfo): void {
+export function auditPresent(input: PresentInput): void {
     if (!enabled) return;
-    presentRing[presentTotal % PRESENT_CAPACITY] = { pane: info.pane, frame: info.frame, rawTick: info.rawTick, backend: info.backend,
-        complete: info.complete, standIns: info.standIns, holes: info.holes, refusal: info.refusal };
+    const exact = input.standIns === 0 && input.standInsRaster === 0 && input.holes === 0;
+    const record: PresentRecord = { pane: input.pane, frame: input.frame, rawTick: input.rawTick, backend: input.backend,
+        complete: input.layersComplete && exact, standIns: input.standIns, standInsRaster: input.standInsRaster, holes: input.holes,
+        zooming: input.zooming, exact, refusal: input.refusal };
+    presentRing[presentTotal % PRESENT_CAPACITY] = record;
     presentTotal++;
-    (globalThis as unknown as { __bmePresentHook?: (info: PresentInfo) => void }).__bmePresentHook?.(info);
+    (globalThis as unknown as { __bmePresentHook?: (info: PresentInfo) => void }).__bmePresentHook?.({ ...record, canvas: input.canvas });
 }
 
 /** The recent presents, oldest first. `dropped` counts the records the ring has overwritten since the last reset. */
@@ -139,7 +160,7 @@ export function auditSnapshot(): RenderAuditSnapshot {
 
 export function auditReset(): void {
     counters = new Map(); frames = new Map(); stages = new Map();
-    presentRing.fill(undefined); presentTotal = 0; drawn = { standIns: 0, holes: 0 };
+    presentRing.fill(undefined); presentTotal = 0; drawn = { standIns: 0, standInsRaster: 0, holes: 0 };
     since = typeof performance !== 'undefined' ? performance.now() : 0;
 }
 

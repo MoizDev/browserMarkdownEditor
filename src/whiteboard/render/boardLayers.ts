@@ -269,8 +269,13 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         ...(typeof options.opaqueWorld === 'function' ? { opaqueWorld: options.opaqueWorld } : {}) });
     // The drag's omitted set is applied where the tiles are built: prepare takes it, and each prepare reads the current
     // omitNodes(frame). The draw never took it (the composer's draw has no omission), so it is not passed there.
-    const prepareGpu = (view: ViewState, budget: FrameBudget, frame: PaintSource): void =>
-        gpu?.prepare(view, withFirstUnit(budget), options.omitNodes?.(frame) ?? undefined);
+    // A live-only overlay admits its parts at the view they are drawn at (its live runs are baked at prepare, and only tiles take
+    // the draw-time shift), so its offset is applied here as well as at draw; the draw keeps the same shift, so both agree.
+    const prepareGpu = (view: ViewState, budget: FrameBudget, frame: PaintSource): void => {
+        const shift = options.liveOverlay ? options.drawOffset?.(frame) : null;
+        const at = shift && (shift.x !== 0 || shift.y !== 0) ? shiftedView(view, shift) : view;
+        gpu?.prepare(at, withFirstUnit(budget), options.omitNodes?.(frame) ?? undefined);
+    };
     const liveSets = new WeakMap<PaintSource, { omit: ReadonlySet<string> | null | undefined; wet: ReadonlySet<string> | undefined; live: ReadonlySet<string> }>();
     const liveFor = (frame: PaintSource): ReadonlySet<string> | undefined => {
         const omit = options.omitNodes?.(frame), wet = options.liveNodeIds?.();

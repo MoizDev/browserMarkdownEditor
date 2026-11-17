@@ -78,7 +78,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const token = Object.freeze({ ...options.token });
     const pending = new Set<() => void>(), controllers = new Set<AbortController>();
     let disposed = false, regionPreview: SelectRegion | null = null, previewIds = new Set<NodeId>();
-    let svg: SVGSVGElement | null = null, shape: SVGElement | null = null, guideSvg: SVGSVGElement | null = null, scheduled: (() => void) | null = null;
+    let svg: SVGSVGElement | null = null, shape: SVGElement | null = null, guideSvg: SVGSVGElement | null = null;
     let scribbleSource: readonly Vec2[] | null = null, scribbleCount = 0, scribbleCamera = '';
     let scribbleTail: SVGPolylineElement | null = null, scribblePoints: string[] = [];
     let guides: readonly BoardSnapGuide[] = [];
@@ -88,9 +88,14 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     // A refused document command is consumed, not declined: a declined key falls through to the host's global route, which can promote a document change.
     const viewRefused = () => current() && !mutable();
     const report = (error: unknown) => { try { options.onError(error); } catch { /* Preserve the original operation failure. */ } };
+    // The wake-up carries no state, and the input host drops pending callbacks when input is disabled (measured:
+    // setInputEnabled(false) dropped the one queued here, so a guard that only that callback clears stayed set and
+    // every later overlay request was skipped: a marquee never cleared, a selection's box and handles never drew).
+    // The host de-duplicates the same callback reference, so requesting again is cheap and never stale.
+    const wakeOverlays = () => {};
     const requestFrame = () => {
-        if (disposed || scheduled) return;
-        scheduled = options.inputFrames.schedule(() => { scheduled = null; });
+        if (disposed) return;
+        options.inputFrames.schedule(wakeOverlays);
     };
     const registerPending = (cancel: () => void) => {
         if (!mutable()) throw new DOMException('Board input is no longer current', 'AbortError');
@@ -590,7 +595,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         return boardSelectTool.begin(sample, modifiers, selectContext);
     } };
     return { select, tool, eraser, beginHandle, doubleClickHandle, handleCommand, keyboardContextMenu, lockedAt, nudge, transform, navigate, command, stickyNeighbour, setGuides, navigation, writeOverlays, cancelPending,
-        dispose() { if (disposed) return; cancelPending(); disposed = true; keyboardContext?.dispose(); backToContent.dispose(); cameraCommands.dispose(); selectionCommands.dispose(); styleShortcuts.dispose(); navigation.dispose(); selectionHandles.dispose(); shapeHandles.dispose(); stickyHandles.dispose(); cardControls.dispose(); scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); guideSvg?.remove(); guideSvg = null; svg = null; shape = null;
+        dispose() { if (disposed) return; cancelPending(); disposed = true; keyboardContext?.dispose(); backToContent.dispose(); cameraCommands.dispose(); selectionCommands.dispose(); styleShortcuts.dispose(); navigation.dispose(); selectionHandles.dispose(); shapeHandles.dispose(); stickyHandles.dispose(); cardControls.dispose(); options.preview.clear(); svg?.remove(); guideSvg?.remove(); guideSvg = null; svg = null; shape = null;
             regionPreview = null; scribbleSource = null; scribbleTail = null; scribblePoints = []; scribbleCount = 0; },
     };
 }

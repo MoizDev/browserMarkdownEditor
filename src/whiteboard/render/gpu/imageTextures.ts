@@ -2,7 +2,7 @@
 // A picture that fits one chunk is written whole; anything larger arrives in row bands, each decoded and then claimed on its
 // own claimUpload, so no single write is larger than a chunk. Design: PLAN §4 gpu-h7, §3.1.
 import type { LayerHost } from '../../../platform/render/compositor.types';
-import type { ByteLease, GfxDevice, TextureHandle } from '../../../platform/render/gfx/api';
+import type { ByteLease, DrawableImage, GfxDevice, TextureHandle } from '../../../platform/render/gfx/api';
 import { auditCount } from '../../../platform/render/renderAudit';
 import type { FrameBudget } from '../../../platform/render/types';
 import type { Admission } from './contracts';
@@ -34,7 +34,7 @@ function textureBytes(width: number, height: number, mips: boolean = IMAGE_MIPS)
  * lease is released: the texture never closes it, so a frame is never closed twice. */
 export interface VideoFrameInput {
     readonly version: number;
-    readonly source: ImageBitmapSource;
+    readonly source: DrawableImage;
     readonly width: number;
     readonly height: number;
 }
@@ -98,9 +98,6 @@ interface Slot {
     dropped: boolean;
     /** Video only: the version the texture holds (-1 before its first write). */
     version: number;
-    /** Video only: the newest frame decoded to a bitmap, waiting for its claimUpload, and the version it carries. */
-    video: Staged | null;
-    pendingVersion: number;
 }
 
 const UPLOAD_USES = ['sample', 'copy-dst'] as const;
@@ -135,16 +132,13 @@ export function createImageTextures(host: LayerHost, audit: string): ImageTextur
         if (slot.scaled) { closeStaged(slot.scaled); slot.scaled = null; }
         if (slot.band) { closeStaged(slot.band); slot.band = null; }
         if (slot.inflight?.lease) { releaseCpu(slot.inflight.lease); slot.inflight.lease = null; }
-        if (slot.video) { closeStaged(slot.video); slot.video = null; }
         slot.device.destroy(slot.view.texture);
         host.allocator.gpu.release(slot.lease);
         gpuBytes -= slot.bytes;
     };
 
     // One decode in flight for a slot: its lease is held in `inflight` until the decode lands or the slot is dropped.
-    // `fatal`: a failure marks the slot failed (an image's texture cannot be made); otherwise it is counted and the slot waits.
-    const decode = (slot: Slot, lease: ByteLease, make: () => Promise<ImageBitmap>, onStaged: (bitmap: ImageBitmap, held: ByteLease) => void,
-        fatal = true): void => {
+    const decode = (slot: Slot, lease: ByteLease, make: () => Promise<ImageBitmap>, onStaged: (bitmap: ImageBitmap, held: ByteLease) => void): void => {
         const inflight: Inflight = { lease };
         slot.inflight = inflight; slot.busy = true;
         make().then(bitmap => {
@@ -157,7 +151,6 @@ export function createImageTextures(host: LayerHost, audit: string): ImageTextur
             const held = inflight.lease; inflight.lease = null;
             if (held) releaseCpu(held);
             if (slot.dropped) return;
-            if (!fatal) { auditCount(audit, 'video:decode-failed', 1); return; }
             slot.failed = true; host.invalidate('image-texture-failed');
         });
     };
@@ -183,20 +176,9 @@ export function createImageTextures(host: LayerHost, audit: string): ImageTextur
     };
 
     const writeRows = (slot: Slot, device: GfxDevice, rect: { x: number; y: number; width: number; height: number },
-        source: ImageBitmap, counter = 'upload:image'): void => {
+        source: DrawableImage, counter = 'upload:image'): void => {
         device.writeTexture(slot.view.texture, rect, { source, ...UPLOAD_SOURCE });
         auditCount(audit, counter, 1, { bytes: rect.width * rect.height * 4 });
-    };
-
-    // A video frame copied to a bitmap, until the device takes a VideoFrame directly (h10). The copy is the frame's own pixels,
-    // so the registry's frame is not touched. A failed copy drops that frame only: the texture keeps its version.
-    const startVideo = (slot: Slot, frame: ImageBitmapSource, lease: ByteLease, version: number): void => {
-        const { width, height } = slot.view;
-        slot.pendingVersion = version;
-        auditCount(audit, 'video:decode', 1, { px: width * height });
-        decode(slot, lease, () => createImageBitmap(frame),
-            (bitmap, held) => { slot.video = { bitmap, lease: held, row: 0, rows: height }; host.invalidate('video-texture-staged'); },
-            false);
     };
 
     const finish = (slot: Slot, device: GfxDevice): void => {
@@ -265,7 +247,7 @@ export function createImageTextures(host: LayerHost, audit: string): ImageTextur
                 const view: ImageTexture = Object.freeze({ key, texture, sourceWidth: w, sourceHeight: h, width: target.width, height: target.height });
                 slot = { device, view, lease, bytes, refs: 0, usedFrame: budget.frameId, ready: false, uploaded: 0,
                     scaled: null, band: null, inflight: null, busy: false, failed: false, dropped: false,
-                    version: -1, video: null, pendingVersion: -1 };
+                    version: -1 };
                 slots.set(key, slot); gpuBytes += bytes;
             }
             slot.usedFrame = budget.frameId;
@@ -274,11 +256,10 @@ export function createImageTextures(host: LayerHost, audit: string): ImageTextur
             return { status: 'ready', value: slot.view };
         },
         acquireVideo(key, frame, budget) {
-            const version = frame.version;
             const device = host.device();
             if (!device) return { status: 'unsupported', why: 'no-device' };
             if (device.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration) return { status: 'deferred' };
-            const w = frame.width, h = frame.height;
+            const { width: w, height: h, version } = frame;
             if (!(w > 0 && h > 0)) return { status: 'empty' };
             let slot = slots.get(key);
             // A node's size is its video's: a change re-creates the texture, but never while a run still draws the old one.
@@ -295,31 +276,27 @@ export function createImageTextures(host: LayerHost, audit: string): ImageTextur
                 catch (error) { host.allocator.gpu.release(lease); throw error; }
                 const view: ImageTexture = Object.freeze({ key, texture, sourceWidth: w, sourceHeight: h, width: w, height: h });
                 slot = { device, view, lease, bytes, refs: 0, usedFrame: budget.frameId, ready: false, uploaded: 0,
-                    scaled: null, band: null, inflight: null, busy: false, failed: false, dropped: false,
-                    version: -1, video: null, pendingVersion: -1 };
+                    scaled: null, band: null, inflight: null, busy: false, failed: false, dropped: false, version: -1 };
                 slots.set(key, slot); gpuBytes += bytes;
             }
             slot.usedFrame = budget.frameId;
             // The version the texture holds costs nothing: no upload, no new texture.
             if (slot.ready && slot.version === version) { slot.refs++; return { status: 'ready', value: slot.view }; }
-            // The newest decoded frame is written whole once its claim is granted. A claim refused waits; the texture keeps its version.
-            if (slot.video) {
-                if (budget.claimUpload(w * h * 4)) {
-                    const staged = slot.video;
-                    writeRows(slot, device, { x: 0, y: 0, width: w, height: h }, staged.bitmap, 'upload:video');
-                    closeStaged(staged); slot.video = null;
-                    slot.version = slot.pendingVersion; slot.ready = true;
-                } else host.invalidate('video-texture-upload');
+            // A new version is written whole, straight from the frame (the device reads a VideoFrame itself), once the media claim is
+            // granted: one per prepare. A refused claim keeps the texture on the version it has, so nothing is drawn half-written.
+            if (!budget.claimUpload(w * h * 4, 'media')) {
+                host.invalidate('video-texture-upload');
+                if (!slot.ready) return { status: 'deferred' };
+                slot.refs++;
+                return { status: 'ready', value: slot.view };
             }
-            if (slot.ready && slot.version === version) { slot.refs++; return { status: 'ready', value: slot.view }; }
-            // Decode this frame unless one is already in flight or staged.
-            if (!slot.busy && !slot.video) {
-                const lease = reserveCpu(w * h * 4);
-                if (!lease) awaitCapacity();
-                else startVideo(slot, frame.source, lease, version);
-            }
-            if (slot.ready) { slot.refs++; return { status: 'ready', value: slot.view }; }
-            return { status: 'deferred' };
+            writeRows(slot, device, { x: 0, y: 0, width: w, height: h }, frame.source, 'upload:video');
+            slot.version = version; slot.ready = true;
+            // The device has read the frame, and the call that read it has returned: the frame is closed now. Closing it again later
+            // is harmless, since the registry closes its frames too.
+            if (typeof VideoFrame !== 'undefined' && frame.source instanceof VideoFrame) frame.source.close();
+            slot.refs++;
+            return { status: 'ready', value: slot.view };
         },
         needsSource(key) {
             const slot = slots.get(key);

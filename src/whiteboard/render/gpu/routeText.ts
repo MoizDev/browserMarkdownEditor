@@ -185,6 +185,8 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         if (whiteLease) host.allocator.gpu.release(whiteLease);
         pipelines = new Map(); pipelinesPending = false; failed = false;
         mono = null; colour = null; white = null; whiteLease = null; sampler = null;
+        // Stand-in records name the atlases this device just disposed: none may be drawn from again.
+        standIns.clear();
         device = null;
     };
 

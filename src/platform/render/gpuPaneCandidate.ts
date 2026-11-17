@@ -23,7 +23,8 @@ export interface GpuPaneCandidateOptions {
     invalidate(reason: string): void;
     onError(error: unknown): void;
     onReady(pane: QualifiedGpuPane): void;
-    onEvict(): void;
+    /** Frees up to `bytes` of this pane's GPU residency and returns the bytes it freed; 0 when it frees none. */
+    onEvict(bytes: number): number;
     inputHealthy(): boolean;
     frameInterval(): number | null;
 }
@@ -77,7 +78,12 @@ export class GpuPaneCandidate {
                     if (interval !== null) defer(() => this.options.runtime.observeGpuTiming(this.options.paneId, p95, interval, samples, disjoint));
                 },
                 onFramebufferFailure: () => defer(() => this.options.runtime.trouble('framebuffer')),
-                evict: () => defer(this.options.onEvict) });
+                // Synchronous: the governor's reservation needs the bytes now. A superseded or disposed generation frees nothing.
+                evict: (bytes, pool) => {
+                    if (pool !== 'gpu' || this.current !== generationRef.current || generationRef.current?.disposed ||
+                        preparation.signal.aborted) return 0;
+                    return this.options.onEvict(bytes);
+                } });
         } catch (error) { backing.close(); throw error; }
         const generation: Generation = { preparation, services, backing, bundle: null, grant: null,
             disposed: false, failureReported: false, deferredReported: false };

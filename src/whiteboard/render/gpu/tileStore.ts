@@ -24,7 +24,8 @@ export interface NumericTileStore extends TileStore {
     /** The registry index of a scale that holds entries, or −1. A scale's index is valid while it holds entries. */
     scaleIndexOf(scale: number): number;
     /** Composed entries (a target held) of `band` at the scale of `scaleIndex`, over the inclusive tile range
-     * [x0, x1] × [y0, y1]. Allocates nothing; a scale index of −1 or one with no entries counts zero. */
+     * [x0, x1] × [y0, y1]. A span larger than the positions held at that scale walks those positions with a Map iterator (one
+     * small allocation per call); the common span allocates nothing. A scale index of −1 or one with no entries counts zero. */
     countComposed(band: PaintBand, scaleIndex: number, x0: number, y0: number, x1: number, y1: number): number;
     /** Removes one entry; see removeTile. */
     remove(key: TileKey): boolean;
@@ -59,13 +60,12 @@ function posKey(x: number, y: number): number {
     return x * POS_STRIDE + y;
 }
 
-/** Inclusive tile index range a half-open world span [lo, hi) touches at `scale`; first > last when it is empty. */
-function tileRange(lo: number, hi: number, scale: number): readonly [number, number] {
-    if (!Number.isFinite(lo) || !Number.isFinite(hi)) throw new RangeError('Invalid tile span');
-    return [Math.floor(lo * scale / TILE_EDGE), Math.ceil(hi * scale / TILE_EDGE) - 1];
+/** How far apart two scales are on the multiplicative ladder: 0 for the same scale, ln 2 for one √2 step twice over. */
+function standsNearer(a: number, b: number, scale: number): boolean {
+    const da = ratioDistance(a, scale), db = ratioDistance(b, scale);
+    return da !== db ? da < db : a < b;
 }
 
-/** How far apart two scales are on the multiplicative ladder: 0 for the same scale, ln 2 for one √2 step twice over. */
 function ratioDistance(a: number, b: number): number {
     return Math.abs(Math.log(a / b));
 }
@@ -87,8 +87,10 @@ function inReach(key: TileKey): boolean {
         && key.slice >= 0 && key.slice < TILE_KEY_SLICES;
 }
 
-function overlaps(a: Readonly<Rect>, b: Readonly<Rect>): boolean {
-    return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+/** Whether a tile's world span (the same arithmetic as tileWorld, with no rect built) overlaps `b`. */
+function overlapsKey(key: TileKey, b: Readonly<Rect>): boolean {
+    const x = key.x * TILE_EDGE / key.scale, y = key.y * TILE_EDGE / key.scale, size = TILE_EDGE / key.scale;
+    return x < b.x + b.width && b.x < x + size && y < b.y + b.height && b.y < y + size;
 }
 
 export const tileId: TileIdFn = key => {
@@ -136,6 +138,14 @@ class GpuTileStore implements NumericTileStore {
     private readonly scaleRefs = new Int32Array(SCALE_SLOTS);
     /** Scratch for recycling: the newest frame each scale index was touched in. Reused, so a recycle allocates nothing. */
     private readonly scaleNewest = new Float64Array(SCALE_SLOTS);
+    /** Scratch for the range walks (markDirty, standIns) and the standIns scale order: reused, so a walk allocates nothing. */
+    private readonly rangeScratch: Slot[] = [];
+    private readonly standFound: Slot[] = [];
+    private readonly standOrder = new Float64Array(SCALE_SLOTS);
+    /** Scratch for evict's three candidate tiers, scanned once per call and reused. */
+    private readonly evictStaleOff: Slot[] = [];
+    private readonly evictCurrentOff: Slot[] = [];
+    private readonly evictStaleOn: Slot[] = [];
     /** band → scale → packed position → slots there (one per slice). Queries arrive as world rects at one scale. */
     private readonly byBand = new Map<PaintBand, Map<number, Map<number, Slot[]>>>();
     private readonly allocator: MemoryAllocator;
@@ -214,7 +224,7 @@ class GpuTileStore implements NumericTileStore {
     }
 
     /** Composed entries of `band` at the scale `scaleIndex` names, over the inclusive tile range. Walks the range when it is
-     * smaller than the positions held at that scale, the whole numeric index otherwise. Allocates nothing. */
+     * smaller than the positions held at that scale, the positions otherwise (one Map iterator, see NumericTileStore). */
     countComposed(band: PaintBand, scaleIndex: number, x0: number, y0: number, x1: number, y1: number): number {
         if (scaleIndex < 0 || scaleIndex >= SCALE_SLOTS || this.scaleRefs[scaleIndex] === 0 || x1 < x0 || y1 < y0) return 0;
         const scale = this.scaleValue[scaleIndex];
@@ -222,9 +232,11 @@ class GpuTileStore implements NumericTileStore {
         if (!positions) return 0;
         let count = 0;
         if ((x1 - x0 + 1) * (y1 - y0 + 1) > positions.size) {
-            for (const slot of this.byNum.values()) {
-                if (slot.key.band === band && slot.key.scale === scale && slot.key.x >= x0 && slot.key.x <= x1
-                    && slot.key.y >= y0 && slot.key.y <= y1 && slot.composed && slot.target !== null) count++;
+            // The span is larger than the positions stored at this scale: walk those positions, not the whole index.
+            for (const slots of positions.values()) {
+                for (const slot of slots) {
+                    if (slot.key.x >= x0 && slot.key.x <= x1 && slot.key.y >= y0 && slot.key.y <= y1 && slot.composed && slot.target !== null) count++;
+                }
             }
             return count;
         }
@@ -257,7 +269,7 @@ class GpuTileStore implements NumericTileStore {
                 // tile's sampled edge: the test covers the full extent, gutter included, not the interior alone.
                 const gutter = TILE_GUTTER / scale;
                 const grown = { x: world.x - gutter, y: world.y - gutter, width: world.width + 2 * gutter, height: world.height + 2 * gutter };
-                for (const slot of this.inRange(scale, positions, grown)) {
+                for (const slot of this.inRange(scale, positions, grown, this.rangeScratch)) {
                     slot.dirty = true;
                     count++;
                 }
@@ -266,15 +278,30 @@ class GpuTileStore implements NumericTileStore {
         return count;
     }
 
-    /** Composed entries (with a target) of other scales covering `world`, nearest scale first. */
+    /** Composed entries (with a target) of other scales covering `world`, nearest scale first. The array is the store's own
+     * and is valid until the next standIns call: a caller that keeps the entries copies them. */
     standIns(band: PaintBand, world: Readonly<Rect>, scale: number): readonly TileEntry[] {
+        const found = this.standFound;
+        found.length = 0;
         const scales = this.byBand.get(band);
-        if (!scales) return [];
-        const others = [...scales.keys()].filter(other => other !== scale)
-            .sort((a, b) => ratioDistance(a, scale) - ratioDistance(b, scale) || a - b);
-        const found: TileEntry[] = [];
-        for (const other of others) {
-            for (const slot of this.inRange(other, scales.get(other)!, world)) {
+        if (!scales) return found;
+        // The band's other scales in the registry, nearest first, placed by insertion: at most SCALE_SLOTS of them, so this
+        // beats the sort it replaces and allocates nothing.
+        const order = this.standOrder;
+        let count = 0;
+        for (let index = 0; index < SCALE_SLOTS; index++) {
+            const other = this.scaleValue[index];
+            if (Number.isNaN(other) || other === scale || !scales.has(other)) continue;
+            let at = count++;
+            while (at > 0 && standsNearer(other, order[at - 1], scale)) {
+                order[at] = order[at - 1];
+                at--;
+            }
+            order[at] = other;
+        }
+        for (let i = 0; i < count; i++) {
+            const other = order[i];
+            for (const slot of this.inRange(other, scales.get(other)!, world, this.rangeScratch)) {
                 if (slot.composed && slot.target) found.push(slot);
             }
         }
@@ -381,26 +408,39 @@ class GpuTileStore implements NumericTileStore {
         const scale = viewScale(view);
         const shown = viewWorld(view);
         const centreX = shown.x + shown.width / 2, centreY = shown.y + shown.height / 2;
-        const distance = (slot: Slot): number => {
-            const world = tileWorld(slot.key);
-            return Math.hypot(world.x + world.width / 2 - centreX, world.y + world.height / 2 - centreY);
-        };
-        const staleOff: Slot[] = [], currentOff: Slot[] = [], staleOn: Slot[] = [];
-        for (const slot of this.slotsIn()) {
+        // One scan into scratch lists. Each tier is sorted only when the bytes still needed reach it, so a call that frees
+        // enough from the first tier never sorts the others; no tile rect is built for an entry the scan only reads.
+        const staleOff = this.evictStaleOff, currentOff = this.evictCurrentOff, staleOn = this.evictStaleOn;
+        staleOff.length = 0;
+        currentOff.length = 0;
+        staleOn.length = 0;
+        for (const slot of this.byNum.values()) {
             if (!slot.target || slot.usedFrame === frameId) continue;
-            const on = overlaps(tileWorld(slot.key), shown);
+            const on = overlapsKey(slot.key, shown);
             if (slot.key.scale !== scale) (on ? staleOn : staleOff).push(slot);
             else if (!on) currentOff.push(slot);
         }
         staleOff.sort((a, b) => a.usedFrame - b.usedFrame || ratioDistance(b.key.scale, scale) - ratioDistance(a.key.scale, scale));
+        for (const slot of staleOff) {
+            if (freed >= bytes) return freed;
+            freed += this.evictSlot(slot, 'other-scale');
+        }
+        const distance = (slot: Slot): number => {
+            const size = TILE_EDGE / slot.key.scale;
+            return Math.hypot(slot.key.x * TILE_EDGE / slot.key.scale + size / 2 - centreX, slot.key.y * TILE_EDGE / slot.key.scale + size / 2 - centreY);
+        };
         currentOff.sort((a, b) => distance(b) - distance(a) || a.usedFrame - b.usedFrame);
-        const covered = staleOn.filter(slot => this.coveredAt(scale, slot)).sort((a, b) => a.usedFrame - b.usedFrame);
-        const tiers: readonly (readonly [readonly Slot[], string])[] = [[staleOff, 'other-scale'], [currentOff, 'same-scale'], [covered, 'covered']];
-        for (const [group, why] of tiers) {
-            for (const slot of group) {
-                if (freed >= bytes) return freed;
-                freed += this.evictSlot(slot, why);
-            }
+        for (const slot of currentOff) {
+            if (freed >= bytes) return freed;
+            freed += this.evictSlot(slot, 'same-scale');
+        }
+        let covered = 0;
+        for (const slot of staleOn) if (this.coveredAt(scale, slot)) staleOn[covered++] = slot;
+        staleOn.length = covered;
+        staleOn.sort((a, b) => a.usedFrame - b.usedFrame);
+        for (const slot of staleOn) {
+            if (freed >= bytes) return freed;
+            freed += this.evictSlot(slot, 'covered');
         }
         return freed;
     }
@@ -470,12 +510,17 @@ class GpuTileStore implements NumericTileStore {
 
     /** Every slot at `scale` whose tile reaches `rect`. Walks the span when it is small, the stored positions when the
      * span is larger than what is stored (a whole-board query at a small scale). */
-    private inRange(scale: number, positions: Map<number, Slot[]>, rect: Readonly<Rect>): Slot[] {
-        const [x0, x1] = tileRange(rect.x, rect.x + rect.width, scale);
-        const [y0, y1] = tileRange(rect.y, rect.y + rect.height, scale);
-        const found: Slot[] = [];
+    private inRange(scale: number, positions: Map<number, Slot[]>, rect: Readonly<Rect>, found: Slot[]): Slot[] {
+        found.length = 0;
+        if (!Number.isFinite(rect.x) || !Number.isFinite(rect.y) || !Number.isFinite(rect.width) || !Number.isFinite(rect.height)) {
+            throw new RangeError('Invalid tile span');
+        }
+        // The inclusive tile range the half-open span touches at `scale`; first > last when it is empty.
+        const x0 = Math.floor(rect.x * scale / TILE_EDGE), x1 = Math.ceil((rect.x + rect.width) * scale / TILE_EDGE) - 1;
+        const y0 = Math.floor(rect.y * scale / TILE_EDGE), y1 = Math.ceil((rect.y + rect.height) * scale / TILE_EDGE) - 1;
         if (x1 < x0 || y1 < y0) return found;
         if ((x1 - x0 + 1) * (y1 - y0 + 1) > positions.size) {
+            // The span is larger than the positions stored at this scale: walk those positions, not the whole index.
             for (const slots of positions.values()) {
                 for (const slot of slots) {
                     if (slot.key.x >= x0 && slot.key.x <= x1 && slot.key.y >= y0 && slot.key.y <= y1) found.push(slot);
@@ -581,9 +626,9 @@ class GpuTileStore implements NumericTileStore {
 
     /** Whether a composed target of the same band and slice at `scale` covers the centre of `slot`'s tile. */
     private coveredAt(scale: number, slot: Slot): boolean {
-        const world = tileWorld(slot.key);
-        const x = Math.floor((world.x + world.width / 2) * scale / TILE_EDGE);
-        const y = Math.floor((world.y + world.height / 2) * scale / TILE_EDGE);
+        const size = TILE_EDGE / slot.key.scale;
+        const x = Math.floor((slot.key.x * TILE_EDGE / slot.key.scale + size / 2) * scale / TILE_EDGE);
+        const y = Math.floor((slot.key.y * TILE_EDGE / slot.key.scale + size / 2) * scale / TILE_EDGE);
         const slots = this.byBand.get(slot.key.band)?.get(scale)?.get(posKey(x, y));
         return slots?.some(other => other.key.slice === slot.key.slice && other.composed && other.target !== null) ?? false;
     }

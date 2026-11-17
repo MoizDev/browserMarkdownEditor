@@ -152,6 +152,10 @@ export interface RenderConstants {
     readonly minInteractiveQualityScale: 0.5;
     readonly memoryRecoveryRatio: 0.6;
     readonly memoryRecoveryDelayMs: 5000;
+    /** Over budget takes one quality step per settle window: the step re-plans the grants, and the charge settles after it. */
+    readonly qualityStepSettleMs: 300;
+    /** A visibility resume rebuilds the presented picture at once; that rebuild's charge is not pressure for this long. */
+    readonly resumePressureHoldMs: 1500;
     /** Trouble signals, not a claim that driver allocation sizes can be measured (§6.4:655). */
     readonly slowGpuSampleCount: 120;
     readonly stalledFenceMs: 250;

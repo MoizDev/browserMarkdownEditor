@@ -545,6 +545,7 @@ export class PaneLifecycleHost {
     }
 
     windowVisibility(visible: boolean): void {
+        if (visible) this.governor.holdPressure(performance.now());
         surfaceBroker.setWindowVisible(visible);
         all([...this.panes.values()].map(pane => () => pane.setWindowVisible(visible)));
     }

@@ -206,6 +206,8 @@ export class MemoryGovernor {
     private lastTrouble: MemoryTrouble | null = null;
     private qualityLimit = 1;
     private belowRecoverySince: number | null = null;
+    private degradedAt = Number.NEGATIVE_INFINITY;
+    private pressureHoldUntil = Number.NEGATIVE_INFINITY;
     private now = 0;
     private workerHeapBytes = 0;
     private readonly workerHeaps = new Map<object, number>();
@@ -408,7 +410,11 @@ export class MemoryGovernor {
                 this.trimPool(pool, Math.floor(this.target[pool] * POLICY.memoryTrimTargetRatio));
             }
         }
-        if (this.charged.gpu > this.target.gpu || this.charged.cpu > this.target.cpu) this.degrade();
+        // Over budget takes one quality step per settle window, and none while a resume holds pressure. Repeating the step each
+        // frame stacked two steps in one return (1.0 -> 0.8 -> 0.64), and the recovery window then held the lower quality for five
+        // seconds: the stalled return measured in the hidden-tab check.
+        if ((this.charged.gpu > this.target.gpu || this.charged.cpu > this.target.cpu) && now >= this.pressureHoldUntil &&
+            now - this.degradedAt >= POLICY.qualityStepSettleMs) this.degrade();
         const cool = this.charged.gpu < this.target.gpu * POLICY.memoryRecoveryRatio &&
             this.charged.cpu < this.target.cpu * POLICY.memoryRecoveryRatio && !liveGesture;
         if (!cool) this.belowRecoverySince = null;
@@ -605,7 +611,9 @@ export class MemoryGovernor {
         if (this.refusing[pool]) return;
         this.refusing[pool] = true;
         this.lastTrouble = 'allocation';
-        this.degrade();
+        // One step per tick: episodes that interleave with the same rebuild's grants stacked two steps in one frame (measured:
+        // 1.0 -> 0.8 -> 0.64 in one return); the refusal itself still wakes its waiters.
+        if (this.now !== this.degradedAt) this.degrade();
         this.onPressureChange?.();
     }
 
@@ -702,9 +710,15 @@ export class MemoryGovernor {
         return bytes;
     }
 
+    /** A visibility resume rebuilds the presented picture at once; that rebuild's charge is not pressure for a short hold. */
+    holdPressure(now: number): void {
+        this.pressureHoldUntil = Math.max(this.pressureHoldUntil, now + POLICY.resumePressureHoldMs);
+    }
+
     private degrade(): void {
         this.state = 'degraded';
         this.belowRecoverySince = null;
+        this.degradedAt = this.now;
         this.qualityLimit = Math.max(POLICY.minInteractiveQualityScale, this.qualityLimit * POLICY.qualityReductionFactor);
         this.plan();
     }

@@ -75,6 +75,8 @@ export const RENDER_CONSTANTS: RenderConstants = Object.freeze({
     minInteractiveQualityScale: 0.5,
     memoryRecoveryRatio: 0.6,
     memoryRecoveryDelayMs: 5000,
+    qualityStepSettleMs: 300,
+    resumePressureHoldMs: 1500,
     slowGpuSampleCount: 120,
     stalledFenceMs: 250,
     surfaceReserveBytesPerPixel: 12,

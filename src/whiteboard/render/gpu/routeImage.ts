@@ -178,8 +178,7 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
                 const [a, b, c, d, e, f] = item.localToWorld;
                 // Axis-aligned and unflipped: the device rect is the affine's scale and translation applied to the rect.
                 if (b !== 0 || c !== 0 || !(a > 0) || !(d > 0)) return reject(unsupported('transform'));
-                // TODO(h4): clipped pictures draw through withClips (routePath.ts) once it exports it; until then they are a CPU fallback.
-                if (item.clips.length > 0) return reject(unsupported('clip'));
+                // Routes never clip (gpu's rule): the composer applies the item's clips around this draw.
                 if (item.retainedTile) return reject(unsupported('retained'));
                 const admitted = textures.acquire(item.imageKey, resources.image(item.imageKey), budget);
                 if (admitted.status === 'empty') continue;

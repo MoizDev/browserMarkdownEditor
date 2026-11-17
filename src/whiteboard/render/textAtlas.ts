@@ -90,6 +90,8 @@ export interface AtlasEntry extends Indexed {
  * target its coverage is converted into on the GPU (`target`), created on the page's own lease and destroyed with it. */
 export class AtlasPage {
     readonly packer: ShelfPacker;
+    /** False until a pass has stored into the page: its first conversion clears it (a load of a never-stored target is refused). */
+    stored = false;
     readonly entries = new Set<AtlasEntry>();
     /** Runs that pin an entry on this page, counted at pin time. Kept here so an eviction test is O(1), not a scan of the page. */
     pinned = 0;
@@ -252,13 +254,21 @@ export class TextAtlas {
         const bytes = ATLAS_PAGE * ATLAS_PAGE * (this.options.format === 'r8' ? 1 : 4);
         const lease = this.host.reserve(bytes);
         if (!lease) return null;
-        // An R8 page is a conversion target: the route draws its staged coverage into it, so it must be renderable.
-        const uses: ('sample' | 'copy-dst' | 'render')[] = this.options.format === 'r8' ? ['sample', 'copy-dst', 'render'] : ['sample', 'copy-dst'];
         let texture: TextureHandle | null = null;
         try {
-            texture = this.device.createTexture(ATLAS_PAGE, ATLAS_PAGE, this.options.format, uses, lease);
+            // An R8 page is a conversion target: the route draws its staged coverage into it, so it must be renderable. Its
+            // texture and target share one lease that stays open until both exist (createTexture closes its lease, so the
+            // target could not be made on it: measured, every R8 page refused with invalid-input).
+            if (this.options.format === 'r8') {
+                const pair = this.device.createRenderTexture(ATLAS_PAGE, ATLAS_PAGE, lease, { format: 'r8', copyDst: true });
+                texture = pair.texture;
+                const page = new AtlasPage(texture, lease, 'r8');
+                page.target = pair.target;
+                this.pages.push(page);
+                return page;
+            }
+            texture = this.device.createTexture(ATLAS_PAGE, ATLAS_PAGE, this.options.format, ['sample', 'copy-dst'], lease);
             const page = new AtlasPage(texture, lease, this.options.format);
-            if (this.options.format === 'r8') page.target = this.device.createTarget(texture, { samples: 1, stencil: false }, lease);
             this.pages.push(page);
             return page;
         } catch (error) {

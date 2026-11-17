@@ -868,7 +868,9 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
                 const target = run.page.target;
                 if (!target) throw new Error('R8 text page without a conversion target');
                 const viewport = { x: 0, y: 0, width: ATLAS_PAGE, height: ATLAS_PAGE };
-                const gpuPass = passes.begin(target, viewport, { clear: null, stencil: false });
+                // A page that has never been stored starts clear: a load of a target with no contents is refused (measured: invalid-input on every fresh page).
+                const gpuPass = passes.begin(target, viewport, { clear: run.page.stored ? null : [0, 0, 0, 0], stencil: false });
+                run.page.stored = true;
                 gpuPass.draw({ pipeline, bindings: { uniforms: [], textures: [{ binding: 0, texture: staged.texture, sampler }] },
                     vertices: [{ buffer: convertBuffer, offset: run.first * INSTANCE_BYTES, bytes: run.count * INSTANCE_BYTES }],
                     first: 0, count: 4, instances: run.count, scissor: viewport });

@@ -198,6 +198,11 @@ function ladderScale(demand: number): number {
 function isLivePart(item: PaintItem): boolean {
     return item.kind === 'image' && item.blend !== 'multiply' && item.imageKey.startsWith(VIDEO_FRAME_PREFIX);
 }
+/** Whether a paint holds a live part (a video picture). Walked once per paint version, not once per stand-in position. */
+function windowsHaveLive(prepared: PreparedPaint2d): boolean {
+    for (const win of prepared.windows) for (const item of win.items) if (isLivePart(item)) return true;
+    return false;
+}
 /** Cuts a position's parts, in paint order, wherever the blend changes or a live part sits. */
 function cutSlices(parts: readonly TilePart[]): { blend: Blend; parts: TilePart[] }[] {
     const out: { blend: Blend; parts: TilePart[] }[] = [];
@@ -273,6 +278,11 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     let routesEncodedFrame = -1;
     const omitTracker = new OmitTracker();
     let denied = false, settled = false, preparedSharp = true;
+    // A refusal waits for the governor's wake. Set by a refusal, cleared only by wake (or release): prepare clears `denied`
+    // every frame, which let a refused board request a frame every vsync until the wake (measured by gpu's review).
+    let waiting = false;
+    // The paint's live-part flag, scanned once per paint version: a stand-in position queries the parts index only when set.
+    let paintScanned: PreparedPaint2d | null = null, paintHasLive = false;
     let device: GfxDevice | null = null;
     let frame = 0, validRevision = 0;
     let omitIds: ReadonlySet<string> | null = null;
@@ -285,11 +295,12 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     // The governor's wake for a refusal: the parked positions may be advanced again, and the board is asked for a frame.
     const wake = (): void => {
         for (const position of building.values()) position.parked = false;
+        waiting = false;
         host.invalidate('tile-composer-capacity');
     };
-    const refuseTarget = (): void => { denied = true; auditCount(audit, 'tile:denied'); store.wait(TARGET_BYTES, wake); };
+    const refuseTarget = (): void => { denied = true; waiting = true; auditCount(audit, 'tile:denied'); store.wait(TARGET_BYTES, wake); };
     const refuseAdmission = (pool: 'gpu' | 'cpu', bytes: number): void => {
-        denied = true; auditCount(audit, 'tile:denied');
+        denied = true; waiting = true; auditCount(audit, 'tile:denied');
         if (pool === 'gpu') store.wait(bytes, wake); else host.allocator.cpu.whenAvailable?.(wake, bytes);
     };
 
@@ -321,13 +332,17 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     };
 
     /** Composed tiles of the nearest other scale that cover a position, every slice of them, in slice order. */
-    const standInsOf = (band: PaintBand, scale: number, x: number, y: number): TileEntry[] => {
+    /** Composed tiles of the nearest other scale that cover a position, in the store's nearest-first order. One reused array:
+     * valid until the next call, which every caller honours by reading it at once. */
+    const standInScratch: TileEntry[] = [];
+    const standInsOf = (band: PaintBand, scale: number, x: number, y: number): readonly TileEntry[] => {
         const world: Rect = { x: x * EDGE / scale, y: y * EDGE / scale, width: EDGE / scale, height: EDGE / scale };
         const list = store.standIns(band, world, scale);
-        if (!list.length) return [];
+        standInScratch.length = 0;
+        if (!list.length) return standInScratch;
         const nearest = list[0].key.scale;
-        return list.filter(entry => entry.key.scale === nearest && entry.target !== null)
-            .sort((a, b) => a.key.x - b.key.x || a.key.y - b.key.y || a.key.slice - b.key.slice);
+        for (const entry of list) if (entry.key.scale === nearest && entry.target !== null) standInScratch.push(entry);
+        return standInScratch;
     };
 
     /** The admitted, not yet encoded position at (x, y) of `scale`, when its entries are still stored with targets. The compositor
@@ -515,9 +530,14 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             if (outcome === 'refused' && pass !== 'ring' && !position.lowered) {
                 // The governor refused a visible position: it composes one level down, at half the scale, which covers this
                 // position and three others. The stand-in keeps it on screen meanwhile; a second refusal waits.
-                cancel(position); building.delete(key);
                 const low = lowerTileKey(keyOf(position.band, position.scale, position.x, position.y, 0));
                 const lowKey = positionKey(low.band, low.scale, low.x, low.y);
+                if (!building.has(lowKey) && statusAt(low.band, low.scale, low.x, low.y) === 'ok') {
+                    // The lower cell already holds its tile, shown as the stand-in: this position parks, keeping the runs it admitted,
+                    // so the lower tile is not re-rastered each prepare. The governor's wake advances it again.
+                    refuseTarget(); position.parked = true; auditCount(audit, `compose:lower-present:${pass}`); return true;
+                }
+                cancel(position); building.delete(key);
                 let lower = building.get(lowKey);
                 if (!lower) {
                     const started = begin(low.band, low.scale, low.x, low.y, view);
@@ -746,7 +766,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     if (!clip) continue;
                     // The stand-in's entries are drawn in paint order, so its live parts interleave as they do in an exact tile
                     // (the list is in position order, which is not paint order).
-                    collectLive(band, target, x, y, view, budget, true);
+                    collectLive(band, target, x, y, view, budget, paintHasLive);
                     standScratch.length = 0;
                     for (const entry of standInsOf(band, target, x, y)) {
                         const slot = slots.get(entry);
@@ -816,7 +836,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         retireLive();
         store.releaseAll();
         for (const route of routeList) route.release();
-        denied = false; settled = false; presenting = false;
+        denied = false; waiting = false; settled = false; presenting = false;
     };
 
     return {
@@ -840,6 +860,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             }
             presenting = true;
             preparedSharp = prepared.sharp !== false;
+            if (prepared !== paintScanned) { paintScanned = prepared; paintHasLive = windowsHaveLive(prepared); }
             if (prepared.resources !== resourcesSeen) {
                 resourcesSeen = prepared.resources;
                 for (const route of routeList) (route as ItemRoute & ResourcedRoute).useResources?.(prepared.resources);
@@ -1033,6 +1054,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         },
         needsFrame(): boolean {
             if (disposed || denied || !presenting) return false;
+            if (waiting) return indexing || finished.length > 0;
             return indexing || !settled || building.size > 0 || finished.length > 0;
         },
         memory(): { gpuBytes: number; cpuBytes: number } {

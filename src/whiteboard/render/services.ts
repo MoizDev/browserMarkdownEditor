@@ -154,7 +154,11 @@ export function createBoardRenderServices(options: {
     readonly derivedMemory?: (evict: (bytes: number) => void) => Pick<MemoryCacheHandle, 'reserve' | 'release' | 'close'>;
     cooperate?(): Promise<void>;
 }) {
-    const cached = new Map<NodeId, Prepared>(), listeners = new Set<(ids: ReadonlySet<NodeId>) => void>();
+    // Every prepared geometry is kept under its own geometry key (unique per build), indexed by node. A frame can ask for one node
+    // at several precisions and from two document states (a preview and the committed board), so a lookup matches the precision and
+    // the signature, and no other variant is dropped on a store: the byte budget ages them out.
+    const cached = new Map<string, Prepared>(), variantsOf = new Map<NodeId, Set<string>>();
+    const listeners = new Set<(ids: ReadonlySet<NodeId>) => void>();
     const sessionRasters = new SessionDenseRasters();
     // An opaque service incarnation binds the full owner token without putting an arbitrarily
     // long document id into the worker protocol's 128-character session field.
@@ -171,26 +175,40 @@ export function createBoardRenderServices(options: {
         for (const { ladder } of inkLadders.values()) { if (freed >= bytes) break; freed += ladder.evict(bytes - freed); }
     };
     // Idle entries are bounded by bytes, and each lease is charged to the derived handle, so the governor reclaims them first.
-    const idle = new Map<NodeId, { readonly bytes: number; readonly lease: ByteLease | null }>();
+    const idle = new Map<string, { readonly node: NodeId; readonly bytes: number; readonly lease: ByteLease | null }>();
     let idleBytes = 0;
     const dropInkLadder = (id: NodeId) => {
         const entry = inkLadders.get(id);
         if (entry) { entry.ladder.dispose(); inkLadders.delete(id); }
     };
-    // Replacing or releasing an entry keeps its ladder, which the caller may have just rebuilt for the new signature.
-    const forgetIdle = (id: NodeId) => {
-        cached.delete(id);
-        const entry = idle.get(id);
+    // Drops one variant. Replacing or releasing an entry keeps its ladder, which the caller may have just rebuilt for the new signature.
+    const dropVariant = (key: string) => {
+        const entry = idle.get(key), value = cached.get(key);
+        cached.delete(key);
+        if (value && entry) {
+            const set = variantsOf.get(entry.node);
+            set?.delete(key); if (set && set.size === 0) variantsOf.delete(entry.node);
+        }
         if (!entry) return;
-        idle.delete(id); idleBytes -= entry.bytes;
+        idle.delete(key); idleBytes -= entry.bytes;
         if (entry.lease) derived?.release(entry.lease);
     };
-    // Least recently used first; a budget eviction also drops the entry's ladder, which no longer has a geometry to serve.
+    const forgetIdle = (id: NodeId) => { for (const key of [...(variantsOf.get(id) ?? [])]) dropVariant(key); };
+    // A node's prepared geometry for `signature`, whichever precision it was prepared for (bounds and changes do not depend on it).
+    const variantFor = (id: NodeId, signature: readonly unknown[], accept: (value: Prepared) => boolean = () => true): Prepared | undefined => {
+        for (const key of variantsOf.get(id) ?? []) {
+            const value = cached.get(key);
+            if (value && accept(value) && sameGeometrySignature(value.signature, signature)) return value;
+        }
+        return undefined;
+    };
+    // Least recently used first; a budget eviction also drops the entry's ladder once no precision of its node has a geometry to serve.
     const evictOldestIdle = (): { readonly bytes: number; readonly charged: number } => {
         const gone = cached.keys().next().value!, entry = idle.get(gone);
         // A budget eviction of a node a later pass needs again is a rebuild; the count shows whether the idle budget is too small.
         auditCount(AUDIT, 'geometry:evict');
-        forgetIdle(gone); dropInkLadder(gone);
+        dropVariant(gone);
+        if (entry && !variantsOf.has(entry.node)) dropInkLadder(entry.node);
         return { bytes: entry?.bytes ?? 0, charged: entry?.lease?.bytes ?? 0 };
     };
     // The governor's request: idle geometry first (rebuildable from the document), then stroke ladders.
@@ -222,7 +240,7 @@ export function createBoardRenderServices(options: {
     /** Stores a prepared geometry as the newest idle entry. Its stroke ladder counts toward the budget too. A charge the
      * governor still denies after idle bytes are freed leaves the entry out: the cache only ever saves a rebuild. */
     const storeIdle = (id: NodeId, prepared: Prepared): void => {
-        forgetIdle(id);
+        const key = prepared.key;
         const ladder = inkLadders.get(id), charged = preparedBytes(prepared);
         const bytes = charged + (ladder && sameGeometrySignature(ladder.signature, prepared.signature) ? ladder.ladder.bytes : 0);
         if (bytes > IDLE_GEOMETRY_BYTES) return;
@@ -230,8 +248,11 @@ export function createBoardRenderServices(options: {
         let admitted = admit(charged);
         if (!admitted && cached.size) { evictDerived(charged); admitted = admit(charged); }
         if (!admitted) return;
-        cached.set(id, prepared);
-        idle.set(id, { bytes, lease: admitted.lease });
+        cached.set(key, prepared);
+        let set = variantsOf.get(id);
+        if (!set) variantsOf.set(id, set = new Set());
+        set.add(key);
+        idle.set(key, { node: id, bytes, lease: admitted.lease });
         idleBytes += bytes;
     };
     const palettes = options.palettes ?? DEFAULT_BOARD_PALETTES;
@@ -239,7 +260,7 @@ export function createBoardRenderServices(options: {
         // An id leaves the set only when the session doc no longer holds its node AND no geometry is kept for it: a deleted node
         // whose geometry is gone has nothing to re-prepare, so the set stays the text nodes the session still has or keeps.
         for (const id of [...textIds]) {
-            const kept = cached.has(id) || idle.has(id);
+            const kept = (variantsOf.get(id)?.size ?? 0) > 0;
             forgetIdle(id);
             if (!kept && !options.doc.nodes.has(id)) textIds.delete(id);
         }
@@ -252,7 +273,7 @@ export function createBoardRenderServices(options: {
     };
     const releaseHolder = () => {
         if (--holders !== 0) return;
-        disposed = true; text.dispose(); for (const id of [...cached.keys()]) forgetIdle(id); textIds.clear(); listeners.clear(); sessionRasters.dispose();
+        disposed = true; text.dispose(); for (const key of [...cached.keys()]) dropVariant(key); textIds.clear(); listeners.clear(); sessionRasters.dispose();
         for (const id of [...inkLadders.keys()]) dropInkLadder(id);
         sessionResolved?.dispose();
         derived?.close();
@@ -280,11 +301,10 @@ export function createBoardRenderServices(options: {
     const prepare = async (borrowed: Readonly<Node>, doc: BoardDoc, signal: AbortSignal,
         context?: Pick<SceneResolveContext, 'deviceScale' | 'sensitive' | 'allowInkLod'>): Promise<Prepared> => {
         check(signal);
-        const node = createNode(borrowed), before = signature(node, doc), old = cached.get(node.id);
+        const node = createNode(borrowed), before = signature(node, doc);
         const precision = node.kind === 'stroke' ? inkPrecision(context) : undefined;
-        if (old && sameGeometrySignature(old.signature, before) && old.inkPrecision === precision?.key) {
-            cached.delete(node.id); cached.set(node.id, old); auditCount(AUDIT, 'geometry:hit'); return old;
-        }
+        const old = variantFor(node.id, before, value => value.inkPrecision === precision?.key);
+        if (old) { cached.delete(old.key); cached.set(old.key, old); auditCount(AUDIT, 'geometry:hit'); return old; }
         auditCount(AUDIT, 'geometry:build');
         const key = `${options.token.session}:${node.id}:geometry:${++serial}`;
         let result: Omit<Prepared, 'signature'>;
@@ -360,11 +380,10 @@ export function createBoardRenderServices(options: {
     const prepareNow = (borrowed: Readonly<Node>, doc: BoardDoc, signal: AbortSignal,
         context?: Pick<SceneResolveContext, 'deviceScale' | 'sensitive' | 'allowInkLod'>): Prepared => {
         check(signal);
-        const node = createNode(borrowed), before = signature(node, doc), old = cached.get(node.id);
+        const node = createNode(borrowed), before = signature(node, doc);
         const precision = node.kind === 'stroke' ? inkPrecision(context ? { ...context, allowInkLod: false } : undefined) : undefined;
-        if (old && sameGeometrySignature(old.signature, before) && old.inkPrecision === precision?.key) {
-            cached.delete(node.id); cached.set(node.id, old); auditCount(AUDIT, 'geometry:hit'); return old;
-        }
+        const old = variantFor(node.id, before, value => value.inkPrecision === precision?.key);
+        if (old) { cached.delete(old.key); cached.set(old.key, old); auditCount(AUDIT, 'geometry:hit'); return old; }
         auditCount(AUDIT, 'geometry:build');
         const key = `${options.token.session}:${node.id}:geometry:${++serial}`;
         let result: Omit<Prepared, 'signature'>;
@@ -409,8 +428,7 @@ export function createBoardRenderServices(options: {
     };
     const bounds: BoundsProvider = {
         local(node) {
-            const entry = cached.get(node.id);
-            return entry && sameGeometrySignature(entry.signature, signature(node, options.doc)) ? entry.bounds : undefined;
+            return variantFor(node.id, signature(node, options.doc))?.bounds;
         },
         stroke(node) {
             const summary = options.samples.summary?.(node.samples);
@@ -513,8 +531,7 @@ export function createBoardRenderServices(options: {
             const value = scope.get(node.id);
             if (value && !value.inkLod && sameGeometrySignature(value.signature, signature(node, doc))) return value;
         }
-        const value = cached.get(node.id);
-        return value && !value.inkLod && sameGeometrySignature(value.signature, signature(node, doc)) ? value : undefined;
+        return variantFor(node.id, signature(node, doc), value => !value.inkLod);
     };
     const warmChangeGeometry = async (ids: Iterable<NodeId>, signal: AbortSignal, scope?: Map<NodeId, Prepared>, leases?: { release(): void }[],
         doc: BoardDoc = options.doc, current?: () => boolean) => {

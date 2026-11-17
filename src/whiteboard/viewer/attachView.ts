@@ -37,6 +37,9 @@ class SelectionIds implements ReadonlySet<string> {
     }
 }
 
+/** What a view publish changed: the view's state, or only the paint progress its snapshot reports. */
+export type ViewChange = 'state' | 'paint';
+
 /** Attaches view resources only. The admitted model, scene, selection/history and
  * journal belong to the exact App-owned runtime and survive this view's disposal. */
 export const attachView: AttachView = options => {
@@ -79,7 +82,8 @@ export const attachView: AttachView = options => {
     let previewLayers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null = null;
     let previewCoverage: (() => Readonly<{ frame: PaintSource; nodeIds: ReadonlySet<string> }> | null) | null = null;
     let clearPreview: (() => void) | null = null;
-    const listeners = new Set<() => void>();
+    /** 'paint': the paint progress moved (see onPaintProgress); anything else is a change to the view's state. */
+    const listeners = new Set<(change?: ViewChange) => void>();
     const palettes = options.palette ?? DEFAULT_BOARD_PALETTES;
     const sheet = () => view.sheetId ?? runtime.selection.getSnapshot().sheet;
     let paperSnapshot: NotebookPaperSnapshot | null = null;
@@ -112,7 +116,9 @@ export const attachView: AttachView = options => {
         pin() { if (!runtime.scene) throw new Error('Scene is still loading'); return runtime.scene.pin(); },
     };
     const images = options.images ?? { acquire: async () => { throw new Error('This board view has no admitted image provider'); } };
-    const assembler = createPaintFrameAssembler(() => layers.invalidate('board-paint-ready'), report);
+    const assembler = createPaintFrameAssembler(() => layers.invalidate('board-paint-ready'), report, {
+        isActive: () => !disposed && view.visible && (typeof document === 'undefined' || !document.hidden),
+    });
     const frames = options.liveFrames ? options.liveFrames.wrap(assembler) : assembler;
     const previewOmission = (dry: PaintSource): ReadonlySet<string> | null => {
         if (!previewLayers || !view.visible || disposed) return null;
@@ -153,7 +159,7 @@ export const attachView: AttachView = options => {
         liveNodeIds, candidates: () => lastCandidates,
         onDensityMode(mode) { if (densityMode !== mode && !disposed) { densityMode = mode; requestPaint(); } },
         requestFrame: () => { if (!disposed) requestPaint(); },
-        onPaintProgress: () => { if (!disposed) publish(); },
+        onPaintProgress: () => { if (!disposed) publish('paint'); },
         onDrawn(revision, frame, context) {
             options.liveFrames?.drawn(frame);
             embedPort?.drawn({ token: context.token, frameId: context.frameId, cameraEpoch: context.view.epoch,
@@ -242,13 +248,15 @@ export const attachView: AttachView = options => {
     }
     // The native view repaints on every listener call, so listeners hear only a change the snapshot can show. `force` is for a
     // change the snapshot does not carry (the selection), which the caller has already seen change.
-    function publish(force = false): void {
+    function publish(change: ViewChange = 'state', force = false): void {
         if (disposed) return;
         const next = makeSnapshot();
-        accessibility.invalidate();
+        // The accessibility mirror reads selection, session and scene only: a paint-progress change leaves it as it is, and
+        // its sync would otherwise request a frame for nothing (measured: 6 and 11 frames in the 3 s after a drag).
+        if (change === 'state') accessibility.invalidate();
         if (!force && snapshot && sameSnapshot(snapshot, next)) return;
         snapshot = next;
-        for (const listener of listeners) listener();
+        for (const listener of listeners) listener(change);
     }
     // The whole-sheet world: board coordinates are bounded by the 1e12 world limit (as boardLayers' WHOLE_PLANE).
     const WHOLE_SHEET: Rect = { x: -1e12, y: -1e12, width: 2e12, height: 2e12 };
@@ -343,7 +351,7 @@ export const attachView: AttachView = options => {
             }
             frames.requestStream({ stream, isCurrent: () => pin.isCurrent(), release: () => pin.release(), ...(dense ? { liveOnly: true as const } : {}),
                 open: (apron, signal, resolved) => open.call(pin, { ...identity, world: apron }, signal, resolved) });
-            paintJob = null; publish();
+            paintJob = null; publish('paint');
         }, error => { pin.release(); if (!controller.signal.aborted) { viewWorld = null; report(error); } });
     }
     const cancelReveal = () => { const job = revealJob; revealJob = null; job?.abort(); };
@@ -380,7 +388,7 @@ export const attachView: AttachView = options => {
     const stopSelection = runtime.selection.subscribe(() => {
         const currentSheet = sheet();
         if (currentSheet !== previousSheet) { previousSheet = currentSheet; clearPreview?.(); }
-        cancelReveal(); publish(true); requestPaint();
+        cancelReveal(); publish('state', true); requestPaint();
     });
     let previousRevision = options.session.doc.rev;
     const stopSession = options.session.subscribe(() => {

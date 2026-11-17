@@ -27,6 +27,11 @@ export function reportGpuFallback(where: string, error: unknown): GfxError {
 
 const GFX_CODES: readonly GfxError[] = ['lost', 'out-of-budget', 'allocation', 'unsupported', 'invalid-resource', 'invalid-input', 'aborted'];
 
+/** A draw-time GPU error is retried once, after the pane has been quiet this long (no input, no gesture). */
+export const GPU_RETRY_QUIET_MS = 1000;
+/** The GPU errors of one session (one pane attach) that latch the pane on canvas2d: the first is retried, the second is not. */
+export const GPU_ERROR_LATCH_COUNT = 2;
+
 export interface GpuPaneCandidateOptions {
     readonly runtime: PlatformRuntime;
     readonly paneId: string;
@@ -38,6 +43,8 @@ export interface GpuPaneCandidateOptions {
     /** Frees up to `bytes` of this pane's GPU residency and returns the bytes it freed; 0 when it frees none. */
     onEvict(bytes: number): number;
     inputHealthy(): boolean;
+    /** True once the pane has had no input for GPU_RETRY_QUIET_MS and no gesture is running. */
+    quiet(): boolean;
     frameInterval(): number | null;
 }
 
@@ -60,6 +67,10 @@ interface Generation {
 export class GpuPaneCandidate {
     private current: Generation | null = null;
     private serial = 0;
+    /** Draw-time GPU errors this session (one attach of the pane), and the timer of the one quiet-time retry they allow. */
+    private gpuErrors = 0;
+    private retryTimer: ReturnType<typeof setTimeout> | null = null;
+    private disposed = false;
     /** An error that arrives with no current generation has nothing to demote; it is counted and logged once per candidate. */
     private orphanReported = false;
 
@@ -218,13 +229,38 @@ export class GpuPaneCandidate {
         else if (code === 'allocation' || code === 'out-of-budget') this.options.runtime.trouble('allocation');
     }
 
+    /** A draw-time GPU error. It is its own reason, not a creation failure, so the broker does not latch it: the first error
+     * of the session is retried once the pane is quiet, and a second latches the pane on canvas2d (counted). */
     private failure(generation: number, code: GfxError): void {
         const current = this.current;
         if (!current || current.preparation.generation !== generation) return;
         this.reportTrouble(current, code);
         const surface = this.options.surface();
         if (!surface) return;
-        surface.failGpu(surface.stamp, generation, code === 'out-of-budget' ? 'out-of-budget' : 'creation-failed');
+        if (code === 'out-of-budget') { surface.failGpu(surface.stamp, generation, 'out-of-budget', false); return; }
+        this.gpuErrors++;
+        const latch = this.gpuErrors >= GPU_ERROR_LATCH_COUNT;
+        if (latch) auditCount('pane', `fallback:pane-2d:gpu-error-latched:${code}`);
+        surface.failGpu(surface.stamp, generation, `gpu-error:${code}`, latch);
+        if (!latch) this.scheduleRetry();
+    }
+
+    /** One retry, when the pane is quiet. Until then it asks again each second; nothing else wakes it, and the timer is the
+     * only thing that runs while the pane is held on canvas2d. */
+    private scheduleRetry(): void {
+        if (this.retryTimer !== null || this.disposed) return;
+        const attempt = (): void => {
+            this.retryTimer = null;
+            if (this.disposed) return;
+            if (!this.options.quiet()) { this.retryTimer = setTimeout(attempt, GPU_RETRY_QUIET_MS); return; }
+            this.options.surface()?.retry();
+        };
+        this.retryTimer = setTimeout(attempt, GPU_RETRY_QUIET_MS);
+    }
+
+    dispose(): void {
+        this.disposed = true;
+        if (this.retryTimer !== null) { clearTimeout(this.retryTimer); this.retryTimer = null; }
     }
 
     private release(generation: Generation, reason: GpuReleaseReason): void {

@@ -10,7 +10,7 @@ import { captureGpuOwner, registerCaptureGpu } from './captureRuntime';
 import { CaptureError } from './captureError';
 import type { GpuCompositor } from './compositor';
 import { registerWebgl2PaneFactory } from './compositorFactory';
-import { GpuPaneCandidate } from './gpuPaneCandidate';
+import { GPU_RETRY_QUIET_MS, GpuPaneCandidate } from './gpuPaneCandidate';
 import type { QualifiedGpuPane } from './gpuPaneCandidate';
 import type { CameraConstraint } from './camera';
 import type { CompositorLayer, Compositor2DOptions, CreatedCompositor2D, PaneCompositor } from './compositor.types';
@@ -362,6 +362,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         surface: () => lifecycle?.surface ?? null,
         invalidate: reason => lifecycle?.invalidate(reason),
         inputHealthy: () => healthyInputAt !== null && performance.now() - healthyInputAt <= RENDER_CONSTANTS.stalledFenceMs,
+        quiet: () => !options.isInteracting() && performance.now() - lastInputAt >= GPU_RETRY_QUIET_MS,
         frameInterval: () => lastFrameInterval,
         onEvict: bytes => trimGpu(bytes),
         onReady: ready => {
@@ -686,6 +687,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             setVisible(false);
             disposed = true;
             options.onPresentation(null);
+            candidate.dispose();
             observer.dispose();
             removeCapture();
             lifecycle?.unmountPane();

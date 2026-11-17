@@ -46,6 +46,8 @@ interface Entry {
     used: number;
 }
 
+const NO_BOXES: readonly Readonly<Rect>[] = [];
+
 /** Pixels this backend can draw: the device's texture, or the CPU bitmap (which a GPU backend can still upload). */
 /** A zoom gesture's scale changes every few frames; this long without a change, it has settled enough to raster. */
 const ZOOM_SETTLE_MS = 150;
@@ -111,6 +113,10 @@ export class PdfTileLayer implements Layer {
      * paper covers the whole page, so these areas are opaque. Cleared on a source change, on releaseGpu and on dispose. */
     private readonly drawnPages = new Map<number, Readonly<Rect>>();
     private drawnStack: Readonly<PageStack> | null = null;
+    /** Drawable tile rects by page, for one device. Planning asks `covered` for every visible tile; the uncached version
+     * scanned every entry and built a fresh array per tile, so one frame cost tiles × entries (by reading: a zoom step
+     * plans hundreds of tiles). Dropped wherever an entry's drawability changes; a new unsettled entry is never drawable. */
+    private coverCache: { readonly device: GfxDevice | null; readonly boxes: ReadonlyMap<number, readonly Readonly<Rect>[]> } | null = null;
 
     constructor(private readonly host: LayerHost, private readonly producer: PdfTileProducer,
         private readonly demand: (view: ViewState) => Omit<PdfDemandInput, 'covered' | 'previousMotionScale'>,
@@ -227,6 +233,7 @@ export class PdfTileLayer implements Layer {
                             { source: existing.bitmap, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
                         if (existing.texture) { this.texturePool.release(existing.texture); auditCount('pdf-page', 're-upload'); }
                         existing.texture = texture;
+                        this.coverCache = null;
                         consumePdfTileArrival(existing.bitmap);
                     } catch (error) { device.destroy(texture.handle); this.onError(error, request); }
                 }
@@ -256,6 +263,7 @@ export class PdfTileLayer implements Layer {
                 }
                 entry.bitmap = bitmap;
                 entry.settled = true;
+                this.coverCache = null;
                 auditCount('pdf-page', 'cpu-raster', 1, { px: bitmap.width * bitmap.height });
                 this.contentRevision++;
                 this.host.invalidate('pdf-tile-arrived');
@@ -290,6 +298,7 @@ export class PdfTileLayer implements Layer {
             forgetPdfTileArrival(entry.bitmap);
             entry.bitmap.close();
             entry.bitmap = undefined;
+            this.coverCache = null;
             if (entry.lease) { this.host.allocator.cpu.release(entry.lease); entry.lease = null; }
         }
     }
@@ -417,6 +426,7 @@ export class PdfTileLayer implements Layer {
         }
         this.bridgeTextures.clear();
         this.bridgeReady.clear();
+        this.coverCache = null;
         this.texturePool.clear(reason === 'context-lost');
         this.pendingFrame = false;
         if (reason === 'hidden') this.hide();
@@ -716,12 +726,22 @@ export class PdfTileLayer implements Layer {
 
     private covered(page: number, area: Readonly<Rect>, device: GfxDevice | null,
         additional: readonly Readonly<Rect>[] = []): boolean {
-        const boxes: Readonly<Rect>[] = [...additional];
+        const own = this.coverBoxes(device).get(page) ?? NO_BOXES;
+        return covers(area, additional.length ? [...additional, ...own] : own);
+    }
+
+    private coverBoxes(device: GfxDevice | null): ReadonlyMap<number, readonly Readonly<Rect>[]> {
+        const cached = this.coverCache;
+        if (cached && cached.device === device) return cached.boxes;
+        const boxes = new Map<number, Readonly<Rect>[]>();
         for (const entry of this.entries.values()) {
-            if (entry.request.page !== page || !drawableOn(entry, device) || (device && entry.texture?.device !== device)) continue;
-            boxes.push(rect(entry.request));
+            if (!drawableOn(entry, device) || (device && entry.texture?.device !== device)) continue;
+            const list = boxes.get(entry.request.page) ?? [];
+            list.push(rect(entry.request));
+            boxes.set(entry.request.page, list);
         }
-        return covers(area, boxes);
+        this.coverCache = { device, boxes };
+        return boxes;
     }
 
     private visiblePageIndices(input: Omit<PdfDemandInput, 'covered' | 'previousMotionScale'>): readonly number[] {
@@ -772,6 +792,7 @@ export class PdfTileLayer implements Layer {
     }
 
     private remove(key: string, entry: Entry): void {
+        this.coverCache = null;
         if (this.entries.get(key) !== entry) return;
         this.entries.delete(key);
         entry.controller.abort();

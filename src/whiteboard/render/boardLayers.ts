@@ -67,6 +67,8 @@ export interface BoardLayersOptions {
     /** The world rects under which the surface beneath board content is opaque (PLAN §3.3). Absent or empty: no claim,
      * so a multiply keeps today's isolation composite. Supplied per host by `opaqueWorldOf`. */
     readonly opaqueWorld?: () => readonly Rect[];
+    /** An overlay (a drag's preview): its few plain parts are drawn live with no tiles, so no tile grant can stall it. */
+    readonly liveOverlay?: boolean;
 }
 /** The whole plane, in world units: board coordinates are bounded by the 1e12 world limit (services.ts inverse). */
 const WHOLE_PLANE: readonly Rect[] = Object.freeze([Object.freeze({ x: -1e12, y: -1e12, width: 2e12, height: 2e12 })]);
@@ -263,7 +265,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     let onDeviceRoute = false;
     // The composer's adapter options (PLAN §3.3). Built as a value, not a literal: the adapter's option type gains
     // `opaqueWorld` in wave 2, and until then today's adapter ignores it.
-    const gpuOptions = () => ({ audit: options.auditSurface ?? 'board',
+    const gpuOptions = () => ({ audit: options.auditSurface ?? 'board', ...(options.liveOverlay ? { liveOverlay: true } : {}),
         ...(typeof options.opaqueWorld === 'function' ? { opaqueWorld: options.opaqueWorld } : {}) });
     // The drag's omitted set is applied where the tiles are built: prepare takes it, and each prepare reads the current
     // omitNodes(frame). The draw never took it (the composer's draw has no omission), so it is not passed there.

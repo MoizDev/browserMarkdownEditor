@@ -105,7 +105,7 @@ function newGrid(): Grid {
     return { cells: new Map(), populated: [], wide: [], count: 0 };
 }
 /** A paint item's blend as a tile sees it: a multiply item is laid by `modulate`, everything else by `over`. */
-function blendOf(item: PaintItem): Blend {
+export function blendOf(item: PaintItem): Blend {
     return (item.kind === 'image' ? item.blend : item.material.blend) === 'multiply' ? 'modulate' : 'over';
 }
 function unionOf(a: Rect | null, b: Readonly<Rect>): Rect {

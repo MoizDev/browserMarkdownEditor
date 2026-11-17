@@ -319,11 +319,17 @@ export function createPath(host: LayerHost, audit: string): {
         return { status: 'ready', value: { clips, fill, stroke } };
     };
 
+    // One closure for every item: the pass and item of the draw in progress are held here, so a draw builds no closure.
+    let drawPass: GpuPass | null = null, drawingItem: PreparedPathItem | null = null;
+    const drawInside = (): void => {
+        const pass = drawPass!, item = drawingItem!;
+        if (item.fill) kit.draw(pass, item.fill);
+        if (item.stroke) kit.draw(pass, item.stroke);
+    };
     const drawItem = (pass: GpuPass, item: PreparedPathItem): void => {
-        withPreparedClips(pass, item.clips, () => {
-            if (item.fill) kit.draw(pass, item.fill);
-            if (item.stroke) kit.draw(pass, item.stroke);
-        });
+        drawPass = pass; drawingItem = item;
+        try { withPreparedClips(pass, item.clips, drawInside); }
+        finally { drawPass = null; drawingItem = null; }
     };
 
     const route: ItemRoute<PaintPathItem> = {

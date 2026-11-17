@@ -11,7 +11,30 @@ import { ArenaError } from '../../../platform/render/resourceArena';
 import { createTileTarget, destroyTileTarget, type TileTarget } from '../../../platform/render/tileTarget';
 import type { PaintBand } from '../material';
 import { TILE_EDGE, TILE_GUTTER, TILE_SIZE } from '../imageSampling';
-import type { Blend, CreateTileStore, TileEntry, TileIdFn, TileKey, TileStore, TileWorldFn } from './contracts';
+import type { Blend, TileEntry, TileIdFn, TileKey, TileStore, TileWorldFn } from './contracts';
+import { TILE_KEY_REACH, TILE_KEY_SCALES, TILE_KEY_SLICES, TileKeyMap, tileKeyNum } from './tileKeys';
+
+/** The numeric face of the store, beside the TileStore contract. The composer and adapter reach entries through it, so a
+ * frame builds no string id: a key packs to one integer (tileKeyNum) once its scale has a registry index. */
+export interface NumericTileStore extends TileStore {
+    /** The entry at a packed key, or undefined. Allocates nothing. */
+    getByNum(num: number): TileEntry | undefined;
+    /** The packed key of `key`, or −1 when the key cannot be stored (outside the packed range) or its scale holds no entry. */
+    numOf(key: TileKey): number;
+    /** The registry index of a scale that holds entries, or −1. A scale's index is valid while it holds entries. */
+    scaleIndexOf(scale: number): number;
+    /** Composed entries (a target held) of `band` at the scale of `scaleIndex`, over the inclusive tile range
+     * [x0, x1] × [y0, y1]. Allocates nothing; a scale index of −1 or one with no entries counts zero. */
+    countComposed(band: PaintBand, scaleIndex: number, x0: number, y0: number, x1: number, y1: number): number;
+    /** Removes one entry; see removeTile. */
+    remove(key: TileKey): boolean;
+}
+
+/** Scales that may hold entries at once: the packed key's scale field. A store refuses a sixty-fifth with a RangeError,
+ * because a scale that cannot be named would make its entries unreachable by number. */
+const SCALE_SLOTS = TILE_KEY_SCALES;
+/** A tile id as `tileId` writes it: `${band}/${slice}/${scale}/${x},${y}`. Parsed only by the compatibility `get(id)`. */
+const TILE_ID = /^(underlay|content)\/(\d+)\/([^/]+)\/(-?\d+),(-?\d+)$/;
 
 /** Packed position keys hold (x, y) exactly while both stay within ±2^25 tiles: far past any board, and a lookup outside
  * that range returns NaN, which no stored key can equal, so it misses instead of aliasing a different tile. */
@@ -58,6 +81,12 @@ function viewWorld(view: ViewState): Rect {
     return { x: view.camera.x, y: view.camera.y, width: view.viewport.width / view.camera.z, height: view.viewport.height / view.camera.z };
 }
 
+/** Whether a key's position and slice pack: a position outside the packed reach is never stored, and the store says so. */
+function inReach(key: TileKey): boolean {
+    return key.x >= -TILE_KEY_REACH && key.x < TILE_KEY_REACH && key.y >= -TILE_KEY_REACH && key.y < TILE_KEY_REACH
+        && key.slice >= 0 && key.slice < TILE_KEY_SLICES;
+}
+
 function overlaps(a: Readonly<Rect>, b: Readonly<Rect>): boolean {
     return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
 }
@@ -78,7 +107,10 @@ export const tileWorld: TileWorldFn = key => {
 /** Mutable only inside this file; the interface hands out the same object, read-only. */
 class Slot implements TileEntry {
     readonly key: TileKey;
-    readonly id: string;
+    /** The packed key while the slot is linked, −1 for a detached slot the store does not hold. */
+    num = -1;
+    /** The scale-registry index its packed key uses while linked. */
+    scaleIdx = -1;
     blend: Blend;
     target: TileTarget | null = null;
     revision = 0;
@@ -86,15 +118,22 @@ class Slot implements TileEntry {
     composed = false;
     usedFrame = 0;
 
-    constructor(key: TileKey, id: string, blend: Blend) {
+    constructor(key: TileKey, blend: Blend) {
         this.key = { band: key.band, scale: key.scale, x: key.x, y: key.y, slice: key.slice };
-        this.id = id;
         this.blend = blend;
     }
+
+    /** The string id, built on demand: nothing on the frame path asks for it, the numeric index serves every lookup. */
+    get id(): string { return tileId(this.key); }
 }
 
-class GpuTileStore implements TileStore {
-    private readonly byId = new Map<string, Slot>();
+class GpuTileStore implements NumericTileStore {
+    /** The numeric index: packed tile key → its entry. Every lookup by key, number or id lands here. */
+    private readonly byNum = new TileKeyMap<Slot>();
+    /** Scale registry: a scale with entries → its index, the scale each index names, and how many entries use it. */
+    private readonly scaleIndexes = new Map<number, number>();
+    private readonly scaleValue = new Float64Array(SCALE_SLOTS).fill(NaN);
+    private readonly scaleRefs = new Int32Array(SCALE_SLOTS);
     /** band → scale → packed position → slots there (one per slice). Queries arrive as world rects at one scale. */
     private readonly byBand = new Map<PaintBand, Map<number, Map<number, Slot[]>>>();
     private readonly allocator: MemoryAllocator;
@@ -109,20 +148,46 @@ class GpuTileStore implements TileStore {
         this.audit = audit;
     }
 
+    /** Compatibility lookup by string id: the id is parsed and looked up in the numeric index. Not for the frame path. */
     get(id: string): TileEntry | undefined {
-        return this.byId.get(id);
+        const match = TILE_ID.exec(id);
+        if (!match) return undefined;
+        const key: TileKey = { band: match[1] as PaintBand, slice: Number(match[2]), scale: Number(match[3]),
+            x: Number(match[4]), y: Number(match[5]) };
+        return inReach(key) ? this.find(key) : undefined;
+    }
+
+    getByNum(num: number): TileEntry | undefined {
+        return this.byNum.get(num);
+    }
+
+    numOf(key: TileKey): number {
+        if (!inReach(key)) return -1;
+        const index = this.scaleIndexes.get(key.scale);
+        return index === undefined ? -1 : tileKeyNum(key.band, index, key.x, key.y, key.slice);
+    }
+
+    scaleIndexOf(scale: number): number {
+        return this.scaleIndexes.get(scale) ?? -1;
     }
 
     touch(entry: TileEntry, frameId: number): void {
         entry.usedFrame = frameId;
     }
 
-    /** An empty position: it keeps no target, and a target it gives up goes to the free list. */
+    /** An empty position: it keeps no target, and a target it gives up goes to the free list. A position the store cannot
+     * name is returned detached: it holds nothing, so the next call finds nothing and asks again. */
     putEmpty(key: TileKey): TileEntry {
-        const id = tileId(key);
-        let slot = this.byId.get(id);
+        checkKey(key);
+        if (!inReach(key)) {
+            const detached = new Slot(key, 'over');
+            detached.composed = true;
+            detached.dirty = false;
+            return detached;
+        }
+        let slot = this.find(key);
         if (!slot) {
-            slot = new Slot(key, id, 'over');
+            slot = new Slot(key, 'over');
             this.link(slot);
         } else if (slot.target) {
             const target = slot.target;
@@ -137,11 +202,43 @@ class GpuTileStore implements TileStore {
     /** Removes the entry at `key` (one slice of a position; the composer removes each slice it no longer needs). Its
      * target goes to the free list, as in putEmpty. Returns whether an entry was there. */
     remove(key: TileKey): boolean {
-        const slot = this.byId.get(tileId(key));
+        checkKey(key);
+        if (!inReach(key)) return false;
+        const slot = this.find(key);
         if (!slot) return false;
         const target = this.unlink(slot);
         if (target) this.keepFree(target);
         return true;
+    }
+
+    /** Composed entries of `band` at the scale `scaleIndex` names, over the inclusive tile range. Walks the range when it is
+     * smaller than the positions held at that scale, the whole numeric index otherwise. Allocates nothing. */
+    countComposed(band: PaintBand, scaleIndex: number, x0: number, y0: number, x1: number, y1: number): number {
+        if (scaleIndex < 0 || scaleIndex >= SCALE_SLOTS || this.scaleRefs[scaleIndex] === 0 || x1 < x0 || y1 < y0) return 0;
+        const scale = this.scaleValue[scaleIndex];
+        const positions = this.byBand.get(band)?.get(scale);
+        if (!positions) return 0;
+        let count = 0;
+        if ((x1 - x0 + 1) * (y1 - y0 + 1) > positions.size) {
+            for (const slot of this.byNum.values()) {
+                if (slot.key.band === band && slot.key.scale === scale && slot.key.x >= x0 && slot.key.x <= x1
+                    && slot.key.y >= y0 && slot.key.y <= y1 && slot.composed && slot.target !== null) count++;
+            }
+            return count;
+        }
+        for (let y = y0; y <= y1; y++) {
+            for (let x = x0; x <= x1; x++) {
+                const slots = positions.get(posKey(x, y));
+                if (slots) for (const slot of slots) if (slot.composed && slot.target !== null) count++;
+            }
+        }
+        return count;
+    }
+
+    /** The slot at `key`, through the numeric index. The caller has checked that the key is in reach. */
+    private find(key: TileKey): Slot | undefined {
+        const index = this.scaleIndexes.get(key.scale);
+        return index === undefined ? undefined : this.byNum.get(tileKeyNum(key.band, index, key.x, key.y, key.slice));
     }
 
     markDirty(world: Readonly<Rect> | 'all', band?: PaintBand): number {
@@ -185,8 +282,13 @@ class GpuTileStore implements TileStore {
     /** A target for `key`: the entry's own if it has one, else a free-list target, else a new lease. Null when the governor
      * refuses; the caller keeps its stand-in and waits. */
     acquire(key: TileKey, blend: Blend, device: GfxDevice): TileEntry | null {
-        const id = tileId(key);
-        let slot = this.byId.get(id);
+        checkKey(key);
+        // A position the packed key cannot name is refused here, counted as its own cause, never stored.
+        if (!inReach(key)) {
+            auditCount(this.audit, 'tile:out-of-reach');
+            return null;
+        }
+        let slot = this.find(key);
         if (slot?.target && slot.target.device !== device) {
             // A new device generation: the old one abandoned this target and returned its bytes, so only forget it.
             this.forget(slot.target);
@@ -206,7 +308,7 @@ class GpuTileStore implements TileStore {
             return null;
         }
         if (!slot) {
-            slot = new Slot(key, id, blend);
+            slot = new Slot(key, blend);
             this.link(slot);
         }
         slot.blend = blend;
@@ -341,7 +443,10 @@ class GpuTileStore implements TileStore {
     }
 
     private link(slot: Slot): void {
-        this.byId.set(slot.id, slot);
+        // The scale is registered first: a registry that is full throws before anything is indexed.
+        slot.scaleIdx = this.registerScale(slot.key.scale);
+        slot.num = tileKeyNum(slot.key.band, slot.scaleIdx, slot.key.x, slot.key.y, slot.key.slice);
+        this.byNum.set(slot.num, slot);
         let scales = this.byBand.get(slot.key.band);
         if (!scales) {
             scales = new Map();
@@ -399,7 +504,10 @@ class GpuTileStore implements TileStore {
     /** Takes an entry out of every index and returns its target for the caller to keep or destroy. A detached entry draws
      * nothing: a reference the composer still holds sees no target, never a target another entry has since reused. */
     private unlink(slot: Slot): TileTarget | null {
-        this.byId.delete(slot.id);
+        this.byNum.delete(slot.num);
+        this.releaseScale(slot.scaleIdx);
+        slot.num = -1;
+        slot.scaleIdx = -1;
         const scales = this.byBand.get(slot.key.band);
         const positions = scales?.get(slot.key.scale);
         const pos = posKey(slot.key.x, slot.key.y);
@@ -427,6 +535,29 @@ class GpuTileStore implements TileStore {
         return target.bytes;
     }
 
+    /** The registry index of `scale`, taking one reference: a new scale takes the lowest free index. */
+    private registerScale(scale: number): number {
+        const known = this.scaleIndexes.get(scale);
+        if (known !== undefined) {
+            this.scaleRefs[known]++;
+            return known;
+        }
+        const free = this.scaleRefs.indexOf(0);
+        if (free < 0) throw new RangeError(`More than ${SCALE_SLOTS} scales hold tiles at once`);
+        this.scaleIndexes.set(scale, free);
+        this.scaleValue[free] = scale;
+        this.scaleRefs[free] = 1;
+        return free;
+    }
+
+    /** Drops one reference to a registry index; the last one frees the index for the next scale. */
+    private releaseScale(index: number): void {
+        if (index < 0 || this.scaleRefs[index] === 0) return;
+        if (--this.scaleRefs[index] > 0) return;
+        this.scaleIndexes.delete(this.scaleValue[index]);
+        this.scaleValue[index] = NaN;
+    }
+
     /** Whether a composed target of the same band and slice at `scale` covers the centre of `slot`'s tile. */
     private coveredAt(scale: number, slot: Slot): boolean {
         const world = tileWorld(slot.key);
@@ -437,7 +568,8 @@ class GpuTileStore implements TileStore {
     }
 }
 
-export const createTileStore: CreateTileStore = (host, audit) => new GpuTileStore(host, audit);
+/** Creates the board's tile store, with its numeric index. Assignable to the contract's CreateTileStore. */
+export const createTileStore: (host: LayerHost, audit: string) => NumericTileStore = (host, audit) => new GpuTileStore(host, audit);
 
 /** Removes one entry from a store made by createTileStore. `remove` is not on the TileStore contract, so the composer reaches
  * it through here; a store of any other origin is refused rather than silently ignored. */

@@ -330,6 +330,7 @@ export class GpuCompositor implements PaneCompositor {
                         if (key === 'draw' && typeof value === 'function') return (cmd: unknown) => { auditCount(auditId, 'gpu-draw'); return (value as (c: unknown) => void).call(target, cmd); };
                         return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(target) : value;
                     } }) : scope.pass;
+                    // The layer receives the audit view, so the scope must admit that same object: drawTexturedQuad checks identity.
                     drawScope.passes.add(layerTarget);
                     try { binding.layer.drawGpu(layerTarget, frame.view); }
                     finally { drawScope.passes.delete(layerTarget); drawScope.passes.delete(scope.pass); scope.finish(); }

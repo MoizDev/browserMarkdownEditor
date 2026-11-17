@@ -81,7 +81,7 @@ class NotebookPaperLayer implements Layer {
     };
     private readonly gpu: ReturnType<typeof createGpuPaintAdapter>;
     constructor(private readonly host: LayerHost, private readonly options: NotebookPaperLayerOptions) {
-        this.gpu = createGpuPaintAdapter(this.gpuReference, host, error => this.report(error));
+        this.gpu = createGpuPaintAdapter(this.gpuReference, host, error => this.report(error), { audit: 'notebook-paper' });
     }
     private report(error: unknown): void {
         if (isBudgetRefusal(error)) {

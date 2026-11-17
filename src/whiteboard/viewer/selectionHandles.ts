@@ -1,4 +1,5 @@
 import { worldToSurface } from '../../platform/render/camera';
+import { auditCount, auditTimed } from '../../platform/render/renderAudit';
 import type { ScheduledFrame } from '../../platform/render/scheduler';
 import type { ViewState } from '../../platform/types';
 import { isLocked, selectedRoots } from '../change/commands';
@@ -37,10 +38,33 @@ function projected(box: OrientedBox, view: ViewState) {
 }
 
 /** Mounted chrome only: the session and renderer keep all document geometry. */
+const SVG_NS = 'http://www.w3.org/2000/svg';
+interface HandleNodes { readonly path: SVGPolygonElement; readonly stem: SVGLineElement; readonly rotate: SVGCircleElement; readonly circles: SVGCircleElement[] }
+/** Builds one frame's handle elements once, in paint order: outline, stem, rotation grip, then the resize handles. */
+function buildHandleNodes(parent: SVGSVGElement, handleCount: number): HandleNodes {
+    const path = document.createElementNS(SVG_NS, 'polygon'), stem = document.createElementNS(SVG_NS, 'line'), rotate = document.createElementNS(SVG_NS, 'circle');
+    path.setAttribute('fill', 'none'); path.setAttribute('stroke', '#75b7ff'); path.setAttribute('stroke-width', '1.5');
+    stem.setAttribute('stroke', '#75b7ff'); stem.setAttribute('stroke-width', '1.5');
+    rotate.setAttribute('r', '3'); rotate.setAttribute('fill', '#ffffff'); rotate.setAttribute('stroke', '#75b7ff'); rotate.setAttribute('stroke-width', '1.5');
+    parent.append(path, stem, rotate);
+    const circles = Array.from({ length: handleCount }, () => {
+        const circle = document.createElementNS(SVG_NS, 'circle');
+        circle.setAttribute('r', '4'); circle.setAttribute('fill', '#ffffff'); circle.setAttribute('stroke', '#75b7ff'); circle.setAttribute('stroke-width', '1.5');
+        parent.append(circle); return circle;
+    });
+    auditCount('select-handles', 'node-build', 1, { nodes: 3 + handleCount });
+    return { path, stem, rotate, circles };
+}
+/** Sets an attribute only when its value changed, so an unmoved handle costs no style or layout work. */
+function put(element: Element, name: string, value: string): void {
+    if (element.getAttribute(name) !== value) element.setAttribute(name, value);
+}
+
 export function createSelectionHandles(options: SelectionHandleOptions) {
     const { runtime } = options, session = runtime.session, doc = session.doc;
     let box: OrientedBox | null = null, controller: AbortController | undefined, generation = 0, disposed = false;
     let svg: SVGSVGElement | undefined;
+    let handleNodes: HandleNodes | undefined;
     const presented = new PresentedHistory<ViewState['camera']>();
     const current = () => !disposed && options.current() && options.visible() && session.doc === doc;
     const clear = () => { box = null; svg?.remove(); svg = undefined; presented.clear(); options.invalidate(); };
@@ -105,7 +129,9 @@ export function createSelectionHandles(options: SelectionHandleOptions) {
         },
         /** `moving`: a translation preview moves the box by its offset, so it follows the drag; `'hidden'` (a transform that
          * is not a plain translation) hides the box while the preview shows the shape elsewhere. */
-        write(frame: ScheduledFrame, moving: Vec2 | 'hidden' | null = null) {
+        // Audit only: the time each frame's handle write takes, and the DOM nodes it builds.
+        write: (frame: ScheduledFrame, moving: Vec2 | 'hidden' | null = null) => auditTimed('select-handles', () => {
+            auditCount('select-handles', 'frame');
             if (!current() || !box) { svg?.remove(); svg = undefined; presented.clear(); return; }
             presented.present(frame.timestamp, { ...frame.view.camera });
             if (moving === 'hidden') { if (svg) svg.style.display = 'none'; return; }
@@ -113,25 +139,18 @@ export function createSelectionHandles(options: SelectionHandleOptions) {
             if (!svg) {
                 svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('aria-hidden', 'true');
                 svg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible'; options.overlay.append(svg);
+                handleNodes = undefined;
             }
             const shown: OrientedBox = moving ? { ...box, origin: { x: box.origin.x + moving.x, y: box.origin.y + moving.y } } : box;
-            const geometry = projected(shown, frame.view), path = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
-            path.setAttribute('points', [0, 2, 4, 6].map(i => `${geometry.positions[i].x},${geometry.positions[i].y}`).join(' '));
-            path.setAttribute('fill', 'none'); path.setAttribute('stroke', '#75b7ff'); path.setAttribute('stroke-width', '1.5');
-            const stem = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-            stem.setAttribute('x1', String(geometry.positions[2].x)); stem.setAttribute('y1', String(geometry.positions[2].y));
-            stem.setAttribute('x2', String(geometry.rotate.x)); stem.setAttribute('y2', String(geometry.rotate.y));
-            stem.setAttribute('stroke', '#75b7ff'); stem.setAttribute('stroke-width', '1.5');
-            const rotate = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-            rotate.setAttribute('cx', String(geometry.rotate.x)); rotate.setAttribute('cy', String(geometry.rotate.y)); rotate.setAttribute('r', '3');
-            rotate.setAttribute('fill', '#ffffff'); rotate.setAttribute('stroke', '#75b7ff'); rotate.setAttribute('stroke-width', '1.5');
-            svg.replaceChildren(path, stem, rotate);
-            for (const position of geometry.positions) {
-                const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-                circle.setAttribute('cx', String(position.x)); circle.setAttribute('cy', String(position.y)); circle.setAttribute('r', '4');
-                circle.setAttribute('fill', '#ffffff'); circle.setAttribute('stroke', '#75b7ff'); circle.setAttribute('stroke-width', '1.5'); svg.append(circle);
-            }
-        },
+            const geometry = projected(shown, frame.view);
+            // The nodes live as long as their svg: a frame moves their coordinates, it does not build new elements.
+            const nodes = handleNodes ??= buildHandleNodes(svg, geometry.positions.length);
+            put(nodes.path, 'points', [0, 2, 4, 6].map(i => `${geometry.positions[i].x},${geometry.positions[i].y}`).join(' '));
+            put(nodes.stem, 'x1', String(geometry.positions[2].x)); put(nodes.stem, 'y1', String(geometry.positions[2].y));
+            put(nodes.stem, 'x2', String(geometry.rotate.x)); put(nodes.stem, 'y2', String(geometry.rotate.y));
+            put(nodes.rotate, 'cx', String(geometry.rotate.x)); put(nodes.rotate, 'cy', String(geometry.rotate.y));
+            geometry.positions.forEach((position, i) => { put(nodes.circles[i], 'cx', String(position.x)); put(nodes.circles[i], 'cy', String(position.y)); });
+        }),
         hide() { generation++; controller?.abort(); clear(); },
         dispose() { if (disposed) return; disposed = true; generation++; controller?.abort(); stopSelection(); stopSession(); svg?.remove(); svg = undefined; box = null; presented.clear(); },
     };

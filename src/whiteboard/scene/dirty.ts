@@ -31,6 +31,11 @@ function property(key: string, stroke = false): number {
         default: return GEOMETRY;
     }
 }
+/** The kind of a node a forward delete removed: its inverse restores it as a create, which names the kind. */
+function deletedKind(applied: Applied, id: NodeId): string | undefined {
+    for (const op of applied.inverse) if (op.t === 'create' && op.node.id === id) return op.node.kind;
+    return undefined;
+}
 export function sceneDirty(applied: Applied, doc: BoardDoc): SceneDirty {
     const nodes = new Map<NodeId, number>(), sheets = new Set(applied.touched.sheets), queue: NodeId[] = [];
     const add = (id: NodeId, flags: number) => {
@@ -40,9 +45,14 @@ export function sceneDirty(applied: Applied, doc: BoardDoc): SceneDirty {
     let pages = false, structure = false;
     for (const op of applied.forward) {
         switch (op.t) {
-            case 'create': add(op.node.id, STRUCTURE); break;
-            case 'delete': add(op.id, STRUCTURE); break;
-            case 'set': add(op.id, property(op.key, doc.nodes.get(op.id)?.kind === 'stroke')); break;
+            // A frame clips what it holds, and a node's parent or page decides what it is clipped by and drawn on: those changes
+            // reveal or hide pixels outside the nodes' own ink, so they are structural (the span is unknown), not region edits.
+            case 'create': if (op.node.kind === 'frame') structure = true; add(op.node.id, STRUCTURE); break;
+            case 'delete': if (deletedKind(applied, op.id) === 'frame') structure = true; add(op.id, STRUCTURE); break;
+            case 'set':
+                if (op.key === 'parent' || op.key === 'page' || doc.nodes.get(op.id)?.kind === 'frame') structure = true;
+                add(op.id, property(op.key, doc.nodes.get(op.id)?.kind === 'stroke'));
+                break;
             case 'splice': add(op.id, GEOMETRY | SceneDirtyFlag.Text); break;
             case 'board': if (op.key === 'host.paper') pages = true; break;
             case 'sheet': sheets.add(op.op === 'create' ? op.sheet.id : op.id); structure = true; break;

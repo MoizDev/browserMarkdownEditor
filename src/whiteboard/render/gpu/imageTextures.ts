@@ -29,9 +29,15 @@ function textureBytes(width: number, height: number, mips: boolean = IMAGE_MIPS)
     }
 }
 
-/** A video node's current frame, as h12's videoFrames hands it over: one stable key per node, and a `version` that moves per
- * presented frame. The frame is closed once its pixels are copied into a bitmap, so the texture never keeps a frame alive. */
-export type VideoFrameSource = ImageBitmapSource & { readonly width: number; readonly height: number; close(): void };
+/** A video node's current frame, from h12's registry (videoFrames.ts): the lease's `version` moves per presented frame, its
+ * `source` is a VideoFrame or an ImageBitmap, and its size is the lease's. The registry owns the frame and closes it when the
+ * lease is released: the texture never closes it, so a frame is never closed twice. */
+export interface VideoFrameInput {
+    readonly version: number;
+    readonly source: ImageBitmapSource;
+    readonly width: number;
+    readonly height: number;
+}
 
 /** A picture's texture, the stable value every route draws from. `width`/`height` are its texels: the source's own, unless
  * the source is larger than the device's texture limit, which is the only case the texture is resampled (counted as image:resample). */
@@ -52,7 +58,7 @@ export interface ImageTextures {
     /** One texture per video node, rewritten in place when its version moves and never mipped. A version the texture already
      * holds costs no upload; a new one is decoded, then written whole once its claim is granted. Until then the texture keeps
      * the version it has, so a node is never drawn half-written. */
-    acquireVideo(key: string, frame: VideoFrameSource, version: number, budget: FrameBudget): Admission<ImageTexture>;
+    acquireVideo(key: string, frame: VideoFrameInput, budget: FrameBudget): Admission<ImageTexture>;
     /** True when acquiring `key` needs its bitmap: no texture is ready for this device. */
     needsSource(key: string): boolean;
     unhold(key: string): void;
@@ -182,14 +188,13 @@ export function createImageTextures(host: LayerHost, audit: string): ImageTextur
         auditCount(audit, counter, 1, { bytes: rect.width * rect.height * 4 });
     };
 
-    // A video frame decoded to its own bitmap (a copy: the frame closes as soon as the copy lands). A failed decode drops that
-    // frame only: the texture keeps its version, and the next frame decodes.
-    const startVideo = (slot: Slot, frame: VideoFrameSource, lease: ByteLease, version: number): void => {
+    // A video frame copied to a bitmap, until the device takes a VideoFrame directly (h10). The copy is the frame's own pixels,
+    // so the registry's frame is not touched. A failed copy drops that frame only: the texture keeps its version.
+    const startVideo = (slot: Slot, frame: ImageBitmapSource, lease: ByteLease, version: number): void => {
         const { width, height } = slot.view;
         slot.pendingVersion = version;
         auditCount(audit, 'video:decode', 1, { px: width * height });
-        decode(slot, lease, () => createImageBitmap(frame).then(bitmap => { frame.close(); return bitmap; },
-            error => { frame.close(); throw error; }),
+        decode(slot, lease, () => createImageBitmap(frame),
             (bitmap, held) => { slot.video = { bitmap, lease: held, row: 0, rows: height }; host.invalidate('video-texture-staged'); },
             false);
     };
@@ -268,7 +273,8 @@ export function createImageTextures(host: LayerHost, audit: string): ImageTextur
             slot.refs++;
             return { status: 'ready', value: slot.view };
         },
-        acquireVideo(key, frame, version, budget) {
+        acquireVideo(key, frame, budget) {
+            const version = frame.version;
             const device = host.device();
             if (!device) return { status: 'unsupported', why: 'no-device' };
             if (device.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration) return { status: 'deferred' };
@@ -310,7 +316,7 @@ export function createImageTextures(host: LayerHost, audit: string): ImageTextur
             if (!slot.busy && !slot.video) {
                 const lease = reserveCpu(w * h * 4);
                 if (!lease) awaitCapacity();
-                else startVideo(slot, frame, lease, version);
+                else startVideo(slot, frame.source, lease, version);
             }
             if (slot.ready) { slot.refs++; return { status: 'ready', value: slot.view }; }
             return { status: 'deferred' };

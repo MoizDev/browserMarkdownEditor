@@ -89,6 +89,14 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
     const slots = new Map<string, Slot>(), requests = new Set<Request>(), retiring = new Set<Promise<void>>();
     const report = (error: unknown) => { try { options.onError?.(error); } catch { /* reporting cannot break teardown */ } };
     const wake = () => host?.invalidate('embed-presentation');
+    // A refused reserve parks the port (needsFrame is false while blocked). One sized waiter wakes it when the bytes fit,
+    // so a blocked embed retries on real capacity instead of never, and never registers a second waiter meanwhile.
+    let memoryWaiting = false;
+    const awaitMemory = (bytes: number): void => {
+        if (memoryWaiting || !host?.allocator.cpu.whenAvailable) return;
+        memoryWaiting = true;
+        host.allocator.cpu.whenAvailable(() => { memoryWaiting = false; wake(); }, bytes);
+    };
     const requestsChanged = () => {
         wake();
         try { options.invalidate?.(); } catch (error) { report(error); }
@@ -164,7 +172,12 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
     };
     const prepare = (view: ViewState, budget: FrameBudget) => {
         prepared = null;
-        if (!host || !validFrame(view, budget.token)) { for (const slot of slots.values()) hide(slot); return; }
+        if (!host || !validFrame(view, budget.token)) {
+            for (const slot of slots.values()) hide(slot);
+            // Requests wait for a packet that names their node; present() wakes only for that packet.
+            for (const request of requests) request.waitingForFacts = true;
+            return;
+        }
         prepared = { token: { ...budget.token }, epoch: view.epoch, cameraEpoch: budget.cameraEpoch, frameId: budget.frameId }; requestBlocked = false;
         for (const request of requests) {
             if (budget.shouldYield()) break;
@@ -172,7 +185,7 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
             if (!node || !options.overlay.isConnected) { request.waitingForFacts = true; continue; }
             request.waitingForFacts = false;
             const base = host.allocator.cpu.reserve(SLOT_BYTES);
-            if (!base) { requestBlocked = true; break; }
+            if (!base) { requestBlocked = true; awaitMemory(SLOT_BYTES); break; }
             try { createSlot(request, node, base); } catch (error) { host.allocator.cpu.release(base); requests.delete(request); request.signal?.removeEventListener('abort', request.abort); requestsChanged(); request.reject(error); }
         }
         for (const slot of slots.values()) {
@@ -193,7 +206,7 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
                         continue;
                     }
                     const lease = slot.allocator.reserve(Math.max(1, slot.estimated));
-                    if (!lease) { slot.blocked = true; continue; }
+                    if (!lease) { slot.blocked = true; awaitMemory(Math.max(1, slot.estimated)); continue; }
                     slot.clipLease = lease; slot.job = createEmbedClipJob(slot.node, packet!.viewport);
                 }
                 if (slot.job) {
@@ -265,26 +278,34 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
         present(frame) {
             if (disposed || !visible) { releasePacket(frame); return; }
             if (packet === frame) return;
-            const old = packet; packet = frame; prepared = null; revision++;
-            // Every presented frame publishes a packet; waking for one with no slot and no request asked for the next frame,
-            // so a board with no embeds never idled (measured: 90 presents in 3 s at rest, all from this wake).
-            const hadWork = slots.size > 0 || requests.size > 0;
-            for (const request of requests) request.waitingForFacts = false;
+            const old = packet; packet = frame;
+            // Every presented board frame publishes a packet, so waking for each one presented every tick at rest while an
+            // embed existed. Only a packet that changes what this port draws wakes a frame: a slot that was hidden or closed,
+            // a request whose node has just arrived. An identical packet keeps the prepared state and draws as before.
+            let changed = false;
+            for (const request of requests) {
+                if (request.waitingForFacts && frame.nodes.some(item => item.nodeId === request.id)) changed = true;
+                request.waitingForFacts = false;
+            }
             for (const slot of [...slots.values()]) {
                 const node = frame.nodes.find(item => item.nodeId === slot.id);
-                if (!node || node.source !== slot.source || (old && !sameDocument(old.presentation.token, frame.presentation.token))) { close(slot); continue; }
+                if (!node || node.source !== slot.source || (old && !sameDocument(old.presentation.token, frame.presentation.token))) { close(slot); changed = true; continue; }
                 const equivalent = !!slot.node && sameGeometry(slot.node, node) && old?.viewport.width === frame.viewport.width && old.viewport.height === frame.viewport.height;
                 const preserve = equivalent && !!slot.clips;
                 const oldPoster = slot.node?.poster;
                 if (!preserve) clearClip(slot);
                 slot.node = node;
                 if (!preserve || !old || !sameToken(old.presentation.token, frame.presentation.token) ||
-                    old.presentation.viewEpoch !== frame.presentation.viewEpoch || old.sceneRevision !== frame.sceneRevision || oldPoster !== node.poster) hide(slot);
-                else notify(slot, slot.snapshot.mode, slot.snapshot.visible);
+                    old.presentation.viewEpoch !== frame.presentation.viewEpoch || old.sceneRevision !== frame.sceneRevision || oldPoster !== node.poster) {
+                    hide(slot); changed = true;
+                } else notify(slot, slot.snapshot.mode, slot.snapshot.visible);
                 if (!preserve && slot.containment) slot.estimate = estimates(node);
             }
             releasePacket(old);
-            if (hadWork || slots.size > 0 || requests.size > 0) wake();
+            revision++;
+            if (!changed) return;
+            prepared = null;
+            wake();
         },
         drawn(paint) { witness = paint; },
         acquire(id, signal) {

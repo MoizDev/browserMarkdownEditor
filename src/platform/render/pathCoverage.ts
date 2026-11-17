@@ -301,10 +301,11 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         if (shared && shared.refs > 0) shared.refs--;
     };
     /** Destroys a device's scratch of one grid and returns the bytes its target held. Callers ensure no admission is in flight. */
-    const destroyScratch = (owner: GfxDevice, grid: CompositeGrid): number => {
+    const destroyScratch = (owner: GfxDevice, grid: CompositeGrid, reason: 'release' | 'evict'): number => {
         const table = scratchTables[String(grid) as '1' | '4'];
         const shared = table.targets.get(owner);
         if (!shared) return 0;
+        auditCount(audit, `kit:scratch-dropped:${reason}`, 1, { bytes: shared.bytes });
         table.targets.delete(owner);
         owner.destroy(shared.target.target); owner.destroy(shared.target.texture);
         return shared.bytes;
@@ -320,7 +321,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         const kits = kitsOnDevice.get(owner);
         if (!kits || !kits.delete(kitToken) || kits.size > 0) return;
         // The last kit on the device: no admission can be in flight (each kit retired its own before leaving), so both grids go.
-        destroyScratch(owner, 1); destroyScratch(owner, 4);
+        destroyScratch(owner, 1, 'release'); destroyScratch(owner, 4, 'release');
     };
     /** Ensures the device's scratch of this grid holds a band of the given width; false when its lease is refused (a wait). It
      * only grows, and to the widest band the device has asked for, at the full height the cap allows: a grown scratch replaced
@@ -650,7 +651,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
             let freed = reclaimIdle(bytes);
             // An idle scratch (no composite in flight) goes next; the device's next composite re-creates it.
             if (device && freed < bytes) for (const grid of [1, 4] as const) {
-                if (scratchOf(device, grid)?.refs === 0) freed += destroyScratch(device, grid);
+                if (scratchOf(device, grid)?.refs === 0) freed += destroyScratch(device, grid, 'evict');
             }
             return freed;
         },

@@ -275,6 +275,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     let drawCount = 0;
 
     let disposed = false, presenting = false, indexing = false;
+    // This frame's zoom, set in prepare: while zooming, coverage does not hold the frame for a position with nothing (see coverage).
+    let zoomingFrame = false;
     let routesEncodedFrame = -1;
     const omitTracker = new OmitTracker();
     let denied = false, settled = false, preparedSharp = true;
@@ -868,6 +870,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             // The scale moves only with the camera's zoom: a pan or a drag keeps the tiles' scale and their pixels.
             const zooming = lastZoom !== undefined && view.camera.z !== lastZoom;
             lastZoom = view.camera.z;
+            zoomingFrame = zooming;
             if (!zooming) zoomScale = 0;
             else if (!(zoomScale >= demand && zoomScale <= demand * 1.2 * SQRT2)) zoomScale = ladderScale(demand);
             const exact = exactScale(demand);
@@ -1003,6 +1006,9 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             // A position with any picture (its tile at the drawn scale, a dirty one, or a stand-in of another scale) is
             // complete; only a position with nothing is not. Sharp needs the drawn scale to be the demanded one, and every
             // position exact and clean there.
+            // While zooming, a position with nothing is a hole the compose pass is filling, and it does not hold the frame: the
+            // compositor refused 58 of 141 zoom frames for holes waiting on upload allowance (the audit's board-underlay:incomplete,
+            // equal to compositor:refuse:coverage). PLAN 3.1: a zoom presents what exists, scaled, every frame.
             let complete = true, sharp = !indexing && preparedSharp && target === exact, stale = indexing;
             for (const band of BANDS) {
                 for (let y = span.y0; y < span.y1; y++) {
@@ -1012,7 +1018,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         sharp = false;
                         if (status === 'missing' && finishedAt(band, target, x, y)) continue;
                         if (status === 'dirty') { stale = true; continue; }
-                        if (!standInsOf(band, target, x, y).length) complete = false;
+                        if (!zoomingFrame && !standInsOf(band, target, x, y).length) complete = false;
                     }
                 }
             }

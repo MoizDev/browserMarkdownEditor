@@ -2,7 +2,7 @@ import type { Rect, ViewState } from '../types';
 import type { DamageRecord } from './damage';
 import type { CompositorResources, LayerAllocators, LayerHost, PaneCompositor, TexturedQuadOptions, TexturedQuadSpec } from './compositor.types';
 import type { LayerTrouble } from './types';
-import type { GpuPass, TextureHandle, UniformSlice } from './gfx/api';
+import type { DrawableImage, GpuPass, TextureHandle, UniformSlice } from './gfx/api';
 import { paintCanvasIsolation } from './canvas2dContext';
 import { auditCount, auditStage, renderAuditEnabled } from './renderAudit';
 import type { GfxDevice } from './gfx/api';
@@ -41,18 +41,18 @@ export function createLayerHost(bindings: LayerHostBindings): LayerHost {
     };
     const surface = bindings.auditId ?? 'layer';
     function drawTexturedQuad(pass: GpuPass, texture: TextureHandle, source: Readonly<Rect>, dest: Readonly<Rect>, options: TexturedQuadOptions): void;
-    function drawTexturedQuad(ctx: CanvasRenderingContext2D, image: ImageBitmap, source: Readonly<Rect>, dest: Readonly<Rect>, options: TexturedQuadOptions): void;
-    function drawTexturedQuad(target: GpuPass | CanvasRenderingContext2D, image: TextureHandle | ImageBitmap,
+    function drawTexturedQuad(ctx: CanvasRenderingContext2D, image: DrawableImage, source: Readonly<Rect>, dest: Readonly<Rect>, options: TexturedQuadOptions): void;
+    function drawTexturedQuad(target: GpuPass | CanvasRenderingContext2D, image: TextureHandle | DrawableImage,
         source: Readonly<Rect>, dest: Readonly<Rect>, options: TexturedQuadOptions): void {
-        if ('drawImage' in target) { auditCount(surface, 'canvas2d-quad'); compositor().resources.drawTexturedQuad(target, image as ImageBitmap, source, dest, options); }
+        if ('drawImage' in target) { auditCount(surface, 'canvas2d-quad'); compositor().resources.drawTexturedQuad(target, image as DrawableImage, source, dest, options); }
         else { auditCount(surface, 'gpu-quad'); resources().drawTexturedQuad(target, image as TextureHandle, source, dest, options); }
     }
     function drawTexturedQuads(pass: GpuPass, texture: TextureHandle, quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void;
-    function drawTexturedQuads(ctx: CanvasRenderingContext2D, image: ImageBitmap, quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void;
-    function drawTexturedQuads(target: GpuPass | CanvasRenderingContext2D, image: TextureHandle | ImageBitmap,
+    function drawTexturedQuads(ctx: CanvasRenderingContext2D, image: DrawableImage, quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void;
+    function drawTexturedQuads(target: GpuPass | CanvasRenderingContext2D, image: TextureHandle | DrawableImage,
         quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void {
         // One counter per batch, with its quad count: the batch is the unit the GPU sees, the quads are what the layer drew.
-        if ('drawImage' in target) { auditCount(surface, 'canvas2d-quad', quads.length); compositor().resources.drawTexturedQuads(target, image as ImageBitmap, quads, options); }
+        if ('drawImage' in target) { auditCount(surface, 'canvas2d-quad', quads.length); compositor().resources.drawTexturedQuads(target, image as DrawableImage, quads, options); }
         else { auditCount(surface, 'gpu-quad-batch', 1, { quads: quads.length }); resources().drawTexturedQuads(target, image as TextureHandle, quads, options); }
     }
     // Audit only: a per-layer view of the shared device that counts what this layer creates and uploads.

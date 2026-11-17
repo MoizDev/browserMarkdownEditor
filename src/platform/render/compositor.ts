@@ -10,7 +10,7 @@ import { paintPageScope, paintWorldScope, paneCssTransform, projectPage } from '
 import { TEXTURED_QUAD_SHADER } from './compositorShader';
 import { GpuIsolationPlan } from './gpuIsolationPlan';
 import { IsolationShortfall } from './gfx/webgl2Isolation';
-import type { ClipToken, CoverageOutput, CoverageToken, FrameEncoder, GpuPass, GroupToken, PipelineDesc, PipelineHandle, RectI, RgbaP, SamplerHandle, ShaderModule, TargetHandle, TargetLease, TextureHandle, UniformSlice } from './gfx/api';
+import type { ClipToken, CoverageOutput, CoverageToken, DrawableImage, FrameEncoder, GpuPass, GroupToken, PipelineDesc, PipelineHandle, RectI, RgbaP, SamplerHandle, ShaderModule, TargetHandle, TargetLease, TextureHandle, UniformSlice } from './gfx/api';
 import type { Webgl2Owner } from './gfx/webgl2';
 import type { PageStack } from './pageStack';
 import { ArenaError } from './resourceArena';
@@ -490,8 +490,8 @@ export class GpuCompositor implements PaneCompositor {
     }
 
     drawTexturedQuad(pass: GpuPass, texture: TextureHandle, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
-    drawTexturedQuad(ctx: CanvasRenderingContext2D, image: ImageBitmap, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
-    drawTexturedQuad(pass: GpuPass | CanvasRenderingContext2D, texture: TextureHandle | ImageBitmap,
+    drawTexturedQuad(ctx: CanvasRenderingContext2D, image: DrawableImage, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
+    drawTexturedQuad(pass: GpuPass | CanvasRenderingContext2D, texture: TextureHandle | DrawableImage,
         sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void {
         if ('drawImage' in pass) {
             if (!validRect(sourceRect) || !validRect(destRect) || !Number.isFinite(options.opacity) || options.opacity < 0 || options.opacity > 1 ||
@@ -502,7 +502,7 @@ export class GpuCompositor implements PaneCompositor {
                 pass.resetTransform();
                 pass.globalAlpha *= options.opacity;
                 pass.imageSmoothingEnabled = options.sampling === 'linear';
-                pass.drawImage(texture as ImageBitmap, sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height,
+                pass.drawImage(texture as DrawableImage, sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height,
                     destRect.x, destRect.y, destRect.width, destRect.height);
             } finally { pass.restore(); }
             return;
@@ -545,11 +545,11 @@ export class GpuCompositor implements PaneCompositor {
     /** Several quads of one texture, in one instanced draw. The same options apply to every quad, and each quad is validated
      * and clipped exactly as drawTexturedQuad does. A canvas target loops its drawImage: each quad is one drawImage, as before. */
     drawTexturedQuads(pass: GpuPass, texture: TextureHandle, quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void;
-    drawTexturedQuads(ctx: CanvasRenderingContext2D, image: ImageBitmap, quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void;
-    drawTexturedQuads(pass: GpuPass | CanvasRenderingContext2D, texture: TextureHandle | ImageBitmap,
+    drawTexturedQuads(ctx: CanvasRenderingContext2D, image: DrawableImage, quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void;
+    drawTexturedQuads(pass: GpuPass | CanvasRenderingContext2D, texture: TextureHandle | DrawableImage,
         quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void {
         if ('drawImage' in pass) {
-            for (const quad of quads) this.drawTexturedQuad(pass, texture as ImageBitmap, quad.sourceRect, quad.destRect, options);
+            for (const quad of quads) this.drawTexturedQuad(pass, texture as DrawableImage, quad.sourceRect, quad.destRect, options);
             return;
         }
         const gpuTexture = texture as TextureHandle;

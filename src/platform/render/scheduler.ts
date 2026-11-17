@@ -253,6 +253,8 @@ const NO_REASONS: readonly string[] = Object.freeze([]);
 
 interface DamageBatch { entry: PaneEntry; damage: DamageAccumulator; full: boolean; submitted: boolean }
 interface FrameWork { entry: PaneEntry; frame: ScheduledFrame; batch: DamageBatch; geometry: number; hadInput: boolean; platformPrepared: boolean; platformBudget?: FrameBudget;
+    /** A layer's preparation was passed over for lack of time while it did not ask for a frame. */
+    skipped: boolean;
     /** The audit's name for what asked for this frame; '' when the render audit is off. */
     cause: string }
 interface PendingAcknowledgement { entry: PaneEntry; frameId: number; token: FrameToken; submission: ScheduledSubmission }
@@ -728,7 +730,7 @@ export class FrameScheduler {
                     else batch.damage.mark({ x: 0, y: 0, width: 0, height: 0 }, tags);
                     const damage = batch.damage.freeze()!;
                     const frame = Object.freeze({ frameId, timestamp, intervalMs: this.intervalMs, token, view, layers, reasons, damage });
-                    work.push({ entry, frame, batch, geometry, hadInput: entry.inputPriority || reasons.includes('input'), platformPrepared: false, cause });
+                    work.push({ entry, frame, batch, geometry, hadInput: entry.inputPriority || reasons.includes('input'), platformPrepared: false, skipped: false, cause });
                     entry.inputPriority = false;
                 });
             }
@@ -771,6 +773,11 @@ export class FrameScheduler {
                 for (const meta of item.frame.layers) {
                     if (!meta.critical) prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, meta, deadline, false, meter, criticalPending));
                 }
+            }
+            // A layer passed over for time, not asking for a frame, has nothing else to wake it. After a restore that
+            // leaves its picture blank for good, so the pass names the work and the next frame prepares it.
+            for (const item of work) {
+                if (item.skipped && this.valid(item.entry, item.frame.token)) this.mark(item.entry, 'preparation-deferred', true);
             }
             // Layers declare group/mask inventory during prepare; admit it once afterward, without
             // extending the critical preparation or upload deadline. A compositor owns runnable retries.
@@ -876,7 +883,7 @@ export class FrameScheduler {
             // progress slice. A healthy frame keeps the window as it was; the overrun is still reported as overshoot.
             const requesting = meta !== null ? meta.layer.needsFrame() : item.entry.layers.some(layer => layer.needsFrame());
             const exhausted = performance.now() >= deadline;
-            if (exhausted && !requesting) return;
+            if (exhausted && !requesting) { item.skipped = true; return; }
             const limit = exhausted ? performance.now() + meter.sliceMs : deadline;
             const shouldYield = () => !this.valid(item.entry, item.frame.token) || performance.now() >= limit ||
                 (meta !== null && item.entry.pane.isCritical(meta.layer, item.frame.view) !== critical);
@@ -890,11 +897,23 @@ export class FrameScheduler {
                 return Math.floor(critical ? remaining : Math.min(remaining, item.entry.optionalBytes));
             };
             const upload = { remainingBytes: availableBytes(), deadline: meter.deadline };
+            // One media grant per prepare call: a layer prepares once per presented frame, so this is one video frame per media
+            // source per presented frame.
+            let mediaGranted = false;
             const budget: FrameBudget = {
                 frameId: item.frame.frameId, token: item.frame.token, cameraEpoch: item.frame.view.epoch, damage: item.frame.damage,
                 prepareDeadline: limit, upload, shouldYield,
-                claimUpload: bytes => {
+                claimUpload: (bytes: number, kind?: 'media') => {
                     if (!Number.isSafeInteger(bytes) || bytes < 0) throw new RangeError('Upload claim must be nonnegative safe bytes');
+                    if (kind === 'media') {
+                        // A playing video's frame (8 MB at 1080p) can never fit the general allowance (about 1 MiB at 240 Hz), so it
+                        // would never reach the GPU. The copy from a VideoFrame is device-side, so the grant ignores the allowance and
+                        // the time slice, is not charged to this frame's upload meter, and is counted with its bytes.
+                        if (mediaGranted || !this.valid(item.entry, item.frame.token)) return false;
+                        mediaGranted = true;
+                        auditCount('scheduler', 'media:upload-granted', 1, { bytes });
+                        return true;
+                    }
                     if (shouldYield() || performance.now() >= meter.deadline) return false;
                     const remaining = meter.allowance - Math.max(meter.admittedBytes, meter.reportedBytes);
                     if (!critical && bytes > item.entry.optionalBytes) return false;

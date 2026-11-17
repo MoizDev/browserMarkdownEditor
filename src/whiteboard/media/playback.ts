@@ -33,14 +33,9 @@ interface Player {
     /** The frame callback, made once per player: arming it allocates nothing. */
     readonly deliver: VideoFrameRequestCallback;
     closed: boolean;
-    /** One snapshot at a time. A frame that arrives while one copies is uploaded when that copy settles (see presentFrame). */
-    snapshotting: boolean;
-    /** The copy in flight. The source it reads (object URL and charge) is dropped only after this settles. */
-    copying: Promise<void> | null;
-    /** The element's presented-frame count at the last callback, and the count the last upload started for. The video advancing is
-     * `presentedSeen` moving; an upload happens once per such advance, so a paused picture uploads nothing. */
+    /** The element's presented-frame count at the last callback. The video advancing is this count moving; an upload happens
+     * once per advance, so a paused picture uploads nothing. */
     presentedSeen: number;
-    uploadedFor: number;
 }
 interface State { playing: boolean; muted: boolean; time: number; visible: boolean; initialized: boolean; mediaId?: MediaId; player?: Player }
 let soundOwner: Player | null = null;
@@ -138,8 +133,7 @@ export class BoardVideoPlayback {
                 const video = document.createElement('video'); cleanupVideo = video;
                 video.preload = 'auto'; video.playsInline = true; video.loop = true; video.muted = true;
                 const player: Player = { id, mediaId: source.entry.id, video, url, memory, callback: null,
-                    deliver: (_now, metadata) => this.deliver(player, metadata), closed: false, snapshotting: false, copying: null,
-                    presentedSeen: 0, uploadedFor: 0 };
+                    deliver: (_now, metadata) => this.deliver(player, metadata), closed: false, presentedSeen: 0 };
                 state.player = player; state.muted = true;
                 if (this.host.mode === 'hidden-dom') {
                     if (!this.host.overlay || !this.host.videoRect) throw new Error('Video fallback overlay is unavailable');
@@ -199,31 +193,25 @@ export class BoardVideoPlayback {
         }
         if (state.playing) this.arm(player);
     }
-    /** Copies the element's current frame out as an immutable bitmap. Its lifetime is the registry's, not the element's. */
+    /** Presents the element's current frame as a VideoFrame that refers to the decoded picture: no copy is made here, and the
+     * texture upload reads it where it is. Its lifetime is the registry's, not the element's. */
     private presentFrame(player: Player): void {
         const frames = this.host.frames, video = player.video;
         if (!frames || player.closed || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
-        // A frame that arrives during a copy is not dropped: the copy's settle uploads the newest count (see the finally below).
-        if (player.snapshotting) return;
         const bytes = video.videoWidth * video.videoHeight * 4;
-        // Charged before the copy allocates. A refused charge defers this frame; the next advance of the video asks again.
+        // Charged before the frame is taken. A refused charge defers this frame; the next advance of the video asks again.
         const lease = frames.admitFrame(bytes);
         if (!lease) return;
-        player.snapshotting = true;
-        player.uploadedFor = player.presentedSeen;
-        auditCount('media', 'upload', 1, { bytes });
-        const copy: Promise<void> = createImageBitmap(video).then(bitmap => {
-            if (player.closed || !this.host.current() || this.host.source(player.id)?.entry.id !== player.mediaId) { bitmap.close(); frames.release(lease); return; }
-            frames.present(player.id, bitmap, lease);
-        }, () => {
+        let frame: VideoFrame;
+        try { frame = new VideoFrame(video, { timestamp: Math.round(video.currentTime * 1e6) }); }
+        catch {
             frames.release(lease);
-            if (!player.closed && this.host.current()) this.host.error(player.id, 'This video frame could not be shown');
-        }).finally(() => {
-            player.snapshotting = false; if (player.copying === copy) player.copying = null;
-            // The video advanced while this copy ran: its newest frame is the next picture, and it uploads once.
-            if (!player.closed && player.uploadedFor !== player.presentedSeen) this.presentFrame(player);
-        });
-        player.copying = copy;
+            if (this.host.current()) this.host.error(player.id, 'This video frame could not be shown');
+            return;
+        }
+        auditCount('media', 'upload', 1, { bytes });
+        if (player.closed || !this.host.current() || this.host.source(player.id)?.entry.id !== player.mediaId) { frame.close(); frames.release(lease); return; }
+        frames.present(player.id, frame, lease);
     }
     private close(state: State): void {
         const player = state.player; if (!player || player.closed) return;
@@ -238,9 +226,8 @@ export class BoardVideoPlayback {
             player.video.pause(); player.video.removeAttribute('src'); player.video.load();
         } finally {
             player.video.remove();
-            // The decoder is stopped above. The source (object URL and charge) waits for a copy the browser already started.
-            const dropSource = () => { URL.revokeObjectURL(player.url); this.host.memory.release(player.memory); };
-            if (player.copying) void player.copying.then(dropSource, dropSource); else dropSource();
+            // The decoder is stopped above; presented frames hold their own decoded pictures, not the object URL.
+            URL.revokeObjectURL(player.url); this.host.memory.release(player.memory);
         }
     }
 }

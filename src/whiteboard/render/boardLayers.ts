@@ -211,6 +211,9 @@ export interface BoardLayerPair extends Readonly<[PlatformLayerDefinition, Platf
     onDevice(): boolean;
     /** The owning band's CPU bytes now (the direct charge, the dense plan, the device scratch): the measured cost a request's size is judged by. */
     cpuMandatoryBytes(): number;
+    /** The pane's CPU grant as its layer host reports it (`allocator.cpuGrantBytes`, h10); null until a host has drawn or the
+     * method is absent, and the caller then judges by its own floor. */
+    cpuGrantBytes(): number | null;
     /** Each band's LayerHost deadline; the scheduler's coalesced wake only invalidates, it never draws. */
     wakeAt(deadlineMs: number | null): void;
     readyFrame(): PaintSource | null;
@@ -912,6 +915,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     pair.drawnInkNodeIds = () => (gpu as DrawnInkReporter | null)?.drawnInkNodeIds?.() ?? NO_INK;
     pair.onDevice = () => !!activeHost()?.device();
     pair.cpuMandatoryBytes = cpuMandatory;
+    // Typeof-guarded until the host's allocator carries the method (h10 adds it, h9 supplies it).
+    pair.cpuGrantBytes = () => (allocatorHost?.allocator as (LayerHost['allocator'] & { cpuGrantBytes?(): number | null }) | null)?.cpuGrantBytes?.() ?? null;
     pair.wakeAt = deadlineMs => { for (const host of hosts.values()) host.wakeAt(deadlineMs); };
     pair.memory = () => allocatorHost?.allocator.cpu ?? null;
     pair.paintProgress = progressNow;

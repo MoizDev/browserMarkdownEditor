@@ -243,12 +243,13 @@ export const attachView: AttachView = options => {
     const containsRect = (outer: Rect, inner: Rect): boolean => inner.x >= outer.x && inner.y >= outer.y
         && inner.x + inner.width <= outer.x + outer.width && inner.y + inner.height <= outer.y + outer.height;
     // The whole scene's estimated CPU cost: the owning band's CPU bytes for the current view, scaled from the view's item count
-    // to the sheet's. It must fit half the pane's CPU grant. The layer cannot read the grant, so the grant's floor
-    // (cpuGrantMinBytes) stands in for it: the true grant is never smaller, so the test stays the conservative one.
+    // to the sheet's. It must fit half the pane's CPU grant: the grant the host reports, or the grant's floor
+    // (cpuGrantMinBytes) while the host reports none. The floor is never above the true grant, so it stays the conservative test.
     const sceneFits = (wholeItems: number): boolean => {
         const viewItems = Math.max(1, lastCandidates ?? 1);
         const perItem = layers.cpuMandatoryBytes() / viewItems;
-        return wholeItems * perItem <= RENDER_CONSTANTS.cpuGrantMinBytes / 2;
+        const grant = layers.cpuGrantBytes() ?? RENDER_CONSTANTS.cpuGrantMinBytes;
+        return wholeItems * perItem <= grant / 2;
     };
     function requestPaint(sensitive = interaction?.sensitiveNodeIds?.()): void {
         // A request made while the Scene is still catching up is kept and sent once it is ready: the dense

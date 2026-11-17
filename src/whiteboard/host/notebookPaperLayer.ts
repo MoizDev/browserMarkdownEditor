@@ -19,6 +19,8 @@ import { notebookBackdrop } from './notebookBackdrop';
 
 /** The composer's offscreen encode (PLAN §3.3, wave 2). Today's adapter has none, so the layer's call is guarded: a no-op. */
 type OffscreenEncoder = { encodeOffscreen?(passes: OffscreenPasses, view: ViewState, band: PaintBand): void };
+/** The adapter's GPU eviction (h2); typeof-guarded until impl/gpu's `Layer.evictGpu` lands on this branch. */
+type GpuEvicting = { evictGpu?(bytes: number, frameId: number): number };
 export type NotebookHost = Extract<HostBlock, { kind: 'notebook' }>;
 export interface NotebookPaperSnapshot {
     /** Changes whenever paper properties or page geometry change. */
@@ -228,6 +230,11 @@ class NotebookPaperLayer implements Layer {
         return this.ready.stack.rects.filter(rect => this.drawn.has(pageKey(rect)));
     }
     /** Forwards the composer's offscreen encode; a no-op until the adapter has one (PLAN §3.3, wave 2). */
+    /** The governor's trim: frees the adapter's GPU tiles not used this frame, and returns the bytes freed. */
+    evictGpu(bytes: number, frameId: number): number {
+        const adapter = this.gpu as GpuEvicting;
+        return !this.disposed && typeof adapter.evictGpu === 'function' ? adapter.evictGpu(bytes, frameId) : 0;
+    }
     encodeOffscreen(passes: OffscreenPasses, view: ViewState): void {
         const encoder = this.gpu as OffscreenEncoder;
         if (!this.disposed && typeof encoder.encodeOffscreen === 'function') encoder.encodeOffscreen(passes, view, 'content');

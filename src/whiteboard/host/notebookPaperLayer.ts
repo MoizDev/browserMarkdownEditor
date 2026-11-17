@@ -305,9 +305,15 @@ class NotebookPaperLayer implements Layer {
     }
     /** Forwards the composer's offscreen encode; a no-op until the adapter has one (PLAN §3.3, wave 2). */
     /** The governor's trim: frees the adapter's GPU tiles not used this frame, and returns the bytes freed. */
+    /** The governor's trim. The paper's reclaimable residency is its free list (released targets, charged until trimmed) and its
+     * stale or off-view tiles. A trim asks for a few bytes, but the pool needs headroom: a small grant freed one target and left
+     * a board's next admission refused, which froze the pane (measured: the paper held 28 targets, 29.8 MB, for 9 visible
+     * positions). So the paper gives back everything the adapter can release this frame, and returns the real bytes. The
+     * adapter's tiers keep what is drawn now. */
     evictGpu(bytes: number, frameId: number): number {
         const adapter = this.gpu as GpuEvicting;
-        return !this.disposed && typeof adapter.evictGpu === 'function' ? adapter.evictGpu(bytes, frameId) : 0;
+        if (this.disposed || typeof adapter.evictGpu !== 'function') return 0;
+        return adapter.evictGpu(Math.max(bytes, this.gpu.memory().gpuBytes), frameId);
     }
     encodeOffscreen(passes: OffscreenPasses, view: ViewState): void {
         const encoder = this.gpu as OffscreenEncoder;

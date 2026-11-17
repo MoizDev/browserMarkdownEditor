@@ -1,4 +1,4 @@
-import { pageAt, pagePresentation, renderTokenKey, tileKeyString } from '../../platform/render';
+import { pageAt, pagePresentation, renderTokenKey } from '../../platform/render';
 import type { ByteLease, FrameBudget, GfxDevice, GpuPass, GpuReleaseReason, Layer, LayerHost, MirrorView, PageStack, Rect, TextureHandle, ViewState } from '../../platform/render';
 import type { PdfMirrorPixels, PdfSessionMirrors } from './tileMirror';
 import type { PdfVersionBridge } from './versionBridge';
@@ -190,10 +190,10 @@ export class PdfTileLayer implements Layer {
         // 18-32 of 66 rasters per zoom gesture dropped unused). Uncovered area is still rastered at once.
         const zooming = !!device && now - this.scaleChangedAt < ZOOM_SETTLE_MS;
         this.lastMotionScale = planned.motionScale;
-        this.desired = new Set(planned.requests.map(request => tileKeyString(request.key)));
+        this.desired = new Set(planned.requests.map(request => request.text));
         if (!input.moving) {
             const exactKeys = planned.requests.filter(request => request.level === 'exact' && intersects(rect(request), input.viewport))
-                .map(request => tileKeyString(request.key));
+                .map(request => request.text);
             this.framePlan = { view, exactKeys };
         }
         const exactScale = planned.requests.find(request => request.level === 'exact')?.scale.scale;
@@ -234,7 +234,7 @@ export class PdfTileLayer implements Layer {
         }
         let running = [...this.entries.values()].filter(entry => !entry.settled).length;
         for (const request of planned.requests) {
-            const key = tileKeyString(request.key);
+            const key = request.text;
             let existing = this.entries.get(key);
             // A GPU-resident tile whose bitmap was released is lost with its device and rastered again on the new one.
             // A 2D-bridge frame keeps it: that frame draws the mirror, and the next GPU frame still has the texture
@@ -561,7 +561,7 @@ export class PdfTileLayer implements Layer {
         const seen = new Set<string>();
         let mandatoryBytes = 0, prefetchBytes = 0;
         for (const request of requests) {
-            const key = tileKeyString(request.key);
+            const key = request.text;
             if (seen.has(key)) continue;
             seen.add(key);
             const bounds = rect(request);
@@ -680,7 +680,7 @@ export class PdfTileLayer implements Layer {
         if (key === this.mirrorKey) return;
         if (this.mirrorJob?.key !== key) {
             const exact = requests.filter(request => request.level === 'exact' && intersects(rect(request), input.viewport));
-            const entries = exact.map(request => this.entries.get(tileKeyString(request.key)));
+            const entries = exact.map(request => this.entries.get(request.text));
             if (!entries.length || entries.some(entry => !entry?.settled)) { this.mirrorJob = null; return; }
             if (entries.some(entry => !entry?.bitmap)) {
                 // The 2D mirror is the hidden/rebind stand-in, never this view's pixels; re-rastering to refresh it would
@@ -689,7 +689,7 @@ export class PdfTileLayer implements Layer {
                 this.mirrorSkipped = key; this.mirrorJob = null; return;
             }
             const low = requests.filter(request => request.level === 'low' && intersects(rect(request), input.viewport))
-                .map(request => this.entries.get(tileKeyString(request.key)))
+                .map(request => this.entries.get(request.text))
                 .filter((entry): entry is Entry => !!entry?.bitmap);
             this.mirrorJob = { key, view: snapshot, entries: [...low, ...entries as Entry[]], ids: [],
                 lowIds: new Set(), index: 0, pending: false };
@@ -713,7 +713,7 @@ export class PdfTileLayer implements Layer {
         }
         const entry = job.entries[job.index];
         const bitmap = entry.bitmap;
-        if (!bitmap || this.entries.get(tileKeyString(entry.request.key)) !== entry) { this.mirrorJob = null; return; }
+        if (!bitmap || this.entries.get(entry.request.text) !== entry) { this.mirrorJob = null; return; }
         const bounds = rect(entry.request), viewport = input.viewport;
         const left = Math.max(bounds.x, viewport.x), top = Math.max(bounds.y, viewport.y);
         const right = Math.min(bounds.x + bounds.width, viewport.x + viewport.width);

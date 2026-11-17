@@ -490,13 +490,18 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         const samples = grid === 4 ? 1 : PATH_COVERAGE_SAMPLES;
         const h = Math.min(Math.floor(PATH_COVERAGE_SCRATCH_BYTES / coverageTargetBytes(w, 1, samples, grid)), Math.floor(cap / grid));
         const bytes = coverageTargetBytes(w, h, samples, grid);
+        // The pool counts the old scratch's lease until it is returned, so a growth that reserves first is refused for bytes the kit
+        // itself holds. When no admission holds the old scratch (its draws read it at draw time, and none is pending), its lease goes
+        // back first. An admission still holding it keeps it: the growth reserves first, and its refusal is a short wait until those
+        // admissions retire.
+        let reclaimed = false;
+        if (current && current.refs === 0) { table.targets.delete(owner); destroyScratchTarget(owner, current); reclaimed = true; }
         const lease = host.allocator.gpu.reserve(bytes);
         if (!lease) return bytes;
         let target: CoverageTarget;
         try { target = owner.createCoverageTarget(w, h, samples, lease, grid === 4 ? { grid: 4 } : undefined); }
         catch (error) { host.allocator.gpu.release(lease); throw error; }
-        // No admission holds the old target (draws read the scratch when they draw), and the device returns its lease.
-        if (current) destroyScratchTarget(owner, current);
+        if (current && !reclaimed) destroyScratchTarget(owner, current);
         table.widths.set(owner, w);
         table.targets.set(owner, { device: owner, target, bytes, refs: current?.refs ?? 0, usedFrame: frame,
             charge: { holder: kitToken, gpu: host.allocator.gpu, lease }, targetLease: lease });
@@ -568,12 +573,27 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
     };
     const isReady = (): boolean => !disposed && !failed && !unsupported && !!pipelines && !!device &&
         host.device() === device && host.generation === device.generation;
+    /** The packs of one member group at other shifts are superseded by a new shift's pack: a moving group (a drag) is a new key on each
+     * move, so without this every move kept its copy and its buffer. Only packs no admission of this frame uses are dropped (an
+     * in-use one stays until a later frame's new shift finds it idle), so at most one idle copy per group survives a frame. */
+    const supersedePacks = (members: readonly number[]): void => {
+        const group = members.join(',');
+        for (const pack of [...(packsOfMember.get(members[0]) ?? [])]) {
+            if (pack.members.join(',') !== group || pack.usedFrame >= frame || uploading.has(pack.shape.positive)) continue;
+            const entry = shared.get(pack.shape.positive);
+            if (entry && entry.refs > 0) continue;
+            if (entry) { unidle(entry); destroySet(entry); }
+            freePack(pack);
+            auditCount(audit, 'kit:pack-superseded');
+        }
+    };
     /** The sets as one set: each one's vertices moved by its shift, copied into a new pack. A composition already packed is reused. */
     const packSets = (sets: readonly PathCoverageShapes[]): Pack | { readonly refused: number } => {
         const members = sets.flatMap(set => [idOf(set.positive), idOf(set.negative)]);
         const key = sets.map(set => `${idOf(set.positive)}.${idOf(set.negative)}@${set.shift?.[0] ?? 0},${set.shift?.[1] ?? 0}`).join('|');
         const known = packs.get(key);
         if (known) { known.usedFrame = frame; return known; }
+        supersedePacks(members);
         let positive = 0, negative = 0, edges = 0;
         let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
         for (const set of sets) {
@@ -920,12 +940,15 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         // Failure is permanent for this device incarnation: the caller's exact route takes the item.
         if (disposed || failed || unsupported) return unsupportedBecause(disposed ? 'disposed' : failed ? 'failed' : 'device-unsupported');
         warm();
+        // A generation change is the device moving under this kit: its release follows, so the admission waits a frame. It is checked
+        // before readiness, so a kit whose pipelines are built waits here too instead of taking the CPU route as 'not-ready'.
+        if (device && (device.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration)) {
+            return { status: 'deferred' };
+        }
         // Pipelines still compiling are a wait, not a fallback; ready invalidates the frame.
         // Compiling pipelines and a device not yet bound are frame waits: nothing is refused for memory, so nothing is named.
         if (!isReady()) return pending || !device ? { status: 'deferred' } : unsupportedBecause('not-ready');
         const owner = device!, { sets, rule, affine, viewport, output } = request;
-        // A generation change is the device moving under this kit: its release follows, so the admission waits a frame.
-        if (owner.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration) return { status: 'deferred' };
         // Empty sets draw nothing. The rest are one set: several sets, or one shifted set, are packed into a copy with the shifts
         // baked in (see packSets), so the admission draws one winding per band, not one per set.
         const nonEmpty = sets.filter(set => set.positive.length + set.negative.length > 0);

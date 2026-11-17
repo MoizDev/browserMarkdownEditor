@@ -69,7 +69,8 @@ function NativeViewer({ props, identity, board, onError }: {
             const current = latest.current;
             view = createNativeViewLease({ host: nativeCanvasHost, identity, board,
                 parameters: { mode: 'view', visible: current.isVisible, focused: current.isFocused, theme: current.theme, inverted: false },
-                limits: { min, max }, insets: { left, right, top, bottom }, onError, onNotice: setNotice });
+                limits: { min, max }, insets: { left, right, top, bottom }, onError, onNotice: setNotice,
+                onNoticeCleared: message => setNotice(shown => shown === message ? null : shown) });
         } catch (error) { onError(error); return; }
         setLease(view);
         return () => { setLease(previous => previous === view ? null : previous); view.dispose(); };
@@ -191,11 +192,12 @@ function NativeDrawingEditing({ props, board, adapter, onError, onUnavailable }:
 }) {
     const latest = useRef(props); useLayoutEffect(() => { latest.current = props; }, [props]);
     const { identity, nativeCanvasHost: host, zoomLimits: { min, max }, insets: { left, right, top, bottom } } = props;
-    const createLease = useCallback(async (editing: NativeEditingViewOptions, signal: AbortSignal, notice: (message: string) => void) => {
+    const createLease = useCallback(async (editing: NativeEditingViewOptions, signal: AbortSignal, notice: (message: string) => void,
+        clearNotice: (message: string) => void) => {
         signal.throwIfAborted(); const now = latest.current;
         return createNativeViewLease({ host, identity, board, parameters: { mode: 'edit', visible: now.isVisible,
             focused: now.isFocused, theme: now.theme, inverted: false }, limits: { min, max }, insets: { left, right, top, bottom },
-            editing, onError, onNotice: notice });
+            editing, onError, onNotice: notice, onNoticeCleared: clearNotice });
     }, [host, identity, board, min, max, left, right, top, bottom, onError]);
     const renderView = useCallback((context: NativeEditingRenderContext) => <AttachedViewer props={props} identity={identity}
         lease={context.lease} inverted={context.inverted} setInverted={context.setInverted} notice={context.notice}

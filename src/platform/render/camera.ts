@@ -278,6 +278,7 @@ export class CameraController {
      * carries the quality scale, so snapping to it moved a resting camera whenever quality changed: content shifted by up
      * to half a backing pixel at a soft↔sharp swap (logged: −0.78/−0.66 world units, ~0.3 px at 40%, no camera input). */
     private snapDpr: number | null = null;
+    private lastIdeal: Camera | null = null;
     private resizeReference: Readonly<Viewport>;
     private constraint: CameraConstraint;
     private epoch = 0;
@@ -401,7 +402,14 @@ export class CameraController {
         if (frameId === this.frameId && this.frameState) return this.frameState;
         const ideal = constrainCamera(this.cameraValue, this.viewportValue, this.constraint);
         this.publishCamera(ideal);
-        const next = this.moving ? ideal : snapCamera(ideal, this.snapViewport(), this.constraint.bounds(ideal, this.viewportValue));
+        // The presented camera depends on the logical camera and the display's pixel grid only. A frame is left unsnapped
+        // only while the camera itself is travelling (sub-pixel glide); 'moving' alone is not enough, because a press with
+        // no camera input marks frames moving, and the ink pane then hopped by the snap difference at every press and back
+        // at release (measured on canvas2d, img8 at 262%: 0.05/0.19 world units against the page, which did not move).
+        const travelling = this.moving && this.lastIdeal !== null &&
+            (ideal.x !== this.lastIdeal.x || ideal.y !== this.lastIdeal.y || ideal.z !== this.lastIdeal.z);
+        this.lastIdeal = ideal;
+        const next = travelling ? ideal : snapCamera(ideal, this.snapViewport(), this.constraint.bounds(ideal, this.viewportValue));
         validateCamera(next, this.viewportValue);
         // Rest snapping is presentation, not a new semantic input. Writing it back made a
         // fractional scroll alternate raw→snapped every frame (epoch +2), cancelling CPU bands

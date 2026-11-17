@@ -54,7 +54,8 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
     readonly board: ComposedBoardSession;
     readonly adapter: HostedBoardAdapter<BoardSessionPort>;
     readonly factory: NativeEditingCapabilityFactory;
-    readonly createLease: (editing: NativeEditingViewOptions, signal: AbortSignal, notice: (message: string) => void) => Promise<NativeViewLease>;
+    readonly createLease: (editing: NativeEditingViewOptions, signal: AbortSignal, notice: (message: string) => void,
+        clearNotice: (message: string) => void) => Promise<NativeViewLease>;
     readonly renderView: (context: NativeEditingRenderContext) => ReactNode;
     /** PDF keeps its existing view preference outside the retokened shell. */
     readonly inversion?: { readonly value: boolean; readonly set: (value: boolean) => void };
@@ -122,7 +123,7 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
                             touchHandles(show) { viewRef.current?.editing?.announce(show ? 'Text selection handles shown.' : 'Text selection handles hidden.'); },
                             reducedMotion: () => getBoardPreferences().animationSpeed === 0,
                             dynamicTextSize: () => getBoardPreferences().isDynamicResizeMode } } };
-            view = await createLease(editing, controller.signal, setNotice);
+            view = await createLease(editing, controller.signal, setNotice, message => setNotice(shown => shown === message ? null : shown));
             if (!live || controller.signal.aborted || !current()) { view.dispose(); return; }
             viewRef.current = view; setClipboard(service); setLease(view);
             const acquired = view;

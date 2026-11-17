@@ -232,7 +232,8 @@ function PdfEditingView({ props, onUnavailable }: { props: NativePdfViewerProps;
         if (!props.isVisible) { handoff.current?.dispose(); handoff.current = null; }
     }, [props.isVisible]);
     useEffect(() => () => { handoff.current?.dispose(); handoff.current = null; }, []);
-    const createLease = useCallback(async (editing: NativeEditingViewOptions, signal: AbortSignal, notice: (message: string) => void) => {
+    const createLease = useCallback(async (editing: NativeEditingViewOptions, signal: AbortSignal, notice: (message: string) => void,
+        clearNotice: (message: string) => void) => {
         while (true) {
             const value = latest.current;
             await waitWhilePdfRebinding(value.sourceState, signal);
@@ -247,7 +248,7 @@ function PdfEditingView({ props, onUnavailable }: { props: NativePdfViewerProps;
                     parameters: { visible: value.isVisible, focused: value.isFocused, theme: value.theme, inverted: invertedRef.current },
                     isVisible: () => latest.current.isVisible, isFocused: () => latest.current.isVisible && latest.current.isFocused,
                     emphasisEnabled: () => latest.current.emphasisEnabled, onUpdating: setUpdating,
-                    onPresented: () => setAwaitingPresentation(false), onError: value.onError, onNotice: notice });
+                    onPresented: () => setAwaitingPresentation(false), onError: value.onError, onNotice: notice, onNoticeCleared: clearNotice });
                 if (handoff.current === capturedHandoff) handoff.current = null;
                 return view;
             } catch (error) {

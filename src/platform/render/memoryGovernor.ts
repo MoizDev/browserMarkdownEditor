@@ -215,6 +215,9 @@ function samePaneDemand(a: PaneMemoryDemand, b: PaneMemoryDemand | undefined): b
 
 /** Residency a pane grant may reclaim before it refuses a reservation: never critical, hidden, surface or context. */
 const RECLAIMABLE: readonly MemoryClass[] = ['redundant-level', 'prefetch', 'scene-cache'];
+/** How long after a slow GPU window the layers keep bounding their per-frame work. Windows come once per POLICY.slowGpuSampleCount
+ * timed frames, so a sustained slow GPU keeps the bound on only while the windows keep arriving; one window is held for a second. */
+const SLOW_GPU_HOLD_MS = 1000;
 
 /** No navigator/DOM/timers: the app passes the coarsened hint once and advances the clock explicitly. */
 export class MemoryGovernor {
@@ -252,6 +255,8 @@ export class MemoryGovernor {
     private qualityLimit = 1;
     private belowRecoverySince: number | null = null;
     private degradedAt = Number.NEGATIVE_INFINITY;
+    /** The governor clock at the last slow GPU window: timing evidence for the layers, never a trim or a quality step. */
+    private slowGpuAt = Number.NEGATIVE_INFINITY;
     // The level that last failed under trouble, the earliest time it may be retried, and the current back-off.
     private failedQuality: number | null = null;
     private failedUntil = Number.NEGATIVE_INFINITY;
@@ -530,13 +535,13 @@ export class MemoryGovernor {
         if (samples >= POLICY.slowGpuSampleCount && p95Ms > frameIntervalMs) this.signalSlowGpu();
     }
 
-    /** A slow GPU window is timing evidence, not memory. Trouble trims both pools and steps quality down for every pane, so
-     * on a timing window alone it evicted a notebook's visible-set tiles in the middle of a zoom (the rebuild is more GPU work
-     * in the same zoom) and dropped the quality of a three-stroke notebook whose GPU pool held 55 of 64 MB. Only a pool over its
-     * target is pressure; below it the window is counted and nothing is trimmed or degraded. */
+    /** A slow GPU window is a time problem, not memory: it never trims a cache and never steps quality. It is recorded so the
+     * layers bound their own work per frame (`trouble()` reports 'slow-gpu' for a hold after it). A quality step answers memory
+     * pressure only, through the pool paths. Measured: a trim on the window evicted a notebook's visible-set tiles mid-zoom, and
+     * the rebuild was more GPU work in that same zoom. */
     private signalSlowGpu(): void {
         auditCount('governor', 'slow-gpu', 1);
-        if (this.charged.gpu > this.target.gpu) this.signalTrouble('slow-gpu');
+        this.slowGpuAt = this.now;
     }
 
     observeFence(oldestPendingMs: number, mainThreadInputHealthy: boolean): void {
@@ -936,7 +941,10 @@ export class MemoryGovernor {
     }
 
     /** What a layer reads through its host: a pure mapping of the state fields, so the read allocates nothing. */
-    trouble(): LayerTrouble { return layerTroubleOf(this.state, this.lastTrouble); }
+    trouble(): LayerTrouble {
+        if (this.now - this.slowGpuAt < SLOW_GPU_HOLD_MS) return 'slow-gpu';
+        return layerTroubleOf(this.state, this.lastTrouble);
+    }
 
     /** Usage low enough to step quality back up. GPU grants are planned up to the trim target, so a pane using its own
      * grant sits there; the CPU's 0.6 ratio applied to the GPU never came once it was degraded (measured: a PDF held at

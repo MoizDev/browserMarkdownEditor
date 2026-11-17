@@ -81,7 +81,8 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const pending = new Set<() => void>(), controllers = new Set<AbortController>();
     let disposed = false, regionPreview: SelectRegion | null = null, previewIds = new Set<NodeId>();
     let svg: SVGSVGElement | null = null, shape: SVGElement | null = null, guideSvg: SVGSVGElement | null = null, scheduled: (() => void) | null = null;
-    let scribbleSource: readonly Vec2[] | null = null, scribbleCount = 0, scribbleCamera = new Float64Array(3).fill(Number.NaN);
+    let scribbleSource: readonly Vec2[] | null = null, scribbleCount = 0;
+    const scribbleCamera = new Float64Array(3).fill(Number.NaN);
     let scribbleTail: SVGPolylineElement | null = null, scribblePoints: string[] = [];
     let guides: readonly BoardSnapGuide[] = [];
     let nudgeEpoch = 0, nudgeTail: Promise<void> = Promise.resolve();

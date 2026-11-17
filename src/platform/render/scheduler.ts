@@ -254,9 +254,16 @@ const NO_REASONS: readonly string[] = Object.freeze([]);
 
 
 interface DamageBatch { entry: PaneEntry; damage: DamageAccumulator; full: boolean; submitted: boolean }
+/** Optional on a layer: true while its live work (a stroke's GPU runs in flight) must be prepared before the pane's other critical
+ * layers. Declared here, not on Layer, so the layer contract stays as it is; a layer without the hook is ordered as before. */
+interface PreparingFirst { prepareFirst?(): boolean }
+const firstPreparing = (layer: Layer): boolean => (layer as Layer & PreparingFirst).prepareFirst?.() === true;
+
 interface FrameWork { entry: PaneEntry; frame: ScheduledFrame; batch: DamageBatch; geometry: number; hadInput: boolean; platformPrepared: boolean; platformBudget?: FrameBudget;
     /** A layer's preparation was passed over for lack of time while it did not ask for a frame. */
     skipped: boolean;
+    /** Per layer (index-aligned with frame.layers): prepared first this frame as live work, or null when none is live. */
+    first: boolean[] | null;
     /** The audit's name for what asked for this frame; '' when the render audit is off. */
     cause: string }
 interface PendingAcknowledgement { entry: PaneEntry; frameId: number; token: FrameToken; submission: ScheduledSubmission }
@@ -735,7 +742,7 @@ export class FrameScheduler {
                     else batch.damage.mark({ x: 0, y: 0, width: 0, height: 0 }, tags);
                     const damage = batch.damage.freeze()!;
                     const frame = Object.freeze({ frameId, timestamp, intervalMs: this.intervalMs, token, view, layers, reasons, damage });
-                    work.push({ entry, frame, batch, geometry, hadInput: entry.inputPriority || reasons.includes('input'), platformPrepared: false, skipped: false, cause });
+                    work.push({ entry, frame, batch, geometry, hadInput: entry.inputPriority || reasons.includes('input'), platformPrepared: false, skipped: false, first: null, cause });
                     entry.inputPriority = false;
                 });
             }
@@ -764,8 +771,20 @@ export class FrameScheduler {
             }
             for (const item of criticalOrder) {
                 if (!item.platformPrepared) continue;
-                for (const meta of item.frame.layers) {
-                    if (meta.critical) prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, meta, prepareDeadline, true, meter, criticalPending));
+                // Live work first, critical or not: a layer with ink in flight takes the pane's time and upload allowance before
+                // paper, board tiles or any other layer. Measured on notebook draw: a paper layer still building was admitted 570
+                // times while the wet layer was refused every frame (its cover incomplete, 121 compositor refusals). Its flags are
+                // kept for the optional pass, so each layer is prepared once per frame.
+                const layers = item.frame.layers;
+                const flags = this.call(item.entry, () => layers.some(meta => firstPreparing(meta.layer)) ? layers.map(meta => firstPreparing(meta.layer)) : null) ?? null;
+                item.first = flags;
+                if (flags) {
+                    for (let i = 0; i < layers.length; i++) {
+                        if (flags[i]) prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, layers[i], prepareDeadline, layers[i].critical, meter, criticalPending));
+                    }
+                }
+                for (let i = 0; i < layers.length; i++) {
+                    if (layers[i].critical && !flags?.[i]) prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, layers[i], prepareDeadline, true, meter, criticalPending));
                 }
             }
             const optionalOrder = this.focusFirst(this.rotate(work, this.optionalCursor++));
@@ -775,8 +794,9 @@ export class FrameScheduler {
                 item.entry.optionalBytes = Math.min(Math.max(meter.allowance, progressUploadBytes),
                     item.entry.optionalBytes + meter.allowance / Math.max(1, work.length));
                 const deadline = Math.min(prepareDeadline, performance.now() + optionalMs);
-                for (const meta of item.frame.layers) {
-                    if (!meta.critical) prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, meta, deadline, false, meter, criticalPending));
+                for (let i = 0; i < item.frame.layers.length; i++) {
+                    const meta = item.frame.layers[i];
+                    if (!meta.critical && !item.first?.[i]) prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, meta, deadline, false, meter, criticalPending));
                 }
             }
             // A layer passed over for time, not asking for a frame, has nothing else to wake it. After a restore that
@@ -888,8 +908,14 @@ export class FrameScheduler {
             // progress slice. A healthy frame keeps the window as it was; the overrun is still reported as overshoot.
             const requesting = meta !== null ? meta.layer.needsFrame() : item.entry.layers.some(layer => layer.needsFrame());
             const exhausted = performance.now() >= deadline;
-            if (exhausted && !requesting) { item.skipped = true; return; }
-            const limit = exhausted ? performance.now() + meter.sliceMs : deadline;
+            // The platform's frame preparation is never skipped on the deadline. A frame that skipped it kept the previous frame
+            // id, so the compositors refused its encode and a pane under load presented nothing, not even its stand-ins. It runs
+            // with an exhausted budget instead (shouldYield true from the start; only media uploads are granted), so the frame
+            // keeps its id and the layers present what they already hold. The deferred work continues on the next frame, through
+            // the layers' own needsFrame (no extra mark here: an idle pane must not gain a frame).
+            const platform = meta === null;
+            if (exhausted && !requesting && !platform) { item.skipped = true; return; }
+            const limit = exhausted && !platform ? performance.now() + meter.sliceMs : deadline;
             const shouldYield = () => !this.valid(item.entry, item.frame.token) || performance.now() >= limit ||
                 (meta !== null && item.entry.pane.isCritical(meta.layer, item.frame.view) !== critical);
             // remainingBytes includes the explicit one-tile progress grant, not a disguised larger cap.
@@ -932,14 +958,14 @@ export class FrameScheduler {
                     return true;
                 },
             };
-            if (!shouldYield()) {
-                if (meta) meta.layer.prepare(item.frame.view, budget);
-                else {
+            if (platform) {
+                if (this.valid(item.entry, item.frame.token)) {
+                    if (exhausted) auditCount('scheduler', 'prepare:exhausted', 1);
                     item.platformBudget = budget;
                     item.entry.pane.prepareFrame(item.frame, budget);
                     item.platformPrepared = true;
                 }
-            }
+            } else if (meta && !shouldYield()) meta.layer.prepare(item.frame.view, budget);
             overshoot = Math.max(0, performance.now() - deadline);
         });
         return overshoot;

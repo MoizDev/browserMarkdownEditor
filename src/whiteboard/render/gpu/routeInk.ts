@@ -7,7 +7,7 @@ import { auditCount } from '../../../platform/render/renderAudit';
 import type { PaintInkItem, PaintItem } from '../paintStream';
 import { analyticCapsule } from '../analyticInk';
 import { AnalyticInkRun, createAnalyticInkRuns } from '../analyticInkBatch';
-import { inkStrokeSets, inkToleranceBand } from '../inkGeometry';
+import { createInkGeometry, inkToleranceBand } from '../inkGeometry';
 import type { Admission, Blend, CreateInkRoutes, InkRouteFor, ItemRoute, PreparedRun } from './contracts';
 
 /** The only place an ink route is chosen; wet and committed ink both call it, so a stroke cannot change route between
@@ -40,6 +40,8 @@ function affineAt(localToWorld: Affine, origin: Readonly<{ x: number; y: number 
 export const createInkRoutes: CreateInkRoutes = (host: LayerHost, audit: string) => {
     const runs = createAnalyticInkRuns(host, audit);
     const kit = createPathCoverageKit(host, () => auditCount(audit, 'error:coverage-kit'));
+    // The chunk triangles this route holds are leased from the CPU pool, the same pool its analytic staging uses.
+    const geometry = createInkGeometry(host.allocator.cpu, audit);
 
     const analytic: ItemRoute<PaintInkItem> = {
         id: 'ink-analytic',
@@ -72,7 +74,8 @@ export const createInkRoutes: CreateInkRoutes = (host: LayerHost, audit: string)
                 const deviceScale = view.camera.z * view.viewport.dpr * Math.hypot(a, b, c, d);
                 if (!(deviceScale > 0) || !Number.isFinite(deviceScale)) { retireAll(); return { status: 'unsupported', why: 'scale' }; }
                 // One set per chunk, all under one affine and one stencil cover: a publication uploads only the chunks it adds.
-                const stroke = inkStrokeSets(item, inkToleranceBand(deviceScale), audit);
+                const stroke = geometry.strokeSets(item, inkToleranceBand(deviceScale));
+                if (stroke && 'denied' in stroke) { retireAll(); return { status: 'denied', pool: 'cpu', bytes: stroke.denied }; }
                 if (!stroke) { retireAll(); return { status: 'unsupported', why: 'outline-refused' }; }
                 const sets = stroke.sets.map(set => ({ positive: set.triangles, negative: NO_TRIANGLES, edges: set.edges, bounds: set.bounds }));
                 const result: PathCoverageAdmission = kit.admitSets({
@@ -104,8 +107,11 @@ export const createInkRoutes: CreateInkRoutes = (host: LayerHost, audit: string)
         retire(run: PreparedRun): void {
             if (run instanceof UnionInkRun) for (const stroke of run.strokes) kit.retire(stroke);
         },
-        release(): void { kit.release(); },
-        memory: () => kit.memory(),
+        release(): void { kit.release(); geometry.release(); },
+        memory: () => {
+            const kitBytes = kit.memory();
+            return { gpuBytes: kitBytes.gpuBytes, cpuBytes: geometry.memory().cpuBytes + kitBytes.cpuBytes };
+        },
     };
 
     return { analytic, union };

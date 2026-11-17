@@ -299,14 +299,17 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         const table = scratchTables[String(grid) as '1' | '4'];
         const rowBytes = coverageTargetBytes(width, 1, grid === 4 ? 1 : PATH_COVERAGE_SAMPLES, grid);
         if (rowBytes > PATH_COVERAGE_SCRATCH_BYTES) return 'unsupported';
-        // A grid texture is (4·width) texels wide, and the device's largest texture side bounds it.
-        if (grid === 4 && width * 4 > owner.limits.maxRenderTargetSize) return 'unsupported';
+        // A grid texture is (grid·width) texels wide, and the device's largest texture side bounds both axes of it.
+        const cap = owner.limits.maxRenderTargetSize;
+        if (width * grid > cap) return 'unsupported';
         const current = table.targets.get(owner);
-        // Draws loop over bands of the target's height, so any height serves; only the width must fit the request.
+        // Draws loop over bands of the target's height, so the height is only ever bounded by the device: a band taller than
+        // the largest texture side is refused by createCoverageTarget (measured: a notebook asked 2×20164 against a 16384 cap).
         if (current && current.target.width >= width) return true;
         const w = Math.max(width, current?.target.width ?? 0, table.widths.get(owner) ?? 0);
+        if (w * grid > cap) return 'unsupported';
         const samples = grid === 4 ? 1 : PATH_COVERAGE_SAMPLES;
-        const h = Math.floor(PATH_COVERAGE_SCRATCH_BYTES / coverageTargetBytes(w, 1, samples, grid));
+        const h = Math.min(Math.floor(PATH_COVERAGE_SCRATCH_BYTES / coverageTargetBytes(w, 1, samples, grid)), Math.floor(cap / grid));
         const bytes = coverageTargetBytes(w, h, samples, grid);
         const lease = host.allocator.gpu.reserve(bytes);
         if (!lease) return false;

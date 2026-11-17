@@ -5,6 +5,7 @@ import type { FrameBudget } from '../../../platform/render/types';
 import { createPathCoverageKit, type PathCoverageAdmission, type PreparedPathCoverage } from '../../../platform/render/pathCoverage';
 import { auditCount } from '../../../platform/render/renderAudit';
 import type { PaintInkItem, PaintItem } from '../paintStream';
+import type { Rgba } from '../../../platform/types';
 import { analyticCapsule } from '../analyticInk';
 import { AnalyticInkRun, createAnalyticInkRuns } from '../analyticInkBatch';
 import { createInkGeometry, inkToleranceBand } from '../inkGeometry';
@@ -17,10 +18,16 @@ import type { Admission, Blend, CreateInkRoutes, InkRouteFor, ItemRoute, Prepare
  * packing, and that refusal is reported, not re-routed. */
 export const inkRouteFor: InkRouteFor = (item: PaintInkItem) => analyticCapsule(item) ? 'ink-analytic' : 'ink-union';
 
-/** A union run: one stencil cover per stroke, so a translucent stroke is never blended with itself. */
+/** A union run: one stencil cover per stroke, so a translucent stroke is never blended with itself. Colour is not in the
+ * admission: each stroke's paint is read from its item at draw, so a palette change re-admits nothing. By reading, the item's
+ * chunks are one kit admission (admitSets), so the stroke's cover is one cover however many chunks it has. Across tiles, each
+ * tile's admission covers only its own viewport, so a stroke spanning two tiles blends each pixel once. This route admits an
+ * item the same way wet or committed; the hand-over between the two is the pane's logic, not checked here. */
 class UnionInkRun implements PreparedRun {
     readonly route = 'ink-union' as const;
-    constructor(readonly blend: Blend, readonly strokes: readonly PreparedPathCoverage[]) {}
+    constructor(readonly blend: Blend, readonly strokes: readonly PreparedPathCoverage[], readonly items: readonly PaintInkItem[],
+        /** One paint per stroke, reused across draws: a draw assigns the colour, it never allocates. */
+        readonly paints: readonly { colour: Rgba }[]) {}
 }
 
 function pixels(view: ViewState): { width: number; height: number } {
@@ -64,7 +71,7 @@ export const createInkRoutes: CreateInkRoutes = (host: LayerHost, audit: string)
             // Both blends sample the measured 4x4 grid (the proxy's sample positions). A multiply slice is laid by the kit's
             // modulate cover: each stroke multiplies k = C·c + 1 − α·c into the white slice, once per sample.
             const modulate = blend === 'modulate';
-            const admitted: PreparedPathCoverage[] = [];
+            const admitted: PreparedPathCoverage[] = [], admittedItems: PaintInkItem[] = [];
             const retireAll = (): void => { for (const stroke of admitted) kit.retire(stroke); };
             for (const item of items) {
                 if (item.material.blend !== (modulate ? 'multiply' : 'normal')) { retireAll(); return { status: 'unsupported', why: 'blend-mismatch' }; }
@@ -80,7 +87,7 @@ export const createInkRoutes: CreateInkRoutes = (host: LayerHost, audit: string)
                     colour: item.material.color, output: { kind: 'composite', blend: modulate ? 'modulate' : 'normal' },
                     sampling: 'grid4',
                 }, budget);
-                if (result.status === 'ready') admitted.push(result.value);
+                if (result.status === 'ready') { admitted.push(result.value); admittedItems.push(item); }
                 else if (result.status !== 'empty') {
                     retireAll();
                     // The kit's own upload: two doubles per vertex are eight bytes, so a double is four bytes.
@@ -94,12 +101,18 @@ export const createInkRoutes: CreateInkRoutes = (host: LayerHost, audit: string)
                 }
             }
             if (!admitted.length) return { status: 'empty' };
-            return { status: 'ready', value: new UnionInkRun(blend, admitted) };
+            const paints = admittedItems.map(item => ({ colour: item.material.color }));
+            return { status: 'ready', value: new UnionInkRun(blend, admitted, admittedItems, paints) };
         },
         draw(pass: GpuPass, run: PreparedRun): void {
             if (!(run instanceof UnionInkRun)) throw new Error('Not a union ink run');
             // Routes never clip: the caller applies item clips (withClips / withPreparedClips), so this draw is unclipped.
-            for (const stroke of run.strokes) kit.draw(pass, stroke);
+            // The colour is the item's current colour, read here: the kit's paint argument overrides the admission's colour.
+            for (let i = 0; i < run.strokes.length; i++) {
+                const paint = run.paints[i];
+                paint.colour = run.items[i].material.color;
+                kit.draw(pass, run.strokes[i], paint);
+            }
         },
         retire(run: PreparedRun): void {
             if (run instanceof UnionInkRun) for (const stroke of run.strokes) kit.retire(stroke);

@@ -17,13 +17,14 @@ import { TILE_SIZE } from './imageSampling';
 import type { Blend, ItemRoute, PreparedRun } from './gpu/contracts';
 import { createTileComposer, type ResourcedRoute, type TileLay, type TileRoutes } from './gpu/tileComposer';
 import { createTileParts } from './gpu/tileParts';
-import { createTileStore, tileId, tileWorld } from './gpu/tileStore';
+import { createTileStore, tileWorld } from './gpu/tileStore';
 import { createPath, withPreparedClips } from './gpu/routePath';
 import { createInkRoutes, inkRouteFor } from './gpu/routeInk';
 import { createImageRoute } from './gpu/routeImage';
 import { createTextRoute } from './gpu/routeText';
 
 const SIZE = TILE_SIZE;
+const NO_INK: ReadonlySet<string> = new Set();
 const TILE_BYTES = SIZE * SIZE * 4;
 /** The quad that lays a composed tile: the whole texture onto its destination, linear, no coverage classification. */
 const QUAD = Object.freeze({ opacity: 1, sampling: 'linear', coverage: 'none' } as const);
@@ -79,7 +80,7 @@ type CpuRoute = ItemRoute & ResourcedRoute;
 /** The route for what no GPU route draws: each run is rastered on the CPU, once, into a tile-sized scrap and drawn as a quad.
  * A modulate run is painted multiply over white, which is exactly the k the modulate cover produces; an over run is painted
  * over transparency. The composer counts every such run as fallback:item-cpu, so this route counts only its raster and upload. */
-function createCpuRoute(host: LayerHost, surface: string, lay: TileLay): CpuRoute {
+function createCpuRoute(host: LayerHost, surface: string, lay: TileLay, report: (error: unknown) => void): CpuRoute {
     let resources: PaintResources2d | null = null;
     let scratch: OffscreenCanvas | null = null;
     // The scratch canvas is CPU memory the governor must see: it is leased on the layer's CPU pool, and only that lease is reported.
@@ -123,7 +124,6 @@ function createCpuRoute(host: LayerHost, surface: string, lay: TileLay): CpuRout
             const paint = resources;
             const device = host.device();
             if (!paint || !device) return { status: 'unsupported', why: 'no-paint-or-device' };
-            if (!budget.claimUpload(TILE_BYTES)) return { status: 'deferred' };
             if (!scratch) {
                 const cpuLease = host.allocator.cpu.reserve(TILE_BYTES);
                 if (!cpuLease) return { status: 'denied', pool: 'cpu', bytes: TILE_BYTES };
@@ -132,6 +132,8 @@ function createCpuRoute(host: LayerHost, surface: string, lay: TileLay): CpuRout
             }
             const lease = host.allocator.gpu.reserve(TILE_BYTES);
             if (!lease) return { status: 'denied', pool: 'gpu', bytes: TILE_BYTES };
+            // The claim comes after the reservations: a refused reservation spends no upload allowance.
+            if (!budget.claimUpload(TILE_BYTES)) { host.allocator.gpu.release(lease); return { status: 'deferred' }; }
             let texture: TextureHandle | null = null;
             let bitmap: ImageBitmap | null = null;
             try {
@@ -145,12 +147,12 @@ function createCpuRoute(host: LayerHost, surface: string, lay: TileLay): CpuRout
                 ctx.setTransform(s, 0, 0, s, -view.camera.x * s, -view.camera.y * s);
                 const withPaths: PaintResources2d = { ...paint, path: item => pathOf(item, s, paint) };
                 for (const item of items) paintItem2d(ctx, blend === 'modulate' ? multiplied(item) : item, withPaths);
-                auditCount(surface, 'cpu-raster', 1, { px: SIZE * SIZE });
                 bitmap = scratch.transferToImageBitmap();
                 texture = device.createTexture(SIZE, SIZE, 'rgba8', ['sample', 'copy-dst'], lease);
-                auditCount(surface, 'upload:image', 1, { bytes: TILE_BYTES });
                 device.writeTexture(texture, { x: 0, y: 0, width: SIZE, height: SIZE },
                     { source: bitmap, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
+                // Counted once the raster has its texture: the composer counts the fallback with the same pixels.
+                auditCount(surface, 'cpu-raster', 1, { px: SIZE * SIZE });
                 const run: CpuRun = { route: 'cpu', blend, texture, device };
                 live.add(run);
                 return { status: 'ready', value: run };
@@ -158,7 +160,9 @@ function createCpuRoute(host: LayerHost, surface: string, lay: TileLay): CpuRout
                 // A texture owns its lease: destroying it returns the bytes; without one, the lease goes back itself.
                 if (texture) device.destroy(texture); else host.allocator.gpu.release(lease);
                 if (isBudgetRefusal(error)) return { status: 'denied', pool: 'gpu', bytes: TILE_BYTES };
-                throw error;
+                auditCount(surface, 'fallback:cpu-failed', 1, { px: SIZE * SIZE });
+                report(error);
+                return { status: 'denied', pool: 'gpu', bytes: TILE_BYTES };
             } finally {
                 bitmap?.close();
             }
@@ -208,6 +212,14 @@ export interface GpuPaintAdapter {
     /** The governor's GPU pressure: frees up to `bytes` of idle GPU memory, path coverage sets first, then composed tiles
      * not used this frame. Returns the bytes freed. */
     evictGpu(bytes: number, frameId: number): number;
+    /** The governor's CPU pressure: frees up to `bytes` of idle CPU memory (the path route's outline geometry, unused this
+     * frame). Returns the bytes freed. The board's cpuEvict hook forwards to it. */
+    evictCpu(bytes: number): number;
+    /** The GPU bytes the visible tiles at the current scale need, for a viewport of `width` by `height` (view units). */
+    gpuMandatoryBytes(viewport: { width: number; height: number }): number;
+    /** The ink node ids in the tiles this adapter drew in the current composite: filled in drawGpu, cleared at the next prepare.
+     * The wet layer skips these nodes in the same composite, so translucent ink never doubles at hand-over. */
+    drawnInkNodeIds(): ReadonlySet<string>;
     dispose(): void;
 }
 
@@ -230,7 +242,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
     let lastView: ViewState | null = null;
     let inkMemo: { frame: number; paint: PreparedPaint2d; set: ReadonlySet<string> } | null = null;
     const lay = createLay(host);
-    const cpu = createCpuRoute(host, surface, lay);
+    const cpu = createCpuRoute(host, surface, lay, report);
     const ink = createInkRoutes(host, surface);
     // One path route and its clip admission share one coverage kit: the composer admits every route's clips through it.
     const pathRoute = createPath(host, surface);
@@ -247,15 +259,18 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
     };
     const composer = createTileComposer({
         host, audit: surface, parts: createTileParts(host, surface), store, routes,
-        tileId, tileWorld, inkRouteFor, lay, admitClips: pathRoute.admitClips, withPreparedClips,
+        tileWorld, inkRouteFor, lay, admitClips: pathRoute.admitClips, withPreparedClips,
+        layQuads: (pass, texture, quads) => host.drawTexturedQuads(pass, texture, quads, QUAD),
         ...(options.opaqueWorld ? { opaqueWorld: options.opaqueWorld } : {}),
+        // The compose limit halves while the host reports a slow GPU, read each frame (PLAN 3.1).
+        slowGpu: () => host.trouble() === 'slow-gpu',
     });
 
     return {
         prepare(view: ViewState, budget: FrameBudget, omit?: ReadonlySet<string>): void {
             if (disposed || lastFrame === budget.frameId) return;
             lastFrame = budget.frameId;
-            pathRoute.coverage.beginFrame(budget.frameId);
+            pathRoute.beginFrame(budget.frameId);
             const prepared = reference.borrowPrepared(), device = host.device();
             if (!prepared || !device || !documentMatches(prepared.root, budget.token) || !documentMatches(prepared.sourceFrame, budget.token) ||
                 device.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration) {
@@ -268,8 +283,9 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                 timed(surface, 'prepare', () => composer.prepare(view, budget, prepared, omit));
             } catch (error) {
                 if (isBudgetRefusal(error)) return;
+                // Reported, not rethrown: a throw here aborted the board's frame on every prepare while the content stayed in view.
                 report(error);
-                throw error;
+                return;
             }
             presented = prepared;
             lastView = view;
@@ -306,15 +322,22 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             presented = null; omitPrepared = null; lastFrame = -1;
         },
         needsFrame(): boolean { return !disposed && composer.needsFrame(); },
+        drawnInkNodeIds(): ReadonlySet<string> { return disposed ? NO_INK : composer.drawnInkNodeIds(); },
+        gpuMandatoryBytes(viewport: { width: number; height: number }): number {
+            return disposed || !presented ? 0 : composer.mandatoryBytes(viewport.width, viewport.height);
+        },
         evictGpu(bytes: number, frameId: number): number {
             if (disposed || !(bytes > 0)) return 0;
             // Route caches first, then composed tiles: each frees only what this frame did not use. The sum is what was freed.
-            pathRoute.coverage.beginFrame(frameId);
+            pathRoute.beginFrame(frameId);
             let freed = pathRoute.coverage.evict(bytes);
             if (freed < bytes) freed += imageRoute.evictTextures(bytes - freed, frameId);
             if (freed < bytes) freed += textRoute.evictTextures?.(bytes - freed, frameId) ?? 0;
             if (freed < bytes && lastView) freed += store.evict(bytes - freed, frameId, lastView);
             return freed;
+        },
+        evictCpu(bytes: number): number {
+            return disposed || !(bytes > 0) ? 0 : pathRoute.evictCpu(bytes);
         },
         // GPU bytes are the composer's: each is leased by its owner (the store, a route) on the layer's GPU pool, reported once.
         // CPU bytes are this route's own leased scratch only: a route's CPU bytes that are not leased (the text scratch, the path

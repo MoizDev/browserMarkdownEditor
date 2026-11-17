@@ -193,6 +193,20 @@ const INK_FLATTEN_DEVICE_PX = 0.1;
  * chunk's smallest device radius, never above the ceiling, never below the floor (a hairline would cost unbounded vertices). */
 const INK_TOLERANCE_RADIUS_FRACTION = 0.01;
 const INK_TOLERANCE_FLOOR_PX = 0.005;
+/** The thinnest radius, in world units, of an outline's segments and discs (`Infinity` when it has none). The F1 bound is
+ * this radius times INK_TOLERANCE_RADIUS_FRACTION, so geometry and the LOD ladder read it from one place. */
+export function inkMinRadius(outline: { readonly segments: Float64Array; readonly discs: Float64Array }): number {
+    let radius = Infinity;
+    const segments = outline.segments, discs = outline.discs;
+    for (let i = 0; i < segments.length; i += 6) radius = Math.min(radius, segments[i + 2], segments[i + 5]);
+    for (let i = 0; i < discs.length; i += 3) radius = Math.min(radius, discs[i + 2]);
+    return radius;
+}
+/** The centre-error bound a level of this radius may take, in world units: the same fraction as the outline's F1 tolerance,
+ * so a LOD level is held to the error its own geometry is built to. The fraction is scale-free, so it holds at every zoom. */
+export function inkRadiusTolerance(radiusWorld: number): number {
+    return radiusWorld > 0 && Number.isFinite(radiusWorld) ? INK_TOLERANCE_RADIUS_FRACTION * radiusWorld : 0;
+}
 /** The adapter's outline ceiling: an outline past it has no triangles, and the route refuses the stroke. */
 const INK_OUTLINE_MAX_COMMANDS = 262144;
 
@@ -323,12 +337,11 @@ function buildLocal(chunk: InkCoverage, band: number, audit: string): InkTriangl
         throw error;
     }
 }
-/** The device-px errors this chunk's outline may have: a fraction of its thinnest device radius, each under its ceiling. */
+/** The device-px errors this chunk's outline may have: a fraction of its thinnest device radius, each under its ceiling.
+ * By reading, every chunk reaches this one builder, so the F1 bound holds for the wet stroke, the committed stroke and every LOD
+ * level alike: a LOD level's chunks are InkCoverage objects of their own, tessellated here at their own radius. */
 function inkTolerances(chunk: InkCoverage, band: number): { arcPx: number; flattenPx: number } {
-    let radius = Infinity;
-    const segments = chunk.segments, discs = chunk.discs;
-    for (let i = 0; i < segments.length; i += 6) radius = Math.min(radius, segments[i + 2], segments[i + 5]);
-    for (let i = 0; i < discs.length; i += 3) radius = Math.min(radius, discs[i + 2]);
+    const radius = inkMinRadius(chunk);
     if (!(radius < Infinity)) return { arcPx: INK_CAP_ERROR_DEVICE_PX, flattenPx: INK_FLATTEN_DEVICE_PX };
     const fraction = Math.max(INK_TOLERANCE_FLOOR_PX, INK_TOLERANCE_RADIUS_FRACTION * radius * band);
     return { arcPx: Math.min(INK_CAP_ERROR_DEVICE_PX, fraction), flattenPx: Math.min(INK_FLATTEN_DEVICE_PX, fraction) };

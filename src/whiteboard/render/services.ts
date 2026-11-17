@@ -20,7 +20,7 @@ import type { InkCoverage } from '../ink/outline';
 import { CURVE_CHUNK_SPANS } from '../ink/curve';
 import type { BoardDoc } from '../model/doc';
 import type { NodeId } from '../model/ids';
-import { createNode, type Node } from '../model/nodes';
+import { createNode, type ConnectorNode, type Node } from '../model/nodes';
 import type { SampleStoreReader } from '../model/samples';
 import type { MediaStore } from '../media/store';
 import { localBounds, BoundsQuality, type BoundsProvider, type Box, type LocalGeometryBounds } from '../scene/bounds';
@@ -40,7 +40,10 @@ import { createBoardTextGeometry, type PreparedBoardText } from './textGeometry'
 import type { BoardFonts } from '../text/fonts';
 import { prepareBoardVectorGeometry, prepareBoardVectorGeometryNow, prepareOpaqueGeometry, type BoardVectorGeometry } from './vectorGeometry';
 import { connectorBytes, inkChunkBytes, vectorBytes } from './residentBytes';
-import type { ResolvedNodeCache } from './resolvedNodeCache';
+import { ResolvedNodeCache } from './resolvedNodeCache';
+import { auditCount } from '../../platform/render/renderAudit';
+/** The audit surface of the board's paint services: every counter below is `board-paint:<event>`. */
+const AUDIT = 'board-paint';
 /** A link card's stored preview picture and favicon, as the document holds them; other nodes have none. */
 function previewMediaOf(doc: Pick<BoardDoc, 'media'>, node: Readonly<Node>): PreviewMedia | undefined {
     if (node.kind !== 'linkcard' || !node.preview) return undefined;
@@ -86,6 +89,13 @@ function withAllocation(paint: PaintNode, geometry: Prepared, context: SceneReso
 function matrix(doc: BoardDoc, id: NodeId): Affine {
     const pose = worldPose(doc, id), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
     return [c, s, -s, c, pose.x, pose.y];
+}
+/** The connector with each end whose target has no attachment surface detached: that end paints from its own free point, as a
+ * connector whose target is gone does. Left attached, the resolver answers 'pending' for it, and the frame never presents. */
+function unattachedWhere(node: ConnectorNode, surfaces: ReadonlyMap<NodeId, AttachmentSurface>): ConnectorNode {
+    const start = node.start.attach && !surfaces.has(node.start.attach.target) ? { ...node.start, attach: null } : node.start;
+    const end = node.end.attach && !surfaces.has(node.end.attach.target) ? { ...node.end, attach: null } : node.end;
+    return start === node.start && end === node.end ? node : { ...node, start, end };
 }
 function rectangle(w: number, h: number): readonly PathOp[] {
     return [{ op: 'M', p: { x: 0, y: 0 } }, { op: 'L', p: { x: w, y: 0 } },
@@ -178,6 +188,8 @@ export function createBoardRenderServices(options: {
     // Least recently used first; a budget eviction also drops the entry's ladder, which no longer has a geometry to serve.
     const evictOldestIdle = (): { readonly bytes: number; readonly charged: number } => {
         const gone = cached.keys().next().value!, entry = idle.get(gone);
+        // A budget eviction of a node a later pass needs again is a rebuild; the count shows whether the idle budget is too small.
+        auditCount(AUDIT, 'geometry:evict');
         forgetIdle(gone); dropInkLadder(gone);
         return { bytes: entry?.bytes ?? 0, charged: entry?.lease?.bytes ?? 0 };
     };
@@ -188,6 +200,11 @@ export function createBoardRenderServices(options: {
         if (freed < bytes) evictInkLadders(bytes - freed);
     };
     const derived = options.derivedMemory?.(evictDerived);
+    // The session's resolved paint, one revision at a time. A node resolves to the same items in every stream and frame of one
+    // variant (revision, sheet, theme, precision, fonts), so a direct frame, a candidate pass and a dense plan of one revision each
+    // paint a node once. By reading: the paint re-ran per stream, and the first picture of a 5,400-item board prepared each candidate
+    // three times (solo/whiteboard.md). Its charge is the derived handle's, released with the session.
+    const sessionResolved = derived ? new ResolvedNodeCache(derived) : undefined;
     const inkLadder = (id: NodeId, signature: readonly unknown[]): InkLodLadder | undefined => {
         if (!derived || disposed) return undefined;
         const entry = inkLadders.get(id);
@@ -219,7 +236,13 @@ export function createBoardRenderServices(options: {
     };
     const palettes = options.palettes ?? DEFAULT_BOARD_PALETTES;
     const text = createBoardTextGeometry({ fonts: options.fonts, cooperate: options.cooperate, onFontEpoch() {
-        for (const id of textIds) forgetIdle(id);
+        // An id leaves the set only when the session doc no longer holds its node AND no geometry is kept for it: a deleted node
+        // whose geometry is gone has nothing to re-prepare, so the set stays the text nodes the session still has or keeps.
+        for (const id of [...textIds]) {
+            const kept = cached.has(id) || idle.has(id);
+            forgetIdle(id);
+            if (!kept && !options.doc.nodes.has(id)) textIds.delete(id);
+        }
         const ids = new Set(textIds);
         for (const listener of listeners) listener(ids);
     } });
@@ -231,6 +254,7 @@ export function createBoardRenderServices(options: {
         if (--holders !== 0) return;
         disposed = true; text.dispose(); for (const id of [...cached.keys()]) forgetIdle(id); textIds.clear(); listeners.clear(); sessionRasters.dispose();
         for (const id of [...inkLadders.keys()]) dropInkLadder(id);
+        sessionResolved?.dispose();
         derived?.close();
     };
     const signature = (node: Readonly<Node>, doc: BoardDoc): readonly unknown[] => {
@@ -258,7 +282,10 @@ export function createBoardRenderServices(options: {
         check(signal);
         const node = createNode(borrowed), before = signature(node, doc), old = cached.get(node.id);
         const precision = node.kind === 'stroke' ? inkPrecision(context) : undefined;
-        if (old && sameGeometrySignature(old.signature, before) && old.inkPrecision === precision?.key) { cached.delete(node.id); cached.set(node.id, old); return old; }
+        if (old && sameGeometrySignature(old.signature, before) && old.inkPrecision === precision?.key) {
+            cached.delete(node.id); cached.set(node.id, old); auditCount(AUDIT, 'geometry:hit'); return old;
+        }
+        auditCount(AUDIT, 'geometry:build');
         const key = `${options.token.session}:${node.id}:geometry:${++serial}`;
         let result: Omit<Prepared, 'signature'>;
         if (node.kind === 'group') throw new TypeError('Groups aggregate child geometry in Scene');
@@ -287,18 +314,23 @@ export function createBoardRenderServices(options: {
             const targets = new Map<NodeId, { node: Node; world: Affine; clips: AttachmentSurface['clips'] }>();
             for (const end of [node.start, node.end]) if (end.attach && !targets.has(end.attach.target)) {
                 const target = doc.nodes.get(end.attach.target);
-                if (!target) throw new Error(`Connector ${node.id} has a missing target`);
+                // A target the doc does not hold has no surface: its end is painted unattached (unattachedWhere), not thrown on.
+                if (!target) continue;
                 targets.set(target.id, { node: createNode(target), world: matrix(doc, target.id), clips: frameClips(doc, target) });
             }
             const surfaces = new Map<NodeId, AttachmentSurface>();
             for (const [id, target] of targets) {
+                // A group aggregates its children in Scene and has no geometry of its own, so it is never prepared here.
+                if (target.node.kind === 'group') continue;
                 const prepared = await prepare(target.node, doc, signal);
                 const surface = prepared.vector?.attachments;
-                if (!surface) throw new Error(`Connector ${node.id} target ${id} has no supported attachment surface`);
+                // A target with no attachment surface leaves its end unattached, as a group does; a throw here would drop every frame.
+                if (!surface) continue;
                 surfaces.set(id, { target: id, outline: surface.outline, logicalBox: surface.logicalBox,
                     localToWorld: target.world, clips: target.clips, revision: doc.rev });
             }
-            const resolved = await resolveConnectorGeometry({ key, node, localToWorld: world,
+            const paintNode = unattachedWhere(node, surfaces);
+            const resolved = await resolveConnectorGeometry({ key, node: paintNode, localToWorld: world,
                 resolveTarget: id => surfaces.get(id), label: null, toleranceWorld: .01, maxPieces: 65_536 }, {
                 signal, cooperate: options.cooperate,
                 label: node.label ? async (anchor, length, labelSignal) => {
@@ -307,7 +339,7 @@ export function createBoardRenderServices(options: {
                 } : undefined,
             });
             if (resolved.status !== 'ready') throw new Error(resolved.status === 'unroutable' ? resolved.reason : `Connector ${node.id} geometry is pending: ${resolved.reason}`);
-            result = connectorPrepared(key, node, resolved.geometry, inverseWorld);
+            result = connectorPrepared(key, paintNode, resolved.geometry, inverseWorld);
         } else {
             const vector = node.kind === 'opaque' ? await prepareOpaqueGeometry(node, signal, options.cooperate)
                 : await prepareBoardVectorGeometry(node, { text, revision: key, zoom: 1, signal, cooperate: options.cooperate });
@@ -330,7 +362,10 @@ export function createBoardRenderServices(options: {
         check(signal);
         const node = createNode(borrowed), before = signature(node, doc), old = cached.get(node.id);
         const precision = node.kind === 'stroke' ? inkPrecision(context ? { ...context, allowInkLod: false } : undefined) : undefined;
-        if (old && sameGeometrySignature(old.signature, before) && old.inkPrecision === precision?.key) { cached.delete(node.id); cached.set(node.id, old); return old; }
+        if (old && sameGeometrySignature(old.signature, before) && old.inkPrecision === precision?.key) {
+            cached.delete(node.id); cached.set(node.id, old); auditCount(AUDIT, 'geometry:hit'); return old;
+        }
+        auditCount(AUDIT, 'geometry:build');
         const key = `${options.token.session}:${node.id}:geometry:${++serial}`;
         let result: Omit<Prepared, 'signature'>;
         if (node.kind === 'group' || node.kind === 'opaque') throw new TypeError('Copy geometry requires a supported non-container leaf');
@@ -339,16 +374,19 @@ export function createBoardRenderServices(options: {
         } else if (node.kind === 'connector') {
             const world = matrix(doc, node.id), inverseWorld = inverse(world, 1e12);
             if (!inverseWorld) throw new RangeError('Connector transform is not invertible');
-            const surfaces = new Map<NodeId, AttachmentSurface>();
-            for (const end of [node.start, node.end]) if (end.attach && !surfaces.has(end.attach.target)) {
+            const surfaces = new Map<NodeId, AttachmentSurface>(), seen = new Set<NodeId>();
+            for (const end of [node.start, node.end]) if (end.attach && !seen.has(end.attach.target)) {
+                seen.add(end.attach.target);
                 const target = doc.nodes.get(end.attach.target);
-                if (!target) throw new Error(`Connector ${node.id} has a missing target`);
+                // A missing target, a group, or an opaque node has no copy geometry: its end is painted unattached (unattachedWhere).
+                if (!target || target.kind === 'group' || target.kind === 'opaque') continue;
                 const surface = prepareNow(target, doc, signal).vector?.attachments;
-                if (!surface) throw new Error(`Connector ${node.id} target ${target.id} has no supported attachment surface`);
+                if (!surface) continue;
                 surfaces.set(target.id, { target: target.id, outline: surface.outline, logicalBox: surface.logicalBox,
                     localToWorld: matrix(doc, target.id), clips: frameClips(doc, target), revision: doc.rev });
             }
-            const resolved = resolveConnectorGeometryNow({ key, node, localToWorld: world,
+            const paintNode = unattachedWhere(node, surfaces);
+            const resolved = resolveConnectorGeometryNow({ key, node: paintNode, localToWorld: world,
                 resolveTarget: id => surfaces.get(id), label: null, toleranceWorld: .01, maxPieces: 65_536 }, {
                 label: node.label ? (anchor, length) => {
                     const label = text.prepareNow(node, { revision: key, connectorLength: length, anchor });
@@ -356,7 +394,7 @@ export function createBoardRenderServices(options: {
                 } : undefined,
             });
             if (resolved.status !== 'ready') throw new Error(resolved.status === 'unroutable' ? resolved.reason : `Connector ${node.id} geometry is pending: ${resolved.reason}`);
-            result = connectorPrepared(key, node, resolved.geometry, inverseWorld);
+            result = connectorPrepared(key, paintNode, resolved.geometry, inverseWorld);
         } else {
             const vector = prepareBoardVectorGeometryNow(node, { text, revision: key, zoom: 1 });
             if (vector.text.length) textIds.add(node.id);
@@ -393,7 +431,8 @@ export function createBoardRenderServices(options: {
                 // A picture's tiles depend on the stream's own world, so only world-independent resolutions are shared.
                 const reuse = shared && node.kind !== 'picture' ? shared : undefined;
                 const known = reuse?.cache.get(reuse.variant, node.id, context.sensitive);
-                if (known) return known;
+                if (known) { auditCount(AUDIT, 'paint:resolve-hit'); return known; }
+                auditCount(AUDIT, 'paint:resolve-built');
                 const geometry = await prepare(node, doc, itemSignal, context);
                 const paint = node.kind === 'stroke' ? paintStrokeNode(node, geometry.ink!, geometry.key, context, palette)
                     : node.kind === 'connector' ? paintConnector(node, geometry.connector!, context, palette, text.faces)
@@ -413,7 +452,7 @@ export function createBoardRenderServices(options: {
     const paint = async (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder, sourceToken: RenderToken = options.token): Promise<PaintNodeSource> => {
         const epoch = text.fonts.epoch, variant = rasterVariant(doc, request, epoch, sourceToken);
         const world = request.world ? Object.freeze({ ...request.world }) : undefined;
-        const source = await prepareScenePaintSource(doc, sourceToken, request, asyncPaintPorts(doc, request, orderedIds), signal);
+        const source = await prepareScenePaintSource(doc, sourceToken, request, asyncPaintPorts(doc, request, orderedIds, sharedResolution(doc, request, sourceToken)), signal);
         return { ...source, sessionRasters, sourceWorld: world,
             ...(text.fonts.epoch === epoch ? { rasterVariant: variant } : {}) };
     };
@@ -423,13 +462,18 @@ export function createBoardRenderServices(options: {
         request.sheetId, request.theme, request.deviceScale ?? null, !!request.allowInkLod,
         palettes[doc.kind === 'whiteboard' ? request.theme : 'light'].revision, text.fonts.epoch,
     ]);
+    /** The resolution a paint shares: the caller's dense-plan cache when it names one, else the session's cache of this revision. */
+    const sharedResolution = (doc: BoardDoc, request: ScenePaintRequest, sourceToken: RenderToken, given?: ResolvedNodeCache): SharedResolution | undefined => {
+        const cache = given ?? sessionResolved;
+        return cache ? { cache, variant: resolutionVariant(doc, request, sourceToken) } : undefined;
+    };
     // Frame identity matches `paint`: the variant is withdrawn if the font epoch moved while the
     // stream was being consumed, so a frame never claims a raster from a superseded face set.
     const paintStream = (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder,
         sourceToken: RenderToken = options.token, resolved?: ResolvedNodeCache): ScenePaintNodeStream => {
         const epoch = text.fonts.epoch, variant = rasterVariant(doc, request, epoch, sourceToken);
         const world = request.world ? Object.freeze({ ...request.world }) : undefined;
-        const shared = resolved ? { cache: resolved, variant: resolutionVariant(doc, request, sourceToken) } : undefined;
+        const shared = sharedResolution(doc, request, sourceToken, resolved);
         const stream = createScenePaintNodeStream(doc, sourceToken, request, asyncPaintPorts(doc, request, orderedIds, shared), signal);
         return {
             token: stream.token, theme: request.theme, sceneRevision: stream.sceneRevision, sourceDoc: stream.sourceDoc, sensitiveNodes: stream.sensitiveNodes,

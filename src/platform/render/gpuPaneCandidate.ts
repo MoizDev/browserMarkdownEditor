@@ -27,6 +27,11 @@ export function reportGpuFallback(where: string, error: unknown): GfxError {
 
 const GFX_CODES: readonly GfxError[] = ['lost', 'out-of-budget', 'allocation', 'unsupported', 'invalid-resource', 'invalid-input', 'aborted'];
 
+/** A draw-time GPU error is retried once, after the pane has been quiet this long (no input, no gesture). */
+export const GPU_RETRY_QUIET_MS = 1000;
+/** The GPU errors of one session (one pane attach) that latch the pane on canvas2d: the first is retried, the second is not. */
+export const GPU_ERROR_LATCH_COUNT = 2;
+
 export interface GpuPaneCandidateOptions {
     readonly runtime: PlatformRuntime;
     readonly paneId: string;
@@ -38,6 +43,8 @@ export interface GpuPaneCandidateOptions {
     /** Frees up to `bytes` of this pane's GPU residency and returns the bytes it freed; 0 when it frees none. */
     onEvict(bytes: number): number;
     inputHealthy(): boolean;
+    /** True once the pane has had no input for GPU_RETRY_QUIET_MS and no gesture is running. */
+    quiet(): boolean;
     frameInterval(): number | null;
 }
 
@@ -50,6 +57,8 @@ interface Generation {
     disposed: boolean;
     failureReported: boolean;
     deferredReported: boolean;
+    /** This generation has demoted its pane. Its first GPU error is the one counted and logged; later ones are the same fault. */
+    fellBack: boolean;
 }
 
 /** Qualified devices are built against the broker's context and kept detached until the lifecycle
@@ -58,6 +67,12 @@ interface Generation {
 export class GpuPaneCandidate {
     private current: Generation | null = null;
     private serial = 0;
+    /** Draw-time GPU errors this session (one attach of the pane), and the timer of the one quiet-time retry they allow. */
+    private gpuErrors = 0;
+    private retryTimer: ReturnType<typeof setTimeout> | null = null;
+    private disposed = false;
+    /** An error that arrives with no current generation has nothing to demote; it is counted and logged once per candidate. */
+    private orphanReported = false;
 
     constructor(private readonly options: GpuPaneCandidateOptions) {}
 
@@ -98,7 +113,7 @@ export class GpuPaneCandidate {
                 } });
         } catch (error) { backing.close(); throw error; }
         const generation: Generation = { preparation, services, backing, bundle: null, grant: null,
-            disposed: false, failureReported: false, deferredReported: false };
+            disposed: false, failureReported: false, deferredReported: false, fellBack: false };
         generationRef.current = generation;
         this.current = generation;
         try {
@@ -113,7 +128,7 @@ export class GpuPaneCandidate {
                 },
                 invalidate: this.options.invalidate,
                 // Every GPU compositor error demotes this pane; none reaches the owner, so a board never fails to open on one.
-                onError: error => defer(() => this.failure(preparation.generation, reportGpuFallback('compositor', error))),
+                onError: error => defer(() => this.demote(generation, 'compositor', error)),
                 onDeferred: () => {
                     const compositor = generation.bundle?.compositor;
                     if (!compositor || !('retryPending' in compositor) || compositor.retryPending !== true || generation.deferredReported) return;
@@ -139,11 +154,12 @@ export class GpuPaneCandidate {
             const refusal = typeof error === 'object' && error !== null && 'code' in error &&
                 (error.code === 'out-of-budget' || error.code === 'allocation');
             if (!preparation.signal.aborted && !refusal) reportGpuFallback('setup', error);
-            if (!preparation.signal.aborted && !generation.failureReported && typeof error === 'object' && error !== null && 'code' in error) {
+            // Only a capability failure and a real context loss reach the runtime. A refused creation is already accounted by
+            // the governor's reservation; signalling it as trouble degraded the whole app's quality and showed the
+            // 'reduced to fit memory' notice for one pane's forced failure (by reading: signalTrouble → degrade → onPressureChange).
+            if (!preparation.signal.aborted && typeof error === 'object' && error !== null && 'code' in error) {
                 const code = error.code;
-                if (code === 'unsupported' || code === 'allocation' || code === 'out-of-budget' || code === 'lost') {
-                    this.reportTrouble(generation, code);
-                }
+                if (code === 'unsupported' || code === 'lost') this.reportTrouble(generation, code);
             }
             generation.disposed = true;
             generation.services.close();
@@ -171,9 +187,19 @@ export class GpuPaneCandidate {
     /** The pane's GPU work threw outside the compositor's own callbacks (a frame, a layer, a request). The current device
      * generation falls back to canvas2d; with none current the error is only reported. */
     fail(error: unknown, where: string): void {
-        const code = reportGpuFallback(where, error);
         const current = this.current;
-        if (current && !current.disposed) this.failure(current.preparation.generation, code);
+        if (current && !current.disposed) { this.demote(current, where, error); return; }
+        if (this.orphanReported) return;
+        this.orphanReported = true;
+        reportGpuFallback(where, error);
+    }
+
+    /** Demotes the pane once per generation: the first GPU error is counted and logged with its stack, and asks the broker
+     * to fall back; later errors of the same generation are the same fault and add nothing. */
+    private demote(generation: Generation, where: string, error: unknown): void {
+        if (generation.fellBack || generation.disposed || this.current !== generation) return;
+        generation.fellBack = true;
+        this.failure(generation.preparation.generation, reportGpuFallback(where, error));
     }
 
     presented(generation: number): void {
@@ -203,13 +229,38 @@ export class GpuPaneCandidate {
         else if (code === 'allocation' || code === 'out-of-budget') this.options.runtime.trouble('allocation');
     }
 
+    /** A draw-time GPU error. It is its own reason, not a creation failure, so the broker does not latch it: the first error
+     * of the session is retried once the pane is quiet, and a second latches the pane on canvas2d (counted). */
     private failure(generation: number, code: GfxError): void {
         const current = this.current;
         if (!current || current.preparation.generation !== generation) return;
         this.reportTrouble(current, code);
         const surface = this.options.surface();
         if (!surface) return;
-        surface.failGpu(surface.stamp, generation, code === 'out-of-budget' ? 'out-of-budget' : 'creation-failed');
+        if (code === 'out-of-budget') { surface.failGpu(surface.stamp, generation, 'out-of-budget', false); return; }
+        this.gpuErrors++;
+        const latch = this.gpuErrors >= GPU_ERROR_LATCH_COUNT;
+        if (latch) auditCount('pane', `fallback:pane-2d:gpu-error-latched:${code}`);
+        surface.failGpu(surface.stamp, generation, `gpu-error:${code}`, latch);
+        if (!latch) this.scheduleRetry();
+    }
+
+    /** One retry, when the pane is quiet. Until then it asks again each second; nothing else wakes it, and the timer is the
+     * only thing that runs while the pane is held on canvas2d. */
+    private scheduleRetry(): void {
+        if (this.retryTimer !== null || this.disposed) return;
+        const attempt = (): void => {
+            this.retryTimer = null;
+            if (this.disposed) return;
+            if (!this.options.quiet()) { this.retryTimer = setTimeout(attempt, GPU_RETRY_QUIET_MS); return; }
+            this.options.surface()?.retry();
+        };
+        this.retryTimer = setTimeout(attempt, GPU_RETRY_QUIET_MS);
+    }
+
+    dispose(): void {
+        this.disposed = true;
+        if (this.retryTimer !== null) { clearTimeout(this.retryTimer); this.retryTimer = null; }
     }
 
     private release(generation: Generation, reason: GpuReleaseReason): void {

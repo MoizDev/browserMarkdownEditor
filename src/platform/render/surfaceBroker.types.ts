@@ -24,8 +24,12 @@ export interface SurfaceView {
 
 export type ContextDisposeReason = 'disposed' | 'revoked' | 'context-lost' |
     'creation-failed' | 'stale' | 'cpu-pinned' | 'restore-timeout' | 'pressure';
-export type CpuFallbackReason = 'capacity' | 'out-of-budget' | 'creation-failed' | 'context-lost' |
-    'cpu-pinned' | 'restore-timeout' | 'pressure';
+/** A GPU defect reported by the owner (a lost draw, a failed readiness check), named by its owner. */
+export type GpuErrorReason = `gpu-error:${string}`;
+/** `budget`: the visible-context cap is full, so this pane shows live 2D and upgrades when a context frees. */
+export type CpuFallbackReason = 'capacity' | 'budget' | 'out-of-budget' | 'creation-failed' | 'context-lost' |
+    'cpu-pinned' | 'restore-timeout' | 'pressure' | GpuErrorReason;
+export type GpuFailureReason = 'creation-failed' | 'out-of-budget' | GpuErrorReason;
 
 export interface SurfaceResizeResult {
     readonly width: number;
@@ -122,9 +126,11 @@ export interface SurfaceLease {
     /** Byte changes invalidate pending publications; rename/move must not call this. */
     updateToken(token: RenderToken): void;
     requestGpu(canvas: HTMLCanvasElement, stamp: SurfaceStamp): Promise<GpuRequestResult>;
+    /** Pure check of markPresented's preconditions: nothing is recorded. */
+    canMarkPresented(stamp: SurfaceStamp, generation: number): boolean;
     markPresented(stamp: SurfaceStamp, generation: number): boolean;
     /** An unrecoverable qualified-backend fault abandons this reservation and returns to CPU. */
-    failGpu(stamp: SurfaceStamp, generation: number, reason: 'creation-failed' | 'out-of-budget'): void;
+    failGpu(stamp: SurfaceStamp, generation: number, reason: GpuFailureReason, latch: boolean): void;
     /** One fresh attempt after an outright failure/timeout, only on explicit user action or later show. */
     retry(): void;
     snapshot(): SurfaceSnapshot;

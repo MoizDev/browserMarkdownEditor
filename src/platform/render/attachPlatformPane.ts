@@ -1,4 +1,4 @@
-import { auditCount, auditFrame } from './renderAudit';
+import { auditCount, auditFrame, renderAuditEnabled } from './renderAudit';
 import type { ViewState } from '../types';
 const benchmarkMemory = __BME_BENCH__ ? await import('./benchmarkMemory') : null;
 import type { DamageRecord } from './damage';
@@ -10,7 +10,7 @@ import { captureGpuOwner, registerCaptureGpu } from './captureRuntime';
 import { CaptureError } from './captureError';
 import type { GpuCompositor } from './compositor';
 import { registerWebgl2PaneFactory } from './compositorFactory';
-import { GpuPaneCandidate } from './gpuPaneCandidate';
+import { GPU_RETRY_QUIET_MS, GpuPaneCandidate } from './gpuPaneCandidate';
 import type { QualifiedGpuPane } from './gpuPaneCandidate';
 import type { CameraConstraint } from './camera';
 import type { CompositorLayer, Compositor2DOptions, CreatedCompositor2D, PaneCompositor } from './compositor.types';
@@ -129,6 +129,10 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                 auditCount('governor', `evict-partial:${layerSet.definition(layer)?.id ?? 'unnamed'}`, 1, { bytes: partial });
             }
             if (partial >= want) break;
+            // A layer that frees part of itself has already given every position it does not need on screen. What it keeps
+            // is its visible set, which is pinned: releasing it whole here dropped a board's on-screen tiles under a trim.
+            // Such a layer is refused instead, and the refused position is composed at a lower level (h1's 'lower').
+            if (layer.evictGpu) continue;
             const remaining = layer.memory().gpuBytes;
             if (remaining <= 0) continue;
             victims.push(layer);
@@ -141,8 +145,16 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             if (disposed || !visible || touchedThisFrame()) return;
             // Releasing a visible pane's whole working set dropped the plans on screen (a notebook's paper and board) on each
             // eviction, so only the layers the governor asked for are released, and only while they are off this frame.
-            for (const layer of victims) if (layerSet.layers.includes(layer)) lifecycle?.releaseLayerGpu(layer, 'pressure');
-            lifecycle?.invalidate('budget');
+            // The pane is repainted for the budget only when a release actually freed bytes: a layer that is already gone, or
+            // one the lifecycle refused to release, leaves the picture as it is and asks for no frame.
+            let released = false;
+            for (const layer of victims) {
+                if (!layerSet.layers.includes(layer)) continue;
+                const before = layer.memory().gpuBytes;
+                lifecycle?.releaseLayerGpu(layer, 'pressure');
+                if (layer.memory().gpuBytes < before) released = true;
+            }
+            if (released) lifecycle?.invalidate('budget');
         });
         return freed;
     };
@@ -155,7 +167,13 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         queueMicrotask(() => { demandQueued = false; if (!disposed) runtime.refresh(); });
     };
     // A readout refuses an over-reported cache (a product failure reported elsewhere); demand then counts only the layer.
-    const heldBytes = (cache: MemoryCacheHandle | undefined): number => { try { return cache?.readout().reservedBytes ?? 0; } catch { return 0; } };
+    // A readout throws only when a cache's live bytes exceed what it has reserved: an accounting fault. It is counted and
+    // rethrown, never read as zero, since a zero would drop this cache's bytes from the demand the governor plans on.
+    const heldBytes = (cache: MemoryCacheHandle | undefined): number => {
+        if (!cache) return 0;
+        try { return cache.readout().reservedBytes; }
+        catch (error) { auditCount('governor', 'unaccounted'); throw error; }
+    };
     const layerSet = new PaneLayerSet((id, current, definition) => {
         const now = performance.now();
         const common = { paneId: options.paneId, owner: options.documentToken, hiddenAt: visible ? null : now,
@@ -183,7 +201,14 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         caches.push({ cpu, gpu: gpuCache, layer: current });
         return createLayerHost({
             auditId: id,
-            allocator: { cpu, gpu: gpuCache }, generation: () => lifecycle?.surface.snapshot().gpuGeneration ?? 0,
+            // The pane's current CPU grant: a layer sizes its CPU working set against it (0 while the pane has none).
+            allocator: { cpu, gpu: gpuCache, cpuGrantBytes: () => runtime.governor.grant(options.paneId)?.cpuBytes ?? 0 },
+            generation: () => lifecycle?.surface.snapshot().gpuGeneration ?? 0,
+            // The governor's read-only state, so a layer sheds work under 'slow-gpu' or 'pressure' (h10's LayerHost.trouble).
+            trouble: () => runtime.governor.trouble(),
+            // A GPU error a layer caught (an acquisition or prepare error on the device route) demotes the pane, the same way a
+            // compositor error does: counted and logged once per generation, and the open does not fail on it.
+            gpuError: error => candidate.fail(error, 'layer'),
             // GPU uploads cannot gate CPU source acquisition, including the resize bridge.
             gpuResources: () => {
                 if (!gpu || !cpuPresented) return null;
@@ -238,7 +263,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             created.presenter.releaseSurface();
             if (!gpu.backing.promote()) {
                 const surface = lifecycle?.surface;
-                surface?.failGpu(surface.stamp, grant.generation, 'out-of-budget');
+                surface?.failGpu(surface.stamp, grant.generation, 'out-of-budget', false);
                 return false;
             }
             surfaceHost.select(gpu.bundle.compositor);
@@ -263,6 +288,21 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         runtime.refresh();
         lifecycle?.invalidate('geometry');
     }, options.onError);
+    // The inputs the pane's demand is built from that move without an event of their own: size, visibility, focus, colour
+    // mode, mirrors, and what the layers hold. Reading them is a few numbers; the demand and the governor's plan are not, so
+    // they run only when one of these moved. A layer's own demand change (a plan, a refused run) still asks via requestDemand.
+    let demandMark: { pixels: number; visible: boolean; focused: boolean; inverted: boolean; mirrors: boolean; gpu: number; cpu: number } | null = null;
+    const demandMoved = (): boolean => {
+        const size = observer.current;
+        let gpu = 0, cpu = 0;
+        for (const layer of layerSet.layers) { const held = layer.memory(); gpu += held.gpuBytes; cpu += held.cpuBytes; }
+        const next = { pixels: size ? size.physical.width * size.physical.height : 0, visible, focused,
+            inverted: options.readAppearance().inverted, mirrors: !!options.session.mirrors, gpu, cpu };
+        const old = demandMark;
+        demandMark = next;
+        return !old || old.pixels !== next.pixels || old.visible !== next.visible || old.focused !== next.focused
+            || old.inverted !== next.inverted || old.mirrors !== next.mirrors || old.gpu !== next.gpu || old.cpu !== next.cpu;
+    };
     const runtimePane = {
         demand: () => {
             const size = observer.current;
@@ -275,8 +315,10 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             // document-colour target until promotion. Inversion is not a free surface effect.
             const frameCopies = 2 + Number(options.readAppearance().inverted) + Number(!!options.session.mirrors) + isolated;
             // The 2D canvas's CPU working cache is charged to this pane, so its bytes are part of the demand the grant covers.
-            let mandatory = created.compositor.cpuWorkingBytes?.() ?? 0, prefetch = 0;
+            let mandatory = created.compositor.cpuWorkingBytes?.() ?? 0, prefetch = 0, pinned = 0;
             for (const layer of layerSet.layers) {
+                // A layer's visible positions are GPU bytes the pane must keep; the governor grants them before any other need.
+                if (requestedPixels > 0) pinned += layerSet.definition(layer)?.gpuWorkingSet?.(layer, size!.physical).mandatoryBytes ?? 0;
                 // An unobserved/zero box has no drawable viewport. Asking a producer for an
                 // artificial 0×0 floor can deny it before ResizeObserver has published its size.
                 const demand = requestedPixels > 0 ? layerSet.definition(layer)?.cpuWorkingSet?.(layer, size!.physical) : undefined;
@@ -296,6 +338,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             return { paneId: options.paneId, visible, focused, requestedPixels,
                 // Needs stay inside G/C: detached CPU completion, staged GPU, mirror/effect targets,
                 // native bitmap residency and one bounded colour band do not raise either cap.
+                gpuPinnedBytes: pinned,
                 gpuNeedBytes: memory.reduce((sum, value) => sum + value.gpuBytes, 0) +
                     (frameCopies * requestedPixels + bandPixels) * RENDER_CONSTANTS.surfaceReserveBytesPerPixel + requestedPixels * 4,
                 // Working-set demand precedes allocations; prefetch competes only after all visible floors.
@@ -324,6 +367,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         surface: () => lifecycle?.surface ?? null,
         invalidate: reason => lifecycle?.invalidate(reason),
         inputHealthy: () => healthyInputAt !== null && performance.now() - healthyInputAt <= RENDER_CONSTANTS.stalledFenceMs,
+        quiet: () => !options.isInteracting() && performance.now() - lastInputAt >= GPU_RETRY_QUIET_MS,
         frameInterval: () => lastFrameInterval,
         onEvict: bytes => trimGpu(bytes),
         onReady: ready => {
@@ -383,7 +427,8 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                             // layers can prepare the new viewport. Build the normal CPU bridge detached,
                             // then resize/rebuild this SAME kept GPU behind that complete picture.
                             cpuPresented = false;
-                            auditCount('pane', 'fallback:2d-bridge');
+                            // The bridge is board content rastered on the CPU while the device exists: counted with its pixels.
+                            auditCount('pane', 'fallback:2d-bridge', 1, { px: size.physical.width * size.physical.height });
                             drawing = compositor;
                             planned = computeSurfaceMetrics(size.physical, size.nominalDpr, drawing.target.limits, grant.pixelGrant);
                         }
@@ -393,7 +438,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                         const failedGeneration = gpu?.grant.generation;
                         runtime.trouble('framebuffer');
                         if (drawing === compositor || !lifecycle) return result;
-                        if (failedGeneration !== undefined) lifecycle.surface.failGpu(lifecycle.surface.stamp, failedGeneration, 'creation-failed');
+                        if (failedGeneration !== undefined) lifecycle.surface.failGpu(lifecycle.surface.stamp, failedGeneration, 'creation-failed', false);
                         const fallback = computeSurfaceMetrics(size.physical, size.nominalDpr, compositor.target.limits,
                             runtime.governor.grant(options.paneId)?.pixelGrant ?? 0);
                         const cpu = cpuMetrics.commit(frameId, size.generation, fallback, compositor.target);
@@ -423,9 +468,9 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                         const drawing = drawCompositor();
                         drawing?.setAppearance(options.readAppearance());
                         drawing?.snapshot(view);
-                        // Arrivals and colour-mode changes alter demand without a ResizeObserver
-                        // event. Refresh before preparation, not after an allocation was refused.
-                        runtime.refresh();
+                        // Arrivals and colour-mode changes alter demand without a ResizeObserver event. Refresh before
+                        // preparation, not after an allocation was refused; a layer's own demand change asks through requestDemand.
+                        if (demandMoved()) runtime.refresh();
                     },
                     layerId: (layer: Layer) => layerSet.definition(layer)?.id ?? 'unnamed',
                     // The scheduler offers a pane its own error first. A failure of this pane's GPU work (its compositor, not the 2D path
@@ -451,6 +496,11 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                         lastFrameInterval = frame.intervalMs;
                         const drawing = drawCompositor();
                         if (!drawing) return null;
+                        // The 2D compositor draws this frame while a device exists (the bridge, or a pane whose GPU is not yet
+                        // presented): board content rastered on the CPU, counted with the pixels it covers.
+                        if (drawing === compositor && gpu && renderAuditEnabled()) {
+                            auditCount('pane', 'cpu-raster', 1, { px: drawing.surface.width * drawing.surface.height });
+                        }
                         const encodeStart = performance.now();
                         const encoding = drawing.encode(frame);
                         if (!encoding && !(drawing === compositor && options.session.mirrors)) return null;
@@ -642,6 +692,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             setVisible(false);
             disposed = true;
             options.onPresentation(null);
+            candidate.dispose();
             observer.dispose();
             removeCapture();
             lifecycle?.unmountPane();

@@ -1,5 +1,7 @@
 import type { Rect, ViewState } from '../types';
 import { isEmbedContainmentApproved } from '../embedContainment';
+import { RENDER_CONSTANTS } from './constants';
+import { auditCount } from './renderAudit';
 import type { EmbedContainment } from '../embedContainment.types';
 import type { ByteLease } from './gfx/api';
 import type { FrameBudget, FrameToken, Layer } from './types';
@@ -9,6 +11,8 @@ import type { EmbedClippedCoverage, EmbedCoveragePath, EmbedDrawnPaint, EmbedHos
 import type { LayerHost } from './compositor.types';
 
 const SLOT_BYTES = 65_536;
+/** The smallest CPU raster ceiling any device gets (memoryGovernor's low tier): a clip estimate above it cannot be admitted. */
+const CLIP_NEVER_FITS_BYTES = RENDER_CONSTANTS.memoryCeilings.low.cpuRasterBytes;
 class InlineIds implements ReadonlySet<string> {
     readonly #values: Set<string>;
     readonly [Symbol.toStringTag] = 'InlineIds';
@@ -30,6 +34,10 @@ function sameToken(a: FrameToken, b: FrameToken): boolean {
 }
 function sameDocument(a: FrameToken, b: FrameToken): boolean {
     return a.vaultEpoch === b.vaultEpoch && a.documentId === b.documentId && a.bytesGeneration === b.bytesGeneration && a.session === b.session;
+}
+function sameRectOrNull(a: Rect | null, b: Rect | null): boolean {
+    if (a === null || b === null) return a === b;
+    return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
 }
 function sameNumbers(a: readonly number[], b: readonly number[]): boolean {
     return a === b || a.length === b.length && a.every((value, i) => value === b[i]);
@@ -75,7 +83,7 @@ type Slot = {
     controller: AbortController; containment: EmbedContainment | null; base: ByteLease; allocator: LayerHost['allocator']['cpu'];
     node: EmbedPresentedNode | null; snapshot: EmbedHostingSnapshot; listeners: Set<() => void>; interaction: Rect | null;
     estimate: Generator<number> | null; estimated: number; job: Generator<void, EmbedClipDom> | null; clips: EmbedClipDom | null;
-    clipLease: ByteLease | null; blocked: boolean; closed: boolean; estimateDone: boolean; lease: EmbedHostingLease;
+    clipLease: ByteLease | null; blocked: boolean; closed: boolean; estimateDone: boolean; unfit: boolean; lease: EmbedHostingLease;
     externalSignal?: AbortSignal; externalAbort?: () => void;
 };
 
@@ -89,6 +97,17 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
     const slots = new Map<string, Slot>(), requests = new Set<Request>(), retiring = new Set<Promise<void>>();
     const report = (error: unknown) => { try { options.onError?.(error); } catch { /* reporting cannot break teardown */ } };
     const wake = () => host?.invalidate('embed-presentation');
+    // A refused reserve parks the port (needsFrame is false while blocked). One sized waiter wakes it when the bytes fit,
+    // so a blocked embed retries on real capacity instead of never, and never registers a second waiter meanwhile.
+    let memoryWaiting = false, memoryWaitBytes = 0;
+    const awaitMemory = (bytes: number): void => {
+        if (memoryWaiting || !host?.allocator.cpu.whenAvailable) return;
+        memoryWaiting = true; memoryWaitBytes = bytes;
+        host.allocator.cpu.whenAvailable(() => { memoryWaiting = false; wake(); }, bytes);
+    };
+    /** A parked waiter for at most these bytes means a reserve of `bytes` is refused again. Each refused reserve reclaims and
+     * trims the pool (measured: a parked embed retried every frame), so the retry waits for the waiter instead. */
+    const parkedFor = (bytes: number): boolean => memoryWaiting && bytes >= memoryWaitBytes;
     const requestsChanged = () => {
         wake();
         try { options.invalidate?.(); } catch (error) { report(error); }
@@ -108,7 +127,7 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
         slot.job?.return(undefined as never); slot.job = null; slot.estimate?.return(undefined as never); slot.estimate = null;
         slot.clips?.dispose(); slot.clips = null;
         if (slot.clipLease) { slot.allocator.release(slot.clipLease); slot.clipLease = null; }
-        slot.estimated = 0; slot.blocked = false; slot.estimateDone = false;
+        slot.estimated = 0; slot.blocked = false; slot.estimateDone = false; slot.unfit = false;
     };
     const hide = (slot: Slot) => { slot.root.style.visibility = 'hidden'; notify(slot, slot.closed ? 'closed' : 'pending', false); };
     const close = (slot: Slot) => {
@@ -131,7 +150,7 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
         const slot = { id: node.nodeId, source: node.source, root, plane, container, chrome, controller, containment: null,
             base, allocator: host!.allocator.cpu, node, snapshot: Object.freeze({ mode: 'pending', visible: false, node, presentation: packet?.presentation ?? null }),
             listeners: new Set<() => void>(), interaction: null, estimate: null, estimated: 0, job: null, clips: null, clipLease: null,
-            blocked: false, closed: false, estimateDone: false, lease: null } as unknown as Slot;
+            blocked: false, closed: false, estimateDone: false, unfit: false, lease: null } as unknown as Slot;
         slot.lease = {
             nodeId: slot.id, container, chrome, signal: controller.signal,
             bind(value) {
@@ -148,6 +167,8 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
             setInteractionRect(rect) {
                 if (slot.closed) return;
                 if (rect && (![rect.x, rect.y, rect.width, rect.height].every(Number.isFinite) || rect.width <= 0 || rect.height <= 0)) throw new RangeError('Invalid interaction rectangle');
+                // The overlay reports its rectangle on each pointer update; only a different rectangle changes what is drawn.
+                if (sameRectOrNull(slot.interaction, rect)) return;
                 slot.interaction = rect ? { ...rect } : null; hide(slot); wake();
             },
             async dispose() { close(slot); },
@@ -164,15 +185,21 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
     };
     const prepare = (view: ViewState, budget: FrameBudget) => {
         prepared = null;
-        if (!host || !validFrame(view, budget.token)) { for (const slot of slots.values()) hide(slot); return; }
+        if (!host || !validFrame(view, budget.token)) {
+            for (const slot of slots.values()) hide(slot);
+            // Requests wait for a packet that names their node; present() wakes only for that packet.
+            for (const request of requests) request.waitingForFacts = true;
+            return;
+        }
         prepared = { token: { ...budget.token }, epoch: view.epoch, cameraEpoch: budget.cameraEpoch, frameId: budget.frameId }; requestBlocked = false;
         for (const request of requests) {
             if (budget.shouldYield()) break;
             const node = packet!.nodes.find(item => item.nodeId === request.id);
             if (!node || !options.overlay.isConnected) { request.waitingForFacts = true; continue; }
             request.waitingForFacts = false;
+            if (parkedFor(SLOT_BYTES)) { requestBlocked = true; break; }
             const base = host.allocator.cpu.reserve(SLOT_BYTES);
-            if (!base) { requestBlocked = true; break; }
+            if (!base) { requestBlocked = true; awaitMemory(SLOT_BYTES); break; }
             try { createSlot(request, node, base); } catch (error) { host.allocator.cpu.release(base); requests.delete(request); request.signal?.removeEventListener('abort', request.abort); requestsChanged(); request.reject(error); }
         }
         for (const slot of slots.values()) {
@@ -192,8 +219,18 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
                         }
                         continue;
                     }
-                    const lease = slot.allocator.reserve(Math.max(1, slot.estimated));
-                    if (!lease) { slot.blocked = true; continue; }
+                    const need = Math.max(1, slot.estimated);
+                    // No pool can ever admit a clip beyond the smallest CPU raster ceiling: this embed keeps its true-order poster and
+                    // claims nothing, instead of waiting for a fit that cannot come. Counted once per estimate.
+                    if (need > CLIP_NEVER_FITS_BYTES) {
+                        slot.blocked = true;
+                        if (!slot.unfit) { slot.unfit = true; auditCount('embed', 'fallback:embed:clip-never-fits', 1, { bytes: need }); }
+                        continue;
+                    }
+                    slot.unfit = false;
+                    if (parkedFor(need)) { slot.blocked = true; continue; }
+                    const lease = slot.allocator.reserve(need);
+                    if (!lease) { slot.blocked = true; awaitMemory(need); continue; }
                     slot.clipLease = lease; slot.job = createEmbedClipJob(slot.node, packet!.viewport);
                 }
                 if (slot.job) {
@@ -265,26 +302,34 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
         present(frame) {
             if (disposed || !visible) { releasePacket(frame); return; }
             if (packet === frame) return;
-            const old = packet; packet = frame; prepared = null; revision++;
-            // Every presented frame publishes a packet; waking for one with no slot and no request asked for the next frame,
-            // so a board with no embeds never idled (measured: 90 presents in 3 s at rest, all from this wake).
-            const hadWork = slots.size > 0 || requests.size > 0;
-            for (const request of requests) request.waitingForFacts = false;
+            const old = packet; packet = frame;
+            // Every presented board frame publishes a packet, so waking for each one presented every tick at rest while an
+            // embed existed. Only a packet that changes what this port draws wakes a frame: a slot that was hidden or closed,
+            // a request whose node has just arrived. An identical packet keeps the prepared state and draws as before.
+            let changed = false;
+            for (const request of requests) {
+                if (request.waitingForFacts && frame.nodes.some(item => item.nodeId === request.id)) changed = true;
+                request.waitingForFacts = false;
+            }
             for (const slot of [...slots.values()]) {
                 const node = frame.nodes.find(item => item.nodeId === slot.id);
-                if (!node || node.source !== slot.source || (old && !sameDocument(old.presentation.token, frame.presentation.token))) { close(slot); continue; }
+                if (!node || node.source !== slot.source || (old && !sameDocument(old.presentation.token, frame.presentation.token))) { close(slot); changed = true; continue; }
                 const equivalent = !!slot.node && sameGeometry(slot.node, node) && old?.viewport.width === frame.viewport.width && old.viewport.height === frame.viewport.height;
                 const preserve = equivalent && !!slot.clips;
                 const oldPoster = slot.node?.poster;
                 if (!preserve) clearClip(slot);
                 slot.node = node;
                 if (!preserve || !old || !sameToken(old.presentation.token, frame.presentation.token) ||
-                    old.presentation.viewEpoch !== frame.presentation.viewEpoch || old.sceneRevision !== frame.sceneRevision || oldPoster !== node.poster) hide(slot);
-                else notify(slot, slot.snapshot.mode, slot.snapshot.visible);
+                    old.presentation.viewEpoch !== frame.presentation.viewEpoch || old.sceneRevision !== frame.sceneRevision || oldPoster !== node.poster) {
+                    hide(slot); changed = true;
+                } else notify(slot, slot.snapshot.mode, slot.snapshot.visible);
                 if (!preserve && slot.containment) slot.estimate = estimates(node);
             }
             releasePacket(old);
-            if (hadWork || slots.size > 0 || requests.size > 0) wake();
+            revision++;
+            if (!changed) return;
+            prepared = null;
+            wake();
         },
         drawn(paint) { witness = paint; },
         acquire(id, signal) {

@@ -23,7 +23,8 @@ export interface BoardInputHostPorts {
     readonly mappings: MappingHistory;
     sampleToSurface(sample: RealSample): Point;
     clientToSurface(x: number, y: number): Point;
-    schedule(callback: () => void): () => void;
+    /** `onDrop` runs, and `callback` does not, when the host discards the request without an input frame (disable, cancel, dispose). */
+    schedule(callback: () => void, onDrop?: () => void): () => void;
 }
 export interface BoardInputHostOptions {
     readonly session: BoardSession;
@@ -68,7 +69,13 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
     let presentedAt = 0;
     let pointerClient: { id: number; kind: string; x: number; y: number } | null = null;
     const contacts = new Set<number>();
-    const scheduled = new Set<() => void>();
+    // A dropped request must tell its owner, or the owner's "already scheduled" flag stays set and every later request is ignored.
+    const scheduled = new Map<() => void, (() => void) | undefined>();
+    const dropScheduled = () => {
+        const dropped = [...scheduled.values()];
+        scheduled.clear();
+        for (const onDrop of dropped) if (onDrop) safe(onDrop);
+    };
     const attachmentListeners = new Set<(attached: boolean) => void>();
     const current = () => !disposed && options.visible() && options.current(token);
     const report = (error: unknown) => { try { options.onError(error); } catch { /* reporting cannot block cleanup */ } };
@@ -159,9 +166,9 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
         let removed = false;
         return () => { if (removed) return; removed = true; if (binding?.surface === surface && binding.overlay === overlay) { stopAttachment(); binding = null; } };
     };
-    const schedule = (callback: () => void): (() => void) => {
+    const schedule = (callback: () => void, onDrop?: () => void): (() => void) => {
         if (disposed) return () => {};
-        scheduled.add(callback); options.invalidate();
+        scheduled.set(callback, onDrop); options.invalidate();
         return () => { scheduled.delete(callback); };
     };
     return {
@@ -183,14 +190,14 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
         },
         layers: wet.layers,
         consumeInput(_timestamp: number) {
-            if (!current() || !enabled) { stopAttachment(); scheduled.clear(); return; }
+            if (!current() || !enabled) { stopAttachment(); dropScheduled(); return; }
             safe(connect); safe(() => wet.consumeInput());
-            const ready = [...scheduled]; scheduled.clear();
+            const ready = [...scheduled.keys()]; scheduled.clear();
             for (const callback of ready) safe(callback);
         },
         isInteracting() { return current() && (contacts.size > 0 || options.session.isGestureActive); },
-        setInputEnabled(value: boolean) { if (disposed || enabled === value) return; enabled = value; if (!value) { stopAttachment(); scheduled.clear(); } else safe(connect); },
-        cancelViewWork(_reason: string) { stopAttachment(); scheduled.clear(); presented = null; },
+        setInputEnabled(value: boolean) { if (disposed || enabled === value) return; enabled = value; if (!value) { stopAttachment(); dropScheduled(); } else safe(connect); },
+        cancelViewWork(_reason: string) { stopAttachment(); dropScheduled(); presented = null; },
         writeOverlays(frame: ScheduledFrame) {
             if (!binding || !current() || !presented || presented.frameId !== frame.frameId || !sameToken(frame.token, token)) return;
             safe(() => {
@@ -207,7 +214,7 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
         },
         dispose() {
             if (disposed) return;
-            stopAttachment(); attachmentListeners.clear(); scheduled.clear(); disposed = true; binding = null; presented = null;
+            stopAttachment(); attachmentListeners.clear(); dropScheduled(); disposed = true; binding = null; presented = null;
             safe(stopInteraction); safe(() => options.engine.setInteractionLayers(null)); safe(() => wet.dispose()); safe(() => options.overlays?.dispose?.());
         },
     };

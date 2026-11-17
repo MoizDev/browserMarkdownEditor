@@ -1,4 +1,3 @@
-import { worldToSurface } from '../../platform/render/camera';
 import type { ScheduledFrame } from '../../platform/render/scheduler';
 import type { ViewState } from '../../platform/types';
 import { isLocked } from '../change/commands';

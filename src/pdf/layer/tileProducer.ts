@@ -1,4 +1,4 @@
-import { renderTokenKey, tileKeyString } from '../../platform/render';
+import { renderTokenKey } from '../../platform/render';
 import type { Priority } from '../../platform/workers/envelope';
 import type { PageTileArgs, PageTileResult } from '../worker/protocol';
 import type { WithoutDocKey } from '../pool/types';
@@ -42,7 +42,7 @@ export const createPdfTileProducer: CreatePdfTileProducer = (options: PdfTilePro
             const epoch = getPdfFontEpoch(document.docKey);
             if (pdfVariantRevision(variant.variant, epoch) !== request.key.contentRevision) return Promise.reject(new DOMException('Stale PDF tile profile', 'AbortError'));
             const requestedPriority = priority(request, options.isFocused());
-            const key = JSON.stringify([tileKeyString(request.key), variant, options.annotations, options.forms]);
+            const key = JSON.stringify([request.text, variant, options.annotations, options.forms]);
             let flight = flights.get(key);
             if (!flight) {
                 if (!Number.isSafeInteger(++nextRequest)) return Promise.reject(new RangeError('PDF tile request ids exhausted'));

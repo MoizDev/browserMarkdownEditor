@@ -11,6 +11,7 @@ import type { PaintPalette } from '../render/colour';
 import type { PaintFrame, PaintPathItem } from '../render/paintStream';
 import type { PaintBand } from '../render/material';
 import { awaitSizedCapacity, isBudgetRefusal, type SizedCapacityWait } from '../render/budgetRefusal';
+import { withFirstUnit } from '../render/firstUnit';
 import { createGpuPaintAdapter } from '../render/gpuPaintAdapter';
 import { preparedOfFrame, type CanvasPaintAdapter, type PreparedPaint2d } from '../render/reference/canvasPaintAdapter';
 import { Path2dJob } from '../render/reference/coverage2d';
@@ -220,7 +221,8 @@ class NotebookPaperLayer implements Layer {
         }
     }
     prepare(view: ViewState, budget: FrameBudget): void {
-        this.preparePaper(budget);
+        // One page step is always admitted: under a zero slice the staging never advances, and needsFrame keeps asking.
+        this.preparePaper(withFirstUnit(budget));
         if (this.disposed || !this.host.device()) return;
         try {
             this.prepareGpuSource(view, budget.token);
@@ -288,6 +290,11 @@ class NotebookPaperLayer implements Layer {
     private markDrawn(rect: Rect): void {
         if (this.drawn.has(rect)) return;
         this.drawn.add(rect); this.claim = null;
+    }
+    /** The paper's own adapter reports its mandatory GPU bytes for the viewport (h2's gpuMandatoryBytes; none until it lands). */
+    gpuWorkingSetBytes(viewport: Readonly<{ width: number; height: number }>): number {
+        if (this.disposed) return 0;
+        return (this.gpu as { gpuMandatoryBytes?(viewport: Readonly<{ width: number; height: number }>): number }).gpuMandatoryBytes?.(viewport) ?? 0;
     }
     /** Forwards the composer's offscreen encode; a no-op until the adapter has one (PLAN §3.3, wave 2). */
     /** The governor's trim: frees the adapter's GPU tiles not used this frame, and returns the bytes freed. */
@@ -374,6 +381,9 @@ export function createNotebookPaperLayer(options: NotebookPaperLayerOptions): No
         drawnPageRects: () => live?.drawnPageRects() ?? [],
         revision: layer => (layer as NotebookPaperLayer).currentRevision(),
         cpuWorkingSet: layer => ({ mandatoryBytes: (layer as NotebookPaperLayer).demand(), prefetchBytes: 0 }),
+        // A spread until the platform type carries gpuWorkingSet (h9). The paper owns its adapter, so it reports it once.
+        ...{ gpuWorkingSet: (layer: Layer, viewport: Readonly<{ width: number; height: number }>) =>
+            ({ mandatoryBytes: (layer as NotebookPaperLayer).gpuWorkingSetBytes(viewport) }) },
         critical: layer => (layer as NotebookPaperLayer).critical(),
         coverage: (layer, frame, backend) => (layer as NotebookPaperLayer).coverage(frame, layer, backend),
     };

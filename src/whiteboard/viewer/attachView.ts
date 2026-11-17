@@ -9,7 +9,8 @@ import type { EmbedPresentationPort } from '../../platform/render/embedPresentat
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import { createNativeEmbedPresentationProducer, type NativeEmbedPresentationProducer } from '../host/embedPresentationFacts';
 import { boardPageStack } from '../model/pages';
-import { createBoardLayers, BOARD_BACKEND_PREFERENCE, drawnPagesOf, opaqueWorldOf } from '../render/boardLayers';
+import { createBoardLayers, BOARD_BACKEND_PREFERENCE, createDrawnPagesReader, opaqueWorldOf } from '../render/boardLayers';
+import { auditCount } from '../../platform/render/renderAudit';
 import type { DensityMode } from '../render/density';
 import { createPaintFrameAssembler } from '../render/frameAssembler';
 import { LiveNodeUnion } from '../render/nodeSets';
@@ -51,6 +52,13 @@ export const attachView: AttachView = options => {
     // Density mode and the index's candidate count drive which frame kind is requested; both are read
     // by the layers, which never own a frame request of their own.
     let densityMode: DensityMode = 'direct', lastCandidates: number | null = null, paintWhenReady = false;
+    // The device's two-stage request (camera invariance, PLAN issue 1). The first picture asks for the view's world; once that
+    // frame is up, the whole scene is asked ONCE with no world and no device scale. While the scene is asked for the current
+    // key, a camera change asks for nothing: the composer's tiles follow the camera, the scene's item set does not.
+    type SceneKey = { readonly revision: number; readonly sheet: string; readonly theme: string; readonly sensitive: unknown };
+    const sameSceneKey = (a: SceneKey | null, b: SceneKey): boolean => !!a && a.revision === b.revision && a.sheet === b.sheet
+        && a.theme === b.theme && a.sensitive === b.sensitive;
+    let viewAsked: SceneKey | null = null, sceneAsked: SceneKey | null = null, sceneDue = false;
     const unions = new WeakMap<ReadonlySet<string>, WeakMap<ReadonlySet<string>, ReadonlySet<string>>>();
     const union = (a: ReadonlySet<string> | null | undefined, b: ReadonlySet<string> | null | undefined): ReadonlySet<string> | null => {
         if (!a) return b ?? null;
@@ -122,8 +130,18 @@ export const attachView: AttachView = options => {
     const precisionNodeIds = (sensitive: ReadonlySet<string> | undefined) => union(selectionIds(), union(union(union(interaction?.liveNodeIds?.(),
         view.visible ? embedPort?.inlineNodeIds() : null), view.visible ? embedPort?.requestedNodeIds() : null), sensitive));
     const liveNodeIds = () => precisionNodeIds(interaction?.sensitiveNodeIds?.()) ?? undefined;
+    // The composer asks for the opaque world once per tile: the page list is rebuilt only when a layer's claim changes.
+    const drawnPages = createDrawnPagesReader(), pageLayers: unknown[] = [];
+    const opaqueWorld = (): readonly Rect[] => {
+        const host = options.session.doc.host;
+        if (host.kind === 'whiteboard') return opaqueWorldOf(host, view.inverted);
+        pageLayers.length = 0;
+        if (view.backdrops) for (const backdrop of view.backdrops) pageLayers.push(backdrop);
+        if (paper) pageLayers.push(paper);
+        return opaqueWorldOf(host, view.inverted, drawnPages(pageLayers));
+    };
     const layers = createBoardLayers({ frames, images, onError: report, requestedRevision: () => options.session.doc.rev, requestedTheme: () => view.theme, omitNodes: omitPreview,
-        opaqueWorld: () => opaqueWorldOf(options.session.doc.host, view.inverted, drawnPagesOf([...view.backdrops ?? [], ...paper ? [paper] : []])),
+        opaqueWorld,
         liveNodeIds, candidates: () => lastCandidates,
         onDensityMode(mode) { if (densityMode !== mode && !disposed) { densityMode = mode; requestPaint(); } },
         requestFrame: () => { if (!disposed) requestPaint(); },
@@ -147,10 +165,16 @@ export const attachView: AttachView = options => {
             if (!lastView || current.epoch !== lastView.epoch || changed) {
                 lastView = { ...current, camera: { ...current.camera }, viewport: { ...current.viewport } };
                 requestPaint(sensitive);
-            }
+            } else if (sceneDue) requestPaint(sensitive);
         },
         onPresented(revision, token, frame, context) {
             drawnFrame = { sceneRevision: revision, token, frame, context };
+            // A completed presentation is the layers working again: a failure reported before it no longer stands
+            // (the layer's own error clears on the same event, so the view must not keep showing one it does not hold).
+            if (failed) { failed = null; publish(); }
+            // The view frame of the current key is up: the whole scene may now be asked for (once).
+            // The request is made by the next prepare, which a presentation alone does not schedule: ask for that frame.
+            if (layers.onDevice() && viewAsked && revision === viewAsked.revision && !sameSceneKey(sceneAsked, viewAsked)) { sceneDue = true; layers.invalidate('board-scene-request'); }
             interaction?.presented?.(revision, token, frame, context);
             embedProducer?.presented(revision, token, frame, context);
         },
@@ -211,6 +235,11 @@ export const attachView: AttachView = options => {
         // path asks once per missing live set, so a dropped request froze a large board (seen at 3,500 items).
         if (!disposed && view.visible && runtime.scene && !runtime.scene.ready) { paintWhenReady = true; return; }
         if (disposed || !view.visible || !runtime.scene?.ready) return;
+        const onDevice = layers.onDevice();
+        const key: SceneKey = { revision: runtime.scene.revision, sheet: sheet(), theme: view.theme, sensitive };
+        // The whole scene is already asked for this key: a camera change needs no request (checked before the abort below, so the
+        // scene asked in flight is not cancelled).
+        if (onDevice && sameSceneKey(sceneAsked, key)) return;
         paintWhenReady = false;
         paintJob?.abort();
         const controller = new AbortController(), sequence = ++request;
@@ -243,7 +272,14 @@ export const attachView: AttachView = options => {
         // Tile streams reopened by the frame share this request's identity (precision, sensitivity), not its world.
         const identity = { sheetId: selectedSheet, theme: view.theme, sensitiveNodes,
             ...(deviceScale ? { deviceScale, allowInkLod: true } : {}) };
-        const shape = dense ? { ...identity, only: liveSet! } : { ...identity, ...(world ? { world } : {}) };
+        // The whole-scene stage: asked once per key on a device, after the view frame it follows is up. No world, so the pin
+        // does not cull by the camera; no device scale, so the scene's items do not change with the zoom.
+        const scene = onDevice && sceneDue && sameSceneKey(viewAsked, key);
+        const sceneShape = { sheetId: selectedSheet, theme: view.theme, sensitiveNodes };
+        const shape = scene ? sceneShape : dense ? { ...identity, only: liveSet! } : { ...identity, ...(world ? { world } : {}) };
+        auditCount('board', scene ? 'request:scene' : 'request:view');
+        if (onDevice) { if (scene) sceneAsked = key; else viewAsked = key; }
+        sceneDue = false;
         void open.call(pin, shape, controller.signal).then(stream => {
             if (disposed || !view.visible || controller.signal.aborted || sequence !== request) {
                 void stream.release().catch(report).finally(() => pin.release());
@@ -354,6 +390,7 @@ export const attachView: AttachView = options => {
             if (drawnFrame) ports.presented?.(drawnFrame.sceneRevision, drawnFrame.token, drawnFrame.frame, drawnFrame.context);
             return () => { if (interaction === ports) { ports.finishGesture(); ports.finishComposition(); interaction = null; } };
         },
+        boardDrawnInk: () => layers.drawnInkNodeIds(),
         readyPaintFrame: () => {
             const frame = disposed ? null : layers.readyFrame();
             if (!frame) return null;

@@ -178,6 +178,15 @@ export class MirrorSet<T extends object> {
         } finally { this.adopting.delete(entry.id); }
     }
 
+    /** True only while id's pixels are held: the record is present and no close (retainViewport, evict, closeEntry) has claimed
+     * it. A closing record still waits for its borrows, so it reports false at once; finish() is the only path that removes one.
+     * By reading: the record is deleted exactly when its storage is closed, so presence without `closing` is the held state. */
+    holds(id: string): boolean {
+        if (this.released) return false;
+        const record = this.entries.get(id);
+        return record !== undefined && !record.closing;
+    }
+
     /** Commit only ids whose CPU copy survived. A sharp GPU frame alone is not a CPU mirror proof. */
     commitFrame(view: MirrorView, ids: readonly string[], sharp: boolean, protectedLow: ReadonlySet<string>): void {
         if (!this.isCurrent(view.token)) return;

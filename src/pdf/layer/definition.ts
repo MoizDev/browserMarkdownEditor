@@ -11,7 +11,7 @@ export function pdfPageLayerDefinition(options: {
     producer: PdfTileProducer;
     demand(view: ViewState): Omit<PdfDemandInput, 'covered' | 'previousMotionScale'>;
     isCurrent(): boolean;
-    onError(error: unknown, request: PdfTileRequest): void;
+    onError(error: unknown, request: PdfTileRequest | null): void;
     mirror?: PdfLayerMirror;
     bridge?: PdfVersionBridge | null;
 }): { definition: PlatformLayerDefinition; current(): PdfTileLayer | null; drawnPageRects(): readonly Rect[] } {

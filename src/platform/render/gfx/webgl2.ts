@@ -6,7 +6,7 @@ import type {
 } from './api';
 import { RENDER_CONSTANTS } from '../constants';
 import { createWebgl2Frame } from './webgl2Frame';
-import type { ControlledFrame, DrawContext, EncodedDraw, FrameBackend, FrameTarget, FrameTexture, QuadCommand, TargetRequest } from './webgl2Frame';
+import type { ControlledFrame, DrawContext, EncodedDraw, FrameBackend, FrameTarget, FrameTexture, QuadCommand, QuadPin, TargetRequest } from './webgl2Frame';
 import { Webgl2TargetPool } from './webgl2Pool';
 import type { PoolStorage } from './webgl2Pool';
 import { COMPOSITION_SHADER, GRID_RESOLVE_SHADER, MODULATE_COMPOSITE_SHADER } from './webgl2Shaders';
@@ -33,8 +33,8 @@ const benchmarkMemory = __BME_BENCH__ ? await import('../benchmarkMemory') : nul
 // One native storage convention (rendering-design.md §2.2/2.5; vr-lead ruling):
 // textures and render targets are GL-native bottom-left. Canonical top-left bitmaps
 // upload into budgeted, fenced staging targets, then Y-reversed framebuffer blits.
-// Byte uploads reverse rows; readback reverses once. No ImageBitmap pixel-store flip
-// is assumed: WebGL explicitly ignores that flag for ImageBitmap sources.
+// Byte uploads reverse rows; readback reverses once. No pixel-store flip is assumed for
+// ImageBitmap or VideoFrame sources: both are staged top-left and reversed by the blit, as bitmaps always were.
 
 /** Cache-bound allocators reserve actual bytes before any native/CPU allocation (design:603).
  * returnLease is the governor's FINAL return, not the layer-facing close adapter.
@@ -78,6 +78,8 @@ export interface Webgl2Owner extends BrokerGpuOwner, GpuIsolationAdmission {
     releaseTarget(lease: TargetLease): void;
     /** Platform quad helpers need physical storage dimensions, never a native texture. */
     textureInfo(texture: TextureHandle): Readonly<{ width: number; height: number; format: TextureFormat; usedRect: RectI }>;
+    /** The colour texture a target was created over (its atlas region key). Read-only; never allocates. */
+    targetTexture(target: TargetHandle): TextureHandle;
     closeLease(lease: ByteLease): void;
     memory(): ArenaMemory;
     leaseMemory(lease: ByteLease): ArenaLeaseMemory;
@@ -192,6 +194,8 @@ interface FrameWork {
     issued: number | null;
     finished: boolean;
     coverage?: CoveragePlan | null;
+    /** Quad pins for this frame, one per composition program: pinned once per frame, reused by every quad. */
+    quadPins: Map<object, QuadPin>;
 }
 type CoveragePlan = { tag: CoverageFrameTag; domain: BenchmarkPaintDomain; root: CoverageRoot | null; missing: boolean; standInRatio: number; width: number; height: number };
 type CoverageRoot = { width: number; height: number; texture: TextureHandle; target: TargetHandle };
@@ -541,7 +545,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         this.#usable();
         if (!this.#white) throw new ArenaError('out-of-budget');
         const encoding = this.#arena.beginEncoding();
-        const work: FrameWork = { encoding, controller: null, signal: this.#work.signal, slot: null,
+        const work: FrameWork = { encoding, controller: null, signal: this.#work.signal, slot: null, quadPins: new Map(),
             offset: 0, passes: false, surface: false, surfaceRevision: this.#surfaceRevision, issued: null, finished: false };
         this.#frames.set(encoding, work);
         this.#isolation.begin(encoding);
@@ -560,6 +564,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     acquireTarget(request: TargetRequest): TargetLease | null { this.#usable(); return this.#pool.acquire(request); }
     releaseTarget(lease: TargetLease): void { this.#pool.release(lease); this.#collect(); }
 
+    targetTexture(target: TargetHandle): TextureHandle { return this.#arena.validate(target, 'target').color; }
     textureInfo(texture: TextureHandle): Readonly<{ width: number; height: number; format: TextureFormat; usedRect: RectI }> {
         this.#usable();
         const native = this.#arena.validate(texture, 'texture');
@@ -676,7 +681,9 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 this.#checkUpload();
                 this.#issue(encoding);
             } else {
-                if (src.source.width !== rect.width || src.source.height !== rect.height) throw new ArenaError('invalid-input');
+                // A VideoFrame has no width or height of its own; its display size is the size WebGL reads it at.
+                const size = 'displayWidth' in src.source ? { width: src.source.displayWidth, height: src.source.displayHeight } : src.source;
+                if (size.width !== rect.width || size.height !== rect.height) throw new ArenaError('invalid-input');
                 staging = this.acquireTarget({ width: rect.width, height: rect.height, format: 'rgba8', samples: 1, stencil: false, purpose: 'group' });
                 if (!staging) throw new ArenaError('out-of-budget');
                 const stageTexture = this.#pin(encoding, staging.texture, 'texture');
@@ -1271,11 +1278,19 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             quad: command => {
                 const handle = command.variant === 'grid' ? this.#gridComposition : command.variant === 'modulate' ? this.#modulateComposition : this.#composition;
                 if (!handle) throw new ArenaError('invalid-resource');
+                const cached = work.quadPins.get(handle);
+                if (cached) return cached;
                 const program = this.#pin(work.encoding, handle, 'pipeline');
                 const samplerHandle = this.#samplers.get('linear');
                 if (program.role !== 'program' || !samplerHandle) throw new ArenaError('invalid-resource');
                 const sampler = this.#pin(work.encoding, samplerHandle, 'sampler');
-                return () => this.#drawQuad(program, sampler, command);
+                const pin = { program, sampler };
+                work.quadPins.set(handle, pin);
+                return pin;
+            },
+            runQuad: (pin, command) => {
+                // The pin came from quad() above, which returns the native objects this frame pinned; the frame keeps them opaque.
+                this.#drawQuad(pin.program as NativeProgram, pin.sampler as Objects['sampler'], command);
             },
             acquireTarget: request => this.#isolation.borrow(work.encoding, request, true),
             releaseTarget: lease => this.#isolation.put(work.encoding, lease, true),
@@ -1407,7 +1422,10 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             let handle: BufferHandle | null = null;
             try {
                 const data = new Uint8Array(this.#uniformBytes);
-                handle = this.#owned('buffer', { bytes: this.#uniformBytes, uses: ['uniform', 'copy-dst'] }, this.#uniformBytes, this.#services.working);
+                // 'vertex' too: a batched textured-quad draw binds its instance records as a vertex slice from this same ring
+                // (compositor.ts drawTexturedQuads). The device refuses a vertex slice whose buffer lacks the use, which demoted
+                // the pane mid-draw (seen in the final run's audit: pane:fallback:pane-2d:gpu-error:invalid-input).
+                handle = this.#owned('buffer', { bytes: this.#uniformBytes, uses: ['uniform', 'vertex', 'copy-dst'] }, this.#uniformBytes, this.#services.working);
                 slot = { handle, native: this.#arena.validate(handle, 'buffer'), data, lease: cpu, serial: 0, owner: null, valid: true };
                 this.#uniformSlots.push(slot);
             } catch (error) { if (handle) this.destroy(handle); this.#returnCpu(cpu); throw error; }

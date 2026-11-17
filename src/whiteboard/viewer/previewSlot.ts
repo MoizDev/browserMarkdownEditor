@@ -26,6 +26,11 @@ export function createPreviewSlot(id: string, base: PlatformLayerDefinition): Pr
     // The revision the slot schedules by is a small key, one per distinct (epoch, inner revision, draw version): the
     // inner layer's own revision is what it acknowledges, and a draw version changes the picture without changing it.
     // A key of an earlier epoch is never acknowledged into a replaced preview.
+    // A key lives until a later key is presented (frames present in key order, so that one supersedes it) or the preview is
+    // swapped. Dropping the oldest key by count instead lost the acknowledgement of a frame still awaited when a stalled
+    // compositor let 64 newer keys pile up during a drag; the overlay then never started its next request. The cap is only
+    // a memory guard for a compositor that never presents at all.
+    const MAX_KEYS = 4096;
     const keys = new Map<number, { epoch: number; revision: number }>();
     // The three numbers are compared as numbers: the scheduler asks for this key every frame, and a string built per call was
     // the only allocation in that path (by reading).
@@ -34,7 +39,7 @@ export function createPreviewSlot(id: string, base: PlatformLayerDefinition): Pr
         if (currentEpoch === lastEpoch && innerRevision === lastInner && draw === lastDraw) return lastKey;
         lastEpoch = currentEpoch; lastInner = innerRevision; lastDraw = draw; lastKey = lastKey + 1;
         keys.set(lastKey, { epoch: currentEpoch, revision: innerRevision });
-        if (keys.size > 64) for (const old of keys.keys()) { if (keys.size <= 64) break; keys.delete(old); }
+        if (keys.size > MAX_KEYS) for (const old of keys.keys()) { if (keys.size <= MAX_KEYS) break; keys.delete(old); }
         return lastKey;
     };
     class SlotLayer implements Layer {
@@ -65,6 +70,8 @@ export function createPreviewSlot(id: string, base: PlatformLayerDefinition): Pr
         onFramePresented(revision: number, token: Parameters<NonNullable<Layer['onFramePresented']>>[1]) {
             const entry = keys.get(revision);
             if (!entry || entry.epoch !== epoch) return;
+            // Keys are created in ascending order and presented in that order: every key up to this one is done.
+            for (const old of keys.keys()) { if (old > revision) break; keys.delete(old); }
             this.inner?.onFramePresented?.(entry.revision, token);
         }
         dispose() { instances.delete(this); const old = this.inner; this.inner = null; this.innerDef = null; old?.dispose(); }
@@ -95,7 +102,8 @@ export function createPreviewSlot(id: string, base: PlatformLayerDefinition): Pr
     };
     return {
         definition,
-        set(next) { if (next === target) return; target = next; epoch++; },
-        dispose() { target = null; epoch++; for (const layer of [...instances]) layer.dispose(); },
+        // A replaced epoch's keys can never be acknowledged, so they go now rather than at the cap.
+        set(next) { if (next === target) return; target = next; epoch++; keys.clear(); },
+        dispose() { target = null; epoch++; keys.clear(); for (const layer of [...instances]) layer.dispose(); },
     };
 }

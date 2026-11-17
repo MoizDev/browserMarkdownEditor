@@ -1,6 +1,5 @@
 import type { Affine, Rect, ViewState } from '../../platform/types';
 import type { HostBlock } from '../model/doc';
-import { boardPageStack } from '../model/pages';
 import type { PlatformLayerDefinition } from '../../platform/render/attachPlatformPane.types';
 import { awaitCapacity, isBudgetRefusal } from './budgetRefusal';
 import type { CompositorBackend, LayerCoverage, LayerHost } from '../../platform/render/compositor.types';
@@ -80,12 +79,14 @@ export interface BoardLayersOptions {
      * so a multiply keeps today's isolation composite. Supplied per host by `opaqueWorldOf`. */
     readonly opaqueWorld?: () => readonly Rect[];
 }
-/** The opaque world of a host's board content: its page rects, which a notebook's paper and a PDF's pages fill with an opaque
- * colour (paper: notebookPaper.ts, a full-page white path; PDF: render.ts fills each tile white before it renders). The gaps
- * between pages are opaque only while the view is not inverted, so the rects are exact for an inverted view and conservative
- * otherwise (C1, c1-opaque.md). A whiteboard has no page rects and claims none. */
-export function opaqueWorldOf(host: HostBlock): readonly Rect[] {
-    return boardPageStack(host)?.rects ?? [];
+/** The whole plane, in world units: board coordinates are bounded by the 1e12 world limit (services.ts inverse). */
+const WHOLE_PLANE: readonly Rect[] = Object.freeze([Object.freeze({ x: -1e12, y: -1e12, width: 2e12, height: 2e12 })]);
+/** The opaque world of a host's board content (C1, c1-opaque.md). A whiteboard's surface beneath its content is the
+ * appearance clear, opaque everywhere unless the view is inverted (the document group then starts transparent). A page
+ * host's surface is opaque only where its pages are drawn: `drawnPages` is the paper's claim, readiness-gated by it. */
+export function opaqueWorldOf(host: HostBlock, inverted: boolean, drawnPages?: readonly Rect[]): readonly Rect[] {
+    if (host.kind === 'whiteboard') return inverted ? [] : WHOLE_PLANE;
+    return drawnPages ?? [];
 }
 interface Estimate {
     readonly frame: PaintSource;

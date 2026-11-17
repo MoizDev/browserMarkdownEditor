@@ -20,8 +20,11 @@ export interface MemoryAllocator {
     reserve(bytes: number): ByteLease | null;
     release(lease: ByteLease): void;
     /** One-shot: `wake` runs once after the next lease release or grant change, so a denied owner retries on a real
-     * capacity change instead of polling. It only schedules work, so it must not reserve synchronously. */
-    whenAvailable?(wake: () => void): void;
+     * capacity change instead of polling. It only schedules work, so it must not reserve synchronously.
+     * With `bytes`, it waits until that much would actually be admitted: waking on every release made a refused
+     * 1 MB tile retry each frame while unrelated small leases churned, and the pane never idled (measured: 180
+     * presents in 3 s at rest on a ~12k-item board, all from that wake). */
+    whenAvailable?(wake: () => void, bytes?: number): void;
 }
 
 export interface CacheActivity {
@@ -126,6 +129,13 @@ interface LeaseRecord {
     returned: boolean;
 }
 
+/** One denied owner. Keyed by record, not by wake: one wake may wait on both pools with different sizes. */
+interface CapacityWaiter {
+    readonly wake: () => void;
+    readonly cache: CacheRecord;
+    readonly bytes: number | undefined;
+}
+
 interface Share {
     readonly id: string;
     readonly need: number;
@@ -194,7 +204,7 @@ export class MemoryGovernor {
     readonly deviceClass: DeviceMemoryClass;
     private readonly caches = new Map<string, CacheRecord>();
     // Denied owners waiting for the next capacity change; each wake is one-shot and removed when it runs.
-    private readonly capacityWaiters = new Set<() => void>();
+    private readonly capacityWaiters = new Set<CapacityWaiter>();
     private readonly leases = new WeakMap<ByteLease, LeaseRecord>();
     private readonly cacheHandles = new WeakMap<MemoryCacheHandle, CacheRecord>();
     private readonly charged = { gpu: 0, cpu: 0 };
@@ -243,7 +253,7 @@ export class MemoryGovernor {
             handle: {
                 reserve: bytes => this.reserve(cache, bytes),
                 release: lease => this.release(lease, cache),
-                whenAvailable: wake => { if (!cache.closed) this.capacityWaiters.add(wake); },
+                whenAvailable: (wake, bytes) => { if (!cache.closed) this.capacityWaiters.add({ wake, cache, bytes }); },
                 readout: () => this.cacheReadout(cache),
                 updateActivity: activity => {
                     activityValid(activity);
@@ -659,11 +669,17 @@ export class MemoryGovernor {
         }
     }
 
+    /** A sized waiter stays parked until its bytes would be admitted: a closed cache's waiter wakes so its owner sees
+     * the closure. Each wake runs once however many of its waiters fired. */
     private notifyCapacity(): void {
         if (!this.capacityWaiters.size) return;
-        const waiting = [...this.capacityWaiters];
-        this.capacityWaiters.clear();
-        for (const wake of waiting) wake();
+        const woken = new Set<() => void>();
+        for (const waiter of [...this.capacityWaiters]) {
+            if (waiter.bytes !== undefined && !waiter.cache.closed && !this.fits(waiter.cache, waiter.bytes)) continue;
+            this.capacityWaiters.delete(waiter);
+            woken.add(waiter.wake);
+        }
+        for (const wake of woken) wake();
     }
 
     private release(lease: ByteLease, expected?: CacheRecord): void {

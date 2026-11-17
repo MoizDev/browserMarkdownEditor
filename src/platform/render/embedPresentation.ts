@@ -266,6 +266,9 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
             if (disposed || !visible) { releasePacket(frame); return; }
             if (packet === frame) return;
             const old = packet; packet = frame; prepared = null; revision++;
+            // Every presented frame publishes a packet; waking for one with no slot and no request asked for the next frame,
+            // so a board with no embeds never idled (measured: 90 presents in 3 s at rest, all from this wake).
+            const hadWork = slots.size > 0 || requests.size > 0;
             for (const request of requests) request.waitingForFacts = false;
             for (const slot of [...slots.values()]) {
                 const node = frame.nodes.find(item => item.nodeId === slot.id);
@@ -280,7 +283,8 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
                 else notify(slot, slot.snapshot.mode, slot.snapshot.visible);
                 if (!preserve && slot.containment) slot.estimate = estimates(node);
             }
-            releasePacket(old); wake();
+            releasePacket(old);
+            if (hadWork || slots.size > 0 || requests.size > 0) wake();
         },
         drawn(paint) { witness = paint; },
         acquire(id, signal) {

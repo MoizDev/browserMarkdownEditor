@@ -52,6 +52,10 @@ export interface BoardWetOptions {
     readonly invalidate: () => void;
     readonly onError: (error: unknown) => void;
     readonly gpuRoutes: WetGpuRoutes;
+    /** The ink nodes the board drew in the CURRENT composite (valid during that frame's draw; the board's layers draw before
+     * this one in the same document group). A stroke the board drew is not drawn again here, so one composite never paints
+     * a stroke twice. */
+    readonly boardDrawnInk: () => ReadonlySet<string>;
 }
 export interface BoardWetRenderer extends BoardWetLayer {
     readonly layers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }>;
@@ -396,11 +400,14 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
     // True while some visible band still needs an admission for the current publication.
     // True while some pending stroke has no tessellated publication yet.
     const anyUnprepared = (): boolean => {
-        for (const item of handover?.pendingSnapshots() ?? []) if (!prepared.has(item.identity.gestureSequence)) return true;
+        const drawn = options.boardDrawnInk();
+        for (const item of handover?.pendingSnapshots() ?? []) if (!drawn.has(item.identity.nodeId) && !prepared.has(item.identity.gestureSequence)) return true;
         return false;
     };
     const runsPending = (): boolean => {
+        const drawn = options.boardDrawnInk();
         for (const snapshot of handover?.pendingSnapshots() ?? []) {
+            if (drawn.has(snapshot.identity.nodeId)) continue;
             const gesture = snapshot.identity.gestureSequence, source = prepared.get(gesture);
             if (!source || source.snapshot.identity.nodeId !== snapshot.identity.nodeId) return true;
             for (const band of BANDS) {
@@ -415,9 +422,10 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
     // layer's refusal refused the whole frame). Only a band with nothing admitted yet is incomplete. `sharp` says the
     // shown runs are the current publication's, for this token and view; a deferred or denied tip is not sharp.
     const routedCoverage = (token: FrameToken, view: ViewState): Verdict => {
-        const viewKey = viewKeyOf(view);
+        const viewKey = viewKeyOf(view), drawn = options.boardDrawnInk();
         let sharp = true;
         for (const snapshot of handover?.pendingSnapshots() ?? []) {
+            if (drawn.has(snapshot.identity.nodeId)) continue;
             const gesture = snapshot.identity.gestureSequence, source = prepared.get(gesture);
             if (!source) return VERDICT_UNPREPARED;
             for (const band of BANDS) {
@@ -436,9 +444,11 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         if (disposed || !options.current() || !inkRoutes || !owner) return;
         const host = owner;
         let drawn = 0;
+        const boardDrawn = options.boardDrawnInk();
         drawCall.pass = pass; drawCall.view = view; drawCall.host = host;
         try {
             for (const snapshot of handover?.pendingSnapshots() ?? []) {
+                if (boardDrawn.has(snapshot.identity.nodeId)) { if (renderAuditEnabled()) auditCount('wet', 'skip:board-drawn'); continue; }
                 const gesture = snapshot.identity.gestureSequence, source = prepared.get(gesture);
                 if (!source || source.snapshot.identity.nodeId !== snapshot.identity.nodeId
                     || offScreen(source.bounds, source.snapshot.presentation.localToWorld, view)) continue;
@@ -576,9 +586,11 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                     if (disposed || !options.current()) return;
                     // The CPU reference path: counted, so a device session that draws here is visible in the audit.
                     if (renderAuditEnabled()) auditCount('wet', 'draw:canvas2d');
+                    const boardDrawn = options.boardDrawnInk();
                     const snapshots = handover?.pendingSnapshots() ?? [];
                     host.paintWorld(ctx, view, () => {
                         for (const snapshot of snapshots) {
+                            if (boardDrawn.has(snapshot.identity.nodeId)) continue;
                             const item = prepared.get(snapshot.identity.gestureSequence);
                             if (!item || item.snapshot.identity.nodeId !== snapshot.identity.nodeId) continue;
                             if (offScreen(item.bounds, snapshot.presentation.localToWorld, view)) continue;

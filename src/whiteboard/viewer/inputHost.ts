@@ -75,7 +75,7 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
     const safe = (fn: () => void) => { try { fn(); } catch (error) { report(error); } };
     const notifyAttachment = () => { for (const listener of [...attachmentListeners]) safe(() => listener(attached !== null)); };
     const wet = createBoardWetLayer({ token, palette: () => options.engine.getSnapshot().palette,
-        readyFrame: () => options.engine.readyPaintFrame(), current,
+        readyFrame: () => options.engine.readyPaintFrame(), current, boardDrawnInk: () => options.engine.boardDrawnInk(),
         exists: identity => options.session.doc.rev < identity.nodeRevision || options.session.doc.nodes.has(identity.nodeId as import('../model/ids').NodeId),
         invalidate: options.invalidate, onError: report, gpuRoutes: { createInkRoutes, inkRouteFor, withClips } });
     options.engine.setInteractionLayers(wet.layers);

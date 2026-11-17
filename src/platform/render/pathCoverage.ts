@@ -31,6 +31,8 @@ const PATH_COVERAGE_SCRATCH_BYTES = 2 * 2 ** 20;
  * claimUpload). A 256 KiB piece therefore passes only in a frame that is almost empty, and a busy frame refused it every time
  * (measured in a drag: upload:deferred repeated on one admission). At 64 KiB the piece passes the ordinary allowance. */
 const PATH_COVERAGE_UPLOAD_CHUNK_BYTES = 64 * 1024;
+/** The smallest piece a refused upload shrinks to: 4 KiB is a whole number of vertices and of float32s. */
+const PATH_COVERAGE_UPLOAD_MIN_PIECE_BYTES = 4 * 1024;
 /** This kit's share of a device's scratch of one grid: the scratch is the device's, so each kit on the device reports an equal
  * part and the kits sum to it once. It is reported while it exists, idle or not, because the governor must see idle GPU memory. */
 function scratchShare(device: GfxDevice | null, grid: CompositeGrid): number {
@@ -249,7 +251,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
     // A buffer larger than one frame's upload allowance fills across frames. Refused whole each frame, a stroke's outline
     // at 332% never uploaded and the board never presented again (measured: claimUpload refused 73 of 73 admissions).
     const uploading = new Map<Float64Array, { device: GfxDevice; buffer: BufferHandle; data: Float32Array; staging: ByteLease;
-        written: number; negative: Float64Array; bytes: number; usedFrame: number }>();
+        written: number; negative: Float64Array; bytes: number; usedFrame: number; piece: number }>();
     const dropUpload = (key: Float64Array) => {
         const up = uploading.get(key);
         if (!up) return;
@@ -555,16 +557,20 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
                 if (error instanceof ArenaError && error.code === 'unsupported') { unsupported = true; auditCount(audit, 'fallback:path-coverage:vertex-buffer'); return 'unsupported'; }
                 throw error;
             }
-            up = { device: owner, buffer, data, staging, written: 0, negative: set.negative, bytes: vertexBytes, usedFrame: frame };
+            up = { device: owner, buffer, data, staging, written: 0, negative: set.negative, bytes: vertexBytes, usedFrame: frame,
+                piece: PATH_COVERAGE_UPLOAD_CHUNK_BYTES };
             uploading.set(set.positive, up); gpuBytes += vertexBytes;
         }
         while (up.written < up.bytes) {
-            const piece = Math.min(PATH_COVERAGE_UPLOAD_CHUNK_BYTES, up.bytes - up.written);
+            const piece = Math.min(up.piece, up.bytes - up.written);
             if (!budget.claimUpload(piece)) {
                 // By cause, so a repeat is visible as its cause. 'room': the frame's allowance still had the piece, so the scheduler
-                // refused it for another reason (the layer's optional share); that is the case that must not repeat.
+                // refused it for another reason, the layer's optional share, which is the piece's size against that share. The same
+                // bytes then retry in smaller pieces, which fit the share sooner (by reading: the optional share grows by a fraction of
+                // the allowance each frame), so the bytes are not refused at the same size again.
                 const cause = budget.shouldYield() ? 'yield' : budget.upload.remainingBytes >= piece ? 'room' : 'allowance';
                 auditCount(audit, `upload:deferred:${cause}`, 1, { bytes: piece });
+                if (cause === 'room') up.piece = Math.max(PATH_COVERAGE_UPLOAD_MIN_PIECE_BYTES, piece / 2);
                 return 'deferred';
             }
             owner.writeBuffer(up.buffer, up.written, up.data.subarray(up.written / 4, (up.written + piece) / 4));

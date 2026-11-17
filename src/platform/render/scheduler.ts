@@ -42,6 +42,9 @@ export interface PresentedLayerRevision {
 export interface ScheduledSubmission {
     readonly drawn: readonly PresentedLayerRevision[];
     readonly completed?: () => boolean;
+    /** True once the submission can never complete (its context was released, or the compositor was disposed). Its acknowledgement
+     * is dropped: the layers are not told it presented, and no frame is kept requested for a submission that is gone. */
+    readonly superseded?: () => boolean;
     /** Benchmark observation is committed only after this exact display and its overlays agree. */
     readonly commitObservation?: () => void;
     readonly cancelObservation?: () => void;
@@ -1083,6 +1086,7 @@ export class FrameScheduler {
         for (const ack of pending) {
             this.call(ack.entry, () => {
                 if (!this.valid(ack.entry, ack.token)) return;
+                if (ack.submission.superseded?.()) return;
                 if (ack.frameId >= frameId || (ack.submission.completed && !ack.submission.completed())) {
                     this.acknowledgements.push(ack);
                     return;

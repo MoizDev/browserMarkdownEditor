@@ -451,6 +451,7 @@ export class GpuCompositor implements PaneCompositor {
                         return { drawn: frame.layers.filter(meta => snapshot.layers.some(binding => binding.layer === meta.layer))
                             .map(meta => ({ layer: meta.layer, sceneRevision: meta.sceneRevision })),
                         completed: () => !this.#disposed && epoch === this.#epoch && this.#options.owner.resources.completed(submitted.serial),
+                        superseded: () => this.#disposed || epoch !== this.#epoch,
                         ...(__BME_BENCH__ ? { commitObservation: () => this.#options.owner.commitCoverage?.(submitted.serial),
                             cancelObservation: () => this.#options.owner.cancelCoverage?.(submitted.serial) } : {}) };
                     } catch (error) {

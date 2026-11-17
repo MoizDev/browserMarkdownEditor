@@ -1,4 +1,4 @@
-import { auditCount, auditFrame } from './renderAudit';
+import { auditCount, auditFrame, renderAuditEnabled } from './renderAudit';
 import type { ViewState } from '../types';
 const benchmarkMemory = __BME_BENCH__ ? await import('./benchmarkMemory') : null;
 import type { DamageRecord } from './damage';
@@ -385,7 +385,8 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                             // layers can prepare the new viewport. Build the normal CPU bridge detached,
                             // then resize/rebuild this SAME kept GPU behind that complete picture.
                             cpuPresented = false;
-                            auditCount('pane', 'fallback:2d-bridge');
+                            // The bridge is board content rastered on the CPU while the device exists: counted with its pixels.
+                            auditCount('pane', 'fallback:2d-bridge', 1, { px: size.physical.width * size.physical.height });
                             drawing = compositor;
                             planned = computeSurfaceMetrics(size.physical, size.nominalDpr, drawing.target.limits, grant.pixelGrant);
                         }
@@ -453,6 +454,11 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                         lastFrameInterval = frame.intervalMs;
                         const drawing = drawCompositor();
                         if (!drawing) return null;
+                        // The 2D compositor draws this frame while a device exists (the bridge, or a pane whose GPU is not yet
+                        // presented): board content rastered on the CPU, counted with the pixels it covers.
+                        if (drawing === compositor && gpu && renderAuditEnabled()) {
+                            auditCount('pane', 'cpu-raster', 1, { px: drawing.surface.width * drawing.surface.height });
+                        }
                         const encodeStart = performance.now();
                         const encoding = drawing.encode(frame);
                         if (!encoding && !(drawing === compositor && options.session.mirrors)) return null;

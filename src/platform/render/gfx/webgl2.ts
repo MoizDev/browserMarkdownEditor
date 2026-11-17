@@ -1,6 +1,6 @@
 import { coverageTargetBytes } from './api';
 import type {
-    BitmapUpload, BufferHandle, BufferUse, ByteLease, ClipHandle, CoverageTarget, GfxDevice, GfxError,
+    BitmapUpload, BufferHandle, BufferUse, ByteLease, ClipHandle, CoverageTarget, CoverageTargetOptions, GfxDevice, GfxError,
     FrameEncoder, GfxLimits, Handle, PipelineDesc, PipelineHandle, PixelUpload, RectI, SamplerHandle,
     Samples, ShaderLayout, ShaderModule, TargetHandle, TargetLease, TextureFormat, TextureHandle, TextureUse, UniformSlice,
 } from './api';
@@ -9,7 +9,7 @@ import { createWebgl2Frame } from './webgl2Frame';
 import type { ControlledFrame, DrawContext, EncodedDraw, FrameBackend, FrameTarget, FrameTexture, QuadCommand, TargetRequest } from './webgl2Frame';
 import { Webgl2TargetPool } from './webgl2Pool';
 import type { PoolStorage } from './webgl2Pool';
-import { COMPOSITION_SHADER } from './webgl2Shaders';
+import { COMPOSITION_SHADER, GRID_RESOLVE_SHADER } from './webgl2Shaders';
 import { Webgl2IndexMirror } from './webgl2Index';
 import { Webgl2Timer } from './webgl2Timer';
 import { Webgl2IsolationPool } from './webgl2Isolation';
@@ -321,6 +321,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     #uniformBytes = 1 << 20;
     #surfaceRevision = 0;
     #composition: PipelineHandle | null = null;
+    #gridComposition: PipelineHandle | null = null;
     #white: TextureHandle | null = null;
     readonly #fences = new Map<number, WebGLSync | null>();
     readonly #fenceTimes = new Map<number, number>();
@@ -784,14 +785,18 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         return handle;
     }
 
-    createCoverageTarget(width: number, height: number, samples: Samples, lease: ByteLease): CoverageTarget {
+    createCoverageTarget(width: number, height: number, samples: Samples, lease: ByteLease, options?: CoverageTargetOptions): CoverageTarget {
         this.#usable();
-        if (lease.bytes < coverageTargetBytes(width, height, samples)) throw new ArenaError('out-of-budget');
-        const texture = this.#createTexture(width, height, 'rgba8', ['render', 'sample'], lease);
+        const grid = options?.grid ?? 1;
+        if (grid !== 1 && grid !== 4) throw new ArenaError('invalid-input');
+        if (grid !== 1 && samples !== 1) throw new ArenaError('invalid-input');
+        if (lease.bytes < coverageTargetBytes(width, height, samples, grid)) throw new ArenaError('out-of-budget');
+        // A grid target holds one r8 texel per subsample (no MSAA); the device-size rgba8 colour target is unchanged.
+        const texture = this.#createTexture(width * grid, height * grid, grid === 1 ? 'rgba8' : 'r8', ['render', 'sample'], lease);
         try {
             const target = this.createTarget(texture, { samples, stencil: true }, lease);
             this.#arena.closeLease(lease);
-            return { target, texture, width, height, samples };
+            return { target, texture, width, height, samples, grid };
         } catch (error) {
             this.destroy(texture);
             throw error;
@@ -966,7 +971,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             () => { for (const handle of this.#handles) this.#arena.release(handle); },
             () => this.#handles.clear(), () => this.#programs.clear(), () => this.#programSignatures.clear(),
             () => this.#samplers.clear(), () => this.#attachments.clear(),
-            () => { this.#white = null; this.#composition = null; }, () => this.#collect(),
+            () => { this.#white = null; this.#composition = null; this.#gridComposition = null; }, () => this.#collect(),
         ]);
     }
 
@@ -984,7 +989,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 () => { this.#uniformSlots.length = 0; },
                 ...[...this.#indexBuffers].map(buffer => () => this.#dropIndexData(buffer)),
                 () => this.#pipelines.clear(), () => this.#pollCancel?.(),
-                () => { this.#pollCancel = null; this.#white = null; this.#composition = null; },
+                () => { this.#pollCancel = null; this.#white = null; this.#composition = null; this.#gridComposition = null; },
                 () => { this.#fences.clear(); this.#fenceTimes.clear(); }, () => this.#handles.clear(), () => this.#programs.clear(),
                 () => this.#programSignatures.clear(), () => this.#samplers.clear(), () => this.#attachments.clear(),
                 () => this.#textureUnits.clear(), () => this.#uniformUnits.clear(),
@@ -1051,6 +1056,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
 
     async #prepareComposition(signal: AbortSignal): Promise<void> {
         this.#composition = await this.#program(COMPOSITION_SHADER, AbortSignal.any([signal, this.#work.signal]));
+        this.#gridComposition = await this.#program(GRID_RESOLVE_SHADER, AbortSignal.any([signal, this.#work.signal]));
         const sampler = this.createSampler('linear');
         this.destroy(sampler);
         if (__BME_BENCH__) {
@@ -1261,8 +1267,9 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             endReplay: () => this.#endReplay(),
             bindTarget: framebuffer => this.#bindTarget(framebuffer),
             quad: command => {
-                if (!this.#composition) throw new ArenaError('invalid-resource');
-                const program = this.#pin(work.encoding, this.#composition, 'pipeline');
+                const handle = command.grid ? this.#gridComposition : this.#composition;
+                if (!handle) throw new ArenaError('invalid-resource');
+                const program = this.#pin(work.encoding, handle, 'pipeline');
                 const samplerHandle = this.#samplers.get('linear');
                 if (program.role !== 'program' || !samplerHandle) throw new ArenaError('invalid-resource');
                 const sampler = this.#pin(work.encoding, samplerHandle, 'sampler');
@@ -1518,16 +1525,18 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         this.#bindTarget(context.target.framebuffer);
         const gl = this.#usable();
         // Viewport and scissor are held as device rectangles; a repeated rectangle issues nothing (a draw in a pass mostly repeats it).
-        const vx = context.viewport.x - context.originX, vy = context.target.height - (context.viewport.y - context.originY) - context.viewport.height;
-        const vw = context.viewport.width, vh = context.viewport.height;
+        // A grid scope rasterises device geometry at `scale` texels per pixel: the same rectangle, scaled about its origin.
+        const s = context.scale;
+        const vw = context.viewport.width * s, vh = context.viewport.height * s;
+        const vx = (context.viewport.x - context.originX) * s, vy = context.target.height - (context.viewport.y - context.originY) * s - vh;
         const view = this.#cViewport;
         if (!this.#cViewportKnown || view[0] !== vx || view[1] !== vy || view[2] !== vw || view[3] !== vh) {
             gl.viewport(vx, vy, vw, vh);
             view[0] = vx; view[1] = vy; view[2] = vw; view[3] = vh;
             this.#cViewportKnown = true;
         }
-        const sx = scissor.x - context.originX, sy = context.target.height - (scissor.y - context.originY) - scissor.height;
-        const sw = scissor.width, sh = scissor.height;
+        const sw = scissor.width * s, sh = scissor.height * s;
+        const sx = (scissor.x - context.originX) * s, sy = context.target.height - (scissor.y - context.originY) * s - sh;
         const box = this.#cScissor;
         if (!this.#cScissorKnown || box[0] !== sx || box[1] !== sy || box[2] !== sw || box[3] !== sh) {
             gl.enable(gl.SCISSOR_TEST);

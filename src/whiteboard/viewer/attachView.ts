@@ -248,7 +248,7 @@ export const attachView: AttachView = options => {
     const sceneFits = (wholeItems: number): boolean => {
         const viewItems = Math.max(1, lastCandidates ?? 1);
         const perItem = layers.cpuMandatoryBytes() / viewItems;
-        const grant = layers.cpuGrantBytes() ?? RENDER_CONSTANTS.cpuGrantMinBytes;
+        const reported = layers.cpuGrantBytes(), grant = reported > 0 ? reported : RENDER_CONSTANTS.cpuGrantMinBytes;
         return wholeItems * perItem <= grant / 2;
     };
     function requestPaint(sensitive = interaction?.sensitiveNodeIds?.()): void {

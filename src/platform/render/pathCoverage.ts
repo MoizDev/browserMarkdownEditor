@@ -34,6 +34,8 @@ const PATH_COVERAGE_SCRATCH_BYTES = 2 * 2 ** 20;
 const PATH_COVERAGE_UPLOAD_CHUNK_BYTES = 64 * 1024;
 /** The smallest piece a refused upload shrinks to: 4 KiB is a whole number of vertices and of float32s. */
 const PATH_COVERAGE_UPLOAD_MIN_PIECE_BYTES = 4 * 1024;
+/** A vertex is two float32s (the draw's float32x2 attribute): every piece is a whole number of vertices, so a piece never splits one. */
+const PATH_COVERAGE_VERTEX_STRIDE_BYTES = 8;
 /** GPU bytes of triangle buffers that no live admission holds. A stroke's tiles share them, so a few megabytes is a few
  * strokes' worth; past it the least recently retired are destroyed and re-uploaded if drawn again. */
 const IDLE_VERTEX_BYTES = 8 * 2 ** 20;
@@ -739,7 +741,9 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
                 // refused it for another reason, the layer's optional share. The same bytes then retry in smaller pieces.
                 const cause = budget.shouldYield() ? 'yield' : budget.upload.remainingBytes >= piece ? 'room' : 'allowance';
                 auditCount(audit, `upload:deferred:${cause}`, 1, { bytes: piece });
-                if (cause === 'room') up.piece = Math.max(PATH_COVERAGE_UPLOAD_MIN_PIECE_BYTES, piece / 2);
+                // Halved to whole vertices: a piece of 4k+2 words' worth halved to a non-word size, which the range check refuses.
+                if (cause === 'room') up.piece = Math.max(PATH_COVERAGE_UPLOAD_MIN_PIECE_BYTES,
+                    Math.floor(piece / 2 / PATH_COVERAGE_VERTEX_STRIDE_BYTES) * PATH_COVERAGE_VERTEX_STRIDE_BYTES);
                 return 'deferred';
             }
             // The chunk's range is whole words inside the buffer the upload created: the device refuses anything else as invalid-input.

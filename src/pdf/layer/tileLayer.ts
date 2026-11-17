@@ -684,10 +684,11 @@ export class PdfTileLayer implements Layer {
         return offView * 1e12 + otherScale * 1e9 + Math.hypot(dx, dy);
     }
 
-    /** A tile a trim may take: not on the view (a tile on screen is part of every frame that draws it), and not drawn by the
-     * last prepared frame. Its pixels come back by a bitmap upload, or a raster if the plan still wants it. */
+    /** A tile a trim may take: its pixels are on the CPU (so it comes back by a bitmap upload, never a raster), not on the view
+     * (a tile on screen is part of every frame that draws it), and not drawn by the last prepared frame. A GPU-only tile is
+     * kept: freeing it would turn its return into a CPU raster, which is what evictGpu's contract rules out. */
     private evictableTile(entry: Entry, input: Omit<PdfDemandInput, 'covered' | 'previousMotionScale'>): boolean {
-        return !intersects(rect(entry.request), input.viewport) && entry.drawnFrame !== this.preparedFrame;
+        return !!entry.bitmap && !intersects(rect(entry.request), input.viewport) && entry.drawnFrame !== this.preparedFrame;
     }
 
     /** The GPU's answer to a refused tile texture: free one tile the plan does not show, then the layer's own off-plan

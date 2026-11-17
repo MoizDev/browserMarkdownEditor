@@ -311,7 +311,11 @@ export class GpuCompositor implements PaneCompositor {
             const bounds = { x: 0, y: 0, width: snapshot.metrics.backingWidth, height: snapshot.metrics.backingHeight };
             const drawScope: DrawScope = { encoder, view: frame.view, passes: new Set() };
             this.#active = drawScope;
-            try { this.#encodeOffscreen(snapshot, frame, encoder, drawScope); } finally { this.#active = null; }
+            // Every layer's offscreen passes are recorded before the surface pass; the frame replays independent ones grouped
+            // by program and target (webgl2Frame.ts #order), since a layer's own draws are not reordered here.
+            let offscreen = 0;
+            try { offscreen = this.#encodeOffscreen(snapshot, frame, encoder, drawScope); } finally { this.#active = null; }
+            auditCount('compositor', 'offscreen-passes', offscreen);
             const pass = encoder.beginPass({ target: 'surface', viewport: bounds,
                 load: { kind: 'clear', color: snapshot.appearance.background }, store: 'store' });
             this.#active = drawScope;
@@ -367,6 +371,7 @@ export class GpuCompositor implements PaneCompositor {
                     try {
                         const submitStarted = timed ? performance.now() : 0;
                         const submitted = owned.submit();
+                        auditCount('compositor', 'gl:state', submitted.stateSwitches);
                         if (timed) {
                             const now = performance.now();
                             auditStage('compositor', 'submit', now - submitStarted);
@@ -521,7 +526,8 @@ export class GpuCompositor implements PaneCompositor {
     }
 
     /** Each layer's offscreen passes, in layer order, before the surface pass: one pass open at a time, every scope closed. */
-    #encodeOffscreen(snapshot: Snapshot, frame: ScheduledFrame, encoder: FrameEncoder, drawScope: DrawScope): void {
+    #encodeOffscreen(snapshot: Snapshot, frame: ScheduledFrame, encoder: FrameEncoder, drawScope: DrawScope): number {
+        let passes = 0;
         for (const binding of snapshot.layers) {
             const layer = binding.layer;
             if (!layer.encodeOffscreen) continue;
@@ -543,6 +549,7 @@ export class GpuCompositor implements PaneCompositor {
                             load: options.clear ? { kind: 'clear', color: options.clear } : { kind: 'load' }, store: 'store',
                             ...(options.stencil ? { stencil: { load: { kind: 'clear', value: 0 }, store: 'discard' } as const } : {}) });
                         const scope = layerPass(raw);
+                        passes++;
                         auditCount(auditId, 'offscreen-pass');
                         const counted: GpuPass = renderAuditEnabled() ? new Proxy(scope.pass, { get(t, key) {
                             const value = Reflect.get(t, key, t) as unknown;
@@ -562,6 +569,7 @@ export class GpuCompositor implements PaneCompositor {
                 if (timed) auditStage(auditId, 'encodeOffscreen', performance.now() - started);
             }
         }
+        return passes;
     }
 
     #check(): void { if (this.#disposed) throw new ArenaError('aborted'); }

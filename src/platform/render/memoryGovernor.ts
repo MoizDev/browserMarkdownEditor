@@ -1,5 +1,6 @@
 import { RENDER_CONSTANTS as POLICY } from './constants';
 import type { ByteLease } from './gfx/api';
+import { auditCount } from './renderAudit';
 import type { ArenaMemory } from './resourceArena';
 import type { RenderToken } from './types';
 
@@ -20,8 +21,11 @@ export interface MemoryAllocator {
     reserve(bytes: number): ByteLease | null;
     release(lease: ByteLease): void;
     /** One-shot: `wake` runs once after the next lease release or grant change, so a denied owner retries on a real
-     * capacity change instead of polling. It only schedules work, so it must not reserve synchronously. */
-    whenAvailable?(wake: () => void): void;
+     * capacity change instead of polling. It only schedules work, so it must not reserve synchronously.
+     * With `bytes`, it waits until that much would actually be admitted: waking on every release made a refused
+     * 1 MB tile retry each frame while unrelated small leases churned, and the pane never idled (measured: 180
+     * presents in 3 s at rest on a ~12k-item board, all from that wake). */
+    whenAvailable?(wake: () => void, bytes?: number): void;
 }
 
 export interface CacheActivity {
@@ -40,8 +44,9 @@ export interface MemoryCacheRegistration extends CacheActivity {
     readonly paneId?: string;
     readonly owner?: MemorySessionOwner;
     readonly memory: () => ArenaMemory;
-    /** Synchronous eviction request. Only returned leases free capacity, not this call's return. */
-    readonly evict: (bytes: number) => void;
+    /** Eviction request for up to `bytes`; returns the bytes it frees, or 0 when it frees nothing (a touched entry).
+     * An owner that returns nothing is counted as having freed its ask, up to its cache's size: see evictCache. */
+    readonly evict: (bytes: number) => number | void;
 }
 
 export interface MemoryCacheReadout extends ArenaMemory {
@@ -126,6 +131,13 @@ interface LeaseRecord {
     returned: boolean;
 }
 
+/** One denied owner. Keyed by record, not by wake: one wake may wait on both pools with different sizes. */
+interface CapacityWaiter {
+    readonly wake: () => void;
+    readonly cache: CacheRecord;
+    readonly bytes: number | undefined;
+}
+
 interface Share {
     readonly id: string;
     readonly need: number;
@@ -194,7 +206,7 @@ export class MemoryGovernor {
     readonly deviceClass: DeviceMemoryClass;
     private readonly caches = new Map<string, CacheRecord>();
     // Denied owners waiting for the next capacity change; each wake is one-shot and removed when it runs.
-    private readonly capacityWaiters = new Set<() => void>();
+    private readonly capacityWaiters = new Set<CapacityWaiter>();
     private readonly leases = new WeakMap<ByteLease, LeaseRecord>();
     private readonly cacheHandles = new WeakMap<MemoryCacheHandle, CacheRecord>();
     private readonly charged = { gpu: 0, cpu: 0 };
@@ -243,7 +255,7 @@ export class MemoryGovernor {
             handle: {
                 reserve: bytes => this.reserve(cache, bytes),
                 release: lease => this.release(lease, cache),
-                whenAvailable: wake => { if (!cache.closed) this.capacityWaiters.add(wake); },
+                whenAvailable: (wake, bytes) => { if (!cache.closed) this.capacityWaiters.add({ wake, cache, bytes }); },
                 readout: () => this.cacheReadout(cache),
                 updateActivity: activity => {
                     activityValid(activity);
@@ -629,11 +641,23 @@ export class MemoryGovernor {
         try {
             for (const other of candidates) {
                 if (excess <= 0) break;
-                const before = other.bytes;
-                other.registration.evict(excess);
-                excess -= before - other.bytes;
+                const freed = this.evictCache(other, excess, false);
+                if (freed > 0) auditCount('governor', `reclaim:${pool}:${other.registration.id}`, 1, { bytes: freed });
+                excess -= freed;
             }
         } finally { this.trimming = false; }
+    }
+
+    /** Asks one cache for up to `bytes` and returns the bytes it freed. A returned count is believed: an owner that releases
+     * asynchronously cannot show its drop yet. An owner that returns nothing is counted by its synchronous drop, or, in a
+     * trim, by the ask up to its cache's size: a mirror closes entries whose bytes stay charged until retirement, and
+     * counting only the drop asked every candidate (measured earlier: four caches, 45 MB, evicted for a 0.47 MB excess). */
+    private evictCache(cache: CacheRecord, bytes: number, unreportedCountsAsk: boolean): number {
+        const before = cache.bytes;
+        const returned = cache.registration.evict(bytes);
+        const reported = typeof returned === 'number' ? (Number.isFinite(returned) ? Math.max(0, returned) : 0) :
+            unreportedCountsAsk ? Math.min(before, bytes) : 0;
+        return Math.max(before - cache.bytes, reported);
     }
 
     /** One refusal episode degrades the governor once; the retries of that episode only wait for capacity. */
@@ -659,11 +683,17 @@ export class MemoryGovernor {
         }
     }
 
+    /** A sized waiter stays parked until its bytes would be admitted: a closed cache's waiter wakes so its owner sees
+     * the closure. Each wake runs once however many of its waiters fired. */
     private notifyCapacity(): void {
         if (!this.capacityWaiters.size) return;
-        const waiting = [...this.capacityWaiters];
-        this.capacityWaiters.clear();
-        for (const wake of waiting) wake();
+        const woken = new Set<() => void>();
+        for (const waiter of [...this.capacityWaiters]) {
+            if (waiter.bytes !== undefined && !waiter.cache.closed && !this.fits(waiter.cache, waiter.bytes)) continue;
+            this.capacityWaiters.delete(waiter);
+            woken.add(waiter.wake);
+        }
+        for (const wake of woken) wake();
     }
 
     private release(lease: ByteLease, expected?: CacheRecord): void {
@@ -723,15 +753,14 @@ export class MemoryGovernor {
                 b.bytes - a.bytes || stableId(a.registration.id, b.registration.id));
         this.trimming = true;
         try {
-            // Owners release asynchronously, so charged does not fall inside this loop: count each asked cache as freed, or
-            // one trim asks every candidate (measured: four caches, 45 MB, evicted for a 0.47 MB excess).
+            // Charged falls only when owners release, which is asynchronous: the reported bytes stand in for it inside this loop.
             let excess = this.charged[pool] - target;
             for (const cache of candidates) {
                 if (excess <= 0) break;
-                const before = cache.bytes;
                 // The owner protects its last visible coverage provider and capture/live-input pins.
-                cache.registration.evict(excess);
-                excess -= Math.max(before - cache.bytes, Math.min(before, excess));
+                const freed = this.evictCache(cache, excess, true);
+                if (freed > 0) auditCount('governor', `trim:${pool}:${cache.registration.id}`, 1, { bytes: freed });
+                excess -= freed;
             }
         } finally { this.trimming = false; this.plan(); }
     }

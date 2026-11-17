@@ -167,7 +167,13 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         queueMicrotask(() => { demandQueued = false; if (!disposed) runtime.refresh(); });
     };
     // A readout refuses an over-reported cache (a product failure reported elsewhere); demand then counts only the layer.
-    const heldBytes = (cache: MemoryCacheHandle | undefined): number => { try { return cache?.readout().reservedBytes ?? 0; } catch { return 0; } };
+    // A readout throws only when a cache's live bytes exceed what it has reserved: an accounting fault. It is counted and
+    // rethrown, never read as zero, since a zero would drop this cache's bytes from the demand the governor plans on.
+    const heldBytes = (cache: MemoryCacheHandle | undefined): number => {
+        if (!cache) return 0;
+        try { return cache.readout().reservedBytes; }
+        catch (error) { auditCount('governor', 'unaccounted'); throw error; }
+    };
     const layerSet = new PaneLayerSet((id, current, definition) => {
         const now = performance.now();
         const common = { paneId: options.paneId, owner: options.documentToken, hiddenAt: visible ? null : now,

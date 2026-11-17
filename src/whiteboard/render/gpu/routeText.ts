@@ -20,6 +20,7 @@ export interface TextRoute extends ItemRoute<PaintTextItem> {
 /** Per instance: device rect (x, y, w, h), page uv rect (u0, v0, u1, v1; u0 = -1 marks a solid rect), premultiplied colour. */
 const INSTANCE_BYTES = 48;
 const SOLID_UV = -1;
+const PARALLELOGRAM_UV = -2;
 /** A new colour-glyph run is measured here; the set is cleared when full so a long session cannot grow it without bound. */
 const COLOUR_RUN_LIMIT = 4096;
 const MONO_PAGES = 8, COLOUR_PAGES = 2;
@@ -45,16 +46,25 @@ layout(location=0) in vec4 instanceRect;
 layout(location=1) in vec4 instanceUv;
 layout(location=2) in vec4 instanceColour;
 out vec2 pixel; out vec2 uv;
-flat out vec4 edges; flat out vec4 colour; flat out float solid;
+flat out vec4 edges; flat out vec4 colour; flat out float shape;
+flat out vec2 origin; flat out vec2 axisU; flat out vec2 axisV;
 void main() {
     vec2 corner = vec2(float(gl_VertexID & 1), float((gl_VertexID >> 1) & 1));
-    float isSolid = step(instanceUv.x, -0.5);
-    vec2 p = instanceRect.xy - isSolid + corner * (instanceRect.zw + 2.0 * isSolid);
+    // uv.x = -2 marks a parallelogram: rect.xy is its origin, rect.zw the first edge, uv.yz the second. uv.x = -1 an axis-aligned solid.
+    float isRotated = step(instanceUv.x, -1.5);
+    float isSolid = step(instanceUv.x, -0.5) - isRotated;
+    vec2 axisPixel = instanceRect.xy - isSolid + corner * (instanceRect.zw + 2.0 * isSolid);
+    // The parallelogram's device bounds, grown by a pixel so its supersampled edges are not clipped.
+    vec2 p0 = instanceRect.xy, e1 = instanceRect.zw, e2 = instanceUv.yz;
+    vec2 c1 = p0 + e1, c2 = p0 + e2, c3 = p0 + e1 + e2;
+    vec2 lo = min(min(p0, c1), min(c2, c3)) - 1.0, hi = max(max(p0, c1), max(c2, c3)) + 1.0;
+    vec2 p = mix(axisPixel, mix(lo, hi, corner), isRotated);
     pixel = p;
     uv = mix(instanceUv.xy, instanceUv.zw, corner);
     edges = vec4(instanceRect.xy, instanceRect.xy + instanceRect.zw);
     colour = instanceColour;
-    solid = isSolid;
+    shape = isSolid + 2.0 * isRotated;
+    origin = p0; axisU = e1; axisV = e2;
     vec2 unit = p / viewport.xy;
     gl_Position = vec4(unit.x * 2.0 - 1.0, 1.0 - unit.y * 2.0, 0.0, 1.0);
 }`;
@@ -62,13 +72,28 @@ const HEADER = `#version 300 es
 precision highp float;
 uniform sampler2D gfxTexture0;
 in vec2 pixel; in vec2 uv;
-flat in vec4 edges; flat in vec4 colour; flat in float solid;
+flat in vec4 edges; flat in vec4 colour; flat in float shape;
+flat in vec2 origin; flat in vec2 axisU; flat in vec2 axisV;
 layout(location=0) out vec4 gfxColour;
 `;
-/** Coverage of a mask texel, or the exact area a solid rect covers in this pixel. */
+/** Coverage of a mask texel, the exact area of an axis-aligned solid in this pixel, or the area of a parallelogram in this
+ * pixel by 8 × 8 point samples (within 1/64 of the area, which is below the 8-level parity bar at any edge). */
 const COVERAGE = `
 float coverage() {
-    if (solid > 0.5) {
+    if (shape > 1.5) {
+        float det = axisU.x * axisV.y - axisU.y * axisV.x;
+        if (abs(det) < 1e-12) return 0.0;
+        vec2 cell = floor(pixel);
+        float hits = 0.0;
+        for (int j = 0; j < 8; j++) for (int i = 0; i < 8; i++) {
+            vec2 d = cell + vec2((float(i) + 0.5) / 8.0, (float(j) + 0.5) / 8.0) - origin;
+            float u = (d.x * axisV.y - d.y * axisV.x) / det;
+            float v = (axisU.x * d.y - axisU.y * d.x) / det;
+            if (u >= 0.0 && u <= 1.0 && v >= 0.0 && v <= 1.0) hits += 1.0;
+        }
+        return hits / 64.0;
+    }
+    if (shape > 0.5) {
         vec2 cell = floor(pixel);
         vec2 span = clamp(min(edges.zw, cell + 1.0) - max(edges.xy, cell), 0.0, 1.0);
         return span.x * span.y;
@@ -240,27 +265,53 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         const last = build.batches[build.batches.length - 1];
         if (last && last.mode === mode && last.texture === texture) build.batches[build.batches.length - 1] = { mode, texture, first: last.first, count: last.count + 1 };
         else build.batches.push({ mode, texture, first: build.count - 1, count: 1 });
-        build.x0 = Math.min(build.x0, x); build.y0 = Math.min(build.y0, y);
-        build.x1 = Math.max(build.x1, x + w); build.y1 = Math.max(build.y1, y + h);
         return true;
+    };
+    /** Grows the run's device bounds, which become its scissor. */
+    const widen = (build: Build, x0: number, y0: number, x1: number, y1: number): void => {
+        build.x0 = Math.min(build.x0, x0); build.y0 = Math.min(build.y0, y0);
+        build.x1 = Math.max(build.x1, x1); build.y1 = Math.max(build.y1, y1);
     };
 
     /** A solid rect in device px: analytic coverage in the shader, so its edges match the canvas's fill. False only on refusal. */
     const solidRect = (build: Build, x0: number, y0: number, x1: number, y1: number, colourOf: Rgba, viewW: number, viewH: number): boolean => {
         if (!(x1 > x0 && y1 > y0) || x1 <= 0 || y1 <= 0 || x0 >= viewW || y0 >= viewH) return true;
-        return put(build, 'mono', white!, x0, y0, x1 - x0, y1 - y0, SOLID_UV, SOLID_UV, SOLID_UV, SOLID_UV, colourOf);
+        if (!put(build, 'mono', white!, x0, y0, x1 - x0, y1 - y0, SOLID_UV, SOLID_UV, SOLID_UV, SOLID_UV, colourOf)) return false;
+        widen(build, x0, y0, x1, y1);
+        return true;
     };
 
     const denied = (build: Build): Stop => ({ status: 'denied', pool: 'cpu', bytes: (build.count + 1) * INSTANCE_BYTES });
 
-    /** Rects of one item: the backgrounds before its glyphs, the decorations after. Only axis-aligned maps are solid here. */
+    /** A rect under a map with rotation or skew: the device parallelogram, one instance. Its shader supersamples the coverage
+     * (the canvas fill's antialiasing), so a rotated node's backgrounds and underlines stay on the GPU. False only on refusal. */
+    const parallelogram = (build: Build, r: { x: number; y: number; w: number; h: number }, A: readonly number[], colourOf: Rgba, viewW: number, viewH: number): boolean => {
+        // A negative extent fills the same rect as its positive one, so the origin moves to the low corner first.
+        const rx = r.w < 0 ? r.x + r.w : r.x, rw = Math.abs(r.w);
+        const ry = r.h < 0 ? r.y + r.h : r.y, rh = Math.abs(r.h);
+        if (!(rw > 0 && rh > 0)) return true;
+        const ox = A[0] * rx + A[2] * ry + A[4], oy = A[1] * rx + A[3] * ry + A[5];
+        const e1x = A[0] * rw, e1y = A[1] * rw, e2x = A[2] * rh, e2y = A[3] * rh;
+        const xs = [ox, ox + e1x, ox + e2x, ox + e1x + e2x], ys = [oy, oy + e1y, oy + e2y, oy + e1y + e2y];
+        const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+        if (x1 <= 0 || y1 <= 0 || x0 >= viewW || y0 >= viewH) return true;
+        if (!put(build, 'mono', white!, ox, oy, e1x, e1y, PARALLELOGRAM_UV, e2x, e2y, 0, colourOf)) return false;
+        widen(build, x0, y0, x1, y1);
+        return true;
+    };
+
+    /** Rects of one item: the backgrounds before its glyphs, the decorations after. Axis-aligned maps are analytic solids;
+     * rotated or skewed ones are parallelograms. */
     const rects = (build: Build, list: readonly { x: number; y: number; w: number; h: number }[], colours: readonly Rgba[],
         A: readonly number[], viewW: number, viewH: number): Stop | null => {
         for (let i = 0; i < list.length; i++) {
             const colourOf = colours[i];
             if (!colourOf) return { status: 'unsupported', why: 'material' };
-            if (A[1] !== 0 || A[2] !== 0) return { status: 'unsupported', why: 'rotated-rect' };
             const r = list[i];
+            if (A[1] !== 0 || A[2] !== 0) {
+                if (!parallelogram(build, r, A, colourOf, viewW, viewH)) return denied(build);
+                continue;
+            }
             const xa = A[0] * r.x + A[4], xb = A[0] * (r.x + r.w) + A[4];
             const ya = A[3] * r.y + A[5], yb = A[3] * (r.y + r.h) + A[5];
             if (!solidRect(build, Math.min(xa, xb), Math.min(ya, yb), Math.max(xa, xb), Math.max(ya, yb), colourOf, viewW, viewH)) return denied(build);
@@ -389,6 +440,7 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
                 const u0 = e.x / ATLAS_PAGE, v0 = 1 - e.y / ATLAS_PAGE, u1 = (e.x + e.w) / ATLAS_PAGE, v1 = 1 - (e.y + e.h) / ATLAS_PAGE;
                 // A colour run is tinted by nothing: its own colour is in the texels, so the instance carries white.
                 if (!put(build, found.rgba ? 'colour' : 'mono', e.page.texture, x, y, w, h, u0, v0, u1, v1, found.rgba ? WHITE : colourOf)) return denied(build);
+                widen(build, x, y, x + w, y + h);
                 build.pins.push({ atlas: found.rgba ? colour! : mono!, entry: e });
             }
         }

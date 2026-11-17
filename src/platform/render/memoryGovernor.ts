@@ -44,6 +44,8 @@ export interface MemoryCacheRegistration extends CacheActivity {
     readonly kind: MemoryKind;
     readonly class: MemoryClass;
     readonly paneId?: string;
+    /** A live layer's cache (a stroke in flight). Its CPU reservations reclaim their own idle geometry before the pane's others. */
+    readonly liveInput?: boolean;
     readonly owner?: MemorySessionOwner;
     readonly memory: () => ArenaMemory;
     /** Eviction request for up to `bytes`; returns the bytes it frees, or 0 when it frees nothing (a touched entry). An owner
@@ -480,6 +482,7 @@ export class MemoryGovernor {
     advance(now: number, liveGesture: boolean): void {
         if (!Number.isFinite(now) || now < this.now) throw new MemoryAdmissionError('invalid-input');
         this.now = now;
+        for (const cache of this.caches.values()) this.reconcileUnaccounted(cache);
         this.trimHiddenMirrors();
         // Quality drops only when the trims cannot bring a pool back to target: a trim that frees what it is asked for
         // is the answer to pressure, and a degradation for pressure it has not yet had the chance to release is premature.
@@ -561,30 +564,34 @@ export class MemoryGovernor {
         };
     }
 
+    /** A read reports what the owner holds and never changes a charge: the charge moves in reconcileUnaccounted, once per
+     * frame, so two reads in a frame (the scheduler's and the audit's) cannot disagree about it. */
     private cacheReadout(cache: CacheRecord): MemoryCacheReadout {
         const { live, retiring } = cache.registration.memory();
         count(live);
         count(retiring);
-        // Publication without a covering reservation is an accounting fault in the owner. It never throws out of a frame (the
-        // frame would be lost on screen): the bytes are charged to the cache and the owner is named once.
-        if (live + retiring > cache.bytes) this.reconcileUnaccounted(cache, live, retiring);
         return { live, retiring, reservedBytes: cache.bytes, leaseCount: cache.leaseCount, closed: cache.closed };
     }
 
-    /** Charges a cache for live bytes its reservation does not cover, so the pool counts what is on the device. The charge is
-     * the full deficit, not a clamp: a clamp would understate the pool. advance() trims a pool charged past its target on
-     * the next frame, which is the trim the excess needs. Counted per event with its bytes; logged once per cache, named. */
-    private reconcileUnaccounted(cache: CacheRecord, live: number, retiring: number): void {
+    /** Sets the charge a cache holds for live bytes its leases do not cover, so the pool counts what is on the device. Idempotent:
+     * the charge is the owner's current excess over its leases, not a running sum, so a publication that lags its release (a
+     * retiring buffer) keeps the charge until the owner's bytes fall, and a read that repeats changes nothing. The charge is
+     * the full deficit, not a clamp: a clamp would understate the pool. Logged once per cache, named. */
+    private reconcileUnaccounted(cache: CacheRecord): void {
         const { id, pool } = cache.registration;
-        const deficit = live + retiring - cache.bytes;
-        cache.bytes += deficit;
-        cache.unaccounted += deficit;
-        this.charged[pool] += deficit;
-        auditCount('governor', `unaccounted:${id}`, 1, { bytes: deficit });
-        if (!cache.unaccountedReported) {
+        const { live, retiring } = cache.registration.memory();
+        const leased = cache.bytes - cache.unaccounted;
+        const next = Math.max(0, live + retiring - leased);
+        const delta = next - cache.unaccounted;
+        if (!delta) return;
+        cache.bytes += delta;
+        cache.unaccounted = next;
+        this.charged[pool] += delta;
+        if (delta > 0) auditCount('governor', `unaccounted:${id}`, 1, { bytes: delta });
+        if (next > 0 && !cache.unaccountedReported) {
             cache.unaccountedReported = true;
             console.error(`GPU accounting: ${id} published ${live + retiring} bytes (live ${live}, retiring ${retiring}) against ` +
-                `${cache.bytes - deficit} reserved; the difference is charged to it until its leases return.`);
+                `${leased} reserved; the difference is charged to it until the owner publishes no more than its leases.`);
         }
     }
 
@@ -772,7 +779,10 @@ export class MemoryGovernor {
             // A GPU layer evicted whole cannot be the one asking: it would release the residency it is growing.
             (pool === 'cpu' || other !== cache) &&
             !['surface', 'program', 'context', 'mirror', 'mirror-retiring', 'live-input', 'canvas-working'].includes(other.registration.kind))
-            .sort((a, b) => RECLAIMABLE.indexOf(a.registration.class) - RECLAIMABLE.indexOf(b.registration.class) ||
+            // A live stroke's CPU request reclaims its own layer's idle geometry first (the route's chunks the stroke no longer
+            // draws): that is what a new stroke needs back, and the pane's other caches are only asked for what it leaves.
+            .sort((a, b) => (pool === 'cpu' && cache.registration.liveInput ? (a === cache ? 0 : 1) - (b === cache ? 0 : 1) : 0) ||
+                RECLAIMABLE.indexOf(a.registration.class) - RECLAIMABLE.indexOf(b.registration.class) ||
                 a.activity.lastVisibleAt - b.activity.lastVisibleAt || a.activity.lastUsedAt - b.activity.lastUsedAt ||
                 stableId(a.registration.id, b.registration.id));
         this.trimming = true;
@@ -857,8 +867,10 @@ export class MemoryGovernor {
         cache.leaseCount--;
         const pool = cache.registration.pool;
         this.charged[pool] -= record.bytes;
-        // The unaccounted charge goes with the cache's last lease: nothing that holds bytes is left to publish them.
-        if (!cache.leaseCount && cache.unaccounted > 0) {
+        // A closed cache's unaccounted charge goes with its last lease. A live one keeps it: the owner may still hold the bytes
+        // (a publication that lags its release), and reconcileUnaccounted drops the charge when they fall. Dropping it here made
+        // the charge return on every release and come back on the next read, while the owner still held the bytes.
+        if (cache.closed && !cache.leaseCount && cache.unaccounted > 0) {
             cache.bytes -= cache.unaccounted;
             this.charged[pool] -= cache.unaccounted;
             cache.unaccounted = 0;

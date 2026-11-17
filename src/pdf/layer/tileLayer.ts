@@ -645,24 +645,13 @@ export class PdfTileLayer implements Layer {
         return this.texturePool.acquire(device, width, height);
     }
 
-    /**
-     * Pool pressure takes what the view does not show first: off-plan and off-screen tiles. Releasing every texture
-     * for it meant re-rastering the visible page, since a GPU-resident tile has no bitmap left (measured: a window
-     * resize re-rastered 28 tiles). Returns false when nothing was spare, so the caller releases everything.
-     * `keepPool` is the refused-acquire path: it frees this layer's own entries, but leaves the pool's textures for the
-     * retry to reuse. By reading: clearing the pool there destroyed the exact-size textures a zoom step needs next, so
-     * every refused upload during a zoom forced a fresh createTexture for the tiles that had just been released.
-     */
     /** Partial relief the platform asks for before it releases the whole layer: the pool's free textures first, then this
-     * layer's textures the plan does not show, least recently used first. Only a tile whose pixels are still on the CPU
-     * qualifies, since a texture without its bitmap would turn into a raster when it returns. It acts only for the frame
-     * this layer prepared: for any other frame the plan does not say what is on screen, so nothing is freed. */
-    evictGpu(bytes: number, frameId: number): number {
+     * layer's tile textures the plan does not show, farthest first (evictionRank). Pool pressure takes what the view does not
+     * show: releasing every texture for it meant re-rastering the visible page (measured: a window resize re-rastered 28 tiles).
+     * The frame id is not read: what may go is decided tile by tile (evictableTile), so the trim works between frames too. */
+    evictGpu(bytes: number, _frameId: number): number {
         const input = this.latestDemand;
         if (this.disposed || !input) return 0;
-        // Between frames as well as inside one: the trim runs when the scheduler has moved on, and a layer that did not prepare
-        // that frame (a settled pane) used to answer 0 here, so the pool stayed over target. What may go is decided by the tile,
-        // not by the frame id: nothing on screen, and nothing the last prepared frame drew (see evictableTile).
         let freed = 0;
         const pooled = this.texturePool.memory();
         if (pooled > 0) {
@@ -684,10 +673,11 @@ export class PdfTileLayer implements Layer {
         return offView * 1e12 + otherScale * 1e9 + Math.hypot(dx, dy);
     }
 
-    /** A tile a trim may take: not on the view (a tile on screen is part of every frame that draws it), and not drawn by the
-     * last prepared frame. Its pixels come back by a bitmap upload, or a raster if the plan still wants it. */
+    /** A tile a trim may take: its pixels are on the CPU (so it comes back by a bitmap upload, never a raster), not on the view
+     * (a tile on screen is part of every frame that draws it), and not drawn by the last prepared frame. A GPU-only tile is
+     * kept: freeing it would turn its return into a CPU raster, which is what evictGpu's contract rules out. */
     private evictableTile(entry: Entry, input: Omit<PdfDemandInput, 'covered' | 'previousMotionScale'>): boolean {
-        return !intersects(rect(entry.request), input.viewport) && entry.drawnFrame !== this.preparedFrame;
+        return !!entry.bitmap && !intersects(rect(entry.request), input.viewport) && entry.drawnFrame !== this.preparedFrame;
     }
 
     /** The GPU's answer to a refused tile texture: free one tile the plan does not show, then the layer's own off-plan
@@ -702,6 +692,9 @@ export class PdfTileLayer implements Layer {
         return this.releaseUnneededGpu(true);
     }
 
+    /** Frees this layer's tile textures the plan does not show, for a refused texture. `keepPool` is the refused-acquire path: it
+     * frees this layer's own entries but leaves the pool's textures for the retry to reuse. By reading: clearing the pool there
+     * destroyed the exact-size textures a zoom step needs next, so every refused upload during a zoom forced a fresh createTexture. */
     private releaseUnneededGpu(keepPool = false): boolean {
         const input = this.latestDemand;
         if (!input) return false;
@@ -826,12 +819,16 @@ export class PdfTileLayer implements Layer {
     }
     revision(): number { return this.contentRevision; }
     needsFrame(): boolean { return this.pendingFrame; }
+    /** Frees everything the layer holds on the GPU, not only its tiles: the frame texture, the bridge textures and the pool's
+     * textures. The platform disposes a layer that leaves the topology without a releaseGpu first (paneLayerSet,
+     * paneLifecycle's disposeSelection), so dispose must do this itself. A lost device owns nothing to destroy. */
     dispose(): void {
         if (this.disposed) return;
         this.disposed = true;
         this.mirrorJob = null;
         this.hide();
         this.failed.clear();
+        this.releaseGpu(this.host.device() ? 'pressure' : 'context-lost');
         this.drawnPages.clear();
         this.drawnStack = null;
     }
@@ -943,11 +940,15 @@ export class PdfTileLayer implements Layer {
         if (!lost) texture.device.destroy(texture.handle);
     }
 
-    /** A tile loses its texture but stays in the layer: with no bitmap left it has nothing to draw, so it stops being settled
-     * (re-rastered if the plan still wants it, dropped at the next prepare if not). */
+    /** A tile loses its texture. A settled tile with no bitmap is GPU-only: its pixels went with its texture, so it leaves the
+     * layer, and the next prepare rasters it again if the plan still wants it. Kept in the map it was 'in flight' for good:
+     * prepare counts it as running (three of them stopped every new raster) and never re-requests it (measured: evicted
+     * off-view tiles stayed blank on pan). A tile with a bitmap stays settled and is re-uploaded. An unsettled tile has its
+     * producer running, and its own callback retires it. */
     private releaseTile(entry: Entry, lost = false): void {
         this.dropTexture(entry, lost);
-        if (!entry.bitmap) entry.settled = false;
+        if (entry.bitmap || !entry.settled) return;
+        this.remove(entry.request.text, entry);
     }
 
     private dropAllTiles(lost: boolean): void {

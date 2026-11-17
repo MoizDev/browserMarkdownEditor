@@ -361,15 +361,21 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     let lastError: string | null = null, lastProgress: PaintProgress | null = null;
     // A refusal whose size its thrower did not report (the device and arena errors carry none) waits on each pool once: one
     // waiter per pool until that pool fires. A waiter per refusal would pile up for as long as a stall lasts, one per frame.
-    const refusalWaiting = { cpu: false, gpu: false };
+    // The latch belongs to the owner host it was set on. A waiter on a disposed owner may never fire (a closed cache drops it), so
+    // a new owner starts with no latch, and an old owner's callback never clears the new owner's flag.
+    const refusalWaiting: { owner: LayerHost | null; cpu: boolean; gpu: boolean } = { owner: null, cpu: false, gpu: false };
     const awaitRefusal = (): void => {
         const owner = activeHost();
         if (!owner) return;
+        if (refusalWaiting.owner !== owner) { refusalWaiting.owner = owner; refusalWaiting.cpu = false; refusalWaiting.gpu = false; }
         for (const pool of ['cpu', 'gpu'] as const) {
             const allocator = owner.allocator[pool];
             if (refusalWaiting[pool] || !allocator.whenAvailable) continue;
             refusalWaiting[pool] = true;
-            allocator.whenAvailable(() => { refusalWaiting[pool] = false; for (const host of hosts.values()) host.invalidate('board-capacity'); });
+            allocator.whenAvailable(() => {
+                if (refusalWaiting.owner === owner) refusalWaiting[pool] = false;
+                for (const host of hosts.values()) host.invalidate('board-capacity');
+            });
         }
     };
     const report = (error: unknown) => {
@@ -515,8 +521,15 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             deferredClear = false; options.frames.clear(); known.clear();
         }
     };
+    // The presented picture lives on a device or tile set that is being released; forget it and every input its unchanged answer
+    // compares, so the next prepare answers changed until a new picture is presented.
+    const forgetPresented = (): void => {
+        presented = null; presentedOmit = null; presentedInk = null; presentedContext = null; presentedLive = undefined; presentedDrawVersion = -1;
+        refreshProgress();
+    };
     const clearResources = (reason: GpuReleaseReason) => {
         discardHolds();
+        if (reason === 'context-lost') forgetPresented();
         // The reference adapter keeps CPU paths on context loss; this owner must
         // explicitly evict them before returning its CPU leases for any release.
         gpu?.release(reason);
@@ -932,6 +945,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                         disposed = true; discardHolds(); gpu?.dispose(); gpu = null; adapter?.dispose(); adapter = null;
                         deferredClear = true; collectRetired(); presented = null; refreshProgress();
                     } else if (!allocatorHost) {
+                        // A route change: the surviving band's adapter replaces the released one, so the old presented picture goes too.
+                        forgetPresented();
                         allocatorHost = activeHost()!;
                         options.frames.bindMemory?.(allocatorHost.allocator.cpu);
                         const oldDense = dense; dense = null;

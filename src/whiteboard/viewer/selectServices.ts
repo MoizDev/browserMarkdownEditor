@@ -127,7 +127,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         if (framed || !current()) return;
         const view = options.camera();
         selectionHandles.writeLive(view, transformPreview ? transformOffset ?? 'hidden' : null);
-        shapeHandles.writeLive(view, transformOffset);
+        shapeHandles.writeLive(view, transformOffset); stickyHandles.writeLive(view, transformOffset);
         writeGuides(view.camera);
     };
     const showTransform = (ops: readonly Op[], live = false) => { transformPreview = true; transformOffset = translationOf(ops); options.preview.showOps(ops, live); followMove(); requestFrame(); };
@@ -492,7 +492,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             || frame.token.bytesGeneration !== token.bytesGeneration || frame.token.session !== token.session) return;
         overlaysFramed = true;
         drawGrid(frame);
-        navigation.present(frame); selectionHandles.write(frame, transformPreview ? transformOffset ?? 'hidden' : null); shapeHandles.write(frame, transformOffset); stickyHandles.write(frame); cardControls.write(frame); backToContent.update(frame);
+        navigation.present(frame); selectionHandles.write(frame, transformPreview ? transformOffset ?? 'hidden' : null); shapeHandles.write(frame, transformOffset); stickyHandles.write(frame, transformOffset); cardControls.write(frame); backToContent.update(frame);
         writeGuides(frame.view.camera);
         writeRegion(frame.view.camera);
     };

@@ -104,6 +104,8 @@ export class PdfTileLayer implements Layer {
      * a second plan per coverage call re-did the whole demand walk every frame (by reading: the compositor calls
      * coverage on every encoded frame). Null while moving or before the first plan. */
     private framePlan: { readonly view: ViewState; readonly exactKeys: readonly string[] } | null = null;
+    /** The frame id this layer last prepared: `evictGpu` may act only for it. */
+    private preparedFrame = -1;
     private sequence = 0;
     private contentRevision = 0;
     private pendingFrame = false;
@@ -142,6 +144,7 @@ export class PdfTileLayer implements Layer {
     prepare(view: ViewState, budget: FrameBudget): void {
         this.pendingFrame = false;
         this.framePlan = null;
+        this.preparedFrame = budget.frameId;
         if (this.disposed || !this.isCurrent()) return;
         const device = this.host.device();
         if (device && this.frameTexture?.device !== device) {
@@ -445,10 +448,11 @@ export class PdfTileLayer implements Layer {
         return [...this.drawnPages].sort((a, b) => a[0] - b[0]).map(([, rect]) => rect);
     }
 
+    /** Every page texture goes, now. The platform's partial relief (`evictGpu`) runs first under pressure; what it did not
+     * free is released whole here, so a releaseGpu never leaves a tile's texture behind (owner's rule). */
     releaseGpu(reason: GpuReleaseReason): void {
         this.drawnPages.clear();
         this.drawnStack = null;
-        if (reason === 'pressure' && this.releaseUnneededGpu()) return;
         if (this.frameTexture && reason !== 'context-lost') this.frameTexture.device.destroy(this.frameTexture.handle);
         this.frameTexture = null;
         for (const entry of this.entries.values()) {
@@ -486,6 +490,35 @@ export class PdfTileLayer implements Layer {
      * retry to reuse. By reading: clearing the pool there destroyed the exact-size textures a zoom step needs next, so
      * every refused upload during a zoom forced a fresh createTexture for the tiles that had just been released.
      */
+    /** Partial relief the platform asks for before it releases the whole layer: the pool's free textures first, then this
+     * layer's textures the plan does not show, least recently used first. Only a tile whose pixels are still on the CPU
+     * qualifies, since a texture without its bitmap would turn into a raster when it returns. It acts only for the frame
+     * this layer prepared: for any other frame the plan does not say what is on screen, so nothing is freed. */
+    evictGpu(bytes: number, frameId: number): number {
+        const input = this.latestDemand;
+        if (this.disposed || !input || frameId !== this.preparedFrame) return 0;
+        let freed = 0;
+        const pooled = this.texturePool.memory();
+        if (pooled > 0) {
+            this.texturePool.clear(false);
+            freed += pooled;
+        }
+        const candidates = [...this.entries].filter(([key, entry]) => entry.texture && entry.bitmap &&
+            !(this.desired.has(key) && intersects(rect(entry.request), input.viewport)))
+            .sort((a, b) => a[1].used - b[1].used);
+        for (const [, entry] of candidates) {
+            if (freed >= bytes) break;
+            const texture = entry.texture;
+            if (!texture) continue;
+            texture.device.destroy(texture.handle);
+            freed += texture.bytes;
+            entry.texture = undefined;
+            this.coverCache = null;
+            auditCount('pdf-page', 'evict-gpu');
+        }
+        return freed;
+    }
+
     private releaseUnneededGpu(keepPool = false): boolean {
         const input = this.latestDemand;
         if (!input) return false;

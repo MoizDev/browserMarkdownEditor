@@ -1,4 +1,4 @@
-import { auditCount } from './renderAudit';
+import { auditCount, auditDrawnStart, auditDrawnTake, auditPresent, renderAuditEnabled } from './renderAudit';
 import type { Rect, ViewState } from '../types';
 import { deviceContext, imageExtent, paintCanvasIsolation, registerCanvasIsolation } from './canvas2dContext';
 import { createColourGroup2d } from './colourGroup2d';
@@ -427,8 +427,13 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         this.activeKey = key;
         this.beginSources(key);
         const availability = snapshot.layers.map(binding => binding.coverage(frame, this.backend));
-        if (availability.some(item => !item.complete)) return null;
+        if (availability.some(item => !item.complete)) {
+            if (renderAuditEnabled()) auditPresent({ pane: this.options.paneId, frame: frame.frameId, rawTick: frame.timestamp, backend: 'canvas2d',
+                complete: false, canvas: null, standIns: 0, holes: 0, refusal: 'availability' });
+            return null;
+        }
         this.missing = false;
+        if (renderAuditEnabled()) auditDrawnStart();
         this.busy++;
         try {
             if (this.job && this.job.key !== key) this.cancelJob();
@@ -448,6 +453,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             this.busy++;
             const encodedSources = new Set(this.pendingSources), encodedCrops = new Set(this.pendingCrops);
             this.encodedSources.add(encodedSources); this.encodedCrops.add(encodedCrops);
+            const tally = renderAuditEnabled() ? auditDrawnTake() : null;
             let done = false;
             const release = () => { done = true; this.busy--; this.encodedSources.delete(encodedSources);
                 this.encodedCrops.delete(encodedCrops); this.pruneSources(); };
@@ -462,6 +468,8 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
                     this.report = Object.freeze({ frameId: frame.frameId, token: frame.token, presented: true,
                         complete: true, sharp: snapshot.metrics!.qualityScale === 1 && availability.every(item => item.sharp && !item.staleVersion),
                         staleVersion: availability.some(item => item.staleVersion), qualityScale: snapshot.metrics!.qualityScale });
+                    if (tally) auditPresent({ pane: this.options.paneId, frame: frame.frameId, rawTick: frame.timestamp, backend: 'canvas2d',
+                        complete: tally.standIns === 0 && tally.holes === 0, canvas: this.surface, standIns: tally.standIns, holes: tally.holes, refusal: null });
                     return { drawn: frame.layers.map(item => ({ layer: item.layer, sceneRevision: item.sceneRevision })),
                         ...(__BME_BENCH__ ? { commitObservation: () => {
                             if (__BME_BENCH__ && benchmarkDomain) benchmarkCanvas?.managers.get(this)?.observe(back.native, frame, benchmarkDomain.benchmarkPaintDomain(snapshot, frame));

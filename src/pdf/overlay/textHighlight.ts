@@ -15,10 +15,14 @@ export interface PdfHighlightPalette {
     readonly selection: Rgba;
 }
 
-function deviceRect(rect: Readonly<Rect>, view: ViewState): Rect {
+/** Writes the rect's device-pixel placement into `out`: a frame draws every highlight, so no object is made per rect. */
+function deviceRect(rect: Readonly<Rect>, view: ViewState, out: Rect): Rect {
     const scale = view.camera.z * view.viewport.dpr;
-    return { x: (rect.x - view.camera.x) * scale, y: (rect.y - view.camera.y) * scale,
-        width: rect.width * scale, height: rect.height * scale };
+    out.x = (rect.x - view.camera.x) * scale;
+    out.y = (rect.y - view.camera.y) * scale;
+    out.width = rect.width * scale;
+    out.height = rect.height * scale;
+    return out;
 }
 function visible(rect: Rect, view: ViewState): boolean {
     return rect.width > 0 && rect.height > 0 && rect.x < view.viewport.width * view.viewport.dpr &&
@@ -34,6 +38,7 @@ export class PdfTextHighlightLayer implements Layer {
     private disposed = false;
     private pending = false;
     private lease: ByteLease | null = null;
+    private readonly scratch: Rect = { x: 0, y: 0, width: 0, height: 0 };
 
     constructor(private readonly host: LayerHost, private palette: PdfHighlightPalette) {}
 
@@ -81,27 +86,34 @@ export class PdfTextHighlightLayer implements Layer {
     drawGpu(pass: GpuPass, view: ViewState): void {
         const texture = this.texture;
         if (!texture || texture.device !== this.host.device() || this.disposed) return;
-        [this.rects.find, this.rects.current, this.rects.selection].forEach((rects, index) => {
-            for (const rect of rects) {
-                const destination = deviceRect(rect, view);
-                if (visible(destination, view)) this.host.drawTexturedQuad(pass, texture.handle,
-                    { x: index, y: 0, width: 1, height: 1 }, destination, { opacity: 1, sampling: 'nearest' });
-            }
-        });
+        // Each group samples its own texel of the 3×1 palette texture (find, current, selection).
+        this.drawGpuGroup(pass, texture.handle, view, this.rects.find, 0);
+        this.drawGpuGroup(pass, texture.handle, view, this.rects.current, 1);
+        this.drawGpuGroup(pass, texture.handle, view, this.rects.selection, 2);
     }
     draw2d(ctx: CanvasRenderingContext2D, view: ViewState): void {
         if (this.disposed) return;
-        const colors = [this.palette.find, this.palette.current, this.palette.selection];
         ctx.save();
         try {
-            [this.rects.find, this.rects.current, this.rects.selection].forEach((rects, index) => {
-                ctx.fillStyle = css(colors[index]);
-                for (const rect of rects) {
-                    const destination = deviceRect(rect, view);
-                    if (visible(destination, view)) ctx.fillRect(destination.x, destination.y, destination.width, destination.height);
-                }
-            });
+            this.draw2dGroup(ctx, view, this.rects.find, this.palette.find);
+            this.draw2dGroup(ctx, view, this.rects.current, this.palette.current);
+            this.draw2dGroup(ctx, view, this.rects.selection, this.palette.selection);
         } finally { ctx.restore(); }
+    }
+    /** Drawn one rect at a time through one scratch rect: drawTexturedQuad consumes its rects before it returns. */
+    private drawGpuGroup(pass: GpuPass, handle: TextureHandle, view: ViewState, rects: readonly Readonly<Rect>[], texel: number): void {
+        const source = { x: texel, y: 0, width: 1, height: 1 };
+        for (const rect of rects) {
+            deviceRect(rect, view, this.scratch);
+            if (visible(this.scratch, view)) this.host.drawTexturedQuad(pass, handle, source, this.scratch, { opacity: 1, sampling: 'nearest' });
+        }
+    }
+    private draw2dGroup(ctx: CanvasRenderingContext2D, view: ViewState, rects: readonly Readonly<Rect>[], color: Rgba): void {
+        ctx.fillStyle = css(color);
+        for (const rect of rects) {
+            deviceRect(rect, view, this.scratch);
+            if (visible(this.scratch, view)) ctx.fillRect(this.scratch.x, this.scratch.y, this.scratch.width, this.scratch.height);
+        }
     }
     releaseGpu(reason: GpuReleaseReason): void {
         if (this.texture && reason !== 'context-lost') this.texture.device.destroy(this.texture.handle);

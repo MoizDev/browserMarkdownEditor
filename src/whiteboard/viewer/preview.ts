@@ -130,7 +130,8 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
     // so a superseded picture stays where it was last shown until its replacement presents.
     type Shift = { x: number; y: number };
     interface TranslationMeta { baked: Shift; offset: Shift }
-    let translation: { key: string; meta: TranslationMeta; ops: readonly Op[] } | null = null;
+    // `ids` are the nodes the translation moves: a later move of the same nodes keeps the built picture.
+    let translation: { ids: ReadonlySet<NodeId>; meta: TranslationMeta; ops: readonly Op[] } | null = null;
     const metaBySeq = new Map<number, TranslationMeta>();
     let offsetVersion = 0;
     const NO_SHIFT: Shift = Object.freeze({ x: 0, y: 0 });
@@ -420,20 +421,32 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
         }
         return true;
     }
-    function translationKey(ops: readonly Op[]): string {
-        return [...new Set(ops.map(op => op.t === 'set' ? String(op.id) : ''))].sort().join(',');
+    // The moved nodes of a translation's ops. Compared by membership, not by a sorted string key built on every move (by
+    // reading: a large selection sorted and joined all its ids at every pointer event).
+    function movedIds(ops: readonly Op[]): Set<NodeId> {
+        const ids = new Set<NodeId>();
+        for (const op of ops) if (op.t === 'set') ids.add(op.id);
+        return ids;
+    }
+    function sameMovedIds(ops: readonly Op[], ids: ReadonlySet<NodeId>): boolean {
+        const seen = new Set<NodeId>();
+        for (const op of ops) {
+            if (op.t !== 'set') return false;
+            if (!ids.has(op.id)) return false;
+            seen.add(op.id);
+        }
+        return seen.size === ids.size;
     }
     // A live move of the translation in hand moves the built picture; the first move of a translation builds it at rest.
     function moveTranslation(ops: readonly Op[], shift: Shift): void {
-        const key = translationKey(ops);
-        if (translation && translation.key === key) {
+        if (translation && sameMovedIds(ops, translation.ids)) {
             translation.meta.offset = shift; translation.ops = ops;
         } else {
             const doc = runtime.session.doc;
             const changes = new Map<NodeId, Node>();
             for (const op of ops) if (op.t === 'set' && !changes.has(op.id)) changes.set(op.id, copyNode(doc.nodes.get(op.id)!));
             const meta: TranslationMeta = { baked: { x: 0, y: 0 }, offset: shift };
-            translation = { key, meta, ops };
+            translation = { ids: movedIds(ops), meta, ops };
             start(changes, undefined, undefined, meta);
         }
         offsetVersion++;
@@ -459,7 +472,8 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
         showOps(ops, live = false) {
             try {
                 const shift = translationOf(ops);
-                if (shift && live && translatable(ops)) { moveTranslation(ops, shift); return; }
+                // A later move of the translation in hand needs no re-check: its nodes and their attachments did not change.
+                if (shift && live && ((translation && sameMovedIds(ops, translation.ids)) || translatable(ops))) { moveTranslation(ops, shift); return; }
                 // Anything else is built for its ops; a translation's commit is built at its moved place, shown unshifted.
                 translation = null;
                 const projected = operationNodes(runtime.session.doc, ops);

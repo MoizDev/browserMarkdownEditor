@@ -22,7 +22,8 @@ export interface RenderAuditSnapshot {
 }
 
 /** The phases a GPU frame's main-thread time is split into; one name per stage keeps the table comparable across surfaces. */
-export type AuditStage = 'parts' | 'admit' | 'upload' | 'prepare' | 'encodeOffscreen' | 'draw' | 'submit' | 'frame';
+/** `gpu-time` is one resolved GPU duration from the timer query (not CPU time), recorded where the result is read. */
+export type AuditStage = 'parts' | 'admit' | 'upload' | 'prepare' | 'encodeOffscreen' | 'draw' | 'submit' | 'frame' | 'gpu-time';
 
 let enabled = false;
 try { enabled = typeof localStorage !== 'undefined' && localStorage.getItem('bme.renderAudit') === '1'; } catch { enabled = false; }

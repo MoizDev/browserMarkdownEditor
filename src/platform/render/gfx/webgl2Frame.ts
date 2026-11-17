@@ -173,6 +173,14 @@ interface GroupEntry {
     readonly isolation: Isolation;
 }
 
+/** Scratch for packing one composition uniform block (32 floats). `uniforms()` copies the bytes into the ring before it
+ * returns, and the slice it hands back points into the ring, so one array serves every composite. By reading: a fresh
+ * array and a literal per vector allocated on every composite, and a frame composes once per isolated group. */
+const blockScratch = new Float32Array(32);
+function setVec4(into: Float32Array, at: number, x: number, y: number, z: number, w: number): void {
+    into[at] = x; into[at + 1] = y; into[at + 2] = z; into[at + 3] = w;
+}
+
 function integer(value: number): void {
     if (!Number.isSafeInteger(value) || value < 0 || value > 0x7fffffff) throw new ArenaError('invalid-input');
 }
@@ -220,9 +228,17 @@ export function createWebgl2Frame(backend: FrameBackend): ControlledFrame {
     return new DeviceFrame(backend);
 }
 
+/** One recorded operation. A draw keeps its pipeline, command and context as plain fields; any other operation (a pass
+ * boundary, a blit, a quad) keeps its closure in `run`. Records live in a reused array and are re-filled each frame, so a
+ * frame of N draws allocates no closure per draw. By reading: each draw used to allocate `() => pipeline.draw(…)` and
+ * the array of replay closures was rebuilt every frame. */
+interface Recorded { pipeline: FramePipeline | null; command: EncodedDraw | null; context: DrawContext | null; run: (() => void) | null }
+
 class DeviceFrame implements ControlledFrame {
     readonly #backend: FrameBackend;
-    readonly #commands: (() => void)[] = [];
+    readonly #commands: Recorded[] = [];
+    #count = 0;
+    readonly #replay: Recorded[] = [];
     readonly #blocks: PassBlock[] = [];
     #open: PassBlock | null = null;
     readonly #retained = new Map<FrameTarget['retained'], Retention>();
@@ -265,7 +281,7 @@ class DeviceFrame implements ControlledFrame {
             if (desc.target === 'surface') this.#surface = true;
             this.#backend.onPass(desc.target === 'surface');
             // The surface is never regrouped: it is composed last, after every offscreen pass has landed.
-            const block: PassBlock = { start: this.#commands.length, end: -1, simple: desc.target !== 'surface',
+            const block: PassBlock = { start: this.#count, end: -1, simple: desc.target !== 'surface',
                 written: new Set(), read: new Set(), first: null, lastPipeline: null };
             for (const written of [target.color?.texture, target.coverage, target.framebuffer, target.resolveFramebuffer]) {
                 if (written) block.written.add(written);
@@ -309,7 +325,10 @@ class DeviceFrame implements ControlledFrame {
                 executing = true;
                 this.#backend.uploadUniforms();
                 this.#backend.beginReplay();
-                for (const command of this.#replayList()) command();
+                for (const record of this.#replayList()) {
+                    if (record.pipeline) record.pipeline.draw(record.command!, record.context!);
+                    else record.run!();
+                }
                 const stateSwitches = this.#backend.endReplay();
                 serial = this.#backend.issue();
                 for (const [native, state] of this.#retained) Object.assign(native, state);
@@ -324,7 +343,7 @@ class DeviceFrame implements ControlledFrame {
                 throw error;
             } finally {
                 this.#closed = true;
-                this.#commands.length = 0;
+                this.#clearCommands();
                 this.#blocks.length = 0;
                 this.#retained.clear();
                 this.#cleanup(serial, serial === null);
@@ -334,19 +353,26 @@ class DeviceFrame implements ControlledFrame {
     cancel(): void {
         if (this.#closed) return;
         this.#closed = true;
-        this.#commands.length = 0;
+        this.#clearCommands();
         this.#blocks.length = 0;
         this.#retained.clear();
         this.#cleanup(null, true);
     }
+    /** Forgets this frame's records, keeping their slots for the next frame to re-fill (no per-frame allocation). */
+    #clearCommands(): void {
+        for (let i = 0; i < this.#count; i++) {
+            const slot = this.#commands[i];
+            slot.pipeline = null; slot.command = null; slot.context = null; slot.run = null;
+        }
+        this.#count = 0;
+    }
     /** The commands in replay order: each run of consecutive simple offscreen passes regrouped by `#order`, everything
-     * else where it was recorded. Returns the recorded list itself when nothing can be regrouped. */
-    #replayList(): readonly (() => void)[] {
-        const commands = this.#commands, blocks = this.#blocks;
-        if (blocks.length < 2) return commands;
-        const out: (() => void)[] = [];
+     * else where it was recorded. Filled into one reused array, so a frame allocates no replay list. */
+    #replayList(): readonly Recorded[] {
+        const commands = this.#commands, blocks = this.#blocks, out = this.#replay;
+        out.length = 0;
         let pos = 0, b = 0;
-        while (pos < commands.length) {
+        while (pos < this.#count) {
             if (b >= blocks.length || blocks[b].start !== pos) { out.push(commands[pos++]); continue; }
             let end = b + 1;
             if (blocks[b].simple) {
@@ -408,7 +434,21 @@ class DeviceFrame implements ControlledFrame {
         try { this.#backend.finish(serial); } catch (error) { failures.push(error); }
         if (failures.length) throw failures[0];
     }
-    command(operation: () => void): void { this.#commands.push(operation); }
+    command(operation: () => void): void {
+        const slot = this.#slot();
+        slot.pipeline = null; slot.command = null; slot.context = null; slot.run = operation;
+    }
+    /** Records a draw as plain fields of a reused slot, not as a closure. */
+    recordDraw(pipeline: FramePipeline, command: EncodedDraw, context: DrawContext): void {
+        const slot = this.#slot();
+        slot.pipeline = pipeline; slot.command = command; slot.context = context; slot.run = null;
+    }
+    #slot(): Recorded {
+        let slot = this.#commands[this.#count];
+        if (!slot) { slot = { pipeline: null, command: null, context: null, run: null }; this.#commands.push(slot); }
+        this.#count++;
+        return slot;
+    }
     token(): number {
         if (!Number.isSafeInteger(this.#nextToken)) throw new ArenaError('allocation');
         return this.#nextToken++;
@@ -464,7 +504,7 @@ class DeviceFrame implements ControlledFrame {
         this.end(target, desc);
         this.#pass = null;
         const block = this.#open;
-        if (block) { block.end = this.#commands.length; this.#blocks.push(block); this.#open = null; }
+        if (block) { block.end = this.#count; this.#blocks.push(block); this.#open = null; }
     }
     temporary(request: TargetRequest): TargetLease {
         const lease = this.#backend.acquireIsolation(request);
@@ -504,14 +544,18 @@ class DeviceFrame implements ControlledFrame {
         const lease = this.temporary({ width: area.width, height: area.height, samples: 1, stencil: false,
             format: scope.target.format, purpose: 'group' });
         const output = this.#backend.target(lease.target);
+        // Only the copied rectangle is read, so an MSAA target resolves that rectangle, not the whole target: a multiply
+        // composite on a large page otherwise resolved every pixel of the target to copy one group's bounds.
+        // By reading: the copy below reads `local` alone, so the resolve of the rest of the target was never used.
+        const local = { x: area.x - scope.originX, y: area.y - scope.originY, width: area.width, height: area.height };
         let source = scope.target;
         if (source.samples === 4) {
             if (!source.color) throw new ArenaError('invalid-resource');
             const resolve: FrameTarget = { ...source, framebuffer: source.resolveFramebuffer, samples: 1 };
-            this.blit(source, { x: 0, y: 0, width: source.width, height: source.height }, resolve, 0, 0);
+            this.blit(source, local, resolve, local.x, local.y);
             source = resolve;
         }
-        this.blit(source, { x: area.x - scope.originX, y: area.y - scope.originY, width: area.width, height: area.height }, output, 0, 0);
+        this.blit(source, local, output, 0, 0);
         return { lease, texture: this.#backend.texture(lease.texture) };
     }
     composite(scope: Scope, clip: RectI, source: FrameTexture, sourceRect: RectI, bounds: RectI,
@@ -528,19 +572,19 @@ class DeviceFrame implements ControlledFrame {
         }
         let backdrop: { lease: TargetLease; texture: FrameTexture } | null = null;
         if (options.blend === 'multiply') backdrop = this.snapshot(scope, area);
-        const data = new Float32Array(32);
-        data.set([scope.viewport.x, scope.viewport.y, scope.viewport.width, scope.viewport.height], 0);
-        data.set([bounds.x, bounds.y, bounds.width, bounds.height], 4);
-        data.set([sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height], 8);
-        data.set([source.width, source.height, options.opacity, options.colourEffect === 'page-invert' ? 1 : 0], 12);
-        data.set([area.x, area.y, backdrop?.texture.width ?? 1, backdrop?.texture.height ?? 1], 16);
+        const data = blockScratch;
+        setVec4(data, 0, scope.viewport.x, scope.viewport.y, scope.viewport.width, scope.viewport.height);
+        setVec4(data, 4, bounds.x, bounds.y, bounds.width, bounds.height);
+        setVec4(data, 8, sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height);
+        setVec4(data, 12, source.width, source.height, options.opacity, options.colourEffect === 'page-invert' ? 1 : 0);
+        setVec4(data, 16, area.x, area.y, backdrop?.texture.width ?? 1, backdrop?.texture.height ?? 1);
         if (mask) {
-            data.set([mask.bounds.x, mask.bounds.y, mask.bounds.width, mask.bounds.height], 20);
-            data.set([mask.source.width / mask.texture.width, mask.source.height / mask.texture.height,
-                mask.source.x / mask.texture.width, 1 - mask.source.y / mask.texture.height], 24);
+            setVec4(data, 20, mask.bounds.x, mask.bounds.y, mask.bounds.width, mask.bounds.height);
+            setVec4(data, 24, mask.source.width / mask.texture.width, mask.source.height / mask.texture.height,
+                mask.source.x / mask.texture.width, 1 - mask.source.y / mask.texture.height);
         }
-        data.set([options.blend === 'multiply' ? 1 : 0, mask ? 1 : 0, scope.coverage ? 1 : 0,
-            __BME_BENCH__ ? (source.coverage ? 1 : 0) + (backdrop?.texture.coverage ? 2 : 0) : 0], 28);
+        setVec4(data, 28, options.blend === 'multiply' ? 1 : 0, mask ? 1 : 0, scope.coverage ? 1 : 0,
+            __BME_BENCH__ ? (source.coverage ? 1 : 0) + (backdrop?.texture.coverage ? 2 : 0) : 0);
         const packed = this.uniforms(data);
         const command: QuadCommand = {
             context: scope, source, backdrop: backdrop?.texture ?? this.#backend.white(), mask: mask?.texture ?? this.#backend.white(),
@@ -564,13 +608,13 @@ class DeviceFrame implements ControlledFrame {
         if (source.texture === scope.target.color?.texture || source.width < bounds.width * grid || source.height < bounds.height * grid) {
             throw new ArenaError('invalid-resource');
         }
-        const data = new Float32Array(32);
-        data.set([scope.viewport.x, scope.viewport.y, scope.viewport.width, scope.viewport.height], 0);
-        data.set([area.x, area.y, area.width, area.height], 4);
-        data.set([bounds.x, bounds.y, grid, 0], 8);
-        data.set([source.width, source.height, 1, 0], 12);
-        data.set([output.rgb[0], output.rgb[1], output.rgb[2], output.alpha], 16);
-        data.set([output.blend === 'modulate' ? 1 : 0, 0, 0, 0], 28);
+        const data = blockScratch;
+        setVec4(data, 0, scope.viewport.x, scope.viewport.y, scope.viewport.width, scope.viewport.height);
+        setVec4(data, 4, area.x, area.y, area.width, area.height);
+        setVec4(data, 8, bounds.x, bounds.y, grid, 0);
+        setVec4(data, 12, source.width, source.height, 1, 0);
+        setVec4(data, 16, output.rgb[0], output.rgb[1], output.rgb[2], output.alpha);
+        setVec4(data, 28, output.blend === 'modulate' ? 1 : 0, 0, 0, 0);
         const packed = this.uniforms(data);
         const command: QuadCommand = {
             context: scope, source, backdrop: this.#backend.white(), mask: this.#backend.white(),
@@ -677,7 +721,7 @@ class DevicePass implements GpuPass {
                 ...(__BME_BENCH__ && cmd.coverageClass !== undefined ? { coverageClass: cmd.coverageClass } : {}) };
             const context = this.#scope;
             this.#frame.noteDraw(pipeline, textures);
-            this.#frame.command(() => pipeline.draw(command, context));
+            this.#frame.recordDraw(pipeline, command, context);
         });
     }
     acquireTarget(request: TargetRequest): TargetLease | null {

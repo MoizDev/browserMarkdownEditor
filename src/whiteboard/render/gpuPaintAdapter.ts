@@ -55,13 +55,18 @@ function createLay(host: LayerHost): TileLay {
     const bounds: RectI = { x: 0, y: 0, width: 0, height: 0 };
     return (pass: GpuPass, texture: TextureHandle, source: Readonly<Rect>, dest: Readonly<Rect>, blend: Blend): void => {
         if (blend !== 'modulate') { host.drawTexturedQuad(pass, texture, source, dest, QUAD); return; }
-        bounds.x = Math.floor(dest.x); bounds.y = Math.floor(dest.y);
+        // The group's origin is never negative: a tile that starts left of or above the surface is grouped from 0 (the device
+        // refuses a negative origin); its part off the surface is clipped by the surface anyway.
+        bounds.x = Math.max(0, Math.floor(dest.x)); bounds.y = Math.max(0, Math.floor(dest.y));
         bounds.width = Math.ceil(dest.x + dest.width) - bounds.x; bounds.height = Math.ceil(dest.y + dest.height) - bounds.y;
         const group = pass.beginGroup(bounds, MODULATE_GROUP);
         host.drawTexturedQuad(pass, texture, source, dest, QUAD);
         pass.endGroup(group);
     };
 }
+
+/** A route that keeps a cache the governor can reclaim (the text atlas pages, the image textures); absent when it keeps none. */
+interface EvictingRoute extends ItemRoute { evictTextures?(bytes: number, frameId: number): number }
 
 /** A run the CPU route rasters: one tile-sized texture, uploaded once. */
 interface CpuRun extends PreparedRun {
@@ -223,18 +228,21 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
     let omitPrepared: ReadonlySet<string> | null = null;
     // The view the composed tiles were last prepared for: the store keeps the tiles on it, so its eviction spares them.
     let lastView: ViewState | null = null;
+    let inkMemo: { frame: number; paint: PreparedPaint2d; set: ReadonlySet<string> } | null = null;
     const lay = createLay(host);
     const cpu = createCpuRoute(host, surface, lay);
     const ink = createInkRoutes(host, surface);
     // One path route and its clip admission share one coverage kit: the composer admits every route's clips through it.
     const pathRoute = createPath(host, surface);
     const store = createTileStore(host, surface);
+    const imageRoute = createImageRoute(host, surface);
+    const textRoute: EvictingRoute = createTextRoute(host, surface);
     const routes: TileRoutes = {
         path: pathRoute.route,
         inkAnalytic: ink.analytic,
         inkUnion: ink.union,
-        image: createImageRoute(host, surface),
-        text: createTextRoute(host, surface),
+        image: imageRoute,
+        text: textRoute,
         cpu,
     };
     const composer = createTileComposer({
@@ -268,7 +276,17 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         },
         readyFrame(): PaintSource | null { return disposed ? null : presented?.sourceFrame ?? null; },
         readyPaint(): PreparedPaint2d | null { return disposed ? null : presented; },
-        readyInkNodeIds(): ReadonlySet<string> | null { return disposed ? null : presented?.root.inkNodeIds ?? null; },
+        readyInkNodeIds(): ReadonlySet<string> | null {
+            if (disposed || !presented) return null;
+            const nodes = presented.root.inkNodeIds;
+            if (!nodes.size) return nodes;
+            if (!lastView) return new Set();
+            // Memoized per prepare: the composer only changes in prepare, and the board asks several times a frame.
+            if (inkMemo && inkMemo.frame === lastFrame && inkMemo.paint === presented) return inkMemo.set;
+            const set = composer.inkComposed(lastView, nodes);
+            inkMemo = { frame: lastFrame, paint: presented, set };
+            return set;
+        },
         encodeOffscreen(passes: OffscreenPasses, view: ViewState, band: PaintBand): void {
             if (disposed) return;
             timed(surface, 'encodeOffscreen', () => composer.encodeOffscreen(passes, view, band));
@@ -290,8 +308,11 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         needsFrame(): boolean { return !disposed && composer.needsFrame(); },
         evictGpu(bytes: number, frameId: number): number {
             if (disposed || !(bytes > 0)) return 0;
+            // Route caches first, then composed tiles: each frees only what this frame did not use. The sum is what was freed.
             pathRoute.coverage.beginFrame(frameId);
             let freed = pathRoute.coverage.evict(bytes);
+            if (freed < bytes) freed += imageRoute.evictTextures(bytes - freed, frameId);
+            if (freed < bytes) freed += textRoute.evictTextures?.(bytes - freed, frameId) ?? 0;
             if (freed < bytes && lastView) freed += store.evict(bytes - freed, frameId, lastView);
             return freed;
         },

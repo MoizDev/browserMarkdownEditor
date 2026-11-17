@@ -214,6 +214,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     let adapter: CanvasPaintAdapter | null = null, allocatorHost: LayerHost | null = null;
     let gpu: ReturnType<typeof createGpuPaintAdapter> | null = null;
     let direct: CanvasPaintAdapter | null = null, dense: ReturnType<typeof createDensePaintAdapter> | null = null;
+    // The dense adapter's resources, kept so the adapter can be built when dense mode is first entered (see ensureDense).
+    let denseResources: Parameters<typeof createDensePaintAdapter>[0] | null = null;
     const retiringDense = new Set<ReturnType<typeof createDensePaintAdapter>>();
     const density = new DensityController();
     let useDense = false, deferredClear = false;
@@ -432,9 +434,19 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         estimate = null; denied = false; deniedDirectSegments = null; lastPrepareFrame = null; drawn.clear(); drawTokens = new WeakMap(); announced = new WeakMap(); drawSource = null; prepareToken = null; prepareFrameId = -1;
         ackFrame = null; ackOmit = null; ackInk = null; ackMask = 0; ackToken = null; ackContext = null; presentedInk = null;
         if (reason === 'hidden') {
+            const wasDense = useDense;
             deferredClear = true; collectRetired(); presented = null; presentedContext = null; refreshProgress();
             density.reset(); useDense = false; returnedFromHide = true;
+            // The owner's density mode outlives a hide: a board that returns direct must say so, or its owner keeps asking
+            // for live-only frames this board cannot take (by reading: dense-coupling note, the hide-while-dense item).
+            if (wasDense) options.onDensityMode?.('direct');
         }
+    };
+    /** The dense tile adapter, built the first time the board enters dense mode. A device never enters it (its direct paint
+     * is the GPU composer's), so no CPU tile path is constructed there. */
+    const ensureDense = (): ReturnType<typeof createDensePaintAdapter> => {
+        if (!dense) dense = createDensePaintAdapter(denseResources!, allocatorHost!, report, memoryGate);
+        return dense;
     };
     const ensureAdapter = (host: LayerHost): CanvasPaintAdapter => {
         if (!adapter) {
@@ -444,7 +456,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 invalidate: () => { collectRetired(); activeHost()?.invalidate('board-resource'); } };
             direct = createCanvasPaintAdapter(resources,
                 (ctx, view, paint) => { const owner = activeHost(); if (!owner) throw new Error('Board layer is detached'); owner.paintWorld(ctx, view, paint); }, report);
-            dense = createDensePaintAdapter(resources, host, report, memoryGate);
+            denseResources = resources;
             const current = () => useDense ? dense! : direct!;
             adapter = {
                 prepare: (view, budget) => {
@@ -455,9 +467,9 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 readyFrame: () => current().readyFrame(), borrowPrepared: () => current().borrowPrepared(),
                 retainPrepared: () => current().retainPrepared(),
                 draw2d: (ctx, view, band, omit) => current().draw2d(ctx, view, band, omit),
-                release: reason => { direct!.release(reason); dense!.release(reason); },
+                release: reason => { direct!.release(reason); dense?.release(reason); },
                 needsFrame: () => current().needsFrame(), memory: () => current().memory(),
-                dispose: () => { direct!.dispose(); dense!.dispose(); },
+                dispose: () => { direct!.dispose(); dense?.dispose(); },
             };
             gpu = createGpuPaintAdapter(adapter, host, report, gpuOptions());
         }
@@ -531,7 +543,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     // Emitting 'direct' makes the owner request a full frame; the live-only frame in hand is not drawable here.
                     useDense = false; denied = false;
                     allocatorHost?.demandChanged?.();
-                    dense!.release('pressure');
+                    dense?.release('pressure');
                     allocatorHost!.invalidate('board-density-demand-ready');
                     options.onDensityMode?.('direct');
                     return;
@@ -588,7 +600,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             if (deniedDirectSegments !== null && (candidates !== null || !frame.liveOnly) && segments < deniedDirectSegments * 0.5) deniedDirectSegments = null;
             // A live-only frame is the kind dense mode itself requests; it carries no tile stream of its own.
             // A frame whose dense tile jobs failed their bounded retries is drawn direct; the next frame starts over.
-            const mode = dense!.gaveUp(frame) ? 'direct' : useDense && frame.liveOnly && deniedDirectSegments !== null ? 'dense'
+            const mode = dense?.gaveUp(frame) ? 'direct' : useDense && frame.liveOnly && deniedDirectSegments !== null ? 'dense'
                 : frame.openTile ? (deniedDirectSegments !== null ? 'dense' : observed) : 'direct';
             if ((mode === 'dense') !== useDense) {
                 useDense = mode === 'dense';
@@ -597,8 +609,9 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 allocatorHost?.demandChanged?.();
                 if (useDense) {
                     direct!.release('pressure');
+                    ensureDense();
                     for (const old of [...reservations.keys()]) releaseFrame(old);
-                } else dense!.release('pressure');
+                } else dense?.release('pressure');
                 allocatorHost!.invalidate('board-density-demand-ready');
                 options.onDensityMode?.(mode);
                 return;
@@ -772,9 +785,9 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     } else if (!allocatorHost) {
                         allocatorHost = activeHost()!;
                         options.frames.bindMemory?.(allocatorHost.allocator.cpu);
-                        const oldDense = dense!; oldDense.dispose(); retiringDense.add(oldDense);
-                        dense = createDensePaintAdapter({ frames: options.frames, images: options.images,
-                            invalidate: () => { collectRetired(); activeHost()?.invalidate('board-resource'); } }, allocatorHost, report, memoryGate);
+                        const oldDense = dense; dense = null;
+                        if (oldDense) { oldDense.dispose(); retiringDense.add(oldDense); }
+                        if (useDense) ensureDense();
                         gpu?.dispose(); gpu = createGpuPaintAdapter(adapter!, allocatorHost, report, gpuOptions());
                     }
                 },

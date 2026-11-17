@@ -127,6 +127,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         if (framed || !current()) return;
         const view = options.camera();
         selectionHandles.writeLive(view, transformPreview ? transformOffset ?? 'hidden' : null);
+        shapeHandles.writeLive(view, transformOffset); stickyHandles.writeLive(view, transformOffset);
         writeGuides(view.camera);
     };
     const showTransform = (ops: readonly Op[], live = false) => { transformPreview = true; transformOffset = translationOf(ops); options.preview.showOps(ops, live); followMove(); requestFrame(); };
@@ -426,9 +427,13 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     /** The region preview (marquee or scribble) in its own SVG. A marquee is written when its preview changes, with the live
      * camera, so the wash follows the pointer even while the GPU frame is deferred (its overlays are otherwise written only
      * with a submitted frame, and a stalled board froze the wash for the whole drag). A scribble is still written per frame. */
+    // The shape's attributes are written when their value changes, and its style once per kind. By reading: a frame used to
+    // re-set the stroke, fill, dash and width, and the marquee's four numbers, whether or not any had moved.
+    let shapeMode: 'rect' | 'g' | null = null, shapeStroke = '';
+    const shapeBox = new Float64Array(4).fill(Number.NaN);
     const writeRegion = (camera: ViewState['camera']) => {
         if (!regionPreview) {
-            svg?.remove(); svg = null; shape = null; scribbleSource = null; scribbleCount = 0;
+            svg?.remove(); svg = null; shape = null; shapeMode = null; scribbleSource = null; scribbleCount = 0;
             scribbleTail = null; scribblePoints = []; scribbleCamera = ''; return;
         }
         if (!svg) {
@@ -439,21 +444,29 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         const kind = regionPreview.kind === 'marquee' ? 'rect' : 'g';
         if (!shape || shape.localName !== kind) {
             shape?.remove(); shape = document.createElementNS('http://www.w3.org/2000/svg', kind); svg.append(shape);
+            shapeMode = null; shapeStroke = ''; shapeBox.fill(Number.NaN);
             scribbleSource = null; scribbleCount = 0; scribbleTail = null; scribblePoints = []; scribbleCamera = '';
         }
-        shape.setAttribute('stroke', previewIds.size ? '#75b7ff' : '#6a9fff'); shape.setAttribute('stroke-width', '1.5');
+        const stroke = previewIds.size ? '#75b7ff' : '#6a9fff';
+        if (shapeStroke !== stroke) { shapeStroke = stroke; shape.setAttribute('stroke', stroke); }
+        if (shapeMode !== kind) {
+            shapeMode = kind; shape.setAttribute('stroke-width', '1.5');
+            if (kind === 'rect') { shape.setAttribute('fill', 'rgba(106,159,255,0.12)'); shape.setAttribute('stroke-dasharray', '4 3'); }
+            else { shape.setAttribute('fill', 'none'); shape.removeAttribute('stroke-dasharray'); }
+        }
         if (regionPreview.kind === 'marquee') {
             const a = worldToSurface(regionPreview.start, camera), b = worldToSurface(regionPreview.end, camera);
-            shape.setAttribute('x', String(Math.min(a.x, b.x))); shape.setAttribute('y', String(Math.min(a.y, b.y)));
-            shape.setAttribute('width', String(Math.abs(a.x - b.x))); shape.setAttribute('height', String(Math.abs(a.y - b.y)));
-            shape.setAttribute('fill', 'rgba(106,159,255,0.12)'); shape.setAttribute('stroke-dasharray', '4 3');
+            const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y), width = Math.abs(a.x - b.x), height = Math.abs(a.y - b.y);
+            if (shapeBox[0] !== x) { shapeBox[0] = x; shape.setAttribute('x', String(x)); }
+            if (shapeBox[1] !== y) { shapeBox[1] = y; shape.setAttribute('y', String(y)); }
+            if (shapeBox[2] !== width) { shapeBox[2] = width; shape.setAttribute('width', String(width)); }
+            if (shapeBox[3] !== height) { shapeBox[3] = height; shape.setAttribute('height', String(height)); }
         } else {
             const source = regionPreview.points, cameraKey = `${camera.x}:${camera.y}:${camera.z}`;
             if (scribbleSource !== source || scribbleCamera !== cameraKey || scribbleCount > source.length) {
                 shape.replaceChildren(); scribbleSource = source; scribbleCamera = cameraKey; scribbleCount = 0;
                 scribbleTail = null; scribblePoints = [];
             }
-            shape.setAttribute('fill', 'none'); shape.removeAttribute('stroke-dasharray');
             // Keep exact points, but bound DOM projection to four small chunks per shared frame.
             const limit = Math.min(source.length, scribbleCount + 1024);
             while (scribbleCount < limit) {
@@ -479,25 +492,38 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             || frame.token.bytesGeneration !== token.bytesGeneration || frame.token.session !== token.session) return;
         overlaysFramed = true;
         drawGrid(frame);
-        navigation.present(frame); selectionHandles.write(frame, transformPreview ? transformOffset ?? 'hidden' : null); shapeHandles.write(frame); stickyHandles.write(frame); cardControls.write(frame); backToContent.update(frame);
+        navigation.present(frame); selectionHandles.write(frame, transformPreview ? transformOffset ?? 'hidden' : null); shapeHandles.write(frame, transformOffset); stickyHandles.write(frame, transformOffset); cardControls.write(frame); backToContent.update(frame);
         writeGuides(frame.view.camera);
         writeRegion(frame.view.camera);
     };
+    // One line per guide, kept and moved: a frame writes a line's ends only when they changed. By reading: the frame used to
+    // replace every line with a new element each time it was written, which is what the drag's guides did at every move.
+    let guideLines: { readonly line: SVGLineElement; readonly last: Float64Array }[] = [];
     const writeGuides = (camera: ViewState['camera']) => {
-        if (guides.length) {
-            if (!guideSvg) { guideSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-                guideSvg.setAttribute('aria-hidden', 'true'); guideSvg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible';
-                options.overlay.append(guideSvg); }
-            guideSvg.replaceChildren();
-            for (const guide of guides) {
-                const from = guide.axis === 'x' ? { x: guide.value, y: guide.from } : { x: guide.from, y: guide.value };
-                const to = guide.axis === 'x' ? { x: guide.value, y: guide.to } : { x: guide.to, y: guide.value };
-                const a = worldToSurface(from, camera), b = worldToSurface(to, camera);
+        if (!guides.length) { guideSvg?.remove(); guideSvg = null; guideLines = []; return; }
+        if (!guideSvg) {
+            guideSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            guideSvg.setAttribute('aria-hidden', 'true'); guideSvg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible';
+            options.overlay.append(guideSvg); guideLines = [];
+        }
+        for (let i = 0; i < guides.length; i++) {
+            const guide = guides[i];
+            const from = guide.axis === 'x' ? { x: guide.value, y: guide.from } : { x: guide.from, y: guide.value };
+            const to = guide.axis === 'x' ? { x: guide.value, y: guide.to } : { x: guide.to, y: guide.value };
+            const a = worldToSurface(from, camera), b = worldToSurface(to, camera);
+            let entry = guideLines[i];
+            if (!entry) {
                 const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-                line.setAttribute('x1', String(a.x)); line.setAttribute('y1', String(a.y)); line.setAttribute('x2', String(b.x)); line.setAttribute('y2', String(b.y));
                 line.setAttribute('stroke', '#f276bd'); line.setAttribute('stroke-width', '1'); guideSvg.append(line);
+                entry = { line, last: new Float64Array(4).fill(Number.NaN) }; guideLines.push(entry);
             }
-        } else { guideSvg?.remove(); guideSvg = null; }
+            const v = entry.last;
+            if (v[0] !== a.x) { v[0] = a.x; entry.line.setAttribute('x1', String(a.x)); }
+            if (v[1] !== a.y) { v[1] = a.y; entry.line.setAttribute('y1', String(a.y)); }
+            if (v[2] !== b.x) { v[2] = b.x; entry.line.setAttribute('x2', String(b.x)); }
+            if (v[3] !== b.y) { v[3] = b.y; entry.line.setAttribute('y2', String(b.y)); }
+        }
+        while (guideLines.length > guides.length) guideLines.pop()!.line.remove();
     };
     const beginHandle = (sample: RealSample, modifiers: Modifiers): GestureOwner | null => {
         // A card's chips need no write right: consent to load an embed, and opening a link, change no document.

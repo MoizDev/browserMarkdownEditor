@@ -8,7 +8,20 @@ export function isBudgetRefusal(error: unknown): boolean {
     return error instanceof ArenaError && (error.code === 'out-of-budget' || error.code === 'allocation');
 }
 
-/** Wake the layer when either allocator has room again. */
+/** The size of a capacity wait: the pool the refused request was for, and the bytes it needs. */
+export interface SizedCapacityWait { readonly pool: 'cpu' | 'gpu'; readonly bytes: number }
+
+/** Wakes the layer once `wait.pool` can hold `wait.bytes`. The governor drops a sized waiter when it fires, and only
+ * wakes it when the bytes fit (by reading memoryGovernor.ts: a release that cannot satisfy it leaves it waiting). */
+export function awaitSizedCapacity(host: Pick<LayerHost, 'allocator'> | null | undefined, wake: () => void, wait: SizedCapacityWait): void {
+    if (!Number.isSafeInteger(wait.bytes) || wait.bytes < 0) throw new RangeError('A capacity wait needs a byte count');
+    host?.allocator[wait.pool].whenAvailable?.(wake, wait.bytes);
+}
+
+/** The unsized wait, for a refusal whose size its thrower did not report. It wakes on the first capacity change of
+ * either pool, and only once. New code sizes its wait with awaitSizedCapacity. */
 export function awaitCapacity(host: Pick<LayerHost, 'allocator'> | null | undefined, wake: () => void): void {
-    host?.allocator.cpu.whenAvailable?.(wake); host?.allocator.gpu.whenAvailable?.(wake);
+    let woken = false;
+    const once = (): void => { if (!woken) { woken = true; wake(); } };
+    host?.allocator.cpu.whenAvailable?.(once); host?.allocator.gpu.whenAvailable?.(once);
 }

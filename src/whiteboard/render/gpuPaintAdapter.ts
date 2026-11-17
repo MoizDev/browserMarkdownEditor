@@ -220,6 +220,8 @@ export interface GpuPaintAdapter {
     coverage(view: ViewState): { complete: boolean; sharp: boolean; staleVersion?: boolean };
     release(reason: GpuReleaseReason): void;
     needsFrame(): boolean;
+    /** True while the layer waits on a refused GPU admission with nothing else to do (see the composer's memoryBlocked). */
+    memoryBlocked(): boolean;
     memory(): { gpuBytes: number; cpuBytes: number };
     cpuWorkingSet(): { mandatoryBytes: number; prefetchBytes: number };
     /** The governor's GPU pressure: frees up to `bytes` of idle GPU memory, path coverage sets first, then composed tiles
@@ -344,6 +346,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             presented = null; omitPrepared = null; lastFrame = -1; ledger = null;
         },
         needsFrame(): boolean { return !disposed && composer.needsFrame(); },
+        memoryBlocked(): boolean { return !disposed && composer.memoryBlocked(); },
         drawnInkNodeIds(): ReadonlySet<string> { return disposed ? NO_INK : composer.drawnInkNodeIds(); },
         gpuMandatoryBytes(viewport: { width: number; height: number }): number {
             return disposed || !presented ? 0 : composer.mandatoryBytes(viewport.width, viewport.height);

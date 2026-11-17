@@ -5,7 +5,7 @@ import type { FrameBudget } from '../../../platform/render/types';
 import { auditCount } from '../../../platform/render/renderAudit';
 import type { PaintItem, PaintTextItem } from '../paintStream';
 import { ATLAS_PAGE, TextAtlas, type AtlasEntry } from '../textAtlas';
-import { MASK_CANVAS_BYTES, createMaskRaster, maskKey, type MaskGeometry, type MaskRequest, type MaskRaster } from './textMasks';
+import { MASK_CANVAS_BYTES, MEMO_ENTRY_BYTES, createCpuAccount, createMaskRaster, maskKey, type CpuAccount, type MaskGeometry, type MaskRequest, type MaskRaster } from './textMasks';
 import type { Admission, Blend, CreateTextRoute, ItemRoute, PreparedRun } from './contracts';
 
 // The board's text route. A text run is drawn from exact-size run masks (textMasks.ts) that live on atlas pages
@@ -18,6 +18,10 @@ const SOLID_UV = -1;
 /** A new colour-glyph run is measured here; the set is cleared when full so a long session cannot grow it without bound. */
 const COLOUR_RUN_LIMIT = 4096;
 const MONO_PAGES = 8, COLOUR_PAGES = 2;
+/** CPU pool chunk for the memos: one lease per 64 KB, so a memo's accounting is a handful of leases, not one per entry. */
+const MEMO_CHUNK = 64 * 1024;
+/** The instance scratch starts at this many floats (one quad is 12) and doubles; its lease is exact, so it is never over-reported. */
+const SCRATCH_FLOOR = 12 * 64;
 
 const ATTRIBUTES: ShaderModule['layout']['attributes'] = [
     { location: 0, bufferSlot: 0, offset: 0, stride: INSTANCE_BYTES, format: 'float32x4', step: 'instance' },
@@ -94,17 +98,23 @@ interface TextRun extends PreparedRun {
     readonly bufferLease: ByteLease;
     readonly batches: readonly Batch[];
     readonly pins: readonly Pin[];
-    readonly viewport: Float32Array;
+    readonly viewW: number;
+    readonly viewH: number;
     readonly scissor: RectI;
     readonly bytes: number;
 }
 type Stop = Exclude<Admission<PreparedRun>, { status: 'ready' }>;
-/** The instances of one run under construction. `data` is reused across runs; it only grows. */
-interface Build { data: Float32Array<ArrayBuffer>; count: number; batches: Batch[]; pins: Pin[]; x0: number; y0: number; x1: number; y1: number }
+/** The instances of one run under construction. Their floats live in the route's leased scratch, shared by every run. */
+interface Build { count: number; batches: Batch[]; pins: Pin[]; x0: number; y0: number; x1: number; y1: number }
 
 export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string): ItemRoute<PaintTextItem> => {
-    const raster: MaskRaster = createMaskRaster();
+    // Every CPU byte the route holds is leased: the canvas, the instance and uniform scratch, and the two memos.
+    const measureAccount: CpuAccount = createCpuAccount(host.allocator.cpu, MEMO_CHUNK);
+    const colourAccount: CpuAccount = createCpuAccount(host.allocator.cpu, MEMO_CHUNK);
+    const raster: MaskRaster = createMaskRaster(measureAccount);
     let rasterLease: ByteLease | null = null;
+    let scratch: Float32Array<ArrayBuffer> = new Float32Array(0), scratchLease: ByteLease | null = null;
+    let uniformData: Float32Array<ArrayBuffer> | null = null, uniformLease: ByteLease | null = null;
     let device: GfxDevice | null = null;
     let incarnation = 0;
     let pipelines = new Map<Variant, PipelineHandle>();
@@ -112,11 +122,10 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
     let mono: TextAtlas | null = null, colour: TextAtlas | null = null;
     let white: TextureHandle | null = null, whiteLease: ByteLease | null = null, sampler: SamplerHandle | null = null;
     const colourRuns = new Set<string>();
+    const colourRunBytes = (key: string): number => key.length * 2 + MEMO_ENTRY_BYTES;
     /** The font epoch the atlases were last filled under. A change retires the old faces' masks (their keys carry the old epoch). */
     let seenEpoch = -1;
     const live = new Set<TextRun>();
-    const quad = new Float32Array(12);
-    let scratch: Float32Array<ArrayBuffer> = new Float32Array(12 * 64);
 
     const atlasHost = { reserve: (bytes: number) => host.allocator.gpu.reserve(bytes), release: (lease: ByteLease) => host.allocator.gpu.release(lease) };
 
@@ -185,32 +194,51 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         rasterLease = host.allocator.cpu.reserve(MASK_CANVAS_BYTES);
         return rasterLease !== null;
     };
+    const ensureUniformData = (): boolean => {
+        if (uniformData) return true;
+        uniformLease = host.allocator.cpu.reserve(16);
+        if (!uniformLease) return false;
+        uniformData = new Float32Array(4);
+        return true;
+    };
+    /** Grows the leased instance scratch to hold `floats`, keeping what this run has written. False when the pool refuses. */
+    const reserveScratch = (floats: number): boolean => {
+        if (floats <= scratch.length) return true;
+        const capacity = Math.max(floats, scratch.length * 2, SCRATCH_FLOOR);
+        const lease = host.allocator.cpu.reserve(capacity * 4);
+        if (!lease) return false;
+        const grown = new Float32Array(capacity);
+        grown.set(scratch);
+        if (scratchLease) host.allocator.cpu.release(scratchLease);
+        scratch = grown; scratchLease = lease;
+        return true;
+    };
+    const WHITE: Rgba = [1, 1, 1, 1];
 
-    const emit = (build: Build, mode: Mode, texture: TextureHandle): void => {
-        const need = (build.count + 1) * 12;
-        if (scratch.length < need) { const grown = new Float32Array(Math.max(need, scratch.length * 2)); grown.set(scratch.subarray(0, build.count * 12)); scratch = grown; }
-        build.data = scratch;
-        build.data.set(quad, build.count * 12);
+    /** One instance: its device rect, page uv rect and premultiplied colour, appended to the run in paint order. */
+    const put = (build: Build, mode: Mode, texture: TextureHandle, x: number, y: number, w: number, h: number,
+        u0: number, v0: number, u1: number, v1: number, c: Rgba): boolean => {
+        if (!reserveScratch((build.count + 1) * 12)) return false;
+        const o = build.count * 12;
+        scratch[o] = x; scratch[o + 1] = y; scratch[o + 2] = w; scratch[o + 3] = h;
+        scratch[o + 4] = u0; scratch[o + 5] = v0; scratch[o + 6] = u1; scratch[o + 7] = v1;
+        scratch[o + 8] = c[0] * c[3]; scratch[o + 9] = c[1] * c[3]; scratch[o + 10] = c[2] * c[3]; scratch[o + 11] = c[3];
         build.count++;
         const last = build.batches[build.batches.length - 1];
         if (last && last.mode === mode && last.texture === texture) build.batches[build.batches.length - 1] = { mode, texture, first: last.first, count: last.count + 1 };
         else build.batches.push({ mode, texture, first: build.count - 1, count: 1 });
-        build.x0 = Math.min(build.x0, quad[0]); build.y0 = Math.min(build.y0, quad[1]);
-        build.x1 = Math.max(build.x1, quad[0] + quad[2]); build.y1 = Math.max(build.y1, quad[1] + quad[3]);
+        build.x0 = Math.min(build.x0, x); build.y0 = Math.min(build.y0, y);
+        build.x1 = Math.max(build.x1, x + w); build.y1 = Math.max(build.y1, y + h);
+        return true;
     };
-    const setQuad = (x: number, y: number, w: number, h: number, u0: number, v0: number, u1: number, v1: number, c: Rgba): void => {
-        quad[0] = x; quad[1] = y; quad[2] = w; quad[3] = h;
-        quad[4] = u0; quad[5] = v0; quad[6] = u1; quad[7] = v1;
-        quad[8] = c[0] * c[3]; quad[9] = c[1] * c[3]; quad[10] = c[2] * c[3]; quad[11] = c[3];
-    };
-    const WHITE: Rgba = [1, 1, 1, 1];
 
-    /** A solid rect in device px: analytic coverage in the shader, so its edges match the canvas's fill. */
-    const solidRect = (build: Build, x0: number, y0: number, x1: number, y1: number, colourOf: Rgba, viewW: number, viewH: number): void => {
-        if (!(x1 > x0 && y1 > y0) || x1 <= 0 || y1 <= 0 || x0 >= viewW || y0 >= viewH) return;
-        setQuad(x0, y0, x1 - x0, y1 - y0, SOLID_UV, SOLID_UV, SOLID_UV, SOLID_UV, colourOf);
-        emit(build, 'mono', white!);
+    /** A solid rect in device px: analytic coverage in the shader, so its edges match the canvas's fill. False only on refusal. */
+    const solidRect = (build: Build, x0: number, y0: number, x1: number, y1: number, colourOf: Rgba, viewW: number, viewH: number): boolean => {
+        if (!(x1 > x0 && y1 > y0) || x1 <= 0 || y1 <= 0 || x0 >= viewW || y0 >= viewH) return true;
+        return put(build, 'mono', white!, x0, y0, x1 - x0, y1 - y0, SOLID_UV, SOLID_UV, SOLID_UV, SOLID_UV, colourOf);
     };
+
+    const denied = (build: Build): Stop => ({ status: 'denied', pool: 'cpu', bytes: (build.count + 1) * INSTANCE_BYTES });
 
     /** Rects of one item: the backgrounds before its glyphs, the decorations after. Only axis-aligned maps are solid here. */
     const rects = (build: Build, list: readonly { x: number; y: number; w: number; h: number }[], colours: readonly Rgba[],
@@ -222,7 +250,7 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
             const r = list[i];
             const xa = A[0] * r.x + A[4], xb = A[0] * (r.x + r.w) + A[4];
             const ya = A[3] * r.y + A[5], yb = A[3] * (r.y + r.h) + A[5];
-            solidRect(build, Math.min(xa, xb), Math.min(ya, yb), Math.max(xa, xb), Math.max(ya, yb), colourOf, viewW, viewH);
+            if (!solidRect(build, Math.min(xa, xb), Math.min(ya, yb), Math.max(xa, xb), Math.max(ya, yb), colourOf, viewW, viewH)) return denied(build);
         }
         return null;
     };
@@ -249,8 +277,9 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
                 auditCount(audit, 'upload:mask', 1, { bytes: probe.pixels.byteLength });
                 return { entry: placed, rgba: false };
             }
-            if (colourRuns.size >= COLOUR_RUN_LIMIT) colourRuns.clear();
-            colourRuns.add(key);
+            if (colourRuns.size >= COLOUR_RUN_LIMIT) { colourRuns.clear(); colourAccount.reset(); }
+            // A memo the pool refuses is not kept: the run is rastered as a probe again next time, which is correct, only slower.
+            if (colourAccount.charge(colourRunBytes(key))) colourRuns.add(key);
         }
         const colourKey = maskKey(req, geometry, slice, glyph);
         const hit = colour!.lookup(colourKey, frame);
@@ -294,9 +323,8 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
                 // A slice outside the view draws nothing: it is neither uploaded nor pinned by this run.
                 if (x + w <= 0 || y + h <= 0 || x >= viewW || y >= viewH) continue;
                 const u0 = e.x / ATLAS_PAGE, v0 = 1 - e.y / ATLAS_PAGE, u1 = (e.x + e.w) / ATLAS_PAGE, v1 = 1 - (e.y + e.h) / ATLAS_PAGE;
-                if (found.rgba) setQuad(x, y, w, h, u0, v0, u1, v1, WHITE);
-                else setQuad(x, y, w, h, u0, v0, u1, v1, colourOf);
-                emit(build, found.rgba ? 'colour' : 'mono', e.page.texture);
+                // A colour run is tinted by nothing: its own colour is in the texels, so the instance carries white.
+                if (!put(build, found.rgba ? 'colour' : 'mono', e.page.texture, x, y, w, h, u0, v0, u1, v1, found.rgba ? WHITE : colourOf)) return denied(build);
                 build.pins.push({ atlas: found.rgba ? colour! : mono!, entry: e });
             }
         }
@@ -308,7 +336,7 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
     const noteEpoch = (it: PaintTextItem): void => {
         if (it.paint.fontEpoch === seenEpoch) return;
         for (const face of it.faces.faces) { mono?.retireFace(face.css); colour?.retireFace(face.css); }
-        colourRuns.clear();
+        colourRuns.clear(); colourAccount.reset();
         seenEpoch = it.paint.fontEpoch;
     };
 
@@ -336,7 +364,8 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
             const dpr = view.viewport.dpr;
             const viewW = Math.round(view.viewport.width * dpr), viewH = Math.round(view.viewport.height * dpr);
             const scale = view.camera.z * dpr;
-            const build: Build = { data: scratch, count: 0, batches: [], pins: [], x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+            if (!ensureUniformData()) return { status: 'denied', pool: 'cpu', bytes: 16 };
+            const build: Build = { count: 0, batches: [], pins: [], x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
             const frame = budget.frameId;
             for (const it of items) {
                 noteEpoch(it);
@@ -354,7 +383,7 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
             let buffer: BufferHandle | null = null;
             try {
                 buffer = owner.createBuffer(bytes, ['vertex', 'copy-dst'], lease);
-                owner.writeBuffer(buffer, 0, build.data.subarray(0, build.count * 12));
+                owner.writeBuffer(buffer, 0, scratch.subarray(0, build.count * 12));
                 auditCount(audit, 'upload:vertex', 1, { bytes });
                 auditCount(audit, 'geom:build');
             } catch (error) {
@@ -363,10 +392,8 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
                 throw error;
             }
             for (const pin of build.pins) pin.atlas.pin(pin.entry);
-            const viewport = new Float32Array([viewW, viewH, 0, 0]);
             const run: TextRun = { route: 'text', blend, device: owner, buffer, bufferLease: lease,
-                batches: build.batches, pins: build.pins, viewport, scissor: { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }, bytes };
-            scratch = build.data;
+                batches: build.batches, pins: build.pins, viewW, viewH, scissor: { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }, bytes };
             live.add(run);
             auditCount(audit, 'route:text');
             return { status: 'ready', value: run };
@@ -374,7 +401,10 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         draw(pass: GpuPass, prepared: PreparedRun): void {
             const run = prepared as TextRun;
             if (!live.has(run) || device !== run.device || host.device() !== run.device) throw new Error('Stale text run');
-            const uniforms = host.uniforms(run.viewport);
+            // The uniform block is packed into the encoder's ring at this call, so one leased scratch serves every run.
+            const data = uniformData!;
+            data[0] = run.viewW; data[1] = run.viewH; data[2] = 0; data[3] = 0;
+            const uniforms = host.uniforms(data);
             if (!sampler) throw new Error('Text sampler missing');
             for (const batch of run.batches) {
                 const pipeline = pipelines.get(`${batch.mode}-${run.blend}`);
@@ -390,7 +420,9 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         memory(): { gpuBytes: number; cpuBytes: number } {
             let gpuBytes = (mono?.bytes ?? 0) + (colour?.bytes ?? 0) + (whiteLease?.bytes ?? 0);
             for (const run of live) gpuBytes += run.bytes;
-            return { gpuBytes, cpuBytes: (rasterLease?.bytes ?? 0) + scratch.byteLength };
+            const cpuBytes = (rasterLease?.bytes ?? 0) + (scratchLease?.bytes ?? 0) + (uniformLease?.bytes ?? 0) +
+                measureAccount.bytes + colourAccount.bytes;
+            return { gpuBytes, cpuBytes };
         },
     };
 };

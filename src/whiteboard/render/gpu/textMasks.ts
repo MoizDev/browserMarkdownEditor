@@ -1,4 +1,5 @@
 import type { Rgba } from '../../../platform/types';
+import type { ByteLease } from '../../../platform/render/gfx/api';
 import { colourCss } from '../colour';
 
 // Run masks for the board's GPU text route (solo/whiteboard-text-atlas.md, "Decision after step 2"). A run is one
@@ -18,6 +19,8 @@ const MASK_MAX_SLICES = 8;
 export const MASK_CANVAS_BYTES = MASK_SLICE * MASK_MAX_HEIGHT * 4;
 /** Measurements kept per raster. Cleared whole when full: a run is measured again on its next use, which is cheap. */
 const MEASURE_CACHE_LIMIT = 4096;
+/** Bytes charged per memo entry beyond its key (the object, the map slot). */
+export const MEMO_ENTRY_BYTES = 192;
 
 export interface MaskRequest {
     /** The board's font epoch. A font change makes new keys; the old masks age out of the atlas. */
@@ -87,7 +90,38 @@ function edges(origin: number, lo: number, hi: number): { near: number; far: num
     return { near: Math.floor(origin + lo) - MASK_PAD, far: Math.ceil(origin + hi) + MASK_PAD };
 }
 
-export function createMaskRaster(): MaskRaster {
+/** Bytes a CPU-side memo holds, leased from the CPU pool in chunks: a memo that cannot charge simply does not grow. */
+export interface CpuAccount {
+    /** Charges `bytes` against the leased capacity, leasing another chunk when needed; false when the pool refuses. */
+    charge(bytes: number): boolean;
+    /** Releases every chunk and forgets the charges: called when the memo it accounts for is cleared. */
+    reset(): void;
+    /** Bytes currently leased. */
+    readonly bytes: number;
+}
+export function createCpuAccount(allocator: { reserve(bytes: number): ByteLease | null; release(lease: ByteLease): void }, chunk: number): CpuAccount {
+    const leases: ByteLease[] = [];
+    let used = 0, capacity = 0;
+    return {
+        get bytes(): number { return capacity; },
+        charge(bytes: number): boolean {
+            while (used + bytes > capacity) {
+                const lease = allocator.reserve(chunk);
+                if (!lease) return false;
+                leases.push(lease); capacity += chunk;
+            }
+            used += bytes;
+            return true;
+        },
+        reset(): void {
+            for (const lease of leases) allocator.release(lease);
+            leases.length = 0; used = 0; capacity = 0;
+        },
+    };
+}
+
+/** `account` charges each memoised measurement; a measurement the pool will not charge is computed and not kept. */
+export function createMaskRaster(account?: CpuAccount): MaskRaster {
     // Created on the first raster only: an 8 MB canvas is not worth holding for a board without text.
     let ctx: OffscreenCanvasRenderingContext2D | null = null;
     const measured = new Map<string, MaskMeasure>();
@@ -132,8 +166,8 @@ export function createMaskRaster(): MaskRaster {
             const hit = measured.get(key);
             if (hit) return hit;
             const result = measureUncached(req);
-            if (measured.size >= MEASURE_CACHE_LIMIT) measured.clear();
-            measured.set(key, result);
+            if (measured.size >= MEASURE_CACHE_LIMIT) { measured.clear(); account?.reset(); }
+            if (!account || account.charge(key.length * 2 + MEMO_ENTRY_BYTES)) measured.set(key, result);
             return result;
         },
         rasterise(req: MaskRequest, geometry: MaskGeometry, slice: number, colour: Rgba | null): GlyphMask {

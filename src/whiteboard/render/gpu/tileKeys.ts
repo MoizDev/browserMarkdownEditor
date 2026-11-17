@@ -13,6 +13,11 @@ const SCALE_MAX = (1 << SCALE_BITS) - 1, SLICE_MAX = (1 << SLICE_BITS) - 1;
 const XY_BIAS = 1 << (XY_BITS - 1), XY_SPAN = 1 << XY_BITS;
 const XY_MIN = -XY_BIAS, XY_MAX = XY_BIAS - 1;
 const TWO_XY = 2 ** XY_BITS;
+/** The limits a packed key holds, exported so a store can test a key before packing it: x and y in [−REACH, REACH), slice
+ * below TILE_KEY_SLICES, scale index below TILE_KEY_SCALES. */
+export const TILE_KEY_REACH = XY_BIAS;
+export const TILE_KEY_SLICES = SLICE_MAX + 1;
+export const TILE_KEY_SCALES = SCALE_MAX + 1;
 
 function bandIndex(band: PaintBand): number {
     if (band === 'underlay') return 0;

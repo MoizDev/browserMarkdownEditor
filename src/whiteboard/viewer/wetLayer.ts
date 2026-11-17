@@ -279,7 +279,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
     // the newest publication is admitted once it completes. Only the tip is new work: the route keys its geometry by chunk.
     const admitRuns = (host: LayerHost, view: ViewState, budget: FrameBudget): void => {
         const routes = inkRoutes ??= gpuRoutes.createInkRoutes(host, 'board-wet');
-        const palette = options.palette(), pending = handover?.forFrame(() => false) ?? [], live = new Set<number>(), viewKey = viewKeyOf(view);
+        const palette = options.palette(), pending = handover?.pendingSnapshots() ?? [], live = new Set<number>(), viewKey = viewKeyOf(view);
         for (const snapshot of pending) live.add(snapshot.identity.gestureSequence);
         for (const [key, slot] of [...runs]) if (!live.has(slot.gesture)) dropSlot(key);
         for (const snapshot of pending) {
@@ -341,7 +341,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
     // True while some visible band still needs an admission for the current publication.
     const runsPending = (): boolean => {
         const palette = options.palette();
-        for (const snapshot of handover?.forFrame(() => false) ?? []) {
+        for (const snapshot of handover?.pendingSnapshots() ?? []) {
             const gesture = snapshot.identity.gestureSequence, source = prepared.get(gesture);
             if (!source || source.snapshot.identity.nodeId !== snapshot.identity.nodeId) return true;
             for (const band of BANDS) {
@@ -359,7 +359,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
     const routedCoverage = (token: FrameToken, view: ViewState): { complete: boolean; sharp: boolean; why: string } => {
         const palette = options.palette(), viewKey = viewKeyOf(view);
         let sharp = true;
-        for (const snapshot of handover?.forFrame(() => false) ?? []) {
+        for (const snapshot of handover?.pendingSnapshots() ?? []) {
             const gesture = snapshot.identity.gestureSequence, source = prepared.get(gesture);
             if (!source) return { complete: false, sharp: false, why: 'unprepared' };
             for (const band of BANDS) {
@@ -381,7 +381,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         let drawn = 0;
         drawCall.pass = pass; drawCall.view = view; drawCall.host = host;
         try {
-            for (const snapshot of handover?.forFrame(() => false) ?? []) {
+            for (const snapshot of handover?.pendingSnapshots() ?? []) {
                 const gesture = snapshot.identity.gestureSequence, source = prepared.get(gesture);
                 if (!source || source.snapshot.identity.nodeId !== snapshot.identity.nodeId
                     || offScreen(source.bounds, source.snapshot.presentation.localToWorld, view)) continue;
@@ -477,10 +477,10 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         // A denied reservation waits for a genuine scheduler wake, not another polling frame.
         denied = false;
         try {
-            for (const item of handover?.forFrame(() => false) ?? []) {
+            for (const item of handover?.pendingSnapshots() ?? []) {
                 if (item.dry && !options.exists(item.dry)) handover?.clear(item.identity);
             }
-            const snapshots = handover?.forFrame(() => false) ?? [];
+            const snapshots = handover?.pendingSnapshots() ?? [];
             const ids = new Set(snapshots.map(item => item.identity.gestureSequence));
             for (const [id, item] of prepared) if (!ids.has(id)) { dropPrepared(item); prepared.delete(id); publicationVersion++; }
             for (const gesture of [...stables.keys()]) if (!ids.has(gesture)) dropStable(gesture);
@@ -515,7 +515,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                 drawGpu(pass, view) { drawRouted(pass, view, band); },
                 draw2d(ctx, view) {
                     if (disposed || !options.current()) return;
-                    const snapshots = handover?.forFrame(() => false) ?? [];
+                    const snapshots = handover?.pendingSnapshots() ?? [];
                     host.paintWorld(ctx, view, () => {
                         for (const snapshot of snapshots) {
                             const item = prepared.get(snapshot.identity.gestureSequence);
@@ -558,7 +558,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         revision: () => generation,
         cpuWorkingSet: layer => {
             if (!owner || hostLayers.get(owner) !== layer) return { mandatoryBytes: 0, prefetchBytes: 0 };
-            const snapshots = handover?.forFrame(() => false) ?? [];
+            const snapshots = handover?.pendingSnapshots() ?? [];
             const pending = !!work || snapshots.some(item => prepared.get(item.identity.gestureSequence)?.snapshot !== item);
             // Each band shares this one owner. Demand the NEXT bounded native-path/coverage
             // allocation before prepare, including a replacement while old wet pixels stay live.
@@ -569,10 +569,10 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         // which took two frames per plan (measured: every other screencast frame held the same ink). Only while ink is in
         // flight: an idle layer that still wanted a frame kept every frame critical, which starves the other layers' upload
         // share (measured: drawing pan 204 → 78 presents, notebook pan 38).
-        critical: () => (!!owner?.device() && runsPending()) || (handover?.forFrame(() => false) ?? [])
+        critical: () => (!!owner?.device() && runsPending()) || (handover?.pendingSnapshots() ?? [])
             .some(item => !prepared.has(item.identity.gestureSequence)),
         coverage: (_layer, frame, backend) => {
-            const missing = (handover?.forFrame(() => false) ?? [])
+            const missing = (handover?.pendingSnapshots() ?? [])
                 .some(item => !prepared.has(item.identity.gestureSequence));
             if (missing) { auditCount('wet', 'cover:incomplete:unprepared'); return { complete: false, sharp: false }; }
             if (backend === 'canvas2d') return { complete: true, sharp: true };
@@ -591,7 +591,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         liveNodeIds() {
             if (disposed) return EMPTY_LIVE_IDS;
             const next = new Set<string>();
-            for (const snapshot of handover?.forFrame(() => false) ?? []) if (snapshot.dry) next.add(snapshot.dry.nodeId);
+            for (const snapshot of handover?.pendingSnapshots() ?? []) if (snapshot.dry) next.add(snapshot.dry.nodeId);
             let changed = next.size !== liveIds.size;
             if (!changed) for (const id of next) if (!liveIds.has(id)) { changed = true; break; }
             if (changed) liveIds = next.size ? new ImmutableIds(next) : EMPTY_LIVE_IDS;
@@ -600,7 +600,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         presented(revision, token, frame) {
             if (disposed || !sameToken(token, options.token) || !frame || frame.sceneRevision !== revision || !sameToken(frame.token, token)) return;
             let acknowledged = false;
-            for (const item of handover?.forFrame(() => false) ?? []) {
+            for (const item of handover?.pendingSnapshots() ?? []) {
                 if (item.dry && available(frame, item.dry, token)) { handover?.acknowledgePresented(item.dry); acknowledged = true; }
             }
             // Only a handover that changed needs another frame. Invalidating on every presented frame made each frame ask

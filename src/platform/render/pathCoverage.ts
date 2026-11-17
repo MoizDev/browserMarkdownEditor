@@ -112,6 +112,8 @@ interface VertexSet {
     readonly negativeVertices: number;
     refs: number;
     readonly bytes: number;
+    /** The frame this set was last held or retired in: an idle set used in the current frame is never evicted. */
+    usedFrame: number;
 }
 
 /** Pre-admitted vertex buffers, plus the mask's own target and clip handle when the output is a mask. A composite
@@ -237,21 +239,30 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
     // are ordered oldest first and destroyed past IDLE_VERTEX_BYTES, and release() frees them all. Invariant: a set in
     // `shared` has refs 0 exactly when it is in `idle`.
     const idle = new Map<Float64Array, VertexSet>();
-    let idleBytes = 0;
+    let idleBytes = 0, frame = 0;
     const destroySet = (entry: VertexSet) => {
         shared.delete(entry.key); gpuBytes -= entry.bytes; entry.device.destroy(entry.buffer);
     };
     const unidle = (entry: VertexSet) => { if (idle.delete(entry.key)) idleBytes -= entry.bytes; };
+    /** Destroys idle sets, oldest first, until `bytes` are freed, skipping any used in the current frame. Returns the bytes freed;
+     * the governor's evict(bytes) and the idle bound both come here, so a set in use this frame is never reclaimed. */
+    const reclaimIdle = (bytes: number): number => {
+        let freed = 0;
+        for (const entry of idle.values()) {
+            if (freed >= bytes) break;
+            if (entry.usedFrame >= frame) continue;
+            idle.delete(entry.key); idleBytes -= entry.bytes; freed += entry.bytes; destroySet(entry);
+        }
+        return freed;
+    };
     /** Takes one reference on a set, which leaves the idle list. */
-    const holdSet = (entry: VertexSet) => { if (entry.refs === 0) unidle(entry); entry.refs++; };
+    const holdSet = (entry: VertexSet) => { if (entry.refs === 0) unidle(entry); entry.refs++; entry.usedFrame = frame; };
     const releaseShared = (entry: VertexSet) => {
         if (--entry.refs > 0) return;
+        entry.usedFrame = frame;
         idle.delete(entry.key); idle.set(entry.key, entry); idleBytes += entry.bytes;
         // Trimmed only here: a set reserved by an admission still being built has zero refs and must not be destroyed under it.
-        for (const oldest of idle.values()) {
-            if (idleBytes <= IDLE_VERTEX_BYTES) break;
-            idle.delete(oldest.key); idleBytes -= oldest.bytes; destroySet(oldest);
-        }
+        if (idleBytes > IDLE_VERTEX_BYTES) reclaimIdle(idleBytes - IDLE_VERTEX_BYTES);
     };
     const retireOwned = (prepared: PreparedPathCoverage) => {
         const bytes = live.get(prepared);
@@ -487,7 +498,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         }
         uploading.delete(set.positive); host.allocator.cpu.release(up.staging);
         const entry: VertexSet = { key: set.positive, device: owner, buffer: up.buffer, negative: set.negative,
-            positiveVertices: set.positive.length / 2, negativeVertices: set.negative.length / 2, refs: 0, bytes: vertexBytes };
+            positiveVertices: set.positive.length / 2, negativeVertices: set.negative.length / 2, refs: 0, bytes: vertexBytes, usedFrame: frame };
         shared.set(set.positive, entry);
         idle.set(entry.key, entry); idleBytes += entry.bytes;
         return entry;
@@ -594,6 +605,11 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
     return {
         warm,
         ready: isReady,
+        /** Marks the frame the calls that follow belong to. An idle set used in this frame is never reclaimed. */
+        beginFrame(next: number): void { frame = next; },
+        /** The governor's reclaim for this kit's idle triangle buffers: destroys the oldest unused ones until `bytes` are freed,
+         * and returns the bytes actually freed (their leases return to the device's allocator as they retire). */
+        evict(bytes: number): number { return reclaimIdle(bytes); },
         /** The scratch's lease is the device's; this kit reports the share its live composite admissions hold of it, so the
          * kits on one device sum to the scratch once and a hidden pane's kit reports none. */
         memory(): { gpuBytes: number; cpuBytes: number } {

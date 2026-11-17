@@ -62,7 +62,9 @@ function bandOf(localToWorld: Affine, view: ViewState): number | null {
     const [a, b, c, d] = localToWorld;
     const scale = view.camera.z * view.viewport.dpr * Math.hypot(a, b, c, d);
     if (!(scale > 0) || !Number.isFinite(scale)) return null;
-    return Math.floor(2 * Math.log2(scale));
+    // The ladder's scales are exact powers of 2^(1/2), and log2 of such a value can land an ulp below its integer; the floor
+    // would then put the same zoom in the band below, under its own cache key (by reading: a band split at a ladder step).
+    return Math.floor(2 * Math.log2(scale) + 1e-9);
 }
 function flattenTolerance(band: number): number {
     return FLATTEN_DEVICE_PX / Math.pow(2, (band + 1) / 2);

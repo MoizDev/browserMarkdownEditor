@@ -437,13 +437,19 @@ export class MemoryGovernor {
         if (!Number.isFinite(now) || now < this.now) throw new MemoryAdmissionError('invalid-input');
         this.now = now;
         this.trimHiddenMirrors();
+        // Quality drops only when the trims cannot bring a pool back to target: a trim that frees what it is asked for
+        // is the answer to pressure, and a degradation for pressure it has not yet had the chance to release is premature.
+        let unmet = false;
         for (const pool of ['gpu', 'cpu'] as const) {
             if (this.charged[pool] > this.target[pool] * POLICY.memorySoftPressureRatio) {
                 this.state = 'trimming';
-                this.trimPool(pool, Math.floor(this.target[pool] * POLICY.memoryTrimTargetRatio));
+                unmet = this.trimFailed(pool, Math.floor(this.target[pool] * POLICY.memoryTrimTargetRatio)) || unmet;
+            } else if (this.charged[pool] > this.target[pool]) {
+                this.state = 'trimming';
+                unmet = this.trimFailed(pool, this.target[pool]) || unmet;
             }
         }
-        if (this.charged.gpu > this.target.gpu || this.charged.cpu > this.target.cpu) this.degrade();
+        if (unmet) this.degrade();
         const cool = this.cool() && !liveGesture;
         if (!cool) this.belowRecoverySince = null;
         else if (this.belowRecoverySince === null) this.belowRecoverySince = now;
@@ -759,8 +765,16 @@ export class MemoryGovernor {
         } finally { this.trimming = false; }
     }
 
-    private trimPool(pool: MemoryPool, target: number): void {
-        if (this.trimming) return;
+    /** A trim that ran out of candidates while the pool is still over its target: the only pressure a degradation answers. A trim
+     * aimed below target (the soft trim) that stops short of its aim, but reached the target, has not failed. */
+    private trimFailed(pool: MemoryPool, aim: number): boolean {
+        return this.trimPool(pool, aim) > 0 && this.charged[pool] > this.target[pool];
+    }
+
+    /** Evicts from the pool's reclaimable caches until its charge is at `target`. Returns the bytes still over target when
+     * every candidate has been asked: 0 when the trim met its target, or when another trim is already running. */
+    private trimPool(pool: MemoryPool, target: number): number {
+        if (this.trimming) return 0;
         const order: readonly MemoryClass[] = ['hidden-mirror', 'obsolete-arrival', 'offscreen-high',
             'redundant-level', 'prefetch', 'scene-cache', 'critical'];
         const evictionClass = (cache: CacheRecord): MemoryClass => cache.registration.kind === 'mirror' && cache.activity.hiddenAt !== null ?
@@ -774,9 +788,9 @@ export class MemoryGovernor {
                 a.activity.lastVisibleAt - b.activity.lastVisibleAt || a.activity.lastUsedAt - b.activity.lastUsedAt ||
                 b.bytes - a.bytes || stableId(a.registration.id, b.registration.id));
         this.trimming = true;
+        // Charged falls only when owners release, which is asynchronous: the reported bytes stand in for it inside this loop.
+        let excess = this.charged[pool] - target;
         try {
-            // Charged falls only when owners release, which is asynchronous: the reported bytes stand in for it inside this loop.
-            let excess = this.charged[pool] - target;
             for (const cache of candidates) {
                 if (excess <= 0) break;
                 // The owner protects its last visible coverage provider and capture/live-input pins.
@@ -785,6 +799,7 @@ export class MemoryGovernor {
                 excess -= freed;
             }
         } finally { this.trimming = false; this.plan(); }
+        return Math.max(0, excess);
     }
 
     private kindBytes(kind: MemoryKind): number {

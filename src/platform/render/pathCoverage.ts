@@ -338,7 +338,13 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         // Draws loop over bands of the target's height, so the height is only ever bounded by the device: a band taller than
         // the largest texture side is refused by createCoverageTarget (measured: a notebook asked 2×20164 against a 16384 cap).
         if (current && current.target.width >= width) return true;
-        const w = Math.max(width, current?.target.width ?? 0, table.widths.get(owner) ?? 0);
+        const needed = Math.max(width, current?.target.width ?? 0, table.widths.get(owner) ?? 0);
+        // Growth rounds up to a power of two while the rounded band still fits the scratch cap and the device: a scratch grown to
+        // each new widest request was re-created once per admission that was wider than any before (21 in one draw phase, with
+        // no drop). Rounded, the scratch grows at most once per doubling; otherwise the exact request is used.
+        const rounded = 2 ** Math.ceil(Math.log2(needed));
+        const fitsRounded = rounded * grid <= cap && coverageTargetBytes(rounded, 1, grid === 4 ? 1 : PATH_COVERAGE_SAMPLES, grid) <= PATH_COVERAGE_SCRATCH_BYTES;
+        const w = fitsRounded ? rounded : needed;
         if (w * grid > cap) return 'unsupported';
         const samples = grid === 4 ? 1 : PATH_COVERAGE_SAMPLES;
         const h = Math.min(Math.floor(PATH_COVERAGE_SCRATCH_BYTES / coverageTargetBytes(w, 1, samples, grid)), Math.floor(cap / grid));

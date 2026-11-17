@@ -23,6 +23,9 @@ export interface PlatformLayerDefinition {
         mandatoryBytes: number;
         prefetchBytes: number;
     }>;
+    /** GPU bytes the layer must hold for the physical viewport at its current scale: its visible positions, pinned against
+     * trimming while the pane is visible. Granted before the surface share and any other scale or off-view ring. */
+    gpuWorkingSet?(layer: Layer, viewport: Readonly<{ width: number; height: number }>): Readonly<{ mandatoryBytes: number }>;
     /** Gives back up to `bytes` of the layer's own redundant CPU residency when the pane grant refuses a reservation. */
     cpuEvict?(layer: Layer, bytes: number): void;
     /** A live gesture's layer (wet ink): its GPU cache is bounded by the pool, not by the pane's cache grant, because it

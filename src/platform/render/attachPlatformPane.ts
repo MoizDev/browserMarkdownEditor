@@ -1,4 +1,4 @@
-import { auditCount, auditFrame } from './renderAudit';
+import { auditCount, auditFrame, renderAuditEnabled } from './renderAudit';
 import type { ViewState } from '../types';
 const benchmarkMemory = __BME_BENCH__ ? await import('./benchmarkMemory') : null;
 import type { DamageRecord } from './damage';
@@ -129,6 +129,10 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                 auditCount('governor', `evict-partial:${layerSet.definition(layer)?.id ?? 'unnamed'}`, 1, { bytes: partial });
             }
             if (partial >= want) break;
+            // A layer that frees part of itself has already given every position it does not need on screen. What it keeps
+            // is its visible set, which is pinned: releasing it whole here dropped a board's on-screen tiles under a trim.
+            // Such a layer is refused instead, and the refused position is composed at a lower level (h1's 'lower').
+            if (layer.evictGpu) continue;
             const remaining = layer.memory().gpuBytes;
             if (remaining <= 0) continue;
             victims.push(layer);
@@ -277,8 +281,10 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             // document-colour target until promotion. Inversion is not a free surface effect.
             const frameCopies = 2 + Number(options.readAppearance().inverted) + Number(!!options.session.mirrors) + isolated;
             // The 2D canvas's CPU working cache is charged to this pane, so its bytes are part of the demand the grant covers.
-            let mandatory = created.compositor.cpuWorkingBytes?.() ?? 0, prefetch = 0;
+            let mandatory = created.compositor.cpuWorkingBytes?.() ?? 0, prefetch = 0, pinned = 0;
             for (const layer of layerSet.layers) {
+                // A layer's visible positions are GPU bytes the pane must keep; the governor grants them before any other need.
+                if (requestedPixels > 0) pinned += layerSet.definition(layer)?.gpuWorkingSet?.(layer, size!.physical).mandatoryBytes ?? 0;
                 // An unobserved/zero box has no drawable viewport. Asking a producer for an
                 // artificial 0×0 floor can deny it before ResizeObserver has published its size.
                 const demand = requestedPixels > 0 ? layerSet.definition(layer)?.cpuWorkingSet?.(layer, size!.physical) : undefined;
@@ -298,6 +304,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             return { paneId: options.paneId, visible, focused, requestedPixels,
                 // Needs stay inside G/C: detached CPU completion, staged GPU, mirror/effect targets,
                 // native bitmap residency and one bounded colour band do not raise either cap.
+                gpuPinnedBytes: pinned,
                 gpuNeedBytes: memory.reduce((sum, value) => sum + value.gpuBytes, 0) +
                     (frameCopies * requestedPixels + bandPixels) * RENDER_CONSTANTS.surfaceReserveBytesPerPixel + requestedPixels * 4,
                 // Working-set demand precedes allocations; prefetch competes only after all visible floors.
@@ -385,7 +392,8 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                             // layers can prepare the new viewport. Build the normal CPU bridge detached,
                             // then resize/rebuild this SAME kept GPU behind that complete picture.
                             cpuPresented = false;
-                            auditCount('pane', 'fallback:2d-bridge');
+                            // The bridge is board content rastered on the CPU while the device exists: counted with its pixels.
+                            auditCount('pane', 'fallback:2d-bridge', 1, { px: size.physical.width * size.physical.height });
                             drawing = compositor;
                             planned = computeSurfaceMetrics(size.physical, size.nominalDpr, drawing.target.limits, grant.pixelGrant);
                         }
@@ -453,6 +461,11 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                         lastFrameInterval = frame.intervalMs;
                         const drawing = drawCompositor();
                         if (!drawing) return null;
+                        // The 2D compositor draws this frame while a device exists (the bridge, or a pane whose GPU is not yet
+                        // presented): board content rastered on the CPU, counted with the pixels it covers.
+                        if (drawing === compositor && gpu && renderAuditEnabled()) {
+                            auditCount('pane', 'cpu-raster', 1, { px: drawing.surface.width * drawing.surface.height });
+                        }
                         const encodeStart = performance.now();
                         const encoding = drawing.encode(frame);
                         if (!encoding && !(drawing === compositor && options.session.mirrors)) return null;

@@ -350,19 +350,26 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         }
         return false;
     };
-    // Coverage: every band the frame needs is admitted for this publication, this device token and, for a view-bound run, this view.
-    const routedCovered = (token: FrameToken, view: ViewState): boolean => {
+    // Coverage of the routed path. A band with an admitted run draws it, whichever publication that run is for, so the
+    // frame is complete while the stroke grows (measured: a serial check refused 118 of 209 drawing frames, and a critical
+    // layer's refusal refused the whole frame). Only a band with nothing admitted yet is incomplete. `sharp` says the
+    // shown runs are the current publication's, for this token and view; a deferred or denied tip is not sharp.
+    const routedCoverage = (token: FrameToken, view: ViewState): { complete: boolean; sharp: boolean } => {
         const palette = options.palette(), frame = options.readyFrame(), viewKey = viewKeyOf(view);
+        let sharp = true;
         for (const snapshot of handover?.forFrame(identity => visuallyCovered(frame, identity, options.token)) ?? []) {
             const gesture = snapshot.identity.gestureSequence, source = prepared.get(gesture);
+            if (!source) return { complete: false, sharp: false };
             for (const band of BANDS) {
                 if (!bandMaterial(snapshot, band, palette)) continue;
                 const slot = runs.get(runKey(gesture, band));
-                if (!source || !slot || (slot.state !== 'ready' && slot.state !== 'empty') || slot.serial !== source.serial
-                    || slot.scale !== source.scale || !sameFrameToken(slot.token, token) || (slot.viewBound && slot.viewKey !== viewKey)) return false;
+                if (!slot || !sameFrameToken(slot.token, token) || (!slot.shown && slot.state !== 'empty')) return { complete: false, sharp: false };
+                const current = (slot.state === 'ready' || slot.state === 'empty') && slot.serial === source.serial && slot.scale === source.scale
+                    && (!slot.viewBound || slot.viewKey === viewKey);
+                if (!current) sharp = false;
             }
         }
-        return true;
+        return { complete: true, sharp };
     };
     const drawRouted = (pass: GpuPass, view: ViewState, band: WetBand): void => {
         if (disposed || !options.current() || !inkRoutes || !owner) return;
@@ -564,8 +571,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                 .some(item => !prepared.has(item.identity.gestureSequence));
             if (missing) return { complete: false, sharp: false };
             if (backend === 'canvas2d') return { complete: true, sharp: true };
-            const complete = routedCovered(frame.token, frame.view);
-            return { complete, sharp: complete };
+            return routedCoverage(frame.token, frame.view);
         },
     });
     const layers = Object.freeze({ underlay: make('underlay'), content: make('content') });

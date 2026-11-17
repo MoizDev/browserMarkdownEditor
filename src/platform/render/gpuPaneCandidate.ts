@@ -50,6 +50,8 @@ interface Generation {
     disposed: boolean;
     failureReported: boolean;
     deferredReported: boolean;
+    /** This generation has demoted its pane. Its first GPU error is the one counted and logged; later ones are the same fault. */
+    fellBack: boolean;
 }
 
 /** Qualified devices are built against the broker's context and kept detached until the lifecycle
@@ -58,6 +60,8 @@ interface Generation {
 export class GpuPaneCandidate {
     private current: Generation | null = null;
     private serial = 0;
+    /** An error that arrives with no current generation has nothing to demote; it is counted and logged once per candidate. */
+    private orphanReported = false;
 
     constructor(private readonly options: GpuPaneCandidateOptions) {}
 
@@ -98,7 +102,7 @@ export class GpuPaneCandidate {
                 } });
         } catch (error) { backing.close(); throw error; }
         const generation: Generation = { preparation, services, backing, bundle: null, grant: null,
-            disposed: false, failureReported: false, deferredReported: false };
+            disposed: false, failureReported: false, deferredReported: false, fellBack: false };
         generationRef.current = generation;
         this.current = generation;
         try {
@@ -113,7 +117,7 @@ export class GpuPaneCandidate {
                 },
                 invalidate: this.options.invalidate,
                 // Every GPU compositor error demotes this pane; none reaches the owner, so a board never fails to open on one.
-                onError: error => defer(() => this.failure(preparation.generation, reportGpuFallback('compositor', error))),
+                onError: error => defer(() => this.demote(generation, 'compositor', error)),
                 onDeferred: () => {
                     const compositor = generation.bundle?.compositor;
                     if (!compositor || !('retryPending' in compositor) || compositor.retryPending !== true || generation.deferredReported) return;
@@ -139,11 +143,12 @@ export class GpuPaneCandidate {
             const refusal = typeof error === 'object' && error !== null && 'code' in error &&
                 (error.code === 'out-of-budget' || error.code === 'allocation');
             if (!preparation.signal.aborted && !refusal) reportGpuFallback('setup', error);
-            if (!preparation.signal.aborted && !generation.failureReported && typeof error === 'object' && error !== null && 'code' in error) {
+            // Only a capability failure and a real context loss reach the runtime. A refused creation is already accounted by
+            // the governor's reservation; signalling it as trouble degraded the whole app's quality and showed the
+            // 'reduced to fit memory' notice for one pane's forced failure (by reading: signalTrouble → degrade → onPressureChange).
+            if (!preparation.signal.aborted && typeof error === 'object' && error !== null && 'code' in error) {
                 const code = error.code;
-                if (code === 'unsupported' || code === 'allocation' || code === 'out-of-budget' || code === 'lost') {
-                    this.reportTrouble(generation, code);
-                }
+                if (code === 'unsupported' || code === 'lost') this.reportTrouble(generation, code);
             }
             generation.disposed = true;
             generation.services.close();
@@ -171,9 +176,19 @@ export class GpuPaneCandidate {
     /** The pane's GPU work threw outside the compositor's own callbacks (a frame, a layer, a request). The current device
      * generation falls back to canvas2d; with none current the error is only reported. */
     fail(error: unknown, where: string): void {
-        const code = reportGpuFallback(where, error);
         const current = this.current;
-        if (current && !current.disposed) this.failure(current.preparation.generation, code);
+        if (current && !current.disposed) { this.demote(current, where, error); return; }
+        if (this.orphanReported) return;
+        this.orphanReported = true;
+        reportGpuFallback(where, error);
+    }
+
+    /** Demotes the pane once per generation: the first GPU error is counted and logged with its stack, and asks the broker
+     * to fall back; later errors of the same generation are the same fault and add nothing. */
+    private demote(generation: Generation, where: string, error: unknown): void {
+        if (generation.fellBack || generation.disposed || this.current !== generation) return;
+        generation.fellBack = true;
+        this.failure(generation.preparation.generation, reportGpuFallback(where, error));
     }
 
     presented(generation: number): void {

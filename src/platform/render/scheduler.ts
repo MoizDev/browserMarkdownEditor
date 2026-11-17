@@ -667,8 +667,12 @@ export class FrameScheduler {
 
     private ensureFrame(): void {
         if (this.inFrame || this.frameHold !== null) return;
-        if (!this.running || this.suspended || !this.needsWork()) { this.cancelFrame(); return; }
-        if (this.raf === null) this.raf = requestAnimationFrame(this.runFrame);
+        if (!this.running || this.suspended) { this.cancelFrame(); return; }
+        // A frame already requested decides for itself when it runs (it re-checks at its end), so a burst of marks does not scan
+        // every pane and layer each time (gpu-h11 R11): the scan runs once per frame request, not once per mark.
+        if (this.raf !== null) return;
+        if (!this.needsWork()) return;
+        this.raf = requestAnimationFrame(this.runFrame);
     }
 
     private readonly runFrame = (timestamp: number): void => {

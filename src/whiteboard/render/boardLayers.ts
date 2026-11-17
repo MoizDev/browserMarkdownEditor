@@ -909,9 +909,10 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         critical() { return presented === null && !adapter?.readyFrame() && !gpu?.readyFrame(); },
         coverage(layer, frame, backend) {
             const actual = coverageOf(layer, frame, backend);
-            // What this band draws besides the current picture, for the present audit: a previous frame or a scaled tile is a
-            // stand-in; nothing drawable at all is a hole. One unit per band per frame (the band's tiles are not counted apart).
-            if (!actual.complete || !actual.sharp) auditDrawn(!actual.complete && presented === null ? 'hole' : 'stand-in');
+            // What the board draws besides the current picture, for the present audit: a previous frame or a scaled tile is a
+            // stand-in; nothing drawable at all is a hole. Both bands read the same composer and adapter, so their coverage is one
+            // state: it is reported once per frame, from the underlay band, not once per band.
+            if (band === 'underlay' && (!actual.complete || !actual.sharp)) auditDrawn(!actual.complete && presented === null ? 'hole' : 'stand-in');
             return options.optional && !actual.complete ? { complete: true, sharp: true } : actual;
         },
     });

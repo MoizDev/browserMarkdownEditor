@@ -593,10 +593,16 @@ export class FrameScheduler {
             };
             this.meter = meter;
             // 1–2: consume reported geometry/lifecycle first, then input and time-integrated cameras.
-            const candidates = pending.filter(({ entry, reasons }) => reasons.length || entry.motion ||
-                (entry.renderable && this.call(entry, () => entry.layers.some(layer => layer.needsFrame()))));
-            const ready: Array<{ entry: PaneEntry; reasons: readonly string[]; batch: DamageBatch }> = [];
-            for (const { entry, batch, reasons } of candidates) {
+            // The cause is read here, where the frame is requested: a camera that stops in advanceMotion, or a layer that
+            // stops needing a frame during its own preparation, would otherwise leave a presented frame with no cause.
+            const candidates: Array<{ entry: PaneEntry; batch: DamageBatch; reasons: readonly string[]; cause: string }> = [];
+            for (const { entry, batch, reasons } of pending) {
+                const requested = reasons.length > 0 || entry.motion !== null ||
+                    (entry.renderable && this.call(entry, () => entry.layers.some(layer => layer.needsFrame())) === true);
+                if (requested) candidates.push({ entry, batch, reasons, cause: renderAuditEnabled() ? this.presentCause(entry, reasons) : '' });
+            }
+            const ready: Array<{ entry: PaneEntry; reasons: readonly string[]; batch: DamageBatch; cause: string }> = [];
+            for (const { entry, batch, reasons, cause } of candidates) {
                 this.call(entry, () => {
                     // Discard stale document/view work BEFORE a callback can resize a surface.
                     if (!this.token(entry)) { entry.renderable = false; this.cancelMotion(entry); return; }
@@ -629,7 +635,7 @@ export class FrameScheduler {
                         return;
                     }
                     entry.dormantNotified = false;
-                    ready.push({ entry, reasons, batch });
+                    ready.push({ entry, reasons, batch, cause });
                 });
             }
             // All geometry precedes all input; all cameras advance/freeze before any scene snapshot.
@@ -640,8 +646,8 @@ export class FrameScheduler {
                     entry.pane.camera.setMoving(entry.motion !== null || entry.pane.isInteracting());
                 });
             }
-            const frozen: Array<{ entry: PaneEntry; reasons: readonly string[]; batch: DamageBatch; geometry: number; token: FrameToken; view: ViewState }> = [];
-            for (const { entry, reasons, batch } of ready) {
+            const frozen: Array<{ entry: PaneEntry; reasons: readonly string[]; batch: DamageBatch; cause: string; geometry: number; token: FrameToken; view: ViewState }> = [];
+            for (const { entry, reasons, batch, cause } of ready) {
                 this.call(entry, () => {
                     const token = this.token(entry);
                     const metrics = entry.pane.metrics.current;
@@ -649,11 +655,11 @@ export class FrameScheduler {
                         entry.renderable = false;
                         return;
                     }
-                    frozen.push({ entry, reasons, batch, geometry: metrics.tags.geometryGeneration, token, view: entry.pane.camera.beginFrame(frameId) });
+                    frozen.push({ entry, reasons, batch, cause, geometry: metrics.tags.geometryGeneration, token, view: entry.pane.camera.beginFrame(frameId) });
                 });
             }
             const work: FrameWork[] = [];
-            for (const { entry, reasons, batch, geometry, token, view } of frozen) {
+            for (const { entry, reasons, batch, cause, geometry, token, view } of frozen) {
                 this.call(entry, () => {
                     // 3: freeze authoritative scene/live input before retiring any previously wet revision.
                     entry.pane.snapshotScene(view);
@@ -668,7 +674,6 @@ export class FrameScheduler {
                     else batch.damage.mark({ x: 0, y: 0, width: 0, height: 0 }, tags);
                     const damage = batch.damage.freeze()!;
                     const frame = Object.freeze({ frameId, timestamp, intervalMs: this.intervalMs, token, view, layers, reasons, damage });
-                    const cause = renderAuditEnabled() ? this.presentCause(entry, reasons) : '';
                     work.push({ entry, frame, batch, geometry, hadInput: entry.inputPriority || reasons.includes('input'), platformPrepared: false, cause });
                     entry.inputPriority = false;
                 });

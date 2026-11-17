@@ -48,6 +48,14 @@ interface Entry {
 
 const NO_BOXES: readonly Readonly<Rect>[] = [];
 
+/** The part of `box` inside `viewport`, or null when none of it is visible. */
+function clipped(box: Readonly<Rect>, viewport: Readonly<Rect>): Rect | null {
+    const x = Math.max(box.x, viewport.x), y = Math.max(box.y, viewport.y);
+    const right = Math.min(box.x + box.width, viewport.x + viewport.width);
+    const bottom = Math.min(box.y + box.height, viewport.y + viewport.height);
+    return right > x && bottom > y ? { x, y, width: right - x, height: bottom - y } : null;
+}
+
 /** Pixels this backend can draw: the device's texture, or the CPU bitmap (which a GPU backend can still upload). */
 /** A zoom gesture's scale changes every few frames; this long without a change, it has settled enough to raster. */
 const ZOOM_SETTLE_MS = 150;
@@ -92,6 +100,10 @@ export class PdfTileLayer implements Layer {
     private readonly bridgeTextures = new Map<string, PooledTexture>();
     private bridgeReady = new Set<string>();
     private desired = new Set<string>();
+    /** The exact tiles this frame's plan asked for, by key, with the view prepare planned them for. Coverage reads it:
+     * a second plan per coverage call re-did the whole demand walk every frame (by reading: the compositor calls
+     * coverage on every encoded frame). Null while moving or before the first plan. */
+    private framePlan: { readonly view: ViewState; readonly exactKeys: readonly string[] } | null = null;
     private sequence = 0;
     private contentRevision = 0;
     private pendingFrame = false;
@@ -129,6 +141,7 @@ export class PdfTileLayer implements Layer {
 
     prepare(view: ViewState, budget: FrameBudget): void {
         this.pendingFrame = false;
+        this.framePlan = null;
         if (this.disposed || !this.isCurrent()) return;
         const device = this.host.device();
         if (device && this.frameTexture?.device !== device) {
@@ -178,7 +191,21 @@ export class PdfTileLayer implements Layer {
         const zooming = !!device && now - this.scaleChangedAt < ZOOM_SETTLE_MS;
         this.lastMotionScale = planned.motionScale;
         this.desired = new Set(planned.requests.map(request => tileKeyString(request.key)));
+        if (!input.moving) {
+            const exactKeys = planned.requests.filter(request => request.level === 'exact' && intersects(rect(request), input.viewport))
+                .map(request => tileKeyString(request.key));
+            this.framePlan = { view, exactKeys };
+        }
         const exactScale = planned.requests.find(request => request.level === 'exact')?.scale.scale;
+        // Built at most once per prepare, and only when an other-scale stand-in asks: removals below touch only entries
+        // outside the plan, so the plan's drawable tiles do not change during the loop.
+        let planBoxes: Map<number, Readonly<Rect>[]> | null = null;
+        const replaceable = (entry: Entry): boolean => {
+            const area = clipped(rect(entry.request), input.viewport);
+            if (!area) return true;
+            planBoxes ??= this.drawablePlanBoxes(device);
+            return covers(area, planBoxes.get(entry.request.page) ?? []);
+        };
         for (const [key, entry] of this.entries) {
             // A running off-window render is cancelled; settled older scales
             // remain available as stand-ins until the allocator needs space.
@@ -190,15 +217,19 @@ export class PdfTileLayer implements Layer {
                 auditCount('pdf-page', 'fallback:raster-unused');
                 this.remove(key, entry);
             }
-            // Once settled, another scale's off-plan texture is no stand-in for anything: the plan covers the view at
-            // its own scale. Same-scale tiles stay as the scroll cache. Measured: one zoom left 34 MB of old-scale
+            // Another scale's off-plan texture stays as a stand-in until the plan's own tiles cover its visible part.
+            // Dropping it at once showed a blank page while the replacement rastered (by reading: a non-moving zoom
+            // evicted every old-scale tile in the frame the new scale was planned). Off-view ones go at once, as
+            // before. Same-scale tiles stay as the scroll cache. Measured: one zoom left 34 MB of old-scale
             // textures, and the next window resize pushed the pool over its target and degraded the pane to 0.64.
             // Motion tiles stay: the next scroll draws them again. Scales compare with a tolerance, since the same zoom
             // recomputes its scale with float noise (1.4379084967320261 vs ...255).
             else if (!input.moving && entry.settled && !this.desired.has(key) && exactScale !== undefined &&
                 entry.request.level === 'exact' && Math.abs(entry.request.scale.scale / exactScale - 1) > 1e-6) {
-                auditCount('pdf-page', 'evict-other-scale');
-                this.remove(key, entry);
+                if (replaceable(entry)) {
+                    auditCount('pdf-page', 'evict-other-scale');
+                    this.remove(key, entry);
+                } else auditCount('pdf-page', 'stand-in-held');
             }
         }
         let running = [...this.entries.values()].filter(entry => !entry.settled).length;
@@ -289,7 +320,9 @@ export class PdfTileLayer implements Layer {
      */
     private releaseUploadedBitmaps(view: ViewState, viewport: Readonly<Rect>, device: GfxDevice): void {
         const snapshot = this.mirror?.view(view);
-        const mirrored = !snapshot || mirrorViewKey(snapshot) === this.mirrorKey || mirrorViewKey(snapshot) === this.mirrorSkipped;
+        // One key per call: it is a JSON string, and the expression below hashed the same snapshot up to twice.
+        const snapshotKey = snapshot ? mirrorViewKey(snapshot) : '';
+        const mirrored = !snapshot || snapshotKey === this.mirrorKey || snapshotKey === this.mirrorSkipped;
         for (const [key, entry] of this.entries) {
             if (!entry.bitmap || entry.texture?.device !== device) continue;
             // Only the current plan's visible tiles feed the mirror; an older scale kept as a stand-in never does
@@ -329,10 +362,11 @@ export class PdfTileLayer implements Layer {
             }
         }
         if (input.moving || usedBridge) return { complete: true, sharp: false };
-        const desired = planPdfTileDemand({ ...input, covered: () => false });
-        for (const request of desired.requests) {
-            if (request.level !== 'exact' || !intersects(rect(request), input.viewport)) continue;
-            const entry = this.entries.get(tileKeyString(request.key));
+        // Sharp only for the view prepare planned this frame: any other view is not proven sharp, and not refused either.
+        const plan = this.framePlan;
+        if (!plan || plan.view !== view) return { complete: true, sharp: false };
+        for (const key of plan.exactKeys) {
+            const entry = this.entries.get(key);
             if (!entry || !drawableOn(entry, device) || (device && entry.texture?.device !== device)) return { complete: true, sharp: false };
         }
         return { complete: true, sharp: true };
@@ -362,7 +396,7 @@ export class PdfTileLayer implements Layer {
             this.host.drawTexturedQuad(pass, texture.handle, quad.sourceRect, quad.destRect, { opacity: 1, sampling: 'linear',
                 ...(__BME_BENCH__ ? { coverage: 'standin' as const, standInRatio: item.pixels.source.width / item.pixels.world.width / rasterScale } : {}) });
         }
-        for (const entry of this.drawable(view)) {
+        for (const entry of this.drawable(view, current)) {
             if (!entry.texture || entry.texture.device !== this.host.device()) continue;
             const { source, destination } = this.quad(entry.request, stack.rects[entry.request.page], view);
             this.host.drawTexturedQuad(pass, entry.texture.handle, source, destination,
@@ -392,7 +426,7 @@ export class PdfTileLayer implements Layer {
             this.host.drawTexturedQuad(ctx, item.pixels.bitmap, quad.sourceRect, quad.destRect, { opacity: 1, sampling: 'linear',
                 ...(__BME_BENCH__ ? { coverage: 'standin' as const, standInRatio: item.pixels.source.width / item.pixels.world.width / rasterScale } : {}) });
         }
-        for (const entry of this.drawable(view)) {
+        for (const entry of this.drawable(view, current)) {
             if (!entry.bitmap) continue;
             const { source, destination } = this.quad(entry.request, stack.rects[entry.request.page], view);
             this.host.drawTexturedQuad(ctx, entry.bitmap, source, destination,
@@ -730,6 +764,18 @@ export class PdfTileLayer implements Layer {
         return covers(area, additional.length ? [...additional, ...own] : own);
     }
 
+    /** The drawable tiles of the current plan, by page: what a stand-in must wait for before it may go. */
+    private drawablePlanBoxes(device: GfxDevice | null): Map<number, Readonly<Rect>[]> {
+        const boxes = new Map<number, Readonly<Rect>[]>();
+        for (const [key, entry] of this.entries) {
+            if (!this.desired.has(key) || !drawableOn(entry, device) || (device && entry.texture?.device !== device)) continue;
+            const list = boxes.get(entry.request.page) ?? [];
+            list.push(rect(entry.request));
+            boxes.set(entry.request.page, list);
+        }
+        return boxes;
+    }
+
     private coverBoxes(device: GfxDevice | null): ReadonlyMap<number, readonly Readonly<Rect>[]> {
         const cached = this.coverCache;
         if (cached && cached.device === device) return cached.boxes;
@@ -765,9 +811,9 @@ export class PdfTileLayer implements Layer {
         this.drawnPages.set(index, Object.freeze({ x: page.x, y: page.y, width: page.width, height: page.height }));
     }
 
-    private drawable(view: ViewState): Entry[] {
-        const input = this.demand(view);
-        if (contentFamily(input) !== this.contentIdentity) return [];
+    /** `current` is the caller's own check that the frame's content identity is the one entries were planned for. */
+    private drawable(view: ViewState, current: boolean): Entry[] {
+        if (!current) return [];
         const viewport = { x: view.camera.x, y: view.camera.y, width: view.viewport.width / view.camera.z, height: view.viewport.height / view.camera.z };
         return [...this.entries.values()].filter(entry => entry.settled && intersects(rect(entry.request), viewport))
             .sort((a, b) => a.request.scale.scale - b.request.scale.scale || a.used - b.used);

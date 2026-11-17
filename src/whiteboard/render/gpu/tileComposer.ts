@@ -922,7 +922,10 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             frame = budget.frameId;
             drawnInk.clear();
             retireLive();
-            if (scaleIndexes.size >= 60) {
+            // The interned scales only name the positions in progress: with none in progress they are forgotten now, so a zoom's
+            // scales are not kept after it ends (gpu: the churn cannot hold memory). The restart at 60 stays for a long zoom.
+            if (!building.size) scaleIndexes.clear();
+            else if (scaleIndexes.size >= 60) {
                 // The keys' scale indexes are nearly spent: the positions in progress are restarted, which frees their indexes.
                 for (const position of building.values()) cancel(position);
                 building.clear(); scaleIndexes.clear();

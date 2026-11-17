@@ -1,7 +1,7 @@
 import type { Affine, Rect, ViewState } from '../../platform/types';
 import type { HostBlock } from '../model/doc';
 import type { PlatformLayerDefinition } from '../../platform/render/attachPlatformPane.types';
-import { awaitCapacity, isBudgetRefusal } from './budgetRefusal';
+import { awaitCapacity, awaitSizedCapacity, isBudgetRefusal } from './budgetRefusal';
 import type { CompositorBackend, LayerCoverage, LayerHost } from '../../platform/render/compositor.types';
 import type { ScheduledFrame } from '../../platform/render/scheduler';
 import type { ByteLease } from '../../platform/render/gfx/api';
@@ -242,6 +242,13 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     let estimate: Estimate | null = null, denied = false, disposed = false, lastPrepareFrame: number | null = null;
     // One back-off for every refused reservation of this layer pair; the dense plan and the direct estimate both consult it.
     const memoryGate = new MemoryRetryGate();
+    // One sized waiter for the layer pair's refused CPU reservations: a refusal registers it once, until it fires.
+    let capacityWaiting = false;
+    const awaitCpu = (bytes: number): void => {
+        if (capacityWaiting) return;
+        capacityWaiting = true;
+        awaitSizedCapacity(allocatorHost, () => { capacityWaiting = false; allocatorHost?.invalidate('board-memory'); }, { pool: 'cpu', bytes });
+    };
     let memoryRetry: ReturnType<typeof setTimeout> | null = null;
     // The first prepare after a hide drops the session bitmaps the returned view cannot draw, before it plans.
     let returnedFromHide = false;
@@ -506,7 +513,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             if (!lease) {
                 memoryGate.refused(); denied = true;
                 allocatorHost!.demandChanged?.();
-                allocatorHost!.allocator.cpu.whenAvailable?.(() => allocatorHost?.invalidate('board-memory'));
+                awaitCpu(DIRECT_CHUNK);
                 return false;
             }
             memoryGate.admitted();
@@ -640,7 +647,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                         allocatorHost!.demandChanged?.();
                         denied = true;
                         if (frame.openTile && deniedDirectSegments === null) { deniedDirectSegments = segments; allocatorHost!.invalidate('board-density-demand-ready'); }
-                        allocatorHost!.allocator.cpu.whenAvailable?.(() => allocatorHost?.invalidate('board-memory'));
+                        awaitCpu(bytes);
                         return;
                     }
                     memoryGate.admitted();

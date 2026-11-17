@@ -223,7 +223,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     const refuseTarget = (): void => { denied = true; auditCount(audit, 'tile:denied'); store.wait(TARGET_BYTES, wake); };
     const refuseAdmission = (pool: 'gpu' | 'cpu', bytes: number): void => {
         denied = true; auditCount(audit, 'tile:denied');
-        if (pool === 'gpu') store.wait(bytes, wake); else host.allocator.cpu.whenAvailable?.(wake);
+        if (pool === 'gpu') store.wait(bytes, wake); else host.allocator.cpu.whenAvailable?.(wake, bytes);
     };
 
     const keyOf = (band: PaintBand, scale: number, x: number, y: number, slice: number): TileKey => ({ band, scale, x, y, slice });
@@ -478,6 +478,14 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         }
     };
 
+    // The run an encode draws, set by the encode loop: one object for the composer's life, so no closure is built per run.
+    const encodeDraw: { pass: GpuPass | null; route: ItemRoute | null; run: PreparedRun | null } = { pass: null, route: null, run: null };
+    const drawEncoded = (): void => {
+        const { pass, route, run } = encodeDraw;
+        if (!pass || !route || !run) throw new Error('Encode draw without a run');
+        route.draw(pass, run);
+    };
+
     const addDraw = (band: PaintBand, entry: TileEntry, slot: Slot, clip: Rect | null): void => {
         const target = entry.target;
         if (!target) return;
@@ -573,13 +581,17 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 const target = entry.target;
                 const pass = passes.begin(target.target, { x: 0, y: 0, width: target.size, height: target.size },
                     { clear: slice.blend === 'modulate' ? WHITE : CLEAR, stencil: false });
+                const audited = renderAuditEnabled();
                 for (const { route, run, clips } of slice.admitted) {
-                    timedStage(audit, 'draw', () => {
-                        if (clips) withPreparedClips(pass, clips, () => route.draw(pass, run));
-                        else route.draw(pass, run);
-                    });
+                    // Drawn through the shared `drawEncoded` with the run in `encodeDraw`: no closure is built per run.
+                    const t0 = audited ? performance.now() : 0;
+                    encodeDraw.pass = pass; encodeDraw.route = route; encodeDraw.run = run;
+                    if (clips) withPreparedClips(pass, clips, drawEncoded);
+                    else drawEncoded();
+                    if (audited) auditStage(audit, 'draw', performance.now() - t0);
                     auditCount(audit, `route:${route.id}`);
                 }
+                encodeDraw.pass = null; encodeDraw.route = null; encodeDraw.run = null;
                 pass.end();
                 auditCount(audit, 'tile:compose', 1, { px: target.size * target.size });
                 entry.dirty = false; entry.composed = true; entry.revision = validRevision;

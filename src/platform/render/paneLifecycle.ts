@@ -138,6 +138,7 @@ export class PaneLifecycle<T extends object> {
     private uploadGeneration: number | null = null;
     private uploaded = new WeakSet<T>();
     private budgetKey = '';
+    private budgetShape = '';
     private presentationEpoch = 0;
     private prepareSerial = 0;
     private readonly detachHost: () => void;
@@ -440,6 +441,13 @@ export class PaneLifecycle<T extends object> {
         const key = grant ? JSON.stringify([grant.pixelGrant, grant.gpuCacheBytes, grant.cpuBytes, grant.state]) : '';
         if (key === this.budgetKey) return;
         this.budgetKey = key;
+        // A CPU grant that moves alone repaints nothing: the governor refuses or evicts past it at the next reservation, and the
+        // pressure trim releases the rest. Repainting on it fed a loop, because the pane's own staged slices move its CPU need, so the
+        // grant flipped between two values and each flip requested a frame (measured in a drag tail: two budget frames, both with
+        // unchanged pixels).
+        const shape = grant ? JSON.stringify([grant.pixelGrant, grant.gpuCacheBytes, grant.state]) : '';
+        if (shape === this.budgetShape) return;
+        this.budgetShape = shape;
         if (this.canDraw()) this.binding?.invalidate('budget');
     }
 

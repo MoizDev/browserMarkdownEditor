@@ -193,7 +193,11 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
         const next = queued; queued = null;
         // A commit awaiting presentation owns the overlay: a held request made before it is superseded by it.
         if (!next || commitRevision !== null) return;
-        try { start(...next); } catch (error) { clear(); report(error); }
+        // The drained request supersedes nothing: the overlay in flight was already presented. Its start must not
+        // reject the waiters of the request that queued it (a shape commit waits on exactly that overlay); measured:
+        // the commit was rejected as "Board preview was superseded" and the tool fell back to Select, with no shape.
+        resuming = true;
+        try { start(...next); } catch (error) { clear(); report(error); } finally { resuming = false; }
     };
     const start = (changes: Map<NodeId, Node>, textOverlay?: Readonly<{ node: NodeId; paint: TextPaint; faces: FaceTable; localToWorld: Affine }>,
         paper?: Readonly<import('../../utils/paper').NotebookPaper>, meta: TranslationMeta | null = null) => {

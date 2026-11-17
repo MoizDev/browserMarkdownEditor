@@ -1,15 +1,50 @@
 import type { ByteLease, GfxDevice, TextureFormat, TextureHandle } from '../../platform/render/gfx/api';
 import { auditCount } from '../../platform/render/renderAudit';
+import { copyIdentity, identityHash, sameIdentity, type MaskIdentity } from './gpu/textMasks';
 
-// The board text atlas (solo/whiteboard-text-atlas.md): pages of run masks, a shelf packer per page, LRU by page and
+// The board text atlas (solo/whiteboard-text-atlas.md): pages of run mask cells, a shelf packer per page, LRU by page and
 // pins held by the runs that draw from it. Two atlases share this code: R8 for mono coverage masks, RGBA for runs with
-// colour glyphs. Built from b2's step-1 module (ba1f43fc); the decision after step 2 dropped the quantised bands, so a
-// key is the run's exact mask key (textMasks.ts) and nothing here quantises.
+// colour glyphs. Built from b2's step-1 module (ba1f43fc); the decision after step 2 dropped the quantised bands, so an
+// entry is keyed by its cell's exact identity (textMasks.ts) and nothing here quantises. Keys are numbers: the identity's
+// hash finds the bucket and an exact field compare confirms it, so a lookup builds no string and allocates nothing.
 
-/** Pages are square and fixed; a mask wider or taller than a page is never placed whole. */
+/** Pages are square and fixed; a mask cell wider or taller than a page is never placed whole. */
 export const ATLAS_PAGE = 2048;
 /** Shelves are rounded to whole 8 px rows, so a row of masks shares one height and the packer stays a few integers. */
 export const SHELF_STEP = 8;
+
+/** A value an index holds by identity: its own copy of the identity, and that identity's hash. */
+export interface Indexed { readonly identity: MaskIdentity; readonly hash: number }
+/** Values by exact identity, in buckets by numeric hash. Holds no strings. `values` copies, so a sweep may delete as it goes. */
+export class IdentityIndex<V extends Indexed> {
+    private readonly buckets = new Map<number, V[]>();
+    private count = 0;
+    get size(): number { return this.count; }
+    find(probe: MaskIdentity): V | undefined {
+        const bucket = this.buckets.get(identityHash(probe));
+        if (bucket) for (const value of bucket) if (sameIdentity(value.identity, probe)) return value;
+        return undefined;
+    }
+    add(value: V): void {
+        const bucket = this.buckets.get(value.hash);
+        if (bucket) bucket.push(value); else this.buckets.set(value.hash, [value]);
+        this.count++;
+    }
+    delete(value: V): void {
+        const bucket = this.buckets.get(value.hash);
+        if (!bucket) return;
+        const at = bucket.indexOf(value);
+        if (at < 0) return;
+        bucket.splice(at, 1); this.count--;
+        if (bucket.length === 0) this.buckets.delete(value.hash);
+    }
+    clear(): void { this.buckets.clear(); this.count = 0; }
+    values(): V[] {
+        const all: V[] = [];
+        for (const bucket of this.buckets.values()) for (const value of bucket) all.push(value);
+        return all;
+    }
+}
 
 /** Left to right within a shelf, and a new shelf below the last when the row is full. Pure bookkeeping. */
 export class ShelfPacker {
@@ -35,13 +70,10 @@ export class ShelfPacker {
     }
 }
 
-/** A placed mask. `pinned` counts runs that draw it. */
-export interface AtlasEntry {
-    readonly key: string;
-    /** The face css the mask was rastered in: a font change retires entries by it. */
-    readonly css: string;
+/** A placed mask cell. `pinned` counts runs that draw it. `dropped` is set once it has left the atlas for good. */
+export interface AtlasEntry extends Indexed {
     readonly page: AtlasPage;
-    /** Top-left of the mask's pixels inside the page, in page px. */
+    /** Top-left of the cell's pixels inside the page, in page px. */
     readonly x: number;
     readonly y: number;
     readonly w: number;
@@ -49,6 +81,7 @@ export interface AtlasEntry {
     pinned: number;
     /** Set when a font change retires the entry: no lookup finds it, its space frees when its last pin drops. */
     retired: boolean;
+    dropped: boolean;
 }
 
 /** One GPU page: a texture from the layer's grant, its packer and the entries placed on it. */
@@ -87,7 +120,7 @@ export interface TextAtlasOptions {
 
 /** Keyed entries on shelf-packed pages, LRU eviction of whole pages, and pins held by runs until they retire. */
 export class TextAtlas {
-    private readonly entries = new Map<string, AtlasEntry>();
+    private readonly index = new IdentityIndex<AtlasEntry>();
     private readonly pages: AtlasPage[] = [];
     private disposed = false;
     constructor(private readonly device: GfxDevice, private readonly host: AtlasHost, private readonly options: TextAtlasOptions) {}
@@ -95,26 +128,29 @@ export class TextAtlas {
     get pageCount(): number { return this.pages.length; }
     get bytes(): number { return this.pages.reduce((sum, page) => sum + page.lease.bytes, 0); }
 
-    /** A live entry for the key, touched to the frame. Counts a hit; a miss is the caller's raster, counted there. */
-    lookup(key: string, frame: number): AtlasEntry | null {
-        const entry = this.entries.get(key);
+    /** A live entry for the identity, touched to the frame. Counts a hit; a miss is the caller's raster, counted there. */
+    lookup(probe: MaskIdentity, frame: number): AtlasEntry | null {
+        const entry = this.index.find(probe);
         if (!entry || entry.retired) return null;
         entry.page.touch(frame);
         auditCount(this.options.surface, 'text:mask-hit');
         return entry;
     }
 
-    /** Places a w x h mask under the key and returns the entry, or 'oversize' when no page can hold it, or 'denied' when the
-     * grant refuses a page. The pixels are written by `upload`; the entry is not drawable before it. */
-    place(key: string, css: string, w: number, h: number, frame: number): AtlasEntry | 'oversize' | 'denied' {
+    /** Places a w x h cell under the identity and returns the entry, or 'oversize' when no page can hold it, or 'denied' when
+     * the grant refuses a page. The atlas keeps its own copy of the identity. The pixels are written by `upload`; the entry is
+     * not drawable before it. */
+    place(probe: MaskIdentity, w: number, h: number, frame: number): AtlasEntry | 'oversize' | 'denied' {
         if (this.disposed) return 'denied';
         if (w > ATLAS_PAGE || h > ATLAS_PAGE) return 'oversize';
         const placed = this.findSlot(w, h, frame);
         if (!placed) return 'denied';
-        const entry: AtlasEntry = { key, css, page: placed.page, x: placed.x, y: placed.y, w, h, pinned: 0, retired: false };
+        const identity = copyIdentity(probe);
+        const entry: AtlasEntry = { identity, hash: identityHash(identity), page: placed.page, x: placed.x, y: placed.y, w, h,
+            pinned: 0, retired: false, dropped: false };
         placed.page.entries.add(entry);
         placed.page.touch(frame);
-        this.entries.set(key, entry);
+        this.index.add(entry);
         return entry;
     }
 
@@ -122,6 +158,14 @@ export class TextAtlas {
     upload(entry: AtlasEntry, pixels: Uint8Array, rowBytes: number): void {
         this.device.writeTexture(entry.page.texture, { x: entry.x, y: entry.y, width: entry.w, height: entry.h },
             { source: pixels, rowBytes, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
+    }
+
+    /** Writes a cell's ImageBitmap into its page sub-rect with no readback. The caller closes the bitmap: this only reads it.
+     * Colour pages only: an R8 page needs a conversion pass the route cannot begin (see routeText.ts, mono cells). */
+    uploadBitmap(entry: AtlasEntry, bitmap: ImageBitmap): void {
+        if (this.options.format !== 'rgba8') throw new RangeError('A bitmap uploads only to an rgba8 atlas page');
+        this.device.writeTexture(entry.page.texture, { x: entry.x, y: entry.y, width: entry.w, height: entry.h },
+            { source: bitmap, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
     }
 
     /** A run pins every entry its draw reads and unpins once it retires. A pinned page is never evicted or trimmed. */
@@ -136,8 +180,8 @@ export class TextAtlas {
     /** A font changed: retire every entry of that face css. New lookups miss; pinned entries stay valid until their pins drop. */
     retireFace(css: string): number {
         let retired = 0;
-        for (const entry of this.entries.values()) {
-            if (entry.retired || entry.css !== css) continue;
+        for (const entry of this.index.values()) {
+            if (entry.retired || entry.identity.css !== css) continue;
             entry.retired = true; retired++;
             if (entry.pinned === 0) this.forget(entry);
         }
@@ -149,7 +193,8 @@ export class TextAtlas {
     dispose(): void {
         if (this.disposed) return;
         this.disposed = true;
-        this.entries.clear();
+        this.index.clear();
+        for (const page of this.pages) for (const entry of page.entries) entry.dropped = true;
         for (const page of [...this.pages]) {
             if (page.unpinned()) this.evictPage(page);
             else page.retiring = true;
@@ -172,9 +217,9 @@ export class TextAtlas {
         return freed;
     }
 
-    /** True while the entry is the atlas's live mask for its key: not retired, not evicted, not disposed. */
+    /** True while the entry is the atlas's live mask cell for its identity: not retired, not dropped, not disposed. */
     holds(entry: AtlasEntry): boolean {
-        return !this.disposed && !entry.retired && this.entries.get(entry.key) === entry;
+        return !this.disposed && !entry.retired && !entry.dropped;
     }
 
     private findSlot(w: number, h: number, frame: number): { page: AtlasPage; x: number; y: number } | null {
@@ -212,7 +257,7 @@ export class TextAtlas {
     }
 
     private evictPage(page: AtlasPage): void {
-        for (const entry of page.entries) if (this.entries.get(entry.key) === entry) this.entries.delete(entry.key);
+        for (const entry of page.entries) { this.index.delete(entry); entry.dropped = true; }
         auditCount(this.options.surface, 'text:page-evict', 1, { px: ATLAS_PAGE * ATLAS_PAGE });
         this.pages.splice(this.pages.indexOf(page), 1);
         this.destroyPage(page);
@@ -230,6 +275,7 @@ export class TextAtlas {
 
     private forget(entry: AtlasEntry): void {
         entry.page.entries.delete(entry);
-        if (this.entries.get(entry.key) === entry) this.entries.delete(entry.key);
+        this.index.delete(entry);
+        entry.dropped = true;
     }
 }

@@ -36,6 +36,10 @@ interface Player {
     /** The element's presented-frame count at the last callback. The video advancing is this count moving; an upload happens
      * once per advance, so a paused picture uploads nothing. */
     presentedSeen: number;
+    /** An advance whose frame the registry refused: it is owed until a frame is presented. */
+    owed: boolean;
+    /** The unsubscribe of the capacity wait that retries an owed frame; null when none is waiting. */
+    roomWait: (() => void) | null;
 }
 interface State { playing: boolean; muted: boolean; time: number; visible: boolean; initialized: boolean; mediaId?: MediaId; player?: Player }
 let soundOwner: Player | null = null;
@@ -133,7 +137,7 @@ export class BoardVideoPlayback {
                 const video = document.createElement('video'); cleanupVideo = video;
                 video.preload = 'auto'; video.playsInline = true; video.loop = true; video.muted = true;
                 const player: Player = { id, mediaId: source.entry.id, video, url, memory, callback: null,
-                    deliver: (_now, metadata) => this.deliver(player, metadata), closed: false, presentedSeen: 0 };
+                    deliver: (_now, metadata) => this.deliver(player, metadata), closed: false, presentedSeen: 0, owed: false, roomWait: null };
                 state.player = player; state.muted = true;
                 if (this.host.mode === 'hidden-dom') {
                     if (!this.host.overlay || !this.host.videoRect) throw new Error('Video fallback overlay is unavailable');
@@ -193,15 +197,26 @@ export class BoardVideoPlayback {
         }
         if (state.playing) this.arm(player);
     }
+    /** Retries an owed frame when the registry frees room. One wait per player: a second refusal while it waits adds nothing. */
+    private awaitRoom(player: Player): void {
+        const frames = this.host.frames;
+        if (!frames || player.roomWait) return;
+        player.roomWait = frames.onRoom(() => {
+            player.roomWait = null;
+            if (!player.closed && player.owed) this.presentFrame(player);
+        });
+    }
     /** Presents the element's current frame as a VideoFrame that refers to the decoded picture: no copy is made here, and the
      * texture upload reads it where it is. Its lifetime is the registry's, not the element's. */
     private presentFrame(player: Player): void {
         const frames = this.host.frames, video = player.video;
         if (!frames || player.closed || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
         const bytes = video.videoWidth * video.videoHeight * 4;
-        // Charged before the frame is taken. A refused charge defers this frame; the next advance of the video asks again.
+        // Charged before the frame is taken. A refused charge owes this frame: it is retried when the registry frees room, so a
+        // paused picture does not wait on an advance that never comes.
         const lease = frames.admitFrame(bytes);
-        if (!lease) return;
+        if (!lease) { player.owed = true; this.awaitRoom(player); return; }
+        player.owed = false;
         let frame: VideoFrame;
         try { frame = new VideoFrame(video, { timestamp: Math.round(video.currentTime * 1e6) }); }
         catch {
@@ -216,6 +231,7 @@ export class BoardVideoPlayback {
     private close(state: State): void {
         const player = state.player; if (!player || player.closed) return;
         player.closed = true; state.player = undefined;
+        if (player.roomWait) { const unsubscribe = player.roomWait; player.roomWait = null; unsubscribe(); }
         if (Number.isFinite(player.video.currentTime)) state.time = player.video.currentTime;
         if (soundOwner === player) soundOwner = null;
         state.muted = true;

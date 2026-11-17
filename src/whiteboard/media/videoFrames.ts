@@ -46,6 +46,11 @@ export interface VideoFrameRegistry {
     /** Gives back a charge that no frame or decoder took. */
     release(lease: ByteLease): void;
     /**
+     * Calls `listener` once, in a microtask after capacity is released (a frame closed or a charge given back), so a refused
+     * admission can retry. Returns the unsubscribe; a listener is never called after its unsubscribe.
+     */
+    onRoom(listener: () => void): () => void;
+    /**
      * Charges a new presented frame. Null defers it: memory is refused, or this view already holds RETAINED_VERSIONS
      * superseded frames for paints still in flight. The caller asks again on its next advance, and drops nothing that is held.
      */
@@ -102,12 +107,23 @@ export function createVideoFrameRegistry(options: { readonly memory: MemoryAlloc
     const frames = new Set<Frame>(), latest = new Map<string, Frame>(), sequence = new Map<string, number>(), shown = new Set<string>();
     let keys: ReadonlyMap<string, string> = new Map(), version = 0, disposed = false;
     const publish = () => { version++; keys = new Map([...latest.values()].map(frame => [frame.node, frame.key])); options.invalidate(); };
+    // Room listeners run in a microtask, never inside the call that freed the room: a drop inside `present` would otherwise re-enter it
+    // while its own frame is being set as the latest one.
+    const roomWaiters = new Set<() => void>();
+    const roomOpened = () => {
+        if (roomWaiters.size === 0) return;
+        queueMicrotask(() => {
+            const waiting = [...roomWaiters];
+            roomWaiters.clear();
+            for (const listener of waiting) listener();
+        });
+    };
     const drop = (frame: Frame) => {
         if (frame.closed) return;
         frame.closed = true;
         frames.delete(frame);
         if (latest.get(frame.key) === frame) latest.delete(frame.key);
-        try { frame.source.close(); } finally { memory.release(frame.lease); }
+        try { frame.source.close(); } finally { memory.release(frame.lease); roomOpened(); }
     };
     const retireFrame = (frame: Frame) => { frame.retired = true; if (frame.refs === 0) drop(frame); };
     const aborted = () => new DOMException('Video frame is no longer current', 'AbortError');
@@ -126,7 +142,12 @@ export function createVideoFrameRegistry(options: { readonly memory: MemoryAlloc
     };
     return {
         reserve(bytes) { return disposed ? null : memory.reserve(bytes); },
-        release(lease) { memory.release(lease); },
+        release(lease) { memory.release(lease); roomOpened(); },
+        onRoom(listener) {
+            if (disposed) return () => {};
+            roomWaiters.add(listener);
+            return () => { roomWaiters.delete(listener); };
+        },
         admitFrame(bytes) {
             if (disposed || heldVersions() >= RETAINED_VERSIONS) return null;
             return memory.reserve(bytes);
@@ -186,7 +207,7 @@ export function createVideoFrameRegistry(options: { readonly memory: MemoryAlloc
             if (disposed) return;
             disposed = true;
             for (const frame of [...frames]) retireFrame(frame);
-            latest.clear(); keys = new Map(); version++; shown.clear();
+            latest.clear(); keys = new Map(); version++; shown.clear(); roomWaiters.clear();
         },
     };
 }

@@ -184,3 +184,14 @@ export interface RenderConstants {
     readonly webGpuMinProcessMemoryFractionImprovement: 0.25;
     readonly webGpuMinFamilies: 2;
 }
+
+/** What the memory governor says to a layer, read-only: 'slow-gpu' when the GPU's p95 frame time overran the interval
+ * (a layer halves its compose limit), 'pressure' when the governor is trimming or degraded for any other reason. */
+export type LayerTrouble = 'none' | 'slow-gpu' | 'pressure';
+
+/** The governor's trouble state as one pure mapping, so the governor's getter allocates nothing: a normal governor is
+ * 'none'; a trimming or degraded one names its reason, and only the slow-GPU reason is 'slow-gpu'. */
+export function layerTroubleOf(state: 'normal' | 'trimming' | 'degraded' | 'cpu-pinned', lastTrouble: string | null): LayerTrouble {
+    if (state === 'normal') return 'none';
+    return lastTrouble === 'slow-gpu' ? 'slow-gpu' : 'pressure';
+}

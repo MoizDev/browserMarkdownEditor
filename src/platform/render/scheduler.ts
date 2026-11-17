@@ -580,6 +580,10 @@ export class FrameScheduler {
         const bound = entry.binding;
         if (bound && (bound.vaultEpoch !== token.vaultEpoch || bound.documentId !== token.documentId ||
             bound.session !== token.session || bound.viewLease !== token.viewLease)) {
+            // Contract gap (gpu-h11 R7): the pane is unregistered and suspended with 'unregistered', and nothing here re-registers
+            // it. The owner re-registers only on its next view or layer push, so a token change with no such push leaves the pane
+            // dark until one comes. Counted so the gap is visible; the fix is an owner re-bind, which is the owner's to make.
+            if (renderAuditEnabled()) auditCount('scheduler', 'binding-dropped');
             this.unregister(entry);
             return null;
         }

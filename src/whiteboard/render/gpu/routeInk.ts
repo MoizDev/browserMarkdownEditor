@@ -76,6 +76,8 @@ export const createInkRoutes: CreateInkRoutes = (host: LayerHost, audit: string)
                 const result: PathCoverageAdmission = kit.admit({
                     shapes: { positive: stroke.triangles, negative: NO_TRIANGLES, edges: stroke.edges, bounds: stroke.bounds },
                     rule: 'union', affine: affineAt(item.localToWorld, stroke.origin, view), viewport: pixels(view),
+                    // TODO(gpu-h5): supersample: true is the kit's MSAA x jitter path, not the measured 4x4 grid; switch to
+                    // supersample: 4 when h4 lands K1 (scratch/gpu/gpu-h5/kit-requests.md).
                     colour: item.material.color, output: { kind: 'composite', blend: 'normal' }, supersample: true,
                 }, budget);
                 if (result.status === 'ready') admitted.push(result.value);
@@ -92,8 +94,7 @@ export const createInkRoutes: CreateInkRoutes = (host: LayerHost, audit: string)
         },
         draw(pass: GpuPass, run: PreparedRun): void {
             if (!(run instanceof UnionInkRun)) throw new Error('Not a union ink run');
-            // TODO(gpu-h5): draw under each item's clips through withClips (G/routePath.ts, h4) once it lands. Until then
-            // clipped ink draws unclipped, which is wrong for it; the switch that routes clipped ink here waits for that.
+            // Routes never clip: the caller applies item clips (withClips / withPreparedClips), so this draw is unclipped.
             for (const stroke of run.strokes) kit.draw(pass, stroke);
         },
         retire(run: PreparedRun): void {

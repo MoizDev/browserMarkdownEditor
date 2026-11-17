@@ -354,6 +354,7 @@ export const attachView: AttachView = options => {
             if (drawnFrame) ports.presented?.(drawnFrame.sceneRevision, drawnFrame.token, drawnFrame.frame, drawnFrame.context);
             return () => { if (interaction === ports) { ports.finishGesture(); ports.finishComposition(); interaction = null; } };
         },
+        boardDrawnInk: () => layers.drawnInkNodeIds(),
         readyPaintFrame: () => {
             const frame = disposed ? null : layers.readyFrame();
             if (!frame) return null;

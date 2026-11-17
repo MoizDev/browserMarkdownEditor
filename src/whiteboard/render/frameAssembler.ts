@@ -7,6 +7,7 @@ import type { Rect } from '../../platform/types';
 import { PaintStreamJob } from './paintStream';
 import type { PaintItem, PaintNode, PaintNodeSource, PaintSource } from './paintStream';
 import { PAINT_WINDOW_ITEMS, PaintWindowBuilder } from './paintWindows';
+import type { PaintWindow } from './paintWindows';
 import type { PaintBand } from './material';
 import type { PaintFrameAssembler, PinnedPaintSource, PinnedPaintStream } from './frameTypes';
 import type { SessionDenseRasters } from './sessionDenseRasters';
@@ -71,6 +72,39 @@ interface Published {
     borrowers: number;
     retired: boolean;
     releasing: boolean;
+}
+
+const sameShallow = (a: object, b: object): boolean => {
+    const keys = Object.keys(a);
+    return keys.length === Object.keys(b).length && keys.every(key => Object.is((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key]));
+};
+const sameSet = (a: ReadonlySet<string> | undefined, b: ReadonlySet<string> | undefined): boolean => {
+    if (a === b) return true;
+    if (!a || !b || a.size !== b.size) return false;
+    for (const id of a) if (!b.has(id)) return false;
+    return true;
+};
+const sameItems = (a: readonly PaintItem[], b: readonly PaintItem[]): boolean => {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
+};
+const sameWindows = (a: readonly PaintWindow[], b: readonly PaintWindow[]): boolean => {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (a[i].band !== b[i].band || !sameItems(a[i].items, b[i].items)) return false;
+    return true;
+};
+/** Whether two staged frames would draw the same picture: the same scene, theme, variant, token and sensitivity set,
+ * and the same items in the same order. Items compare by identity, which is what a republish of an unchanged scene
+ * reuses from its source; a republish that does not reuse them is conservatively treated as a change. */
+function sameFrame(a: PaintSource, b: PaintSource): boolean {
+    if (a.liveOnly !== b.liveOnly || a.sceneRevision !== b.sceneRevision || a.theme !== b.theme ||
+        a.rasterVariant !== b.rasterVariant || a.sourceDoc !== b.sourceDoc || a.sourceWorld !== b.sourceWorld ||
+        !sameSet(a.sensitiveNodes, b.sensitiveNodes) || !sameShallow(a.token, b.token)) return false;
+    return a.liveOnly
+        ? sameWindows((a as { windows: readonly PaintWindow[] }).windows, (b as { windows: readonly PaintWindow[] }).windows)
+        : sameItems((a as { underlay: readonly PaintItem[] }).underlay, (b as { underlay: readonly PaintItem[] }).underlay) &&
+            sameItems((a as { content: readonly PaintItem[] }).content, (b as { content: readonly PaintItem[] }).content);
 }
 
 function syncOwner(pin: PinnedPaintSource): Owner {
@@ -251,6 +285,8 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
         const frame: PaintSource = staged.kind === 'windows'
             ? Object.freeze({ ...root, liveOnly: true as const, windows: Object.freeze([...staged.underlay.finish(), ...staged.content.finish()]) })
             : Object.freeze({ ...root, underlay: Object.freeze(staged.underlay), content: Object.freeze(staged.content) });
+        // An unchanged picture is not published: the presented frame stays, and no frame is requested for it.
+        if (latest && sameFrame(latest.frame, frame)) { staging = null; releaseOwned(o, work.blocks); return; }
         const published: Published = { owner: o, frame, blocks: work.blocks, borrowers: 0, retired: false, releasing: false };
         retained.set(frame, published); latest = published; staging = null; invalidate();
     };

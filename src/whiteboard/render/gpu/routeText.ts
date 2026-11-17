@@ -4,6 +4,7 @@ import type { BufferHandle, ByteLease, DrawCommand, GfxDevice, GpuPass, Pipeline
 import type { FrameBudget, OffscreenPasses } from '../../../platform/render/types';
 import { auditCount } from '../../../platform/render/renderAudit';
 import type { FontKey } from '../../text/fonts';
+import { RENDER_CONSTANTS } from '../../../platform/render/constants';
 import type { PaintItem, PaintTextItem } from '../paintStream';
 import { ATLAS_PAGE, IdentityIndex, ShelfPacker, TextAtlas, type AtlasEntry, type AtlasPage, type Indexed } from '../textAtlas';
 import { MEMO_ENTRY_BYTES, copyIdentity, createCpuAccount, createMaskRaster, fillIdentity, identityHash, needsColourMask,
@@ -31,6 +32,12 @@ export interface TextRoute extends ItemRoute<PaintTextItem> {
 
 /** Per instance: device rect (x, y, w, h), page uv rect (u0, v0, u1, v1; u0 = -1 marks a solid rect), premultiplied colour. */
 const INSTANCE_BYTES = 48;
+/** A refusal of `bytes` from `pool`. A request above the pool's grant floor can never be granted: the governor's capacity wake only
+ * comes when the floor is free, so a denial would wait forever. Such a cell is unsupported, and the composer draws its fallback. */
+function refused(pool: 'gpu' | 'cpu', bytes: number): Stop {
+    const floor = pool === 'gpu' ? RENDER_CONSTANTS.gpuGrantMinBytes : RENDER_CONSTANTS.cpuGrantMinBytes;
+    return bytes > floor ? { status: 'unsupported', why: 'oversize' } : { status: 'denied', pool, bytes };
+}
 /** A batch's uniform before its first draw writes the frame's slice into it. It is never submitted. */
 const NO_UNIFORM: UniformSlice = { buffer: null as unknown as BufferHandle, offset: 0, bytes: 0 };
 const SOLID_UV = -1;
@@ -348,7 +355,7 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         if (!sampler) sampler = owner.createSampler('linear');
         if (!white) {
             const lease = host.allocator.gpu.reserve(1);
-            if (!lease) return { status: 'denied', pool: 'gpu', bytes: 1 };
+            if (!lease) return refused('gpu', 1);
             try { white = owner.createTexture(1, 1, 'r8', ['sample', 'copy-dst'], lease); }
             catch (error) { host.allocator.gpu.release(lease); throw error; }
             whiteLease = lease;
@@ -472,7 +479,7 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         build.x0 = Math.min(build.x0, x0); build.y0 = Math.min(build.y0, y0);
         build.x1 = Math.max(build.x1, x1); build.y1 = Math.max(build.y1, y1);
     };
-    const denied = (): Stop => ({ status: 'denied', pool: 'cpu', bytes: (build.count + 1) * INSTANCE_BYTES });
+    const denied = (): Stop => refused('cpu', (build.count + 1) * INSTANCE_BYTES);
 
     /** A solid rect in device px: analytic coverage in the shader, so its edges match the canvas's fill. False only on refusal. */
     const solidRect = (x0: number, y0: number, x1: number, y1: number, colourOf: Rgba, viewW: number, viewH: number): boolean => {
@@ -576,7 +583,7 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         // the rasterise until the bitmap is closed. A refusal waits for these bytes, not for a fixed maximum.
         const rasterLease = host.allocator.cpu.reserve(bytes);
         auditCount(audit, `text:raster:bucket:${2 ** Math.ceil(Math.log2(Math.max(1, bytes)))}`);
-        if (!rasterLease) return { status: 'denied', pool: 'cpu', bytes };
+        if (!rasterLease) return refused('cpu', bytes);
         try {
             if (!budget.claimUpload(bytes)) return { status: 'deferred' };
             // Rastered before it is placed: an entry the atlas holds must already have its texels, or a later draw would read nothing.
@@ -585,7 +592,7 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
             try {
                 placed = colour!.place(fillIdentity(probe, req, cellIndex, colourOf), at.w, at.h, frame);
                 if (placed === 'oversize') return { status: 'unsupported', why: 'oversize' };
-                if (placed === 'denied') return { status: 'denied', pool: 'gpu', bytes };
+                if (placed === 'denied') return refused('gpu', bytes);
                 colour!.uploadBitmap(placed, made.bitmap);
             } finally { made.bitmap.close(); }
             auditCount(audit, 'text:mask-raster', 1, { px: at.w * at.h });
@@ -605,14 +612,14 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         // staging spot and the conversion capacity are checked first; a spot taken and then deferred by the claim is reclaimed
         // at the next staging reset, as a refused cell's spot always was.
         const spot = stageSpot(at.w, at.h);
-        if (spot === 'denied') return { status: 'denied', pool: 'gpu', bytes };
+        if (spot === 'denied') return refused('gpu', bytes);
         // A full staging texture is the frame's limit: the run waits for the next frame, which starts with the staging reset.
         if (!spot) { host.invalidate('text-stage-full'); return { status: 'deferred' }; }
-        if (!ensureConvertCapacity(pendingCount + 1)) return { status: 'denied', pool: 'gpu', bytes };
+        if (!ensureConvertCapacity(pendingCount + 1)) return refused('gpu', bytes);
         // The raster's own bytes, as in rasterColour: held until the staging write has taken the bitmap.
         const rasterLease = host.allocator.cpu.reserve(bytes);
         auditCount(audit, `text:raster:bucket:${2 ** Math.ceil(Math.log2(Math.max(1, bytes)))}`);
-        if (!rasterLease) return { status: 'denied', pool: 'cpu', bytes };
+        if (!rasterLease) return refused('cpu', bytes);
         try {
             if (!budget.claimUpload(bytes)) return { status: 'deferred' };
             const staged = stage!;
@@ -620,7 +627,7 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
             try {
                 const placed = mono!.place(fillIdentity(probe, req, cellIndex, null), at.w, at.h, frame);
                 if (placed === 'oversize') return { status: 'unsupported', why: 'oversize' };
-                if (placed === 'denied') return { status: 'denied', pool: 'gpu', bytes: at.w * at.h };
+                if (placed === 'denied') return refused('gpu', at.w * at.h);
                 device!.writeTexture(staged.texture, { x: spot.x, y: spot.y, width: at.w, height: at.h },
                     { source: made.bitmap, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
                 let next = pending[pendingCount];
@@ -760,7 +767,7 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
             const dpr = view.viewport.dpr;
             const viewW = Math.round(view.viewport.width * dpr), viewH = Math.round(view.viewport.height * dpr);
             const scale = view.camera.z * dpr;
-            if (!ensureUniformData()) return { status: 'denied', pool: 'cpu', bytes: 16 };
+            if (!ensureUniformData()) return refused('cpu', 16);
             build.count = 0; build.batchCount = 0; build.inexact = false;
             build.pinAtlas.length = 0; build.pinEntry.length = 0;
             build.x0 = Infinity; build.y0 = Infinity; build.x1 = -Infinity; build.y1 = -Infinity;
@@ -782,7 +789,7 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
             }
             if (!budget.claimUpload(bytes)) return { status: 'deferred' };
             const lease = host.allocator.gpu.reserve(bytes);
-            if (!lease) return { status: 'denied', pool: 'gpu', bytes };
+            if (!lease) return refused('gpu', bytes);
             let buffer: BufferHandle | null = null;
             try {
                 buffer = owner.createBuffer(bytes, ['vertex', 'copy-dst'], lease);

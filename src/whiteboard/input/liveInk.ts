@@ -96,16 +96,23 @@ export class LiveInk implements GestureOwner {
   private dirty = true
   private dry: DryInkIdentity | null = null
   private snapshot: CurvePublication | null = null
+  // The delegated bridge reads these once per input frame. One record is updated in place, so a read allocates nothing; the
+  // bridge copies the fields it keeps, and the identity and presentation it holds are stable references.
+  private readonly read: { identity: InkIdentity; presentation: InkPresentation; sample: RealSample; curveSequence: number }
   get delegatedState(): Readonly<{ identity: InkIdentity; presentation: InkPresentation; sample: RealSample }> | null {
-    return !this.ended && this.last ? { identity: this.context.identity, presentation: this.context.presentation, sample: this.last } : null
+    if (this.ended || !this.last) return null
+    this.read.sample = this.last
+    return this.read
   }
   get delegatedCandidate(): Readonly<{ identity: InkIdentity; presentation: InkPresentation; sample: RealSample; curveSequence: number }> | null {
-    return !this.ended && this.last && this.snapshot ? { identity: this.context.identity, presentation: this.context.presentation,
-      sample: this.last, curveSequence: this.snapshot.sequence } : null
+    if (this.ended || !this.last || !this.snapshot) return null
+    this.read.sample = this.last; this.read.curveSequence = this.snapshot.sequence
+    return this.read
   }
 
   constructor(first: RealSample, modifiers: Modifiers, private readonly context: LiveInkContext, private readonly handover: WetInkHandover) {
     this.pointerIds = new Set([first.pointerId])
+    this.read = { identity: context.identity, presentation: context.presentation, sample: first, curveSequence: -1 }
     this.builder = new StraightInkBuilder(new LocalCurveBuilder(context.builderOptions, context.captureDeviceScale, context.presentation.fairTol))
     this.append(first, modifiers)
     context.clearRedoAtDown()

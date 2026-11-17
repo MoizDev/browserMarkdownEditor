@@ -56,8 +56,12 @@ export interface Layer {
      * each, which removes a framebuffer switch per tile. Only clear passes without stencil use the atlas; anything else draws
      * its own target and is counted as a fallback. */
     readonly atlas?: boolean;
-    /** Schedule work without blocking; preparation is split into resumable units (design:677–679). */
-    prepare(view: ViewState, budget: FrameBudget): void;
+    /** Schedule work without blocking; preparation is split into resumable units (design:677–679).
+     * Returns `false` only when a prepare ran to completion for this view and nothing the layer draws next can differ from what
+     * it last presented, so a continuation frame may skip encode and present. A layer the budget or deadline skipped this frame
+     * has proved nothing, so the scheduler counts it as changed. Any other answer, including no answer (every layer that does not
+     * say), means the picture may have changed. A forwarding wrapper that does not return the inner answer simply reports changed. */
+    prepare(view: ViewState, budget: FrameBudget): boolean | void;
     drawGpu(pass: GpuPass, view: ViewState): void;
     /** Optional, GPU only. Encodes passes into the layer's OWN offscreen targets (tile textures) on this frame's encoder,
      * before the frame's surface pass, so `drawGpu` can sample them in the same frame. Targets and every resource drawn

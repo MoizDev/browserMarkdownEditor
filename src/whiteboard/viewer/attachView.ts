@@ -35,6 +35,9 @@ class SelectionIds implements ReadonlySet<string> {
     }
 }
 
+/** What a view publish changed: the view's state, or only the paint progress its snapshot reports. */
+export type ViewChange = 'state' | 'paint';
+
 /** Attaches view resources only. The admitted model, scene, selection/history and
  * journal belong to the exact App-owned runtime and survive this view's disposal. */
 export const attachView: AttachView = options => {
@@ -63,7 +66,8 @@ export const attachView: AttachView = options => {
     let previewLayers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null = null;
     let previewCoverage: (() => Readonly<{ frame: PaintSource; nodeIds: ReadonlySet<string> }> | null) | null = null;
     let clearPreview: (() => void) | null = null;
-    const listeners = new Set<() => void>();
+    /** 'paint': the paint progress moved (see onPaintProgress); anything else is a change to the view's state. */
+    const listeners = new Set<(change?: ViewChange) => void>();
     const palettes = options.palette ?? DEFAULT_BOARD_PALETTES;
     const sheet = () => view.sheetId ?? runtime.selection.getSnapshot().sheet;
     let paperSnapshot: NotebookPaperSnapshot | null = null;
@@ -126,7 +130,7 @@ export const attachView: AttachView = options => {
         liveNodeIds, candidates: () => lastCandidates,
         onDensityMode(mode) { if (densityMode !== mode && !disposed) { densityMode = mode; requestPaint(); } },
         requestFrame: () => { if (!disposed) requestPaint(); },
-        onPaintProgress: () => { if (!disposed) publish(); },
+        onPaintProgress: () => { if (!disposed) publish('paint'); },
         onDrawn(revision, frame, context) {
             options.liveFrames?.drawn(frame);
             embedPort?.drawn({ token: context.token, frameId: context.frameId, cameraEpoch: context.view.epoch,
@@ -200,10 +204,13 @@ export const attachView: AttachView = options => {
             layers: definitions,
             backendPreference: BOARD_BACKEND_PREFERENCE };
     }
-    function publish(): void {
+    function publish(change: ViewChange = 'state'): void {
         if (disposed) return;
-        snapshot = makeSnapshot(); accessibility.invalidate();
-        for (const listener of listeners) listener();
+        snapshot = makeSnapshot();
+        // The accessibility mirror reads selection, session and scene only: a paint-progress change leaves it as it is, and
+        // its sync would otherwise request a frame for nothing (measured: 6 and 11 frames in the 3 s after a drag).
+        if (change === 'state') accessibility.invalidate();
+        for (const listener of listeners) listener(change);
     }
     function requestPaint(sensitive = interaction?.sensitiveNodeIds?.()): void {
         // A request made while the Scene is still catching up is kept and sent once it is ready: the dense
@@ -252,7 +259,7 @@ export const attachView: AttachView = options => {
             if (world) { const landed = pin.countCandidates?.(selectedSheet, world) ?? null; if (landed !== null) lastCandidates = landed; }
             frames.requestStream({ stream, isCurrent: () => pin.isCurrent(), release: () => pin.release(), ...(dense ? { liveOnly: true as const } : {}),
                 open: (apron, signal, resolved) => open.call(pin, { ...identity, world: apron }, signal, resolved) });
-            paintJob = null; publish();
+            paintJob = null; publish('paint');
         }, error => { pin.release(); if (!controller.signal.aborted) report(error); });
     }
     const cancelReveal = () => { const job = revealJob; revealJob = null; job?.abort(); };

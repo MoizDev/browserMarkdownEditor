@@ -166,7 +166,7 @@ export function createNativeViewLease(options: {
     }
     const token = Object.freeze(sourceToken ? { ...sourceToken } : { vaultEpoch: identity.vaultActivation, documentId: identity.documentId,
         session: identity.session, bytesGeneration: identity.bytesGeneration });
-    const viewLease = ++serial, listeners = new Set<() => void>();
+    const viewLease = ++serial, listeners = new Set<(change?: string) => void>();
     let parameters = { ...options.parameters }, disposed = false, platformPane: PlatformPane | null = null;
     let inputPermitted = true;
     let backdrop = options.pdfBackdrop;
@@ -196,8 +196,10 @@ export function createNativeViewLease(options: {
                 presentation.token.session === source.session && presentation.token.vaultEpoch === source.vaultEpoch &&
                 presentation.token.bytesGeneration === source.bytesGeneration));
     };
-    const publish =() => { if (!disposed) for (const listener of [...listeners]) listener(); };
-    const invalidate = () => { platformPane?.invalidate('native-view'); publish(); };
+    // The viewer's 'paint' (paint progress) reaches this lease's listeners, and the board's own listener, but it does not redraw
+    // the native pane: the pane's picture did not change.
+    const publish = (change?: string) => { if (!disposed) for (const listener of [...listeners]) listener(change); };
+    const invalidate = (change?: string) => { if (change !== 'paint') platformPane?.invalidate('native-view'); publish(change); };
     const cameraPorts: CameraPorts = { currentPath: () => current() ? host.identity(identity.documentId)?.path : undefined,
         invalidate, onError: options.onError };
     const cameraClaim = options.cameraHandoff ? claimCamera(options.cameraHandoff, runtime, limits, insets, cameraPorts) : null;

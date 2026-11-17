@@ -82,6 +82,8 @@ interface Position {
     readonly y: number;
     readonly slices: Slice[];
     cursor: number;
+    /** Refused by a pool: not advanced again until the governor's wake (no per-frame retry of a refusal). */
+    parked: boolean;
 }
 /** Tile positions across a view, as integer coordinates with exclusive ends. */
 interface Span { readonly x0: number; readonly y0: number; readonly x1: number; readonly y1: number }
@@ -210,7 +212,11 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     // ladder scale, and coverage asked about the exact one, where nothing is composed, so every frame of a zoom read incomplete.
     let drawnTarget = 0;
 
-    const wake = (): void => { host.invalidate('tile-composer-capacity'); };
+    // The governor's wake for a refusal: the parked positions may be advanced again, and the board is asked for a frame.
+    const wake = (): void => {
+        for (const position of building.values()) position.parked = false;
+        host.invalidate('tile-composer-capacity');
+    };
     const refuseTarget = (): void => { denied = true; auditCount(audit, 'tile:denied'); store.wait(TARGET_BYTES, wake); };
     const refuseAdmission = (pool: 'gpu' | 'cpu', bytes: number): void => {
         denied = true; auditCount(audit, 'tile:denied');
@@ -353,7 +359,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 next: 0, admitted: [], entry: existing && existing.target ? existing : null,
             };
         });
-        return { band, scale, x, y, slices, cursor: 0 };
+        return { band, scale, x, y, slices, cursor: 0, parked: false };
     };
 
     /** Admits and acquires a position's slices in order. 'wait' resumes next frame; 'denied' waits for memory. */
@@ -413,10 +419,17 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                             building.set(key, position);
                         }
                         // Why a frame composes nothing is the zoom question: each exit is counted (pass and cause).
+                        if (position.parked) continue;
                         if (composed >= limit) { auditCount(audit, `compose:limit:${pass}`); return; }
                         if (budget.shouldYield()) { auditCount(audit, `compose:yield:${pass}`); return; }
                         const outcome = advance(position, budget, gpu);
-                        if (outcome !== 'done') { auditCount(audit, `compose:${outcome}:${pass}`); return; }
+                        if (outcome !== 'done') {
+                            // A refusal by a pool waits on its wake, and the position is not advanced before that. A budget wait
+                            // is this frame's and retries next frame.
+                            if (outcome === 'denied') position.parked = true;
+                            auditCount(audit, `compose:${outcome}:${pass}`);
+                            return;
+                        }
                         auditCount(audit, `compose:done:${pass}`);
                         building.delete(key);
                         finished.push(position);

@@ -20,7 +20,7 @@ import type { InkCoverage } from '../ink/outline';
 import { CURVE_CHUNK_SPANS } from '../ink/curve';
 import type { BoardDoc } from '../model/doc';
 import type { NodeId } from '../model/ids';
-import { createNode, type Node } from '../model/nodes';
+import { createNode, type ConnectorNode, type Node } from '../model/nodes';
 import type { SampleStoreReader } from '../model/samples';
 import type { MediaStore } from '../media/store';
 import { localBounds, BoundsQuality, type BoundsProvider, type Box, type LocalGeometryBounds } from '../scene/bounds';
@@ -89,6 +89,13 @@ function withAllocation(paint: PaintNode, geometry: Prepared, context: SceneReso
 function matrix(doc: BoardDoc, id: NodeId): Affine {
     const pose = worldPose(doc, id), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
     return [c, s, -s, c, pose.x, pose.y];
+}
+/** The connector with each end whose target has no attachment surface detached: that end paints from its own free point, as a
+ * connector whose target is gone does. Left attached, the resolver answers 'pending' for it, and the frame never presents. */
+function unattachedWhere(node: ConnectorNode, surfaces: ReadonlyMap<NodeId, AttachmentSurface>): ConnectorNode {
+    const start = node.start.attach && !surfaces.has(node.start.attach.target) ? { ...node.start, attach: null } : node.start;
+    const end = node.end.attach && !surfaces.has(node.end.attach.target) ? { ...node.end, attach: null } : node.end;
+    return start === node.start && end === node.end ? node : { ...node, start, end };
 }
 function rectangle(w: number, h: number): readonly PathOp[] {
     return [{ op: 'M', p: { x: 0, y: 0 } }, { op: 'L', p: { x: w, y: 0 } },
@@ -229,7 +236,13 @@ export function createBoardRenderServices(options: {
     };
     const palettes = options.palettes ?? DEFAULT_BOARD_PALETTES;
     const text = createBoardTextGeometry({ fonts: options.fonts, cooperate: options.cooperate, onFontEpoch() {
-        for (const id of textIds) forgetIdle(id);
+        // An id leaves the set only when the session doc no longer holds its node AND no geometry is kept for it: a deleted node
+        // whose geometry is gone has nothing to re-prepare, so the set stays the text nodes the session still has or keeps.
+        for (const id of [...textIds]) {
+            const kept = cached.has(id) || idle.has(id);
+            forgetIdle(id);
+            if (!kept && !options.doc.nodes.has(id)) textIds.delete(id);
+        }
         const ids = new Set(textIds);
         for (const listener of listeners) listener(ids);
     } });
@@ -301,18 +314,23 @@ export function createBoardRenderServices(options: {
             const targets = new Map<NodeId, { node: Node; world: Affine; clips: AttachmentSurface['clips'] }>();
             for (const end of [node.start, node.end]) if (end.attach && !targets.has(end.attach.target)) {
                 const target = doc.nodes.get(end.attach.target);
-                if (!target) throw new Error(`Connector ${node.id} has a missing target`);
+                // A target the doc does not hold has no surface: its end is painted unattached (unattachedWhere), not thrown on.
+                if (!target) continue;
                 targets.set(target.id, { node: createNode(target), world: matrix(doc, target.id), clips: frameClips(doc, target) });
             }
             const surfaces = new Map<NodeId, AttachmentSurface>();
             for (const [id, target] of targets) {
+                // A group aggregates its children in Scene and has no geometry of its own, so it is never prepared here.
+                if (target.node.kind === 'group') continue;
                 const prepared = await prepare(target.node, doc, signal);
                 const surface = prepared.vector?.attachments;
-                if (!surface) throw new Error(`Connector ${node.id} target ${id} has no supported attachment surface`);
+                // A target with no attachment surface leaves its end unattached, as a group does; a throw here would drop every frame.
+                if (!surface) continue;
                 surfaces.set(id, { target: id, outline: surface.outline, logicalBox: surface.logicalBox,
                     localToWorld: target.world, clips: target.clips, revision: doc.rev });
             }
-            const resolved = await resolveConnectorGeometry({ key, node, localToWorld: world,
+            const paintNode = unattachedWhere(node, surfaces);
+            const resolved = await resolveConnectorGeometry({ key, node: paintNode, localToWorld: world,
                 resolveTarget: id => surfaces.get(id), label: null, toleranceWorld: .01, maxPieces: 65_536 }, {
                 signal, cooperate: options.cooperate,
                 label: node.label ? async (anchor, length, labelSignal) => {
@@ -321,7 +339,7 @@ export function createBoardRenderServices(options: {
                 } : undefined,
             });
             if (resolved.status !== 'ready') throw new Error(resolved.status === 'unroutable' ? resolved.reason : `Connector ${node.id} geometry is pending: ${resolved.reason}`);
-            result = connectorPrepared(key, node, resolved.geometry, inverseWorld);
+            result = connectorPrepared(key, paintNode, resolved.geometry, inverseWorld);
         } else {
             const vector = node.kind === 'opaque' ? await prepareOpaqueGeometry(node, signal, options.cooperate)
                 : await prepareBoardVectorGeometry(node, { text, revision: key, zoom: 1, signal, cooperate: options.cooperate });
@@ -356,16 +374,19 @@ export function createBoardRenderServices(options: {
         } else if (node.kind === 'connector') {
             const world = matrix(doc, node.id), inverseWorld = inverse(world, 1e12);
             if (!inverseWorld) throw new RangeError('Connector transform is not invertible');
-            const surfaces = new Map<NodeId, AttachmentSurface>();
-            for (const end of [node.start, node.end]) if (end.attach && !surfaces.has(end.attach.target)) {
+            const surfaces = new Map<NodeId, AttachmentSurface>(), seen = new Set<NodeId>();
+            for (const end of [node.start, node.end]) if (end.attach && !seen.has(end.attach.target)) {
+                seen.add(end.attach.target);
                 const target = doc.nodes.get(end.attach.target);
-                if (!target) throw new Error(`Connector ${node.id} has a missing target`);
+                // A missing target, a group, or an opaque node has no copy geometry: its end is painted unattached (unattachedWhere).
+                if (!target || target.kind === 'group' || target.kind === 'opaque') continue;
                 const surface = prepareNow(target, doc, signal).vector?.attachments;
-                if (!surface) throw new Error(`Connector ${node.id} target ${target.id} has no supported attachment surface`);
+                if (!surface) continue;
                 surfaces.set(target.id, { target: target.id, outline: surface.outline, logicalBox: surface.logicalBox,
                     localToWorld: matrix(doc, target.id), clips: frameClips(doc, target), revision: doc.rev });
             }
-            const resolved = resolveConnectorGeometryNow({ key, node, localToWorld: world,
+            const paintNode = unattachedWhere(node, surfaces);
+            const resolved = resolveConnectorGeometryNow({ key, node: paintNode, localToWorld: world,
                 resolveTarget: id => surfaces.get(id), label: null, toleranceWorld: .01, maxPieces: 65_536 }, {
                 label: node.label ? (anchor, length) => {
                     const label = text.prepareNow(node, { revision: key, connectorLength: length, anchor });
@@ -373,7 +394,7 @@ export function createBoardRenderServices(options: {
                 } : undefined,
             });
             if (resolved.status !== 'ready') throw new Error(resolved.status === 'unroutable' ? resolved.reason : `Connector ${node.id} geometry is pending: ${resolved.reason}`);
-            result = connectorPrepared(key, node, resolved.geometry, inverseWorld);
+            result = connectorPrepared(key, paintNode, resolved.geometry, inverseWorld);
         } else {
             const vector = prepareBoardVectorGeometryNow(node, { text, revision: key, zoom: 1 });
             if (vector.text.length) textIds.add(node.id);

@@ -45,12 +45,17 @@ function scratchShare(device: GfxDevice | null, grid: CompositeGrid): number {
 const IDLE_VERTEX_BYTES = 8 * 2 ** 20;
 /** Several sets of one request (or one shifted set), copied into one set with each set's shift baked into its vertices. The pack is
  * keyed by its sets' identities and shifts and lives while the buffer it backs does: the packed positive array is that buffer's key. */
-interface Pack { readonly key: string; readonly shape: PathCoverageShapes; readonly lease: ByteLease; readonly bytes: number; usedFrame: number }
-/** A straight colour's cover colour: premultiplied, and for a modulate composite k = C·c + 1 − α·c (the form admission uses). */
-function premultiplied(rgba: Rgba, modulate: boolean): readonly number[] {
+interface Pack { readonly key: string; readonly shape: PathCoverageShapes; readonly lease: ByteLease; readonly bytes: number; usedFrame: number;
+    /** The ids of the member arrays it was built from: forgetting one of them releases the pack. */
+    readonly members: readonly number[] }
+/** A straight colour's cover colour, written into `into`: premultiplied, and for a modulate composite k = C·c + 1 − α·c (the form
+ * admission uses). In place, so a draw with a paint colour allocates nothing. */
+function premultipliedInto(into: number[], rgba: Rgba, modulate: boolean): number[] {
     const [r, g, b, a] = rgba;
     const pr = r * a, pg = g * a, pb = b * a;
-    return modulate ? [pr + 1 - a, pg + 1 - a, pb + 1 - a, 1] : [pr, pg, pb, a];
+    into[0] = modulate ? pr + 1 - a : pr; into[1] = modulate ? pg + 1 - a : pg; into[2] = modulate ? pb + 1 - a : pb;
+    into[3] = modulate ? 1 : a;
+    return into;
 }
 /** Copies `src` (interleaved x, y) into `dst` at `at`, each point moved by (dx, dy); returns the next index. */
 function copyShifted(src: Float64Array, dst: Float64Array, at: number, dx: number, dy: number): number {
@@ -117,11 +122,15 @@ export interface PathCoverageSetsRequest extends Omit<PathCoverageRequest, 'shap
 export type PathCoverageAdmission =
     | { readonly status: 'ready'; readonly value: PreparedPathCoverage }
     | { readonly status: 'empty' }
-    | { readonly status: 'denied' }
-    /** The frame's upload allowance ran out mid-upload: retry next frame (a frame wait, not a memory wait). */
+    /** A memory refusal: the pool that refused and the bytes this admission needed from it, so the caller waits on the right pool
+     * for the bytes that will fit. */
+    | { readonly status: 'denied'; readonly pool: 'gpu' | 'cpu'; readonly bytes: number }
+    /** The frame's upload allowance ran out mid-upload, or the pipelines are still compiling: retry next frame (a frame wait,
+     * not a memory wait). */
     | { readonly status: 'deferred' }
     | { readonly status: 'unsupported' };
 
+type Denial = Extract<PathCoverageAdmission, { readonly status: 'denied' }>;
 /** One triangle set of an admission: its shared buffer (positive triangles first, then negative), and how many of each. */
 export interface PreparedPathPart {
     readonly vertices: BufferHandle;
@@ -266,6 +275,8 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         written: number; negative: Float64Array; bytes: number; usedFrame: number; piece: number }>();
     // Packs (see Pack): a composition's copy is made once while its buffer lives; the ids name the sets, and an id is never reused.
     const packs = new Map<string, Pack>(), packOfArray = new Map<Float64Array, Pack>(), arrayIds = new WeakMap<Float64Array, number>();
+    // Packs by member id: the owner's forget of a member releases the packs built from it, with no walk over every pack.
+    const packsOfMember = new Map<number, Set<Pack>>();
     let nextArrayId = 0, packedBytes = 0;
     const idOf = (array: Float64Array): number => {
         let id = arrayIds.get(array);
@@ -274,6 +285,10 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
     };
     const freePack = (pack: Pack) => {
         packs.delete(pack.key); packOfArray.delete(pack.shape.positive); packedBytes -= pack.bytes;
+        for (const id of pack.members) {
+            const built = packsOfMember.get(id);
+            if (built) { built.delete(pack); if (built.size === 0) packsOfMember.delete(id); }
+        }
         host.allocator.cpu.release(pack.lease);
     };
     /** The kit has let go of a triangle array: a pack's lease goes with it; any other array is the owner's, told through onFreed. */
@@ -370,7 +385,8 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
      * only grows, and to the widest band the device has asked for, at the full height the cap allows: a grown scratch replaced
      * the one every kit drew from, and a band re-sized per request was a new target for each kit's width change. A grid scratch
      * is 4× the texels per device pixel, so its band is sized by the grid's bytes (coverageTargetBytes with the grid). */
-    const ensureScratch = (owner: GfxDevice, width: number, grid: CompositeGrid): boolean | 'unsupported' => {
+    /** True when the scratch holds the band; the refused GPU bytes when its grant refuses the growth; 'unsupported' past the caps. */
+    const ensureScratch = (owner: GfxDevice, width: number, grid: CompositeGrid): true | number | 'unsupported' => {
         const table = scratchTables[String(grid) as '1' | '4'];
         const rowBytes = coverageTargetBytes(width, 1, grid === 4 ? 1 : PATH_COVERAGE_SAMPLES, grid);
         if (rowBytes > PATH_COVERAGE_SCRATCH_BYTES) return 'unsupported';
@@ -393,7 +409,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         const h = Math.min(Math.floor(PATH_COVERAGE_SCRATCH_BYTES / coverageTargetBytes(w, 1, samples, grid)), Math.floor(cap / grid));
         const bytes = coverageTargetBytes(w, h, samples, grid);
         const lease = host.allocator.gpu.reserve(bytes);
-        if (!lease) return false;
+        if (!lease) return bytes;
         let target: CoverageTarget;
         try { target = owner.createCoverageTarget(w, h, samples, lease, grid === 4 ? { grid: 4 } : undefined); }
         catch (error) { host.allocator.gpu.release(lease); throw error; }
@@ -469,7 +485,8 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
     const isReady = (): boolean => !disposed && !failed && !unsupported && !!pipelines && !!device &&
         host.device() === device && host.generation === device.generation;
     /** The sets as one set: each one's vertices moved by its shift, copied into a new pack. A composition already packed is reused. */
-    const packSets = (sets: readonly PathCoverageShapes[]): Pack | 'denied' => {
+    const packSets = (sets: readonly PathCoverageShapes[]): Pack | { readonly refused: number } => {
+        const members = sets.flatMap(set => [idOf(set.positive), idOf(set.negative)]);
         const key = sets.map(set => `${idOf(set.positive)}.${idOf(set.negative)}@${set.shift?.[0] ?? 0},${set.shift?.[1] ?? 0}`).join('|');
         const known = packs.get(key);
         if (known) { known.usedFrame = frame; return known; }
@@ -483,7 +500,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         }
         const bytes = (positive + negative) * 8;
         const lease = host.allocator.cpu.reserve(bytes);
-        if (!lease) return 'denied';
+        if (!lease) return { refused: bytes };
         const pos = new Float64Array(positive), neg = new Float64Array(negative);
         let p = 0, n = 0;
         for (const set of sets) {
@@ -491,8 +508,13 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
             p = copyShifted(set.positive, pos, p, sx, sy);
             n = copyShifted(set.negative, neg, n, sx, sy);
         }
-        const pack: Pack = { key, shape: { positive: pos, negative: neg, edges, bounds: { x0, y0, x1, y1 } }, lease, bytes, usedFrame: frame };
+        const pack: Pack = { key, shape: { positive: pos, negative: neg, edges, bounds: { x0, y0, x1, y1 } }, lease, bytes, usedFrame: frame, members };
         packs.set(key, pack); packOfArray.set(pos, pack); packedBytes += bytes;
+        for (const id of members) {
+            let built = packsOfMember.get(id);
+            if (!built) packsOfMember.set(id, built = new Set());
+            built.add(pack);
+        }
         auditCount(audit, 'kit:pack', 1, { bytes });
         return pack;
     };
@@ -526,6 +548,12 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         if (!count) return;
         issue(pass, pipeline, windingUniforms, part.bindings, first, count, scissor);
     };
+    // Draws with a paint colour write their cover colour, output and band here, in place: the frame copies a cover's colour and a
+    // composite's output when it is issued (webgl2Frame compositeGrid, uniforms), and a scope keeps its band only until endCoverage.
+    const paintCover: number[] = [0, 0, 0, 0];
+    const paintOutput: { kind: 'paint'; blend: 'normal' | 'modulate'; rgb: [number, number, number]; alpha: number } =
+        { kind: 'paint', blend: 'normal', rgb: [0, 0, 0], alpha: 0 };
+    const bandRect: RectI = { x: 0, y: 0, width: 0, height: 0 };
     const render = (pass: GpuPass, prepared: PreparedPathCoverage, paint?: Rgba): void => {
         if (disposed || !live.has(prepared) || !pipelines || prepared.device !== device || host.device() !== device ||
             host.generation !== prepared.device.generation) throw new Error('Stale path coverage');
@@ -534,9 +562,13 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         // A grid composite draws its own one-sample r8 set and covers with coverage 1 in each texel; its colour is the 'paint' output's
         // straight rgb and alpha, at draw. An MSAA composite covers in its premultiplied colour, given at draw or the admitted one.
         const grid = prepared.grid === 4;
-        const colour: readonly number[] = paint ? (grid ? paint : premultiplied(paint, prepared.modulate)) : prepared.colour;
-        const drawOutput: CoverageOutput = paint && output.kind === 'paint'
-            ? { kind: 'paint', blend: output.blend, rgb: [paint[0], paint[1], paint[2]], alpha: paint[3] } : output;
+        const colour: readonly number[] = paint ? (grid ? paint : premultipliedInto(paintCover, paint, prepared.modulate)) : prepared.colour;
+        let drawOutput: CoverageOutput = output;
+        if (paint && output.kind === 'paint') {
+            paintOutput.blend = output.blend; paintOutput.alpha = paint[3];
+            paintOutput.rgb[0] = paint[0]; paintOutput.rgb[1] = paint[1]; paintOutput.rgb[2] = paint[2];
+            drawOutput = paintOutput;
+        }
         const target = prepared.target ?? scratchOf(prepared.device, prepared.grid)?.target;
         if (!target || target.width < prepared.bounds.width) throw new Error('Stale path coverage');
         const set = pipelines;
@@ -548,7 +580,8 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         const windingUniforms = windingSlice(viewport, affine, 0, 0);
         const whole = prepared.bounds;
         // One rect serves every band: a scope keeps its bounds only until its endCoverage, and the next band rewrites the rect after that.
-        const band: RectI = { x: whole.x, y: whole.y, width: whole.width, height: 0 };
+        const band = bandRect;
+        band.x = whole.x; band.y = whole.y; band.width = whole.width; band.height = 0;
         for (let y = whole.y; y < whole.y + whole.height; y += target.height) {
             band.y = y; band.height = Math.min(target.height, whole.y + whole.height - y);
             const coverUniforms = coverSlice(viewport, band, coverColour, 1);
@@ -593,7 +626,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
     /** The shared buffer of one triangle set, uploaded in chunks within each frame's allowance. Returns the entry, or why not:
      * a refused or deferred upload keeps what it wrote, and the retry resumes it. */
     const vertexSetFor = (owner: GfxDevice, set: PathCoverageShapes, vertexCount: number, budget: FrameBudget):
-        VertexSet | 'denied' | 'deferred' | 'unsupported' => {
+        VertexSet | Denial | 'deferred' | 'unsupported' => {
         const vertexBytes = vertexCount * 8;
         const found = shared.get(set.positive);
         if (found) return found.device !== owner || found.negative !== set.negative || found.bytes !== vertexBytes ? 'unsupported' : found;
@@ -602,13 +635,13 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         if (up) up.usedFrame = frame;
         if (!up) {
             const staging = host.allocator.cpu.reserve(vertexBytes);
-            if (!staging) return 'denied';
+            if (!staging) return { status: 'denied', pool: 'cpu', bytes: vertexBytes };
             // Positive triangles first, then negative: the draw ranges follow this order.
             const data = new Float32Array(vertexCount * 2);
             data.set(set.positive, 0);
             data.set(set.negative, set.positive.length);
             const lease = host.allocator.gpu.reserve(vertexBytes);
-            if (!lease) { host.allocator.cpu.release(staging); return 'denied'; }
+            if (!lease) { host.allocator.cpu.release(staging); return { status: 'denied', pool: 'gpu', bytes: vertexBytes }; }
             let buffer: BufferHandle;
             try { buffer = owner.createBuffer(vertexBytes, ['vertex', 'copy-dst'], lease); }
             catch (error) {
@@ -656,9 +689,11 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         if (disposed || failed || unsupported) return unsupportedBecause(disposed ? 'disposed' : failed ? 'failed' : 'device-unsupported');
         warm();
         // Pipelines still compiling are a wait, not a fallback; ready invalidates the frame.
-        if (!isReady()) return pending || !device ? { status: 'denied' } : unsupportedBecause('not-ready');
+        // Compiling pipelines and a device not yet bound are frame waits: nothing is refused for memory, so nothing is named.
+        if (!isReady()) return pending || !device ? { status: 'deferred' } : unsupportedBecause('not-ready');
         const owner = device!, { sets, rule, affine, viewport, output } = request;
-        if (owner.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration) return { status: 'denied' };
+        // A generation change is the device moving under this kit: its release follows, so the admission waits a frame.
+        if (owner.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration) return { status: 'deferred' };
         // Empty sets draw nothing. The rest are one set: several sets, or one shifted set, are packed into a copy with the shifts
         // baked in (see packSets), so the admission draws one winding per band, not one per set.
         const nonEmpty = sets.filter(set => set.positive.length + set.negative.length > 0);
@@ -673,7 +708,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         let shape: PathCoverageShapes = nonEmpty[0];
         if (nonEmpty.length > 1 || nonEmpty[0].shift) {
             const packed = packSets(nonEmpty);
-            if (packed === 'denied') return { status: 'denied' };
+            if ('refused' in packed) return { status: 'denied', pool: 'cpu', bytes: packed.refused };
             shape = packed.shape;
         }
         const mapped = mapBounds(shape.bounds, affine);
@@ -695,18 +730,19 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         const entry = vertexSetFor(owner, shape, vertexCount, budget);
         // One count per refused admission: the admission returns here, so a repeat is one more admission, not more pieces.
         if (entry === 'deferred') auditCount(audit, 'upload:deferred:admission');
-        if (typeof entry === 'string') return { status: entry };
+        if (entry === 'deferred' || entry === 'unsupported') return { status: entry };
+        if ('status' in entry) return entry;
         const parts: VertexSet[] = [entry];
         // The scratch is ensured after the buffers, and before any reference is taken: a refusal leaves nothing held.
         if (composite) {
             const fits = ensureScratch(owner, bounds.width, grid);
             if (fits !== true) {
                 if (fits === 'unsupported') { auditCount(audit, 'fallback:raster-route'); return { status: 'unsupported' }; }
-                return { status: 'denied' };
+                return { status: 'denied', pool: 'gpu', bytes: fits };
             }
         }
         const targetLease = composite ? null : host.allocator.gpu.reserve(targetBytes);
-        if (!composite && !targetLease) return { status: 'denied' };
+        if (!composite && !targetLease) return { status: 'denied', pool: 'gpu', bytes: targetBytes };
         for (const part of parts) holdSet(part);
         let target: CoverageTarget | null = null, clip: ClipHandle | null = null;
         let targetAttached = false;
@@ -757,6 +793,14 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         beginFrame(next: number): void { frame = next; },
         /** Whether the kit still holds this triangle array (a shared set or an upload in progress). */
         holds(key: Float64Array): boolean { return shared.has(key) || uploading.has(key); },
+        /** The owner has let go of a triangle array (its outline was dropped): the packs built from it are released with it. A pack
+         * whose buffer is still in use is released when that buffer goes (freed), so nothing a draw reads is freed here. */
+        forgetTriangles(key: Float64Array): void {
+            const id = arrayIds.get(key);
+            const built = id === undefined ? undefined : packsOfMember.get(id);
+            if (!built) return;
+            for (const pack of [...built]) if (!shared.has(pack.shape.positive) && !uploading.has(pack.shape.positive)) freePack(pack);
+        },
         /** The governor's reclaim for this kit's idle triangle buffers: destroys the oldest unused ones until `bytes` are freed,
          * and returns the bytes actually freed (their leases return to the device's allocator as they retire). */
         evict(bytes: number): number {

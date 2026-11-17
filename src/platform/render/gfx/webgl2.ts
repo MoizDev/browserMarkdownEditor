@@ -1422,7 +1422,10 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             let handle: BufferHandle | null = null;
             try {
                 const data = new Uint8Array(this.#uniformBytes);
-                handle = this.#owned('buffer', { bytes: this.#uniformBytes, uses: ['uniform', 'copy-dst'] }, this.#uniformBytes, this.#services.working);
+                // 'vertex' too: a batched textured-quad draw binds its instance records as a vertex slice from this same ring
+                // (compositor.ts drawTexturedQuads). The device refuses a vertex slice whose buffer lacks the use, which demoted
+                // the pane mid-draw (seen in the final run's audit: pane:fallback:pane-2d:gpu-error:invalid-input).
+                handle = this.#owned('buffer', { bytes: this.#uniformBytes, uses: ['uniform', 'vertex', 'copy-dst'] }, this.#uniformBytes, this.#services.working);
                 slot = { handle, native: this.#arena.validate(handle, 'buffer'), data, lease: cpu, serial: 0, owner: null, valid: true };
                 this.#uniformSlots.push(slot);
             } catch (error) { if (handle) this.destroy(handle); this.#returnCpu(cpu); throw error; }

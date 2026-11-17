@@ -575,12 +575,14 @@ export class MemoryGovernor {
     }
 
     /** Render audit only: every cache's charge with its pane, and each pane's grant. */
-    auditCaches(): { caches: { id: string; pane: string | null; pool: MemoryPool; kind: MemoryKind; bytes: number; hidden: boolean }[];
+    auditCaches(): { caches: { id: string; pane: string | null; pool: MemoryPool; kind: MemoryKind; bytes: number; hidden: boolean;
+        waiters: number; refused: number | null }[];
         grants: { pane: string; cpuBytes: number; gpuCacheBytes: number }[] } {
         return {
             caches: [...this.caches.values()].filter(cache => cache.bytes > 0).map(cache => ({ id: cache.registration.id,
                 pane: cache.registration.paneId ?? null, pool: cache.registration.pool, kind: cache.registration.kind,
-                bytes: cache.bytes, hidden: cache.activity.hiddenAt !== null })),
+                bytes: cache.bytes, hidden: cache.activity.hiddenAt !== null,
+                waiters: this.capacityWaiters.get(cache)?.size ?? 0, refused: cache.refusal?.bytes ?? null })),
             grants: [...this.grants].map(([pane, grant]) => ({ pane, cpuBytes: grant.cpuBytes, gpuCacheBytes: grant.gpuCacheBytes })),
         };
     }

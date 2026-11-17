@@ -10,7 +10,7 @@ import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import { createNativeEmbedPresentationProducer, type NativeEmbedPresentationProducer } from '../host/embedPresentationFacts';
 import { boardPageStack } from '../model/pages';
 import { createBoardLayers, BOARD_BACKEND_PREFERENCE, createDrawnPagesReader, opaqueWorldOf } from '../render/boardLayers';
-import { auditCount } from '../../platform/render/renderAudit';
+import { auditCount, auditGauge } from '../../platform/render/renderAudit';
 import { RENDER_CONSTANTS } from '../../platform/render/constants';
 import type { DensityMode } from '../render/density';
 import { createPaintFrameAssembler } from '../render/frameAssembler';
@@ -155,6 +155,7 @@ export const attachView: AttachView = options => {
         return opaqueWorldOf(host, view.inverted, drawnPages(pageLayers));
     };
     const layers = createBoardLayers({ frames, images, onError: report, requestedRevision: () => options.session.doc.rev, requestedTheme: () => view.theme, omitNodes: omitPreview,
+        changedNodesSince: (from, to) => runtime.scene?.changedNodesSince(from, to) ?? null,
         opaqueWorld,
         liveNodeIds, candidates: () => lastCandidates,
         onDensityMode(mode) { if (densityMode !== mode && !disposed) { densityMode = mode; requestPaint(); } },
@@ -327,8 +328,10 @@ export const attachView: AttachView = options => {
         const liveSet = dense ? (union(precisionNodeIds(sensitive), previewCoverage?.()?.nodeIds ?? null) ?? new Set<string>()) as ReadonlySet<NodeId> : null;
         const sensitiveNodes = (dense ? liveSet : precisionNodeIds(sensitive)) as ReadonlySet<NodeId>;
         // Tile streams reopened by the frame share this request's identity (precision, sensitivity), not its world.
+        // On a device, the view stage realises its strokes at the whole-scene stage's precision (scenePrecision): the two stages
+        // then share one realisation per stroke, and a stage switch re-keys nothing. Canvas2d keeps its request.
         const identity = { sheetId: selectedSheet, theme: view.theme, sensitiveNodes,
-            ...(deviceScale ? { deviceScale, allowInkLod: true } : {}) };
+            ...(deviceScale ? { deviceScale, allowInkLod: true } : {}), ...(onDevice ? { scenePrecision: true } : {}) };
         // The whole-scene stage: asked once per key on a device, after the view frame it follows is up. No world, so the pin
         // does not cull by the camera; no device scale, so the scene's items do not change with the zoom.
         const sceneShape = { sheetId: selectedSheet, theme: view.theme, sensitiveNodes };
@@ -396,8 +399,11 @@ export const attachView: AttachView = options => {
         publish(); if (runtime.scene?.ready) requestPaint();
     });
     snapshot = makeSnapshot();
+    // The node count on the shown sheet, for the audit's node-count check. Registered only while the audit is on (no-op off).
+    const dropNodeGauge = auditGauge(`board:nodes:${options.auditPane ?? options.token.documentId}`, () => options.session.doc.bySheet.get(sheet())?.size ?? 0);
     const dispose = () => {
         if (disposed) return;
+        dropNodeGauge();
         clearPreview?.(); clearPreview = null;
         const oldProducer = embedProducer; embedProducer = null; oldProducer?.dispose();
         const oldEmbed = embedPort; embedPort = null;
@@ -419,7 +425,9 @@ export const attachView: AttachView = options => {
             if (old.theme !== view.theme) interaction?.paletteChanged?.();
             if (old.visible !== view.visible) embedPort?.setVisible(view.visible);
             if (view.visible && (old.theme !== view.theme || old.sheetId !== view.sheetId)) clearPreview?.();
-            if (!view.visible) { clearPreview?.(); paintJob?.abort(); cancelReveal(); frames.clear(); drawnFrame = null; interaction?.finishGesture(); interaction?.finishComposition(); }
+            // A hidden pane's frames and stream are gone, and its camera may change before it is shown again (a resize, a restored
+            // position): the request state that assumes the old stream and camera is dropped, so a show always asks for the current one.
+            if (!view.visible) { clearPreview?.(); paintJob?.abort(); cancelReveal(); frames.clear(); drawnFrame = null; viewWorld = null; viewAsked = null; sceneAsked = null; interaction?.finishGesture(); interaction?.finishComposition(); }
             publish();
             if (view.visible && (!old.visible || view.theme !== old.theme || view.sheetId !== old.sheetId)) requestPaint();
             layers.invalidate('board-view');

@@ -24,6 +24,11 @@ const benchmarkDomain = __BME_BENCH__ ? await import('./benchmarkPaintDomain') :
 /** The textured-quad pipeline, typed as PipelineDesc so its literal stencil state stays `enabled: false`. */
 /** The shared atlas side (Layer.atlas): one rgba8 target of this size, 17 MB, leased once per frame and shelf-packed. */
 const ATLAS_SIZE = 2064;
+/** The batch buffer's floor, in floats (64 quads of 8). It never shrinks below this. */
+const BATCH_FLOOR_FLOATS = 64 * 8;
+/** Batches in a row that used under a quarter of the buffer before it shrinks back to what they need. Measured by reading only:
+ * a long idle run after one large batch is the case this covers, and a short dip does not reallocate. */
+const BATCH_IDLE_LIMIT = 120;
 
 function quadDescriptor(shader: ShaderModule): PipelineDesc {
     return { shader, topology: 'triangle-strip', colorFormat: 'rgba8', samples: 1, blend: 'source-over', alphaToCoverage: false,
@@ -141,7 +146,9 @@ export class GpuCompositor implements PaneCompositor {
     readonly #encodings = new Set<FrameEncoder>();
     readonly #quadData = new Float32Array(16);
     /** Batched quads: one instance record (dst x0,y0,x1,y1 and src x,y,w,h) per quad, grown to the largest batch so far, and the batch's uniform block. */
-    #batchData = new Float32Array(64 * 8);
+    #batchData = new Float32Array(BATCH_FLOOR_FLOATS);
+    /** Consecutive batches that used less than a quarter of the buffer; the buffer shrinks after BATCH_IDLE_LIMIT of them. */
+    #batchIdle = 0;
     readonly #batchUniforms = new Float32Array(16);
     /** This frame's atlas (Layer.atlas): its lease and shelf cursor, created by the first atlas tile; null until then. */
     #atlas: { lease: TargetLease | null; x: number; y: number; rowH: number } | null = null;
@@ -206,10 +213,13 @@ export class GpuCompositor implements PaneCompositor {
                 binding.isolation.opacity > 1 || !['normal', 'multiply'].includes(binding.isolation.blend))) {
                 throw new ArenaError('invalid-input');
             }
-            // Keep callback receiver semantics without reading the caller's mutable binding again.
+            // Keep callback receiver semantics without reading the caller's mutable binding again. `critical` is copied too: the
+            // refusal gate reads it, and a copy without it reads every incomplete layer as critical (measured on the large drawing:
+            // the board's definition answered no, yet each incomplete band refused the frame, because the copy had dropped it).
             return Object.freeze({ id: binding.id, layer: binding.layer, group: binding.group,
                 isolation: binding.isolation ? Object.freeze({ ...binding.isolation }) : undefined,
                 coverage: binding.coverage.bind(binding),
+                ...(binding.critical ? { critical: binding.critical.bind(binding) } : {}),
                 ...(__BME_BENCH__ && binding.benchmarkDomain ? { benchmarkDomain: binding.benchmarkDomain.bind(binding) } : {}) });
         }));
     }
@@ -304,13 +314,14 @@ export class GpuCompositor implements PaneCompositor {
         try {
             if (!this.#options.owner.admitIsolation(plan.finish())) {
                 auditCount('compositor', 'refuse:isolation-budget');
-                this.#options.onError(new ArenaError('out-of-budget'));
+                // A budget refusal defers and retries; reporting it as an error demoted the pane to canvas2d for good.
+                this.#failure(new ArenaError('out-of-budget'));
                 return;
             }
             this.#isolationReadyFrame = frame.frameId;
         } catch (error) {
-            if (error instanceof ArenaError && error.code === 'out-of-budget') { auditCount('compositor', 'refuse:isolation-budget'); this.#options.onError(error); }
-            else this.#failure(error);
+            if (error instanceof ArenaError && error.code === 'out-of-budget') auditCount('compositor', 'refuse:isolation-budget');
+            this.#failure(error);
         }
     }
 
@@ -448,6 +459,7 @@ export class GpuCompositor implements PaneCompositor {
                         return { drawn: frame.layers.filter(meta => snapshot.layers.some(binding => binding.layer === meta.layer))
                             .map(meta => ({ layer: meta.layer, sceneRevision: meta.sceneRevision })),
                         completed: () => !this.#disposed && epoch === this.#epoch && this.#options.owner.resources.completed(submitted.serial),
+                        superseded: () => this.#disposed || epoch !== this.#epoch,
                         ...(__BME_BENCH__ ? { commitObservation: () => this.#options.owner.commitCoverage?.(submitted.serial),
                             cancelObservation: () => this.#options.owner.cancelCoverage?.(submitted.serial) } : {}) };
                     } catch (error) {
@@ -663,7 +675,7 @@ export class GpuCompositor implements PaneCompositor {
         const width = Math.round(active.view.viewport.width * active.view.viewport.dpr);
         const height = Math.round(active.view.viewport.height * active.view.viewport.dpr);
         // Every quad is checked before anything is drawn, so a bad quad refuses the whole batch and draws none of it.
-        const batch = this.#batchData.length >= quads.length * 8 ? this.#batchData : (this.#batchData = new Float32Array(quads.length * 8));
+        const batch = this.#batchBuffer(quads.length * 8);
         let count = 0, left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
         for (const quad of quads) {
             const { sourceRect: src, destRect: dst } = quad;
@@ -807,13 +819,26 @@ export class GpuCompositor implements PaneCompositor {
     }
     /** Compiles the single and the batched quad together: a batch is useless without its single fallback, and one promise
      * keeps both handles in step. allSettled, so a failure of one still releases the other instead of leaking it. */
+    /** The buffer for a batch of `floats`: grown when it is too small, and shrunk back once `BATCH_IDLE_LIMIT` batches in a row
+     * used under a quarter of it, so one large batch does not keep its memory for the compositor's life. */
+    #batchBuffer(floats: number): Float32Array {
+        const current = this.#batchData;
+        if (current.length < floats) { this.#batchIdle = 0; return (this.#batchData = new Float32Array(floats)); }
+        if (current.length > BATCH_FLOOR_FLOATS && floats * 4 < current.length) {
+            if (++this.#batchIdle < BATCH_IDLE_LIMIT) return current;
+            this.#batchIdle = 0;
+            return (this.#batchData = new Float32Array(Math.max(floats, BATCH_FLOOR_FLOATS)));
+        }
+        this.#batchIdle = 0;
+        return current;
+    }
     #prepareQuad(): void {
         if (this.#quad || this.#compiling) return;
         const device = this.#options.owner.resources;
         const epoch = this.#epoch;
         this.#nearest ??= device.createSampler('nearest');
         this.#linear ??= device.createSampler('linear');
-        this.#compiling = Promise.allSettled([device.createPipeline(quadDescriptor(TEXTURED_QUAD_SHADER)),
+        const compile: Promise<void> = Promise.allSettled([device.createPipeline(quadDescriptor(TEXTURED_QUAD_SHADER)),
             device.createPipeline(quadDescriptor(TEXTURED_QUAD_BATCH_SHADER))]).then(([single, batch]) => {
             const handles = [single, batch].map(result => result.status === 'fulfilled' ? result.value : null);
             if (this.#disposed || epoch !== this.#epoch) { for (const handle of handles) if (handle) device.destroy(handle); return; }
@@ -827,9 +852,11 @@ export class GpuCompositor implements PaneCompositor {
             this.#batchQuad = handles[1];
             this.#options.invalidate('gpu-quad-ready');
         }).finally(() => {
-            this.#compiling = null;
+            // A compile from a lost context can settle after a newer one started: its marker is not this one's to clear.
+            if (this.#compiling === compile) this.#compiling = null;
             if (!this.#disposed && epoch !== this.#epoch && this.#available) this.#options.invalidate('gpu-quad-retry');
         });
+        this.#compiling = compile;
     }
     #failure(error: unknown): void {
         if (error instanceof IsolationShortfall) {

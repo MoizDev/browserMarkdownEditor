@@ -100,17 +100,18 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         return { token: current, sourceRole: '', contentRevision: options.revision(), colourVersion: 0,
             geometryDigest: '', nominalDpr: lastView.viewport.dpr, view: lastView };
     };
-    // The frame this pane was last prepared or presented in. Its caches are never evicted in the frame in progress, nor in
-    // the frame that just ran when a release is deferred to a microtask: an eviction of a pane that is on screen is re-
-    // prepared the next frame and evicted again (measured: 170 'budget' invalidations per 3 s on the large seed).
+    // The frame this pane was last prepared or presented in. Whole-layer victims are chosen only in a frame this pane has not
+    // presented: an eviction of a pane that is on screen is re-prepared the next frame and evicted again (measured: 170 'budget'
+    // invalidations per 3 s on the large seed). A pane presented after the choice is released after the task, see below.
     let touchedFrame = -1;
     const touchedThisFrame = (): boolean => touchedFrame === runtime.scheduler.currentFrame();
     // Layers whose GPU release is already scheduled. Several caches of one pane can ask in the same trim; the second must not
     // count residency the first has already promised to free.
     const releasing = new Set<Layer>();
     /** Frees this pane's GPU residency, up to `bytes`, from its layers in order (or only `only`). The bytes are decided and
-     * returned now, so the governor can count them; the release waits for a microtask, outside any reservation, and only
-     * then invalidates the pane. A pane with nothing resident frees 0 and is not invalidated. */
+     * returned now, so the governor can count them, and a whole-layer victim is released in a microtask, outside any
+     * reservation: the governor counts it as freed, so that release must happen (it does unless the pane is gone), and then
+     * the pane is invalidated for the budget. A pane with nothing resident frees 0 and is not invalidated. */
     const trimGpu = (bytes: number, only?: Layer): number => {
         if (disposed || !visible) return 0;
         const frameId = runtime.scheduler.currentFrame();
@@ -149,17 +150,23 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         if (!victims.length) return 0;
         queueMicrotask(() => {
             for (const layer of victims) releasing.delete(layer);
-            if (disposed || !visible || touchedThisFrame()) return;
+            // The victims were chosen in a frame this pane had not presented, and the bytes above were counted on that promise.
+            // The release is kept: it runs after the task that presented this pane (the picture on screen is already drawn), so
+            // the only cost of a later paint is re-rastering the victims, which the next prepare does when they are still wanted.
+            // Only a pane that is gone keeps them: its caches have already left the governor's books.
+            if (disposed || !visible) return;
             // Releasing a visible pane's whole working set dropped the plans on screen (a notebook's paper and board) on each
-            // eviction, so only the layers the governor asked for are released, and only while they are off this frame.
-            // The pane is repainted for the budget only when a release actually freed bytes: a layer that is already gone, or
-            // one the lifecycle refused to release, leaves the picture as it is and asks for no frame.
+            // eviction, so only the layers the governor asked for are released. The pane is repainted for the budget only when a
+            // release actually freed bytes: a layer that is already gone, or one the lifecycle refused to release, leaves the
+            // picture as it is and asks for no frame. A promised release that did not free its bytes is audited by name.
             let released = false;
             for (const layer of victims) {
                 if (!layerSet.layers.includes(layer)) continue;
                 const before = layer.memory().gpuBytes;
                 lifecycle?.releaseLayerGpu(layer, 'pressure');
-                if (layer.memory().gpuBytes < before) released = true;
+                const after = layer.memory().gpuBytes;
+                if (after < before) released = true;
+                else if (after > 0 && renderAuditEnabled()) auditCount('governor', `evict-unrealized:${layerSet.definition(layer)?.id ?? 'unnamed'}`, 1, { bytes: after });
             }
             if (released) lifecycle?.invalidate('budget');
         });
@@ -180,7 +187,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         const common = { paneId: options.paneId, owner: options.documentToken, hiddenAt: visible ? null : now,
             lastVisibleAt: now, lastUsedAt: now, class: 'scene-cache' as const };
         const cacheId = `${options.paneId}:${options.viewLease}:${id}:${++cacheSerial}`;
-        const cpu = runtime.governor.register({ ...common, id: `${cacheId}:cpu`, pool: 'cpu', kind: 'working',
+        const cpu = runtime.governor.register({ ...common, id: `${cacheId}:cpu`, pool: 'cpu', kind: 'working', liveInput: definition.liveInput === true,
             memory: () => ({ live: current()?.memory().cpuBytes ?? 0, retiring: 0 }),
             // The layer names what it can rebuild; without the hook nothing in this cache is reclaimable, and the bytes its
             // drop measures are the bytes freed.

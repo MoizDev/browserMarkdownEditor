@@ -46,6 +46,8 @@ export function createSceneSnapshot(options: {
     occupiedBounds?: SceneOccupiedBounds | null;
     /** Changed regions between an older revision and this pin; absent means unknown. */
     changes?: (from: number) => RegionChanges;
+    /** The node ids changed between an older revision and this pin; null or absent means unknown. */
+    changedNodes?: (from: number) => ReadonlySet<string> | null;
     renderer?: { release(): void };
     prepare: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder) => Promise<PaintNodeSource>;
     prepareStream?: (doc: BoardDoc, request: ScenePaintRequest, signal: AbortSignal, orderedIds?: PaintNodeOrder, resolved?: ResolvedNodeCache) => ScenePaintNodeStream;
@@ -137,6 +139,7 @@ export function createSceneSnapshot(options: {
         ...(request.sensitiveNodes ? { sensitiveNodes: new Set(request.sensitiveNodes) } : {}),
         ...(request.only ? { only: new Set(request.only) } : {}) });
     const regionChangesSince = (from: number): RegionChanges => options.changes ? options.changes(from) : FULL_REGION_CHANGES;
+    const changedNodesSince = (from: number): ReadonlySet<string> | null => options.changedNodes ? options.changedNodes(from) : null;
     /** Whether any sensitive node may paint inside `world`. Cell candidates answer it; a query too large
      * for the grid tests each sensitive node's own bounds instead. Unknown answers true. */
     const sensitiveMayMeet = (index: SceneCellIndex, world: Readonly<Rect>, sensitive: ReadonlySet<string>): boolean => {
@@ -184,7 +187,7 @@ export function createSceneSnapshot(options: {
         if (signal.aborted) abort();
         return {
             token: source.token, theme: source.theme, sceneRevision: source.sceneRevision, sourceDoc: source.sourceDoc, sensitiveNodes: source.sensitiveNodes,
-            sessionRasters: source.sessionRasters, get rasterVariant() { return source.rasterVariant; }, sourceWorld, regionChangesSince,
+            sessionRasters: source.sessionRasters, get rasterVariant() { return source.rasterVariant; }, sourceWorld, regionChangesSince, changedNodesSince,
             sensitiveMayMeet: (world, nodes) => sensitiveMayMeet(index, world, nodes),
             mayPaint: world => mayPaint(index, world), ...(occupiedRoot ? { occupiedRoot } : {}),
             isCurrent: () => !released && !controller.signal.aborted && !closePromise && source.isCurrent(),

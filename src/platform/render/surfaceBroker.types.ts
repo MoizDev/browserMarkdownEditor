@@ -131,7 +131,9 @@ export interface SurfaceLease {
     markPresented(stamp: SurfaceStamp, generation: number): boolean;
     /** An unrecoverable qualified-backend fault abandons this reservation and returns to CPU. */
     failGpu(stamp: SurfaceStamp, generation: number, reason: GpuFailureReason, latch: boolean): void;
-    /** One fresh attempt after an outright failure/timeout, only on explicit user action or later show. */
+    /** One fresh attempt after an outright failure, on explicit user action or a later show. A restore timeout is retried by the
+     * broker itself on a back-off while the pane is visible (5 s, doubling, to 60 s), so it is not permanent: a context lost
+     * with no restore used to leave the pane on 2D for the whole session, until it was hidden and shown. */
     retry(): void;
     snapshot(): SurfaceSnapshot;
     dispose(): void;

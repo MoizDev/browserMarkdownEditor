@@ -1,4 +1,5 @@
 import { surfaceBroker } from './surfaceBroker';
+import { auditCount } from './renderAudit';
 import type { DamageRecord } from './damage';
 import type { BrokerGpuOwner, GpuGrant, SurfaceLease, SurfaceRegistration, SurfaceView } from './surfaceBroker.types';
 import type { MemoryGovernor, MemoryPressureState, PaneMemoryGrant } from './memoryGovernor';
@@ -467,8 +468,12 @@ export class PaneLifecycle<T extends object> {
         // name a GPU picture that is not on screen (a refused selectGpu left it so, under memory pressure).
         if (!this.options.presenter.selectGpu(grant)) return false;
         if (!this.surface.markPresented(this.surface.stamp, grant.generation)) {
-            // Nothing between the check above and here touches broker state, so a refusal is an invariant violation, not a case.
-            throw new Error('GPU presentation lost its surface after the display switched');
+            // selectGpu runs presenter code, which can lose the surface synchronously (a loss, a resize): the switch is undone and
+            // this frame is not presented, so the screen and the broker's state agree again. Throwing here left the GPU picture on
+            // screen with the broker unaware of it, and the scheduler demoted the pane for a state it had not caused.
+            this.options.presenter.select2D();
+            auditCount('pane', 'gpu-present-lost-surface');
+            return false;
         }
         this.usingGpu = true;
         this.returnBorrow();

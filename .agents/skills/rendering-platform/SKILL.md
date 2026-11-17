@@ -29,6 +29,9 @@ The platform is a shared, demand-driven compositor, not a document engine or ano
   textures, targets, buffers and drawing backing in the same task; a broker may keep only the
   separately accounted context/program reserve. Hidden panes have no GPU working memory
   (C4.3–C4.4, design §3.3).
+- `evictGpu(bytes, frameId)` is the governor's partial trim: it returns the bytes it freed and keeps what frame `frameId`
+  uses. A layer with the hook is never released whole by the trim (`trimGpu` in `attachPlatformPane.ts`); one without it is
+  released whole only when its pane was not touched this frame. Board and paper details: `board-gpu-path`.
 - GPU resources are rebuildable caches of session CPU truth. Mirrors and their leases belong to the
   app-level document session, not to a pane/layer; unmount returns a borrow, not the bitmap owner.
   Source reload/session closure, not a path rename or graph trip, ends their ownership (design §6.4).
@@ -70,6 +73,12 @@ The platform is a shared, demand-driven compositor, not a document engine or ano
   `reportWorkerMemory(worker, bytes)`; `releaseWorkerMemory(worker)` on stop/crash/recycle.
   Both are lazy render exports keyed by the actual worker incarnation; these estimates are
   report-only, separate from the decoded-raster CPU budget C (design §6.2; worker-host §5.8).
+- Governor grants (`memoryGovernor.ts`, `plan`): a pane's pinned visible positions (`gpuPinnedBytes`) are granted first and
+  never trimmed while the pane is visible; the rest of the GPU share is split by focus weight. A visible position past its
+  pane's share is refused and composed one level down, never trimmed from the screen. Only `maxVisiblePaneContexts` panes
+  get a GPU context; a sixth keeps its 2D picture and its floor.
+- A slow GPU is timing evidence, not memory. `trouble()` reports `slow-gpu` for a hold after the window; it never trims a
+  cache or steps quality. Layers shed per-frame work instead (the board halves its compose limit).
 - Capture belongs to the session: select an idle GPU route only if its full document/session token
   matches the immutable snapshot and the scheduler is running/not suspended, otherwise use CPU.
   Retain content/resources synchronously before awaiting. Async `prepare` may publish the frozen

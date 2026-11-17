@@ -207,8 +207,9 @@ function createCpuRoute(host: LayerHost, surface: string, lay: TileLay): CpuRout
 }
 
 export interface GpuPaintAdapter {
-    /** Indexes the reference's paint, composes what the view needs within the frame's limit. `omit` is the drag's omitted nodes. */
-    prepare(view: ViewState, budget: FrameBudget, omit?: ReadonlySet<string>): void;
+    /** Indexes the reference's paint, composes what the view needs within the frame's limit. `omit` is the drag's omitted nodes.
+     * True when anything visible changed since the previous prepare (the composer's report); true when it could not tell. */
+    prepare(view: ViewState, budget: FrameBudget, omit?: ReadonlySet<string>): boolean;
     /** The paint the composed tiles were built from, once a paint has been prepared. */
     readyFrame(): PaintSource | null;
     readyPaint(): PreparedPaint2d | null;
@@ -303,8 +304,8 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
     });
 
     return {
-        prepare(view: ViewState, budget: FrameBudget, omit?: ReadonlySet<string>): void {
-            if (disposed || lastFrame === budget.frameId) return;
+        prepare(view: ViewState, budget: FrameBudget, omit?: ReadonlySet<string>): boolean {
+            if (disposed || lastFrame === budget.frameId) return true;
             lastFrame = budget.frameId;
             pathRoute.beginFrame(budget.frameId);
             const prepared = reference.borrowPrepared(), device = host.device();
@@ -312,23 +313,25 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                 device.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration) {
                 composer.release('hidden');
                 presented = null; omitPrepared = null; ledger = null;
-                return;
+                return true;
             }
             omitPrepared = omit?.size ? omit : null;
             ledger = { device, generation: host.generation };
             // The frame has come: the store's deadline is handled (its trim runs in the composer's prepare, and re-arms if not due).
             armWake('store', null);
+            let changed = true;
             try {
-                timed(surface, 'prepare', () => composer.prepare(view, budget, prepared, omit));
+                changed = timed(surface, 'prepare', () => composer.prepare(view, budget, prepared, omit));
             } catch (error) {
-                if (isBudgetRefusal(error)) return;
+                if (isBudgetRefusal(error)) return true;
                 // Reported, not rethrown: a throw here aborted the board's frame on every prepare while the content stayed in view.
                 // On a device the error goes to the GPU channel, so the pane demotes to canvas2d instead of failing the open.
                 host.reportGpuError(error);
-                return;
+                return true;
             }
             presented = prepared;
             lastView = view;
+            return changed;
         },
         readyFrame(): PaintSource | null { return disposed ? null : presented?.sourceFrame ?? null; },
         readyPaint(): PreparedPaint2d | null { return disposed ? null : presented; },

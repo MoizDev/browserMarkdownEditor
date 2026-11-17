@@ -134,6 +134,18 @@ export class BoundsVersions {
         }
     }
     changedRegionsSince(from: number, to: number): RegionChanges { return regionChanges(this.changesSince(from, to)); }
+    /** Every node a publication in (from, to] touched, or null when that span is not retained or a structural change makes every
+     * node unknown. A dirty node whose box is unchanged is still named (a paint-only edit changes its pixels). */
+    changedNodesSince(from: number, to: number): ReadonlySet<NodeId> | null {
+        const changes = this.changesSince(from, to);
+        if (!changes) return null;
+        const ids = new Set<NodeId>();
+        for (const change of changes) {
+            if (change.structural) return null;
+            for (const id of change.nodes.keys()) ids.add(id);
+        }
+        return ids;
+    }
     /** Every published change in (from, to], in order, or null when that span is not fully retained. */
     changesSince(from: number, to: number): readonly BoundsRevisionChange[] | null {
         if (!Number.isSafeInteger(from) || !Number.isSafeInteger(to) || from > to || from < this.historyFloor) return null;

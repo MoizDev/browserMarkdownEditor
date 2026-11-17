@@ -108,6 +108,8 @@ export interface AttachViewOptions {
     /** A view's playing video frames, served by their own image keys. Absent for any view with no video to play. */
     readonly liveFrames?: VideoFrameOverlay;
     readonly signal?: AbortSignal;
+    /** The pane this view draws in, naming its audit gauges (board:nodes:<auditPane>); absent, the document id names them. */
+    readonly auditPane?: string;
     readonly reveal: (world: Readonly<{ x: number; y: number; width: number; height: number }>) => void;
     readonly onError: (error: Error) => void;
 }

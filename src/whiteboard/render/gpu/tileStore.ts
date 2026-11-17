@@ -2,7 +2,7 @@
 // render target (platform/render/tileTarget.ts) charged to the GPU governor through its lease. This file is bookkeeping
 // only: the composer (tileComposer.ts) decides what to draw; the store decides what to keep, what to reuse and what to
 // give back. Design: planning/60-implementation/gpu-handoff/PLAN.md §3.1–3.2.
-import type { Rect } from '../../../platform/types';
+import type { Rect, ViewState } from '../../../platform/types';
 import type { LayerHost } from '../../../platform/render/compositor.types';
 import type { GfxDevice } from '../../../platform/render/gfx/api';
 import type { MemoryAllocator } from '../../../platform/render/memoryGovernor';
@@ -19,7 +19,7 @@ const POS_LIMIT = 2 ** 25;
 const POS_STRIDE = 2 ** 26;
 
 /** Targets kept for reuse. A zoom drops one scale's positions at once and the next scale's are the same size, so the free
- * list holds about one scale's visible positions (PLAN §6.4: about 30 at DPR 2). Past the limit a target is destroyed,
+ * list holds about one scale's visible positions (PLAN §6, risk 4: about 30 at DPR 2). Past the limit a target is destroyed,
  * because a kept target still holds its bytes against the governor. Gpu measures the limit in wave 3. */
 const FREE_TARGET_LIMIT = 32;
 
@@ -45,6 +45,21 @@ function tileRange(lo: number, hi: number, scale: number): readonly [number, num
 /** How far apart two scales are on the multiplicative ladder: 0 for the same scale, ln 2 for one √2 step twice over. */
 function ratioDistance(a: number, b: number): number {
     return Math.abs(Math.log(a / b));
+}
+
+/** The pane's device pixels per world unit: the scale a tile at the current view is composed at. */
+function viewScale(view: ViewState): number {
+    const scale = view.camera.z * view.viewport.dpr;
+    if (!(scale > 0) || !Number.isFinite(scale)) throw new RangeError('Invalid view scale');
+    return scale;
+}
+
+function viewWorld(view: ViewState): Rect {
+    return { x: view.camera.x, y: view.camera.y, width: view.viewport.width / view.camera.z, height: view.viewport.height / view.camera.z };
+}
+
+function overlaps(a: Readonly<Rect>, b: Readonly<Rect>): boolean {
+    return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
 }
 
 export const tileId: TileIdFn = key => {
@@ -235,14 +250,58 @@ class GpuTileStore implements TileStore {
         }
     }
 
-    /** Placeholder until step (3) of this package: eviction needs the view order and the free-list drain. */
-    evict(): number {
-        throw new Error('tile store: evict lands in the next commit of this package');
+    /** Frees at least `bytes` when it can, and never an entry touched in `frameId`. Order: the free list; other scales off
+     * view (least recently used first); the current scale off view (farthest from the view first); other scales on view
+     * that the current scale composes at their centre, so the picture never loses its stand-in. Returns the bytes freed. */
+    evict(bytes: number, frameId: number, view: ViewState): number {
+        if (!Number.isFinite(bytes) || bytes < 0) throw new RangeError('Invalid eviction size');
+        let freed = 0;
+        while (freed < bytes && this.free.length) {
+            const target = this.free.pop()!;
+            freed += target.bytes;
+            this.retire(target);
+            auditCount(this.audit, 'tile:evict:free-list');
+        }
+        if (freed >= bytes) return freed;
+
+        const scale = viewScale(view);
+        const shown = viewWorld(view);
+        const centreX = shown.x + shown.width / 2, centreY = shown.y + shown.height / 2;
+        const distance = (slot: Slot): number => {
+            const world = tileWorld(slot.key);
+            return Math.hypot(world.x + world.width / 2 - centreX, world.y + world.height / 2 - centreY);
+        };
+        const staleOff: Slot[] = [], currentOff: Slot[] = [], staleOn: Slot[] = [];
+        for (const slot of this.slotsIn()) {
+            if (!slot.target || slot.usedFrame === frameId) continue;
+            const on = overlaps(tileWorld(slot.key), shown);
+            if (slot.key.scale !== scale) (on ? staleOn : staleOff).push(slot);
+            else if (!on) currentOff.push(slot);
+        }
+        staleOff.sort((a, b) => a.usedFrame - b.usedFrame || ratioDistance(b.key.scale, scale) - ratioDistance(a.key.scale, scale));
+        currentOff.sort((a, b) => distance(b) - distance(a) || a.usedFrame - b.usedFrame);
+        const covered = staleOn.filter(slot => this.coveredAt(scale, slot)).sort((a, b) => a.usedFrame - b.usedFrame);
+        const tiers: readonly (readonly [readonly Slot[], string])[] = [[staleOff, 'other-scale'], [currentOff, 'same-scale'], [covered, 'covered']];
+        for (const [group, why] of tiers) {
+            for (const slot of group) {
+                if (freed >= bytes) return freed;
+                freed += this.evictSlot(slot, why);
+            }
+        }
+        return freed;
     }
 
-    /** Placeholder until step (3). */
-    dropScalesExcept(): number {
-        throw new Error('tile store: dropScalesExcept lands in the next commit of this package');
+    /** Moves every entry of `band` at other scales off the index. Their targets join the free list, where the new scale
+     * reuses them, so the bytes stay charged until reuse or eviction. Returns the number of entries dropped. */
+    dropScalesExcept(scale: number, band: PaintBand): number {
+        let dropped = 0;
+        for (const slot of this.slotsIn(band)) {
+            if (slot.key.scale === scale) continue;
+            const target = this.unlink(slot);
+            if (target) this.keepFree(target);
+            dropped++;
+        }
+        return dropped;
     }
 
     /** Waits for governor capacity. */
@@ -253,9 +312,18 @@ class GpuTileStore implements TileStore {
         this.allocator.whenAvailable(wake);
     }
 
-    /** Placeholder until step (3). */
+    /** Gives every target back and forgets every entry, so the store is empty and its bytes read zero when this returns.
+     * The governor's charge follows when the device retires each texture (ResourceArena: a submitted use fences). */
     releaseAll(): void {
-        throw new Error('tile store: releaseAll lands in the next commit of this package');
+        for (const slot of this.slotsIn()) {
+            const target = this.unlink(slot);
+            if (target) {
+                this.retire(target);
+                auditCount(this.audit, 'tile:evict:release-all');
+            }
+        }
+        for (const target of this.free.splice(0)) this.retire(target);
+        if (this.gpuBytes !== 0) throw new Error('Tile store byte ledger is out of step after release');
     }
 
     /** The store holds no CPU memory: its composed content lives in GPU targets only. */
@@ -317,6 +385,46 @@ class GpuTileStore implements TileStore {
             }
         }
         return found;
+    }
+
+    /** Takes an entry out of every index and returns its target for the caller to keep or destroy. A detached entry draws
+     * nothing: a reference the composer still holds sees no target, never a target another entry has since reused. */
+    private unlink(slot: Slot): TileTarget | null {
+        this.byId.delete(slot.id);
+        const scales = this.byBand.get(slot.key.band);
+        const positions = scales?.get(slot.key.scale);
+        const pos = posKey(slot.key.x, slot.key.y);
+        const slots = positions?.get(pos);
+        if (slots) {
+            const at = slots.indexOf(slot);
+            if (at >= 0) slots.splice(at, 1);
+            if (slots.length === 0) positions?.delete(pos);
+        }
+        if (positions?.size === 0) scales?.delete(slot.key.scale);
+        if (scales?.size === 0) this.byBand.delete(slot.key.band);
+        const target = slot.target;
+        slot.target = null;
+        slot.composed = false;
+        slot.dirty = true;
+        return target;
+    }
+
+    /** Unlinks an entry and destroys its target, returning the bytes it held. */
+    private evictSlot(slot: Slot, why: string): number {
+        const target = this.unlink(slot);
+        if (!target) return 0;
+        this.retire(target);
+        auditCount(this.audit, `tile:evict:${why}`);
+        return target.bytes;
+    }
+
+    /** Whether a composed target of the same band and slice at `scale` covers the centre of `slot`'s tile. */
+    private coveredAt(scale: number, slot: Slot): boolean {
+        const world = tileWorld(slot.key);
+        const x = Math.floor((world.x + world.width / 2) * scale / TILE_EDGE);
+        const y = Math.floor((world.y + world.height / 2) * scale / TILE_EDGE);
+        const slots = this.byBand.get(slot.key.band)?.get(scale)?.get(posKey(x, y));
+        return slots?.some(other => other.key.slice === slot.key.slice && other.composed && other.target !== null) ?? false;
     }
 }
 

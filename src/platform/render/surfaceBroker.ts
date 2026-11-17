@@ -3,6 +3,7 @@ import type { RenderToken } from './types';
 import type { ByteLease } from './gfx/api';
 import type { MemoryAllocator } from './memoryGovernor';
 import { auditCount } from './renderAudit';
+import { paneMotionState } from './paneMotion';
 import type {
     BrokerGpuOwner, ContextDisposeReason, CpuFallbackReason, GpuGrant, GpuRequestResult,
     SurfaceBrokerConfiguration, SurfaceCallbacks, SurfaceLease, SurfaceRegistration, SurfaceSnapshot, SurfaceStamp,
@@ -62,8 +63,7 @@ interface SurfaceEntry {
     lease: SurfaceLease;
 }
 
-/** A gesture is over once input has been quiet this long; the upgrade waits for that and never lands mid-gesture. A fling or
- * zoom that keeps moving after its last input is not seen here, so its quiet moment is this window after that input. */
+/** A gesture is over once input and camera motion have been quiet this long; the upgrade waits for that, never mid-gesture. */
 const UPGRADE_QUIET_MS = 250;
 
 function sessionKey(token: RenderToken): string {
@@ -620,11 +620,19 @@ class SurfaceBroker {
         return this.fallback(entry, 'budget');
     }
 
-    private deferUpgrade(entry: SurfaceEntry): void {
+    /** Milliseconds until this pane is quiet: no input and no motion for the quiet window. A pane still moving reports one
+     * window and is asked again when it passes, so a fling or zoom that outlives its last input still holds the upgrade. */
+    private quietWait(entry: SurfaceEntry): number {
+        const motion = paneMotionState(entry.paneId);
+        if (motion.moving) return UPGRADE_QUIET_MS;
+        const since = Math.max(entry.view.lastInputAt, motion.stoppedAt);
+        return Math.max(0, since + UPGRADE_QUIET_MS - performance.now());
+    }
+
+    private deferUpgrade(entry: SurfaceEntry, delay: number): void {
         if (entry.upgradeTimer !== null) return;
         auditCount('context', 'upgrade:deferred');
-        // A real deadline, not a poll: the timer fires once input has been quiet for the window, and re-arms if a new gesture began.
-        const delay = Math.max(0, entry.view.lastInputAt + UPGRADE_QUIET_MS - performance.now());
+        // A real deadline, not a poll: the timer fires when the quiet window of input and motion has passed, and re-arms if not.
         entry.upgradeTimer = setTimeout(() => {
             entry.upgradeTimer = null;
             if (this.current(entry)) this.notifyAvailable();
@@ -656,8 +664,9 @@ class SurfaceBroker {
                     [...this.surfaces.values()].some(other => !other.view.visible && other.reservation);
                 if (others >= RENDER_CONSTANTS.maxVisiblePaneContexts || !hasRoom) continue;
                 // A budget fallback upgrades on a visibility change or once input has been quiet: never mid-gesture.
-                if (entry.budgetFallback && !bypass && performance.now() - entry.view.lastInputAt < UPGRADE_QUIET_MS) {
-                    this.deferUpgrade(entry);
+                const wait = entry.budgetFallback && !bypass ? this.quietWait(entry) : 0;
+                if (wait > 0) {
+                    this.deferUpgrade(entry, wait);
                     continue;
                 }
                 if (entry.upgradeTimer !== null) { clearTimeout(entry.upgradeTimer); entry.upgradeTimer = null; }

@@ -1,6 +1,6 @@
 import type { ByteLease } from '../../platform/render/gfx/api';
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
-import type { PaintItem, PaintSource } from '../render/paintStream';
+import type { PaintImageItem, PaintSource } from '../render/paintStream';
 import { paintItemsOf } from '../render/paintWindows';
 import type { PaintFrameAssembler } from '../render/frameTypes';
 import type { PaintImageLease } from '../render/resources';
@@ -218,25 +218,64 @@ export function videoFrameOverlay(registry: VideoFrameRegistry, afterDraw: () =>
  * the assembler owns: presented, retain, isCurrent and retire. An original is retired only when no decorated
  * version of it is still held and it is no longer the newest one.
  */
+/** A decorated frame's original, by identity: every frame the assembler hands out is either an original or one of these. */
+const originalOfDecorated = new WeakMap<PaintSource, PaintSource>();
+export function originalOf(frame: PaintSource): PaintSource { return originalOfDecorated.get(frame) ?? frame; }
+
+/** One image item of an original frame, and the list it sits in. Found once per original frame, so a decorate reads only these. */
+interface ImageSlot { readonly list: readonly unknown[]; readonly at: number; readonly item: PaintImageItem }
+const imageSlots = new WeakMap<PaintSource, readonly ImageSlot[]>();
+function slotsOf(frame: PaintSource): readonly ImageSlot[] {
+    const known = imageSlots.get(frame);
+    if (known) return known;
+    const slots: ImageSlot[] = [];
+    const scan = (items: readonly { readonly kind: string }[]): void => {
+        for (let at = 0; at < items.length; at++) {
+            const item = items[at];
+            if (item.kind === 'image') slots.push({ list: items, at, item: item as PaintImageItem });
+        }
+    };
+    if (frame.liveOnly) for (const window of frame.windows) scan(window.items);
+    else { scan(frame.underlay); scan(frame.content); }
+    imageSlots.set(frame, slots);
+    return slots;
+}
+
+/**
+ * The frame the assembler serves for a playing picture: a new object per registry advance (the canvas2d reference's snapshot
+ * restarts on object identity, and that restart is what takes the new picture's lease: canvasPaintAdapter.ts:250-252).
+ * Everything else is shared with the original: only the video image items are replaced, and only the arrays that hold them are copied.
+ */
+function decorateFrame(frame: PaintSource, keys: ReadonlyMap<string, string>): PaintSource {
+    const copies = new Map<readonly unknown[], unknown[]>();
+    for (const slot of slotsOf(frame)) {
+        const key = keys.get(slot.item.nodeId);
+        if (key === undefined || slot.item.imageKey === key) continue;
+        let copy = copies.get(slot.list);
+        if (!copy) copies.set(slot.list, copy = slot.list.slice());
+        copy[slot.at] = { ...slot.item, imageKey: key };
+    }
+    for (const copy of copies.values()) Object.freeze(copy);
+    const replaced = <T>(list: readonly T[]): readonly T[] => (copies.get(list) as readonly T[] | undefined) ?? list;
+    const decorated: PaintSource = frame.liveOnly
+        ? Object.freeze({ ...frame, windows: Object.freeze(frame.windows.map(window => {
+            const items = replaced(window.items);
+            return items === window.items ? window : Object.freeze({ band: window.band, items });
+        })) })
+        : Object.freeze({ ...frame, underlay: replaced(frame.underlay), content: replaced(frame.content) });
+    return decorated;
+}
+
 export function liveVideoFrames(base: PaintFrameAssembler, registry: VideoFrameRegistry): PaintFrameAssembler {
-    const originals = new WeakMap<PaintSource, PaintSource>();
     const versions = new Map<PaintSource, Set<PaintSource>>(), deferred = new Set<PaintSource>();
     let newest: PaintSource | null = null, lastOriginal: PaintSource | null = null, lastVersion = -1, lastDecorated: PaintSource | null = null;
-    const original = (frame: PaintSource) => originals.get(frame) ?? frame;
-    const withKeys = (items: readonly PaintItem[], keys: ReadonlyMap<string, string>): readonly PaintItem[] => items.map(item => {
-        if (item.kind !== 'image') return item;
-        const key = keys.get(item.nodeId);
-        return key === undefined ? item : { ...item, imageKey: key };
-    });
+    const original = (frame: PaintSource) => originalOf(frame);
     const decorate = (frame: PaintSource): PaintSource => {
         const keys = registry.keys;
         if (keys.size === 0) return frame;
         if (lastOriginal === frame && lastVersion === registry.version && lastDecorated) return lastDecorated;
-        const decorated: PaintSource = frame.liveOnly
-            ? Object.freeze({ ...frame, windows: Object.freeze(frame.windows.map(window =>
-                Object.freeze({ band: window.band, items: Object.freeze(withKeys(window.items, keys)) }))) })
-            : Object.freeze({ ...frame, underlay: Object.freeze(withKeys(frame.underlay, keys)), content: Object.freeze(withKeys(frame.content, keys)) });
-        originals.set(decorated, frame);
+        const decorated = decorateFrame(frame, keys);
+        originalOfDecorated.set(decorated, frame);
         let held = versions.get(frame);
         if (!held) versions.set(frame, held = new Set());
         held.add(decorated);

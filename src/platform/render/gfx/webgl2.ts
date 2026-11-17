@@ -269,6 +269,12 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     readonly #timer: Webgl2Timer;
     readonly #isolation: Webgl2IsolationPool;
     readonly #sampleCounts = new Map<number, ReadonlySet<number>>();
+    // Replay-only tally of state switches (the audit's gl:state). `undefined` = unknown at the start of a replay, so the
+    // first bind of each kind of a frame counts. Counting only: a redundant bind is still issued, as before.
+    #replayProgram: WebGLProgram | null | undefined;
+    #replayFramebuffer: WebGLFramebuffer | null | undefined;
+    #replayBlend: string | undefined;
+    #replaySwitches = 0;
     readonly #uniformBindings: number;
     readonly #maxAttributes: number;
     readonly #maxElementIndex: number;
@@ -1232,6 +1238,9 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             white: () => texture(this.#white!),
             uniforms: bytes => this.#frameUniforms(work, bytes),
             uploadUniforms: () => { if (work.surface) this.#timer.begin(); this.#uploadUniforms(work); },
+            beginReplay: () => this.#beginReplay(),
+            endReplay: () => this.#replaySwitches,
+            bindTarget: framebuffer => this.#bindTarget(framebuffer),
             quad: command => {
                 if (!this.#composition) throw new ArenaError('invalid-resource');
                 const program = this.#pin(work.encoding, this.#composition, 'pipeline');
@@ -1441,9 +1450,28 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         }
     }
 
+    #beginReplay(): void {
+        this.#replayProgram = undefined;
+        this.#replayFramebuffer = undefined;
+        this.#replayBlend = undefined;
+        this.#replaySwitches = 0;
+    }
+
+    #bindTarget(framebuffer: WebGLFramebuffer | null): void {
+        const gl = this.#usable();
+        if (framebuffer !== this.#replayFramebuffer) { this.#replayFramebuffer = framebuffer; this.#replaySwitches++; }
+        gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+    }
+
+    #useProgram(program: WebGLProgram): void {
+        const gl = this.#usable();
+        if (program !== this.#replayProgram) { this.#replayProgram = program; this.#replaySwitches++; }
+        gl.useProgram(program);
+    }
+
     #viewport(context: DrawContext, scissor: RectI): void {
         const gl = this.#usable();
-        gl.bindFramebuffer(gl.FRAMEBUFFER, context.target.framebuffer);
+        this.#bindTarget(context.target.framebuffer);
         gl.viewport(context.viewport.x - context.originX, context.target.height - (context.viewport.y - context.originY) - context.viewport.height,
             context.viewport.width, context.viewport.height);
         gl.enable(gl.SCISSOR_TEST);
@@ -1466,6 +1494,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
 
     #blend(blend: PipelineDesc['blend']): void {
         const gl = this.#usable();
+        if (blend !== this.#replayBlend) { this.#replayBlend = blend; this.#replaySwitches++; }
         if (blend === 'replace') gl.disable(gl.BLEND);
         else if (blend === 'modulate') {
             // Multiply by the source colour and keep the destination alpha: one fixed-function step per fragment, so a
@@ -1489,7 +1518,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 gl.drawBuffers(context.target.coverage && pipeline.descriptor.shader.id === 'platform-textured-quad'
                     ? [gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1] : [gl.COLOR_ATTACHMENT0]);
             }
-            gl.useProgram(program.program);
+            this.#useProgram(program.program);
             gl.bindVertexArray(this.#ensureVao(pipeline));
             const bindings = pipeline.vertexBindings;
             if (!bindings || bindings.length !== command.vertices.length ||
@@ -1548,7 +1577,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             if (__BME_BENCH__ && command.context.target.framebuffer) {
                 gl.drawBuffers(command.context.target.coverage ? [gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1] : [gl.COLOR_ATTACHMENT0]);
             }
-            gl.useProgram(program.program);
+            this.#useProgram(program.program);
             gl.bindVertexArray(null);
             this.#bindUniform(0, command.uniforms.buffer.buffer, command.uniforms.slice.offset, 128);
             this.#bindTexture(0, command.source.texture, sampler.sampler);

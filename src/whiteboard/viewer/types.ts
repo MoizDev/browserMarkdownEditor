@@ -1,4 +1,5 @@
 import type { PlatformLayerDefinition, PlatformPresentation } from '../../platform/render/attachPlatformPane.types';
+import type { ViewState } from '../../platform/types';
 import type { EmbedPresentationPort } from '../../platform/render/embedPresentation.types';
 import type { CompositorAppearance } from '../../platform/render/compositor.types';
 import type { PageStack } from '../../platform/render/pageStack';
@@ -62,6 +63,8 @@ export interface ViewerInteractionPorts {
     beforeHistoryReplay?(step: HistoryStepInfo, direction: 'undo' | 'redo'): boolean;
     presented?(revision: number, token: RenderToken, frame?: PaintSource, context?: ViewerPaintPresentation): void;
     liveNodeIds?(): ReadonlySet<string>;
+    /** Whether the live layer paints this node in the frame at `view` (see BoardWetRenderer.drawsLive). */
+    liveDraws?(nodeId: string, band: 'underlay' | 'content', view: ViewState, canvas: boolean): boolean;
     /** The theme palette changed. Interaction-owned paint (the wet ink source) caches pigments
      * from the palette and is only refreshed when its own layer is prepared, so the view must
      * tell it: the main layers' invalidation alone leaves a dark pigment on screen. */

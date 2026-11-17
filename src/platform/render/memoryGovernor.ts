@@ -130,6 +130,10 @@ interface CacheRecord {
     /** The last refusal of this cache: the capacity epoch it was refused in, and the size. Until capacity changes, the same
      * or a larger request is refused without a second round of reclaim and trims. */
     refusal: { readonly epoch: number; readonly bytes: number } | null;
+    /** Bytes the owner published beyond its leases (an accounting fault, see reconcileUnaccounted). They are charged to the
+     * cache and returned with its last lease. */
+    unaccounted: number;
+    unaccountedReported: boolean;
     readonly handle: MemoryCacheHandle;
 }
 
@@ -282,7 +286,7 @@ export class MemoryGovernor {
         }
         const cache: CacheRecord = {
             registration: { ...registration, owner: registration.owner ? Object.freeze({ ...registration.owner }) : undefined },
-            activity: { ...registration }, bytes: 0, leaseCount: 0, closed: false, refusal: null,
+            activity: { ...registration }, bytes: 0, leaseCount: 0, closed: false, refusal: null, unaccounted: 0, unaccountedReported: false,
             handle: {
                 reserve: bytes => this.reserve(cache, bytes),
                 release: lease => this.release(lease, cache),
@@ -546,15 +550,27 @@ export class MemoryGovernor {
         const { live, retiring } = cache.registration.memory();
         count(live);
         count(retiring);
-        // Publication without a covering reservation is a product failure, not a test hook.
-        // Named by cache: the owner that published bytes its reservation does not cover is the one this error must point at.
-        if (live + retiring > cache.bytes) {
-            const id = cache.registration.id;
-            auditCount('governor', `unaccounted:${id}`);
-            throw new MemoryAdmissionError('unaccounted',
-                `unaccounted: ${id} live ${live} retiring ${retiring} reserved ${cache.bytes}`);
-        }
+        // Publication without a covering reservation is an accounting fault in the owner. It never throws out of a frame (the
+        // frame would be lost on screen): the bytes are charged to the cache and the owner is named once.
+        if (live + retiring > cache.bytes) this.reconcileUnaccounted(cache, live, retiring);
         return { live, retiring, reservedBytes: cache.bytes, leaseCount: cache.leaseCount, closed: cache.closed };
+    }
+
+    /** Charges a cache for live bytes its reservation does not cover, so the pool counts what is on the device. The charge is
+     * the full deficit, not a clamp: a clamp would understate the pool. advance() trims a pool charged past its target on
+     * the next frame, which is the trim the excess needs. Counted per event with its bytes; logged once per cache, named. */
+    private reconcileUnaccounted(cache: CacheRecord, live: number, retiring: number): void {
+        const { id, pool } = cache.registration;
+        const deficit = live + retiring - cache.bytes;
+        cache.bytes += deficit;
+        cache.unaccounted += deficit;
+        this.charged[pool] += deficit;
+        auditCount('governor', `unaccounted:${id}`, 1, { bytes: deficit });
+        if (!cache.unaccountedReported) {
+            cache.unaccountedReported = true;
+            console.error(`GPU accounting: ${id} published ${live + retiring} bytes (live ${live}, retiring ${retiring}) against ` +
+                `${cache.bytes - deficit} reserved; the difference is charged to it until its leases return.`);
+        }
     }
 
     /** Render audit only: every cache's charge with its pane, and each pane's grant. */
@@ -823,6 +839,12 @@ export class MemoryGovernor {
         cache.leaseCount--;
         const pool = cache.registration.pool;
         this.charged[pool] -= record.bytes;
+        // The unaccounted charge goes with the cache's last lease: nothing that holds bytes is left to publish them.
+        if (!cache.leaseCount && cache.unaccounted > 0) {
+            cache.bytes -= cache.unaccounted;
+            this.charged[pool] -= cache.unaccounted;
+            cache.unaccounted = 0;
+        }
         // Only a release that leaves room for the smallest standing refusal can change its answer (see refusedFloor).
         if (this.charged[pool] + this.refusedFloor[pool] <= this.target[pool]) this.bumpCapacity();
         this.notifyCapacity();

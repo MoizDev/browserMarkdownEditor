@@ -70,6 +70,8 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     const compositorRef: { current: PaneCompositor | null } = { current: null };
     let lastView: ViewState = { camera: { ...camera.camera }, viewport: { ...camera.viewport }, epoch: 0, moving: false };
     let lastQuality: number | null = null;
+    // Audit only: the camera scale of the previous mirrored present, for the present's zooming flag.
+    let lastMirroredScale: number | null = null;
     let sampledCamera = { ...camera.camera };
     let lastInputAt = performance.now();
     let pendingInputAt: number | null = null;
@@ -166,14 +168,8 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         demandQueued = true;
         queueMicrotask(() => { demandQueued = false; if (!disposed) runtime.refresh(); });
     };
-    // A readout refuses an over-reported cache (a product failure reported elsewhere); demand then counts only the layer.
-    // A readout throws only when a cache's live bytes exceed what it has reserved: an accounting fault. It is counted and
-    // rethrown, never read as zero, since a zero would drop this cache's bytes from the demand the governor plans on.
-    const heldBytes = (cache: MemoryCacheHandle | undefined): number => {
-        if (!cache) return 0;
-        try { return cache.readout().reservedBytes; }
-        catch (error) { auditCount('governor', 'unaccounted'); throw error; }
-    };
+    // A cache's reserved bytes include any accounting fault the governor has charged (it never throws out of a readout).
+    const heldBytes = (cache: MemoryCacheHandle | undefined): number => cache ? cache.readout().reservedBytes : 0;
     const layerSet = new PaneLayerSet((id, current, definition) => {
         const now = performance.now();
         const common = { paneId: options.paneId, owner: options.documentToken, hiddenAt: visible ? null : now,
@@ -404,6 +400,9 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                         cpuPresented = false;
                         surfaceHost.clearStaged();
                         options.onPresentation(null);
+                        // Every fallback, a GPU error included, needs a frame now: the GPU frame that failed may have cleared the
+                        // canvas, and only a 2D frame repaints it. Without this the pane waited for an unrelated change.
+                        lifecycle?.invalidate('cpu-fallback');
                         if (reason === 'context-lost') runtime.trouble('context-loss');
                     },
                     onSlotAvailable: () => { gpuRequested = false; requestGpu(); },
@@ -558,10 +557,14 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                                 }
                                 // A mirrored frame is presented from the 2D mirror without an encode: it is recorded here, as the 2D
                                 // compositor records its own, so the present audit counts every presented frame. The mirror is a 2D picture: canvas2d.
-                                if (mirrored && renderAuditEnabled()) auditPresent({ pane: options.paneId, frame: frame.frameId,
-                                    rawTick: frame.timestamp, backend: 'canvas2d', layersComplete: complete, canvas: null,
-                                    standIns: 0, standInsRaster: 0, holes: 0, zooming: false,
-                                    refusal: null });
+                                if (mirrored && renderAuditEnabled()) {
+                                    const scale = frame.view.camera.z;
+                                    const zooming = lastMirroredScale !== null && scale !== lastMirroredScale;
+                                    lastMirroredScale = scale;
+                                    auditPresent({ pane: options.paneId, frame: frame.frameId, rawTick: frame.timestamp, backend: 'canvas2d',
+                                        layersComplete: complete, canvas: null, standIns: 0, standInsRaster: 0, holes: 0, zooming,
+                                        refusal: null });
+                                }
                                 auditFrame(drawing.backend, performance.now() - encodeStart);
                                 touchedFrame = frame.frameId;
                                 if (qualityScale < 1) auditCount('pane', 'quality-below-1');

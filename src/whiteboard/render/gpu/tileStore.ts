@@ -6,9 +6,9 @@ import type { Rect, ViewState } from '../../../platform/types';
 import type { LayerHost } from '../../../platform/render/compositor.types';
 import type { GfxDevice } from '../../../platform/render/gfx/api';
 import type { MemoryAllocator } from '../../../platform/render/memoryGovernor';
-import { auditCount } from '../../../platform/render/renderAudit';
+import { auditCount, renderAuditEnabled } from '../../../platform/render/renderAudit';
 import { ArenaError } from '../../../platform/render/resourceArena';
-import { createTileTarget, destroyTileTarget, type TileTarget } from '../../../platform/render/tileTarget';
+import { createTileTarget, destroyTileTarget, tileTargetBytes, type TileTarget } from '../../../platform/render/tileTarget';
 import type { PaintBand } from '../material';
 import { TILE_EDGE, TILE_GUTTER, TILE_SIZE } from '../imageSampling';
 import type { Blend, TileEntry, TileIdFn, TileKey, TileStore, TileWorldFn } from './contracts';
@@ -53,6 +53,8 @@ const FREE_TARGET_LIMIT = 32;
  * oldest first), so a zoom that dropped its scales hands their bytes back instead of holding them until releaseAll. */
 const FREE_IDLE_MS = 2000;
 const FREE_TARGET_RESERVE = 4;
+/** The bytes of every target the store makes: the ledger check compares against it. */
+const TARGET_BYTES = tileTargetBytes(TILE_SIZE);
 
 function checkKey(key: TileKey): void {
     if (!Number.isSafeInteger(key.x) || !Number.isSafeInteger(key.y) || !Number.isSafeInteger(key.slice) ||
@@ -161,6 +163,8 @@ class GpuTileStore implements NumericTileStore {
     /** Bytes of every target this store holds, in entries or on the free list. The governor charges the same bytes through
      * each target's lease; this readout drops to zero the moment the store gives a target up. */
     private gpuBytes = 0;
+    /** Targets the store has made and not yet forgotten: each one is a lease it holds. Audit-only check, see checkLedger. */
+    private targetsHeld = 0;
     /** The device generation whose targets the store holds; see adopt. */
     private current: GfxDevice | null = null;
     /** The last acquire's clock reading (performance.now), which the idle trim measures from. */
@@ -367,6 +371,8 @@ class GpuTileStore implements NumericTileStore {
         const made = createTileTarget(device, this.allocator, TILE_SIZE);
         if (!made) return null;
         this.gpuBytes += made.bytes;
+        this.targetsHeld++;
+        this.checkLedger('take');
         auditCount(this.audit, 'tile:target-new');
         return made;
     }
@@ -376,6 +382,7 @@ class GpuTileStore implements NumericTileStore {
     private keepFree(target: TileTarget): void {
         if (this.free.length < FREE_TARGET_LIMIT) {
             this.free.push(target);
+            this.checkFree('keep');
             if (this.free.length > FREE_TARGET_RESERVE) this.host.wakeAt(this.lastAcquireAt + FREE_IDLE_MS);
             return;
         }
@@ -404,8 +411,22 @@ class GpuTileStore implements NumericTileStore {
     }
 
     /** Drops the count of a target whose device generation is gone. The arena returned its bytes at abandonment. */
-    private forget(target: TileTarget): void {
+    private forget(target: TileTarget, path: string): void {
         this.gpuBytes -= target.bytes;
+        this.targetsHeld--;
+        this.checkLedger(path);
+    }
+
+    /** Audit only, never throws: the bytes the store reports are exactly the targets it holds, each one tile-sized. Counted as
+     * store:ledger:mismatch:<path>, where path is the move that broke it. Both sides move together, so this holds mid-sweep. */
+    private checkLedger(path: string): void {
+        if (!renderAuditEnabled()) return;
+        if (this.gpuBytes !== this.targetsHeld * TARGET_BYTES) auditCount('store', 'ledger:mismatch:' + path);
+    }
+
+    /** Audit only: a free target is a held target, so the free list never outgrows the targets the store holds. */
+    private checkFree(path: string): void {
+        if (renderAuditEnabled() && this.free.length > this.targetsHeld) auditCount('store', 'ledger:mismatch:' + path);
     }
 
     /** Makes `device` the generation the store holds targets of. When it changes, every target of the old generation is
@@ -419,7 +440,7 @@ class GpuTileStore implements NumericTileStore {
         for (const slot of this.byNum.values()) {
             const target = slot.target;
             if (!target || target.device === device) continue;
-            this.forget(target);
+            this.forget(target, 'adopt-slot');
             slot.target = null;
             slot.composed = false;
             slot.dirty = true;
@@ -428,7 +449,7 @@ class GpuTileStore implements NumericTileStore {
         let kept = 0;
         for (const target of this.free) {
             if (target.device === device) this.free[kept++] = target;
-            else { this.forget(target); stale++; }
+            else { this.forget(target, 'adopt-free'); stale++; }
         }
         this.free.length = kept;
         if (stale > 0) auditCount(this.audit, 'tile:target-stale', stale);
@@ -437,7 +458,7 @@ class GpuTileStore implements NumericTileStore {
     /** Destroys a target and returns its bytes. ResourceArena.abandon drops every record of a lost generation, so a
      * destroy of one of its handles throws invalid-resource; its bytes are already back. Any other failure is real. */
     private retire(target: TileTarget): void {
-        this.forget(target);
+        this.forget(target, 'retire');
         try {
             destroyTileTarget(target);
         } catch (error) {

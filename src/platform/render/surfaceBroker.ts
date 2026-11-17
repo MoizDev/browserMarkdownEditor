@@ -138,6 +138,7 @@ class SurfaceBroker {
                 updateView: view => this.updateView(entry, view),
                 updateToken: token => this.updateToken(entry, token),
                 requestGpu: (canvas, stamp) => this.requestGpu(entry, canvas, stamp),
+                canMarkPresented: (stamp, generation) => this.canMarkPresented(entry, stamp, generation),
                 markPresented: (stamp, generation) => this.markPresented(entry, stamp, generation),
                 failGpu: (stamp, generation, reason) => {
                     if (!this.matches(entry, stamp) || entry.reservation?.generation !== generation) return;
@@ -439,10 +440,16 @@ class SurfaceBroker {
         };
     }
 
+    /** Pure: whether the GPU surface may be shown now. The lifecycle asks before it switches the display, so a refused
+     * switch leaves the broker's state where the picture on screen says it is. */
+    private canMarkPresented(entry: SurfaceEntry, stamp: SurfaceStamp, generation: number): boolean {
+        return this.matches(entry, stamp) && drawable(entry) && this.windowVisible &&
+            !!entry.reservation?.owner && !entry.reservation.lost && !entry.reservation.context?.isContextLost() &&
+            entry.checkedGeneration === generation && entry.generation === generation;
+    }
+
     private markPresented(entry: SurfaceEntry, stamp: SurfaceStamp, generation: number): boolean {
-        if (!this.matches(entry, stamp) || !drawable(entry) || !this.windowVisible ||
-            !entry.reservation?.owner || entry.reservation.lost || entry.reservation.context?.isContextLost() ||
-            entry.checkedGeneration !== generation || entry.generation !== generation) return false;
+        if (!this.canMarkPresented(entry, stamp, generation)) return false;
         entry.state = 'gpu-visible';
         return true;
     }

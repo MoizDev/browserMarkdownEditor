@@ -462,8 +462,14 @@ export class PaneLifecycle<T extends object> {
             token.viewLease !== this.surface.stamp.viewLease || token.deviceGeneration !== grant.generation ||
             renderTokenKey(token) !== renderTokenKey(this.surface.stamp.documentToken) ||
             !sameFrame(token, current) || viewKey(view) !== viewKey(currentView) || revision !== this.options.currentRevision() ||
-            !this.surface.markPresented(this.surface.stamp, grant.generation)) return false;
+            !this.surface.canMarkPresented(this.surface.stamp, grant.generation)) return false;
+        // The display switches first, and only a switch that succeeded is recorded: the broker's gpu-visible state must never
+        // name a GPU picture that is not on screen (a refused selectGpu left it so, under memory pressure).
         if (!this.options.presenter.selectGpu(grant)) return false;
+        if (!this.surface.markPresented(this.surface.stamp, grant.generation)) {
+            // Nothing between the check above and here touches broker state, so a refusal is an invariant violation, not a case.
+            throw new Error('GPU presentation lost its surface after the display switched');
+        }
         this.usingGpu = true;
         this.returnBorrow();
         return true;

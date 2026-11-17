@@ -123,6 +123,8 @@ export interface SurfaceLease {
     /** Byte changes invalidate pending publications; rename/move must not call this. */
     updateToken(token: RenderToken): void;
     requestGpu(canvas: HTMLCanvasElement, stamp: SurfaceStamp): Promise<GpuRequestResult>;
+    /** Pure check of markPresented's preconditions: nothing is recorded. */
+    canMarkPresented(stamp: SurfaceStamp, generation: number): boolean;
     markPresented(stamp: SurfaceStamp, generation: number): boolean;
     /** An unrecoverable qualified-backend fault abandons this reservation and returns to CPU. */
     failGpu(stamp: SurfaceStamp, generation: number, reason: 'creation-failed' | 'out-of-budget'): void;

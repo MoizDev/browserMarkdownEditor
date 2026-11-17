@@ -665,7 +665,22 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
                 if (cause === 'room') up.piece = Math.max(PATH_COVERAGE_UPLOAD_MIN_PIECE_BYTES, piece / 2);
                 return 'deferred';
             }
-            owner.writeBuffer(up.buffer, up.written, up.data.subarray(up.written / 4, (up.written + piece) / 4));
+            // The chunk's range is whole words inside the buffer the upload created: the device refuses anything else as
+            // invalid-input. The kit's own pieces always satisfy this, so a violation is a bug, named with its numbers.
+            const offset = up.written;
+            if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(piece) || offset < 0 || piece <= 0 || offset % 4 !== 0 ||
+                piece % 4 !== 0 || offset + piece > up.bytes) {
+                throw new RangeError(`Invalid path vertex upload: offset ${offset}, bytes ${piece}, buffer ${up.bytes}`);
+            }
+            try { owner.writeBuffer(up.buffer, offset, up.data.subarray(offset / 4, (offset + piece) / 4)); }
+            catch (error) {
+                // The device refused the write: this upload is dropped (its buffer and staging go with it), and the item draws on the
+                // CPU route, instead of failing the board's acquisition. The counter names the refused range.
+                if (!(error instanceof ArenaError) || error.code !== 'invalid-input') throw error;
+                dropUpload(set.positive);
+                auditCount(audit, 'fallback:path-coverage:upload-refused', 1, { bytes: piece });
+                return 'unsupported';
+            }
             auditCount(audit, 'upload:vertex', 1, { bytes: piece });
             up.written += piece;
         }

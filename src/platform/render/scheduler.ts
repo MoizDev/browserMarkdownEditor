@@ -254,6 +254,11 @@ const NO_REASONS: readonly string[] = Object.freeze([]);
 
 
 interface DamageBatch { entry: PaneEntry; damage: DamageAccumulator; full: boolean; submitted: boolean }
+/** Optional on a layer: true while its live work (a stroke's GPU runs in flight) must be prepared before the pane's other critical
+ * layers. Declared here, not on Layer, so the layer contract stays as it is; a layer without the hook is ordered as before. */
+interface PreparingFirst { prepareFirst?(): boolean }
+const firstPreparing = (layer: Layer): boolean => (layer as Layer & PreparingFirst).prepareFirst?.() === true;
+
 interface FrameWork { entry: PaneEntry; frame: ScheduledFrame; batch: DamageBatch; geometry: number; hadInput: boolean; platformPrepared: boolean; platformBudget?: FrameBudget;
     /** A layer's preparation was passed over for lack of time while it did not ask for a frame. */
     skipped: boolean;
@@ -764,6 +769,16 @@ export class FrameScheduler {
             }
             for (const item of criticalOrder) {
                 if (!item.platformPrepared) continue;
+                // Live work first: a critical layer with ink in flight takes the pane's critical share and upload allowance before
+                // any other critical layer. Measured on notebook draw: a paper layer still building was admitted 570 times while
+                // the wet layer was refused every frame (its cover incomplete, 121 compositor refusals).
+                const live = this.call(item.entry, () => item.frame.layers.some(meta => meta.critical && firstPreparing(meta.layer))) === true;
+                if (live) {
+                    const ordered = this.call(item.entry, () => item.frame.layers.filter(meta => meta.critical)
+                        .sort((a, b) => Number(firstPreparing(b.layer)) - Number(firstPreparing(a.layer)))) ?? [];
+                    for (const meta of ordered) prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, meta, prepareDeadline, true, meter, criticalPending));
+                    continue;
+                }
                 for (const meta of item.frame.layers) {
                     if (meta.critical) prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, meta, prepareDeadline, true, meter, criticalPending));
                 }

@@ -1307,8 +1307,10 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     for (let x = span.x0; x < span.x1; x++) {
                         const status = statusAt(band, target, x, y);
                         if (status === 'ok') continue;
-                        sharp = false;
+                        // Composed this frame: drawn fresh (buildDraws' pending path), so the frame is sharp here. The compositor reads
+                        // coverage before the encode, and the entry it still finds is the old one; the draw is not.
                         if (status === 'missing' && finishedAt(band, target, x, y)) continue;
+                        sharp = false;
                         if (status === 'dirty') { stale = true; continue; }
                         if (!zoomingFrame && !standInsOf(band, target, x, y).length) complete = false;
                     }

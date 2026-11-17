@@ -30,16 +30,29 @@ function point(box: OrientedBox, x: number, y: number): Vec2 {
     const c = Math.cos(box.rotation), s = Math.sin(box.rotation);
     return { x: box.origin.x + c * x - s * y, y: box.origin.y + s * x + c * y };
 }
-function projected(box: OrientedBox, view: ViewState) {
-    const positions = handles.map(handle => worldToSurface(point(box, (handle.x + 1) * box.width / 2, (handle.y + 1) * box.height / 2), view.camera));
-    const corner = positions[2], centre = worldToSurface(point(box, box.width / 2, box.height / 2), view.camera);
-    const dx = corner.x - centre.x, dy = corner.y - centre.y, length = Math.hypot(dx, dy) || 1;
-    return { positions, rotate: { x: corner.x + dx / length * 11.25, y: corner.y + dy / length * 11.25 } };
+/** Surface positions of the box's handles, written into `out` (no per-frame arrays): the eight resize handles as x, y pairs,
+ * then the rotation grip at index 16 (x) and 17 (y). Measured by reading only: the frame path made a fresh array of eight
+ * points and a rotation point for every frame, and the outline made a string from them. */
+const PROJECTED = 18;
+function projectInto(box: OrientedBox, view: ViewState, out: Float64Array, shiftX = 0, shiftY = 0): void {
+    for (let i = 0; i < handles.length; i++) {
+        const world = point(box, (handles[i].x + 1) * box.width / 2, (handles[i].y + 1) * box.height / 2);
+        const position = worldToSurface({ x: world.x + shiftX, y: world.y + shiftY }, view.camera);
+        out[2 * i] = position.x; out[2 * i + 1] = position.y;
+    }
+    const centreWorld = point(box, box.width / 2, box.height / 2);
+    const centre = worldToSurface({ x: centreWorld.x + shiftX, y: centreWorld.y + shiftY }, view.camera);
+    const cornerX = out[4], cornerY = out[5];
+    const dx = cornerX - centre.x, dy = cornerY - centre.y, length = Math.hypot(dx, dy) || 1;
+    out[16] = cornerX + dx / length * 11.25; out[17] = cornerY + dy / length * 11.25;
 }
 
 /** Mounted chrome only: the session and renderer keep all document geometry. */
 const SVG_NS = 'http://www.w3.org/2000/svg';
-interface HandleNodes { readonly path: SVGPolygonElement; readonly stem: SVGLineElement; readonly rotate: SVGCircleElement; readonly circles: SVGCircleElement[] }
+/** `last` holds the value each attribute was last written with: circles x, y pairs at 0–15, the grip at 16–17, the stem's
+ * x1, y1, x2, y2 at 18–21. A frame compares numbers here and touches the DOM only for what moved, so an unmoved handle
+ * costs no attribute read and no write. */
+interface HandleNodes { readonly path: SVGPolygonElement; readonly stem: SVGLineElement; readonly rotate: SVGCircleElement; readonly circles: SVGCircleElement[]; readonly last: Float64Array }
 /** Builds one frame's handle elements once, in paint order: outline, stem, rotation grip, then the resize handles. */
 function buildHandleNodes(parent: SVGSVGElement, handleCount: number): HandleNodes {
     const path = document.createElementNS(SVG_NS, 'polygon'), stem = document.createElementNS(SVG_NS, 'line'), rotate = document.createElementNS(SVG_NS, 'circle');
@@ -53,11 +66,7 @@ function buildHandleNodes(parent: SVGSVGElement, handleCount: number): HandleNod
         parent.append(circle); return circle;
     });
     auditCount('select-handles', 'node-build', 1, { nodes: 3 + handleCount });
-    return { path, stem, rotate, circles };
-}
-/** Sets an attribute only when its value changed, so an unmoved handle costs no style or layout work. */
-function put(element: Element, name: string, value: string): void {
-    if (element.getAttribute(name) !== value) element.setAttribute(name, value);
+    return { path, stem, rotate, circles, last: new Float64Array(PROJECTED + 4).fill(Number.NaN) };
 }
 
 export function createSelectionHandles(options: SelectionHandleOptions) {
@@ -108,22 +117,38 @@ export function createSelectionHandles(options: SelectionHandleOptions) {
     const stopSelection = runtime.selection.subscribe(refresh), stopSession = session.subscribe(refresh);
     refresh();
     // The nodes live as long as their svg: a frame moves their coordinates, it does not build new elements.
+    // A frame's positions go to one scratch array, and each attribute is written only when its number changed: a frame that
+    // moves nothing touches no DOM node (by reading: the old frame re-set every attribute and the outline string each time).
+    const drawn = new Float64Array(PROJECTED);
+    const hitPositions = new Float64Array(PROJECTED);
     const draw = (shape: OrientedBox, view: ViewState, moving: Vec2 | 'hidden' | null) => {
-        if (moving === 'hidden') { if (svg) svg.style.display = 'none'; return; }
-        if (svg) svg.style.display = '';
+        if (moving === 'hidden') { if (svg && svg.style.display !== 'none') svg.style.display = 'none'; return; }
+        if (svg && svg.style.display !== '') svg.style.display = '';
         if (!svg) {
             svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('aria-hidden', 'true');
             svg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible'; options.overlay.append(svg);
             handleNodes = undefined;
         }
-        const shown: OrientedBox = moving ? { ...shape, origin: { x: shape.origin.x + moving.x, y: shape.origin.y + moving.y } } : shape;
-        const geometry = projected(shown, view);
-        const nodes = handleNodes ??= buildHandleNodes(svg, geometry.positions.length);
-        put(nodes.path, 'points', [0, 2, 4, 6].map(i => `${geometry.positions[i].x},${geometry.positions[i].y}`).join(' '));
-        put(nodes.stem, 'x1', String(geometry.positions[2].x)); put(nodes.stem, 'y1', String(geometry.positions[2].y));
-        put(nodes.stem, 'x2', String(geometry.rotate.x)); put(nodes.stem, 'y2', String(geometry.rotate.y));
-        put(nodes.rotate, 'cx', String(geometry.rotate.x)); put(nodes.rotate, 'cy', String(geometry.rotate.y));
-        geometry.positions.forEach((position, i) => { put(nodes.circles[i], 'cx', String(position.x)); put(nodes.circles[i], 'cy', String(position.y)); });
+        projectInto(shape, view, drawn, moving ? moving.x : 0, moving ? moving.y : 0);
+        const nodes = handleNodes ??= buildHandleNodes(svg, handles.length);
+        const last = nodes.last;
+        let outline = false;
+        for (let i = 0; i < handles.length; i++) {
+            const x = drawn[2 * i], y = drawn[2 * i + 1];
+            if (last[2 * i] !== x) { last[2 * i] = x; nodes.circles[i].setAttribute('cx', String(x)); if (!(i & 1)) outline = true; }
+            if (last[2 * i + 1] !== y) { last[2 * i + 1] = y; nodes.circles[i].setAttribute('cy', String(y)); if (!(i & 1)) outline = true; }
+        }
+        // The outline is the four corners (handles 0, 2, 4, 6), so its string is rebuilt only when one of them moved.
+        if (outline) nodes.path.setAttribute('points', `${drawn[0]},${drawn[1]} ${drawn[4]},${drawn[5]} ${drawn[8]},${drawn[9]} ${drawn[12]},${drawn[13]}`);
+        const gripX = drawn[16], gripY = drawn[17];
+        if (last[16] !== gripX) { last[16] = gripX; nodes.rotate.setAttribute('cx', String(gripX)); }
+        if (last[17] !== gripY) { last[17] = gripY; nodes.rotate.setAttribute('cy', String(gripY)); }
+        // The stem runs from the top-right corner (handle 2) to the grip.
+        const x1 = drawn[4], y1 = drawn[5];
+        if (last[18] !== x1) { last[18] = x1; nodes.stem.setAttribute('x1', String(x1)); }
+        if (last[19] !== y1) { last[19] = y1; nodes.stem.setAttribute('y1', String(y1)); }
+        if (last[20] !== gripX) { last[20] = gripX; nodes.stem.setAttribute('x2', String(gripX)); }
+        if (last[21] !== gripY) { last[21] = gripY; nodes.stem.setAttribute('y2', String(gripY)); }
     };
     return {
         refresh,
@@ -138,10 +163,11 @@ export function createSelectionHandles(options: SelectionHandleOptions) {
             const camera = presented.at(time);
             if (!current() || !box || !camera || !Number.isFinite(surface.x) || !Number.isFinite(surface.y)) return null;
             // Default, calibration cut by owner: resize precedes the outward rotation hotspot.
-            const geometry = projected(box, { ...options.camera(), camera }), radius = coarse ? 14 : 6;
-            for (let i = 0; i < handles.length; i++) if (Math.hypot(surface.x - geometry.positions[i].x, surface.y - geometry.positions[i].y) <= radius)
+            projectInto(box, { ...options.camera(), camera }, hitPositions);
+            const radius = coarse ? 14 : 6;
+            for (let i = 0; i < handles.length; i++) if (Math.hypot(surface.x - hitPositions[2 * i], surface.y - hitPositions[2 * i + 1]) <= radius)
                 return { kind: 'resize', handle: handles[i] };
-            if (Math.hypot(surface.x - geometry.rotate.x, surface.y - geometry.rotate.y) <= (coarse ? 10 : 3.5))
+            if (Math.hypot(surface.x - hitPositions[16], surface.y - hitPositions[17]) <= (coarse ? 10 : 3.5))
                 return { kind: 'rotate', centre: point(box, box.width / 2, box.height / 2), orientation: box.rotation };
             return null;
         },

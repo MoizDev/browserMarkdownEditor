@@ -146,23 +146,57 @@ export interface PreparedPathPart {
  * whose refs reach zero is freed. A set uploaded by an admission that was then refused stays at zero refs, so the retry
  * uploads nothing, and release() frees it. */
 interface VertexSet {
-    /** The array the set is registered under: a chain head moves to the pack it now draws (rekey), so this is not fixed. */
-    key: Float64Array;
+    readonly key: Float64Array;
     readonly device: GfxDevice;
     readonly buffer: BufferHandle;
-    negative: Float64Array;
+    readonly negative: Float64Array;
+    /** Mutable: a chain's buffer draws more vertices after each append. */
     positiveVertices: number;
-    negativeVertices: number;
+    readonly negativeVertices: number;
     refs: number;
-    /** The buffer's size, which is what it costs: a chain head's buffer is larger than the bytes it draws (capacity doubling). */
+    /** The buffer's size, which is what it costs: a chain's buffer is larger than the bytes it draws (capacity doubling). */
     readonly bytes: number;
-    /** The bytes the set draws: the prefix of the buffer its sets wrote. Equal to `bytes` for every set but a chain head. */
+    /** The bytes the set draws: the prefix of the buffer that holds its triangles. Equal to `bytes` except for a chain. */
     used: number;
-    /** A chain head: the sets its buffer holds, by array id (positive, negative per set). An append extends it. */
-    chain?: { readonly lead: number; readonly ids: readonly number[] };
+    /** A chain's buffer (see Chain). */
+    readonly chain?: Chain;
     /** The frame this set was last held or retired in: an idle set used in the current frame is never evicted. */
     usedFrame: number;
 }
+/** A union chain: one stroke's sets in one buffer, which grows by append. `data` is the CPU copy the buffer is written from, with
+ * capacity: an append writes the new sets at its end, and a re-upload is made from it. `len` (floats) and `ids` describe what the
+ * buffer holds once its upload has finished. Its key is a placeholder array, so no owner array can collide with it. */
+interface Chain {
+    readonly key: Float64Array;
+    readonly lead: number;
+    readonly data: Float32Array;
+    /** The CPU lease's bytes: the capacity of `data`. */
+    readonly bytes: number;
+    readonly lease: ByteLease;
+    ids: readonly number[];
+    len: number;
+    released: boolean;
+}
+/** An upload in progress: the buffer and how many of its bytes are written, within the frame's allowance. */
+interface Upload {
+    readonly key: Float64Array;
+    readonly device: GfxDevice;
+    readonly buffer: BufferHandle;
+    readonly data: Float32Array;
+    readonly staging: ByteLease | null;
+    written: number;
+    readonly negative: Float64Array;
+    readonly positiveVertices: number;
+    readonly negativeVertices: number;
+    /** The bytes the set draws. */
+    readonly bytes: number;
+    /** The buffer's size (what the GPU lease holds). */
+    readonly capacity: number;
+    usedFrame: number;
+    piece: number;
+    readonly chain?: Chain;
+}
+const EMPTY_TRIANGLES = new Float64Array(0);
 
 /** Pre-admitted vertex buffers, plus the mask's own target and clip handle when the output is a mask. A composite
  * owns no target: it draws through the kit's shared scratch, one band at a time. */
@@ -272,16 +306,17 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
     // views of an item at one scale draw the same buffer under their own affine. A buffer per admission uploaded and
     // charged a stroke once per tile it crossed, and the notebook's paper was refused for the room (267 refusals).
     const shared = new Map<Float64Array, VertexSet>();
-    // A multi-set union request (ink: one set per chunk of a stroke) is a chain: its buffer keeps the sets it holds, and a request whose
-    // leading sets are those, with new sets appended, writes only the appended bytes. The head per leading set's id.
-    const chainHeads = new Map<number, VertexSet>();
+    // A union request of several unshifted sets (ink: one set per chunk of a stroke) is a chain: its buffer and its CPU copy hold the
+    // sets, and a request whose leading sets are the chain's, with more after them, appends only those sets. Keyed by the leading set.
+    const chains = new Map<number, Chain>();
+    // Chains are keyed by placeholder arrays: freeing one tells the owner nothing (it holds no array of the owner's).
+    const chainKeys = new WeakSet<Float64Array>();
     // Uniform data is filled and copied into the frame's ring by host.uniforms before the next fill (the ring copies it
     // synchronously), so one array serves every uniform a draw needs.
     const uniformScratch = new Float32Array(12);
     // A buffer larger than one frame's upload allowance fills across frames. Refused whole each frame, a stroke's outline
     // at 332% never uploaded and the board never presented again (measured: claimUpload refused 73 of 73 admissions).
-    const uploading = new Map<Float64Array, { device: GfxDevice; buffer: BufferHandle; data: Float32Array; staging: ByteLease;
-        written: number; negative: Float64Array; bytes: number; capacity: number; usedFrame: number; piece: number }>();
+    const uploading = new Map<Float64Array, Upload>();
     // Packs (see Pack): a composition's copy is made once while its buffer lives; the ids name the sets, and an id is never reused.
     const packs = new Map<string, Pack>(), packOfArray = new Map<Float64Array, Pack>(), arrayIds = new WeakMap<Float64Array, number>();
     // Packs by member id: the owner's forget of a member releases the packs built from it, with no walk over every pack.
@@ -302,6 +337,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
     };
     /** The kit has let go of a triangle array: a pack's lease goes with it; any other array is the owner's, told through onFreed. */
     const freed = (key: Float64Array) => {
+        if (chainKeys.has(key)) return;
         const pack = packOfArray.get(key);
         if (pack) freePack(pack); else onFreed?.(key);
     };
@@ -310,7 +346,9 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         if (!up) return;
         uploading.delete(key); gpuBytes -= up.capacity;
         if (!shared.has(key)) freed(key);
-        host.allocator.cpu.release(up.staging); up.device.destroy(up.buffer);
+        if (up.staging) host.allocator.cpu.release(up.staging);
+        up.device.destroy(up.buffer);
+        if (up.chain) releaseChain(up.chain);
     };
     // A set with no live admission stays on the GPU: the next tile that draws the same stroke then uploads nothing. The
     // composer retires each run right after drawing it, so without this every tile of a stroke re-uploaded it. Idle sets
@@ -318,22 +356,17 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
     // `shared` has refs 0 exactly when it is in `idle`.
     const idle = new Map<Float64Array, VertexSet>();
     let idleBytes = 0, frame = 0;
-    /** A chain head whose buffer is going is no longer one. */
-    const dropHead = (entry: VertexSet) => { if (entry.chain && chainHeads.get(entry.chain.lead) === entry) chainHeads.delete(entry.chain.lead); };
-    const destroySet = (entry: VertexSet) => {
-        shared.delete(entry.key); gpuBytes -= entry.bytes; entry.device.destroy(entry.buffer); dropHead(entry);
-        if (!uploading.has(entry.key)) freed(entry.key);
+    /** A chain's CPU copy and its lease go with the chain: when its buffer is gone (or its upload was dropped). */
+    const releaseChain = (chain: Chain): void => {
+        if (chain.released) return;
+        chain.released = true;
+        if (chains.get(chain.lead) === chain) chains.delete(chain.lead);
+        packedBytes -= chain.bytes; host.allocator.cpu.release(chain.lease);
     };
-    /** A chain head now draws another pack's triangles: its buffer is the same, so the entry moves to that pack's key (the old pack
-     * goes with the old key, as any pack does). An admission in flight holds the entry itself, so it draws the same bytes as before. */
-    const rekey = (entry: VertexSet, key: Float64Array, negative: Float64Array) => {
-        const old = entry.key;
-        if (old === key) { entry.negative = negative; return; }
-        const wasIdle = idle.get(old) === entry;
-        shared.delete(old); if (wasIdle) idle.delete(old);
-        entry.key = key; entry.negative = negative;
-        shared.set(key, entry); if (wasIdle) idle.set(key, entry);
-        freed(old);
+    const destroySet = (entry: VertexSet) => {
+        shared.delete(entry.key); gpuBytes -= entry.bytes; entry.device.destroy(entry.buffer);
+        if (entry.chain) releaseChain(entry.chain);
+        if (!uploading.has(entry.key)) freed(entry.key);
     };
     const unidle = (entry: VertexSet) => { if (idle.delete(entry.key)) idleBytes -= entry.bytes; };
     /** Destroys idle sets, oldest first, until `bytes` are freed, skipping any used in the current frame. Returns the bytes freed;
@@ -472,12 +505,13 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         incarnation++;
         const owner = device;
         for (const prepared of [...live.keys()]) retireOwned(prepared);
-        for (const entry of shared.values()) { gpuBytes -= entry.bytes; entry.device.destroy(entry.buffer); }
+        for (const entry of shared.values()) { gpuBytes -= entry.bytes; entry.device.destroy(entry.buffer); if (entry.chain) releaseChain(entry.chain); }
         const held = [...shared.keys()];
-        shared.clear(); idle.clear(); idleBytes = 0; chainHeads.clear();
+        shared.clear(); idle.clear(); idleBytes = 0;
         for (const key of held) if (!uploading.has(key)) freed(key);
         for (const key of [...uploading.keys()]) dropUpload(key);
         for (const pack of [...packs.values()]) freePack(pack);
+        for (const chain of [...chains.values()]) releaseChain(chain);
         if (pipelines && device) for (const handle of Object.values(pipelines)) device.destroy(handle);
         pipelines = null; device = null; pending = false; failed = false; unsupported = false;
         if (owner) leaveDevice(owner);
@@ -673,55 +707,166 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
     };
     /** The shared buffer of one triangle set, uploaded in chunks within each frame's allowance. Returns the entry, or why not:
      * a refused or deferred upload keeps what it wrote, and the retry resumes it. */
-    /** The ids of a request's sets, two per set (positive, negative): a chain head is matched by them, so it retains no arrays. */
+    /** The ids of a request's sets, two per set (positive, negative): a chain is matched by them, so it retains no arrays. */
     const idsOf = (sets: readonly PathCoverageShapes[]): number[] => sets.flatMap(set => [idOf(set.positive), idOf(set.negative)]);
-    /** A chain buffer's capacity: the next power of two that holds its bytes, so appends fit until the chain doubles. */
-    const capacityFor = (bytes: number): number => 2 ** Math.ceil(Math.log2(bytes));
-    /** Appends a request's sets onto the chain head that holds its leading sets: only the appended bytes are written, at the head's end,
-     * and the head then draws the whole request. Null when there is no such head, the request does not fit the head's capacity, or the
-     * appended bytes need more than one upload claim (the caller uploads the request whole, resumably). */
-    const appendChain = (owner: GfxDevice, set: PathCoverageShapes, chain: readonly PathCoverageShapes[], vertexBytes: number,
-        budget: FrameBudget): VertexSet | 'unsupported' | null => {
-        const head = chainHeads.get(idOf(chain[0].positive));
-        if (!head || head.device !== owner || !head.chain || head.chain.ids.length > 2 * chain.length) return null;
-        const ids = head.chain.ids;
-        for (let i = 0; i < ids.length; i += 2) {
-            if (ids[i] !== idOf(chain[i / 2].positive) || ids[i + 1] !== idOf(chain[i / 2].negative)) return null;
+    /** Whether a chain's committed ids are a prefix of the request's sets: the same sets, possibly with more after them. */
+    const extendsIds = (ids: readonly number[], sets: readonly PathCoverageShapes[]): boolean => {
+        if (ids.length > 2 * sets.length) return false;
+        for (let i = 0; i < ids.length; i++) {
+            const set = sets[i >> 1];
+            if (ids[i] !== idOf((i & 1) === 1 ? set.negative : set.positive)) return false;
         }
-        const appended = chain.slice(ids.length / 2);
-        let appendBytes = 0;
-        for (const part of appended) appendBytes += part.positive.length * 4;
-        // A union chain holds positive triangles only, one 8-byte vertex per two floats: the head's bytes and the request's line up.
-        if (head.used + appendBytes !== vertexBytes || head.used % 4 !== 0 || appendBytes % 4 !== 0) return null;
-        // Past the capacity the whole request is uploaded again into a larger buffer (copy-on-grow: once per doubling).
-        if (vertexBytes > head.bytes) return null;
-        if (appendBytes > PATH_COVERAGE_UPLOAD_CHUNK_BYTES) return null;
-        if (appendBytes > 0) {
-            if (!budget.claimUpload(appendBytes)) return null;
-            const data = new Float32Array(appendBytes / 4);
-            let at = 0;
-            for (const part of appended) { data.set(part.positive, at); at += part.positive.length; }
-            try { owner.writeBuffer(head.buffer, head.used, data); }
+        return true;
+    };
+    /** The bounds of several unshifted sets together. */
+    const unionBounds = (sets: readonly PathCoverageShapes[]): PathCoverageShapes['bounds'] => {
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+        for (const set of sets) {
+            x0 = Math.min(x0, set.bounds.x0); y0 = Math.min(y0, set.bounds.y0);
+            x1 = Math.max(x1, set.bounds.x1); y1 = Math.max(y1, set.bounds.y1);
+        }
+        return { x0, y0, x1, y1 };
+    };
+    /** A buffer's capacity: the next power of two that holds its bytes, so appends fit until the chain doubles. */
+    const capacityFor = (bytes: number): number => 2 ** Math.ceil(Math.log2(bytes));
+    /** Writes an upload's pieces within the frame's allowance: 'done' once every byte is in the buffer. A refused or deferred upload keeps
+     * what it wrote, and the retry resumes it; a piece the device refuses drops the upload, and its item takes the CPU route. */
+    const writeUpload = (up: Upload, budget: FrameBudget): 'done' | 'deferred' | 'unsupported' => {
+        while (up.written < up.bytes) {
+            const piece = Math.min(up.piece, up.bytes - up.written);
+            if (!budget.claimUpload(piece)) {
+                // By cause, so a repeat is visible as its cause. 'room': the frame's allowance still had the piece, so the scheduler
+                // refused it for another reason, the layer's optional share. The same bytes then retry in smaller pieces.
+                const cause = budget.shouldYield() ? 'yield' : budget.upload.remainingBytes >= piece ? 'room' : 'allowance';
+                auditCount(audit, `upload:deferred:${cause}`, 1, { bytes: piece });
+                if (cause === 'room') up.piece = Math.max(PATH_COVERAGE_UPLOAD_MIN_PIECE_BYTES, piece / 2);
+                return 'deferred';
+            }
+            // The chunk's range is whole words inside the buffer the upload created: the device refuses anything else as invalid-input.
+            const offset = up.written;
+            if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(piece) || offset < 0 || piece <= 0 || offset % 4 !== 0 ||
+                piece % 4 !== 0 || offset + piece > up.bytes) {
+                throw new RangeError(`Invalid path vertex upload: offset ${offset}, bytes ${piece}, buffer ${up.bytes}`);
+            }
+            try { up.device.writeBuffer(up.buffer, offset, up.data.subarray(offset / 4, (offset + piece) / 4)); }
             catch (error) {
-                // The head's bytes are unchanged until this returns, so nothing it draws is affected; the stroke takes the CPU route.
                 if (!(error instanceof ArenaError) || error.code !== 'invalid-input') throw error;
-                auditCount(audit, 'fallback:path-coverage:append-refused', 1, { bytes: appendBytes });
+                // The counter names the refused range, so the device's refusal can be read against its numbers.
+                dropUpload(up.key);
+                auditCount(audit, 'fallback:path-coverage:upload-refused', 1, { bytes: piece });
                 return 'unsupported';
             }
-            auditCount(audit, 'kit:pack:append', 1, { bytes: appendBytes });
+            auditCount(audit, 'upload:vertex', 1, { bytes: piece });
+            up.written += piece;
         }
-        head.used = vertexBytes;
-        head.positiveVertices = set.positive.length / 2; head.negativeVertices = set.negative.length / 2;
-        head.chain = { lead: head.chain.lead, ids: idsOf(chain) };
-        head.usedFrame = frame;
-        rekey(head, set.positive, set.negative);
+        return 'done';
+    };
+    /** An upload that has written every byte is the shared entry for its key. */
+    const finishUpload = (up: Upload): VertexSet => {
+        uploading.delete(up.key);
+        if (up.staging) host.allocator.cpu.release(up.staging);
+        const entry: VertexSet = { key: up.key, device: up.device, buffer: up.buffer, negative: up.negative,
+            positiveVertices: up.positiveVertices, negativeVertices: up.negativeVertices, refs: 0, bytes: up.capacity, used: up.bytes,
+            usedFrame: frame, chain: up.chain };
+        shared.set(up.key, entry);
+        idle.set(entry.key, entry); idleBytes += entry.bytes;
+        return entry;
+    };
+    /** Appends the request's sets after a chain's committed sets: their vertices go to the CPU copy's end and to the buffer's end, and the
+     * chain then holds them. Returns the chain's entry, 'unsupported' when the device refuses the write, or null when the chain cannot take
+     * them (the request is then uploaded whole: its capacity is past, or its appended bytes need more than one upload claim). */
+    const appendChain = (owner: GfxDevice, head: VertexSet, chain: Chain, sets: readonly PathCoverageShapes[],
+        budget: FrameBudget): VertexSet | 'unsupported' | null => {
+        let total = 0;
+        for (const part of sets) total += part.positive.length;
+        const bytes = total * 4;
+        let floats = 0;
+        for (const part of sets.slice(chain.ids.length / 2)) floats += part.positive.length;
+        if (chain.len + floats !== total || bytes > head.bytes || total > chain.data.length ||
+            floats * 4 > PATH_COVERAGE_UPLOAD_CHUNK_BYTES) return null;
+        if (floats > 0 && !budget.claimUpload(floats * 4)) return null;
+        // The appended vertices go to the CPU copy's end first. Nothing reads that region until the commit below, so a refused write
+        // leaves the chain as it was.
+        const from = chain.len;
+        let at = from;
+        for (const part of sets.slice(chain.ids.length / 2)) { chain.data.set(part.positive, at); at += part.positive.length; }
+        if (floats > 0) {
+            try { owner.writeBuffer(head.buffer, from * 4, chain.data.subarray(from, total)); }
+            catch (error) {
+                if (!(error instanceof ArenaError) || error.code !== 'invalid-input') throw error;
+                auditCount(audit, 'fallback:path-coverage:append-refused', 1, { bytes: floats * 4 });
+                return 'unsupported';
+            }
+            auditCount(audit, 'kit:pack:append', 1, { bytes: floats * 4 });
+        }
+        chain.len = total; chain.ids = idsOf(sets);
+        head.used = bytes; head.positiveVertices = total / 2; head.usedFrame = frame;
         return head;
     };
+    /** The entry for a union chain: a request that extends the chain appends to its buffer (after finishing its upload if one is in progress);
+     * anything else is a new chain, uploaded whole. */
+    const chainSetFor = (owner: GfxDevice, sets: readonly PathCoverageShapes[], budget: FrameBudget):
+        VertexSet | Denial | 'deferred' | 'unsupported' => {
+        const chain = chains.get(idOf(sets[0].positive));
+        if (chain && extendsIds(chain.ids, sets)) {
+            const pending = uploading.get(chain.key);
+            if (pending) {
+                // The chain's committed sets are still uploading: finish them, then append what the request adds.
+                pending.usedFrame = frame;
+                const state = writeUpload(pending, budget);
+                if (state !== 'done') return state;
+                finishUpload(pending);
+            }
+            const head = shared.get(chain.key);
+            if (head) {
+                const appended = appendChain(owner, head, chain, sets, budget);
+                if (appended !== null) return appended;
+            }
+        }
+        return newChain(owner, sets, budget);
+    };
+    /** A new chain: its sets copied into a CPU copy with capacity, and uploaded whole into a buffer of the same capacity. Each takes its
+     * spare capacity only when its pool grants it; a refusal asks for the exact size. */
+    const newChain = (owner: GfxDevice, sets: readonly PathCoverageShapes[], budget: FrameBudget):
+        VertexSet | Denial | 'deferred' | 'unsupported' => {
+        let total = 0;
+        for (const part of sets) total += part.positive.length;
+        const bytes = total * 4;
+        let capacity = capacityFor(bytes);
+        let lease = host.allocator.cpu.reserve(capacity);
+        if (!lease && capacity > bytes) { capacity = bytes; lease = host.allocator.cpu.reserve(bytes); }
+        if (!lease) return { status: 'denied', pool: 'cpu', bytes: capacity };
+        let gpuCapacity = capacityFor(bytes);
+        let gpuLease = host.allocator.gpu.reserve(gpuCapacity);
+        if (!gpuLease && gpuCapacity > bytes) { gpuCapacity = bytes; gpuLease = host.allocator.gpu.reserve(bytes); }
+        if (!gpuLease) { host.allocator.cpu.release(lease); return { status: 'denied', pool: 'gpu', bytes: gpuCapacity }; }
+        let buffer: BufferHandle;
+        try { buffer = owner.createBuffer(gpuCapacity, ['vertex', 'copy-dst'], gpuLease); }
+        catch (error) {
+            host.allocator.gpu.release(gpuLease); host.allocator.cpu.release(lease);
+            if (error instanceof ArenaError && error.code === 'unsupported') { unsupported = true; auditCount(audit, 'fallback:path-coverage:vertex-buffer'); return 'unsupported'; }
+            throw error;
+        }
+        // The lead's earlier chain is replaced: an upload of its sets that is still in progress is one nothing resumes, so it goes.
+        const earlier = chains.get(idOf(sets[0].positive));
+        if (earlier && uploading.has(earlier.key)) dropUpload(earlier.key);
+        const data = new Float32Array(capacity / 4);
+        let at = 0;
+        for (const part of sets) { data.set(part.positive, at); at += part.positive.length; }
+        const key = new Float64Array(0);
+        const chain: Chain = { key, lead: idOf(sets[0].positive), data, bytes: capacity, lease, ids: idsOf(sets), len: total, released: false };
+        chainKeys.add(key); chains.set(chain.lead, chain); packedBytes += capacity;
+        const up: Upload = { key, device: owner, buffer, data, staging: null, written: 0, negative: EMPTY_TRIANGLES,
+            positiveVertices: total / 2, negativeVertices: 0, bytes, capacity: gpuCapacity, usedFrame: frame,
+            piece: PATH_COVERAGE_UPLOAD_CHUNK_BYTES, chain };
+        uploading.set(key, up); gpuBytes += gpuCapacity;
+        const state = writeUpload(up, budget);
+        return state === 'done' ? finishUpload(up) : state;
+    };
     /** The shared buffer of one triangle set, uploaded in chunks within each frame's allowance. Returns the entry, or why not:
-     * a refused or deferred upload keeps what it wrote, and the retry resumes it. `chain` is the request's sets when they are a union
-     * chain (see chainHeads): then the buffer has room to grow and is registered as a head once it is uploaded. */
-    const vertexSetFor = (owner: GfxDevice, set: PathCoverageShapes, vertexCount: number, budget: FrameBudget,
-        chain: readonly PathCoverageShapes[] | null): VertexSet | Denial | 'deferred' | 'unsupported' => {
+     * a refused or deferred upload keeps what it wrote, and the retry resumes it. */
+    const vertexSetFor = (owner: GfxDevice, set: PathCoverageShapes, vertexCount: number, budget: FrameBudget):
+        VertexSet | Denial | 'deferred' | 'unsupported' => {
         const vertexBytes = vertexCount * 8;
         const found = shared.get(set.positive);
         if (found && found.device === owner && found.negative === set.negative && found.used === vertexBytes) return found;
@@ -730,15 +875,11 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
             // cannot be replaced while a draw reads it: that is a fallback, counted. An idle one is replaced by a fresh upload; the array
             // stays held here, so the owner is not told it was freed (destroySet would tell it).
             if (found.refs > 0) { auditCount(audit, 'fallback:path-coverage:shared-mismatch'); return 'unsupported'; }
-            unidle(found); shared.delete(set.positive); gpuBytes -= found.bytes; found.device.destroy(found.buffer); dropHead(found);
+            unidle(found); shared.delete(set.positive); gpuBytes -= found.bytes; found.device.destroy(found.buffer);
         }
         let up = uploading.get(set.positive);
         if (up && (up.device !== owner || up.negative !== set.negative || up.bytes !== vertexBytes)) { dropUpload(set.positive); up = undefined; }
         if (up) up.usedFrame = frame;
-        if (!up && chain) {
-            const appended = appendChain(owner, set, chain, vertexBytes, budget);
-            if (appended !== null) return appended;
-        }
         if (!up) {
             const staging = host.allocator.cpu.reserve(vertexBytes);
             if (!staging) return { status: 'denied', pool: 'cpu', bytes: vertexBytes };
@@ -746,65 +887,22 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
             const data = new Float32Array(vertexCount * 2);
             data.set(set.positive, 0);
             data.set(set.negative, set.positive.length);
-            // A chain's spare capacity is taken only when the pool grants it: a refused doubling must not wait for bytes the pool
-            // may never hold, so the exact size is asked then, and the next append grows the chain from there.
-            let capacity = chain ? capacityFor(vertexBytes) : vertexBytes;
-            let lease = host.allocator.gpu.reserve(capacity);
-            if (!lease && capacity > vertexBytes) { capacity = vertexBytes; lease = host.allocator.gpu.reserve(capacity); }
-            if (!lease) { host.allocator.cpu.release(staging); return { status: 'denied', pool: 'gpu', bytes: capacity }; }
+            const lease = host.allocator.gpu.reserve(vertexBytes);
+            if (!lease) { host.allocator.cpu.release(staging); return { status: 'denied', pool: 'gpu', bytes: vertexBytes }; }
             let buffer: BufferHandle;
-            try { buffer = owner.createBuffer(capacity, ['vertex', 'copy-dst'], lease); }
+            try { buffer = owner.createBuffer(vertexBytes, ['vertex', 'copy-dst'], lease); }
             catch (error) {
                 host.allocator.gpu.release(lease); host.allocator.cpu.release(staging);
                 if (error instanceof ArenaError && error.code === 'unsupported') { unsupported = true; auditCount(audit, 'fallback:path-coverage:vertex-buffer'); return 'unsupported'; }
                 throw error;
             }
-            up = { device: owner, buffer, data, staging, written: 0, negative: set.negative, bytes: vertexBytes, capacity, usedFrame: frame,
-                piece: PATH_COVERAGE_UPLOAD_CHUNK_BYTES };
-            uploading.set(set.positive, up); gpuBytes += capacity;
+            up = { key: set.positive, device: owner, buffer, data, staging, written: 0, negative: set.negative,
+                positiveVertices: set.positive.length / 2, negativeVertices: set.negative.length / 2, bytes: vertexBytes,
+                capacity: vertexBytes, usedFrame: frame, piece: PATH_COVERAGE_UPLOAD_CHUNK_BYTES };
+            uploading.set(set.positive, up); gpuBytes += vertexBytes;
         }
-        while (up.written < up.bytes) {
-            const piece = Math.min(up.piece, up.bytes - up.written);
-            if (!budget.claimUpload(piece)) {
-                // By cause, so a repeat is visible as its cause. 'room': the frame's allowance still had the piece, so the scheduler
-                // refused it for another reason, the layer's optional share, which is the piece's size against that share. The same
-                // bytes then retry in smaller pieces, which fit the share sooner (by reading: the optional share grows by a fraction of
-                // the allowance each frame), so the bytes are not refused at the same size again.
-                const cause = budget.shouldYield() ? 'yield' : budget.upload.remainingBytes >= piece ? 'room' : 'allowance';
-                auditCount(audit, `upload:deferred:${cause}`, 1, { bytes: piece });
-                if (cause === 'room') up.piece = Math.max(PATH_COVERAGE_UPLOAD_MIN_PIECE_BYTES, piece / 2);
-                return 'deferred';
-            }
-            // The chunk's range is whole words inside the buffer the upload created: the device refuses anything else as
-            // invalid-input. The kit's own pieces always satisfy this, so a violation is a bug, named with its numbers.
-            const offset = up.written;
-            if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(piece) || offset < 0 || piece <= 0 || offset % 4 !== 0 ||
-                piece % 4 !== 0 || offset + piece > up.bytes) {
-                throw new RangeError(`Invalid path vertex upload: offset ${offset}, bytes ${piece}, buffer ${up.bytes}`);
-            }
-            try { owner.writeBuffer(up.buffer, offset, up.data.subarray(offset / 4, (offset + piece) / 4)); }
-            catch (error) {
-                // The device refused the write: this upload is dropped (its buffer and staging go with it), and the item draws on the
-                // CPU route, instead of failing the board's acquisition. The counter names the refused range.
-                if (!(error instanceof ArenaError) || error.code !== 'invalid-input') throw error;
-                dropUpload(set.positive);
-                auditCount(audit, 'fallback:path-coverage:upload-refused', 1, { bytes: piece });
-                return 'unsupported';
-            }
-            auditCount(audit, 'upload:vertex', 1, { bytes: piece });
-            up.written += piece;
-        }
-        uploading.delete(set.positive); host.allocator.cpu.release(up.staging);
-        const entry: VertexSet = { key: set.positive, device: owner, buffer: up.buffer, negative: set.negative,
-            positiveVertices: set.positive.length / 2, negativeVertices: set.negative.length / 2, refs: 0, bytes: up.capacity,
-            used: vertexBytes, usedFrame: frame };
-        if (chain) {
-            entry.chain = { lead: idOf(chain[0].positive), ids: idsOf(chain) };
-            chainHeads.set(entry.chain.lead, entry);
-        }
-        shared.set(set.positive, entry);
-        idle.set(entry.key, entry); idleBytes += entry.bytes;
-        return entry;
+        const state = writeUpload(up, budget);
+        return state === 'done' ? finishUpload(up) : state;
     };
     /** Admission happens here, in prepare: targets, vertex buffers and any clip handle are created before any draw. Failure is
      * permanent for this device incarnation and returns 'unsupported'. A set uploaded by an admission that is then refused
@@ -835,8 +933,11 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
             throw new RangeError('Invalid path coverage viewport');
         }
         if (!request.colour.every(Number.isFinite)) throw new RangeError('Invalid path coverage colour');
-        let shape: PathCoverageShapes = nonEmpty[0];
-        if (nonEmpty.length > 1 || nonEmpty[0].shift) {
+        // A union request of several unshifted sets is a chain (see chainSetFor): its sets are never packed, so a publication copies and
+        // uploads only the sets it adds. Other sets are packed (packSets).
+        const chainSets = nonEmpty.length > 1 && nonEmpty.every(part => part.negative.length === 0 && !part.shift) ? nonEmpty : null;
+        let shape: PathCoverageShapes = chainSets ? { positive: EMPTY_TRIANGLES, negative: EMPTY_TRIANGLES, edges, bounds: unionBounds(chainSets) } : nonEmpty[0];
+        if (!chainSets && (nonEmpty.length > 1 || nonEmpty[0].shift)) {
             const packed = packSets(nonEmpty);
             if ('refused' in packed) return { status: 'denied', pool: 'cpu', bytes: packed.refused };
             shape = packed.shape;
@@ -855,12 +956,10 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         if (composite && coverageTargetBytes(bounds.width, 1, grid === 4 ? 1 : PATH_COVERAGE_SAMPLES, grid) > PATH_COVERAGE_SCRATCH_BYTES) {
             auditCount(audit, 'fallback:raster-route'); return { status: 'unsupported' };
         }
-        const vertexCount = (shape.positive.length + shape.negative.length) / 2;
+        const vertexCount = chainSets ? chainSets.reduce((sum, part) => sum + part.positive.length, 0) / 2
+            : (shape.positive.length + shape.negative.length) / 2;
         if (!Number.isSafeInteger(vertexCount) || vertexCount % 3) throw new RangeError('Invalid path triangle storage');
-        // A union request of several unshifted sets is a chain (ink: a stroke's chunks, one more per publication): its buffer is kept
-        // and appended to, so a publication uploads only the chunks it adds.
-        const chain = nonEmpty.length > 1 && nonEmpty.every(part => part.negative.length === 0 && !part.shift) ? nonEmpty : null;
-        const entry = vertexSetFor(owner, shape, vertexCount, budget, chain);
+        const entry = chainSets ? chainSetFor(owner, chainSets, budget) : vertexSetFor(owner, shape, vertexCount, budget);
         // One count per refused admission: the admission returns here, so a repeat is one more admission, not more pieces.
         if (entry === 'deferred') auditCount(audit, 'upload:deferred:admission');
         if (entry === 'deferred' || entry === 'unsupported') return { status: entry };
@@ -943,7 +1042,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
             for (const [key, up] of [...uploading]) {
                 if (freed >= bytes) break;
                 if (up.usedFrame >= frame) continue;
-                freed += up.bytes; dropUpload(key);
+                freed += up.capacity; dropUpload(key);
             }
             // A pack no buffer holds (its admission was refused before the upload) is host CPU memory nothing uses: it goes first.
             for (const pack of [...packs.values()]) {

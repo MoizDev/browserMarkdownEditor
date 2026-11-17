@@ -28,8 +28,7 @@ export interface NotebookPaperSnapshot {
     readonly host: Readonly<NotebookHost>;
     readonly pages: readonly PageGeometry[];
 }
-/** A page's identity while it is drawn: its rect, so a page that moved or resized is not yet drawn. */
-const pageKey = (rect: Readonly<Rect>): string => `${rect.x},${rect.y},${rect.width},${rect.height}`;
+const NO_RECTS: readonly Rect[] = Object.freeze([]);
 export interface NotebookPaperLayerOptions {
     /** Return the same immutable snapshot until its revision changes. */
     readonly read: () => NotebookPaperSnapshot;
@@ -66,6 +65,12 @@ function workingBytes(snapshot: NotebookPaperSnapshot, stack: Readonly<PageStack
     return bytes;
 }
 
+/** The revision a frame asks this layer for; a loop, since this runs every frame and `find` would allocate a closure. */
+function requestedRevision(frame: ScheduledFrame, layer: Layer): number | undefined {
+    for (const entry of frame.layers) if (entry.layer === layer) return entry.sceneRevision;
+    return undefined;
+}
+
 class NotebookPaperLayer implements Layer {
     private ready: Ready | null = null;
     private staged: Staging | null = null;
@@ -81,8 +86,10 @@ class NotebookPaperLayer implements Layer {
     };
     private gpuPrepared: PreparedPaint2d | null = null;
     private gpuSource: { ready: Ready; first: number; last: number; token: FrameToken } | null = null;
-    /** Pages whose paper has been drawn at least once since the GPU route was last released: the pages a board may claim opaque. */
-    private readonly drawn = new Set<string>();
+    /** Stack rects whose paper has been drawn at least once since the GPU route was last released: the pages a board may
+     * claim opaque. By identity: a layout change makes new rect objects, so the claim resets with the layout. */
+    private drawn = new WeakSet<Rect>();
+    private claim: { readonly ready: Ready; readonly rects: readonly Rect[] } | null = null;
     private readonly gpuReference: CanvasPaintAdapter = {
         prepare: () => {}, readyFrame: () => this.gpuPrepared?.sourceFrame ?? null,
         borrowPrepared: () => this.gpuPrepared, retainPrepared: () => null, draw2d: () => {}, release: () => {},
@@ -132,7 +139,8 @@ class NotebookPaperLayer implements Layer {
                 this.dropStaged(); this.desired = snapshot; this.denied = false; this.failedRevision = null;
             }
             if (this.ready?.revision === snapshot.revision) {
-                this.ready.token = { ...budget.token }; return;
+                if (!sameToken(this.ready.token, budget.token)) this.ready.token = { ...budget.token };
+                return;
             }
             if (Object.is(this.failedRevision, snapshot.revision)) return;
             if (this.staged && !sameToken(this.staged.token, budget.token)) this.dropStaged();
@@ -229,13 +237,19 @@ class NotebookPaperLayer implements Layer {
         // Drawn only when the adapter's ready tiles are the ones prepared for this paper (the coverage test below).
         const source = this.gpuSource;
         if (source && this.gpuPrepared && this.gpu.readyPaint() === this.gpuPrepared) {
-            for (let page = source.first; page <= source.last; page++) this.drawn.add(pageKey(source.ready.stack.rects[page]));
+            for (let page = source.first; page <= source.last; page++) this.markDrawn(source.ready.stack.rects[page]);
         }
     }
     /** The current pages whose paper has been drawn at least once: the only pages a board may claim opaque (C1 readiness). */
     drawnPageRects(): readonly Rect[] {
-        if (this.disposed || !this.ready) return [];
-        return this.ready.stack.rects.filter(rect => this.drawn.has(pageKey(rect)));
+        const ready = this.ready;
+        if (this.disposed || !ready) return NO_RECTS;
+        if (this.claim?.ready !== ready) this.claim = { ready, rects: ready.stack.rects.filter(rect => this.drawn.has(rect)) };
+        return this.claim.rects;
+    }
+    private markDrawn(rect: Rect): void {
+        if (this.drawn.has(rect)) return;
+        this.drawn.add(rect); this.claim = null;
     }
     /** Forwards the composer's offscreen encode; a no-op until the adapter has one (PLAN §3.3, wave 2). */
     /** The governor's trim: frees the adapter's GPU tiles not used this frame, and returns the bytes freed. */
@@ -265,12 +279,12 @@ class NotebookPaperLayer implements Layer {
                     ctx.translate(box.x, box.y); ctx.beginPath(); ctx.rect(0, 0, box.width, box.height); ctx.clip();
                     for (const item of ready.items) paintItem2d(ctx, item.item, this.resources);
                 } finally { ctx.restore(); }
-                this.drawn.add(pageKey(box));
+                this.markDrawn(box);
             }
         });
     }
     releaseGpu(reason: GpuReleaseReason): void {
-        this.gpu.release(reason); this.gpuPrepared = null; this.gpuSource = null; this.drawn.clear();
+        this.gpu.release(reason); this.gpuPrepared = null; this.gpuSource = null; this.drawn = new WeakSet(); this.claim = null;
         // Pressure takes GPU memory only. The CPU paths stay: dropping them made every pressure release a
         // full rebuild (measured: 788 rebuilds in one notebook stroke), and the rebuild asked for the same tiles again.
         if (reason === 'pressure') return;
@@ -298,7 +312,7 @@ class NotebookPaperLayer implements Layer {
     }
     critical(): boolean { return !this.ready; }
     coverage(frame: ScheduledFrame, layer: Layer, backend: CompositorBackend): LayerCoverage {
-        const ready = this.ready, requested = frame.layers.find(entry => entry.layer === layer)?.sceneRevision;
+        const ready = this.ready, requested = requestedRevision(frame, layer);
         if (!ready || !sameToken(ready.token, frame.token)) return { complete: false, sharp: false };
         const current = ready.revision === requested && ready.revision === this.options.read().revision;
         if (!current) return { complete: false, sharp: false, staleVersion: true };

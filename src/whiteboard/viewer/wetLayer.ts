@@ -695,7 +695,9 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
             if (!owner || hostLayers.get(owner) !== layer) return;
             const keep = new Set<InkCoverage>();
             for (const slot of runs.values()) for (const chunk of slot.shown?.kept ?? []) keep.add(chunk);
-            inkRoutes?.evictCpu(bytes, keep);
+            const freed = inkRoutes?.evictCpu(bytes, keep) ?? 0;
+            // Measured for the pressure run: the bytes of idle geometry this live layer gave back to the pool.
+            if (renderAuditEnabled()) auditCount('wet', 'reclaim:geometry', 1, { bytes: freed });
         },
         create(host) {
             if (disposed) throw new Error('Wet layer disposed');

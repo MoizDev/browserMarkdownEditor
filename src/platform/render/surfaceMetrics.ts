@@ -127,7 +127,7 @@ export type SurfaceCommit =
     | { readonly kind: 'ready'; readonly tags: SurfaceCommitTags; readonly metrics: ReadySurfaceMetrics; readonly actual: SurfaceResizeResult }
     | { readonly kind: 'dormant'; readonly tags: SurfaceCommitTags; readonly metrics: DormantSurfaceMetrics }
     | { readonly kind: 'failed'; readonly tags: SurfaceCommitTags; readonly metrics: ReadySurfaceMetrics;
-        readonly reason: 'stale-limits' | 'resize-failed' | 'stale-generation' | 'incomplete' | 'buffer-mismatch';
+        readonly reason: 'stale-limits' | 'resize-failed' | 'stale-generation' | 'incomplete' | 'refused' | 'buffer-mismatch';
         readonly actual: SurfaceResizeResult | null };
 
 /** The scheduler calls this on geometry/show invalidation, never from an observation callback.
@@ -167,6 +167,7 @@ export class SurfaceMetricsCommitter {
             try {
                 actual = Object.freeze({ ...target.resizeSurface(metrics.backingWidth, metrics.backingHeight) });
                 if (target.generation !== tags.deviceGeneration || actual.generation !== tags.deviceGeneration) reason = 'stale-generation';
+                else if (actual.refused) reason = 'refused';
                 else if (!actual.complete) reason = 'incomplete';
                 else if (actual.width !== metrics.backingWidth || actual.height !== metrics.backingHeight) reason = 'buffer-mismatch';
             } catch {

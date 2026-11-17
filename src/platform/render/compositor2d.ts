@@ -683,6 +683,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         this.check();
         const token = this.options.currentToken();
         const result = (complete: boolean) => ({ width, height, generation: token?.deviceGeneration ?? 0, complete });
+        const refused = () => ({ ...result(false), refused: true });
         if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 0 || height < 0 ||
             width > POLICY.maxSurfaceAxisPixels || height > POLICY.maxSurfaceAxisPixels || width * height > POLICY.maxSurfacePixels) throw new RangeError('Invalid CPU backing');
         if (this.encodedSources.size) return result(false);
@@ -692,12 +693,12 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             if (!this.host && !this.surface.width && !this.surface.height && !this.displayReserved) this.backing!.stage();
             const bytes = width * height * POLICY.surfaceReserveBytesPerPixel;
             if (bytes > this.displayReserved) {
-                if (!this.backing!.reserve(bytes - this.displayReserved)) return result(false);
+                if (!this.backing!.reserve(bytes - this.displayReserved)) return refused();
                 this.displayReserved = bytes;
             }
             const old = this.buffers.get('back');
             if (old && (old.canvas.width !== width || old.canvas.height !== height)) this.dropWork();
-            if (!this.allocate('back', width, height, false)) return result(false);
+            if (!this.allocate('back', width, height, false)) return refused();
             if (old !== this.buffers.get('back')) { this.cancelJob(); this.generation = allocateSurfaceGeneration(); }
             return result(true);
         } finally { this.busy--; }

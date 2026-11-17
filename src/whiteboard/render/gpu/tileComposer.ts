@@ -245,6 +245,20 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             .sort((a, b) => a.key.x - b.key.x || a.key.y - b.key.y || a.key.slice - b.key.slice);
     };
 
+    /** The admitted, not yet encoded position at (x, y) of `scale`, when its entries are still stored with targets. The compositor
+     * encodes it this frame, before it draws, so it is covered now. Null for any other position. */
+    const finishedAt = (band: PaintBand, scale: number, x: number, y: number): Position | null => {
+        for (const position of finished) {
+            if (position.band !== band || position.scale !== scale || position.x !== x || position.y !== y) continue;
+            for (const slice of position.slices) {
+                const entry = slice.entry;
+                if (!entry || !entry.target || store.get(slice.id) !== entry) return null;
+            }
+            return position;
+        }
+        return null;
+    };
+
     /** The GPU route for an item, or the CPU route with the reason no GPU route takes it. */
     const routeOf = (item: PaintItem): { route: ItemRoute; why: string | null } => {
         const kind = item.kind;
@@ -447,6 +461,13 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             for (let y = span.y0; y < span.y1; y++) {
                 for (let x = span.x0; x < span.x1; x++) {
                     const status = statusAt(band, target, x, y);
+                    // Admitted and encoded this frame: its fresh entries are drawn now, as the exact tile they will be.
+                    const pending = status === 'missing' ? finishedAt(band, target, x, y) : null;
+                    if (pending) {
+                        for (const slice of pending.slices) if (slice.entry) addDraw(band, slice.entry, { mode: slice.mode, count: pending.slices.length }, null);
+                        auditCount(audit, 'tile:encoding');
+                        continue;
+                    }
                     const exact = status !== 'missing' && (zooming || complete || standInsOf(band, target, x, y).length === 0);
                     if (exact) {
                         const first = store.get(idOf(band, target, x, y, 0));
@@ -528,12 +549,11 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             if (disposed) return;
             frame = budget.frameId;
             denied = false; settled = false;
-            // A position finished and never encoded (its band was not encoded this frame) is begun again from its admissions.
-            for (const position of finished) cancel(position);
-            finished = [];
             const demand = view.camera.z * view.viewport.dpr;
             device = host.device();
             if (!prepared || !device || !(demand > 0) || !Number.isFinite(demand)) {
+                for (const position of finished) cancel(position);
+                finished = [];
                 drawCount = 0; presenting = false; return;
             }
             presenting = true;
@@ -576,7 +596,17 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     if (!invalidated && position.scale === target && inSpan(ring, position.x, position.y)) continue;
                     cancel(position); building.delete(key);
                 }
+                // A finished position still valid for this content and scale waits for this frame's encode, so it is kept.
+                const kept: Position[] = [];
+                for (const position of finished) {
+                    if (!invalidated && position.scale === target && inSpan(ring, position.x, position.y)) kept.push(position);
+                    else cancel(position);
+                }
+                finished = kept;
                 if (device) compose(view, budget, device, target, span, zooming, demand);
+            } else {
+                for (const position of finished) cancel(position);
+                finished = [];
             }
             buildDraws(view, target, zooming);
             settled = !indexing && allExact(view, target);
@@ -638,6 +668,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         const status = statusAt(band, target, x, y);
                         if (status === 'ok') continue;
                         sharp = false;
+                        if (status === 'missing' && finishedAt(band, target, x, y)) continue;
                         if (status === 'dirty') { stale = true; continue; }
                         if (!standInsOf(band, target, x, y).length) complete = false;
                     }

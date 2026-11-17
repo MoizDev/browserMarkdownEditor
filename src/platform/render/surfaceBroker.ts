@@ -140,8 +140,14 @@ class SurfaceBroker {
                 requestGpu: (canvas, stamp) => this.requestGpu(entry, canvas, stamp),
                 canMarkPresented: (stamp, generation) => this.canMarkPresented(entry, stamp, generation),
                 markPresented: (stamp, generation) => this.markPresented(entry, stamp, generation),
-                failGpu: (stamp, generation, reason) => {
+                failGpu: (stamp, generation, reason, latch) => {
                     if (!this.matches(entry, stamp) || entry.reservation?.generation !== generation) return;
+                    // A latched failure pins the session to 2D for good. Without the latch the pane stays on the CPU until retry().
+                    // Neither is a user notice: a GPU defect is not the document's failure.
+                    if (latch) {
+                        entry.circuit.pinned = true;
+                        auditCount('context', 'gpu-error-latched');
+                    }
                     this.abandon(entry, 'creation-failed');
                     entry.failed = reason;
                     if (drawable(entry)) this.fallback(entry, reason);

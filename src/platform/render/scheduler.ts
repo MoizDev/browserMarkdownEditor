@@ -262,6 +262,8 @@ const firstPreparing = (layer: Layer): boolean => (layer as Layer & PreparingFir
 interface FrameWork { entry: PaneEntry; frame: ScheduledFrame; batch: DamageBatch; geometry: number; hadInput: boolean; platformPrepared: boolean; platformBudget?: FrameBudget;
     /** A layer's preparation was passed over for lack of time while it did not ask for a frame. */
     skipped: boolean;
+    /** Per layer (index-aligned with frame.layers): prepared first this frame as live work, or null when none is live. */
+    first: boolean[] | null;
     /** The audit's name for what asked for this frame; '' when the render audit is off. */
     cause: string }
 interface PendingAcknowledgement { entry: PaneEntry; frameId: number; token: FrameToken; submission: ScheduledSubmission }
@@ -740,7 +742,7 @@ export class FrameScheduler {
                     else batch.damage.mark({ x: 0, y: 0, width: 0, height: 0 }, tags);
                     const damage = batch.damage.freeze()!;
                     const frame = Object.freeze({ frameId, timestamp, intervalMs: this.intervalMs, token, view, layers, reasons, damage });
-                    work.push({ entry, frame, batch, geometry, hadInput: entry.inputPriority || reasons.includes('input'), platformPrepared: false, skipped: false, cause });
+                    work.push({ entry, frame, batch, geometry, hadInput: entry.inputPriority || reasons.includes('input'), platformPrepared: false, skipped: false, first: null, cause });
                     entry.inputPriority = false;
                 });
             }
@@ -769,18 +771,20 @@ export class FrameScheduler {
             }
             for (const item of criticalOrder) {
                 if (!item.platformPrepared) continue;
-                // Live work first: a critical layer with ink in flight takes the pane's critical share and upload allowance before
-                // any other critical layer. Measured on notebook draw: a paper layer still building was admitted 570 times while
-                // the wet layer was refused every frame (its cover incomplete, 121 compositor refusals).
-                const live = this.call(item.entry, () => item.frame.layers.some(meta => meta.critical && firstPreparing(meta.layer))) === true;
-                if (live) {
-                    const ordered = this.call(item.entry, () => item.frame.layers.filter(meta => meta.critical)
-                        .sort((a, b) => Number(firstPreparing(b.layer)) - Number(firstPreparing(a.layer)))) ?? [];
-                    for (const meta of ordered) prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, meta, prepareDeadline, true, meter, criticalPending));
-                    continue;
+                // Live work first, critical or not: a layer with ink in flight takes the pane's time and upload allowance before
+                // paper, board tiles or any other layer. Measured on notebook draw: a paper layer still building was admitted 570
+                // times while the wet layer was refused every frame (its cover incomplete, 121 compositor refusals). Its flags are
+                // kept for the optional pass, so each layer is prepared once per frame.
+                const layers = item.frame.layers;
+                const flags = this.call(item.entry, () => layers.some(meta => firstPreparing(meta.layer)) ? layers.map(meta => firstPreparing(meta.layer)) : null) ?? null;
+                item.first = flags;
+                if (flags) {
+                    for (let i = 0; i < layers.length; i++) {
+                        if (flags[i]) prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, layers[i], prepareDeadline, layers[i].critical, meter, criticalPending));
+                    }
                 }
-                for (const meta of item.frame.layers) {
-                    if (meta.critical) prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, meta, prepareDeadline, true, meter, criticalPending));
+                for (let i = 0; i < layers.length; i++) {
+                    if (layers[i].critical && !flags?.[i]) prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, layers[i], prepareDeadline, true, meter, criticalPending));
                 }
             }
             const optionalOrder = this.focusFirst(this.rotate(work, this.optionalCursor++));
@@ -790,8 +794,9 @@ export class FrameScheduler {
                 item.entry.optionalBytes = Math.min(Math.max(meter.allowance, progressUploadBytes),
                     item.entry.optionalBytes + meter.allowance / Math.max(1, work.length));
                 const deadline = Math.min(prepareDeadline, performance.now() + optionalMs);
-                for (const meta of item.frame.layers) {
-                    if (!meta.critical) prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, meta, deadline, false, meter, criticalPending));
+                for (let i = 0; i < item.frame.layers.length; i++) {
+                    const meta = item.frame.layers[i];
+                    if (!meta.critical && !item.first?.[i]) prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, meta, deadline, false, meter, criticalPending));
                 }
             }
             // A layer passed over for time, not asking for a frame, has nothing else to wake it. After a restore that

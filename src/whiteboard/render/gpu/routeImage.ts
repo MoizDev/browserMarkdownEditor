@@ -3,7 +3,7 @@
 // not land on whole pixels (b39411ce, measured against the canvas2d control). Design: PLAN §4 gpu-h7, §3.2.
 import type { ViewState } from '../../../platform/types';
 import type { LayerHost } from '../../../platform/render/compositor.types';
-import type { Bindings, DrawableImage, GfxDevice, GpuPass, PipelineHandle, RectI, SamplerHandle, ShaderModule } from '../../../platform/render/gfx/api';
+import type { Bindings, DrawableImage, DrawCommand, GfxDevice, GpuPass, PipelineHandle, RectI, SamplerHandle, ShaderModule } from '../../../platform/render/gfx/api';
 import { auditCount } from '../../../platform/render/renderAudit';
 import type { FrameBudget } from '../../../platform/render/types';
 import type { PaintImageItem } from '../paintStream';
@@ -265,11 +265,18 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
             const own = run as ImageRun;
             const drawPipeline = own.blend === 'modulate' ? modulatePipeline : overPipeline, drawSampler = sampler;
             if (!drawPipeline || !drawSampler || device !== own.device || own.retired) throw new Error('Stale image run');
+            // One command for the run, rewritten per draw: draw copies what it records, and uniformsInto rewrites the uniform
+            // slice in place, so a run of N pictures allocates one command instead of N.
+            const head = own.calls[0];
+            if (!head) return;
+            const cmd: DrawCommand = { pipeline: drawPipeline, vertices: NO_VERTICES, first: 0, count: 4, instances: 1, scissor: head.scissor,
+                bindings: { uniforms: [{ binding: 0, slice: host.uniforms(head.uniforms) }],
+                    textures: [{ binding: 0, texture: head.textures[0].texture, sampler: drawSampler }] } };
             for (const call of own.calls) {
-                // The uniform slice is the one per-draw value: the ring hands out a new one each time, so its binding is made here.
-                const slice = host.uniforms(call.uniforms);
-                pass.draw({ pipeline: drawPipeline, vertices: NO_VERTICES, first: 0, count: 4, instances: 1, scissor: call.scissor,
-                    bindings: { uniforms: [{ binding: 0, slice }], textures: call.textures } });
+                host.uniformsInto(call.uniforms, cmd.bindings.uniforms[0].slice);
+                cmd.bindings.textures[0].texture = call.textures[0].texture;
+                cmd.scissor = call.scissor;
+                pass.draw(cmd);
             }
             auditCount(audit, 'route:image', own.calls.length);
         },

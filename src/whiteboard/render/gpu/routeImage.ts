@@ -3,7 +3,7 @@
 // not land on whole pixels (b39411ce, measured against the canvas2d control). Design: PLAN §4 gpu-h7, §3.2.
 import type { ViewState } from '../../../platform/types';
 import type { LayerHost } from '../../../platform/render/compositor.types';
-import type { DrawableImage, GfxDevice, GpuPass, PipelineHandle, RectI, SamplerHandle, ShaderModule, TextureHandle } from '../../../platform/render/gfx/api';
+import type { Bindings, DrawableImage, GfxDevice, GpuPass, PipelineHandle, RectI, SamplerHandle, ShaderModule } from '../../../platform/render/gfx/api';
 import { auditCount } from '../../../platform/render/renderAudit';
 import type { FrameBudget } from '../../../platform/render/types';
 import type { PaintImageItem } from '../paintStream';
@@ -23,10 +23,13 @@ export interface ImageRoute extends ItemRoute<PaintImageItem> {
 
 /** One draw: a picture's texture over its device rect, its uniforms packed for the shader below. */
 interface ImageDraw {
-    readonly texture: TextureHandle;
+    /** Built once at admit: the texture binding is fixed for the draw, so `draw` allocates none of it. */
+    readonly textures: Bindings['textures'];
     readonly scissor: RectI;
     readonly uniforms: Float32Array;
 }
+/** The vertex list of every picture draw: the quad comes from the vertex index, so there is nothing to bind. */
+const NO_VERTICES: readonly never[] = [];
 
 interface ImageRun extends PreparedRun {
     readonly route: 'image';
@@ -117,8 +120,10 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
     let pending = 0, failed = false, incarnation = 0;
     // The paint's hold on picture bitmaps, when its resources carry one (the reference adapter's do; a dense plan's spread keeps it).
     let hold: PaintImageHold | null = null;
-    // Pictures some item was refused for: their CPU draw needs the bitmap, so the bitmap is never released for them.
+    // Pictures some item of THIS frame was refused for: their CPU draw needs the bitmap, so it is not released this frame.
+    // Scoped to the frame: a picture refused once and then gone from the board kept its bitmap held for the whole session.
     const cpuKeys = new Set<string>();
+    let cpuFrame = -1;
     /** A run refused before its items were admitted: every picture of it is a CPU draw candidate. */
     const refuseAll = (items: readonly PaintImageItem[], admission: Exclude<Admission<PreparedRun>, { status: 'ready' }>): Admission<PreparedRun> => {
         let waiting = false;
@@ -131,6 +136,7 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
 
     const release = (): void => {
         incarnation++;
+        cpuKeys.clear(); cpuFrame = -1;
         textures.release();
         if (device) {
             if (overPipeline) device.destroy(overPipeline);
@@ -170,6 +176,7 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
         id: 'image',
         accepts(item): item is PaintImageItem { return item.kind === 'image'; },
         admit(items: readonly PaintImageItem[], view: ViewState, blend: Blend, budget: FrameBudget): Admission<PreparedRun> {
+            if (budget.frameId !== cpuFrame) { cpuKeys.clear(); cpuFrame = budget.frameId; }
             const current = host.device();
             if (!current) return refuseAll(items, unsupported('no-device'));
             if (current.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration) return { status: 'deferred' };
@@ -244,7 +251,8 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
                 uniforms.set([targetWidth, targetHeight, multiply, 0, x0, y0, x1, y1,
                     src.x * kx, src.y * ky, (src.x + src.width) * kx, (src.y + src.height) * ky,
                     tex.width, tex.height, item.opacity, item.inverted ? 1 : 0]);
-                calls.push({ texture: tex.texture, scissor: { x: left, y: top, width: right - left, height: bottom - top }, uniforms });
+                calls.push({ textures: [{ binding: 0, texture: tex.texture, sampler }],
+                    scissor: { x: left, y: top, width: right - left, height: bottom - top }, uniforms });
             }
             if (calls.length === 0) {
                 for (const key of holds) textures.unhold(key);
@@ -258,9 +266,10 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
             const drawPipeline = own.blend === 'modulate' ? modulatePipeline : overPipeline, drawSampler = sampler;
             if (!drawPipeline || !drawSampler || device !== own.device || own.retired) throw new Error('Stale image run');
             for (const call of own.calls) {
+                // The uniform slice is the one per-draw value: the ring hands out a new one each time, so its binding is made here.
                 const slice = host.uniforms(call.uniforms);
-                pass.draw({ pipeline: drawPipeline, vertices: [], first: 0, count: 4, instances: 1, scissor: call.scissor,
-                    bindings: { uniforms: [{ binding: 0, slice }], textures: [{ binding: 0, texture: call.texture, sampler: drawSampler }] } });
+                pass.draw({ pipeline: drawPipeline, vertices: NO_VERTICES, first: 0, count: 4, instances: 1, scissor: call.scissor,
+                    bindings: { uniforms: [{ binding: 0, slice }], textures: call.textures } });
             }
             auditCount(audit, 'route:image', own.calls.length);
         },

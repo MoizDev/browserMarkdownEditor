@@ -913,7 +913,9 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         // Critical (its missing positions refuse the frame) only while the board has nothing drawable at all: no presented
         // frame and no prepared tile to stand in. Anything drawable makes it non-critical, so a large board whose coverage is
         // never complete still presents its stand-ins (measured: 129 refusals, 0 presents, all from incomplete coverage).
-        critical() { return presented === null && !adapter?.readyFrame() && !gpu?.readyFrame(); },
+        // A layer waiting on a refused GPU admission defers instead: holding every frame for memory the governor has not freed
+        // froze the pane (a board whose ink tile could not be admitted refused every frame, and nothing requested another).
+        critical() { return presented === null && !adapter?.readyFrame() && !gpu?.readyFrame() && !gpu?.memoryBlocked(); },
         coverage(layer, frame, backend) {
             const actual = coverageOf(layer, frame, backend);
             // What the board draws besides the current picture, for the present audit: a previous frame or a scaled tile is a

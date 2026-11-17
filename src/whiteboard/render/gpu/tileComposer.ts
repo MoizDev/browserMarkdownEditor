@@ -147,6 +147,8 @@ interface Draw {
     /** A live part's admitted run and the route that admitted it, drawn under the clip; null for a tile draw. */
     live: PreparedRun | null;
     liveRoute: ItemRoute | null;
+    /** The node a live part belongs to, added to the band's drawn-live set when the part is laid. */
+    node: string;
 }
 
 /** A live part admitted for this frame: its run and the route that owns it, retired by that route. */
@@ -213,6 +215,9 @@ export interface TileComposer {
     /** The ink node ids in the tiles drawn by the last drawGpu calls of this composite. Filled in drawGpu, cleared in prepare;
      * one set reused for the composer's life. */
     drawnInkNodeIds(): ReadonlySet<string>;
+    /** The nodes whose live parts this composite lays in one band (a live part deferred or denied this frame is absent). Filled in
+     * drawGpu, cleared in prepare, one set per band for the composer's life. */
+    drawnLiveNodeIds(band: PaintBand): ReadonlySet<string>;
     /** The GPU bytes the visible tiles at the drawn scale hold, for a viewport of `width` by `height` (view units): one
      * tile target per slice of each visible position that is composed. The governor's mandatory working set. */
     mandatoryBytes(width: number, height: number): number;
@@ -314,6 +319,9 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     const draws: Draw[] = [];
     // The ink nodes the composite draws, filled in drawGpu and cleared in prepare: one set for the composer's life.
     const drawnInk = new Set<string>();
+    // The nodes whose live parts the composite lays, per band: filled in drawGpu beside the live draw, cleared in prepare. The board
+    // trusts a changed node as drawn only when it is in this set, so a live part that was deferred or denied is not counted.
+    const drawnLive: Record<PaintBand, Set<string>> = { underlay: new Set<string>(), content: new Set<string>() };
     // Live parts: admitted each frame through the image route, released at the next prepare. Scratch holds the ones of the
     // position being drawn, in paint order.
     const liveRuns: LiveAdmission[] = [];
@@ -321,7 +329,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     // A live part deferred this frame asks for the next one. Consecutive deferred frames are counted and the asking stops at the
     // retry limit (a part that never fits its upload budget must not keep the board framing at rest).
     let liveDeferredNow = false, liveDeferredFrames = 0;
-    const liveScratch: { order: number; run: PreparedRun; route: ItemRoute }[] = [];
+    const liveScratch: { order: number; run: PreparedRun; route: ItemRoute; nodeId: string }[] = [];
     const standScratch: { order: number; entry: TileEntry; slot: Slot }[] = [];
     // Batch scratch: the quads of one call, reused. The pool holds spec objects for the composer's life.
     const quadPool: { sourceRect: Rect; destRect: Rect }[] = [];
@@ -837,7 +845,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         const world = tileWorld(entry.key);
         let draw = draws[drawCount];
         if (!draw) {
-            draw = { band, texture: target.texture, mode: slot.mode, x: 0, y: 0, w: 0, h: 0, clipOn: false, cx: 0, cy: 0, cw: 0, ch: 0, ink: NO_IDS, live: null, liveRoute: null };
+            draw = { band, texture: target.texture, mode: slot.mode, x: 0, y: 0, w: 0, h: 0, clipOn: false, cx: 0, cy: 0, cw: 0, ch: 0, ink: NO_IDS, live: null, liveRoute: null, node: '' };
             draws.push(draw);
         }
         drawCount++;
@@ -910,21 +918,21 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             const video = isLivePart(part.item);
             if (video ? !wanted : !(stand && heldLive(part.nodeId, stand))) continue;
             const admitted = admitLive(part.item, part.blend, view, budget);
-            if (admitted) liveScratch.push({ order: part.order, run: admitted.run, route: admitted.route });
+            if (admitted) liveScratch.push({ order: part.order, run: admitted.run, route: admitted.route, nodeId: part.nodeId });
         }
     };
 
     /** A live draw: its run under `clip`, in the draw order of the position it shows. */
-    const addLiveDraw = (band: PaintBand, run: PreparedRun, route: ItemRoute, clip: Rect): void => {
+    const addLiveDraw = (band: PaintBand, run: PreparedRun, route: ItemRoute, clip: Rect, nodeId: string): void => {
         let draw = draws[drawCount];
         if (!draw) {
-            draw = { band, texture: null, mode: 'over', x: 0, y: 0, w: 0, h: 0, clipOn: true, cx: 0, cy: 0, cw: 0, ch: 0, ink: NO_IDS, live: null, liveRoute: null };
+            draw = { band, texture: null, mode: 'over', x: 0, y: 0, w: 0, h: 0, clipOn: true, cx: 0, cy: 0, cw: 0, ch: 0, ink: NO_IDS, live: null, liveRoute: null, node: '' };
             draws.push(draw);
         }
         drawCount++;
         draw.band = band; draw.texture = null; draw.mode = 'over'; draw.clipOn = true;
         draw.cx = clip.x; draw.cy = clip.y; draw.cw = clip.width; draw.ch = clip.height;
-        draw.ink = NO_IDS; draw.live = run; draw.liveRoute = route;
+        draw.ink = NO_IDS; draw.live = run; draw.liveRoute = route; draw.node = nodeId;
         auditCount(audit, 'tile:live-part');
     };
 
@@ -932,7 +940,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     const liveBefore = (band: PaintBand, order: number, from: number, clip: Rect | null): number => {
         let li = from;
         for (; li < liveScratch.length && liveScratch[li].order < order; li++) {
-            if (clip) addLiveDraw(band, liveScratch[li].run, liveScratch[li].route, clip);
+            if (clip) addLiveDraw(band, liveScratch[li].run, liveScratch[li].route, clip, liveScratch[li].nodeId);
         }
         return li;
     };
@@ -946,7 +954,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         for (const part of parts.partsFor(band, gutter, omitIds ?? undefined)) {
             if (part.item.kind === 'ink') drawnInk.add(part.nodeId);
             const admitted = admitLive(part.item, part.blend, view, budget);
-            if (admitted) liveScratch.push({ order: part.order, run: admitted.run, route: admitted.route });
+            if (admitted) liveScratch.push({ order: part.order, run: admitted.run, route: admitted.route, nodeId: part.nodeId });
         }
     };
     /** The live-only overlay's draw list: each visible position's parts, in paint order, clipped to that position on the surface. */
@@ -1126,6 +1134,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             editBits = 0;
             frame = budget.frameId;
             drawnInk.clear();
+            drawnLive.underlay.clear(); drawnLive.content.clear();
             retireLive();
             // The interned scales only name the positions in progress: with none in progress they are forgotten now, so a zoom's
             // scales are not kept after it ends (gpu: the churn cannot hold memory). The restart at 60 stays for a long zoom.
@@ -1294,6 +1303,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     if (draw.clipOn) {
                         scissor.x = draw.cx; scissor.y = draw.cy; scissor.width = draw.cw; scissor.height = draw.ch;
                         const clip = pass.pushClip(scissor);
+                        drawnLive[draw.band].add(draw.node);
                         draw.liveRoute?.draw(pass, draw.live);
                         pass.popClip(clip);
                     }
@@ -1372,6 +1382,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             return { complete, sharp: complete && sharp, ...(stale ? { staleVersion: true } : {}) };
         },
         drawnInkNodeIds(): ReadonlySet<string> { return drawnInk; },
+        drawnLiveNodeIds(band: PaintBand): ReadonlySet<string> { return drawnLive[band]; },
         mandatoryBytes(width: number, height: number): number {
             if (disposed || !presenting) return 0;
             const target = drawnTarget;

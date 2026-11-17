@@ -51,6 +51,9 @@ export interface CompositorLayer {
 export interface LayerAllocators {
     readonly cpu: MemoryAllocator;
     readonly gpu: MemoryAllocator;
+    /** The pane's current CPU grant in bytes: read-only, allocates nothing. Optional so a construction site that does not yet supply it
+     * still typechecks; absent, a layer reads 0 (no grant known). */
+    cpuGrantBytes?(): number;
 }
 
 /** Source is intrinsic texture/bitmap texels including its real gutter; destination is DEVICE pixels. */

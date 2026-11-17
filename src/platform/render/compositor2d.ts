@@ -160,6 +160,8 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
     private job: ColourJob | null = null;
     private mirrorJob: MirrorJob | null = null;
     private lastFrame: ScheduledFrame | null = null;
+    /** Audit only: the camera scale at the previous encode, for the present's zooming flag. */
+    private lastScale: number | null = null;
     private report: CompositorCoverage | null = null;
     private presentedKey = '';
     private missing = false;
@@ -428,9 +430,10 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         this.activeKey = key;
         this.beginSources(key);
         const availability = snapshot.layers.map(binding => binding.coverage(frame, this.backend));
+        const zooming = renderAuditEnabled() && this.zoomStep(frame.view.camera.z);
         if (availability.some(item => !item.complete)) {
             if (renderAuditEnabled()) auditPresent({ pane: this.options.paneId, frame: frame.frameId, rawTick: frame.timestamp, backend: 'canvas2d',
-                complete: false, canvas: null, standIns: 0, holes: 0, refusal: 'availability' });
+                layersComplete: false, canvas: null, standIns: 0, standInsRaster: 0, holes: 0, zooming, refusal: 'availability' });
             return null;
         }
         this.missing = false;
@@ -470,7 +473,8 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
                         complete: true, sharp: snapshot.metrics!.qualityScale === 1 && availability.every(item => item.sharp && !item.staleVersion),
                         staleVersion: availability.some(item => item.staleVersion), qualityScale: snapshot.metrics!.qualityScale });
                     if (tally) auditPresent({ pane: this.options.paneId, frame: frame.frameId, rawTick: frame.timestamp, backend: 'canvas2d',
-                        complete: tally.standIns === 0 && tally.holes === 0, canvas: this.surface, standIns: tally.standIns, holes: tally.holes, refusal: null });
+                        layersComplete: availability.every(item => item.complete), canvas: this.surface, standIns: tally.standIns,
+                        standInsRaster: tally.standInsRaster, holes: tally.holes, zooming, refusal: null });
                     return { drawn: frame.layers.map(item => ({ layer: item.layer, sceneRevision: item.sceneRevision })),
                         ...(__BME_BENCH__ ? { commitObservation: () => {
                             if (__BME_BENCH__ && benchmarkDomain) benchmarkCanvas?.managers.get(this)?.observe(back.native, frame, benchmarkDomain.benchmarkPaintDomain(snapshot, frame));
@@ -480,6 +484,13 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
                 discard: () => { if (!done) release(); },
             };
         } finally { this.busy--; }
+    }
+
+    /** Audit only: whether the camera scale moved since the previous encode, then remembers this one. */
+    private zoomStep(scale: number): boolean {
+        const zooming = this.lastScale !== null && scale !== this.lastScale;
+        this.lastScale = scale;
+        return zooming;
     }
 
     coverage(frame: ScheduledFrame): CompositorCoverage {

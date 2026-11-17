@@ -198,6 +198,13 @@ function waterFill(items: readonly Share[], capacity: number): Map<string, numbe
 
 function stableId(a: string, b: string): number { return a < b ? -1 : a > b ? 1 : 0; }
 
+/** Every field a grant is planned from; a change in any one re-plans. */
+function samePaneDemand(a: PaneMemoryDemand, b: PaneMemoryDemand | undefined): boolean {
+    return b !== undefined && a.paneId === b.paneId && a.visible === b.visible && a.focused === b.focused &&
+        a.requestedPixels === b.requestedPixels && a.gpuNeedBytes === b.gpuNeedBytes && a.cpuNeedBytes === b.cpuNeedBytes &&
+        a.cpuMandatoryBytes === b.cpuMandatoryBytes && a.cpuPinned === b.cpuPinned;
+}
+
 /** Residency a pane grant may reclaim before it refuses a reservation: never critical, hidden, surface or context. */
 const RECLAIMABLE: readonly MemoryClass[] = ['redundant-level', 'prefetch', 'scene-cache'];
 
@@ -294,12 +301,17 @@ export class MemoryGovernor {
         }
         count(pixels);
         if (visible > POLICY.maxVisiblePaneContexts) throw new MemoryAdmissionError('invalid-input');
+        // The scheduler refreshes every frame (snapshotScene), so demand that did not change re-plans nothing: the grants
+        // move only with the demand, with degradation and recovery (which plan themselves) and with context/program charges.
+        const changed = this.panes.length !== panes.length || panes.some((pane, i) => !samePaneDemand(pane, this.panes[i]));
         this.panes = panes.map(pane => ({ ...pane }));
-        this.target.gpu = Math.min(this.ceilings.gpuBytes, Math.max(POLICY.gpuGrantMinBytes,
-            POLICY.gpuGrantBaseBytes + POLICY.gpuGrantPerVisiblePaneBytes * visible + POLICY.gpuGrantPerVisiblePixelBytes * pixels));
-        this.target.cpu = Math.min(this.ceilings.cpuRasterBytes, Math.max(POLICY.cpuGrantMinBytes,
-            POLICY.cpuGrantPerVisiblePaneBytes * visible + POLICY.cpuGrantPerVisiblePixelBytes * pixels));
-        this.replan();
+        if (changed) {
+            this.target.gpu = Math.min(this.ceilings.gpuBytes, Math.max(POLICY.gpuGrantMinBytes,
+                POLICY.gpuGrantBaseBytes + POLICY.gpuGrantPerVisiblePaneBytes * visible + POLICY.gpuGrantPerVisiblePixelBytes * pixels));
+            this.target.cpu = Math.min(this.ceilings.cpuRasterBytes, Math.max(POLICY.cpuGrantMinBytes,
+                POLICY.cpuGrantPerVisiblePaneBytes * visible + POLICY.cpuGrantPerVisiblePixelBytes * pixels));
+            this.replan();
+        }
         this.trimHiddenMirrors();
         for (const pool of ['gpu', 'cpu'] as const) {
             if (this.charged[pool] > this.target[pool]) this.trimPool(pool, this.target[pool]);

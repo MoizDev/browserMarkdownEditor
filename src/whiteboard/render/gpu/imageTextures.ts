@@ -12,10 +12,6 @@ import type { Admission } from './contracts';
  * a 4000-px-wide picture would take about 16 times as many frames to arrive. */
 export const IMAGE_CHUNK_BYTES = 1024 * 1024;
 
-/** The largest zoom a board shows: DRAWING_VIEW_LIMITS in CanvasPane.tsx (max 100); notebook pages cap at 4, so this bounds
- * every board. A picture is never kept finer than its device size at this zoom: the texels beyond it are unreachable. */
-export const MAX_BOARD_ZOOM = 100;
-
 /** Mip levels stay off. IMAGE_SAMPLING_PROFILE is bilinear without mip levels, canvas2d samples that way, and the
  * parity row (pictures within 3 levels of canvas2d) is measured against it; mips would smooth minified pictures away
  * from that reference. The path is real (h10's `createTexture(…, { mips })`, `generateMips`): turning this on is gpu's
@@ -33,8 +29,8 @@ function textureBytes(width: number, height: number): number {
     }
 }
 
-/** A picture's texture, the stable value every route draws from. `width`/`height` are its texels: smaller than the
- * source only when the source is larger than the picture's texels at the largest zoom, or the device's texture limit. */
+/** A picture's texture, the stable value every route draws from. `width`/`height` are its texels: the source's own, unless
+ * the source is larger than the device's texture limit, which is the only case the texture is resampled (counted as image:resample). */
 export interface ImageTexture {
     readonly key: string;
     readonly texture: TextureHandle;
@@ -44,17 +40,13 @@ export interface ImageTexture {
     readonly height: number;
 }
 
-/** The device pixels a draw of the picture spans at the largest zoom (`shown`), and the crop it draws in source texels
- * (null: the whole picture). The texture keeps the texels those pixels can resolve, never more than the source. */
-export interface ImageNeed {
-    readonly shown: { readonly width: number; readonly height: number };
-    readonly crop: { readonly width: number; readonly height: number } | null;
-}
-
 export interface ImageTextures {
     /** `ready` holds the texture until `unhold` (a route pairs them per prepared run). `deferred` while staging or
-     * uploading; `denied` when the GPU pool refuses the lease; `unsupported` for a source this path cannot draw. */
-    acquire(key: string, image: CanvasImageSource, budget: FrameBudget, need: ImageNeed): Admission<ImageTexture>;
+     * uploading; `denied` when the GPU pool refuses the lease; `unsupported` for a source this path cannot draw. `image` is
+     * null once the picture's bitmap was released: a ready texture still draws; anything else must wait for the bitmap. */
+    acquire(key: string, image: CanvasImageSource | null, budget: FrameBudget): Admission<ImageTexture>;
+    /** True when acquiring `key` needs its bitmap: no texture is ready for this device. */
+    needsSource(key: string): boolean;
     unhold(key: string): void;
     /** Frees textures nobody holds and no frame used this frame, least recently used first. Returns the bytes freed. */
     evict(bytes: number, frameId: number): number;
@@ -95,17 +87,12 @@ interface Slot {
 const UPLOAD_USES = ['sample', 'copy-dst'] as const;
 const UPLOAD_SOURCE = { premultiplied: true, colorSpace: 'srgb', origin: 'top-left' } as const;
 
-/** The texture a picture needs, per axis: its source, cut to the texels its largest-zoom draw spans, and to the device's
- * texture limit (`limits.maxTexture2D`, the field gpu confirmed). Never larger than the source. */
-function targetSize(device: GfxDevice, w: number, h: number, need: ImageNeed): { width: number; height: number } {
+/** The texture a picture gets: its source size, fitted proportionally into the device's texture limit (`limits.maxTexture2D`,
+ * the field gpu confirmed). A picture within the limit keeps its texels: the GPU scales it when it is drawn, not a CPU resample. */
+function targetSize(device: GfxDevice, w: number, h: number): { width: number; height: number } {
     const max = device.limits.maxTexture2D;
-    // The source texels one device pixel covers at the largest zoom, scaled up when the draw shows only a crop of the source.
-    const cropW = need.crop ? need.crop.width : w, cropH = need.crop ? need.crop.height : h;
-    const axis = (source: number, cropSize: number, shown: number, cap: number): number => {
-        const fullNeed = shown > 0 && Number.isFinite(shown) ? Math.ceil(shown * source / cropSize) : source;
-        return Math.max(1, Math.min(source, cap, fullNeed));
-    };
-    return { width: axis(w, cropW, need.shown.width, max), height: axis(h, cropH, need.shown.height, max) };
+    const scale = Math.min(1, max / w, max / h);
+    return { width: Math.min(max, Math.max(1, Math.round(w * scale))), height: Math.min(max, Math.max(1, Math.round(h * scale))) };
 }
 
 export function createImageTextures(host: LayerHost, audit: string): ImageTextures {
@@ -153,10 +140,13 @@ export function createImageTextures(host: LayerHost, audit: string): ImageTextur
     };
 
     // Decodes the picture down to the texture size. Settlement is an invalidate, so the next prepare finds it.
+    // Only a picture beyond the device's texture limit is resampled, on the browser side (off the main thread); a picture within
+    // the limit is uploaded at its own size and the GPU scales it when drawn.
     const startResize = (slot: Slot, image: ImageBitmap): void => {
         const { width, height } = slot.view;
         const lease = reserveCpu(width * height * 4);
         if (!lease) { awaitCapacity(); return; }
+        auditCount(audit, 'image:resample', 1, { px: width * height });
         decode(slot, lease, () => createImageBitmap(image, { resizeWidth: width, resizeHeight: height, resizeQuality: 'high' }),
             (bitmap, held) => { slot.scaled = { bitmap, lease: held, row: 0, rows: height }; host.invalidate('image-texture-staged'); });
     };
@@ -211,24 +201,27 @@ export function createImageTextures(host: LayerHost, audit: string): ImageTextur
     };
 
     return {
-        acquire(key, image, budget, need) {
+        acquire(key, image, budget) {
             const device = host.device();
             if (!device) return { status: 'unsupported', why: 'no-device' };
             if (device.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration) return { status: 'deferred' };
+            let slot = slots.get(key);
+            if (slot?.failed) { drop(slot); return { status: 'unsupported', why: 'upload-failed' }; }
+            if (!image) {
+                // Without its bitmap only a ready texture of this device draws; a route asks for the bitmap first otherwise.
+                if (!slot || !slot.ready || slot.device !== device) return { status: 'deferred' };
+                slot.usedFrame = budget.frameId;
+                slot.refs++;
+                return { status: 'ready', value: slot.view };
+            }
             if (typeof ImageBitmap === 'undefined' || !(image instanceof ImageBitmap)) return { status: 'unsupported', why: 'not-bitmap' };
             const w = image.width, h = image.height;
             if (!(w > 0 && h > 0)) return { status: 'empty' };
-            let slot = slots.get(key);
-            if (slot?.failed) { drop(slot); return { status: 'unsupported', why: 'upload-failed' }; }
-            const target = targetSize(device, w, h, need);
-            // A texture is grown only when no run holds it and none is decoding: a later, larger draw of the same picture needs
-            // more texels than the texture has. A texture that is only too large (the device's scale fell) is kept.
-            const grows = !!slot && slot.refs === 0 && !slot.busy && (slot.view.width < target.width || slot.view.height < target.height);
-            if (slot && (slot.device !== device || slot.view.sourceWidth !== w || slot.view.sourceHeight !== h || grows)) {
-                if (grows) auditCount(audit, 'image:texture-grow', 1, { from: slot.view.width, to: target.width });
-                drop(slot); slot = undefined;
-            }
+            // A picture's size is its source's, so a texture never needs to grow after its first draw: the same key always
+            // resolves to the same texture size (the source's own, or the device's fit).
+            if (slot && (slot.device !== device || slot.view.sourceWidth !== w || slot.view.sourceHeight !== h)) { drop(slot); slot = undefined; }
             if (!slot) {
+                const target = targetSize(device, w, h);
                 const bytes = textureBytes(target.width, target.height);
                 const lease = host.allocator.gpu.reserve(bytes);
                 if (!lease) { awaitCapacity(); return { status: 'denied', pool: 'gpu', bytes }; }
@@ -244,6 +237,10 @@ export function createImageTextures(host: LayerHost, audit: string): ImageTextur
             if (!slot.ready && !advance(slot, device, image, budget)) return { status: 'deferred' };
             slot.refs++;
             return { status: 'ready', value: slot.view };
+        },
+        needsSource(key) {
+            const slot = slots.get(key);
+            return !slot || !slot.ready || slot.device !== host.device();
         },
         unhold(key) {
             const slot = slots.get(key);

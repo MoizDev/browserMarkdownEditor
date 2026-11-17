@@ -24,7 +24,6 @@ import type {
 
 const EDGE = TILE_EDGE, GUTTER = TILE_GUTTER, SIZE = TILE_SIZE;
 const BANDS: readonly PaintBand[] = ['underlay', 'content'];
-const SQRT2 = Math.SQRT2;
 const TARGET_BYTES = tileTargetBytes(SIZE);
 const CLEAR: RgbaP = [0, 0, 0, 0], WHITE: RgbaP = [1, 1, 1, 1];
 /** The texture's interior. The gutter is composed (so edges are right) and never drawn. */
@@ -63,6 +62,10 @@ interface Slot {
     readonly firstOrder: readonly number[];
     /** The position's live parts (video pictures drawn each frame, never composed). */
     readonly live: number;
+    /** The tile holds geometry (a path or ink route's content): a zoom draws it at the exact scale each frame. */
+    readonly geometry: boolean;
+    /** The tile holds CPU raster content: a zoom never composes it again, since the CPU route would raster it afresh each frame. */
+    readonly cpu: boolean;
 }
 /** A consecutive run of one route's items within a slice. A run the CPU route takes (a GPU route refused it, or it has no route
  * yet, or its clips were refused) carries `why` and `label`, and is counted once as a fallback. A clipped item (on a route that
@@ -193,10 +196,6 @@ export interface TileComposer {
 function exactScale(demand: number): number {
     return Number(demand.toPrecision(12));
 }
-/** The √2 ladder level at or above a demand: the scale a zoom composes at. */
-function ladderScale(demand: number): number {
-    return Math.pow(SQRT2, Math.ceil(Math.log(demand) / Math.log(SQRT2)));
-}
 /** A live part: a video picture, whose image key carries the video prefix. It is never composed into a tile: it is drawn each
  * frame through the image route, between the slices its paint order falls between. */
 function isLivePart(item: PaintItem): boolean {
@@ -297,7 +296,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     const heldNodes = new Map<string, number>();
     // The frame each tile entry was last encoded (its content's frame), read against heldNodes.
     const composedAt = new WeakMap<TileEntry, number>();
-    let lastZoom: number | undefined, zoomScale = 0;
+    let lastZoom: number | undefined;
     // The scale the last prepare composed and drew. Coverage describes this scale, not the exact demand: a zoom draws its
     // ladder scale, and coverage asked about the exact one, where nothing is composed, so every frame of a zoom read incomplete.
     let drawnTarget = 0;
@@ -356,6 +355,21 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         return standInScratch;
     };
 
+    /** Whether a zoom holds a position at its nearest composed tiles instead of composing it at the exact scale. It holds when those
+     * tiles have content and either none of it is geometry (raster only: drawn scaled, not re-rastered) or some of it is CPU raster
+     * (the CPU route would raster it afresh each frame). Mixed GPU content composes exact: its text route scales its cached masks. A
+     * position with no composed content (an empty tile, or none at all) is composed. */
+    const heldByZoom = (band: PaintBand, scale: number, x: number, y: number): boolean => {
+        let content = false, geometry = false, cpu = false;
+        for (const entry of standInsOf(band, scale, x, y)) {
+            const slot = slots.get(entry);
+            if (!slot) return false;
+            if (slot.count === 0) continue;
+            content = true; geometry ||= slot.geometry; cpu ||= slot.cpu;
+        }
+        return content && (!geometry || cpu);
+    };
+
     /** The admitted, not yet encoded position at (x, y) of `scale`, when its entries are still stored with targets. The compositor
      * encodes it this frame, before it draws, so it is covered now. Null for any other position. */
     const finishedAt = (band: PaintBand, scale: number, x: number, y: number): Position | null => {
@@ -390,6 +404,9 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         return false;
     };
 
+    /** The routes that draw geometry: paths and ink. Every other route's content is raster (the text masks and decoded images, which
+     * the GPU draws from rastered or decoded pixels, and the CPU raster), which a zoom does not re-raster (gpu's ruling). */
+    const isGeometryRoute = (route: ItemRoute): boolean => route === routes.path || route === routes.inkAnalytic || route === routes.inkUnion;
     /** The GPU route for an item, or the CPU route with the reason no GPU route takes it. */
     const routeOf = (item: PaintItem): { route: ItemRoute; why: string | null } => {
         const kind = item.kind;
@@ -471,7 +488,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         for (const part of raw) if (isLivePart(part.item)) live++;
         if (!cut.length) {
             const entry = store.putEmpty(key0);
-            slots.set(entry, { mode: 'over', count: 0, inkNodes: NO_IDS, firstOrder: NO_ORDERS, live });
+            slots.set(entry, { mode: 'over', count: 0, inkNodes: NO_IDS, firstOrder: NO_ORDERS, live, geometry: false, cpu: false });
             auditCount(audit, 'tile:empty');
             return null;
         }
@@ -612,6 +629,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         if (!position) {
                             const status = statusAt(band, target, x, y);
                             if (pass === 'dirty' ? status !== 'dirty' : status !== 'missing') continue;
+                            // While zooming, content a stand-in can show is not composed again at this scale: its raster is scaled.
+                            if (zoomingFrame && pass !== 'dirty' && heldByZoom(band, target, x, y)) { auditCount(audit, 'compose:zoom:held'); continue; }
                             const started = begin(band, target, x, y, view);
                             if (!started) continue;
                             position = started;
@@ -659,7 +678,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         layQuads(pass, texture, quadList);
     };
 
-    const addDraw = (band: PaintBand, entry: TileEntry, slot: Slot, clip: Rect | null): void => {
+    const addDraw = (band: PaintBand, entry: TileEntry, slot: Pick<Slot, 'mode' | 'inkNodes'>, clip: Rect | null): void => {
         const target = entry.target;
         if (!target) return;
         const world = tileWorld(entry.key);
@@ -787,12 +806,11 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         const pendingClip = pending.lowered ? clipAt(x, y) : null;
                         if (pending.lowered && !pendingClip) continue;
                         collectLive(band, target, x, y, view, budget, pending.live > 0, null);
-                        const orders = pending.slices.map(part => part.firstOrder);
                         let li = 0;
                         for (const slice of pending.slices) {
                             if (!slice.entry) continue;
                             li = liveBefore(band, slice.firstOrder, li, pendingClip);
-                            addDraw(band, slice.entry, { mode: slice.mode, count: pending.slices.length, inkNodes: slice.inkNodes, firstOrder: orders, live: pending.live }, pendingClip);
+                            addDraw(band, slice.entry, { mode: slice.mode, inkNodes: slice.inkNodes }, pendingClip);
                         }
                         liveBefore(band, Infinity, li, pendingClip);
                         auditCount(audit, 'tile:encoding');
@@ -817,6 +835,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         }
                         liveBefore(band, Infinity, li, clip);
                         auditCount(audit, 'tile:hit');
+                        if (zooming) auditCount(audit, 'zoom:draw:exact');
                         continue;
                     }
                     // The stand-in's clip is the part of its position on the surface: a scissor outside the surface, or with a
@@ -838,26 +857,17 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         addDraw(band, item.entry, item.slot, clip);
                     }
                     liveBefore(band, Infinity, li, clip);
-                    // What this position shows: its stand-in's entries (drawn above), or nothing at all, a hole the audit counts.
-                    auditDrawn(standScratch.length ? 'stand-in' : 'hole');
+                    // What this position shows: its stand-in's entries (drawn above), or nothing at all, a hole the audit counts. Its origin
+                    // is geometry when any stand-in holds geometry, which a zoom must draw exact (the audit counts it apart).
+                    if (standScratch.length) {
+                        const geometry = standScratch.some(item => item.slot.geometry);
+                        auditDrawn('stand-in', 1, geometry ? 'geometry' : 'raster');
+                        if (zooming) auditCount(audit, geometry ? 'zoom:draw:standin:geometry' : 'zoom:draw:standin:raster');
+                    } else auditDrawn('hole');
                     auditCount(audit, 'tile:standin');
                 }
             }
         }
-    };
-
-    /** Every visible position of both bands has its tile at `scale`, or one finished this frame (encoded before the draw). */
-    const exactReady = (view: ViewState, scale: number): boolean => {
-        const span = spanAt(view, scale);
-        for (const band of BANDS) {
-            for (let y = span.y0; y < span.y1; y++) {
-                for (let x = span.x0; x < span.x1; x++) {
-                    const status = statusAt(band, scale, x, y);
-                    if (status !== 'ok' && !(status === 'missing' && finishedAt(band, scale, x, y))) return false;
-                }
-            }
-        }
-        return true;
     };
 
     /** Every visible position of both bands has its exact tile at `exact`, or no content: the band's picture is current. */
@@ -894,7 +904,9 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 auditCount(audit, 'tile:compose', 1, { px: target.size * target.size });
                 entry.dirty = false; entry.composed = true; entry.revision = validRevision;
                 slots.set(entry, { mode: slice.mode, count: position.slices.length, inkNodes: slice.inkNodes,
-                    firstOrder: position.slices.map(part => part.firstOrder), live: position.live });
+                    firstOrder: position.slices.map(part => part.firstOrder), live: position.live,
+                    geometry: slice.admitted.some(admitted => isGeometryRoute(admitted.route)),
+                    cpu: slice.admitted.some(admitted => admitted.route === routes.cpu) });
                 store.touch(entry, frame);
             }
             for (const { route, run, clips } of slice.admitted) { route.retire(run); clips?.retire(); }
@@ -949,8 +961,6 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             const zooming = lastZoom !== undefined && view.camera.z !== lastZoom;
             lastZoom = view.camera.z;
             zoomingFrame = zooming;
-            if (!zooming) zoomScale = 0;
-            else if (!(zoomScale >= demand && zoomScale <= demand * 1.2 * SQRT2)) zoomScale = ladderScale(demand);
             const exact = exactScale(demand);
             // Compose targets the exact scale every frame, visible positions first (exact-first zoom, gpu).
             const target = exact;
@@ -998,12 +1008,10 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 for (const position of finished) cancel(position);
                 finished = [];
             }
-            // Drawn at the exact scale once its visible tiles are all there. While zooming and not yet, the bucket's composed tiles
-            // are drawn (they are the stand-ins), so a zoom frame never waits on the exact compose (gpu's cost rule).
-            const drawTarget = zooming && zoomScale > 0 && !exactReady(view, target) ? zoomScale : target;
-            drawnTarget = drawTarget;
-            if (zooming) auditCount(audit, drawTarget === target ? 'compose:zoom:exact' : 'compose:zoom:standin');
-            buildDraws(view, drawTarget, zooming, budget);
+            // Each position draws its exact tile where it is there, and otherwise its nearest composed tiles, clipped to it. No frame
+            // waits for the compose: a zoom shows what exists (gpu's ruling: geometry exact, raster scaled).
+            drawnTarget = target;
+            buildDraws(view, target, zooming, budget);
             settled = !indexing && allExact(view, target);
         },
         encodeOffscreen(passes: OffscreenPasses, _view: ViewState, band: PaintBand): void {

@@ -1,12 +1,14 @@
 import type { ByteLease } from '../../platform/render/gfx/api';
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { InkCoverageReply } from '../workers/geometryProtocol';
+import { inkMinRadius, inkRadiusTolerance } from './inkGeometry';
 
 /** Levels kept per stroke. Each is a full chain at its own error band, so the bound keeps one stroke's ladder
  * from growing with every zoom step; the least recently used level is released to make room. */
 const MAX_LEVELS = 4;
 
-interface HeldLevel { readonly reply: InkCoverageReply; readonly lease: ByteLease }
+/** `tolerance` is the level's own F1 centre bound (its geometry's thinnest radius); a level's centre error may not exceed it. */
+interface HeldLevel { readonly reply: InkCoverageReply; readonly lease: ByteLease; readonly tolerance: number }
 
 /** A stroke's certified coarser chains, one per error band.
  *
@@ -27,10 +29,14 @@ export class InkLodLadder {
 
     /** The coarsest held level whose cumulative centre error fits the budget, or null. A hit becomes most recent. */
     coarsest(budget: number): InkCoverageReply | null {
+        // A level serves a budget only within its own F1 bound. The client's budget is 1/16 device px, stricter than a quarter
+        // pixel, so the quarter-pixel rule holds; the bound stops a thin stroke taking a coarse chain its own width cannot absorb.
+        // Both are world units and scale-free, so neither depends on the zoom the level was built at.
         let best = -1;
         for (let i = 0; i < this.#levels.length; i++) {
-            const error = this.#levels[i].reply.centreErrorWorld;
-            if (error <= budget && (best < 0 || error > this.#levels[best].reply.centreErrorWorld)) best = i;
+            const { reply, tolerance } = this.#levels[i];
+            const error = reply.centreErrorWorld;
+            if (error <= Math.min(budget, tolerance) && (best < 0 || error > this.#levels[best].reply.centreErrorWorld)) best = i;
         }
         if (best < 0) return null;
         const [hit] = this.#levels.splice(best, 1);
@@ -44,7 +50,7 @@ export class InkLodLadder {
         if (this.#levels.length >= MAX_LEVELS) this.#release(0);
         const lease = this.memory.reserve(reply.segments.byteLength);
         if (!lease) return false;
-        this.#levels.push({ reply, lease });
+        this.#levels.push({ reply, lease, tolerance: inkRadiusTolerance(inkMinRadius(reply)) });
         return true;
     }
 

@@ -9,7 +9,7 @@ import type { FrameBudget } from '../../../platform/render/types';
 import type { PaintImageItem } from '../paintStream';
 import type { PaintResources2d } from '../reference/paint2d';
 import type { Admission, Blend, CreateImageRoute, ItemRoute, PreparedRun } from './contracts';
-import { createImageTextures, type ImageTextures } from './imageTextures';
+import { createImageTextures, IMAGE_FILTER, type ImageTextures } from './imageTextures';
 
 /** The picture route as the composer sees it. `useResources` gives it the paint's image lookup for the revision being
  * composed: the ItemRoute contract has no place for it (see the report to gpu), so the composer binds it. */
@@ -28,7 +28,7 @@ interface ImageDraw {
 
 interface ImageRun extends PreparedRun {
     readonly route: 'image';
-    readonly blend: 'over';
+    readonly blend: Blend;
     readonly device: GfxDevice;
     readonly calls: readonly ImageDraw[];
     /** Image keys whose textures this run holds; retire releases them once. */
@@ -38,7 +38,7 @@ interface ImageRun extends PreparedRun {
 
 const UNIFORM_BYTES = 64;
 
-/** Four vec4 uniforms, 16 floats: viewport (target px w, h), destination (device rect x0, y0, x1, y1), sourceRect (texel
+/** Four vec4 uniforms, 16 floats: viewport (target px w, h, multiply flag), destination (device rect x0, y0, x1, y1), sourceRect (texel
  * rect u0, v0, u1, v1), params (texture w, h, opacity, invert). The quad covers whole device pixels; every edge pixel is
  * measured against the rect in the fragment, so the vertices need no antialiasing of their own. */
 const IMAGE_SHADER: ShaderModule = {
@@ -91,7 +91,15 @@ void main() {
         vec3 r = vec3(dot(vec3(-0.574, 1.430, 0.144), c), dot(vec3(0.426, 0.430, 0.144), c), dot(vec3(0.426, 1.430, -0.856), c));
         p = vec4(clamp(1.0 - r, 0.0, 1.0) * p.a, p.a);
     }
-    gfxColour = p * (params.z * coverage);
+    float alpha = p.a * params.z * coverage;
+    if (viewport.z > 0.5) {
+        // A multiply slice: the blend is dst · src (rgb ZERO, SRC_COLOR), so the picture's source is 1 - a·(1 - c),
+        // the canvas's multiply of c over white by its effective alpha a (c unpremultiplied).
+        vec3 c = p.a > 0.0 ? p.rgb / p.a : vec3(0.0);
+        gfxColour = vec4(1.0 - alpha * (1.0 - c), 1.0);
+    } else {
+        gfxColour = p * (params.z * coverage);
+    }
 }`,
     },
 };
@@ -101,38 +109,46 @@ const unsupported = (why: string) => ({ status: 'unsupported' as const, why });
 export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
     const textures: ImageTextures = createImageTextures(host, audit);
     let resources: PaintResources2d | null = null;
-    let device: GfxDevice | null = null, pipeline: PipelineHandle | null = null, sampler: SamplerHandle | null = null;
-    let pending = false, failed = false, incarnation = 0;
+    let device: GfxDevice | null = null, sampler: SamplerHandle | null = null;
+    // One pipeline per blend: 'over' is premultiplied source-over; 'modulate' is the multiply slice's fixed-function dst · src.
+    let overPipeline: PipelineHandle | null = null, modulatePipeline: PipelineHandle | null = null;
+    let pending = 0, failed = false, incarnation = 0;
 
     const release = (): void => {
         incarnation++;
         textures.release();
         if (device) {
-            if (pipeline) device.destroy(pipeline);
+            if (overPipeline) device.destroy(overPipeline);
+            if (modulatePipeline) device.destroy(modulatePipeline);
             if (sampler) device.destroy(sampler);
         }
-        device = null; pipeline = null; sampler = null; pending = false; failed = false;
+        device = null; overPipeline = null; modulatePipeline = null; sampler = null; pending = 0; failed = false;
     };
 
-    // The pipeline compiles asynchronously; a run is admitted only once it exists. A generation change drops everything.
+    // Pipelines compile asynchronously; a run is admitted only once both exist. A generation change drops everything.
     const warm = (current: GfxDevice): void => {
         if (device !== current) { release(); device = current; }
-        if (pipeline || pending || failed) return;
-        sampler ??= current.createSampler('linear');
+        if (failed || pending > 0 || (overPipeline && modulatePipeline)) return;
+        sampler ??= current.createSampler(IMAGE_FILTER);
         const serial = ++incarnation;
-        pending = true;
-        current.createPipeline({ shader: IMAGE_SHADER, topology: 'triangle-strip', colorFormat: 'rgba8', samples: 1,
-            blend: 'source-over', alphaToCoverage: false, colorWrite: [true, true, true, true], stencil: { enabled: false } })
-            .then(value => {
-                if (incarnation !== serial || device !== current) { current.destroy(value); return; }
-                pipeline = value; pending = false;
-                host.invalidate('image-pipeline-ready');
-            }, () => {
-                if (incarnation !== serial) return;
-                pending = false; failed = true;
-                auditCount(audit, 'image:pipeline-failed');
-                host.invalidate('image-pipeline-failed');
-            });
+        const compile = (blend: Blend, onReady: (handle: PipelineHandle) => void) => {
+            pending++;
+            current.createPipeline({ shader: IMAGE_SHADER, topology: 'triangle-strip', colorFormat: 'rgba8', samples: 1,
+                blend: blend === 'modulate' ? 'modulate' : 'source-over', alphaToCoverage: false,
+                colorWrite: [true, true, true, true], stencil: { enabled: false } })
+                .then(value => {
+                    if (incarnation !== serial || device !== current) { current.destroy(value); return; }
+                    pending--; onReady(value);
+                    host.invalidate('image-pipeline-ready');
+                }, () => {
+                    if (incarnation !== serial) return;
+                    pending--; failed = true;
+                    auditCount(audit, 'image:pipeline-failed');
+                    host.invalidate('image-pipeline-failed');
+                });
+        };
+        if (!overPipeline) compile('over', handle => { overPipeline = handle; });
+        if (!modulatePipeline) compile('modulate', handle => { modulatePipeline = handle; });
     };
 
     return {
@@ -142,13 +158,11 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
             const current = host.device();
             if (!current) return unsupported('no-device');
             if (current.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration) return { status: 'deferred' };
-            // The 'modulate' pipeline needs h10's blend (PLAN §3.4) on PipelineDesc; until it lands a multiply slice of
-            // pictures is counted as a CPU fallback by the composer, not drawn here.
-            if (blend === 'modulate') return unsupported('modulate-blend');
             if (!resources) throw new Error('The image route has no paint resources: useResources must run before admit');
             warm(current);
             if (failed) return unsupported('pipeline-failed');
-            if (!pipeline || !sampler) return { status: 'deferred' };
+            if (!overPipeline || !modulatePipeline || !sampler) return { status: 'deferred' };
+            const multiply = blend === 'modulate' ? 1 : 0;
 
             const scale = view.camera.z * view.viewport.dpr;
             const targetWidth = Math.round(view.viewport.width * view.viewport.dpr), targetHeight = Math.round(view.viewport.height * view.viewport.dpr);
@@ -186,7 +200,7 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
                 // The crop in source pixels, as texels of the texture (which is smaller only when the source was downscaled).
                 const kx = tex.width / tex.sourceWidth, ky = tex.height / tex.sourceHeight;
                 const uniforms = new Float32Array(UNIFORM_BYTES / 4);
-                uniforms.set([targetWidth, targetHeight, 0, 0, x0, y0, x1, y1,
+                uniforms.set([targetWidth, targetHeight, multiply, 0, x0, y0, x1, y1,
                     src.x * kx, src.y * ky, (src.x + src.width) * kx, (src.y + src.height) * ky,
                     tex.width, tex.height, item.opacity, item.inverted ? 1 : 0]);
                 calls.push({ texture: tex.texture, scissor: { x: left, y: top, width: right - left, height: bottom - top }, uniforms });
@@ -195,12 +209,12 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
                 for (const key of holds) textures.unhold(key);
                 return { status: 'empty' };
             }
-            const run: ImageRun = { route: 'image', blend: 'over', device: current, calls, holds, retired: false };
+            const run: ImageRun = { route: 'image', blend, device: current, calls, holds, retired: false };
             return { status: 'ready', value: run };
         },
         draw(pass: GpuPass, run: PreparedRun): void {
             const own = run as ImageRun;
-            const drawPipeline = pipeline, drawSampler = sampler;
+            const drawPipeline = own.blend === 'modulate' ? modulatePipeline : overPipeline, drawSampler = sampler;
             if (!drawPipeline || !drawSampler || device !== own.device || own.retired) throw new Error('Stale image run');
             for (const call of own.calls) {
                 const slice = host.uniforms(call.uniforms);

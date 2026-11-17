@@ -56,8 +56,11 @@ export interface ChatNode {
     /** user: how many images rode along (the thumbnails themselves are object
      *  URLs, which die with the page). */
     images?: number;
-    /** assistant: the CLI session that produced this turn. A branch gets its
-     *  own, which is how a fork stays a fork on the agent's side too. */
+    /** The CLI session this turn went into: for an assistant, the one that
+     *  produced it; for a user message, the one it was sent to — recorded even
+     *  when no reply came back (stopped, failed), because the CLI still kept the
+     *  words. A branch gets its own, which is how a fork stays a fork on the
+     *  agent's side too (`activeSessionId`). */
     sessionId?: string | null;
     /** assistant: what it thought and what it did. */
     reasoning?: string;
@@ -152,16 +155,28 @@ export function isEmpty(tree: ChatTree): boolean {
     return Object.keys(tree.nodes).length === 0;
 }
 
-/** The last assistant turn on the active branch — whose CLI session the next
- *  message continues in. Null when this branch has not run yet, which is
- *  exactly when a new session has to be started. */
+/**
+ * The CLI session the next message on the active branch may continue in, or
+ * null when it has to start a new one (and carry the branch as a transcript).
+ *
+ * A session is a LINE: resuming it hands the agent every turn it ever saw. So
+ * the newest session on this branch is only safe to resume when NO node off the
+ * branch carries it too. Every branch that forks below the first reply shares its
+ * parent's session up to the fork, and the old version's question and answer are
+ * in it: resuming that is exactly the agent "remembering" the message the user
+ * edited away (measured: edit message 2 of 2 → the run resumed the session that
+ * held the original message 2 and its reply).
+ */
 export function activeSessionId(tree: ChatTree): string | null {
     const path = activePath(tree);
-    for (let i = path.length - 1; i >= 0; i--) {
-        const node = path[i];
-        if (node.role === 'assistant' && node.sessionId) return node.sessionId;
+    let candidate: string | null = null;
+    for (let i = path.length - 1; i >= 0 && !candidate; i--) candidate = path[i].sessionId ?? null;
+    if (!candidate) return null;
+    const onPath = new Set(path.map(node => node.id));
+    for (const node of Object.values(tree.nodes)) {
+        if (node.sessionId === candidate && !onPath.has(node.id)) return null;
     }
-    return null;
+    return candidate;
 }
 
 /* ───────────────────────── writing ─────────────────────────
@@ -201,6 +216,13 @@ export function branchFrom(
     if (!original) return tree;
     const full: ChatNode = { ...node, parent: original.parent, role: original.role };
     return { ...withNode(tree, full), activeLeaf: full.id };
+}
+
+/** Record the CLI session `id` was sent into. A no-op once it has one. */
+export function tagSession(tree: ChatTree, id: string, sessionId: string): ChatTree {
+    const node = tree.nodes[id];
+    if (!node || node.sessionId) return tree;
+    return { ...tree, nodes: { ...tree.nodes, [id]: { ...node, sessionId } } };
 }
 
 /** Switch to another version of a message: show `id`'s own newest line. */

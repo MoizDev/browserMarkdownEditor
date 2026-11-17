@@ -151,6 +151,7 @@ class Reader implements ScenePaintNodeStream {
     readonly rasterVariant: ScenePaintNodeStream['rasterVariant'];
     readonly sourceWorld: ScenePaintNodeStream['sourceWorld'];
     readonly regionChangesSince: ScenePaintNodeStream['regionChangesSince'];
+    readonly changedNodesSince: ScenePaintNodeStream['changedNodesSince'];
     readonly sensitiveMayMeet: ScenePaintNodeStream['sensitiveMayMeet'];
     readonly mayPaint: ScenePaintNodeStream['mayPaint'];
     readonly occupiedRoot: ScenePaintNodeStream['occupiedRoot'];
@@ -160,6 +161,7 @@ class Reader implements ScenePaintNodeStream {
         this.token = source.token; this.theme = source.theme; this.sceneRevision = source.sceneRevision; this.sourceDoc = source.sourceDoc;
         this.sensitiveNodes = source.sensitiveNodes; this.sessionRasters = source.sessionRasters; this.rasterVariant = source.rasterVariant;
         this.sourceWorld = source.sourceWorld; this.regionChangesSince = source.regionChangesSince;
+        this.changedNodesSince = source.changedNodesSince;
         this.sensitiveMayMeet = source.sensitiveMayMeet; this.mayPaint = source.mayPaint; this.occupiedRoot = source.occupiedRoot;
     }
 

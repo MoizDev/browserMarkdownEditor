@@ -1,4 +1,4 @@
-import { coverageTargetBytes } from './api';
+import { COVERAGE_ATLAS_TILE, coverageTargetBytes } from './api';
 import type {
     BitmapUpload, BufferHandle, BufferUse, ByteLease, ClipHandle, CoverageTarget, CoverageTargetOptions, GfxDevice, GfxError,
     FrameEncoder, GfxLimits, Handle, PipelineDesc, PipelineHandle, PixelUpload, RectI, SamplerHandle,
@@ -9,7 +9,7 @@ import { createWebgl2Frame } from './webgl2Frame';
 import type { ControlledFrame, DrawContext, EncodedDraw, FrameBackend, FrameTarget, FrameTexture, QuadCommand, QuadPin, TargetRequest } from './webgl2Frame';
 import { Webgl2TargetPool } from './webgl2Pool';
 import type { PoolStorage } from './webgl2Pool';
-import { COMPOSITION_SHADER, GRID_RESOLVE_SHADER, MODULATE_COMPOSITE_SHADER } from './webgl2Shaders';
+import { COMPOSITION_SHADER, GRID16_RESOLVE_SHADER, GRID_RESOLVE_SHADER, MODULATE_COMPOSITE_SHADER } from './webgl2Shaders';
 import { Webgl2IndexMirror } from './webgl2Index';
 import { Webgl2Timer } from './webgl2Timer';
 import { Webgl2IsolationPool } from './webgl2Isolation';
@@ -327,6 +327,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     #surfaceRevision = 0;
     #composition: PipelineHandle | null = null;
     #gridComposition: PipelineHandle | null = null;
+    #grid16Composition: PipelineHandle | null = null;
     #modulateComposition: PipelineHandle | null = null;
     #white: TextureHandle | null = null;
     readonly #fences = new Map<number, WebGLSync | null>();
@@ -812,6 +813,24 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         }
     }
 
+    /** The overlap atlas (grid 16): `slotsAcross`×`slotsDown` slots of one tile each, one r8 texel per 1/16 device px and a stencil
+     * at the same texel size. The lease is charged exactly coverageTargetBytes(…, 1, 16). A slot is drawn through beginCoverage. */
+    createCoverageAtlas(slotsAcross: number, slotsDown: number, lease: ByteLease): CoverageTarget {
+        this.#usable();
+        if (!Number.isSafeInteger(slotsAcross) || !Number.isSafeInteger(slotsDown) || slotsAcross <= 0 || slotsDown <= 0) throw new ArenaError('invalid-input');
+        const width = slotsAcross * COVERAGE_ATLAS_TILE, height = slotsDown * COVERAGE_ATLAS_TILE;
+        if (lease.bytes < coverageTargetBytes(width, height, 1, 16)) throw new ArenaError('out-of-budget');
+        const texture = this.#createTexture(width * 16, height * 16, 'r8', ['render', 'sample'], lease);
+        try {
+            const target = this.createTarget(texture, { samples: 1, stencil: true }, lease);
+            this.#arena.closeLease(lease);
+            return { target, texture, width, height, samples: 1, grid: 16 };
+        } catch (error) {
+            this.destroy(texture);
+            throw error;
+        }
+    }
+
     createRenderTexture(width: number, height: number, lease: ByteLease, options?: { format?: 'rgba8' | 'r8'; copyDst?: boolean }): { texture: TextureHandle; target: TargetHandle } {
         this.#usable();
         const format = options?.format ?? 'rgba8';
@@ -982,7 +1001,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             () => { for (const handle of this.#handles) this.#arena.release(handle); },
             () => this.#handles.clear(), () => this.#programs.clear(), () => this.#programSignatures.clear(),
             () => this.#samplers.clear(), () => this.#attachments.clear(),
-            () => { this.#white = null; this.#composition = null; this.#gridComposition = null; this.#modulateComposition = null; }, () => this.#collect(),
+            () => { this.#white = null; this.#composition = null; this.#gridComposition = null; this.#grid16Composition = null; this.#modulateComposition = null; }, () => this.#collect(),
         ]);
     }
 
@@ -1000,7 +1019,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 () => { this.#uniformSlots.length = 0; },
                 ...[...this.#indexBuffers].map(buffer => () => this.#dropIndexData(buffer)),
                 () => this.#pipelines.clear(), () => this.#pollCancel?.(),
-                () => { this.#pollCancel = null; this.#white = null; this.#composition = null; this.#gridComposition = null; this.#modulateComposition = null; },
+                () => { this.#pollCancel = null; this.#white = null; this.#composition = null; this.#gridComposition = null; this.#grid16Composition = null; this.#modulateComposition = null; },
                 () => { this.#fences.clear(); this.#fenceTimes.clear(); }, () => this.#handles.clear(), () => this.#programs.clear(),
                 () => this.#programSignatures.clear(), () => this.#samplers.clear(), () => this.#attachments.clear(),
                 () => this.#textureUnits.clear(), () => this.#uniformUnits.clear(),
@@ -1068,6 +1087,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     async #prepareComposition(signal: AbortSignal): Promise<void> {
         this.#composition = await this.#program(COMPOSITION_SHADER, AbortSignal.any([signal, this.#work.signal]));
         this.#gridComposition = await this.#program(GRID_RESOLVE_SHADER, AbortSignal.any([signal, this.#work.signal]));
+        this.#grid16Composition = await this.#program(GRID16_RESOLVE_SHADER, AbortSignal.any([signal, this.#work.signal]));
         this.#modulateComposition = await this.#program(MODULATE_COMPOSITE_SHADER, AbortSignal.any([signal, this.#work.signal]));
         const sampler = this.createSampler('linear');
         this.destroy(sampler);
@@ -1280,7 +1300,8 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             endReplay: () => this.#endReplay(),
             bindTarget: framebuffer => this.#bindTarget(framebuffer),
             quad: command => {
-                const handle = command.variant === 'grid' ? this.#gridComposition : command.variant === 'modulate' ? this.#modulateComposition : this.#composition;
+                const handle = command.variant === 'grid' ? this.#gridComposition : command.variant === 'grid16' ? this.#grid16Composition
+                    : command.variant === 'modulate' ? this.#modulateComposition : this.#composition;
                 if (!handle) throw new ArenaError('invalid-resource');
                 const cached = work.quadPins.get(handle);
                 if (cached) return cached;

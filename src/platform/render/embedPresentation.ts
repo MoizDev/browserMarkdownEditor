@@ -93,6 +93,11 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
     let visible = true, disposed = false, requestBlocked = false, revision = 0;
     let prepared: { token: FrameToken; epoch: number; cameraEpoch: number; frameId: number } | null = null;
     let witness: EmbedDrawnPaint | null = null;
+    // Every change that can alter what the overlay shows, or what a prepare would admit, bumps `mutations`. `draw` records the
+    // count it wrote the overlay at (`drawnAt`); a completed prepare with nothing since answers unchanged (types.ts, Layer.prepare).
+    // The overlay is DOM, so "presented" here is "drawn": the DOM is the picture, and a skipped frame leaves it as it was.
+    let mutations = 0, drawnAt = -1;
+    const touch = () => { mutations++; };
     let inlineRevision: number | null = null, inlineCache: ReadonlySet<string> = EMPTY_INLINE;
     const slots = new Map<string, Slot>(), requests = new Set<Request>(), retiring = new Set<Promise<void>>();
     const report = (error: unknown) => { try { options.onError?.(error); } catch { /* reporting cannot break teardown */ } };
@@ -109,7 +114,7 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
      * trims the pool (measured: a parked embed retried every frame), so the retry waits for the waiter instead. */
     const parkedFor = (bytes: number): boolean => memoryWaiting && bytes >= memoryWaitBytes;
     const requestsChanged = () => {
-        wake();
+        touch(); wake();
         try { options.invalidate?.(); } catch (error) { report(error); }
     };
     const releasePacket = (value: EmbedPresentationFrame | null) => {
@@ -124,14 +129,19 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
         for (const callback of slot.listeners) { try { callback(); } catch (error) { report(error); } }
     };
     const clearClip = (slot: Slot) => {
+        touch();
         slot.job?.return(undefined as never); slot.job = null; slot.estimate?.return(undefined as never); slot.estimate = null;
         slot.clips?.dispose(); slot.clips = null;
         if (slot.clipLease) { slot.allocator.release(slot.clipLease); slot.clipLease = null; }
         slot.estimated = 0; slot.blocked = false; slot.estimateDone = false; slot.unfit = false;
     };
-    const hide = (slot: Slot) => { slot.root.style.visibility = 'hidden'; notify(slot, slot.closed ? 'closed' : 'pending', false); };
+    const hide = (slot: Slot) => {
+        if (slot.root.style.visibility !== 'hidden') touch();
+        slot.root.style.visibility = 'hidden'; notify(slot, slot.closed ? 'closed' : 'pending', false);
+    };
     const close = (slot: Slot) => {
         if (slot.closed) return;
+        touch();
         slot.closed = true; slot.externalSignal?.removeEventListener('abort', slot.externalAbort!); slot.controller.abort();
         try { slot.containment?.dispose(); } catch (error) { report(error); }
         slot.containment = null; clearClip(slot); slot.node = null; hide(slot); slot.root.remove();
@@ -160,7 +170,7 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
                 // Geometry belongs to the stable container, including its outside-board interaction mode.
                 value.element.style.display = 'block'; value.element.style.width = '100%';
                 value.element.style.height = '100%'; value.element.style.border = '0';
-                slot.containment = value; slot.estimate = estimates(slot.node!); wake();
+                slot.containment = value; slot.estimate = estimates(slot.node!); touch(); wake();
             },
             getSnapshot: () => slot.snapshot,
             subscribe(callback) { slot.listeners.add(callback); return () => { slot.listeners.delete(callback); }; },
@@ -169,12 +179,12 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
                 if (rect && (![rect.x, rect.y, rect.width, rect.height].every(Number.isFinite) || rect.width <= 0 || rect.height <= 0)) throw new RangeError('Invalid interaction rectangle');
                 // The overlay reports its rectangle on each pointer update; only a different rectangle changes what is drawn.
                 if (sameRectOrNull(slot.interaction, rect)) return;
-                slot.interaction = rect ? { ...rect } : null; hide(slot); wake();
+                slot.interaction = rect ? { ...rect } : null; touch(); hide(slot); wake();
             },
             async dispose() { close(slot); },
         };
         // The id stays in the requested set (now as a slot), so this is no change to repaint for.
-        slots.set(slot.id, slot); requests.delete(request); request.signal?.removeEventListener('abort', request.abort);
+        touch(); slots.set(slot.id, slot); requests.delete(request); request.signal?.removeEventListener('abort', request.abort);
         if (request.signal) {
             slot.externalSignal = request.signal; slot.externalAbort = () => close(slot);
             request.signal.addEventListener('abort', slot.externalAbort, { once: true });
@@ -183,27 +193,32 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
         request.resolve(slot.lease);
         return slot;
     };
-    const prepare = (view: ViewState, budget: FrameBudget) => {
+    /** The Layer answer: `false` only for a whole prepare (no budget cut) that left the overlay exactly as the last draw wrote it. */
+    const prepare = (view: ViewState, budget: FrameBudget): boolean => {
         prepared = null;
+        let whole = true;
+        // A budget cut anywhere in this prepare means the work is unproven, so the answer is changed.
+        const yielded = (): boolean => { if (budget.shouldYield()) { whole = false; return true; } return false; };
+        const answer = (): boolean => !(whole && mutations === drawnAt);
         if (!host || !validFrame(view, budget.token)) {
             for (const slot of slots.values()) hide(slot);
             // Requests wait for a packet that names their node; present() wakes only for that packet.
             for (const request of requests) request.waitingForFacts = true;
-            return;
+            return answer();
         }
         prepared = { token: { ...budget.token }, epoch: view.epoch, cameraEpoch: budget.cameraEpoch, frameId: budget.frameId }; requestBlocked = false;
         for (const request of requests) {
-            if (budget.shouldYield()) break;
+            if (yielded()) break;
             const node = packet!.nodes.find(item => item.nodeId === request.id);
             if (!node || !options.overlay.isConnected) { request.waitingForFacts = true; continue; }
             request.waitingForFacts = false;
             if (parkedFor(SLOT_BYTES)) { requestBlocked = true; break; }
             const base = host.allocator.cpu.reserve(SLOT_BYTES);
             if (!base) { requestBlocked = true; awaitMemory(SLOT_BYTES); break; }
-            try { createSlot(request, node, base); } catch (error) { host.allocator.cpu.release(base); requests.delete(request); request.signal?.removeEventListener('abort', request.abort); requestsChanged(); request.reject(error); }
+            try { createSlot(request, node, base); } catch (error) { host.allocator.cpu.release(base); touch(); requests.delete(request); request.signal?.removeEventListener('abort', request.abort); requestsChanged(); request.reject(error); }
         }
         for (const slot of slots.values()) {
-            if (budget.shouldYield()) break;
+            if (yielded()) break;
             if (!slot.containment || !slot.node || slot.closed) continue;
             if (!isEmbedContainmentApproved(slot.containment)) { close(slot); continue; }
             slot.blocked = false;
@@ -211,8 +226,9 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
                 if (!slot.clips && !slot.job) {
                     if (!slot.estimateDone) {
                         slot.estimate ??= estimates(slot.node);
-                        while (!budget.shouldYield()) {
+                        while (!yielded()) {
                             const next = slot.estimate.next();
+                            touch();
                             if (next.done) { slot.estimate = null; slot.estimateDone = true; break; }
                             slot.estimated += next.value;
                             if (!Number.isSafeInteger(slot.estimated)) throw new RangeError('Embed clip estimate overflow');
@@ -231,18 +247,20 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
                     if (parkedFor(need)) { slot.blocked = true; continue; }
                     const lease = slot.allocator.reserve(need);
                     if (!lease) { slot.blocked = true; awaitMemory(need); continue; }
-                    slot.clipLease = lease; slot.job = createEmbedClipJob(slot.node, packet!.viewport);
+                    touch(); slot.clipLease = lease; slot.job = createEmbedClipJob(slot.node, packet!.viewport);
                 }
                 if (slot.job) {
-                    while (!budget.shouldYield()) {
+                    while (!yielded()) {
+                        touch();
                         const step = slot.job.next();
                         if (step.done) { slot.job = null; slot.clips = step.value; slot.root.prepend(step.value.definitions); slot.root.append(step.value.shield); break; }
                     }
                 }
             } catch (error) { clearClip(slot); slot.blocked = true; report(error); }
         }
+        return answer();
     };
-    const draw = (view: ViewState) => {
+    const paintOverlay = (view: ViewState) => {
         if (!prepared || !validFrame(view, prepared.token) || prepared.epoch !== view.epoch || !witness ||
             !sameToken(witness.token, prepared.token) || witness.frameId !== prepared.frameId || witness.cameraEpoch !== prepared.cameraEpoch ||
             witness.sceneRevision !== packet!.sceneRevision) { for (const slot of slots.values()) hide(slot); return; }
@@ -274,13 +292,14 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
             slot.root.style.visibility = 'visible'; notify(slot, interaction ? 'interaction' : 'inline', true);
         }
     };
+    const draw = (view: ViewState) => { paintOverlay(view); drawnAt = mutations; };
     const definition: EmbedPresentationPort['layer'] = {
         id: 'embed-presentation', group: 'chrome',
         create(value) {
             if (host || disposed) throw new Error('Embed presentation already attached');
             host = value;
             layer = { prepare, drawGpu: (_pass, view) => draw(view), draw2d: (_ctx, view) => draw(view),
-                releaseGpu(reason) { prepared = null; if (reason === 'hidden') for (const slot of [...slots.values()]) close(slot); else for (const slot of slots.values()) hide(slot); },
+                releaseGpu(reason) { prepared = null; touch(); if (reason === 'hidden') for (const slot of [...slots.values()]) close(slot); else for (const slot of slots.values()) hide(slot); },
                 memory() { let cpuBytes = 0; for (const slot of slots.values()) cpuBytes += slot.base.bytes + (slot.clipLease?.bytes ?? 0); return { gpuBytes: 0, cpuBytes }; },
                 needsFrame() { return !disposed && visible && ((!requestBlocked && !!prepared && [...requests].some(request => !request.waitingForFacts)) ||
                     [...slots.values()].some(slot => !!slot.containment && !slot.blocked && !slot.clips)); },
@@ -316,10 +335,11 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
                 if (!node || node.source !== slot.source || (old && !sameDocument(old.presentation.token, frame.presentation.token))) { close(slot); changed = true; continue; }
                 const equivalent = !!slot.node && sameGeometry(slot.node, node) && old?.viewport.width === frame.viewport.width && old.viewport.height === frame.viewport.height;
                 const preserve = equivalent && !!slot.clips;
-                const oldPoster = slot.node?.poster;
+                const oldPoster = slot.node?.poster, oldOrder = slot.node?.order, oldOpacity = slot.node?.opacity;
                 if (!preserve) clearClip(slot);
                 slot.node = node;
-                if (!preserve || !old || !sameToken(old.presentation.token, frame.presentation.token) ||
+                // order (z) and opacity are drawn but not part of the geometry comparison, so a change to either is a change here too.
+                if (!preserve || !old || !sameToken(old.presentation.token, frame.presentation.token) || oldOrder !== node.order || oldOpacity !== node.opacity ||
                     old.presentation.viewEpoch !== frame.presentation.viewEpoch || old.sceneRevision !== frame.sceneRevision || oldPoster !== node.poster) {
                     hide(slot); changed = true;
                 } else notify(slot, slot.snapshot.mode, slot.snapshot.visible);
@@ -328,10 +348,17 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
             releasePacket(old);
             revision++;
             if (!changed) return;
+            touch();
             prepared = null;
             wake();
         },
-        drawn(paint) { witness = paint; },
+        drawn(paint) {
+            // A slot's omission decides whether its poster or its live copy shows, and the board's draw is where that arrives.
+            for (const slot of slots.values()) {
+                if ((witness?.omittedNodeIds?.has(slot.id) ?? false) !== (paint.omittedNodeIds?.has(slot.id) ?? false)) { touch(); break; }
+            }
+            witness = paint;
+        },
         acquire(id, signal) {
             if (disposed || !visible) return Promise.reject(new Error('Embed presentation unavailable'));
             if (signal?.aborted) return Promise.reject(signal.reason);
@@ -362,7 +389,7 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
         },
         setVisible(value) {
             if (disposed || visible === value) return;
-            visible = value; prepared = null; witness = null;
+            visible = value; prepared = null; witness = null; touch();
             if (!value) {
                 for (const slot of [...slots.values()]) close(slot);
                 for (const request of requests) { request.signal?.removeEventListener('abort', request.abort); request.reject(new Error('Embed hidden')); }

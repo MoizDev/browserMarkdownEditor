@@ -181,6 +181,8 @@ export function createBoardRenderServices(options: {
     // Least recently used first; a budget eviction also drops the entry's ladder, which no longer has a geometry to serve.
     const evictOldestIdle = (): { readonly bytes: number; readonly charged: number } => {
         const gone = cached.keys().next().value!, entry = idle.get(gone);
+        // A budget eviction of a node a later pass needs again is a rebuild; the count shows whether the idle budget is too small.
+        auditCount(AUDIT, 'geometry:evict');
         forgetIdle(gone); dropInkLadder(gone);
         return { bytes: entry?.bytes ?? 0, charged: entry?.lease?.bytes ?? 0 };
     };

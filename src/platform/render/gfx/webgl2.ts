@@ -814,10 +814,14 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     }
 
     /** The overlap atlas (grid 16): `slotsAcross`×`slotsDown` slots of one tile each, one r8 texel per 1/16 device px and a stencil
-     * at the same texel size. The lease is charged exactly coverageTargetBytes(…, 1, 16). A slot is drawn through beginCoverage. */
+     * at the same texel size. The lease is charged exactly coverageTargetBytes(…, 1, 16). A slot is drawn through beginCoverage.
+     * A throw leaves the lease open for the caller to release (as createCoverageTarget does). */
     createCoverageAtlas(slotsAcross: number, slotsDown: number, lease: ByteLease): CoverageTarget {
         this.#usable();
         if (!Number.isSafeInteger(slotsAcross) || !Number.isSafeInteger(slotsDown) || slotsAcross <= 0 || slotsDown <= 0) throw new ArenaError('invalid-input');
+        // No grid-16 program (not yet compiled, or refused): the caller takes its grid-4 route. The lease is the caller's to release
+        // on a throw, as for createCoverageTarget.
+        if (!this.#grid16Composition) throw new ArenaError('invalid-resource');
         const width = slotsAcross * COVERAGE_ATLAS_TILE, height = slotsDown * COVERAGE_ATLAS_TILE;
         if (lease.bytes < coverageTargetBytes(width, height, 1, 16)) throw new ArenaError('out-of-budget');
         const texture = this.#createTexture(width * 16, height * 16, 'r8', ['render', 'sample'], lease);
@@ -1087,7 +1091,14 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     async #prepareComposition(signal: AbortSignal): Promise<void> {
         this.#composition = await this.#program(COMPOSITION_SHADER, AbortSignal.any([signal, this.#work.signal]));
         this.#gridComposition = await this.#program(GRID_RESOLVE_SHADER, AbortSignal.any([signal, this.#work.signal]));
-        this.#grid16Composition = await this.#program(GRID16_RESOLVE_SHADER, AbortSignal.any([signal, this.#work.signal]));
+        // The grid-16 resolve is optional: a compile or link failure there must not take the grid 1 and 4 composition down with it.
+        // Without it no atlas is admitted (createCoverageAtlas refuses), so the caller falls back to grid 4 and counts it.
+        const both = AbortSignal.any([signal, this.#work.signal]);
+        try { this.#grid16Composition = await this.#program(GRID16_RESOLVE_SHADER, both); }
+        catch (error) {
+            if (both.aborted) throw error;
+            this.#grid16Composition = null;
+        }
         this.#modulateComposition = await this.#program(MODULATE_COMPOSITE_SHADER, AbortSignal.any([signal, this.#work.signal]));
         const sampler = this.createSampler('linear');
         this.destroy(sampler);

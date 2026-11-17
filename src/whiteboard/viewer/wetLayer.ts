@@ -527,19 +527,14 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                 drawGpu(pass, view) { drawRouted(pass, view, band); },
                 draw2d(ctx, view) {
                     if (disposed || !options.current()) return;
+                    // The CPU reference path: counted, so a device session that draws here is visible in the audit.
+                    if (renderAuditEnabled()) auditCount('wet', 'draw:canvas2d');
                     const snapshots = handover?.pendingSnapshots() ?? [];
                     host.paintWorld(ctx, view, () => {
                         for (const snapshot of snapshots) {
                             const item = prepared.get(snapshot.identity.gestureSequence);
                             if (!item || item.snapshot.identity.nodeId !== snapshot.identity.nodeId) continue;
-                            if (item.bounds) {
-                                const b = item.bounds, [a, c1, c2, d, e, f] = snapshot.presentation.localToWorld;
-                                const corners = [[b.x, b.y], [b.x + b.w, b.y], [b.x, b.y + b.h], [b.x + b.w, b.y + b.h]];
-                                const xs = corners.map(([x, y]) => a * x + c2 * y + e), ys = corners.map(([x, y]) => c1 * x + d * y + f);
-                                const cam = view.camera;
-                                if (Math.max(...xs) < cam.x || Math.min(...xs) > cam.x + view.viewport.width / cam.z
-                                    || Math.max(...ys) < cam.y || Math.min(...ys) > cam.y + view.viewport.height / cam.z) continue;
-                            }
+                            if (offScreen(item.bounds, snapshot.presentation.localToWorld, view)) continue;
                             const isHighlight = snapshot.presentation.tool === 'highlighter';
                             if (!isHighlight && band === 'underlay') continue;
                             const pigment = resolveSwatch(options.palette(), snapshot.presentation.color as Swatch, isHighlight ? 'highlight' : 'stroke');

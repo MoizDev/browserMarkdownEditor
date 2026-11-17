@@ -1,5 +1,6 @@
 import { styleGeometryMetrics } from '../geom/styleMetrics';
 import { CURVE_CHUNK_SPANS, CURVE_VERSION, curveParameters, materializeCurveRange, type CurveParameters, type CurveRange } from '../ink/curve';
+import { INK_CAP_ERROR_DEVICE_PX } from '../ink/flatten';
 import { InkCoverageJob, coverageOutline, type CoverageOptions, type InkCoverage } from '../ink/outline';
 import type { SampleSequence, SegmentKind } from '../ink/samples';
 import { DOT_METRIC_PROVISIONAL, radiusAtSample, realizeStrokePoints, validateInkWidth, type InkWidth } from '../ink/width';
@@ -180,8 +181,14 @@ export function buildStrokeCoverageNow(node: StrokeNode, samples: SampleStoreRea
 // Tessellated ink for the GPU routes. Geometry is local-space and keyed by the chunk that owns it and by a device-scale
 // band, so the device transform is a uniform and a pan or a zoom inside one band builds nothing.
 
-/** Device pixels of flattening error allowed for a stencil-covered outline (design §5.1: ≤0.1 px), as the path route uses. */
+/** Ceiling on the device-px error of an outline's arcs and of its flattening: the path route's 0.1 px (design §5.1). */
 const INK_FLATTEN_DEVICE_PX = 0.1;
+/** Geometry error follows the stroke's own thinness. A fixed device-px error is a fixed fraction of a thin stroke: at
+ * zoom 0.25 a 1.5 px stroke lost up to 0.16 px per side to the 1/16 px arc tolerance plus the 0.1 px flattening, which
+ * the sampling bar never sees (it compares sampling against exact geometry). So the tolerance is this fraction of the
+ * chunk's smallest device radius, never above the ceiling, never below the floor (a hairline would cost unbounded vertices). */
+const INK_TOLERANCE_RADIUS_FRACTION = 0.01;
+const INK_TOLERANCE_FLOOR_PX = 0.005;
 /** The adapter's outline ceiling: an outline past it has no triangles, and the route refuses the stroke. */
 const INK_OUTLINE_MAX_COMMANDS = 262144;
 
@@ -213,8 +220,11 @@ export function inkChunkTriangles(chunk: InkCoverage, band: number, audit: strin
     const origin = { x: chunk.boundsLocal.x, y: chunk.boundsLocal.y };
     let value: InkTriangles | null = null;
     try {
-        const commands = coverageOutline(chunk, band, INK_OUTLINE_MAX_COMMANDS);
-        const shapes = pathFillTriangles(commands, { tolerance: INK_FLATTEN_DEVICE_PX / band, origin: [origin.x, origin.y] });
+        const tolerancePx = inkTolerancePx(chunk, band);
+        // coverageOutline's arc tolerance is INK_CAP_ERROR_DEVICE_PX / deviceScale (its only use of the scale), so this
+        // scale sets the arcs to the chunk's tolerance and nothing else about the outline changes.
+        const commands = coverageOutline(chunk, band * (INK_CAP_ERROR_DEVICE_PX / tolerancePx), INK_OUTLINE_MAX_COMMANDS);
+        const shapes = pathFillTriangles(commands, { tolerance: tolerancePx / band, origin: [origin.x, origin.y] });
         if (shapes) value = foldUnion(shapes, origin);
     } catch (error) {
         // Only the outline's own ceilings are RangeErrors that mean "refused"; anything else is a fault.
@@ -222,6 +232,15 @@ export function inkChunkTriangles(chunk: InkCoverage, band: number, audit: strin
     }
     chunkTriangles.set(chunk, { band, value });
     return value;
+}
+/** The device-px error this chunk's outline and flattening may have: a fraction of its thinnest device radius, clamped. */
+function inkTolerancePx(chunk: InkCoverage, band: number): number {
+    let radius = Infinity;
+    const segments = chunk.segments, discs = chunk.discs;
+    for (let i = 0; i < segments.length; i += 6) radius = Math.min(radius, segments[i + 2], segments[i + 5]);
+    for (let i = 0; i < discs.length; i += 3) radius = Math.min(radius, discs[i + 2]);
+    if (!(radius < Infinity)) return INK_FLATTEN_DEVICE_PX;
+    return Math.min(INK_FLATTEN_DEVICE_PX, Math.max(INK_TOLERANCE_FLOOR_PX, INK_TOLERANCE_RADIUS_FRACTION * radius * band));
 }
 function foldUnion(shapes: PathFillTriangles, origin: Readonly<{ x: number; y: number }>): InkTriangles {
     const { positive, negative } = shapes;

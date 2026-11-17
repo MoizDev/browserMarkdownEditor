@@ -47,6 +47,15 @@ function sameDocument(a: RenderToken, b: RenderToken): boolean {
         a.bytesGeneration === b.bytesGeneration && a.session === b.session;
 }
 
+/** Optional partial eviction (`evictGpu` on a layer): frees up to `bytes` of its GPU residency now and returns the bytes it
+ * freed, never anything it touched in `frameId`. Read through a cast until Layer declares it, so a layer without it frees 0. */
+function partialGpuEvict(layer: Layer, bytes: number, frameId: number): number {
+    const hook = (layer as Layer & { readonly evictGpu?: (bytes: number, frameId: number) => number }).evictGpu;
+    if (typeof hook !== 'function') return 0;
+    const freed = hook.call(layer, bytes, frameId);
+    return typeof freed === 'number' && Number.isFinite(freed) ? Math.max(0, freed) : 0;
+}
+
 function sameFrame(a: FrameToken, b: FrameToken): boolean {
     return sameDocument(a, b) && a.viewLease === b.viewLease && a.deviceGeneration === b.deviceGeneration;
 }
@@ -111,16 +120,27 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
      * then invalidates the pane. A pane in this frame, or with nothing resident, frees 0 and is not invalidated. */
     const trimGpu = (bytes: number, only?: Layer): number => {
         if (disposed || !visible || touchedThisFrame()) return 0;
+        const frameId = runtime.scheduler.currentFrame();
         const victims: Layer[] = [];
         let freed = 0;
         for (const layer of only ? [only] : layerSet.layers) {
             if (freed >= bytes) break;
             if (releasing.has(layer)) continue;
-            const live = layer.memory().gpuBytes;
-            if (live <= 0) continue;
+            if (layer.memory().gpuBytes <= 0) continue;
+            // A layer that can give back part of its residency does so first, synchronously, and the whole layer is released
+            // only when that falls short of the ask. Without the hook the layer is released whole, as before.
+            const want = bytes - freed;
+            const partial = partialGpuEvict(layer, want, frameId);
+            if (partial > 0) {
+                freed += partial;
+                auditCount('governor', `evict-partial:${layerSet.definition(layer)?.id ?? 'unnamed'}`, 1, { bytes: partial });
+            }
+            if (partial >= want) break;
+            const remaining = layer.memory().gpuBytes;
+            if (remaining <= 0) continue;
             victims.push(layer);
             releasing.add(layer);
-            freed += live;
+            freed += remaining;
         }
         if (!victims.length) return 0;
         queueMicrotask(() => {

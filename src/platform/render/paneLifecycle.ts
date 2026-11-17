@@ -158,10 +158,21 @@ export class PaneLifecycle<T extends object> {
                     prepareGpu: async preparation => this.wrapOwner(await callbacks.prepareGpu(preparation)),
                     onGpuReady: grant => {
                         this.readyGrant = grant;
-                        if (this.visible && !this.suspended && !this.disposed) { this.readyGrant = null; callbacks.onGpuReady(grant); }
+                        if (this.visible && !this.suspended && !this.disposed) {
+                            this.readyGrant = null;
+                            callbacks.onGpuReady(grant);
+                            // A new owner (first ready, or a restored context after loss) has released or never held every
+                            // layer's GPU state: the next frame prepares each layer again from its CPU truth.
+                            this.invalidate('gpu-ready');
+                        }
                     },
                     onCpuFallback: reason => {
-                        if (!this.disposed && this.visible) this.begin2D();
+                        if (!this.disposed && this.visible) {
+                            this.begin2D();
+                            // A budget fallback starts a live 2D presentation whatever picture was last shown: present it now,
+                            // not on the next change, or the pane sits on a static picture.
+                            if (reason === 'budget') this.invalidate('budget-fallback');
+                        }
                         callbacks.onCpuFallback(reason);
                     },
                     onSlotAvailable: () => { if (this.visible && !this.suspended && !this.disposed) callbacks.onSlotAvailable(); },
@@ -216,9 +227,15 @@ export class PaneLifecycle<T extends object> {
         if (this.disposed || !this.visible) return;
         this.visible = false;
         this.view = { ...this.view, visible: false };
-        // Broker.beforeHide seals first, then the wrapped owner releases layers/arena and zeros GL.
-        try { this.withGpuRelease('hidden', () => this.surface.updateView(this.view)); }
-        finally {
+        // Broker.beforeHide seals first, then the wrapped owner releases layers/arena and zeros GL. The broker releases only
+        // a drawable pane's reservation, so every layer is also released here, in this task: a hidden pane holds no GPU
+        // working memory whatever the broker had reserved. The serial makes a second release of a layer a no-op.
+        try {
+            this.withGpuRelease('hidden', () => {
+                this.surface.updateView(this.view);
+                this.releaseSelection(this.layers, 'hidden');
+            });
+        } finally {
             try {
                 all([() => this.discard2D(), () => this.options.presenter.releaseSurface(), () => this.returnBorrow(),
                 () => this.options.session.mirrors?.setVisible(false, this.options.now())]);
@@ -445,8 +462,14 @@ export class PaneLifecycle<T extends object> {
             token.viewLease !== this.surface.stamp.viewLease || token.deviceGeneration !== grant.generation ||
             renderTokenKey(token) !== renderTokenKey(this.surface.stamp.documentToken) ||
             !sameFrame(token, current) || viewKey(view) !== viewKey(currentView) || revision !== this.options.currentRevision() ||
-            !this.surface.markPresented(this.surface.stamp, grant.generation)) return false;
+            !this.surface.canMarkPresented(this.surface.stamp, grant.generation)) return false;
+        // The display switches first, and only a switch that succeeded is recorded: the broker's gpu-visible state must never
+        // name a GPU picture that is not on screen (a refused selectGpu left it so, under memory pressure).
         if (!this.options.presenter.selectGpu(grant)) return false;
+        if (!this.surface.markPresented(this.surface.stamp, grant.generation)) {
+            // Nothing between the check above and here touches broker state, so a refusal is an invariant violation, not a case.
+            throw new Error('GPU presentation lost its surface after the display switched');
+        }
         this.usingGpu = true;
         this.returnBorrow();
         return true;
@@ -457,6 +480,10 @@ export class PaneLifecycle<T extends object> {
      * was 'trimming' (large seed, 114 of 114). Their unblocking comes from the capacity waiters and their shrink from the
      * eviction that freed the bytes, so neither needs a frame here. */
     applyBudget(grant: PaneMemoryGrant | null): void {
+        // A CPU grant that moves alone repaints nothing: the governor refuses or evicts past it at the next reservation, and the
+        // pressure trim releases the rest. Repainting on it fed a loop, because the pane's own staged slices move its CPU need, so the
+        // grant flipped between two values and each flip requested a frame (measured in a drag tail: two budget frames, both with
+        // unchanged pixels). The cache grant likewise: the layers trim to it without a repaint.
         const seen = this.budget;
         if (grant === null) {
             if (seen === null) return;
@@ -574,6 +601,7 @@ export class PaneLifecycleHost {
     }
 
     windowVisibility(visible: boolean): void {
+        if (visible) this.governor.holdPressure(performance.now());
         surfaceBroker.setWindowVisible(visible);
         all([...this.panes.values()].map(pane => () => pane.setWindowVisible(visible)));
     }

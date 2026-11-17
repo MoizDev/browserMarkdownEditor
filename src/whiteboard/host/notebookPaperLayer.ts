@@ -5,12 +5,14 @@ import type { ByteLease, GpuPass } from '../../platform/render/gfx/api';
 import { pageAt, type PageStack } from '../../platform/render/pageStack';
 import type { ScheduledFrame } from '../../platform/render/scheduler';
 import type { FrameBudget, FrameToken, GpuReleaseReason, Layer, OffscreenPasses } from '../../platform/render/types';
+import { auditDrawn } from '../../platform/render/renderAudit';
 import { boardPageStack } from '../model/pages';
 import type { HostBlock } from '../model/doc';
 import type { PaintPalette } from '../render/colour';
 import type { PaintFrame, PaintPathItem } from '../render/paintStream';
 import type { PaintBand } from '../render/material';
 import { awaitSizedCapacity, isBudgetRefusal, type SizedCapacityWait } from '../render/budgetRefusal';
+import { withFirstUnit } from '../render/firstUnit';
 import { createGpuPaintAdapter } from '../render/gpuPaintAdapter';
 import { preparedOfFrame, type CanvasPaintAdapter, type PreparedPaint2d } from '../render/reference/canvasPaintAdapter';
 import { Path2dJob } from '../render/reference/coverage2d';
@@ -146,7 +148,9 @@ class NotebookPaperLayer implements Layer {
     }
     private report(error: unknown, wait: SizedCapacityWait | undefined = this.workingWait()): void {
         if (isBudgetRefusal(error) && wait) { this.deny(wait); return; }
-        try { this.options.onError(error); } catch { /* errors do not escape the layer scheduler */ }
+        // A device-path error belongs to the pane's GPU error channel; budget refusals and canvas2d keep onError.
+        try { if (this.host.device() && !isBudgetRefusal(error)) this.host.reportGpuError(error); else this.options.onError(error); }
+        catch { /* errors do not escape the layer scheduler */ }
     }
     private dropStaged(): void {
         const old = this.staged; this.staged = null;
@@ -220,7 +224,8 @@ class NotebookPaperLayer implements Layer {
         }
     }
     prepare(view: ViewState, budget: FrameBudget): void {
-        this.preparePaper(budget);
+        // One page step is always admitted: under a zero slice the staging never advances, and needsFrame keeps asking.
+        this.preparePaper(withFirstUnit(budget));
         if (this.disposed || !this.host.device()) return;
         try {
             this.prepareGpuSource(view, budget.token);
@@ -289,6 +294,11 @@ class NotebookPaperLayer implements Layer {
         if (this.drawn.has(rect)) return;
         this.drawn.add(rect); this.claim = null;
     }
+    /** The paper's own adapter reports its mandatory GPU bytes for the viewport (h2's gpuMandatoryBytes; none until it lands). */
+    gpuWorkingSetBytes(viewport: Readonly<{ width: number; height: number }>): number {
+        if (this.disposed) return 0;
+        return (this.gpu as { gpuMandatoryBytes?(viewport: Readonly<{ width: number; height: number }>): number }).gpuMandatoryBytes?.(viewport) ?? 0;
+    }
     /** Forwards the composer's offscreen encode; a no-op until the adapter has one (PLAN §3.3, wave 2). */
     /** The governor's trim: frees the adapter's GPU tiles not used this frame, and returns the bytes freed. */
     evictGpu(bytes: number, frameId: number): number {
@@ -348,8 +358,16 @@ class NotebookPaperLayer implements Layer {
         return this.memory().cpuBytes + (this.host.device() ? this.gpu.cpuWorkingSet().mandatoryBytes : 0) +
             (this.ready?.revision === snapshot.revision || this.staged?.snapshot.revision === snapshot.revision ? 0 : workingBytes(snapshot, stack));
     }
-    critical(): boolean { return !this.ready; }
+    /** Critical only while the paper has drawn no page at all: a stand-in (any drawn page) lets a pan that exposes pages faster
+     * than they compose present what there is, instead of refusing every frame (the 0-presents class, measured on large boards). */
+    critical(): boolean { return this.drawnPageRects().length === 0; }
     coverage(frame: ScheduledFrame, layer: Layer, backend: CompositorBackend): LayerCoverage {
+        const result = this.coverageNow(frame, layer, backend);
+        // What the paper draws besides the current picture, for the present audit: pages drawn before are stand-ins; none drawn is a hole.
+        if (!result.complete || !result.sharp) auditDrawn(!result.complete && this.drawnPageRects().length === 0 ? 'hole' : 'stand-in');
+        return result;
+    }
+    private coverageNow(frame: ScheduledFrame, layer: Layer, backend: CompositorBackend): LayerCoverage {
         const ready = this.ready, requested = requestedRevision(frame, layer);
         if (!ready || !sameToken(ready.token, frame.token)) return { complete: false, sharp: false };
         const current = ready.revision === requested && ready.revision === this.options.read().revision;
@@ -374,6 +392,9 @@ export function createNotebookPaperLayer(options: NotebookPaperLayerOptions): No
         drawnPageRects: () => live?.drawnPageRects() ?? [],
         revision: layer => (layer as NotebookPaperLayer).currentRevision(),
         cpuWorkingSet: layer => ({ mandatoryBytes: (layer as NotebookPaperLayer).demand(), prefetchBytes: 0 }),
+        // A spread until the platform type carries gpuWorkingSet (h9). The paper owns its adapter, so it reports it once.
+        ...{ gpuWorkingSet: (layer: Layer, viewport: Readonly<{ width: number; height: number }>) =>
+            ({ mandatoryBytes: (layer as NotebookPaperLayer).gpuWorkingSetBytes(viewport) }) },
         critical: layer => (layer as NotebookPaperLayer).critical(),
         coverage: (layer, frame, backend) => (layer as NotebookPaperLayer).coverage(frame, layer, backend),
     };

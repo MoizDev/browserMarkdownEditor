@@ -3,6 +3,7 @@ import type { ByteLease } from './gfx/api';
 import { auditCount } from './renderAudit';
 import type { ArenaMemory } from './resourceArena';
 import { layerTroubleOf } from './types';
+import { MIN_SURFACE_QUALITY } from './surfaceMetrics';
 import type { LayerTrouble, RenderToken } from './types';
 
 export type MemoryPool = 'gpu' | 'cpu';
@@ -146,8 +147,8 @@ interface Share {
 }
 
 export class MemoryAdmissionError extends Error {
-    constructor(readonly code: 'invalid-input' | 'invalid-lease' | 'foreign-owner' | 'unaccounted') {
-        super(code);
+    constructor(readonly code: 'invalid-input' | 'invalid-lease' | 'foreign-owner' | 'unaccounted', message: string = code) {
+        super(message);
         this.name = 'MemoryAdmissionError';
     }
 }
@@ -224,6 +225,15 @@ export class MemoryGovernor {
     // Bumped whenever a reservation that was refused could now fit: a lease returned, a grant or demand that moved, a cache
     // that became visible or was transferred. A refusal memo is valid only within the epoch it was taken in.
     private capacityEpoch = 0;
+    // The smallest refused request still standing, per pool (Infinity when none). A release can admit a refusal only if its pool
+    // would then hold that size: fits() checks the pool first. Releases that leave the pool over it do not move the epoch.
+    private readonly refusedFloor: Record<MemoryPool, number> = { gpu: Infinity, cpu: Infinity };
+    // Panes by id, rebuilt with the demand: fits() and the transfer path look one up per call, and a linear find there
+    // ran for every waiter on every release.
+    private readonly paneById = new Map<string, PaneMemoryDemand>();
+    // Each pane's quality ceiling. It falls the moment a pane's pixel grant falls short of its need, and rises only in a
+    // recovery step (sustained cool use with no gesture): a pane never steps back up on the next plan that frees bytes.
+    private readonly paneCeiling = new Map<string, number>();
     private readonly target: { gpu: number; cpu: number } = { gpu: POLICY.gpuGrantMinBytes, cpu: POLICY.cpuGrantMinBytes };
     private readonly ceilings: Readonly<{ gpuBytes: number; cpuRasterBytes: number }>;
     private panes: readonly PaneMemoryDemand[] = [];
@@ -236,6 +246,13 @@ export class MemoryGovernor {
     private lastTrouble: MemoryTrouble | null = null;
     private qualityLimit = 1;
     private belowRecoverySince: number | null = null;
+    private degradedAt = Number.NEGATIVE_INFINITY;
+    // The level that last failed under trouble, the earliest time it may be retried, and the current back-off.
+    private failedQuality: number | null = null;
+    private failedUntil = Number.NEGATIVE_INFINITY;
+    private failureBackoffMs: number = POLICY.qualityFailureBackoffMinMs;
+    private levelSince = Number.NEGATIVE_INFINITY;
+    private pressureHoldUntil = Number.NEGATIVE_INFINITY;
     private now = 0;
     private workerHeapBytes = 0;
     private readonly workerHeaps = new Map<object, number>();
@@ -280,7 +297,7 @@ export class MemoryGovernor {
                     activityValid(activity);
                     if (cache.closed) return;
                     cache.activity = { ...activity };
-                    this.capacityEpoch++;
+                    this.bumpCapacity();
                     this.trimHiddenMirrors();
                 },
                 close: () => {
@@ -319,13 +336,15 @@ export class MemoryGovernor {
             if (pane.visible && pane.requestedPixels > 0) { pixels += pane.requestedPixels; visible++; }
         }
         count(pixels);
-        if (visible > POLICY.maxVisiblePaneContexts) throw new MemoryAdmissionError('invalid-input');
         // The scheduler refreshes every frame (snapshotScene), so demand that did not change re-plans nothing: the grants
         // move only with the demand, with degradation and recovery (which plan themselves) and with context/program charges.
         const changed = this.panes.length !== panes.length || panes.some((pane, i) => !samePaneDemand(pane, this.panes[i]));
         this.panes = panes.map(pane => ({ ...pane }));
+        this.paneById.clear();
+        for (const pane of this.panes) this.paneById.set(pane.paneId, pane);
+        for (const id of this.paneCeiling.keys()) if (!ids.has(id)) this.paneCeiling.delete(id);
         if (changed) {
-            this.capacityEpoch++;
+            this.bumpCapacity();
             this.target.gpu = Math.min(this.ceilings.gpuBytes, Math.max(POLICY.gpuGrantMinBytes,
                 POLICY.gpuGrantBaseBytes + POLICY.gpuGrantPerVisiblePaneBytes * visible + POLICY.gpuGrantPerVisiblePixelBytes * pixels));
             this.target.cpu = Math.min(this.ceilings.cpuRasterBytes, Math.max(POLICY.cpuGrantMinBytes,
@@ -372,7 +391,7 @@ export class MemoryGovernor {
         destination.bytes += record.bytes;
         destination.leaseCount++;
         record.cache = destination;
-        this.capacityEpoch++;
+        this.bumpCapacity();
         if (source.closed && !source.leaseCount) this.caches.delete(source.registration.id);
         return true;
     }
@@ -404,7 +423,7 @@ export class MemoryGovernor {
             }
         }
         const paneId = destination.registration.paneId;
-        const pane = this.panes.find(pane => pane.paneId === paneId);
+        const pane = paneId === undefined ? undefined : this.paneById.get(paneId);
         const grant = paneId === undefined ? undefined : this.grants.get(paneId);
         const bytes = records.reduce((sum, record) => sum + record.bytes, 0);
         const displayed = [...this.caches.values()].filter(cache => cache.registration.paneId === paneId &&
@@ -418,7 +437,7 @@ export class MemoryGovernor {
             destination.bytes += record.bytes;
             destination.leaseCount++;
             record.cache = destination;
-            this.capacityEpoch++;
+            this.bumpCapacity();
             if (source.closed && !source.leaseCount) this.caches.delete(source.registration.id);
         }
         return true;
@@ -464,16 +483,25 @@ export class MemoryGovernor {
                 unmet = this.trimFailed(pool, this.target[pool]) || unmet;
             }
         }
-        if (unmet) this.degrade();
+        // Over budget steps down unless a resume holds pressure: the rebuild after a return is charged at once, and stepping on it stacked
+        // the quality down (1.0 -> 0.8 -> 0.64), which the recovery window then held for five seconds.
+        if (unmet && now >= this.pressureHoldUntil) this.degrade();
+        this.trimPanesOverGrant();
         const cool = this.cool() && !liveGesture;
         if (!cool) this.belowRecoverySince = null;
         else if (this.belowRecoverySince === null) this.belowRecoverySince = now;
-        else if (now - this.belowRecoverySince >= POLICY.memoryRecoveryDelayMs) {
+        else if (now - this.belowRecoverySince >= POLICY.memoryRecoveryDelayMs && !this.raiseRefused(now)) {
             this.qualityLimit = Math.min(1, this.qualityLimit / POLICY.qualityReductionFactor);
+            for (const [id, value] of this.paneCeiling) this.paneCeiling.set(id, Math.min(1, value / POLICY.qualityReductionFactor));
+            this.levelSince = now;
             this.state = this.qualityLimit < 1 ? 'degraded' : 'normal';
             if (this.state === 'normal') this.lastTrouble = null;
             this.belowRecoverySince = now;
             this.replan();
+        }
+        if (this.failedQuality !== null && now - this.levelSince >= POLICY.qualityFailureResetMs) {
+            this.failedQuality = null;
+            this.failureBackoffMs = POLICY.qualityFailureBackoffMinMs;
         }
     }
 
@@ -481,6 +509,7 @@ export class MemoryGovernor {
         this.lastTrouble = reason;
         this.state = 'trimming';
         this.belowRecoverySince = null;
+        this.recordFailedLevel();
         for (const pool of ['gpu', 'cpu'] as const) {
             this.trimPool(pool, Math.floor(this.target[pool] * POLICY.memoryTrimTargetRatio));
         }
@@ -518,7 +547,13 @@ export class MemoryGovernor {
         count(live);
         count(retiring);
         // Publication without a covering reservation is a product failure, not a test hook.
-        if (live + retiring > cache.bytes) throw new MemoryAdmissionError('unaccounted');
+        // Named by cache: the owner that published bytes its reservation does not cover is the one this error must point at.
+        if (live + retiring > cache.bytes) {
+            const id = cache.registration.id;
+            auditCount('governor', `unaccounted:${id}`);
+            throw new MemoryAdmissionError('unaccounted',
+                `unaccounted: ${id} live ${live} retiring ${retiring} reserved ${cache.bytes}`);
+        }
         return { live, retiring, reservedBytes: cache.bytes, leaseCount: cache.leaseCount, closed: cache.closed };
     }
 
@@ -599,6 +634,7 @@ export class MemoryGovernor {
                 // so no webgl2 PDF frame was ever sharp and its editing cover never dropped.
                 if (this.charged[pool] + bytes > this.target[pool]) this.refuseReservation(pool);
                 cache.refusal = { epoch: this.capacityEpoch, bytes };
+                this.refusedFloor[pool] = Math.min(this.refusedFloor[pool], bytes);
                 return null;
             }
         }
@@ -625,7 +661,7 @@ export class MemoryGovernor {
             const held = this.kindBytes('context');
             return held + bytes <= (POLICY.maxAppContexts - POLICY.reservedTerminalContexts) * POLICY.keptContextReserveBytes;
         }
-        const pane = this.panes.find(item => item.paneId === paneId);
+        const pane = paneId === undefined ? undefined : this.paneById.get(paneId);
         const grant = paneId === undefined ? undefined : this.grants.get(paneId);
         if (pool === 'gpu' && (cache.activity.hiddenAt !== null || !pane?.visible || !pane.requestedPixels ||
             (pane.cpuPinned && kind !== 'surface' && kind !== 'canvas-working'))) return false;
@@ -659,6 +695,30 @@ export class MemoryGovernor {
                 kind === 'canvas-working' ? other.registration.kind === 'canvas-working' :
                 !['surface', 'program', 'context', 'live-input', 'canvas-working'].includes(other.registration.kind)))
             .reduce((sum, other) => sum + other.bytes, 0);
+    }
+
+    /** A pane's GPU layer caches above its grant give back what they can rebuild, off view first, now: a grant that shrank
+     * (or a spare that was never granted) must not wait for a refusal, which the layer's own cache never raises. */
+    private trimPanesOverGrant(): void {
+        if (this.trimming) return;
+        this.trimming = true;
+        try {
+            for (const [paneId, grant] of this.grants) {
+                let excess = this.paneUsed(paneId, 'gpu', 'working') - grant.gpuCacheBytes;
+                if (excess <= 0) continue;
+                const candidates = [...this.caches.values()].filter(other => other.registration.paneId === paneId &&
+                    other.registration.pool === 'gpu' && other.bytes > 0 && other.activity.hiddenAt === null &&
+                    !['surface', 'program', 'context', 'mirror', 'mirror-retiring', 'live-input', 'canvas-working'].includes(other.registration.kind))
+                    .sort((a, b) => a.activity.lastVisibleAt - b.activity.lastVisibleAt || a.activity.lastUsedAt - b.activity.lastUsedAt ||
+                        stableId(a.registration.id, b.registration.id));
+                for (const other of candidates) {
+                    if (excess <= 0) break;
+                    const freed = this.evictCache(other, excess, false);
+                    if (freed > 0) auditCount('governor', `grant-trim:gpu:${other.registration.id}`, 1, { bytes: freed });
+                    excess -= freed;
+                }
+            }
+        } finally { this.trimming = false; }
     }
 
     /** A refused CPU reservation inside a pane asks the pane's own owners to give back what they can rebuild: the owner
@@ -710,6 +770,7 @@ export class MemoryGovernor {
         if (this.refusing[pool]) return;
         this.refusing[pool] = true;
         this.lastTrouble = 'allocation';
+        this.recordFailedLevel();
         this.degrade();
         this.onPressureChange?.();
     }
@@ -722,6 +783,7 @@ export class MemoryGovernor {
         for (const [id, grant] of this.grants) {
             const old = before.get(id);
             if (!old || grant.cpuBytes > old.cpuBytes || grant.gpuCacheBytes > old.gpuCacheBytes || grant.pixelGrant > old.pixelGrant) {
+                this.bumpCapacity();
                 this.notifyCapacity();
                 return;
             }
@@ -730,8 +792,14 @@ export class MemoryGovernor {
 
     /** A sized waiter stays parked until its bytes would be admitted: a closed cache's waiter wakes so its owner sees
      * the closure. Each wake runs once however many of its waiters fired. */
-    private notifyCapacity(): void {
+    /** Every refusal memo dies with the epoch, so the floor they were measured against starts over with it. */
+    private bumpCapacity(): void {
         this.capacityEpoch++;
+        this.refusedFloor.gpu = Infinity;
+        this.refusedFloor.cpu = Infinity;
+    }
+
+    private notifyCapacity(): void {
         if (!this.capacityWaiters.size) return;
         const woken = new Set<() => void>();
         for (const [cache, waiters] of this.capacityWaiters) {
@@ -750,11 +818,13 @@ export class MemoryGovernor {
         if (!record || (expected && record.cache !== expected)) throw new MemoryAdmissionError('invalid-lease');
         if (record.returned) return;
         record.returned = true;
-        this.capacityEpoch++;
         const cache = record.cache;
         cache.bytes -= record.bytes;
         cache.leaseCount--;
-        this.charged[cache.registration.pool] -= record.bytes;
+        const pool = cache.registration.pool;
+        this.charged[pool] -= record.bytes;
+        // Only a release that leaves room for the smallest standing refusal can change its answer (see refusedFloor).
+        if (this.charged[pool] + this.refusedFloor[pool] <= this.target[pool]) this.bumpCapacity();
         this.notifyCapacity();
         if (cache.closed && !cache.leaseCount) this.caches.delete(cache.registration.id);
         if (!this.trimming && ['context', 'program'].includes(cache.registration.kind)) this.plan();
@@ -830,21 +900,46 @@ export class MemoryGovernor {
         return bytes;
     }
 
-    /** Usage low enough to step quality back up. GPU grants are planned up to the trim target, so a pane using its own
-     * grant sits there; the CPU's 0.6 ratio applied to the GPU never came once it was degraded (measured: a PDF held at
-     * 44 of 64 MB stayed at quality 0.8, so no webgl2 frame was ever sharp). */
     /** What a layer reads through its host: a pure mapping of the state fields, so the read allocates nothing. */
     trouble(): LayerTrouble { return layerTroubleOf(this.state, this.lastTrouble); }
 
+    /** Usage low enough to step quality back up. GPU grants are planned up to the trim target, so a pane using its own
+     * grant sits there; the CPU's 0.6 ratio applied to the GPU never came once it was degraded (measured: a PDF held at
+     * 44 of 64 MB stayed at quality 0.8, so no webgl2 frame was ever sharp). */
     cool(): boolean {
         return this.charged.gpu < this.target.gpu * POLICY.memoryTrimTargetRatio &&
             this.charged.cpu < this.target.cpu * POLICY.memoryRecoveryRatio;
     }
 
+    /** The level being left failed under trouble: a raise back to it waits out the back-off, which doubles on repeat failures of
+     * the same level. Only trouble records a failure, not a budget step: a budget step is not evidence the level cannot work. */
+    private recordFailedLevel(): void {
+        if (this.failedQuality === this.qualityLimit) this.failureBackoffMs = Math.min(this.failureBackoffMs * 2, POLICY.qualityFailureBackoffMaxMs);
+        else { this.failedQuality = this.qualityLimit; this.failureBackoffMs = POLICY.qualityFailureBackoffMinMs; }
+        this.failedUntil = this.now + this.failureBackoffMs;
+    }
+
+    /** True while the next level up is the failed one and its back-off has not passed. */
+    private raiseRefused(now: number): boolean {
+        return this.failedQuality !== null && now < this.failedUntil &&
+            Math.min(1, this.qualityLimit / POLICY.qualityReductionFactor) >= this.failedQuality;
+    }
+
+    /** A visibility resume rebuilds the presented picture at once; that rebuild's charge is not pressure for a short hold. */
+    holdPressure(now: number): void {
+        this.pressureHoldUntil = Math.max(this.pressureHoldUntil, now + POLICY.resumePressureHoldMs);
+    }
+
+    /** Every pressure signal lands here, so one settle window takes one quality step: each pane of a return can report its own
+     * capability failure in the same tick, and a step per report stacked them (measured: two steps, 1.0 -> 0.8 -> 0.64, in one tick). */
     private degrade(): void {
         this.state = 'degraded';
         this.belowRecoverySince = null;
-        this.qualityLimit = Math.max(POLICY.minInteractiveQualityScale, this.qualityLimit * POLICY.qualityReductionFactor);
+        if (this.now - this.degradedAt >= POLICY.qualityStepSettleMs) {
+            this.degradedAt = this.now;
+            this.levelSince = this.now;
+            this.qualityLimit = Math.max(POLICY.minInteractiveQualityScale, this.qualityLimit * POLICY.qualityReductionFactor);
+        }
         this.plan();
     }
 
@@ -870,6 +965,18 @@ export class MemoryGovernor {
             supported.push(pane);
             remaining -= minimum;
         }
+        // Surface floors before the share: every visible pane keeps its picture at MIN_SURFACE_QUALITY, so insufficient memory
+        // lowers resolution and never blanks a pane. Arithmetic, 2560×1600 device px: q 1/4 is 640×400 = 256,000 px × 12 B ≈ 3 MB
+        // per pane, so five panes need ≈ 15 MB of the 102 MB low-device trim target. A floor the pool cannot hold is not granted.
+        const byWeight = [...visible].sort((a, b) => weight(b) - weight(a) || stableId(a.paneId, b.paneId));
+        const floorPixels = new Map<string, number>();
+        for (const pane of byWeight) {
+            const px = Math.floor(pane.requestedPixels * MIN_SURFACE_QUALITY * MIN_SURFACE_QUALITY);
+            const bytes = px * POLICY.surfaceReserveBytesPerPixel;
+            if (bytes > remaining) continue;
+            floorPixels.set(pane.paneId, px);
+            remaining -= bytes;
+        }
         // Pinned first. Arithmetic, DPR 2, a 1280×800 CSS pane (2560×1600 device px): 5×4 = 20 visible positions; a 514² RGBA
         // tile is 514·514·4 = 1,056,784 B ≈ 1.06 MB, so one band's visible set is ≈ 21 MB. On a low device (128 MB pool) the
         // trim target is 102.4 MB, the surface share is at most 41 MB, leaving ≈ 61 MB of cache for the pool; five such panes
@@ -878,11 +985,17 @@ export class MemoryGovernor {
         const pinned = waterFill(supported.map(pane => ({ id: pane.paneId, weight: weight(pane),
             need: Math.max(0, Math.min(pane.gpuPinnedBytes ?? 0, pane.gpuNeedBytes - minimum)) })), remaining);
         remaining -= [...pinned.values()].reduce((sum, value) => sum + value, 0);
+        const ceilingOf = (pane: PaneMemoryDemand) => Math.min(this.qualityLimit, this.paneCeiling.get(pane.paneId) ?? 1);
         const surfaceBytes = Math.min(Math.floor(this.target.gpu * POLICY.memoryTrimTargetRatio * POLICY.surfaceMaxGpuGrantFraction), remaining);
         // Denying GL must not deny a 2D drawing buffer (§6.3:641); both paths share this cap.
         const pixels = waterFill(visible.map(pane => ({ id: pane.paneId, weight: weight(pane),
-            need: Math.floor(pane.requestedPixels * this.qualityLimit * this.qualityLimit) })),
+            need: Math.max(0, Math.floor(pane.requestedPixels * ceilingOf(pane) * ceilingOf(pane)) - (floorPixels.get(pane.paneId) ?? 0)) })),
         Math.floor(surfaceBytes / POLICY.surfaceReserveBytesPerPixel));
+        const pixelGrantOf = (paneId: string): number => (floorPixels.get(paneId) ?? 0) + (pixels.get(paneId) ?? 0);
+        for (const pane of visible) {
+            const q = Math.sqrt(pixelGrantOf(pane.paneId) / pane.requestedPixels);
+            if (q < (this.paneCeiling.get(pane.paneId) ?? 1)) this.paneCeiling.set(pane.paneId, Math.max(MIN_SURFACE_QUALITY, q));
+        }
         const assignedSurface = [...pixels.values()].reduce((sum, value) => sum + value, 0) * POLICY.surfaceReserveBytesPerPixel;
         const cache = waterFill(supported.map(pane => ({ id: pane.paneId, weight: weight(pane),
             need: Math.max(0, pane.gpuNeedBytes - minimum - (pinned.get(pane.paneId) ?? 0)) })), Math.max(0, remaining - assignedSurface));
@@ -896,6 +1009,8 @@ export class MemoryGovernor {
             for (const pane of supported) cache.set(pane.paneId, (cache.get(pane.paneId) ?? 0) + Math.floor(spare * weight(pane) / totalWeight));
         }
         for (const [id, bytes] of pinned) cache.set(id, (cache.get(id) ?? 0) + bytes);
+        // The GPU is offered to the five highest-weighted visible panes only; a sixth keeps its 2D picture and its floor.
+        const gpuRanked = new Set(byWeight.slice(0, POLICY.maxVisiblePaneContexts).map(pane => pane.paneId));
         const cpu = waterFill(visible.map(pane => ({ id: pane.paneId, weight: weight(pane),
             need: pane.cpuMandatoryBytes ?? pane.cpuNeedBytes })), this.target.cpu);
         const mandatoryAssigned = [...cpu.values()].reduce((sum, value) => sum + value, 0);
@@ -903,10 +1018,10 @@ export class MemoryGovernor {
             need: pane.cpuNeedBytes - (pane.cpuMandatoryBytes ?? pane.cpuNeedBytes) })), this.target.cpu - mandatoryAssigned);
         for (const [id, bytes] of optional) cpu.set(id, (cpu.get(id) ?? 0) + bytes);
         this.grants = new Map(this.panes.map(pane => {
-            const pixelGrant = pixels.get(pane.paneId) ?? 0;
+            const pixelGrant = pixelGrantOf(pane.paneId);
             const q = pane.requestedPixels ? Math.sqrt(pixelGrant / pane.requestedPixels) : 0;
             const hasCacheCredit = pixelGrant > 0 && supported.includes(pane);
-            const gpuEligible = hasCacheCredit && !pane.cpuPinned;
+            const gpuEligible = gpuRanked.has(pane.paneId) && hasCacheCredit && !pane.cpuPinned;
             return [pane.paneId, Object.freeze({
                 paneId: pane.paneId, pixelGrant, gpuEligible,
                 // Browser-managed 2D scratch needs the same logical G credit even without WebGL (§10).

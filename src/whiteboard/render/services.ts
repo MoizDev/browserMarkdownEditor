@@ -20,7 +20,7 @@ import type { InkCoverage } from '../ink/outline';
 import { CURVE_CHUNK_SPANS } from '../ink/curve';
 import type { BoardDoc } from '../model/doc';
 import type { NodeId } from '../model/ids';
-import { createNode, type Node } from '../model/nodes';
+import { createNode, type ConnectorNode, type Node } from '../model/nodes';
 import type { SampleStoreReader } from '../model/samples';
 import type { MediaStore } from '../media/store';
 import { localBounds, BoundsQuality, type BoundsProvider, type Box, type LocalGeometryBounds } from '../scene/bounds';
@@ -90,6 +90,13 @@ function matrix(doc: BoardDoc, id: NodeId): Affine {
     const pose = worldPose(doc, id), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
     return [c, s, -s, c, pose.x, pose.y];
 }
+/** The connector with each end whose target has no attachment surface detached: that end paints from its own free point, as a
+ * connector whose target is gone does. Left attached, the resolver answers 'pending' for it, and the frame never presents. */
+function unattachedWhere(node: ConnectorNode, surfaces: ReadonlyMap<NodeId, AttachmentSurface>): ConnectorNode {
+    const start = node.start.attach && !surfaces.has(node.start.attach.target) ? { ...node.start, attach: null } : node.start;
+    const end = node.end.attach && !surfaces.has(node.end.attach.target) ? { ...node.end, attach: null } : node.end;
+    return start === node.start && end === node.end ? node : { ...node, start, end };
+}
 function rectangle(w: number, h: number): readonly PathOp[] {
     return [{ op: 'M', p: { x: 0, y: 0 } }, { op: 'L', p: { x: w, y: 0 } },
         { op: 'L', p: { x: w, y: h } }, { op: 'L', p: { x: 0, y: h } }, { op: 'Z' }];
@@ -147,7 +154,11 @@ export function createBoardRenderServices(options: {
     readonly derivedMemory?: (evict: (bytes: number) => void) => Pick<MemoryCacheHandle, 'reserve' | 'release' | 'close'>;
     cooperate?(): Promise<void>;
 }) {
-    const cached = new Map<NodeId, Prepared>(), listeners = new Set<(ids: ReadonlySet<NodeId>) => void>();
+    // Every prepared geometry is kept under its own geometry key (unique per build), indexed by node. A frame can ask for one node
+    // at several precisions and from two document states (a preview and the committed board), so a lookup matches the precision and
+    // the signature, and no other variant is dropped on a store: the byte budget ages them out.
+    const cached = new Map<string, Prepared>(), variantsOf = new Map<NodeId, Set<string>>();
+    const listeners = new Set<(ids: ReadonlySet<NodeId>) => void>();
     const sessionRasters = new SessionDenseRasters();
     // An opaque service incarnation binds the full owner token without putting an arbitrarily
     // long document id into the worker protocol's 128-character session field.
@@ -164,26 +175,40 @@ export function createBoardRenderServices(options: {
         for (const { ladder } of inkLadders.values()) { if (freed >= bytes) break; freed += ladder.evict(bytes - freed); }
     };
     // Idle entries are bounded by bytes, and each lease is charged to the derived handle, so the governor reclaims them first.
-    const idle = new Map<NodeId, { readonly bytes: number; readonly lease: ByteLease | null }>();
+    const idle = new Map<string, { readonly node: NodeId; readonly bytes: number; readonly lease: ByteLease | null }>();
     let idleBytes = 0;
     const dropInkLadder = (id: NodeId) => {
         const entry = inkLadders.get(id);
         if (entry) { entry.ladder.dispose(); inkLadders.delete(id); }
     };
-    // Replacing or releasing an entry keeps its ladder, which the caller may have just rebuilt for the new signature.
-    const forgetIdle = (id: NodeId) => {
-        cached.delete(id);
-        const entry = idle.get(id);
+    // Drops one variant. Replacing or releasing an entry keeps its ladder, which the caller may have just rebuilt for the new signature.
+    const dropVariant = (key: string) => {
+        const entry = idle.get(key), value = cached.get(key);
+        cached.delete(key);
+        if (value && entry) {
+            const set = variantsOf.get(entry.node);
+            set?.delete(key); if (set && set.size === 0) variantsOf.delete(entry.node);
+        }
         if (!entry) return;
-        idle.delete(id); idleBytes -= entry.bytes;
+        idle.delete(key); idleBytes -= entry.bytes;
         if (entry.lease) derived?.release(entry.lease);
     };
-    // Least recently used first; a budget eviction also drops the entry's ladder, which no longer has a geometry to serve.
+    const forgetIdle = (id: NodeId) => { for (const key of [...(variantsOf.get(id) ?? [])]) dropVariant(key); };
+    // A node's prepared geometry for `signature`, whichever precision it was prepared for (bounds and changes do not depend on it).
+    const variantFor = (id: NodeId, signature: readonly unknown[], accept: (value: Prepared) => boolean = () => true): Prepared | undefined => {
+        for (const key of variantsOf.get(id) ?? []) {
+            const value = cached.get(key);
+            if (value && accept(value) && sameGeometrySignature(value.signature, signature)) return value;
+        }
+        return undefined;
+    };
+    // Least recently used first; a budget eviction also drops the entry's ladder once no precision of its node has a geometry to serve.
     const evictOldestIdle = (): { readonly bytes: number; readonly charged: number } => {
         const gone = cached.keys().next().value!, entry = idle.get(gone);
         // A budget eviction of a node a later pass needs again is a rebuild; the count shows whether the idle budget is too small.
         auditCount(AUDIT, 'geometry:evict');
-        forgetIdle(gone); dropInkLadder(gone);
+        dropVariant(gone);
+        if (entry && !variantsOf.has(entry.node)) dropInkLadder(entry.node);
         return { bytes: entry?.bytes ?? 0, charged: entry?.lease?.bytes ?? 0 };
     };
     // The governor's request: idle geometry first (rebuildable from the document), then stroke ladders.
@@ -215,7 +240,7 @@ export function createBoardRenderServices(options: {
     /** Stores a prepared geometry as the newest idle entry. Its stroke ladder counts toward the budget too. A charge the
      * governor still denies after idle bytes are freed leaves the entry out: the cache only ever saves a rebuild. */
     const storeIdle = (id: NodeId, prepared: Prepared): void => {
-        forgetIdle(id);
+        const key = prepared.key;
         const ladder = inkLadders.get(id), charged = preparedBytes(prepared);
         const bytes = charged + (ladder && sameGeometrySignature(ladder.signature, prepared.signature) ? ladder.ladder.bytes : 0);
         if (bytes > IDLE_GEOMETRY_BYTES) return;
@@ -223,13 +248,22 @@ export function createBoardRenderServices(options: {
         let admitted = admit(charged);
         if (!admitted && cached.size) { evictDerived(charged); admitted = admit(charged); }
         if (!admitted) return;
-        cached.set(id, prepared);
-        idle.set(id, { bytes, lease: admitted.lease });
+        cached.set(key, prepared);
+        let set = variantsOf.get(id);
+        if (!set) variantsOf.set(id, set = new Set());
+        set.add(key);
+        idle.set(key, { node: id, bytes, lease: admitted.lease });
         idleBytes += bytes;
     };
     const palettes = options.palettes ?? DEFAULT_BOARD_PALETTES;
     const text = createBoardTextGeometry({ fonts: options.fonts, cooperate: options.cooperate, onFontEpoch() {
-        for (const id of textIds) forgetIdle(id);
+        // An id leaves the set only when the session doc no longer holds its node AND no geometry is kept for it: a deleted node
+        // whose geometry is gone has nothing to re-prepare, so the set stays the text nodes the session still has or keeps.
+        for (const id of [...textIds]) {
+            const kept = (variantsOf.get(id)?.size ?? 0) > 0;
+            forgetIdle(id);
+            if (!kept && !options.doc.nodes.has(id)) textIds.delete(id);
+        }
         const ids = new Set(textIds);
         for (const listener of listeners) listener(ids);
     } });
@@ -239,7 +273,7 @@ export function createBoardRenderServices(options: {
     };
     const releaseHolder = () => {
         if (--holders !== 0) return;
-        disposed = true; text.dispose(); for (const id of [...cached.keys()]) forgetIdle(id); textIds.clear(); listeners.clear(); sessionRasters.dispose();
+        disposed = true; text.dispose(); for (const key of [...cached.keys()]) dropVariant(key); textIds.clear(); listeners.clear(); sessionRasters.dispose();
         for (const id of [...inkLadders.keys()]) dropInkLadder(id);
         sessionResolved?.dispose();
         derived?.close();
@@ -267,11 +301,10 @@ export function createBoardRenderServices(options: {
     const prepare = async (borrowed: Readonly<Node>, doc: BoardDoc, signal: AbortSignal,
         context?: Pick<SceneResolveContext, 'deviceScale' | 'sensitive' | 'allowInkLod'>): Promise<Prepared> => {
         check(signal);
-        const node = createNode(borrowed), before = signature(node, doc), old = cached.get(node.id);
+        const node = createNode(borrowed), before = signature(node, doc);
         const precision = node.kind === 'stroke' ? inkPrecision(context) : undefined;
-        if (old && sameGeometrySignature(old.signature, before) && old.inkPrecision === precision?.key) {
-            cached.delete(node.id); cached.set(node.id, old); auditCount(AUDIT, 'geometry:hit'); return old;
-        }
+        const old = variantFor(node.id, before, value => value.inkPrecision === precision?.key);
+        if (old) { cached.delete(old.key); cached.set(old.key, old); auditCount(AUDIT, 'geometry:hit'); return old; }
         auditCount(AUDIT, 'geometry:build');
         const key = `${options.token.session}:${node.id}:geometry:${++serial}`;
         let result: Omit<Prepared, 'signature'>;
@@ -301,18 +334,23 @@ export function createBoardRenderServices(options: {
             const targets = new Map<NodeId, { node: Node; world: Affine; clips: AttachmentSurface['clips'] }>();
             for (const end of [node.start, node.end]) if (end.attach && !targets.has(end.attach.target)) {
                 const target = doc.nodes.get(end.attach.target);
-                if (!target) throw new Error(`Connector ${node.id} has a missing target`);
+                // A target the doc does not hold has no surface: its end is painted unattached (unattachedWhere), not thrown on.
+                if (!target) continue;
                 targets.set(target.id, { node: createNode(target), world: matrix(doc, target.id), clips: frameClips(doc, target) });
             }
             const surfaces = new Map<NodeId, AttachmentSurface>();
             for (const [id, target] of targets) {
+                // A group aggregates its children in Scene and has no geometry of its own, so it is never prepared here.
+                if (target.node.kind === 'group') continue;
                 const prepared = await prepare(target.node, doc, signal);
                 const surface = prepared.vector?.attachments;
-                if (!surface) throw new Error(`Connector ${node.id} target ${id} has no supported attachment surface`);
+                // A target with no attachment surface leaves its end unattached, as a group does; a throw here would drop every frame.
+                if (!surface) continue;
                 surfaces.set(id, { target: id, outline: surface.outline, logicalBox: surface.logicalBox,
                     localToWorld: target.world, clips: target.clips, revision: doc.rev });
             }
-            const resolved = await resolveConnectorGeometry({ key, node, localToWorld: world,
+            const paintNode = unattachedWhere(node, surfaces);
+            const resolved = await resolveConnectorGeometry({ key, node: paintNode, localToWorld: world,
                 resolveTarget: id => surfaces.get(id), label: null, toleranceWorld: .01, maxPieces: 65_536 }, {
                 signal, cooperate: options.cooperate,
                 label: node.label ? async (anchor, length, labelSignal) => {
@@ -321,7 +359,7 @@ export function createBoardRenderServices(options: {
                 } : undefined,
             });
             if (resolved.status !== 'ready') throw new Error(resolved.status === 'unroutable' ? resolved.reason : `Connector ${node.id} geometry is pending: ${resolved.reason}`);
-            result = connectorPrepared(key, node, resolved.geometry, inverseWorld);
+            result = connectorPrepared(key, paintNode, resolved.geometry, inverseWorld);
         } else {
             const vector = node.kind === 'opaque' ? await prepareOpaqueGeometry(node, signal, options.cooperate)
                 : await prepareBoardVectorGeometry(node, { text, revision: key, zoom: 1, signal, cooperate: options.cooperate });
@@ -342,11 +380,10 @@ export function createBoardRenderServices(options: {
     const prepareNow = (borrowed: Readonly<Node>, doc: BoardDoc, signal: AbortSignal,
         context?: Pick<SceneResolveContext, 'deviceScale' | 'sensitive' | 'allowInkLod'>): Prepared => {
         check(signal);
-        const node = createNode(borrowed), before = signature(node, doc), old = cached.get(node.id);
+        const node = createNode(borrowed), before = signature(node, doc);
         const precision = node.kind === 'stroke' ? inkPrecision(context ? { ...context, allowInkLod: false } : undefined) : undefined;
-        if (old && sameGeometrySignature(old.signature, before) && old.inkPrecision === precision?.key) {
-            cached.delete(node.id); cached.set(node.id, old); auditCount(AUDIT, 'geometry:hit'); return old;
-        }
+        const old = variantFor(node.id, before, value => value.inkPrecision === precision?.key);
+        if (old) { cached.delete(old.key); cached.set(old.key, old); auditCount(AUDIT, 'geometry:hit'); return old; }
         auditCount(AUDIT, 'geometry:build');
         const key = `${options.token.session}:${node.id}:geometry:${++serial}`;
         let result: Omit<Prepared, 'signature'>;
@@ -356,16 +393,19 @@ export function createBoardRenderServices(options: {
         } else if (node.kind === 'connector') {
             const world = matrix(doc, node.id), inverseWorld = inverse(world, 1e12);
             if (!inverseWorld) throw new RangeError('Connector transform is not invertible');
-            const surfaces = new Map<NodeId, AttachmentSurface>();
-            for (const end of [node.start, node.end]) if (end.attach && !surfaces.has(end.attach.target)) {
+            const surfaces = new Map<NodeId, AttachmentSurface>(), seen = new Set<NodeId>();
+            for (const end of [node.start, node.end]) if (end.attach && !seen.has(end.attach.target)) {
+                seen.add(end.attach.target);
                 const target = doc.nodes.get(end.attach.target);
-                if (!target) throw new Error(`Connector ${node.id} has a missing target`);
+                // A missing target, a group, or an opaque node has no copy geometry: its end is painted unattached (unattachedWhere).
+                if (!target || target.kind === 'group' || target.kind === 'opaque') continue;
                 const surface = prepareNow(target, doc, signal).vector?.attachments;
-                if (!surface) throw new Error(`Connector ${node.id} target ${target.id} has no supported attachment surface`);
+                if (!surface) continue;
                 surfaces.set(target.id, { target: target.id, outline: surface.outline, logicalBox: surface.logicalBox,
                     localToWorld: matrix(doc, target.id), clips: frameClips(doc, target), revision: doc.rev });
             }
-            const resolved = resolveConnectorGeometryNow({ key, node, localToWorld: world,
+            const paintNode = unattachedWhere(node, surfaces);
+            const resolved = resolveConnectorGeometryNow({ key, node: paintNode, localToWorld: world,
                 resolveTarget: id => surfaces.get(id), label: null, toleranceWorld: .01, maxPieces: 65_536 }, {
                 label: node.label ? (anchor, length) => {
                     const label = text.prepareNow(node, { revision: key, connectorLength: length, anchor });
@@ -373,7 +413,7 @@ export function createBoardRenderServices(options: {
                 } : undefined,
             });
             if (resolved.status !== 'ready') throw new Error(resolved.status === 'unroutable' ? resolved.reason : `Connector ${node.id} geometry is pending: ${resolved.reason}`);
-            result = connectorPrepared(key, node, resolved.geometry, inverseWorld);
+            result = connectorPrepared(key, paintNode, resolved.geometry, inverseWorld);
         } else {
             const vector = prepareBoardVectorGeometryNow(node, { text, revision: key, zoom: 1 });
             if (vector.text.length) textIds.add(node.id);
@@ -388,8 +428,7 @@ export function createBoardRenderServices(options: {
     };
     const bounds: BoundsProvider = {
         local(node) {
-            const entry = cached.get(node.id);
-            return entry && sameGeometrySignature(entry.signature, signature(node, options.doc)) ? entry.bounds : undefined;
+            return variantFor(node.id, signature(node, options.doc))?.bounds;
         },
         stroke(node) {
             const summary = options.samples.summary?.(node.samples);
@@ -492,8 +531,7 @@ export function createBoardRenderServices(options: {
             const value = scope.get(node.id);
             if (value && !value.inkLod && sameGeometrySignature(value.signature, signature(node, doc))) return value;
         }
-        const value = cached.get(node.id);
-        return value && !value.inkLod && sameGeometrySignature(value.signature, signature(node, doc)) ? value : undefined;
+        return variantFor(node.id, signature(node, doc), value => !value.inkLod);
     };
     const warmChangeGeometry = async (ids: Iterable<NodeId>, signal: AbortSignal, scope?: Map<NodeId, Prepared>, leases?: { release(): void }[],
         doc: BoardDoc = options.doc, current?: () => boolean) => {

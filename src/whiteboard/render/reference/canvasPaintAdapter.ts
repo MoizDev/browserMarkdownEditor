@@ -54,6 +54,8 @@ export interface PaintImageHold {
     imageState(key: string): 'ready' | 'released' | 'absent';
     /** Gives up the bitmap of a held picture; returns true when there was one to give up. */
     releaseImage(key: string): boolean;
+    /** The held picture's size and, for a video node, the version of the frame its lease holds (0 for a picture). Null when not held. */
+    imageFact(key: string): { readonly width: number; readonly height: number; readonly version: number } | null;
     /** Requests a released or absent picture again; its settlement invalidates the frame. A request already in flight is kept. */
     reacquireImage(key: string): void;
 }
@@ -68,6 +70,9 @@ export interface PreparedRetain {
 export type PaintProjection2d = (ctx: CanvasRenderingContext2D, view: ViewState, paint: () => void) => void;
 
 type PathJob = Path2dJob | InkCoverageUnionPath2dJob;
+type GeometryEntry = { prepared: PreparedPath2d; bytes: number };
+/** Path geometry kept across revisions: about a few boards' strokes, far below the CPU grant. */
+const GEOMETRY_CACHE_BYTES = 8 * 1024 * 1024;
 type Snapshot = {
     frame: PaintSource;
     scale: number;
@@ -140,6 +145,25 @@ export function createCanvasPaintAdapter(
     include?: (item: PaintItem) => boolean,
 ): CanvasPaintAdapter {
     let staged: Snapshot | null = null, presented: Snapshot | null = null;
+    // Path geometry by job key (geometry key, item key, scale), least recently used first, up to GEOMETRY_CACHE_BYTES. A key is minted
+    // only when a node's geometry is rebuilt and a move keeps it, so a new revision re-uses each path it did not change, and two
+    // precisions alternating frame to frame both stay (presentation must not prune the other one: that re-tessellated it every frame).
+    const geometryCache = new Map<string, GeometryEntry>();
+    let geometryCacheBytes = 0;
+    const cacheGet = (key: string): GeometryEntry | undefined => {
+        const entry = geometryCache.get(key);
+        if (entry) { geometryCache.delete(key); geometryCache.set(key, entry); }
+        return entry;
+    };
+    const cacheSet = (key: string, entry: GeometryEntry): void => {
+        const old = geometryCache.get(key);
+        if (old) geometryCacheBytes -= old.bytes;
+        geometryCache.delete(key); geometryCache.set(key, entry); geometryCacheBytes += entry.bytes;
+        while (geometryCacheBytes > GEOMETRY_CACHE_BYTES && geometryCache.size > 1) {
+            const oldest = geometryCache.keys().next().value!;
+            geometryCacheBytes -= geometryCache.get(oldest)!.bytes; geometryCache.delete(oldest);
+        }
+    };
     // Snapshots kept alive only by retainPrepared borrows: their memory is still held and counted.
     const borrowed = new Set<Snapshot>();
     let disposed = false;
@@ -183,7 +207,9 @@ export function createCanvasPaintAdapter(
                 const path = job.path.result!;
                 const prepared = { path, origin: job.path.origin };
                 const bytes = job.path.commandCount * 32;
-                s.geometry.set(job.key, { prepared, bytes });
+                const entry = { prepared, bytes };
+                s.geometry.set(job.key, entry);
+                cacheSet(job.key, entry);
                 if (job.item) s.paths.set(job.item, prepared);
                 if (job.clip !== undefined) s.clips.set(job.clip, prepared);
                 s.bytes += bytes;
@@ -213,7 +239,8 @@ export function createCanvasPaintAdapter(
             // One geometry serves several items (a figure's outline and its marks; a highlight's two bands), so
             // the item's own key is part of the identity: sharing by geometry alone paints the first path again.
             const key = `${item.kind}:${item.geometryKey}:${item.key}:${item.kind === 'ink' ? itemScale : ''}`;
-            const cached = s.geometry.get(key) ?? (presented && sameToken(s.frame, presented.frame) ? presented.geometry.get(key) : undefined);
+            const cached = s.geometry.get(key) ?? (presented && sameToken(s.frame, presented.frame) ? presented.geometry.get(key) : undefined)
+                ?? cacheGet(key);
             if (cached) {
                 if (!s.geometry.has(key)) { s.geometry.set(key, cached); s.bytes += cached.bytes; }
                 s.paths.set(item, cached.prepared);
@@ -230,6 +257,12 @@ export function createCanvasPaintAdapter(
     function imageHold(s: Snapshot): PaintImageHold {
         return {
             imageState(key) { return s.images.get(key) ? 'ready' : s.released.has(key) ? 'released' : 'absent'; },
+            imageFact(key) {
+                const lease = s.images.get(key);
+                if (!lease) return null;
+                const version = (lease as { readonly version?: unknown }).version;
+                return { width: lease.width, height: lease.height, version: typeof version === 'number' ? version : 0 };
+            },
             releaseImage(key) {
                 const lease = s.images.get(key);
                 if (!lease) return false;
@@ -322,7 +355,7 @@ export function createCanvasPaintAdapter(
             if (reason === 'context-lost') return;
             if (staged) releaseSnapshot(staged);
             if (presented) releaseSnapshot(presented);
-            staged = null; presented = null;
+            staged = null; presented = null; geometryCache.clear(); geometryCacheBytes = 0;
         },
         needsFrame() {
             if (disposed) return false;
@@ -334,6 +367,10 @@ export function createCanvasPaintAdapter(
         memory() {
             let cpuBytes = (staged?.bytes ?? 0) + (presented?.bytes ?? 0);
             for (const s of borrowed) if (s !== presented) cpuBytes += s.bytes;
+            // Cached geometry that no open snapshot holds is counted here; a snapshot counts the entries it holds.
+            const held = new Set<GeometryEntry>();
+            for (const snapshot of [staged, presented, ...borrowed]) if (snapshot) for (const entry of snapshot.geometry.values()) held.add(entry);
+            for (const entry of geometryCache.values()) if (!held.has(entry)) cpuBytes += entry.bytes;
             return { gpuBytes: 0, cpuBytes };
         },
         dispose() {
@@ -341,7 +378,7 @@ export function createCanvasPaintAdapter(
             disposed = true;
             if (staged) releaseSnapshot(staged);
             if (presented) releaseSnapshot(presented);
-            staged = null; presented = null;
+            staged = null; presented = null; geometryCache.clear(); geometryCacheBytes = 0;
         },
     };
 }

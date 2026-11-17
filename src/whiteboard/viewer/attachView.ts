@@ -9,7 +9,9 @@ import type { EmbedPresentationPort } from '../../platform/render/embedPresentat
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import { createNativeEmbedPresentationProducer, type NativeEmbedPresentationProducer } from '../host/embedPresentationFacts';
 import { boardPageStack } from '../model/pages';
-import { createBoardLayers, BOARD_BACKEND_PREFERENCE, drawnPagesOf, opaqueWorldOf } from '../render/boardLayers';
+import { createBoardLayers, BOARD_BACKEND_PREFERENCE, createDrawnPagesReader, opaqueWorldOf } from '../render/boardLayers';
+import { auditCount } from '../../platform/render/renderAudit';
+import { RENDER_CONSTANTS } from '../../platform/render/constants';
 import type { DensityMode } from '../render/density';
 import { createPaintFrameAssembler } from '../render/frameAssembler';
 import { LiveNodeUnion } from '../render/nodeSets';
@@ -35,6 +37,9 @@ class SelectionIds implements ReadonlySet<string> {
     }
 }
 
+/** What a view publish changed: the view's state, or only the paint progress its snapshot reports. */
+export type ViewChange = 'state' | 'paint';
+
 /** Attaches view resources only. The admitted model, scene, selection/history and
  * journal belong to the exact App-owned runtime and survive this view's disposal. */
 export const attachView: AttachView = options => {
@@ -51,6 +56,20 @@ export const attachView: AttachView = options => {
     // Density mode and the index's candidate count drive which frame kind is requested; both are read
     // by the layers, which never own a frame request of their own.
     let densityMode: DensityMode = 'direct', lastCandidates: number | null = null, paintWhenReady = false;
+    // The device's two-stage request (camera invariance, PLAN issue 1). The first picture asks for the view's world; once that
+    // frame is up, the whole scene is asked ONCE with no world and no device scale. While the scene is asked for the current
+    // key, a camera change asks for nothing: the composer's tiles follow the camera, the scene's item set does not.
+    type SceneKey = { readonly revision: number; readonly sheet: string; readonly theme: string; readonly sensitive: unknown };
+    const sameSceneKey = (a: SceneKey | null, b: SceneKey): boolean => !!a && a.revision === b.revision && a.sheet === b.sheet
+        && a.theme === b.theme && a.sensitive === b.sensitive;
+    let viewAsked: SceneKey | null = null, sceneAsked: SceneKey | null = null, sceneDue = false;
+    // The key whose whole-scene request was refused for its size: not asked again for that key (sceneRefused stops the stage's re-arming).
+    let sceneRefused: SceneKey | null = null;
+    // The sheet's whole candidate count at a revision, read from a view pin once its stream has opened: a pin counts
+    // nothing before that, so the whole-scene decision waits for it (a probe pin would never answer).
+    let wholeCount: { readonly revision: number; readonly sheet: string; readonly count: number } | null = null;
+    // The view request in force: its key, its device scale and the world it covers (1.5 viewports each side).
+    let viewWorld: { key: SceneKey; scale: number; world: Rect } | null = null;
     const unions = new WeakMap<ReadonlySet<string>, WeakMap<ReadonlySet<string>, ReadonlySet<string>>>();
     const union = (a: ReadonlySet<string> | null | undefined, b: ReadonlySet<string> | null | undefined): ReadonlySet<string> | null => {
         if (!a) return b ?? null;
@@ -63,7 +82,8 @@ export const attachView: AttachView = options => {
     let previewLayers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null = null;
     let previewCoverage: (() => Readonly<{ frame: PaintSource; nodeIds: ReadonlySet<string> }> | null) | null = null;
     let clearPreview: (() => void) | null = null;
-    const listeners = new Set<() => void>();
+    /** 'paint': the paint progress moved (see onPaintProgress); anything else is a change to the view's state. */
+    const listeners = new Set<(change?: ViewChange) => void>();
     const palettes = options.palette ?? DEFAULT_BOARD_PALETTES;
     const sheet = () => view.sheetId ?? runtime.selection.getSnapshot().sheet;
     let paperSnapshot: NotebookPaperSnapshot | null = null;
@@ -96,7 +116,9 @@ export const attachView: AttachView = options => {
         pin() { if (!runtime.scene) throw new Error('Scene is still loading'); return runtime.scene.pin(); },
     };
     const images = options.images ?? { acquire: async () => { throw new Error('This board view has no admitted image provider'); } };
-    const assembler = createPaintFrameAssembler(() => layers.invalidate('board-paint-ready'), report);
+    const assembler = createPaintFrameAssembler(() => layers.invalidate('board-paint-ready'), report, {
+        isActive: () => !disposed && view.visible && (typeof document === 'undefined' || !document.hidden),
+    });
     const frames = options.liveFrames ? options.liveFrames.wrap(assembler) : assembler;
     const previewOmission = (dry: PaintSource): ReadonlySet<string> | null => {
         if (!previewLayers || !view.visible || disposed) return null;
@@ -122,12 +144,22 @@ export const attachView: AttachView = options => {
     const precisionNodeIds = (sensitive: ReadonlySet<string> | undefined) => union(selectionIds(), union(union(union(interaction?.liveNodeIds?.(),
         view.visible ? embedPort?.inlineNodeIds() : null), view.visible ? embedPort?.requestedNodeIds() : null), sensitive));
     const liveNodeIds = () => precisionNodeIds(interaction?.sensitiveNodeIds?.()) ?? undefined;
+    // The composer asks for the opaque world once per tile: the page list is rebuilt only when a layer's claim changes.
+    const drawnPages = createDrawnPagesReader(), pageLayers: unknown[] = [];
+    const opaqueWorld = (): readonly Rect[] => {
+        const host = options.session.doc.host;
+        if (host.kind === 'whiteboard') return opaqueWorldOf(host, view.inverted);
+        pageLayers.length = 0;
+        if (view.backdrops) for (const backdrop of view.backdrops) pageLayers.push(backdrop);
+        if (paper) pageLayers.push(paper);
+        return opaqueWorldOf(host, view.inverted, drawnPages(pageLayers));
+    };
     const layers = createBoardLayers({ frames, images, onError: report, requestedRevision: () => options.session.doc.rev, requestedTheme: () => view.theme, omitNodes: omitPreview,
-        opaqueWorld: () => opaqueWorldOf(options.session.doc.host, view.inverted, drawnPagesOf([...view.backdrops ?? [], ...paper ? [paper] : []])),
+        opaqueWorld,
         liveNodeIds, candidates: () => lastCandidates,
         onDensityMode(mode) { if (densityMode !== mode && !disposed) { densityMode = mode; requestPaint(); } },
         requestFrame: () => { if (!disposed) requestPaint(); },
-        onPaintProgress: () => { if (!disposed) publish(); },
+        onPaintProgress: () => { if (!disposed) publish('paint'); },
         onDrawn(revision, frame, context) {
             options.liveFrames?.drawn(frame);
             embedPort?.drawn({ token: context.token, frameId: context.frameId, cameraEpoch: context.view.epoch,
@@ -147,10 +179,17 @@ export const attachView: AttachView = options => {
             if (!lastView || current.epoch !== lastView.epoch || changed) {
                 lastView = { ...current, camera: { ...current.camera }, viewport: { ...current.viewport } };
                 requestPaint(sensitive);
-            }
+            } else if (sceneDue) requestPaint(sensitive);
         },
         onPresented(revision, token, frame, context) {
             drawnFrame = { sceneRevision: revision, token, frame, context };
+            // A completed presentation is the layers working again: a failure reported before it no longer stands
+            // (the layer's own error clears on the same event, so the view must not keep showing one it does not hold).
+            if (failed) { failed = null; publish(); }
+            // The view frame of the current key is up: the whole scene may now be asked for (once).
+            // The request is made by the next prepare, which a presentation alone does not schedule: ask for that frame.
+            // Armed once per key: while the stage is already due, a presented frame must not invalidate again (that re-presented forever).
+            if (layers.onDevice() && !sceneDue && viewAsked && revision === viewAsked.revision && !sameSceneKey(sceneAsked, viewAsked) && !sameSceneKey(sceneRefused, viewAsked)) { sceneDue = true; layers.invalidate('board-scene-request'); }
             interaction?.presented?.(revision, token, frame, context);
             embedProducer?.presented(revision, token, frame, context);
         },
@@ -201,16 +240,62 @@ export const attachView: AttachView = options => {
             layers: definitions,
             backendPreference: BOARD_BACKEND_PREFERENCE };
     }
-    function publish(): void {
-        if (disposed) return;
-        snapshot = makeSnapshot(); accessibility.invalidate();
-        for (const listener of listeners) listener();
+    function sameSnapshot(a: ViewerSnapshot, b: ViewerSnapshot): boolean {
+        return a.state === b.state && a.readOnlyReason === b.readOnlyReason && a.sceneRevision === b.sceneRevision
+            && a.layout === b.layout && a.palette === b.palette && a.layers === b.layers && a.backendPreference === b.backendPreference
+            && a.appearance.background === b.appearance.background && a.appearance.inverted === b.appearance.inverted
+            && JSON.stringify(a.paint) === JSON.stringify(b.paint);
     }
+    // The native view repaints on every listener call, so listeners hear only a change the snapshot can show. `force` is for a
+    // change the snapshot does not carry (the selection), which the caller has already seen change.
+    function publish(change: ViewChange = 'state', force = false): void {
+        if (disposed) return;
+        const next = makeSnapshot();
+        // The accessibility mirror reads selection, session and scene only: a paint-progress change leaves it as it is, and
+        // its sync would otherwise request a frame for nothing (measured: 6 and 11 frames in the 3 s after a drag).
+        if (change === 'state') accessibility.invalidate();
+        if (!force && snapshot && sameSnapshot(snapshot, next)) return;
+        snapshot = next;
+        for (const listener of listeners) listener(change);
+    }
+    // The whole-sheet world: board coordinates are bounded by the 1e12 world limit (as boardLayers' WHOLE_PLANE).
+    const WHOLE_SHEET: Rect = { x: -1e12, y: -1e12, width: 2e12, height: 2e12 };
+    const viewportOf = (view: { readonly camera: { readonly x: number; readonly y: number; readonly z: number };
+        readonly viewport: { readonly width: number; readonly height: number } }): Rect =>
+        ({ x: view.camera.x, y: view.camera.y, width: view.viewport.width / view.camera.z, height: view.viewport.height / view.camera.z });
+    const containsRect = (outer: Rect, inner: Rect): boolean => inner.x >= outer.x && inner.y >= outer.y
+        && inner.x + inner.width <= outer.x + outer.width && inner.y + inner.height <= outer.y + outer.height;
+    // The whole scene's estimated CPU cost: the owning band's CPU bytes for the current view, scaled from the view's item count
+    // to the sheet's. It must fit half the pane's CPU grant: the grant the host reports, or the grant's floor
+    // (cpuGrantMinBytes) while the host reports none. The floor is never above the true grant, so it stays the conservative test.
+    const sceneFits = (wholeItems: number): boolean => {
+        const viewItems = Math.max(1, lastCandidates ?? 1);
+        const perItem = layers.cpuMandatoryBytes() / viewItems;
+        const reported = layers.cpuGrantBytes(), grant = reported > 0 ? reported : RENDER_CONSTANTS.cpuGrantMinBytes;
+        return wholeItems * perItem <= grant / 2;
+    };
     function requestPaint(sensitive = interaction?.sensitiveNodeIds?.()): void {
         // A request made while the Scene is still catching up is kept and sent once it is ready: the dense
         // path asks once per missing live set, so a dropped request froze a large board (seen at 3,500 items).
         if (!disposed && view.visible && runtime.scene && !runtime.scene.ready) { paintWhenReady = true; return; }
         if (disposed || !view.visible || !runtime.scene?.ready) return;
+        const onDevice = layers.onDevice();
+        const key: SceneKey = { revision: runtime.scene.revision, sheet: sheet(), theme: view.theme, sensitive };
+        // The whole scene is already asked for this key: a camera change needs no request (checked before the abort below, so the
+        // scene asked in flight is not cancelled).
+        if (onDevice && sameSceneKey(sceneAsked, key)) return;
+        // A view request whose world still holds the viewport, at the same key and scale, stands: a pan inside it asks nothing new.
+        const viewNow = lastView;
+        if (onDevice && !sceneDue && densityMode !== 'dense' && viewNow && viewWorld && sameSceneKey(viewWorld.key, key)
+            && viewWorld.scale === viewNow.camera.z * viewNow.viewport.dpr && containsRect(viewWorld.world, viewportOf(viewNow))) return;
+        // The whole scene, once per key, and only when its estimated cost fits (sceneFits). A count not known yet waits: a fresh
+        // pin counts nothing until its first stream opens, so the stage stays due. A refusal is latched on this key.
+        let scene = onDevice && sceneDue && sameSceneKey(viewAsked, key);
+        if (scene) {
+            const whole = wholeCount && wholeCount.revision === key.revision && wholeCount.sheet === key.sheet ? wholeCount.count : null;
+            if (whole === null) return;
+            if (!sceneFits(whole)) { sceneRefused = key; sceneDue = false; auditCount('board', 'request:scene-too-large'); scene = false; }
+        }
         paintWhenReady = false;
         paintJob?.abort();
         const controller = new AbortController(), sequence = ++request;
@@ -221,7 +306,8 @@ export const attachView: AttachView = options => {
         // beyond the viewport, and every live item it meets must be in the frame to be drawn live.
         const world: Rect | undefined = current ? (() => {
             const width = current.viewport.width / current.camera.z, height = current.viewport.height / current.camera.z;
-            const margin = 2 * Math.max(width, height);
+            // 1.5 viewports each side: a pan inside this world asks nothing new (viewWorld), so the margin is generous.
+            const margin = 1.5 * Math.max(width, height);
             return { x: current.camera.x - margin, y: current.camera.y - margin, width: width + 2 * margin, height: height + 2 * margin };
         })() : undefined;
         lastSensitive = sensitive;
@@ -243,7 +329,15 @@ export const attachView: AttachView = options => {
         // Tile streams reopened by the frame share this request's identity (precision, sensitivity), not its world.
         const identity = { sheetId: selectedSheet, theme: view.theme, sensitiveNodes,
             ...(deviceScale ? { deviceScale, allowInkLod: true } : {}) };
-        const shape = dense ? { ...identity, only: liveSet! } : { ...identity, ...(world ? { world } : {}) };
+        // The whole-scene stage: asked once per key on a device, after the view frame it follows is up. No world, so the pin
+        // does not cull by the camera; no device scale, so the scene's items do not change with the zoom.
+        const sceneShape = { sheetId: selectedSheet, theme: view.theme, sensitiveNodes };
+        const shape = scene ? sceneShape : dense ? { ...identity, only: liveSet! } : { ...identity, ...(world ? { world } : {}) };
+        auditCount('board', scene ? 'request:scene' : 'request:view');
+        if (onDevice) { if (scene) sceneAsked = key; else viewAsked = key; }
+        // The world this view request asks for, kept until the camera leaves it (the skip at the top of requestPaint).
+        viewWorld = onDevice && !scene && !dense && world && deviceScale !== undefined ? { key, scale: deviceScale, world } : null;
+        sceneDue = false;
         void open.call(pin, shape, controller.signal).then(stream => {
             if (disposed || !view.visible || controller.signal.aborted || sequence !== request) {
                 void stream.release().catch(report).finally(() => pin.release());
@@ -251,10 +345,14 @@ export const attachView: AttachView = options => {
             }
             // The stream's open has built this pin's index for the sheet: the count is current before the frame prepares.
             if (world) { const landed = pin.countCandidates?.(selectedSheet, world) ?? null; if (landed !== null) lastCandidates = landed; }
+            if (!wholeCount || wholeCount.revision !== key.revision || wholeCount.sheet !== selectedSheet) {
+                const total = pin.countCandidates?.(selectedSheet, WHOLE_SHEET) ?? null;
+                if (total !== null) wholeCount = { revision: key.revision, sheet: selectedSheet, count: total };
+            }
             frames.requestStream({ stream, isCurrent: () => pin.isCurrent(), release: () => pin.release(), ...(dense ? { liveOnly: true as const } : {}),
                 open: (apron, signal, resolved) => open.call(pin, { ...identity, world: apron }, signal, resolved) });
-            paintJob = null; publish();
-        }, error => { pin.release(); if (!controller.signal.aborted) report(error); });
+            paintJob = null; publish('paint');
+        }, error => { pin.release(); if (!controller.signal.aborted) { viewWorld = null; report(error); } });
     }
     const cancelReveal = () => { const job = revealJob; revealJob = null; job?.abort(); };
     const reveal = (ids: ReadonlySet<NodeId>) => {
@@ -290,7 +388,7 @@ export const attachView: AttachView = options => {
     const stopSelection = runtime.selection.subscribe(() => {
         const currentSheet = sheet();
         if (currentSheet !== previousSheet) { previousSheet = currentSheet; clearPreview?.(); }
-        cancelReveal(); publish(); requestPaint();
+        cancelReveal(); publish('state', true); requestPaint();
     });
     let previousRevision = options.session.doc.rev;
     const stopSession = options.session.subscribe(() => {

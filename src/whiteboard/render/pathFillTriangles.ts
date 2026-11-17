@@ -31,21 +31,32 @@ export interface PathFillTriangles {
 export function flattenContours(commands: readonly PathCommand[], tolerance: number, maxEdges: number): Vec2[][] | null {
     if (!(tolerance > 0) || !Number.isFinite(tolerance)) throw new RangeError('Invalid path flattening tolerance');
     const contours: Vec2[][] = [];
-    let current: Vec2[] | null = null;
+    // The open contour, if any. After a closepath there is none, and the next segment opens a contour at the subpath's start,
+    // as canvas does: the closed triangle is not joined to what follows it (a stroke twin, pathStrokeTriangles, does the same).
+    let current: Vec2[] | null = null, subpathStart: Vec2 | null = null;
     let edges = 0;
+    const open = (): Vec2[] => {
+        if (current) return current;
+        if (!subpathStart) throw new RangeError('Path segment before move');
+        current = [subpathStart];
+        contours.push(current);
+        return current;
+    };
     const push = (points: readonly Vec2[]) => {
-        if (!current) throw new RangeError('Path segment before move');
+        const target = open();
         for (const point of points) {
             if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) throw new RangeError('Non-finite path vertex');
-            current.push(point);
+            target.push(point);
         }
         edges += points.length;
     };
     for (const command of commands) {
         switch (command[0]) {
             case 'M': {
-                current = [{ x: command[1], y: command[2] }];
+                const start = { x: command[1], y: command[2] };
+                current = [start];
                 contours.push(current);
+                subpathStart = start;
                 break;
             }
             case 'L': {
@@ -53,8 +64,8 @@ export function flattenContours(commands: readonly PathCommand[], tolerance: num
                 break;
             }
             case 'C': {
-                if (!current) throw new RangeError('Path segment before move');
-                const last = current[current.length - 1];
+                const last = current ? current[current.length - 1] : subpathStart;
+                if (!last) throw new RangeError('Path segment before move');
                 const pieces = flattenCubic({
                     p0: last,
                     p1: { x: command[1], y: command[2] },
@@ -66,6 +77,8 @@ export function flattenContours(commands: readonly PathCommand[], tolerance: num
                 break;
             }
             case 'Z':
+                // Closes the open contour; the subpath's start is kept for the segments that follow.
+                current = null;
                 break;
         }
         if (edges > maxEdges) return null;

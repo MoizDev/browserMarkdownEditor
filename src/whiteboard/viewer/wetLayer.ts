@@ -15,7 +15,7 @@ import { HIGHLIGHT_OVERLAY_ALPHA, HIGHLIGHT_UNDERLAY_ALPHA, inkMaterial, type In
 import type { PaintSource, PaintInkItem, PaintClip } from '../render/paintStream';
 import type { Admission, CreateInkRoutes, InkRouteFor, ItemRoute, PreparedRun, WithClips } from '../render/gpu/contracts';
 import { awaitSizedCapacity, isBudgetRefusal } from '../render/budgetRefusal';
-import { appendPath2d } from '../render/reference/coverage2d';
+import { appendPath2d, path2d } from '../render/reference/coverage2d';
 
 // Provenance: wet/dry ink handover, bounded ink outline and C4 layer contracts;
 // independently wired renderer, no third-party source.
@@ -102,6 +102,17 @@ class ImmutableIds implements ReadonlySet<string> {
     }
 }
 const EMPTY_LIVE_IDS: ReadonlySet<string> = new ImmutableIds();
+
+// Frame clips of a continuation stroke as canvas2d paths, built once per clip geometry. Only a continuation of a framed
+// stroke has any, so the table stays tiny; it is cleared past a few dozen entries rather than tracked per stroke.
+const clipPaths = new Map<string, { readonly d: PaintClip['d']; readonly path: Path2D }>();
+function clipPathFor(clip: PaintClip): Path2D {
+    const held = clipPaths.get(clip.key);
+    if (held && held.d === clip.d) return held.path;
+    if (clipPaths.size >= 64) clipPaths.clear();
+    const path = path2d(clip.d); clipPaths.set(clip.key, { d: clip.d, path });
+    return path;
+}
 type WetBand = 'underlay' | 'content';
 const BANDS: readonly WetBand[] = ['underlay', 'content'];
 type InkRoutes = ReturnType<CreateInkRoutes>;
@@ -135,14 +146,19 @@ function isPending(pending: readonly WetInkSnapshot[], gesture: number): boolean
 /** A coverage verdict. The fixed ones are constants, so a frame that asks for coverage allocates nothing. */
 interface Verdict { readonly complete: boolean; readonly sharp: boolean; readonly why: string }
 const VERDICT_SHARP: Verdict = { complete: true, sharp: true, why: '' }, VERDICT_STALE: Verdict = { complete: true, sharp: false, why: '' };
-const VERDICT_UNPREPARED: Verdict = { complete: false, sharp: false, why: 'unprepared' };
-const VERDICT_NO_SLOT: Verdict = { complete: false, sharp: false, why: 'no-slot' };
-const VERDICT_TOKEN: Verdict = { complete: false, sharp: false, why: 'token' };
-const VERDICT_NO_SHOWN: Record<WetRunSlot['state'], Verdict> = {
-    pending: { complete: false, sharp: false, why: 'no-shown-pending' }, ready: { complete: false, sharp: false, why: 'no-shown-ready' },
-    empty: { complete: false, sharp: false, why: 'no-shown-empty' }, denied: { complete: false, sharp: false, why: 'no-shown-denied' },
+// A stroke's tip is one bounded chunk. It is tessellated within this allowance even past the frame's budget, so a newest
+// publication never waits behind the frame's general work (measured: 234 frames left unprepared behind the budget).
+const TIP_ALLOWANCE_MS = 3;
+// A band with nothing shown does not hold the frame: the frame presents without it and is not sharp, so the newest publication
+// is drawn when it is admitted. Refusing here made every drawing frame wait on the newest tip (measured on the drawing: 58 frames
+// refused as no-shown-pending per draw phase, answer rate .89 paced and .79 saturated against 1.0 on canvas2d). The reason is kept
+// for the audit, so a frame that is not sharp says which band it is waiting for.
+const VERDICT_UNSHOWN: Record<'no-slot' | 'token' | WetRunSlot['state'], Verdict> = {
+    'no-slot': { complete: true, sharp: false, why: 'unshown:no-slot' }, token: { complete: true, sharp: false, why: 'unshown:token' },
+    pending: { complete: true, sharp: false, why: 'unshown:pending' }, ready: { complete: true, sharp: false, why: 'unshown:ready' },
+    empty: { complete: true, sharp: false, why: 'unshown:empty' }, denied: { complete: true, sharp: false, why: 'unshown:denied' },
 };
-const COVER_INCOMPLETE: LayerCoverage = { complete: false, sharp: false }, COVER_CANVAS2D: LayerCoverage = { complete: true, sharp: true };
+const COVER_CANVAS2D: LayerCoverage = { complete: true, sharp: true };
 function sameFrameToken(a: FrameToken, b: FrameToken): boolean {
     return sameToken(a, b) && a.viewLease === b.viewLease && a.deviceGeneration === b.deviceGeneration;
 }
@@ -216,6 +232,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
     };
     const dropWork = () => {
         const item = work; work = null;
+        dropPartial();
         if (!item) return;
         const chunk = item.chunk; item.chunk = null;
         if (chunk) {
@@ -240,8 +257,16 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         for (const [key] of [...runs]) dropSlot(key);
         if (inkRoutes) { inkRoutes.analytic.release(); inkRoutes.union.release(); inkRoutes = null; }
     };
+    // The partial outline of a stroke whose first publication is incomplete (see sourceOf). Its path lease is the layer's, so it is
+    // released when the partial is replaced, when the stroke completes, or when the layer clears.
+    let partial: { owner: object; count: number; source: Prepared } | null = null;
+    const dropPartial = (): void => {
+        if (!partial) return;
+        for (const lease of partial.source.leases) release(lease);
+        partial = null;
+    };
     const clear = () => {
-        dropWork(); for (const item of prepared.values()) dropPrepared(item); prepared.clear();
+        dropWork(); dropPartial(); for (const item of prepared.values()) dropPrepared(item); prepared.clear();
         for (const gesture of [...stables.keys()]) dropStable(gesture);
         releaseRoutes();
         dirty = false; denied = false; liveIds = EMPTY_LIVE_IDS;
@@ -266,6 +291,27 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         if (!lease) { denied = true; awaitSizedCapacity(owner, invalidate, { pool: 'cpu', bytes }); return null; }
         source.leases.push(lease); source.path = path;
         return path;
+    };
+    // The partial outline of a stroke with no completed publication: the chunks its tessellation has so far, drawn as a publication of
+    // their own. Cached per chunk count, so a frame that adds no chunk re-admits nothing; drawn through the same route as any stroke.
+    const partialOf = (snapshot: WetInkSnapshot): Prepared | null => {
+        const w = work;
+        if (!w || w.snapshot.identity.gestureSequence !== snapshot.identity.gestureSequence || w.snapshot.identity.nodeId !== snapshot.identity.nodeId) return null;
+        const coverageChunks = [...w.stable.chunks, ...w.tail.chunks];
+        if (!coverageChunks.length) return null;
+        if (partial?.owner === w && partial.count === coverageChunks.length) return partial.source;
+        dropPartial();
+        const source: Prepared = { snapshot: w.snapshot, path: null, origin: w.stable.origin, leases: [], scale: w.scale,
+            bounds: w.tail.bounds ? unionBounds(w.stable.bounds, w.tail.bounds) : w.stable.bounds, coverageChunks, serial: ++publicationVersion };
+        partial = { owner: w, count: coverageChunks.length, source };
+        return source;
+    };
+    // What a stroke draws: its last completed publication, or while its first is incomplete, the partial outline. A stroke with
+    // neither (nothing tessellated yet) draws nothing and is not refused for it.
+    const sourceOf = (snapshot: WetInkSnapshot): Prepared | null => {
+        const done = prepared.get(snapshot.identity.gestureSequence);
+        if (done && done.snapshot.identity.nodeId === snapshot.identity.nodeId) return done;
+        return partialOf(snapshot);
     };
     const drawScrap = (pass: GpuPass, view: ViewState, host: LayerHost, scrap: WetScrap): void => {
         const cam = view.camera, scale = cam.z * view.viewport.dpr;
@@ -340,16 +386,16 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         // Deleting the entry being visited is safe in a Map's iteration; a slot whose stroke is gone is dropped here.
         for (const [key, slot] of runs) if (!isPending(pending, slot.gesture)) dropSlot(key);
         for (const snapshot of pending) {
-            const gesture = snapshot.identity.gestureSequence, source = prepared.get(gesture);
-            if (!source || source.snapshot.identity.nodeId !== snapshot.identity.nodeId) { if (audited) auditCount('wet', 'admit-skip:unprepared'); continue; }
+            const gesture = snapshot.identity.gestureSequence, source = sourceOf(snapshot);
+            if (!source) { if (audited) auditCount('wet', 'admit-skip:unprepared'); continue; }
             const shown = source.snapshot;
             for (const band of BANDS) {
                 const key = runKey(gesture, band), current = runs.get(key);
                 if (current && current.serial === source.serial && current.scale === source.scale && current.palette === palette
                     && sameFrameToken(current.token, budget.token) && (current.state === 'ready' || current.state === 'empty')
                     && (!current.viewBound || current.viewKey === viewKey)) { if (audited) auditCount('wet', 'admit-skip:fresh'); continue; }
-                // A band with nothing shown yet is admitted even past the frame's budget: the tessellation spent it, and a
-                // stroke with no run is refused by coverage (measured: 41 yields left drawing frames incomplete).
+                // A band with nothing shown yet is admitted even past the frame's budget: the tessellation spent it, and until
+                // it is admitted the frame presents without the newest tip (measured: 41 yields left drawing frames unsharp).
                 if (current?.shown && budget.shouldYield()) { if (audited) auditCount('wet', 'admit-skip:yield'); return; }
                 const reuse = current && current.serial === source.serial && current.palette === palette ? current : null;
                 const material = reuse ? reuse.material : bandMaterial(shown, band, palette);
@@ -400,18 +446,12 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         }
     };
     // True while some visible band still needs an admission for the current publication.
-    // True while some pending stroke has no tessellated publication yet.
-    const anyUnprepared = (): boolean => {
-        const drawn = options.boardDrawnInk();
-        for (const item of handover?.pendingSnapshots() ?? []) if (!drawn.has(item.identity.nodeId) && !prepared.has(item.identity.gestureSequence)) return true;
-        return false;
-    };
     const runsPending = (): boolean => {
         const drawn = options.boardDrawnInk();
         for (const snapshot of handover?.pendingSnapshots() ?? []) {
             if (drawn.has(snapshot.identity.nodeId)) continue;
-            const gesture = snapshot.identity.gestureSequence, source = prepared.get(gesture);
-            if (!source || source.snapshot.identity.nodeId !== snapshot.identity.nodeId) return true;
+            const gesture = snapshot.identity.gestureSequence, source = sourceOf(snapshot);
+            if (!source) continue;
             for (const band of BANDS) {
                 const slot = runs.get(runKey(gesture, band));
                 if (!slot || slot.state === 'pending' || slot.serial !== source.serial || slot.scale !== source.scale) return true;
@@ -421,20 +461,20 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
     };
     // Coverage of the routed path. A band with an admitted run draws it, whichever publication that run is for, so the
     // frame is complete while the stroke grows (measured: a serial check refused 118 of 209 drawing frames, and a critical
-    // layer's refusal refused the whole frame). Only a band with nothing admitted yet is incomplete. `sharp` says the
-    // shown runs are the current publication's, for this token and view; a deferred or denied tip is not sharp.
+    // layer's refusal refused the whole frame). No band refuses the frame: one with nothing shown is not sharp (VERDICT_UNSHOWN).
+    // `sharp` says the shown runs are the current publication's, for this token and view; a deferred or denied tip is not sharp.
     const routedCoverage = (token: FrameToken, view: ViewState): Verdict => {
         const viewKey = viewKeyOf(view), drawn = options.boardDrawnInk();
         let sharp = true;
         for (const snapshot of handover?.pendingSnapshots() ?? []) {
             if (drawn.has(snapshot.identity.nodeId)) continue;
-            const gesture = snapshot.identity.gestureSequence, source = prepared.get(gesture);
-            if (!source) return VERDICT_UNPREPARED;
+            const gesture = snapshot.identity.gestureSequence, source = sourceOf(snapshot);
+            if (!source) continue;
             for (const band of BANDS) {
                 const slot = runs.get(runKey(gesture, band));
-                if (!slot) return VERDICT_NO_SLOT;
-                if (!sameFrameToken(slot.token, token)) return VERDICT_TOKEN;
-                if (!slot.shown && slot.state !== 'empty') return VERDICT_NO_SHOWN[slot.state];
+                if (!slot) return VERDICT_UNSHOWN['no-slot'];
+                if (!sameFrameToken(slot.token, token)) return VERDICT_UNSHOWN.token;
+                if (!slot.shown && slot.state !== 'empty') return VERDICT_UNSHOWN[slot.state];
                 const current = (slot.state === 'ready' || slot.state === 'empty') && slot.serial === source.serial && slot.scale === source.scale
                     && (!slot.viewBound || slot.viewKey === viewKey);
                 if (!current) sharp = false;
@@ -451,9 +491,8 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         try {
             for (const snapshot of handover?.pendingSnapshots() ?? []) {
                 if (boardDrawn.has(snapshot.identity.nodeId)) { if (renderAuditEnabled()) auditCount('wet', 'skip:board-drawn'); continue; }
-                const gesture = snapshot.identity.gestureSequence, source = prepared.get(gesture);
-                if (!source || source.snapshot.identity.nodeId !== snapshot.identity.nodeId
-                    || offScreen(source.bounds, source.snapshot.presentation.localToWorld, view)) continue;
+                const gesture = snapshot.identity.gestureSequence, source = sourceOf(snapshot);
+                if (!source || offScreen(source.bounds, source.snapshot.presentation.localToWorld, view)) continue;
                 const shown = runs.get(runKey(gesture, band))?.shown;
                 if (!shown) continue;
                 // Clips are applied here and only here: the route draws the item's geometry, withClips its clips.
@@ -536,6 +575,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         const gesture = w.snapshot.identity.gestureSequence;
         const prior = prepared.get(gesture);
         if (prior) dropPrepared(prior);
+        dropPartial();
         prepared.set(gesture, { snapshot: w.snapshot, path: null, origin: s.origin, leases: w.tail.leases, scale: w.scale,
             bounds: w.tail.bounds ? unionBounds(s.bounds, w.tail.bounds) : s.bounds, coverageChunks: [...s.chunks, ...w.tail.chunks], serial: ++publicationVersion });
         work = null; return true;
@@ -554,7 +594,8 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
             for (const gesture of stables.keys()) if (!isPending(snapshots, gesture)) dropStable(gesture);
             if (work && (!snapshots.some(item => item.identity.gestureSequence === work!.snapshot.identity.gestureSequence
                 && item.identity.nodeId === work!.snapshot.identity.nodeId) || work.scale < scaleAt(view, work.snapshot))) dropWork();
-            while (!budget.shouldYield()) {
+            const tipUntil = performance.now() + TIP_ALLOWANCE_MS;
+            while (!budget.shouldYield() || (work !== null && performance.now() < tipUntil)) {
                 if (!work) {
                     let next: WetInkSnapshot | null = null;
                     for (const item of snapshots) {
@@ -581,7 +622,10 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
             if (disposed) throw new Error('Wet layer disposed');
             hosts.add(host); owner ??= host;
             let ended = false;
-            const layer: Layer = {
+            // prepareFirst is read by the scheduler from the layer object (not the definition): a live stroke with GPU runs in
+            // flight is prepared before the pane's other critical layers (fd3c12a6). The Layer contract itself is unchanged.
+            const layer: Layer & { prepareFirst(): boolean } = {
+                prepareFirst: () => !!owner?.device() && runsPending(),
                 prepare,
                 drawGpu(pass, view) { drawRouted(pass, view, band); },
                 draw2d(ctx, view) {
@@ -593,16 +637,25 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                     host.paintWorld(ctx, view, () => {
                         for (const snapshot of snapshots) {
                             if (boardDrawn.has(snapshot.identity.nodeId)) continue;
-                            const item = prepared.get(snapshot.identity.gestureSequence);
-                            if (!item || item.snapshot.identity.nodeId !== snapshot.identity.nodeId) continue;
+                            const item = sourceOf(snapshot);
+                            if (!item) continue;
                             if (offScreen(item.bounds, snapshot.presentation.localToWorld, view)) continue;
                             const isHighlight = snapshot.presentation.tool === 'highlighter';
                             if (!isHighlight && band === 'underlay') continue;
                             const pigment = resolveSwatch(options.palette(), snapshot.presentation.color as Swatch, isHighlight ? 'highlight' : 'stroke');
                             if (!pigment) continue;
-                            const alpha = isHighlight ? (band === 'underlay' ? HIGHLIGHT_UNDERLAY_ALPHA : HIGHLIGHT_OVERLAY_ALPHA) : 1;
+                            // A continuation inherits its node's opacity and ancestor frame clips, as the committed stroke does. Live ink
+                            // drew without them, so a segment past its frame showed while drawing and vanished at pen-up (feature 6e360790).
+                            const alpha = (isHighlight ? (band === 'underlay' ? HIGHLIGHT_UNDERLAY_ALPHA : HIGHLIGHT_OVERLAY_ALPHA) : 1)
+                                * (snapshot.presentation.opacity ?? 1);
                             ctx.save();
                             try {
+                                // Each clip in its own transform, from the base of the paint world, then the stroke's own transform below.
+                                const base = ctx.getTransform();
+                                for (const clip of snapshot.presentation.clips ?? []) {
+                                    ctx.setTransform(base); ctx.transform(...clip.localToWorld); ctx.clip(clipPathFor(clip), clip.fillRule);
+                                }
+                                ctx.setTransform(base);
                                 const [a, b, c, d, e, f] = snapshot.presentation.localToWorld;
                                 ctx.transform(a, b, c, d, e, f); ctx.translate(item.origin[0], item.origin[1]);
                                 ctx.fillStyle = colourCss(withOpacity(pigment, alpha));
@@ -637,12 +690,11 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         // which took two frames per plan (measured: every other screencast frame held the same ink). Only while ink is in
         // flight: an idle layer that still wanted a frame kept every frame critical, which starves the other layers' upload
         // share (measured: drawing pan 204 → 78 presents, notebook pan 38).
-        critical: () => (!!owner?.device() && runsPending()) || anyUnprepared(),
+        critical: () => !!owner?.device() && runsPending(),
         coverage: (_layer, frame, backend): LayerCoverage => {
-            if (anyUnprepared()) { if (renderAuditEnabled()) auditCount('wet', 'cover:incomplete:unprepared'); return COVER_INCOMPLETE; }
             if (backend === 'canvas2d') return COVER_CANVAS2D;
             const verdict = routedCoverage(frame.token, frame.view);
-            if (renderAuditEnabled()) auditCount('wet', verdict.complete ? (verdict.sharp ? 'cover:sharp' : 'cover:stale') : `cover:incomplete:${verdict.why}`);
+            if (renderAuditEnabled()) auditCount('wet', verdict.complete ? (verdict.sharp ? 'cover:sharp' : verdict.why ? `cover:stale:${verdict.why}` : 'cover:stale') : `cover:incomplete:${verdict.why}`);
             return verdict;
         },
     });

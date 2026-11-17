@@ -2,7 +2,7 @@
 // A picture that fits one chunk is written whole; anything larger arrives in row bands, each decoded and then claimed on its
 // own claimUpload, so no single write is larger than a chunk. Design: PLAN §4 gpu-h7, §3.1.
 import type { LayerHost } from '../../../platform/render/compositor.types';
-import type { ByteLease, GfxDevice, TextureHandle } from '../../../platform/render/gfx/api';
+import type { ByteLease, DrawableImage, GfxDevice, TextureHandle } from '../../../platform/render/gfx/api';
 import { auditCount } from '../../../platform/render/renderAudit';
 import type { FrameBudget } from '../../../platform/render/types';
 import type { Admission } from './contracts';
@@ -20,13 +20,23 @@ const IMAGE_MIPS = false;
 /** The filter every picture is sampled with: linear, with the mip chain when IMAGE_MIPS is on. */
 export const IMAGE_FILTER: 'linear' | 'linear-mipmap' = IMAGE_MIPS ? 'linear-mipmap' : 'linear';
 
-/** Bytes of a texture's whole chain: level 0 alone, or every level down to 1×1 when mips are on. */
-function textureBytes(width: number, height: number): number {
+/** Bytes of a texture's whole chain: level 0 alone, or every level down to 1×1 when it is mipped. */
+function textureBytes(width: number, height: number, mips: boolean = IMAGE_MIPS): number {
     let bytes = 0;
     for (let w = width, h = height; ; w = Math.max(1, w >> 1), h = Math.max(1, h >> 1)) {
         bytes += w * h * 4;
-        if (!IMAGE_MIPS || (w === 1 && h === 1)) return bytes;
+        if (!mips || (w === 1 && h === 1)) return bytes;
     }
+}
+
+/** A video node's current frame, from h12's registry (videoFrames.ts): the lease's `version` moves per presented frame, its
+ * `source` is a VideoFrame or an ImageBitmap, and its size is the lease's. The registry owns the frame and closes it when the
+ * lease is released: the texture never closes it, so a frame is never closed twice. */
+export interface VideoFrameInput {
+    readonly version: number;
+    readonly source: DrawableImage;
+    readonly width: number;
+    readonly height: number;
 }
 
 /** A picture's texture, the stable value every route draws from. `width`/`height` are its texels: the source's own, unless
@@ -45,6 +55,10 @@ export interface ImageTextures {
      * uploading; `denied` when the GPU pool refuses the lease; `unsupported` for a source this path cannot draw. `image` is
      * null once the picture's bitmap was released: a ready texture still draws; anything else must wait for the bitmap. */
     acquire(key: string, image: CanvasImageSource | null, budget: FrameBudget): Admission<ImageTexture>;
+    /** One texture per video node, rewritten in place when its version moves and never mipped. A version the texture already
+     * holds costs no upload; a new one is decoded, then written whole once its claim is granted. Until then the texture keeps
+     * the version it has, so a node is never drawn half-written. */
+    acquireVideo(key: string, frame: VideoFrameInput, budget: FrameBudget): Admission<ImageTexture>;
     /** True when acquiring `key` needs its bitmap: no texture is ready for this device. */
     needsSource(key: string): boolean;
     unhold(key: string): void;
@@ -82,6 +96,8 @@ interface Slot {
     busy: boolean;
     failed: boolean;
     dropped: boolean;
+    /** Video only: the version the texture holds (-1 before its first write). */
+    version: number;
 }
 
 const UPLOAD_USES = ['sample', 'copy-dst'] as const;
@@ -160,9 +176,9 @@ export function createImageTextures(host: LayerHost, audit: string): ImageTextur
     };
 
     const writeRows = (slot: Slot, device: GfxDevice, rect: { x: number; y: number; width: number; height: number },
-        source: ImageBitmap): void => {
+        source: DrawableImage, counter = 'upload:image'): void => {
         device.writeTexture(slot.view.texture, rect, { source, ...UPLOAD_SOURCE });
-        auditCount(audit, 'upload:image', 1, { bytes: rect.width * rect.height * 4 });
+        auditCount(audit, counter, 1, { bytes: rect.width * rect.height * 4 });
     };
 
     const finish = (slot: Slot, device: GfxDevice): void => {
@@ -230,11 +246,57 @@ export function createImageTextures(host: LayerHost, audit: string): ImageTextur
                 catch (error) { host.allocator.gpu.release(lease); throw error; }
                 const view: ImageTexture = Object.freeze({ key, texture, sourceWidth: w, sourceHeight: h, width: target.width, height: target.height });
                 slot = { device, view, lease, bytes, refs: 0, usedFrame: budget.frameId, ready: false, uploaded: 0,
-                    scaled: null, band: null, inflight: null, busy: false, failed: false, dropped: false };
+                    scaled: null, band: null, inflight: null, busy: false, failed: false, dropped: false,
+                    version: -1 };
                 slots.set(key, slot); gpuBytes += bytes;
             }
             slot.usedFrame = budget.frameId;
             if (!slot.ready && !advance(slot, device, image, budget)) return { status: 'deferred' };
+            slot.refs++;
+            return { status: 'ready', value: slot.view };
+        },
+        acquireVideo(key, frame, budget) {
+            const device = host.device();
+            if (!device) return { status: 'unsupported', why: 'no-device' };
+            if (device.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration) return { status: 'deferred' };
+            const { width: w, height: h, version } = frame;
+            if (!(w > 0 && h > 0)) return { status: 'empty' };
+            // A video is never scaled (pictures are, in `targetSize`): a frame past the device's texture limit cannot be a texture.
+            // Refused before a lease is reserved, so the composer counts the CPU fallback instead of createTexture throwing out of admit.
+            if (w > device.limits.maxTexture2D || h > device.limits.maxTexture2D) return { status: 'unsupported', why: 'video-size' };
+            let slot = slots.get(key);
+            // A node's size is its video's: a change re-creates the texture, but never while a run still draws the old one.
+            if (slot && (slot.device !== device || slot.view.sourceWidth !== w || slot.view.sourceHeight !== h)) {
+                if (slot.refs > 0) return { status: 'deferred' };
+                drop(slot); slot = undefined;
+            }
+            if (!slot) {
+                const bytes = textureBytes(w, h, false);
+                const lease = host.allocator.gpu.reserve(bytes);
+                if (!lease) { awaitCapacity(); return { status: 'denied', pool: 'gpu', bytes }; }
+                let texture: TextureHandle;
+                try { texture = device.createTexture(w, h, 'rgba8', UPLOAD_USES, lease, { mips: false }); }
+                catch (error) { host.allocator.gpu.release(lease); throw error; }
+                const view: ImageTexture = Object.freeze({ key, texture, sourceWidth: w, sourceHeight: h, width: w, height: h });
+                slot = { device, view, lease, bytes, refs: 0, usedFrame: budget.frameId, ready: false, uploaded: 0,
+                    scaled: null, band: null, inflight: null, busy: false, failed: false, dropped: false, version: -1 };
+                slots.set(key, slot); gpuBytes += bytes;
+            }
+            slot.usedFrame = budget.frameId;
+            // The version the texture holds costs nothing: no upload, no new texture.
+            if (slot.ready && slot.version === version) { slot.refs++; return { status: 'ready', value: slot.view }; }
+            // A new version is written whole, straight from the frame (the device reads a VideoFrame itself), once the media claim is
+            // granted: one per prepare. A refused claim keeps the texture on the version it has, so nothing is drawn half-written.
+            if (!budget.claimUpload(w * h * 4, 'media')) {
+                host.invalidate('video-texture-upload');
+                if (!slot.ready) return { status: 'deferred' };
+                slot.refs++;
+                return { status: 'ready', value: slot.view };
+            }
+            writeRows(slot, device, { x: 0, y: 0, width: w, height: h }, frame.source, 'upload:video');
+            slot.version = version; slot.ready = true;
+            // The frame is the registry's: it stays open, since a 2D fallback may still draw this lease. The version recorded above
+            // makes the next call for this node a no-op, so a node uploads at most once per presented frame.
             slot.refs++;
             return { status: 'ready', value: slot.view };
         },

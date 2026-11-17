@@ -341,13 +341,18 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
                     },
                     isCurrent: () => { try { valid(); return source.isCurrent(); } catch { return false; } } };
                 if (!frames || !pair) {
-                    const inner = createPaintFrameAssembler(() => pair?.invalidate('preview-ready'), report);
+                    // A frame is tagged with the request it was staged for, both when it is published and when a prepare reads it.
+                    const tag = (frame: PaintSource) => {
+                        if (!frameIds.has(frame) && requestedIds) { frameIds.set(frame, requestedIds); frameGenerations.set(frame, requestedGeneration); }
+                    };
+                    const inner = createPaintFrameAssembler(() => pair?.invalidate('preview-ready'), report, {
+                        isActive: () => !!engine.getView().visible && (typeof globalThis.document === 'undefined' || !globalThis.document.hidden),
+                        onPublished: tag,
+                    });
                     const assembler: typeof inner = { ...inner, prepare(budget) {
                         inner.prepare(budget);
                         const frame = inner.readFrame();
-                        if (frame && !frameIds.has(frame) && requestedIds) {
-                            frameIds.set(frame, requestedIds); frameGenerations.set(frame, requestedGeneration);
-                        }
+                        if (frame) tag(frame);
                     } };
                     const layers = createBoardLayers({ frames: assembler, images: options.images, onError: report, requestedRevision: () => pinned.revision,
                         requestedTheme: () => engine.getView().theme, optional: true, onPresented: presentedOverlay, auditSurface: 'board-preview',

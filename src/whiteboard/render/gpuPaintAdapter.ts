@@ -17,13 +17,14 @@ import { TILE_SIZE } from './imageSampling';
 import type { Blend, ItemRoute, PreparedRun } from './gpu/contracts';
 import { createTileComposer, type ResourcedRoute, type TileLay, type TileRoutes } from './gpu/tileComposer';
 import { createTileParts } from './gpu/tileParts';
-import { createTileStore, tileId, tileWorld } from './gpu/tileStore';
+import { createTileStore, tileWorld } from './gpu/tileStore';
 import { createPath, withPreparedClips } from './gpu/routePath';
 import { createInkRoutes, inkRouteFor } from './gpu/routeInk';
 import { createImageRoute } from './gpu/routeImage';
 import { createTextRoute } from './gpu/routeText';
 
 const SIZE = TILE_SIZE;
+const NO_INK: ReadonlySet<string> = new Set();
 const TILE_BYTES = SIZE * SIZE * 4;
 /** The quad that lays a composed tile: the whole texture onto its destination, linear, no coverage classification. */
 const QUAD = Object.freeze({ opacity: 1, sampling: 'linear', coverage: 'none' } as const);
@@ -73,6 +74,10 @@ interface CpuRun extends PreparedRun {
     readonly route: 'cpu';
     readonly texture: TextureHandle;
     readonly device: GfxDevice;
+    /** The lease the texture was created on: its bytes are what this run reports, read from the lease, not from a count. */
+    readonly lease: ByteLease;
+    /** The device generation the lease was granted in. A new generation abandons the old one, and returns its leases. */
+    readonly generation: number;
 }
 type CpuRoute = ItemRoute & ResourcedRoute;
 
@@ -85,6 +90,9 @@ function createCpuRoute(host: LayerHost, surface: string, lay: TileLay): CpuRout
     // The scratch canvas is CPU memory the governor must see: it is leased on the layer's CPU pool, and only that lease is reported.
     let scratchLease: ByteLease | null = null;
     const live = new Set<CpuRun>();
+    // A run is held only while its device generation is the host's: a new generation (or a lost device) abandons the old
+    // one, and the arena returns every lease it granted, so a stale run's bytes are no longer reserved to this layer.
+    const current = (run: CpuRun): boolean => run.device === host.device() && run.generation === host.generation;
     // Path geometry of a fragment or ink part, built once per item and device scale: the reference holds only its own items' paths.
     const paths = new WeakMap<PaintItem, { scale: number; prepared: PreparedPath2d }>();
     const pathOf = (item: PaintItem, scale: number, paint: PaintResources2d): PreparedPath2d => {
@@ -123,7 +131,6 @@ function createCpuRoute(host: LayerHost, surface: string, lay: TileLay): CpuRout
             const paint = resources;
             const device = host.device();
             if (!paint || !device) return { status: 'unsupported', why: 'no-paint-or-device' };
-            if (!budget.claimUpload(TILE_BYTES)) return { status: 'deferred' };
             if (!scratch) {
                 const cpuLease = host.allocator.cpu.reserve(TILE_BYTES);
                 if (!cpuLease) return { status: 'denied', pool: 'cpu', bytes: TILE_BYTES };
@@ -132,6 +139,8 @@ function createCpuRoute(host: LayerHost, surface: string, lay: TileLay): CpuRout
             }
             const lease = host.allocator.gpu.reserve(TILE_BYTES);
             if (!lease) return { status: 'denied', pool: 'gpu', bytes: TILE_BYTES };
+            // The claim comes after the reservations: a refused reservation spends no upload allowance.
+            if (!budget.claimUpload(TILE_BYTES)) { host.allocator.gpu.release(lease); return { status: 'deferred' }; }
             let texture: TextureHandle | null = null;
             let bitmap: ImageBitmap | null = null;
             try {
@@ -145,20 +154,23 @@ function createCpuRoute(host: LayerHost, surface: string, lay: TileLay): CpuRout
                 ctx.setTransform(s, 0, 0, s, -view.camera.x * s, -view.camera.y * s);
                 const withPaths: PaintResources2d = { ...paint, path: item => pathOf(item, s, paint) };
                 for (const item of items) paintItem2d(ctx, blend === 'modulate' ? multiplied(item) : item, withPaths);
-                auditCount(surface, 'cpu-raster', 1, { px: SIZE * SIZE });
                 bitmap = scratch.transferToImageBitmap();
                 texture = device.createTexture(SIZE, SIZE, 'rgba8', ['sample', 'copy-dst'], lease);
-                auditCount(surface, 'upload:image', 1, { bytes: TILE_BYTES });
                 device.writeTexture(texture, { x: 0, y: 0, width: SIZE, height: SIZE },
                     { source: bitmap, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
-                const run: CpuRun = { route: 'cpu', blend, texture, device };
+                // Counted once the raster has its texture: the composer counts the fallback with the same pixels.
+                auditCount(surface, 'cpu-raster', 1, { px: SIZE * SIZE });
+                const run: CpuRun = { route: 'cpu', blend, texture, device, lease, generation: host.generation };
                 live.add(run);
                 return { status: 'ready', value: run };
             } catch (error) {
                 // A texture owns its lease: destroying it returns the bytes; without one, the lease goes back itself.
                 if (texture) device.destroy(texture); else host.allocator.gpu.release(lease);
                 if (isBudgetRefusal(error)) return { status: 'denied', pool: 'gpu', bytes: TILE_BYTES };
-                throw error;
+                auditCount(surface, 'fallback:cpu-failed', 1, { px: SIZE * SIZE });
+                // A device's non-budget failure goes to the GPU error channel: the pane demotes to canvas2d instead of failing the open.
+                host.reportGpuError(error);
+                return { status: 'denied', pool: 'gpu', bytes: TILE_BYTES };
             } finally {
                 bitmap?.close();
             }
@@ -173,17 +185,22 @@ function createCpuRoute(host: LayerHost, surface: string, lay: TileLay): CpuRout
             if (run.route !== 'cpu') throw new Error('CPU route retired a run of another route');
             const cpu = run as CpuRun;
             if (!live.delete(cpu)) return;
-            cpu.device.destroy(cpu.texture);
+            if (current(cpu)) cpu.device.destroy(cpu.texture);
         },
         release(): void {
-            for (const run of live) run.device.destroy(run.texture);
+            // Cleared before any destroy: a destroy that throws must not leave a run counted with its lease already returned.
+            const runs = [...live];
             live.clear();
+            for (const run of runs) if (current(run)) run.device.destroy(run.texture);
             if (scratchLease) host.allocator.cpu.release(scratchLease);
             scratchLease = null;
             scratch = null;
         },
         memory(): { gpuBytes: number; cpuBytes: number } {
-            return { gpuBytes: live.size * TILE_BYTES, cpuBytes: scratchLease?.bytes ?? 0 };
+            // The ledger is the leases the live runs hold on this generation's device: each run's own lease, never a count.
+            let gpuBytes = 0;
+            for (const run of live) if (current(run)) gpuBytes += run.lease.bytes;
+            return { gpuBytes, cpuBytes: scratchLease?.bytes ?? 0 };
         },
     };
     return route;
@@ -208,6 +225,14 @@ export interface GpuPaintAdapter {
     /** The governor's GPU pressure: frees up to `bytes` of idle GPU memory, path coverage sets first, then composed tiles
      * not used this frame. Returns the bytes freed. */
     evictGpu(bytes: number, frameId: number): number;
+    /** The governor's CPU pressure: frees up to `bytes` of idle CPU memory (the path route's outline geometry, unused this
+     * frame). Returns the bytes freed. The board's cpuEvict hook forwards to it. */
+    evictCpu(bytes: number): number;
+    /** The GPU bytes the visible tiles at the current scale need, for a viewport of `width` by `height` (view units). */
+    gpuMandatoryBytes(viewport: { width: number; height: number }): number;
+    /** The ink node ids in the tiles this adapter drew in the current composite: filled in drawGpu, cleared at the next prepare.
+     * The wet layer skips these nodes in the same composite, so translucent ink never doubles at hand-over. */
+    drawnInkNodeIds(): ReadonlySet<string>;
     dispose(): void;
 }
 
@@ -225,6 +250,9 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
     let disposed = false;
     let lastFrame = -1;
     let presented: PreparedPaint2d | null = null;
+    // The device and generation the composer's leases were granted on, set when it last prepared. Once either changes the
+    // arena has returned those leases, so the composer's bytes are no longer reserved to this layer and are not reported.
+    let ledger: { device: GfxDevice; generation: number } | null = null;
     let omitPrepared: ReadonlySet<string> | null = null;
     // The view the composed tiles were last prepared for: the store keeps the tiles on it, so its eviction spares them.
     let lastView: ViewState | null = null;
@@ -247,7 +275,8 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
     };
     const composer = createTileComposer({
         host, audit: surface, parts: createTileParts(host, surface), store, routes,
-        tileId, tileWorld, inkRouteFor, lay, admitClips: pathRoute.admitClips, withPreparedClips,
+        tileWorld, inkRouteFor, lay, admitClips: pathRoute.admitClips, withPreparedClips,
+        layQuads: (pass, texture, quads) => host.drawTexturedQuads(pass, texture, quads, QUAD),
         ...(options.opaqueWorld ? { opaqueWorld: options.opaqueWorld } : {}),
         // The compose limit halves while the host reports a slow GPU, read each frame (PLAN 3.1).
         slowGpu: () => host.trouble() === 'slow-gpu',
@@ -257,21 +286,24 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         prepare(view: ViewState, budget: FrameBudget, omit?: ReadonlySet<string>): void {
             if (disposed || lastFrame === budget.frameId) return;
             lastFrame = budget.frameId;
-            pathRoute.coverage.beginFrame(budget.frameId);
+            pathRoute.beginFrame(budget.frameId);
             const prepared = reference.borrowPrepared(), device = host.device();
             if (!prepared || !device || !documentMatches(prepared.root, budget.token) || !documentMatches(prepared.sourceFrame, budget.token) ||
                 device.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration) {
                 composer.release('hidden');
-                presented = null; omitPrepared = null;
+                presented = null; omitPrepared = null; ledger = null;
                 return;
             }
             omitPrepared = omit?.size ? omit : null;
+            ledger = { device, generation: host.generation };
             try {
                 timed(surface, 'prepare', () => composer.prepare(view, budget, prepared, omit));
             } catch (error) {
                 if (isBudgetRefusal(error)) return;
-                report(error);
-                throw error;
+                // Reported, not rethrown: a throw here aborted the board's frame on every prepare while the content stayed in view.
+                // On a device the error goes to the GPU channel, so the pane demotes to canvas2d instead of failing the open.
+                host.reportGpuError(error);
+                return;
             }
             presented = prepared;
             lastView = view;
@@ -305,23 +337,34 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         },
         release(reason: GpuReleaseReason): void {
             composer.release(reason);
-            presented = null; omitPrepared = null; lastFrame = -1;
+            presented = null; omitPrepared = null; lastFrame = -1; ledger = null;
         },
         needsFrame(): boolean { return !disposed && composer.needsFrame(); },
+        drawnInkNodeIds(): ReadonlySet<string> { return disposed ? NO_INK : composer.drawnInkNodeIds(); },
+        gpuMandatoryBytes(viewport: { width: number; height: number }): number {
+            return disposed || !presented ? 0 : composer.mandatoryBytes(viewport.width, viewport.height);
+        },
         evictGpu(bytes: number, frameId: number): number {
             if (disposed || !(bytes > 0)) return 0;
             // Route caches first, then composed tiles: each frees only what this frame did not use. The sum is what was freed.
-            pathRoute.coverage.beginFrame(frameId);
+            pathRoute.beginFrame(frameId);
             let freed = pathRoute.coverage.evict(bytes);
             if (freed < bytes) freed += imageRoute.evictTextures(bytes - freed, frameId);
             if (freed < bytes) freed += textRoute.evictTextures?.(bytes - freed, frameId) ?? 0;
             if (freed < bytes && lastView) freed += store.evict(bytes - freed, frameId, lastView);
             return freed;
         },
+        evictCpu(bytes: number): number {
+            return disposed || !(bytes > 0) ? 0 : pathRoute.evictCpu(bytes);
+        },
         // GPU bytes are the composer's: each is leased by its owner (the store, a route) on the layer's GPU pool, reported once.
         // CPU bytes are this route's own leased scratch only: a route's CPU bytes that are not leased (the text scratch, the path
         // geometry cache) are not reported, since the governor would refuse to admit bytes it has not reserved.
-        memory(): { gpuBytes: number; cpuBytes: number } { return { gpuBytes: composer.memory().gpuBytes, cpuBytes: cpu.memory().cpuBytes }; },
+        memory(): { gpuBytes: number; cpuBytes: number } {
+            // The composer's ledger (store targets and route leases, the CPU route's included) counts only while its device generation is current.
+            const held = ledger !== null && ledger.device === host.device() && ledger.generation === host.generation;
+            return { gpuBytes: held ? composer.memory().gpuBytes : 0, cpuBytes: cpu.memory().cpuBytes };
+        },
         cpuWorkingSet(): { mandatoryBytes: number; prefetchBytes: number } {
             return { mandatoryBytes: composer.memory().cpuBytes, prefetchBytes: 0 };
         },

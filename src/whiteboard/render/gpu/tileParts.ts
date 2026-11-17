@@ -342,7 +342,7 @@ export const createTileParts: CreateTileParts = (_host, audit) => {
 
     const startBuild = (prepared: PreparedPaint2d): Build => {
         const root = prepared.root, revision = root.sceneRevision;
-        let full = !index || index.theme !== root.theme || index.variant !== root.rasterVariant;
+        const full = !index || index.theme !== root.theme || index.variant !== root.rasterVariant;
         let regions: readonly Rect[] = NO_RECTS;
         // A span without region history (no regionChangesSince on the source, or one the scene cannot bound) is not a rebuild:
         // the items are diffed against the index, so only the parts that actually changed are reported.

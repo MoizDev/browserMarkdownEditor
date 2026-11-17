@@ -71,6 +71,12 @@ export function createPreviewSlot(id: string, base: PlatformLayerDefinition): Pr
         encodeOffscreen(...args: Parameters<NonNullable<Layer['encodeOffscreen']>>) { this.sync()?.encodeOffscreen?.(...args); }
         draw2d(...args: Parameters<Layer['draw2d']>) { this.sync()?.draw2d(...args); }
         releaseGpu(reason: Parameters<Layer['releaseGpu']>[0]) { this.inner?.releaseGpu(reason); }
+        // Present only when the inner layer partially evicts: the platform releases a layer without this hook whole, and a slot
+        // that always had one would never be released whole, even when its inner layer has no partial release to offer.
+        get evictGpu(): Layer['evictGpu'] {
+            const inner = this.inner;
+            return inner?.evictGpu ? (bytes, frameId) => inner.evictGpu!(bytes, frameId) : undefined;
+        }
         memory() { return this.inner?.memory() ?? { gpuBytes: 0, cpuBytes: 0 }; }
         needsFrame() { return this.innerEpoch !== epoch || (this.inner?.needsFrame() ?? false); }
         // The revision the slot reports carries its epoch; the inner layer acknowledges the revision it reported itself.
@@ -98,6 +104,16 @@ export function createPreviewSlot(id: string, base: PlatformLayerDefinition): Pr
             const innerRevision = inner && s.innerDef ? s.innerDef.revision(inner) : 0;
             const draw = inner && s.innerDef?.drawVersion ? s.innerDef.drawVersion(inner) : 0;
             return keyFor(epoch, innerRevision, draw);
+        },
+        // The platform pins a layer's GPU working set and evicts its CPU bytes through the definition: a slot without these would
+        // drop the live preview's share from both, for as long as the preview is up.
+        gpuWorkingSet(layer, viewport) {
+            const s = slot(layer), inner = s.sync();
+            return inner && s.innerDef?.gpuWorkingSet ? s.innerDef.gpuWorkingSet(inner, viewport) : { mandatoryBytes: 0 };
+        },
+        cpuEvict(layer, bytes) {
+            const s = slot(layer), inner = s.sync();
+            if (inner && s.innerDef?.cpuEvict) s.innerDef.cpuEvict(inner, bytes);
         },
         cpuWorkingSet(layer, viewport) {
             const s = slot(layer), inner = s.sync();

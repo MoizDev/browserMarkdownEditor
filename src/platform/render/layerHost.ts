@@ -23,6 +23,8 @@ export interface LayerHostBindings {
     refreshDemandNow?(): void;
     /** The pane's governor trouble state (memoryGovernor's getter); absent means 'none'. */
     trouble?(): LayerTrouble;
+    /** A device-path error raised by the layer's own work (a draw or a resource it drives), routed to the pane's GPU error channel. */
+    gpuError?(error: unknown): void;
 }
 
 /** One stable host per layer. Accessors consult the live qualified generation, never the
@@ -88,6 +90,7 @@ export function createLayerHost(bindings: LayerHostBindings): LayerHost {
     };
     return {
         device: () => auditedDevice(bindings.gpuResources()?.device ?? null),
+        reportGpuError: (error: unknown) => bindings.gpuError?.(error),
         get generation() { return bindings.generation(); },
         allocator: bindings.allocator,
         reserveIsolation: reservation => {

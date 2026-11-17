@@ -269,8 +269,9 @@ export class MirrorSet<T extends object> {
         };
     }
 
-    /** Hidden: exact → low → nothing. Visible: low providers needed by this frame stay pinned. */
-    evict(bytes: number): void {
+    /** Hidden: exact → low → nothing. Visible: low providers needed by this frame stay pinned. Returns the bytes it closed:
+     * they stay charged as retiring until their borrows drain, so the governor counts them here, not by a later drop. */
+    evict(bytes: number): number {
         if (!Number.isFinite(bytes) || bytes < 0) throw new RangeError('Invalid mirror eviction');
         let retired = 0;
         const errors: unknown[] = [];
@@ -284,6 +285,7 @@ export class MirrorSet<T extends object> {
             if (record.closing) retired += record.entry.bytes;
         }
         if (errors.length) throw new AggregateError(errors, 'Mirror eviction failed');
+        return retired;
     }
 
     /** Only the App's session-closing barrier calls this, never hide/unmount/rename (§C7.1). */

@@ -251,8 +251,6 @@ interface PaneEntry {
 }
 
 const NO_REASONS: readonly string[] = Object.freeze([]);
-/** Reasons that only continue preparation: a frame asked for by nothing else can present nothing new when its layers are unchanged. */
-const CONTINUATION_REASONS: ReadonlySet<string> = new Set(['preparation-deferred', 'presentation-deferred']);
 
 
 interface DamageBatch { entry: PaneEntry; damage: DamageAccumulator; full: boolean; submitted: boolean }
@@ -270,6 +268,8 @@ interface FrameWork { entry: PaneEntry; frame: ScheduledFrame; batch: DamageBatc
     drawnChange: boolean;
     /** Layers whose prepare ran to completion this frame (a skipped layer is not counted). */
     called: number;
+    /** A full repaint is due (see the damage decision in the work pass): this frame must reach the canvas. */
+    repaint: boolean;
     /** The audit's name for what asked for this frame; '' when the render audit is off. */
     cause: string }
 interface PendingAcknowledgement { entry: PaneEntry; frameId: number; token: FrameToken; submission: ScheduledSubmission }
@@ -575,13 +575,14 @@ export class FrameScheduler {
         return this.running && !this.suspended && this.live(entry) && !this.demoted.has(entry) && sameToken(token, entry.pane.currentToken());
     }
 
-    /** True when this frame cannot change the picture: every layer of the pane ran its preparation to completion and none
-     * reported a visible change (prepare returned false), no upload was granted, the frame is not a full repaint, and its
-     * only reasons continue preparation (the deferred marks, or a layer's own needsFrame with no invalidation). A layer that
-     * was passed over, or returns nothing, is a change: nothing was proved about it. */
+    /** True when this frame cannot change the picture, whatever invalidated it: every layer of the pane ran its preparation to
+     * completion and none reported a visible change (prepare returned false), no upload was granted, and the frame needs no
+     * repaint (a full damage, a new token, camera or geometry since the last presented picture). A pane with a pending
+     * acknowledgement presents, because its submission is awaited. A layer that was passed over, or returns nothing, is a
+     * change: nothing was proved about it. The reason does not matter when nothing drawn changed. */
     private unchangedPicture(item: FrameWork): boolean {
-        if (item.drawnChange || item.called !== item.frame.layers.length || item.batch.full) return false;
-        for (const reason of item.frame.reasons) if (!CONTINUATION_REASONS.has(reason)) return false;
+        if (item.drawnChange || item.called !== item.frame.layers.length || item.repaint) return false;
+        for (const ack of this.acknowledgements) if (ack.entry === item.entry) return false;
         return true;
     }
 
@@ -756,12 +757,17 @@ export class FrameScheduler {
                     const revision = this.revisionKey(entry, layers);
                     const tags = { reasonBits: 0, contentRevision: revision.length <= 4096 ? revision : '', cameraEpoch: view.epoch };
                     const previous = entry.presented;
-                    if (batch.full || !batch.damage.freeze() || revision.length > 4096 || !previous ||
-                        !sameToken(token, previous.token) || previous.epoch !== view.epoch || previous.geometry !== geometry) batch.damage.markFull(tags);
+                    // A repaint: an explicit full damage, a new token (device, document, view lease), a camera or geometry change since the
+                    // last presented picture. Only such a frame must reach the canvas when no layer drew anything.
+                    // No pending damage is not a repaint: a frame that marked nothing (a layer's own needsFrame, a deferred mark) has
+                    // no damage record. It is drawn in full when it presents (the markFull below); the skip needs only `repaint`.
+                    const repaint = batch.full || revision.length > 4096 || !previous ||
+                        !sameToken(token, previous.token) || previous.epoch !== view.epoch || previous.geometry !== geometry;
+                    if (repaint || !batch.damage.freeze()) batch.damage.markFull(tags);
                     else batch.damage.mark({ x: 0, y: 0, width: 0, height: 0 }, tags);
                     const damage = batch.damage.freeze()!;
                     const frame = Object.freeze({ frameId, timestamp, intervalMs: this.intervalMs, token, view, layers, reasons, damage });
-                    work.push({ entry, frame, batch, geometry, hadInput: entry.inputPriority || reasons.includes('input'), platformPrepared: false, skipped: false, first: null, drawnChange: false, called: 0, cause });
+                    work.push({ entry, frame, batch, geometry, hadInput: entry.inputPriority || reasons.includes('input'), platformPrepared: false, skipped: false, first: null, drawnChange: false, called: 0, repaint, cause });
                     entry.inputPriority = false;
                 });
             }
@@ -836,11 +842,16 @@ export class FrameScheduler {
             for (const item of this.focusFirst(this.rotate(work, this.encodeCursor++))) {
                 this.call(item.entry, () => {
                     if (!item.platformPrepared || !this.valid(item.entry, item.frame.token)) return;
-                    // A continuation frame whose layers all report unchanged presents nothing new. Its damage stays pending (it
-                    // is merged back below, unsubmitted), and any work still outstanding keeps its own mark or needsFrame.
+                    // A frame whose layers all report unchanged presents nothing new, whatever invalidated it. Its damage stays pending
+                    // (merged back below, unsubmitted), and any work still outstanding keeps its own mark or needsFrame.
                     if (this.unchangedPicture(item)) {
                         if (renderAuditEnabled()) auditCount('pane', 'present-skipped:unchanged');
                         return;
+                    }
+                    if (renderAuditEnabled()) {
+                        const kept = item.repaint ? 'repaint' : this.acknowledgements.some(ack => ack.entry === item.entry) ? 'ack'
+                            : item.drawnChange ? 'changed' : 'not-called';
+                        auditCount('pane', 'present-kept:' + kept);
                     }
                     const encoding = item.entry.pane.encode(item.frame);
                     if (encoding) encodings.push({ work: item, encoding, done: false });
@@ -944,7 +955,11 @@ export class FrameScheduler {
             // keeps its id and the layers present what they already hold. The deferred work continues on the next frame, through
             // the layers' own needsFrame (no extra mark here: an idle pane must not gain a frame).
             const platform = meta === null;
-            if (exhausted && !requesting && !platform) { item.skipped = true; return; }
+            if (exhausted && !requesting && !platform) {
+                item.skipped = true;
+                if (renderAuditEnabled() && meta) auditCount('pane', 'prepare-passed-over:' + (item.entry.pane.layerId?.(meta.layer) ?? 'unnamed'));
+                return;
+            }
             const limit = exhausted && !platform ? performance.now() + meter.sliceMs : deadline;
             const shouldYield = () => !this.valid(item.entry, item.frame.token) || performance.now() >= limit ||
                 (meta !== null && item.entry.pane.isCritical(meta.layer, item.frame.view) !== critical);
@@ -1002,7 +1017,10 @@ export class FrameScheduler {
                 // that returns nothing, or that was not called, leaves the frame's picture open: it is presented.
                 const unchanged = meta.layer.prepare(item.frame.view, budget) === false;
                 item.called++;
-                if (!unchanged) item.drawnChange = true;
+                if (!unchanged) {
+                    item.drawnChange = true;
+                    if (renderAuditEnabled()) auditCount('pane', 'prepare-changed:' + (item.entry.pane.layerId?.(meta.layer) ?? 'unnamed'));
+                }
             }
             overshoot = Math.max(0, performance.now() - deadline);
         });

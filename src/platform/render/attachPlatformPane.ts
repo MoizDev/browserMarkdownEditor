@@ -70,6 +70,9 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     const compositorRef: { current: PaneCompositor | null } = { current: null };
     let lastView: ViewState = { camera: { ...camera.camera }, viewport: { ...camera.viewport }, epoch: 0, moving: false };
     let lastQuality: number | null = null;
+    /** What the last real present reported, for the frames that skip it (see presentUnchanged). Cleared whenever the pane stops presenting. */
+    let lastReport: { revision: string; backend: PaneCompositor['backend']; complete: boolean; sharp: boolean;
+        staleVersion: boolean | undefined; camera: { x: number; y: number; z: number }; geometry: number | undefined } | null = null;
     // Audit only: the camera scale of the previous mirrored present, for the present's zooming flag.
     let lastMirroredScale: number | null = null;
     let sampledCamera = { ...camera.camera };
@@ -355,7 +358,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         },
         interacting: options.isInteracting,
         windowVisibility: (windowVisible: boolean) => {
-            if (!windowVisible) { options.onPresentation(null); return; }
+            if (!windowVisible) { lastReport = null; options.onPresentation(null); return; }
             const state = lifecycle?.surface.snapshot().state;
             if (state !== 'gpu-visible' && state !== 'rebuilding') {
                 gpu = null;
@@ -411,7 +414,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                         gpu = null;
                         cpuPresented = false;
                         surfaceHost.clearStaged();
-                        options.onPresentation(null);
+                        lastReport = null; options.onPresentation(null);
                         // Every fallback, a GPU error included, needs a frame now: the GPU frame that failed may have cleared the
                         // canvas, and only a 2D frame repaints it. Without this the pane waited for an unrelated change.
                         lifecycle?.invalidate('cpu-fallback');
@@ -581,6 +584,8 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                                 touchedFrame = frame.frameId;
                                 if (qualityScale < 1) auditCount('pane', 'quality-below-1');
                                 if (drawing !== compositor) candidate.presented(frame.token.deviceGeneration);
+                                lastReport = { revision, backend: drawing.backend, complete, sharp, staleVersion,
+                                    camera: { x: liveCamera.x, y: liveCamera.y, z: liveCamera.z }, geometry: geometry?.generation };
                                 options.onPresentation({ frameId: frame.frameId, token: frame.token, backend: drawing.backend,
                                     complete, sharp, staleVersion,
                                     viewEpoch: frame.view.epoch, revision });
@@ -594,6 +599,22 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                             },
                         };
                     },
+                    // A frame whose layers all answered unchanged is presented without encode or submit: the picture on screen is the one
+                    // it would draw. It reports what the last real present reported, and only for the same token, revision, camera,
+                    // geometry and backend; anything else returns false and the scheduler encodes the frame as usual.
+                    presentUnchanged: (frame: ScheduledFrame): boolean => {
+                        const last = lastReport;
+                        const drawing = drawCompositor();
+                        if (!last || !drawing || drawing.backend !== last.backend || disposed) return false;
+                        const current = token();
+                        const liveCamera = options.readCamera();
+                        if (!current || !sameFrame(current, frame.token) || options.revision() !== last.revision ||
+                            liveCamera.x !== last.camera.x || liveCamera.y !== last.camera.y || liveCamera.z !== last.camera.z ||
+                            observer.current?.generation !== last.geometry) return false;
+                        options.onPresentation({ frameId: frame.frameId, token: frame.token, backend: last.backend, complete: last.complete,
+                            sharp: last.sharp, staleVersion: last.staleVersion, viewEpoch: frame.view.epoch, revision: last.revision });
+                        return true;
+                    },
                     writeOverlays: options.writeOverlays,
                     ...(__BME_BENCH__ ? { benchmarkMemory: () => {
                         const memory = runtime.governor.readout();
@@ -606,7 +627,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                                 cpuBytes: grant?.cpuBytes ?? 0 },
                         };
                     } } : {}),
-                    suspend: (reason: Parameters<PaneLifecycle<T>['suspend']>[0]) => { options.onPresentation(null); lifecycle?.suspend(reason); },
+                    suspend: (reason: Parameters<PaneLifecycle<T>['suspend']>[0]) => { lastReport = null; options.onPresentation(null); lifecycle?.suspend(reason); },
                 };
                 frameLease = runtime.scheduler.register(pane);
                 const lease = frameLease;
@@ -639,7 +660,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         if (disposed || visible === next) return;
         visible = next;
         if (!next) {
-            cpuPresented = false; gpuRequested = false; options.onPresentation(null);
+            cpuPresented = false; gpuRequested = false; lastReport = null; options.onPresentation(null);
             lifecycle?.hidePane();
             surfaceHost.clearStaged();
             gpu = null;
@@ -712,7 +733,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             if (disposed) return;
             setVisible(false);
             disposed = true;
-            options.onPresentation(null);
+            lastReport = null; options.onPresentation(null);
             candidate.dispose();
             observer.dispose();
             removeCapture();

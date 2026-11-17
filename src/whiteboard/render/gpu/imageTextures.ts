@@ -261,6 +261,9 @@ export function createImageTextures(host: LayerHost, audit: string): ImageTextur
             if (device.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration) return { status: 'deferred' };
             const { width: w, height: h, version } = frame;
             if (!(w > 0 && h > 0)) return { status: 'empty' };
+            // A video is never scaled (pictures are, in `targetSize`): a frame past the device's texture limit cannot be a texture.
+            // Refused before a lease is reserved, so the composer counts the CPU fallback instead of createTexture throwing out of admit.
+            if (w > device.limits.maxTexture2D || h > device.limits.maxTexture2D) return { status: 'unsupported', why: 'video-size' };
             let slot = slots.get(key);
             // A node's size is its video's: a change re-creates the texture, but never while a run still draws the old one.
             if (slot && (slot.device !== device || slot.view.sourceWidth !== w || slot.view.sourceHeight !== h)) {

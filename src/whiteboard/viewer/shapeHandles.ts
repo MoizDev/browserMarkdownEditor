@@ -1,4 +1,5 @@
 import { worldToSurface } from '../../platform/render/camera';
+import { cameraChanged, forgetCamera } from './cameraCache';
 import type { ScheduledFrame } from '../../platform/render/scheduler';
 import type { ViewState } from '../../platform/types';
 import { isLocked } from '../change/commands';
@@ -60,12 +61,14 @@ export function createShapeHandles(options: ShapeHandleOptions) {
     let controller: AbortController | undefined, svg: SVGSVGElement | undefined, group: SVGGElement | undefined;
     // The group's translation in surface pixels, as last written: a drag's offset moves every handle by one transform.
     let groupX = Number.NaN, groupY = Number.NaN;
-    let rendered: readonly Handle[] | null = null, renderedCount = 0, renderedCamera = '';
+    let rendered: readonly Handle[] | null = null, renderedCount = 0;
+    // The camera the group was built for: x, y, z as numbers, NaN until built.
+    const renderedCamera = new Float64Array(3).fill(Number.NaN);
     const presented = new PresentedHistory<{ camera: ViewState['camera']; handles: readonly Handle[]; count: number }>();
     let controlPending: AbortController | undefined, headBusy = false;
     const current = () => !disposed && options.current() && options.visible() && session.doc === doc;
     const clear = () => { handles = []; selected = null; svg?.remove(); svg = undefined; group = undefined;
-        rendered = null; renderedCount = 0; renderedCamera = ''; presented.clear(); options.invalidate(); };
+        rendered = null; renderedCount = 0; forgetCamera(renderedCamera); presented.clear(); options.invalidate(); };
     const refresh = () => {
         const turn = ++generation; controller?.abort(); controller = new AbortController(); const signal = controller.signal;
         clear(); if (!current()) return;
@@ -144,9 +147,10 @@ export function createShapeHandles(options: ShapeHandleOptions) {
             group = document.createElementNS(SVG_NS, 'g'); svg.append(group); options.overlay.append(svg);
             rendered = null; renderedCount = 0; groupX = Number.NaN; groupY = Number.NaN;
         }
-        const key = `${camera.x}:${camera.y}:${camera.z}`;
-        if (rendered !== handles || renderedCamera !== key) {
-            group.replaceChildren(); rendered = handles; renderedCount = 0; renderedCamera = key;
+        // Checked first and unconditionally, so the cache tracks the camera even on a frame rebuilt for the handles alone.
+        const cameraMoved = cameraChanged(renderedCamera, camera);
+        if (rendered !== handles || cameraMoved) {
+            group.replaceChildren(); rendered = handles; renderedCount = 0;
         }
         // A large imported polyline cannot rebuild thousands of SVG commands in one frame.
         const limit = Math.min(handles.length, renderedCount + 1024);

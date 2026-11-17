@@ -177,7 +177,7 @@ export class GpuCompositor implements PaneCompositor {
             }
             ids.add(binding.id); objects.add(binding.layer); chrome ||= binding.group === 'chrome';
             if (binding.isolation && (!Number.isFinite(binding.isolation.opacity) || binding.isolation.opacity < 0 ||
-                binding.isolation.opacity > 1 || !['normal', 'multiply', 'modulate'].includes(binding.isolation.blend))) {
+                binding.isolation.opacity > 1 || !['normal', 'multiply'].includes(binding.isolation.blend))) {
                 throw new ArenaError('invalid-input');
             }
             // Keep callback receiver semantics without reading the caller's mutable binding again.

@@ -18,7 +18,7 @@ export type CompositorLayerGroup = 'document' | 'chrome';
 /** Explicit isolation only; ordinary node/ancestor opacity remains per paint (design §10). */
 export interface CompositorIsolation {
     readonly opacity: number;
-    readonly blend: 'normal' | 'multiply' | 'modulate';
+    readonly blend: 'normal' | 'multiply';
     /** Already projected device bounds; omit only for a genuinely full-layer effect. */
     bounds?(frame: ScheduledFrame): RectI;
 }

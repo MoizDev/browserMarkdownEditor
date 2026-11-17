@@ -590,11 +590,18 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         consumeInput() { if (disposed || !options.current()) return; for (const callback of callbacks) callback(); },
         liveNodeIds() {
             if (disposed) return EMPTY_LIVE_IDS;
+            // Compared in place: the set is rebuilt only when it changes, since the board reads it every frame.
+            const pending = handover?.pendingSnapshots() ?? [];
+            let count = 0, same = true;
+            for (const snapshot of pending) {
+                if (!snapshot.dry) continue;
+                count++;
+                if (same && !liveIds.has(snapshot.dry.nodeId)) same = false;
+            }
+            if (same && count === liveIds.size) return liveIds;
             const next = new Set<string>();
-            for (const snapshot of handover?.pendingSnapshots() ?? []) if (snapshot.dry) next.add(snapshot.dry.nodeId);
-            let changed = next.size !== liveIds.size;
-            if (!changed) for (const id of next) if (!liveIds.has(id)) { changed = true; break; }
-            if (changed) liveIds = next.size ? new ImmutableIds(next) : EMPTY_LIVE_IDS;
+            for (const snapshot of pending) if (snapshot.dry) next.add(snapshot.dry.nodeId);
+            liveIds = next.size ? new ImmutableIds(next) : EMPTY_LIVE_IDS;
             return liveIds;
         },
         presented(revision, token, frame) {

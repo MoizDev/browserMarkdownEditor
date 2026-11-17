@@ -133,12 +133,14 @@ export interface ShaderLayout {
 
 // rendering-design.md:137–146, 239: mask-max is only for coverage-mask construction;
 // multiply is destination-aware composition, not a fixed-function colour blend.
+// 'modulate' is the fixed-function dst·src step of a multiply slice (rgb ZERO, SRC_COLOR; alpha ZERO, ONE): no shader,
+// no backdrop copy. It is not the destination-aware multiply of beginGroup/composite, which samples a leased backdrop.
 export interface PipelineDesc {
     shader: ShaderModule;
     topology: 'triangles' | 'triangle-strip';
     colorFormat: TextureFormat;
     samples: Samples;
-    blend: 'replace' | 'source-over' | 'mask-max' | 'add';
+    blend: 'replace' | 'source-over' | 'mask-max' | 'add' | 'modulate';
     alphaToCoverage: boolean;
     colorWrite: readonly [boolean, boolean, boolean, boolean];
     stencil: StencilState;
@@ -206,7 +208,8 @@ export interface CoverageTarget {
     readonly samples: Samples;
 }
 export interface CoverageToken { readonly id: number }
-export type CoverageOutput = { readonly kind: 'composite'; readonly blend: 'normal' | 'multiply' } | { readonly kind: 'mask' };
+// 'modulate' lays the resolved slice on the surface by fixed-function dst·src (see PipelineDesc.blend), not by backdrop copy.
+export type CoverageOutput = { readonly kind: 'composite'; readonly blend: 'normal' | 'multiply' | 'modulate' } | { readonly kind: 'mask' };
 // Exact charge for a coverage target: RGBA8 colour, multisample colour where requested, and at
 // least 8 B/px/sample of stencil (the backend's own rule, matching webgl2 #targetBytes).
 export function coverageTargetBytes(width: number, height: number, samples: Samples): number {
@@ -291,7 +294,8 @@ export interface FrameEncoder {
 }
 
 // rendering-design.md:202, 298: completion serials guard safe pooled-storage reuse.
-export interface Submission { readonly serial: number }
+// `stateSwitches`: program, blend and framebuffer changes the replayed commands made (the audit's gl:state).
+export interface Submission { readonly serial: number; readonly stateSwitches: number }
 
 // rendering-design.md:203–206, §2.5: already canonical; the caller closes the bitmap
 // explicitly after writeTexture returns. Upload does not repeat colour conversion.
@@ -319,16 +323,20 @@ export interface GfxDevice {
     readonly limits: GfxLimits;
     createBuffer(bytes: number, uses: readonly BufferUse[], lease: ByteLease): BufferHandle;
     writeBuffer(dst: BufferHandle, offset: number, src: ArrayBufferView): void;
+    // `mips` allocates the full chain down to 1×1, charged to the lease in full (about a third more than level 0).
     createTexture(
         width: number,
         height: number,
         format: TextureFormat,
         uses: readonly TextureUse[],
         lease: ByteLease,
+        options?: { mips?: boolean },
     ): TextureHandle;
     writeTexture(dst: TextureHandle, rect: RectI, src: BitmapUpload | PixelUpload): void;
-    // Clamp at the edge; no mip levels.
-    createSampler(filter: 'nearest' | 'linear'): SamplerHandle;
+    // Fills levels 1… from level 0 on the GPU. Only for a texture created with `mips`; call after each write to level 0.
+    generateMips(texture: TextureHandle): void;
+    // Clamp at the edge. 'linear-mipmap' trilinear-filters across the chain; it reads level 0 alone when there is none.
+    createSampler(filter: 'nearest' | 'linear' | 'linear-mipmap'): SamplerHandle;
     createClip(mask: TextureHandle, deviceBounds: RectI): ClipHandle;
     // Admitted in prepare on the same lease (texture then stencil target). Destroy both to retire it.
     createCoverageTarget(width: number, height: number, samples: Samples, lease: ByteLease): CoverageTarget;

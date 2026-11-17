@@ -79,7 +79,6 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     let gpu: QualifiedGpuPane | null = null;
     let cpuPresented = false;
     let gpuRequested = false;
-    let trimQueued = false;
     const drawCompositor = (): PaneCompositor | null => gpu && cpuPresented ? gpu.bundle.compositor : compositorRef.current;
     const activeMetrics = (): SurfaceMetricsCommitter => gpu && cpuPresented ? gpuMetrics : cpuMetrics;
 
@@ -99,16 +98,40 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         return { token: current, sourceRole: '', contentRevision: options.revision(), colourVersion: 0,
             geometryDigest: '', nominalDpr: lastView.viewport.dpr, view: lastView };
     };
-    const queueTrim = (): void => {
-        if (trimQueued) return;
-        trimQueued = true;
+    // The frame this pane was last prepared or presented in. Its caches are never evicted in the frame in progress, nor in
+    // the frame that just ran when a release is deferred to a microtask: an eviction of a pane that is on screen is re-
+    // prepared the next frame and evicted again (measured: 170 'budget' invalidations per 3 s on the large seed).
+    let touchedFrame = -1;
+    const touchedThisFrame = (): boolean => touchedFrame === runtime.scheduler.currentFrame();
+    // Layers whose GPU release is already scheduled. Several caches of one pane can ask in the same trim; the second must not
+    // count residency the first has already promised to free.
+    const releasing = new Set<Layer>();
+    /** Frees this pane's GPU residency, up to `bytes`, from its layers in order (or only `only`). The bytes are decided and
+     * returned now, so the governor can count them; the release waits for a microtask, outside any reservation, and only
+     * then invalidates the pane. A pane in this frame, or with nothing resident, frees 0 and is not invalidated. */
+    const trimGpu = (bytes: number, only?: Layer): number => {
+        if (disposed || !visible || touchedThisFrame()) return 0;
+        const victims: Layer[] = [];
+        let freed = 0;
+        for (const layer of only ? [only] : layerSet.layers) {
+            if (freed >= bytes) break;
+            if (releasing.has(layer)) continue;
+            const live = layer.memory().gpuBytes;
+            if (live <= 0) continue;
+            victims.push(layer);
+            releasing.add(layer);
+            freed += live;
+        }
+        if (!victims.length) return 0;
         queueMicrotask(() => {
-            trimQueued = false;
-            if (disposed || !visible) return;
-            // A visible pane's device working set is trimmed by its owner; releasing every layer for it dropped the plans on
-            // screen (a notebook's paper and board) on each eviction, and nothing presented until they were rebuilt.
+            for (const layer of victims) releasing.delete(layer);
+            if (disposed || !visible || touchedThisFrame()) return;
+            // Releasing a visible pane's whole working set dropped the plans on screen (a notebook's paper and board) on each
+            // eviction, so only the layers the governor asked for are released, and only while they are off this frame.
+            for (const layer of victims) if (layerSet.layers.includes(layer)) lifecycle?.releaseLayerGpu(layer, 'pressure');
             lifecycle?.invalidate('budget');
         });
+        return freed;
     };
     // A layer's declared demand changes between refreshes (a plan starts, a session bitmap is kept or dropped, a run is
     // refused). Each change marks the pane dirty; one refresh runs on the next microtask, however many changes landed.
@@ -127,23 +150,22 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         const cacheId = `${options.paneId}:${options.viewLease}:${id}:${++cacheSerial}`;
         const cpu = runtime.governor.register({ ...common, id: `${cacheId}:cpu`, pool: 'cpu', kind: 'working',
             memory: () => ({ live: current()?.memory().cpuBytes ?? 0, retiring: 0 }),
-            // The layer names what it can rebuild; without the hook nothing in this cache is reclaimable.
-            evict: bytes => { const layer = current(); if (layer) layerSet.definition(layer)?.cpuEvict?.(layer, bytes); } });
+            // The layer names what it can rebuild; without the hook nothing in this cache is reclaimable, and the bytes its
+            // drop measures are the bytes freed.
+            evict: bytes => {
+                const layer = current();
+                if (!layer || touchedThisFrame()) return 0;
+                const before = layer.memory().cpuBytes;
+                layerSet.definition(layer)?.cpuEvict?.(layer, bytes);
+                return Math.max(0, before - layer.memory().cpuBytes);
+            } });
         let gpuCache: MemoryCacheHandle;
         try {
             gpuCache = runtime.governor.register({ ...common, id: `${cacheId}:gpu`, pool: 'gpu',
                 kind: definition.liveInput ? 'live-input' : 'working',
                 memory: () => ({ live: current()?.memory().gpuBytes ?? 0, retiring: 0 }),
-                evict: () => {
-                    // Evict this layer's GPU cache, not the pane's: the governor names the cache it wants back.
-                    const layer = current();
-                    if (!layer || disposed || !visible) { queueTrim(); return; }
-                    queueMicrotask(() => {
-                        if (disposed || !visible || current() !== layer) return;
-                        lifecycle?.releaseLayerGpu(layer, 'pressure');
-                        lifecycle?.invalidate('budget');
-                    });
-                } });
+                // Evict this layer's GPU cache, not the pane's: the governor names the cache it wants back.
+                evict: bytes => { const layer = current(); return layer ? trimGpu(bytes, layer) : 0; } });
         } catch (error) { cpu.close(); throw error; }
         caches.push({ cpu, gpu: gpuCache, layer: current });
         return createLayerHost({
@@ -284,7 +306,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         invalidate: reason => lifecycle?.invalidate(reason), onError: options.onError,
         inputHealthy: () => healthyInputAt !== null && performance.now() - healthyInputAt <= RENDER_CONSTANTS.stalledFenceMs,
         frameInterval: () => lastFrameInterval,
-        onEvict: queueTrim,
+        onEvict: bytes => trimGpu(bytes),
         onReady: ready => {
             if (disposed || !visible) return;
             gpu = ready;
@@ -385,9 +407,11 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                         // event. Refresh before preparation, not after an allocation was refused.
                         runtime.refresh();
                     },
+                    layerId: (layer: Layer) => layerSet.definition(layer)?.id ?? 'unnamed',
                     sceneRevision: (layer: Layer) => layerSet.definition(layer)?.revision(layer) ?? 0,
                     isCritical: (layer: Layer, view: ViewState) => layerSet.definition(layer)?.critical(layer, view) ?? false,
                     prepareFrame: (frame: ScheduledFrame, budget: Parameters<PaneCompositor['prepareFrame']>[1]) => {
+                        touchedFrame = frame.frameId;
                         const drawing = drawCompositor();
                         drawing?.prepareFrame(frame, budget);
                         const mirror = mirrorView();
@@ -456,6 +480,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                                     }
                                 }
                                 auditFrame(drawing.backend, performance.now() - encodeStart);
+                                touchedFrame = frame.frameId;
                                 if (qualityScale < 1) auditCount('pane', 'quality-below-1');
                                 if (drawing !== compositor) candidate.presented(frame.token.deviceGeneration);
                                 options.onPresentation({ frameId: frame.frameId, token: frame.token, backend: drawing.backend,

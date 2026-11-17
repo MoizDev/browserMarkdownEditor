@@ -1,12 +1,15 @@
 import { styleGeometryMetrics } from '../geom/styleMetrics';
 import { CURVE_CHUNK_SPANS, CURVE_VERSION, curveParameters, materializeCurveRange, type CurveParameters, type CurveRange } from '../ink/curve';
-import { InkCoverageJob, type CoverageOptions, type InkCoverage } from '../ink/outline';
+import { InkCoverageJob, coverageOutline, type CoverageOptions, type InkCoverage } from '../ink/outline';
 import type { SampleSequence, SegmentKind } from '../ink/samples';
 import { DOT_METRIC_PROVISIONAL, radiusAtSample, realizeStrokePoints, validateInkWidth, type InkWidth } from '../ink/width';
 import type { StrokeNode } from '../model/nodes';
 import type { SampleChunk, SampleStoreReader } from '../model/samples';
+import { auditCount } from '../../platform/render/renderAudit';
 import { prepareInkCoverageInWorker } from '../workers/inkCoverageClient';
 import type { BoardJobIdentity } from '../workers/protocol';
+import { pathFillTriangles, type PathFillTriangles } from './pathFillTriangles';
+import { inkCoverageChunks, type PaintInkItem } from './paintStream';
 
 // The scene pin owns the sample lease. This adapter borrows chunk views, not a
 // point-sized object/array copy, and respects the store's exact chunk endpoints.
@@ -172,4 +175,100 @@ export function buildStrokeCoverageNow(node: StrokeNode, samples: SampleStoreRea
             if (next.done) return next.value;
         }
     } finally { job.return(undefined as never); }
+}
+
+// Tessellated ink for the GPU routes. Geometry is local-space and keyed by the chunk that owns it and by a device-scale
+// band, so the device transform is a uniform and a pan or a zoom inside one band builds nothing.
+
+/** Device pixels of flattening error allowed for a stencil-covered outline (design §5.1: ≤0.1 px), as the path route uses. */
+const INK_FLATTEN_DEVICE_PX = 0.1;
+/** The adapter's outline ceiling: an outline past it has no triangles, and the route refuses the stroke. */
+const INK_OUTLINE_MAX_COMMANDS = 262144;
+
+/** The device-scale band that geometry is built for: the upper edge of the half-octave that holds `deviceScale`. An
+ * outline built at the band's top holds 0.1 device px there and less at every lower scale in the band. */
+export function inkToleranceBand(deviceScale: number): number {
+    return 2 ** (Math.ceil(2 * Math.log2(deviceScale)) / 2);
+}
+
+export interface InkTriangles {
+    /** Origin-relative triangles, x and y per vertex. Positive and negative are folded together: the union rule draws every one. */
+    readonly triangles: Float64Array;
+    readonly origin: Readonly<{ x: number; y: number }>;
+    readonly bounds: Readonly<{ x0: number; y0: number; x1: number; y1: number }>;
+    readonly edges: number;
+}
+const ZERO_ORIGIN: Readonly<{ x: number; y: number }> = Object.freeze({ x: 0, y: 0 });
+const ZERO_BOUNDS: Readonly<{ x0: number; y0: number; x1: number; y1: number }> = Object.freeze({ x0: 0, y0: 0, x1: 0, y1: 0 });
+
+/** Each chunk's triangles, kept on the chunk: a chunk is immutable and the scene keeps it while it is drawn, so a
+ * committed stroke is tessellated once per band, and a live stroke re-tessellates only the chunk it is still adding to. */
+const chunkTriangles = new WeakMap<InkCoverage, { band: number; value: InkTriangles | null }>();
+/** One chunk's union triangles at one device-scale band. `null` when the outline exceeds its budget (the caller refuses
+ * the stroke, counted by the route); a build that fails for any other reason is not caught. */
+export function inkChunkTriangles(chunk: InkCoverage, band: number, audit: string): InkTriangles | null {
+    const held = chunkTriangles.get(chunk);
+    if (held && held.band === band) { auditCount(audit, 'geom:hit'); return held.value; }
+    auditCount(audit, 'geom:build');
+    const origin = { x: chunk.boundsLocal.x, y: chunk.boundsLocal.y };
+    let value: InkTriangles | null = null;
+    try {
+        const commands = coverageOutline(chunk, band, INK_OUTLINE_MAX_COMMANDS);
+        const shapes = pathFillTriangles(commands, { tolerance: INK_FLATTEN_DEVICE_PX / band, origin: [origin.x, origin.y] });
+        if (shapes) value = foldUnion(shapes, origin);
+    } catch (error) {
+        // Only the outline's own ceilings are RangeErrors that mean "refused"; anything else is a fault.
+        if (!(error instanceof RangeError)) throw error;
+    }
+    chunkTriangles.set(chunk, { band, value });
+    return value;
+}
+function foldUnion(shapes: PathFillTriangles, origin: Readonly<{ x: number; y: number }>): InkTriangles {
+    const { positive, negative } = shapes;
+    let triangles = positive;
+    if (negative.length) {
+        triangles = new Float64Array(positive.length + negative.length);
+        triangles.set(positive, 0); triangles.set(negative, positive.length);
+    }
+    return { triangles, origin, bounds: triangles.length ? shapes.bounds : ZERO_BOUNDS, edges: shapes.edges };
+}
+
+/** The union triangles of one stroke, rebased to its first chunk's corner. The array is the identity the path kit shares a
+ * vertex buffer by, so it is kept per item and band: each tile of one stroke at one band uploads it once. A live stroke
+ * that appends chunks rebuilds this copy (a memory copy, no re-tessellation). `null` when any chunk is refused. */
+const strokeTriangles = new WeakMap<PaintInkItem, { band: number; value: InkTriangles | null }>();
+export function inkStrokeTriangles(item: PaintInkItem, band: number, audit: string): InkTriangles | null {
+    const held = strokeTriangles.get(item);
+    if (held && held.band === band) return held.value;
+    const parts: InkTriangles[] = [];
+    let refused = false;
+    for (const chunk of inkCoverageChunks(item.coverage)) {
+        const part = inkChunkTriangles(chunk, band, audit);
+        if (!part) { refused = true; break; }
+        parts.push(part);
+    }
+    const value = refused ? null : joinChunks(parts);
+    strokeTriangles.set(item, { band, value });
+    return value;
+}
+function joinChunks(parts: readonly InkTriangles[]): InkTriangles {
+    if (!parts.length) return { triangles: new Float64Array(0), origin: ZERO_ORIGIN, bounds: ZERO_BOUNDS, edges: 0 };
+    const origin = parts[0].origin;
+    let length = 0, edges = 0;
+    for (const part of parts) { length += part.triangles.length; edges += part.edges; }
+    const triangles = new Float64Array(length);
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, offset = 0;
+    for (const part of parts) {
+        const dx = part.origin.x - origin.x, dy = part.origin.y - origin.y, source = part.triangles;
+        for (let i = 0; i < source.length; i += 2) {
+            triangles[offset + i] = source[i] + dx;
+            triangles[offset + i + 1] = source[i + 1] + dy;
+        }
+        if (source.length) {
+            x0 = Math.min(x0, part.bounds.x0 + dx); y0 = Math.min(y0, part.bounds.y0 + dy);
+            x1 = Math.max(x1, part.bounds.x1 + dx); y1 = Math.max(y1, part.bounds.y1 + dy);
+        }
+        offset += source.length;
+    }
+    return { triangles, origin, bounds: length ? { x0, y0, x1, y1 } : ZERO_BOUNDS, edges };
 }

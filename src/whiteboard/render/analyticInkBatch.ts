@@ -2,7 +2,10 @@ import type { ViewState } from '../../platform/types';
 import type { LayerHost } from '../../platform/render/compositor.types';
 import type { BufferHandle, ByteLease, GfxDevice, GpuPass, PipelineHandle, RectI } from '../../platform/render/gfx/api';
 import type { FrameBudget, FrameToken } from '../../platform/render/types';
-import type { AnalyticInkPaint } from './analyticInk';
+import { analyticInkPaint, type AnalyticInkPaint } from './analyticInk';
+import { auditCount } from '../../platform/render/renderAudit';
+import type { Admission, PreparedRun } from './gpu/contracts';
+import type { PaintInkItem } from './paintStream';
 import { ANALYTIC_INK_BATCH_SHADER } from './analyticInkBatchShader';
 
 const STRIDE = 48, SLABS = [64 * 1024, 128 * 1024, 256 * 1024] as const;
@@ -207,3 +210,128 @@ export function createAnalyticInkBatch(host: LayerHost, report: (error: unknown)
         dispose(): void { if (!disposed) { disposed = true; release(); } },
     };
 }
+
+// The run route (gpu-h5): a run of analytic capsules is packed once, uploaded in slabs, and drawn as one instanced draw
+// per slab. It is the route behind inkRouteFor's 'ink-analytic'; the batch above stays only for the running adapter.
+
+/** Slabs are bounded so one upload stays inside a frame's allowance; a run larger than a slab takes several. */
+const RUN_SLAB_BYTES = 256 * 1024;
+interface AnalyticSlab { readonly buffer: BufferHandle; readonly count: number; readonly bytes: number; readonly bounds: RectI }
+/** A run admitted for one view. Its slabs are immutable GPU buffers, drawn in item order. */
+export class AnalyticInkRun implements PreparedRun {
+    readonly route = 'ink-analytic' as const;
+    readonly blend = 'over' as const;
+    constructor(readonly device: GfxDevice, readonly viewport: Float32Array, readonly slabs: readonly AnalyticSlab[],
+        readonly instances: number) {}
+}
+
+/** Admits runs of analytic capsules, one view at a time. Packing is the single-item function's (analyticInkPaint), so the
+ * run's pixels are the single item's pixels; only the upload and the draw are batched. */
+export function createAnalyticInkRuns(host: LayerHost, audit: string) {
+    let device: GfxDevice | null = null, pipeline: PipelineHandle | null = null, pending = false, failed = false, incarnation = 0;
+    let gpuBytes = 0;
+    // One packing scratch, reused across admissions: writeBuffer copies its bytes before it returns.
+    let staging = new Float32Array(0);
+    const live = new Set<AnalyticInkRun>();
+    const destroyRun = (run: AnalyticInkRun): void => {
+        if (!live.delete(run)) return;
+        for (const slab of run.slabs) { run.device.destroy(slab.buffer); gpuBytes -= slab.bytes; }
+    };
+    const release = (): void => {
+        incarnation++;
+        for (const run of [...live]) destroyRun(run);
+        if (pipeline && device) device.destroy(pipeline);
+        pipeline = null; device = null; pending = false; failed = false; staging = new Float32Array(0);
+    };
+    const ensurePipeline = (owner: GfxDevice): boolean => {
+        if (pipeline) return true;
+        if (pending || failed) return false;
+        const serial = ++incarnation; pending = true;
+        try {
+            owner.createPipeline({ shader: ANALYTIC_INK_BATCH_SHADER, topology: 'triangle-strip', colorFormat: 'rgba8', samples: 1,
+                blend: 'source-over', alphaToCoverage: false, colorWrite: [true, true, true, true], stencil: { enabled: false } })
+                .then(value => {
+                    if (incarnation !== serial || device !== owner) { owner.destroy(value); return; }
+                    pipeline = value; pending = false; host.invalidate('analytic-batch-ready');
+                }, () => {
+                    if (incarnation !== serial) return;
+                    pending = false; failed = true; auditCount(audit, 'error:analytic-pipeline'); host.invalidate('analytic-batch-fallback');
+                });
+        } catch {
+            pending = false; failed = true; auditCount(audit, 'error:analytic-pipeline');
+        }
+        return false;
+    };
+    return {
+        admit(items: readonly PaintInkItem[], view: ViewState, budget: FrameBudget): Admission<AnalyticInkRun> {
+            const current = host.device();
+            if (!current) return { status: 'unsupported', why: 'no-device' };
+            if (current !== device) { release(); device = current; }
+            if (failed) return { status: 'unsupported', why: 'analytic-pipeline' };
+            if (!ensurePipeline(current)) return { status: 'deferred' };
+            if (current.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration) return { status: 'deferred' };
+            // Phase one packs every drawn instance into the scratch; it creates no GPU state, so a refusal here needs no rollback.
+            const rects: RectI[] = [];
+            for (const item of items) {
+                const paint = analyticInkPaint(item, view);
+                if (!paint) return { status: 'unsupported', why: 'analytic-unpackable' };
+                if (!paint.bounds.width || !paint.bounds.height) continue;
+                const n = rects.length;
+                if (staging.length < (n + 1) * 12) {
+                    const next = new Float32Array(Math.max((n + 1) * 12, staging.length * 2));
+                    next.set(staging); staging = next;
+                }
+                staging.set(paint.data.subarray(4, 16), n * 12);
+                rects.push(paint.bounds);
+            }
+            if (!rects.length) return { status: 'empty' };
+            // Phase two uploads one slab at a time; any refusal retires the slabs this admission already made.
+            const perSlab = Math.floor(RUN_SLAB_BYTES / STRIDE);
+            const created: AnalyticSlab[] = [];
+            const rollback = (): void => {
+                for (const slab of created) { current.destroy(slab.buffer); gpuBytes -= slab.bytes; }
+            };
+            for (let start = 0; start < rects.length; start += perSlab) {
+                if (start > 0 && budget.shouldYield()) { rollback(); return { status: 'deferred' }; }
+                const end = Math.min(rects.length, start + perSlab), bytes = (end - start) * STRIDE;
+                if (!budget.claimUpload(bytes)) { rollback(); return { status: 'deferred' }; }
+                const lease = host.allocator.gpu.reserve(bytes);
+                if (!lease) { rollback(); return { status: 'denied', pool: 'gpu', bytes }; }
+                let buffer: BufferHandle | null = null;
+                try {
+                    buffer = current.createBuffer(bytes, ['vertex', 'copy-dst'], lease);
+                    current.writeBuffer(buffer, 0, staging.subarray(start * 12, end * 12));
+                } catch (error) {
+                    if (buffer) current.destroy(buffer); else host.allocator.gpu.release(lease);
+                    rollback();
+                    throw error;
+                }
+                let bounds: RectI | null = null;
+                for (let i = start; i < end; i++) bounds = union(bounds, rects[i]);
+                created.push({ buffer, count: end - start, bytes, bounds: bounds! });
+                gpuBytes += bytes;
+                auditCount(audit, 'upload:vertex', 1, { bytes });
+            }
+            const run = new AnalyticInkRun(current, Float32Array.of(width(view), height(view), 0, 0), created, rects.length);
+            live.add(run);
+            return { status: 'ready', value: run };
+        },
+        draw(pass: GpuPass, run: AnalyticInkRun): void {
+            const ready = pipeline;
+            if (!live.has(run) || !ready || run.device !== device || host.device() !== device || host.generation !== run.device.generation) {
+                throw new Error('Stale analytic ink run');
+            }
+            const bindings = { uniforms: [{ binding: 0, slice: host.uniforms(run.viewport) }], textures: [] };
+            for (const slab of run.slabs) {
+                pass.draw({ pipeline: ready, bindings, vertices: [{ buffer: slab.buffer, offset: 0, bytes: slab.bytes }],
+                    first: 0, count: 4, instances: slab.count, scissor: slab.bounds });
+            }
+            auditCount(audit, 'route:ink-analytic', run.instances);
+        },
+        retire: destroyRun,
+        release,
+        memory(): { gpuBytes: number; cpuBytes: number } { return { gpuBytes, cpuBytes: staging.byteLength }; },
+    };
+}
+function width(view: ViewState): number { return Math.round(view.viewport.width * view.viewport.dpr); }
+function height(view: ViewState): number { return Math.round(view.viewport.height * view.viewport.dpr); }

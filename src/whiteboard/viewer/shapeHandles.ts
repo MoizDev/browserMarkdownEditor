@@ -57,12 +57,14 @@ type Handle = { readonly hit: ShapeHandleHit; readonly point: Vec2 };
 export function createShapeHandles(options: ShapeHandleOptions) {
     const { runtime } = options, session = runtime.session, doc = session.doc;
     let handles: readonly Handle[] = [], selected: NodeId | null = null, generation = 0, disposed = false;
-    let controller: AbortController | undefined, svg: SVGSVGElement | undefined;
+    let controller: AbortController | undefined, svg: SVGSVGElement | undefined, group: SVGGElement | undefined;
+    // The group's translation in surface pixels, as last written: a drag's offset moves every handle by one transform.
+    let groupX = Number.NaN, groupY = Number.NaN;
     let rendered: readonly Handle[] | null = null, renderedCount = 0, renderedCamera = '';
     const presented = new PresentedHistory<{ camera: ViewState['camera']; handles: readonly Handle[]; count: number }>();
     let controlPending: AbortController | undefined, headBusy = false;
     const current = () => !disposed && options.current() && options.visible() && session.doc === doc;
-    const clear = () => { handles = []; selected = null; svg?.remove(); svg = undefined;
+    const clear = () => { handles = []; selected = null; svg?.remove(); svg = undefined; group = undefined;
         rendered = null; renderedCount = 0; renderedCamera = ''; presented.clear(); options.invalidate(); };
     const refresh = () => {
         const turn = ++generation; controller?.abort(); controller = new AbortController(); const signal = controller.signal;
@@ -131,6 +133,41 @@ export function createShapeHandles(options: ShapeHandleOptions) {
     };
     const stopSelection = runtime.selection.subscribe(refresh), stopSession = session.subscribe(refresh);
     refresh();
+    // The handles are built once per camera, in surface pixels, and a drag's translation moves them all as one group transform:
+    // a moving translation rebuilds no node, it writes one attribute when its offset changed. By reading: the frame left them
+    // at rest while the preview moved, and a rebuild per move would cost a node per handle of a large polyline.
+    const SVG_NS = 'http://www.w3.org/2000/svg';
+    const paint = (camera: ViewState['camera'], moving: Vec2 | null): boolean => {
+        if (!svg || !group) {
+            svg = document.createElementNS(SVG_NS, 'svg'); svg.setAttribute('aria-hidden', 'true');
+            svg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible';
+            group = document.createElementNS(SVG_NS, 'g'); svg.append(group); options.overlay.append(svg);
+            rendered = null; renderedCount = 0; groupX = Number.NaN; groupY = Number.NaN;
+        }
+        const key = `${camera.x}:${camera.y}:${camera.z}`;
+        if (rendered !== handles || renderedCamera !== key) {
+            group.replaceChildren(); rendered = handles; renderedCount = 0; renderedCamera = key;
+        }
+        // A large imported polyline cannot rebuild thousands of SVG commands in one frame.
+        const limit = Math.min(handles.length, renderedCount + 1024);
+        while (renderedCount < limit) {
+            const path = document.createElementNS(SVG_NS, 'path'), parts: string[] = [];
+            const end = Math.min(limit, renderedCount + 256);
+            while (renderedCount < end) {
+                const handle = handles[renderedCount++], p = worldToSurface(handle.point, camera);
+                const r = handle.hit.kind === 'connector-control' || handle.hit.kind === 'polyline-midpoint' ? 3 : 5;
+                parts.push(`M ${p.x - r} ${p.y} a ${r} ${r} 0 1 0 ${2 * r} 0 a ${r} ${r} 0 1 0 ${-2 * r} 0 Z`);
+            }
+            path.setAttribute('d', parts.join(' ')); path.setAttribute('fill', '#ffffff');
+            path.setAttribute('stroke', '#75b7ff'); path.setAttribute('stroke-width', '1.5'); group.append(path);
+        }
+        const dx = moving ? moving.x * camera.z : 0, dy = moving ? moving.y * camera.z : 0;
+        if (dx !== groupX || dy !== groupY) {
+            groupX = dx; groupY = dy;
+            if (dx || dy) group.setAttribute('transform', `translate(${dx} ${dy})`); else group.removeAttribute('transform');
+        }
+        return renderedCount >= handles.length;
+    };
     return {
         refresh,
         hit(surface: Vec2, coarse = false, time?: number): ShapeHandleHit | null {
@@ -200,34 +237,19 @@ export function createShapeHandles(options: ShapeHandleOptions) {
             }).catch(options.error);
             return true;
         },
-        write(frame: ScheduledFrame) {
-            if (!current() || !handles.length) { svg?.remove(); svg = undefined; rendered = null; renderedCount = 0; presented.clear(); return; }
-            if (!svg) {
-                svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('aria-hidden', 'true');
-                svg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible'; options.overlay.append(svg);
-            }
-            const camera = frame.view.camera, key = `${camera.x}:${camera.y}:${camera.z}`;
-            if (rendered !== handles || renderedCamera !== key) {
-                svg.replaceChildren(); rendered = handles; renderedCount = 0; renderedCamera = key;
-            }
-            // A large imported polyline cannot rebuild thousands of SVG commands in one frame.
-            const limit = Math.min(handles.length, renderedCount + 1024);
-            while (renderedCount < limit) {
-                const path = document.createElementNS('http://www.w3.org/2000/svg', 'path'), parts: string[] = [];
-                const end = Math.min(limit, renderedCount + 256);
-                while (renderedCount < end) {
-                    const handle = handles[renderedCount++], p = worldToSurface(handle.point, camera);
-                    const r = handle.hit.kind === 'connector-control' || handle.hit.kind === 'polyline-midpoint' ? 3 : 5;
-                    parts.push(`M ${p.x - r} ${p.y} a ${r} ${r} 0 1 0 ${2 * r} 0 a ${r} ${r} 0 1 0 ${-2 * r} 0 Z`);
-                }
-                path.setAttribute('d', parts.join(' ')); path.setAttribute('fill', '#ffffff');
-                path.setAttribute('stroke', '#75b7ff'); path.setAttribute('stroke-width', '1.5'); svg.append(path);
-            }
+        write(frame: ScheduledFrame, moving: Vec2 | null = null) {
+            if (!current() || !handles.length) { svg?.remove(); svg = undefined; group = undefined; rendered = null; renderedCount = 0; presented.clear(); return; }
+            const camera = frame.view.camera;
+            const complete = paint(camera, moving);
             presented.present(frame.timestamp, { camera: { ...camera }, handles, count: renderedCount });
-            if (renderedCount < handles.length) options.invalidate();
+            if (!complete) options.invalidate();
+        },
+        writeLive(view: ViewState, moving: Vec2 | null = null) {
+            if (!current() || !handles.length) return;
+            if (!paint(view.camera, moving)) options.invalidate();
         },
         hide() { generation++; controller?.abort(); controlPending?.abort(); clear(); },
-        dispose() { if (disposed) return; disposed = true; generation++; controller?.abort(); controlPending?.abort(); controlPending = undefined; stopSelection(); stopSession(); svg?.remove(); svg = undefined; handles = []; selected = null;
+        dispose() { if (disposed) return; disposed = true; generation++; controller?.abort(); controlPending?.abort(); controlPending = undefined; stopSelection(); stopSession(); svg?.remove(); svg = undefined; group = undefined; handles = []; selected = null;
             rendered = null; renderedCount = 0; presented.clear(); },
     };
 }

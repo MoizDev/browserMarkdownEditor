@@ -364,9 +364,14 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
                     frames = assembler; pair = layers;
                     engine.setPreviewLayers({ underlay: { ...layers[0], id: 'board-preview-underlay' },
                         content: { ...layers[1], id: 'board-preview-content' } }, () => {
-                        const frame = layers.readyFrame();
+                        // The layers hand out the ready frame wrapped with its ink set, a new object per call whenever the frame
+                        // holds ink, so it is never the object the assembler tagged or retained. The tagged frame is the
+                        // assembler's own; it is the one the layers show when the wrapper matches it in revision, theme and token.
+                        // Keyed on the wrapper, the lookup missed on every drag of an ink node (measured: 84 of 84 calls).
+                        const shown = layers.readyFrame(), frame = assembler.readFrame();
                         const ids = frame && frameIds.get(frame);
-                        if (frame && ids && assembler.isCurrent(frame)) {
+                        if (shown && frame && ids && shown.sceneRevision === frame.sceneRevision && shown.theme === frame.theme
+                            && shown.token === frame.token && assembler.isCurrent(frame)) {
                             if (frameGenerations.get(frame) === generation) settle();
                             return { frame, nodeIds: ids };
                         }

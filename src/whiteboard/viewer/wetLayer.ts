@@ -26,9 +26,12 @@ type Prepared = { readonly snapshot: WetInkSnapshot; path: Path2D | null; readon
 // The finalized prefix of one stroke. A span the curve has finalized (publication.finalizedSpanCount) keeps its coverage
 // for the stroke's life, so a growing stroke tessellates only its replaceable tail.
 type Stable = { readonly nodeId: string; readonly scale: number; readonly origin: readonly [number, number]; spans: number;
-    chunks: InkCoverage[]; bounds: Bounds | null; dot: boolean; scan: number; buffers: Set<ArrayBufferLike>; leases: ByteLease[] };
+    chunks: InkCoverage[]; bounds: Bounds | null; dot: boolean; scan: number; buffers: Set<ArrayBufferLike>; leases: ByteLease[];
+    /** The tessellation scratch of this stroke, held for its life: one chunk runs at a time, and a publication per input frame
+     * reserved and released it again otherwise. */
+    temp: ByteLease | null };
 type Tail = { chunks: InkCoverage[]; bounds: Bounds | null; buffers: Set<ArrayBufferLike>; leases: ByteLease[] };
-type Chunk = { readonly first: number; readonly count: number; readonly finalizing: boolean; readonly temp: ByteLease;
+type Chunk = { readonly first: number; readonly count: number; readonly finalizing: boolean;
     coverage: InkCoverageJob | null; readonly leases: ByteLease[];
     retained: { coverage: InkCoverage; buffers: ArrayBufferLike[]; bytes: number } | null };
 type Work = { snapshot: WetInkSnapshot; stable: Stable; scale: number; offset: number; tail: Tail; chunk: Chunk | null };
@@ -179,6 +182,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         if (!item) return;
         stables.delete(gesture);
         for (const lease of item.leases) release(lease);
+        if (item.temp) release(item.temp);
     };
     const dropWork = () => {
         const item = work; work = null;
@@ -186,7 +190,6 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         const chunk = item.chunk; item.chunk = null;
         if (chunk) {
             chunk.coverage?.cancel();
-            release(chunk.temp);
             for (const lease of chunk.leases) release(lease);
         }
         for (const lease of item.tail.leases) release(lease);
@@ -414,7 +417,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         if (!stable) {
             const samples = snapshot.curve.samples;
             stable = { nodeId: snapshot.identity.nodeId, scale, origin: [samples.x(0), samples.y(0)], spans: 0, chunks: [],
-                bounds: null, dot: true, scan: 1, buffers: new Set(), leases: [] };
+                bounds: null, dot: true, scan: 1, buffers: new Set(), leases: [], temp: null };
             stables.set(gesture, stable);
         }
         work = { snapshot, stable, scale, offset: stable.spans, chunk: null,
@@ -433,7 +436,6 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
             const lease = retained.bytes ? reserve(retained.bytes) : null;
             if (retained.bytes && !lease) { denied = true; return false; }
             if (lease) c.leases.push(lease);
-            release(c.temp);
             if (c.finalizing) {
                 s.chunks.push(retained.coverage); s.spans = c.first + c.count;
                 s.bounds = unionBounds(s.bounds, retained.coverage.boundsLocal);
@@ -462,12 +464,13 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         if (offset < spans || (spans === 0 && offset === 0)) {
             const finalizing = spans > 0 && offset + FINAL_SPANS <= publication.finalizedSpanCount;
             const count = spans === 0 ? 0 : finalizing ? FINAL_SPANS : Math.min(CHUNK, spans - offset);
-            const temp = reserve(TEMP_BYTES); if (!temp) { denied = true; return false; }
+            const temp = s.temp ?? reserve(TEMP_BYTES); if (!temp) { denied = true; return false; }
+            s.temp = temp;
             const geometry = materializeCurveRange(real, { firstSpan: offset, spanCount: count }, publication.parameters);
             w.offset = spans === 0 ? 1 : offset + count;
             const style: InkWidth = { width: w.snapshot.presentation.width, model: { id: 'uniform' }, pressure: 'none' };
             const dot: InkDot | null = offset === 0 && s.dot ? { x: real.x(0), y: real.y(0), radius: DOT_METRIC_PROVISIONAL.radius(style.width, style.width / 2, style.model) } : null;
-            w.chunk = { first: offset, count, finalizing, temp, leases: [], retained: null,
+            w.chunk = { first: offset, count, finalizing, leases: [], retained: null,
                 coverage: new InkCoverageJob(real, geometry, style, { deviceScale: w.scale, dot, maxPrimitives: 4096 }) };
             // A non-finalized chunk is the tip: rebuilt on every publication, so this counts the per-input tessellation.
             if (!finalizing) auditCount('wet', 'tip-build');
@@ -571,7 +574,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
             const pending = !!work || snapshots.some(item => prepared.get(item.identity.gestureSequence)?.snapshot !== item);
             // Each band shares this one owner. Demand the NEXT bounded native-path/coverage
             // allocation before prepare, including a replacement while old wet pixels stay live.
-            const extra = pending ? (work ? (work.chunk ? 0 : TEMP_BYTES) + PATH_BLOCK + (work.chunk?.retained?.bytes ?? 0) : TEMP_BYTES + PATH_BLOCK) : 0;
+            const extra = pending ? (work?.stable.temp ? 0 : TEMP_BYTES) + PATH_BLOCK + (work?.chunk?.retained?.bytes ?? 0) : 0;
             return { mandatoryBytes: reserved + extra + (owner.device() ? routesMemory().cpuBytes : 0), prefetchBytes: 0 };
         },
         // A live stroke whose GPU runs are still in flight is critical: the non-critical share of a frame is one sliver,

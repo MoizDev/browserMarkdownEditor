@@ -228,9 +228,17 @@ export function createWebgl2Frame(backend: FrameBackend): ControlledFrame {
     return new DeviceFrame(backend);
 }
 
+/** One recorded operation. A draw keeps its pipeline, command and context as plain fields; any other operation (a pass
+ * boundary, a blit, a quad) keeps its closure in `run`. Records live in a reused array and are re-filled each frame, so a
+ * frame of N draws allocates no closure per draw. By reading: each draw used to allocate `() => pipeline.draw(…)` and
+ * the array of replay closures was rebuilt every frame. */
+interface Recorded { pipeline: FramePipeline | null; command: EncodedDraw | null; context: DrawContext | null; run: (() => void) | null }
+
 class DeviceFrame implements ControlledFrame {
     readonly #backend: FrameBackend;
-    readonly #commands: (() => void)[] = [];
+    readonly #commands: Recorded[] = [];
+    #count = 0;
+    readonly #replay: Recorded[] = [];
     readonly #blocks: PassBlock[] = [];
     #open: PassBlock | null = null;
     readonly #retained = new Map<FrameTarget['retained'], Retention>();
@@ -273,7 +281,7 @@ class DeviceFrame implements ControlledFrame {
             if (desc.target === 'surface') this.#surface = true;
             this.#backend.onPass(desc.target === 'surface');
             // The surface is never regrouped: it is composed last, after every offscreen pass has landed.
-            const block: PassBlock = { start: this.#commands.length, end: -1, simple: desc.target !== 'surface',
+            const block: PassBlock = { start: this.#count, end: -1, simple: desc.target !== 'surface',
                 written: new Set(), read: new Set(), first: null, lastPipeline: null };
             for (const written of [target.color?.texture, target.coverage, target.framebuffer, target.resolveFramebuffer]) {
                 if (written) block.written.add(written);
@@ -317,7 +325,10 @@ class DeviceFrame implements ControlledFrame {
                 executing = true;
                 this.#backend.uploadUniforms();
                 this.#backend.beginReplay();
-                for (const command of this.#replayList()) command();
+                for (const record of this.#replayList()) {
+                    if (record.pipeline) record.pipeline.draw(record.command!, record.context!);
+                    else record.run!();
+                }
                 const stateSwitches = this.#backend.endReplay();
                 serial = this.#backend.issue();
                 for (const [native, state] of this.#retained) Object.assign(native, state);
@@ -332,7 +343,7 @@ class DeviceFrame implements ControlledFrame {
                 throw error;
             } finally {
                 this.#closed = true;
-                this.#commands.length = 0;
+                this.#clearCommands();
                 this.#blocks.length = 0;
                 this.#retained.clear();
                 this.#cleanup(serial, serial === null);
@@ -342,19 +353,26 @@ class DeviceFrame implements ControlledFrame {
     cancel(): void {
         if (this.#closed) return;
         this.#closed = true;
-        this.#commands.length = 0;
+        this.#clearCommands();
         this.#blocks.length = 0;
         this.#retained.clear();
         this.#cleanup(null, true);
     }
+    /** Forgets this frame's records, keeping their slots for the next frame to re-fill (no per-frame allocation). */
+    #clearCommands(): void {
+        for (let i = 0; i < this.#count; i++) {
+            const slot = this.#commands[i];
+            slot.pipeline = null; slot.command = null; slot.context = null; slot.run = null;
+        }
+        this.#count = 0;
+    }
     /** The commands in replay order: each run of consecutive simple offscreen passes regrouped by `#order`, everything
-     * else where it was recorded. Returns the recorded list itself when nothing can be regrouped. */
-    #replayList(): readonly (() => void)[] {
-        const commands = this.#commands, blocks = this.#blocks;
-        if (blocks.length < 2) return commands;
-        const out: (() => void)[] = [];
+     * else where it was recorded. Filled into one reused array, so a frame allocates no replay list. */
+    #replayList(): readonly Recorded[] {
+        const commands = this.#commands, blocks = this.#blocks, out = this.#replay;
+        out.length = 0;
         let pos = 0, b = 0;
-        while (pos < commands.length) {
+        while (pos < this.#count) {
             if (b >= blocks.length || blocks[b].start !== pos) { out.push(commands[pos++]); continue; }
             let end = b + 1;
             if (blocks[b].simple) {
@@ -416,7 +434,21 @@ class DeviceFrame implements ControlledFrame {
         try { this.#backend.finish(serial); } catch (error) { failures.push(error); }
         if (failures.length) throw failures[0];
     }
-    command(operation: () => void): void { this.#commands.push(operation); }
+    command(operation: () => void): void {
+        const slot = this.#slot();
+        slot.pipeline = null; slot.command = null; slot.context = null; slot.run = operation;
+    }
+    /** Records a draw as plain fields of a reused slot, not as a closure. */
+    recordDraw(pipeline: FramePipeline, command: EncodedDraw, context: DrawContext): void {
+        const slot = this.#slot();
+        slot.pipeline = pipeline; slot.command = command; slot.context = context; slot.run = null;
+    }
+    #slot(): Recorded {
+        let slot = this.#commands[this.#count];
+        if (!slot) { slot = { pipeline: null, command: null, context: null, run: null }; this.#commands.push(slot); }
+        this.#count++;
+        return slot;
+    }
     token(): number {
         if (!Number.isSafeInteger(this.#nextToken)) throw new ArenaError('allocation');
         return this.#nextToken++;
@@ -472,7 +504,7 @@ class DeviceFrame implements ControlledFrame {
         this.end(target, desc);
         this.#pass = null;
         const block = this.#open;
-        if (block) { block.end = this.#commands.length; this.#blocks.push(block); this.#open = null; }
+        if (block) { block.end = this.#count; this.#blocks.push(block); this.#open = null; }
     }
     temporary(request: TargetRequest): TargetLease {
         const lease = this.#backend.acquireIsolation(request);
@@ -689,7 +721,7 @@ class DevicePass implements GpuPass {
                 ...(__BME_BENCH__ && cmd.coverageClass !== undefined ? { coverageClass: cmd.coverageClass } : {}) };
             const context = this.#scope;
             this.#frame.noteDraw(pipeline, textures);
-            this.#frame.command(() => pipeline.draw(command, context));
+            this.#frame.recordDraw(pipeline, command, context);
         });
     }
     acquireTarget(request: TargetRequest): TargetLease | null {

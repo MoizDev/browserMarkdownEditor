@@ -16,6 +16,7 @@ import { preparedOfFrame, type CanvasPaintAdapter, type PreparedPaint2d } from '
 import { Path2dJob } from '../render/reference/coverage2d';
 import { paintItem2d, type PaintResources2d, type PreparedPath2d } from '../render/reference/paint2d';
 import { notebookBackdrop } from './notebookBackdrop';
+import { FULL_REGION_CHANGES, type RegionChanges } from '../scene/boundsVersions';
 
 /** The composer's offscreen encode (PLAN §3.3, wave 2). Today's adapter has none, so the layer's call is guarded: a no-op. */
 type OffscreenEncoder = { encodeOffscreen?(passes: OffscreenPasses, view: ViewState, band: PaintBand): void };
@@ -28,8 +29,14 @@ export interface NotebookPaperSnapshot {
     readonly host: Readonly<NotebookHost>;
     readonly pages: readonly PageGeometry[];
 }
-/** A page's identity while it is drawn: its rect, so a page that moved or resized is not yet drawn. */
-const pageKey = (rect: Readonly<Rect>): string => `${rect.x},${rect.y},${rect.width},${rect.height}`;
+const NO_RECTS: readonly Rect[] = Object.freeze([]);
+const NO_CHANGES: RegionChanges = Object.freeze({ full: false, regions: NO_RECTS });
+/** Pages a paper keeps items for before it is replaced: by reading, a dotted page is about a thousand items, so this bounds a scroll. */
+const PAGE_CACHE_LIMIT = 48;
+/** A page's GPU paint: the template's items moved to the page, each clipped to it. Built once per ready paper. */
+type PagePaint = { readonly items: readonly PaintPathItem[] };
+type GpuPaper = { readonly ready: Ready; fresh: boolean; readonly pages: Map<number, PagePaint>;
+    readonly paths: WeakMap<PaintPathItem, PreparedPath2d>; readonly clips: Map<string, PreparedPath2d>; readonly resources: PaintResources2d };
 export interface NotebookPaperLayerOptions {
     /** Return the same immutable snapshot until its revision changes. */
     readonly read: () => NotebookPaperSnapshot;
@@ -66,6 +73,33 @@ function workingBytes(snapshot: NotebookPaperSnapshot, stack: Readonly<PageStack
     return bytes;
 }
 
+/** A page's paint, built on first use. Its items are the paper's template moved to the page, with the page's clip. */
+function paperPage(paper: GpuPaper, page: number): PagePaint {
+    const known = paper.pages.get(page);
+    if (known) return known;
+    const box = paper.ready.stack.rects[page];
+    const clipKey = `notebook-page/${page}/${box.x}/${box.y}/${box.width}/${box.height}`;
+    const d: PaintPathItem['d'] = [['M', 0, 0], ['L', box.width, 0], ['L', box.width, box.height], ['L', 0, box.height], ['Z']];
+    const clipPath = new Path2D(); clipPath.rect(0, 0, box.width, box.height);
+    paper.clips.set(clipKey, { path: clipPath, origin: [0, 0] });
+    const items = paper.ready.items.map(source => {
+        const [a, b, c, d0, e, f] = source.item.localToWorld;
+        const item: PaintPathItem = { ...source.item, key: `${source.item.key}/page/${page}`,
+            nodeId: `paper/${page}`, localToWorld: [a, b, c, d0, e + box.x, f + box.y],
+            clips: [...source.item.clips, { key: clipKey, d, fillRule: 'nonzero', localToWorld: [1, 0, 0, 1, box.x, box.y] }] };
+        paper.paths.set(item, source.path);
+        return item;
+    });
+    const built: PagePaint = { items: Object.freeze(items) };
+    paper.pages.set(page, built);
+    return built;
+}
+/** The revision a frame asks this layer for; a loop, since this runs every frame and `find` would allocate a closure. */
+function requestedRevision(frame: ScheduledFrame, layer: Layer): number | undefined {
+    for (const entry of frame.layers) if (entry.layer === layer) return entry.sceneRevision;
+    return undefined;
+}
+
 class NotebookPaperLayer implements Layer {
     private ready: Ready | null = null;
     private staged: Staging | null = null;
@@ -80,9 +114,13 @@ class NotebookPaperLayer implements Layer {
         image: () => { throw new Error('Notebook paper has no image resources'); },
     };
     private gpuPrepared: PreparedPaint2d | null = null;
-    private gpuSource: { ready: Ready; first: number; last: number; token: FrameToken } | null = null;
-    /** Pages whose paper has been drawn at least once since the GPU route was last released: the pages a board may claim opaque. */
-    private readonly drawn = new Set<string>();
+    private gpuSource: { ready: Ready; first: number; last: number; padFirst: number; padLast: number; token: FrameToken } | null = null;
+    private gpuPaper: GpuPaper | null = null;
+    private gpuGeneration = 0;
+    /** Stack rects whose paper has been drawn at least once since the GPU route was last released: the pages a board may
+     * claim opaque. By identity: a layout change makes new rect objects, so the claim resets with the layout. */
+    private drawn = new WeakSet<Rect>();
+    private claim: { readonly ready: Ready; readonly rects: readonly Rect[] } | null = null;
     private readonly gpuReference: CanvasPaintAdapter = {
         prepare: () => {}, readyFrame: () => this.gpuPrepared?.sourceFrame ?? null,
         borrowPrepared: () => this.gpuPrepared, retainPrepared: () => null, draw2d: () => {}, release: () => {},
@@ -117,7 +155,7 @@ class NotebookPaperLayer implements Layer {
         finally { this.host.allocator.cpu.release(old.lease); }
     }
     private dropReady(): void {
-        const old = this.ready; this.ready = null;
+        const old = this.ready; this.ready = null; this.gpuPaper = null;
         if (old) this.host.allocator.cpu.release(old.lease);
     }
     private snapshot(): NotebookPaperSnapshot {
@@ -132,7 +170,8 @@ class NotebookPaperLayer implements Layer {
                 this.dropStaged(); this.desired = snapshot; this.denied = false; this.failedRevision = null;
             }
             if (this.ready?.revision === snapshot.revision) {
-                this.ready.token = { ...budget.token }; return;
+                if (!sameToken(this.ready.token, budget.token)) this.ready.token = { ...budget.token };
+                return;
             }
             if (Object.is(this.failedRevision, snapshot.revision)) return;
             if (this.staged && !sameToken(this.staged.token, budget.token)) this.dropStaged();
@@ -197,45 +236,58 @@ class NotebookPaperLayer implements Layer {
         const last = pageAt(ready.stack, view.camera.y + view.viewport.height / view.camera.z);
         const previous = this.gpuSource;
         if (previous && previous.ready === ready && previous.first === first && previous.last === last && sameToken(previous.token, token)) return;
-        const paths = new WeakMap<PaintPathItem, PreparedPath2d>();
-        const clips = new Map<string, PreparedPath2d>();
+        // One page either side of the viewport: a tile at the viewport edge samples its neighbour's gutter.
+        const padFirst = Math.max(0, first - 1), padLast = Math.min(ready.stack.rects.length - 1, last + 1);
+        const paper = this.gpuPaperFor(ready);
+        const fresh = paper.fresh; paper.fresh = false;
         const items: PaintPathItem[] = [];
-        for (let page = first; page <= last; page++) {
-            const box = ready.stack.rects[page];
-            const clipKey = `notebook-page/${page}/${box.x}/${box.y}/${box.width}/${box.height}`;
-            const d: PaintPathItem['d'] = [['M', 0, 0], ['L', box.width, 0], ['L', box.width, box.height], ['L', 0, box.height], ['Z']];
-            const clipPath = new Path2D(); clipPath.rect(0, 0, box.width, box.height);
-            clips.set(clipKey, { path: clipPath, origin: [0, 0] });
-            for (const source of ready.items) {
-                const [a, b, c, d0, e, f] = source.item.localToWorld;
-                const item: PaintPathItem = { ...source.item, key: `${source.item.key}/page/${page}`,
-                    nodeId: `paper/${page}`, localToWorld: [a, b, c, d0, e + box.x, f + box.y],
-                    clips: [...source.item.clips, { key: clipKey, d, fillRule: 'nonzero', localToWorld: [1, 0, 0, 1, box.x, box.y] }] };
-                paths.set(item, source.path); items.push(item);
-            }
-        }
+        for (let page = padFirst; page <= padLast; page++) for (const item of paperPage(paper, page).items) items.push(item);
+        // The composer's revision for this frame: each rebuild is one. It learns the pages newly in view from the rebuild before
+        // it, and must recompose everything when the paper itself is new (a new ready revision, or a cache reset).
+        const from = this.gpuGeneration, to = from + 1; this.gpuGeneration = to;
+        const added: Rect[] = [];
+        if (!fresh && previous) for (let page = padFirst; page <= padLast; page++) if (page < previous.padFirst || page > previous.padLast) added.push(ready.stack.rects[page]);
+        const changes: RegionChanges = fresh || !previous ? FULL_REGION_CHANGES : { full: false, regions: added };
         const frame: PaintFrame = { token: { vaultEpoch: token.vaultEpoch, documentId: token.documentId,
-            bytesGeneration: token.bytesGeneration, session: token.session }, sceneRevision: ready.revision,
-        inkNodeIds: new Set(), underlay: [], content: items };
-        this.gpuPrepared = preparedOfFrame(frame, {
+            bytesGeneration: token.bytesGeneration, session: token.session }, sceneRevision: to,
+        inkNodeIds: new Set(), underlay: [], content: items,
+        regionChangesSince: since => since === to ? NO_CHANGES : since === from ? changes : FULL_REGION_CHANGES };
+        this.gpuPrepared = preparedOfFrame(frame, paper.resources);
+        this.gpuSource = { ready, first, last, padFirst, padLast, token: { ...token } };
+    }
+    /** The GPU paint of one ready paper: its pages' items are built once, and shared by every frame that shows them. */
+    private gpuPaperFor(ready: Ready): GpuPaper {
+        const current = this.gpuPaper;
+        // A cache that has grown past its page limit is replaced (fresh), so a long scroll of a large dotted notebook
+        // cannot hold every page it has shown. The old paper keeps its own resources for the prepared frames that use it.
+        if (current?.ready === ready && current.pages.size < PAGE_CACHE_LIMIT) return current;
+        const paths = new WeakMap<PaintPathItem, PreparedPath2d>(), clips = new Map<string, PreparedPath2d>();
+        const paper: GpuPaper = { ready, fresh: true, pages: new Map(), paths, clips, resources: {
             path: item => { const path = paths.get(item as PaintPathItem); if (!path) throw new Error('Notebook GPU path unavailable'); return path; },
             clip: key => { const clip = clips.get(key); if (!clip) throw new Error('Notebook GPU clip unavailable'); return clip; },
             image: () => { throw new Error('Notebook paper has no image resources'); },
-        });
-        this.gpuSource = { ready, first, last, token: { ...token } };
+        } };
+        this.gpuPaper = paper;
+        return paper;
     }
     drawGpu(pass: GpuPass, view: ViewState): void {
         this.gpu.drawGpu(pass, view, 'content');
         // Drawn only when the adapter's ready tiles are the ones prepared for this paper (the coverage test below).
         const source = this.gpuSource;
         if (source && this.gpuPrepared && this.gpu.readyPaint() === this.gpuPrepared) {
-            for (let page = source.first; page <= source.last; page++) this.drawn.add(pageKey(source.ready.stack.rects[page]));
+            for (let page = source.first; page <= source.last; page++) this.markDrawn(source.ready.stack.rects[page]);
         }
     }
     /** The current pages whose paper has been drawn at least once: the only pages a board may claim opaque (C1 readiness). */
     drawnPageRects(): readonly Rect[] {
-        if (this.disposed || !this.ready) return [];
-        return this.ready.stack.rects.filter(rect => this.drawn.has(pageKey(rect)));
+        const ready = this.ready;
+        if (this.disposed || !ready) return NO_RECTS;
+        if (this.claim?.ready !== ready) this.claim = { ready, rects: ready.stack.rects.filter(rect => this.drawn.has(rect)) };
+        return this.claim.rects;
+    }
+    private markDrawn(rect: Rect): void {
+        if (this.drawn.has(rect)) return;
+        this.drawn.add(rect); this.claim = null;
     }
     /** Forwards the composer's offscreen encode; a no-op until the adapter has one (PLAN §3.3, wave 2). */
     /** The governor's trim: frees the adapter's GPU tiles not used this frame, and returns the bytes freed. */
@@ -265,12 +317,12 @@ class NotebookPaperLayer implements Layer {
                     ctx.translate(box.x, box.y); ctx.beginPath(); ctx.rect(0, 0, box.width, box.height); ctx.clip();
                     for (const item of ready.items) paintItem2d(ctx, item.item, this.resources);
                 } finally { ctx.restore(); }
-                this.drawn.add(pageKey(box));
+                this.markDrawn(box);
             }
         });
     }
     releaseGpu(reason: GpuReleaseReason): void {
-        this.gpu.release(reason); this.gpuPrepared = null; this.gpuSource = null; this.drawn.clear();
+        this.gpu.release(reason); this.gpuPrepared = null; this.gpuSource = null; this.drawn = new WeakSet(); this.claim = null;
         // Pressure takes GPU memory only. The CPU paths stay: dropping them made every pressure release a
         // full rebuild (measured: 788 rebuilds in one notebook stroke), and the rebuild asked for the same tiles again.
         if (reason === 'pressure') return;
@@ -298,7 +350,7 @@ class NotebookPaperLayer implements Layer {
     }
     critical(): boolean { return !this.ready; }
     coverage(frame: ScheduledFrame, layer: Layer, backend: CompositorBackend): LayerCoverage {
-        const ready = this.ready, requested = frame.layers.find(entry => entry.layer === layer)?.sceneRevision;
+        const ready = this.ready, requested = requestedRevision(frame, layer);
         if (!ready || !sameToken(ready.token, frame.token)) return { complete: false, sharp: false };
         const current = ready.revision === requested && ready.revision === this.options.read().revision;
         if (!current) return { complete: false, sharp: false, staleVersion: true };

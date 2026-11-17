@@ -32,6 +32,13 @@ function midpoint(a: Dyadic, b: Dyadic): Dyadic {
     valid(result); return result;
 }
 function middle(a: DPoint, b: DPoint): DPoint { return { x: midpoint(a.x, b.x), y: midpoint(a.y, b.y) }; }
+/** True when n * 2^e is exactly 1, whatever its representation: trailing zero bits of n move into e first. */
+function isUnitDyadic(w: Dyadic): boolean {
+    let n = w.n, e = w.e;
+    if (n === 0n) return false;
+    while ((n & 1n) === 0n) { n >>= 1n; e += 1; }
+    return n === 1n && e === 0;
+}
 function signed(n: bigint): -1 | 0 | 1 { return n < 0n ? -1 : n > 0n ? 1 : 0; }
 function spans(a: bigint, b: bigint): boolean { return (a <= 0n && b >= 0n) || (b <= 0n && a >= 0n); }
 
@@ -43,7 +50,9 @@ export function createFillPointJob(paths: readonly (readonly PathOp[])[], point:
         maxWork = limits.maxWork ?? 5000000, maxCommands = limits.maxCommands ?? 1000000;
     if (!Number.isSafeInteger(maxDepth) || maxDepth < 0 || maxDepth > 128 || !Number.isSafeInteger(maxNodes) || maxNodes < 1
         || !Number.isSafeInteger(maxWork) || maxWork < 1 || !Number.isSafeInteger(maxCommands) || maxCommands < 1) throw new RangeError('Invalid fill point limits');
-    if (limits.exactPoint && (limits.exactPoint.w.n !== 1n || limits.exactPoint.w.e !== 0)) throw new RangeError('Fill point requires unit homogeneous weight');
+    // Compare the VALUE, not the fields: a dyadic is not canonical (2^52 * 2^-52 is 1), and a marquee's exact corners
+    // carry such weights. The raw test refused them, so the region query failed and a marquee selected nothing.
+    if (limits.exactPoint && !isUnitDyadic(limits.exactPoint.w)) throw new RangeError('Fill point requires unit homogeneous weight');
     const origin = limits.exactPoint ? { x: limits.exactPoint.x, y: limits.exactPoint.y } : { x: dyadic(point.x), y: dyadic(point.y) };
     valid(origin.x); valid(origin.y);
     const translate = (p: Vec2): DPoint => {

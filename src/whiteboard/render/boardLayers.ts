@@ -37,6 +37,8 @@ export interface BoardLayersOptions {
     /** Fired once per actual change of the renderer's progress; never for a repeated value. */
     readonly onPaintProgress?: () => void;
     readonly requestedRevision: () => number;
+    /** The node ids published in (from, to], or null when unknown (history not retained, a structural change, or no scene yet). */
+    readonly changedNodesSince?: (from: number, to: number) => ReadonlySet<string> | null;
     /** The theme the view asks for: a frame painted for the other theme is never current, whatever its revision. */
     readonly requestedTheme: () => 'light' | 'dark';
     /** View-only suppression, evaluated against the actual ready preview frame. */
@@ -811,11 +813,12 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     // by their live layer). A drag moves only those, so its base picture stays current (measured: stale:revision on 186 of 186
     // drag-sat frames). Unknown history (null, or a structural change) is stale.
     const undrawnChangeSince = (from: number, to: number): boolean => {
+        // The live scene history first (it names the revisions a frame lags behind); the pinned frame's own history when the
+        // live one is not retained for this span.
         const now = options.frames.readFrame();
-        if (!now || now.sceneRevision !== to) return false;
-        const changed = now.changedNodesSince?.(from);
+        const changed = options.changedNodesSince?.(from, to) ?? (now && now.sceneRevision === to ? now.changedNodesSince?.(from) : null);
         if (!changed) return false;
-        const omitted = options.omitNodes?.(now) ?? null, live = options.liveNodeIds?.();
+        const omitted = now ? options.omitNodes?.(now) ?? null : null, live = options.liveNodeIds?.();
         for (const id of changed) if (!omitted?.has(id) && !live?.has(id)) return false;
         return true;
     };

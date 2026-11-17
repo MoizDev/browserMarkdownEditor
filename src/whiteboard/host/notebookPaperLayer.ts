@@ -226,14 +226,18 @@ class NotebookPaperLayer implements Layer {
             this.report(error);
         }
     }
-    prepare(view: ViewState, budget: FrameBudget): void {
+    // Reports changed (true) on every path: the paper's own staging and source steps can change what it draws, and the
+    // composer's prepare reports nothing, so no path can prove the picture unchanged yet. Forwarding the composer's answer
+    // (false, once it proves one) needs those steps to prove idle too.
+    prepare(view: ViewState, budget: FrameBudget): boolean {
         // One page step is always admitted: under a zero slice the staging never advances, and needsFrame keeps asking.
         this.preparePaper(withFirstUnit(budget));
-        if (this.disposed || !this.host.device()) return;
+        if (this.disposed || !this.host.device()) return true;
         try {
             this.prepareGpuSource(view, budget.token);
             this.gpu.prepare(view, budget);
         } catch (error) { this.report(error); }
+        return true;
     }
     private prepareGpuSource(view: ViewState, token: FrameToken): void {
         const ready = this.ready;

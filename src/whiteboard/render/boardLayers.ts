@@ -599,7 +599,10 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         }
         denied = false; return true;
     };
-    const prepare = (view: ViewState, budget: FrameBudget) => {
+    // Returns nothing on every path, which the Layer contract reads as changed: the composer's prepare reports nothing, and no
+    // path here proves the band's picture unchanged from the last presented frame (the view, the frame and the composer's
+    // settled state are not compared).
+    const prepare = (view: ViewState, budget: FrameBudget): void => {
         if (!adapter || disposed || lastPrepareFrame === budget.frameId) return;
         lastPrepareFrame = budget.frameId; prepareToken = budget.token; prepareFrameId = budget.frameId;
         preparedView = view;

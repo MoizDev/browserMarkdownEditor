@@ -2,6 +2,7 @@ import { RENDER_CONSTANTS } from './constants';
 import type { RenderToken } from './types';
 import type { ByteLease } from './gfx/api';
 import type { MemoryAllocator } from './memoryGovernor';
+import { auditCount } from './renderAudit';
 import type {
     BrokerGpuOwner, ContextDisposeReason, CpuFallbackReason, GpuGrant, GpuRequestResult,
     SurfaceBrokerConfiguration, SurfaceCallbacks, SurfaceLease, SurfaceRegistration, SurfaceSnapshot, SurfaceStamp,
@@ -378,6 +379,7 @@ class SurfaceBroker {
                 this.abandon(entry, 'creation-failed');
                 entry.failed = 'creation-failed';
                 if (capabilityUnavailable) entry.callbacks.onCapabilityFailure?.();
+                auditCount('context', 'creation-failed');
                 return this.fallback(entry, 'creation-failed');
             }
             if (!valid() || !drawable(entry)) {
@@ -394,6 +396,7 @@ class SurfaceBroker {
                 if (entry.reservation !== reservation) return { kind: 'stale' };
                 this.abandon(entry, 'creation-failed');
                 entry.failed = 'creation-failed';
+                auditCount('context', 'creation-failed');
                 return this.fallback(entry, 'creation-failed');
             }
             return valid() && drawable(entry) ? { kind: 'gpu', grant } : { kind: 'stale' };
@@ -449,6 +452,7 @@ class SurfaceBroker {
             finally {
                 const pinned = entry.circuit.losses.length >= RENDER_CONSTANTS.contextLossPinCount;
                 if (pinned) entry.circuit.pinned = true;
+                auditCount('context', pinned ? 'loss:pinned' : 'loss');
                 try {
                     zeroCanvas(reservation.canvas);
                     entry.callbacks.onSurfaceZeroed?.(reservation.canvas);
@@ -481,6 +485,7 @@ class SurfaceBroker {
             reservation.intentional || entry.circuit.pinned) return;
         reservation.restored = true;
         this.pauseRestoreClock(reservation);
+        auditCount('context', 'restored');
         if (!drawable(entry)) { this.abandon(entry, 'stale'); return; }
         if (reservation.foregroundMs >= RESTORE_FOREGROUND_MS) { this.restoreTimedOut(entry, reservation); return; }
         if (!this.windowVisible) return;
@@ -519,6 +524,7 @@ class SurfaceBroker {
 
     private restoreTimedOut(entry: SurfaceEntry, reservation: Reservation): void {
         if (!this.current(entry) || entry.reservation !== reservation || !reservation.lost) return;
+        auditCount('context', 'restore-timeout');
         this.abandon(entry, 'restore-timeout');
         entry.failed = 'restore-timeout';
         if (drawable(entry)) this.fallback(entry, 'restore-timeout');

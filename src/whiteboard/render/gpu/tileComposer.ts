@@ -392,9 +392,12 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                             position = started;
                             building.set(key, position);
                         }
-                        if (composed >= limit || budget.shouldYield()) return;
+                        // Why a frame composes nothing is the zoom question: each exit is counted (pass and cause).
+                        if (composed >= limit) { auditCount(audit, `compose:limit:${pass}`); return; }
+                        if (budget.shouldYield()) { auditCount(audit, `compose:yield:${pass}`); return; }
                         const outcome = advance(position, budget, gpu);
-                        if (outcome !== 'done') return;
+                        if (outcome !== 'done') { auditCount(audit, `compose:${outcome}:${pass}`); return; }
+                        auditCount(audit, `compose:done:${pass}`);
                         building.delete(key);
                         finished.push(position);
                         composed += position.slices.length;

@@ -175,6 +175,8 @@ export class PdfTileLayer implements Layer {
     private contentIdentity = '';
     private lastMotionScale: PdfDemandInput['previousMotionScale'];
     private motionScaleAt = 0;
+    /** The raster scale the previous prepare planned for: a zoom is a prepare whose scale differs from it. */
+    private lastRasterScale = 0;
     private latestDemand: Omit<PdfDemandInput, 'covered' | 'previousMotionScale'> | null = null;
     private latestView: ViewState | null = null;
     private mirrorJob: MirrorJob | null = null;
@@ -264,6 +266,12 @@ export class PdfTileLayer implements Layer {
             motionScaleOverride: holdMotionScale ? this.lastMotionScale : undefined,
             covered: (page, area) => this.covered(page, area, device) });
         if (input.moving && !holdMotionScale) this.motionScaleAt = now;
+        // A zoom is a frame whose raster scale differs from the previous frame's. On the GPU a tile a stand-in covers is
+        // not started in such a frame: the stand-in is scaled from the nearest cached size meanwhile, and a raster started
+        // there finishes after the scale has moved on and is thrown away. The first frame the scale rests starts it, so a
+        // rest costs one frame, not a settle time (a 150 ms hold here doubled the time to exact against canvas2d).
+        const zooming = !!device && this.lastRasterScale !== 0 && Math.abs(input.rasterScale / this.lastRasterScale - 1) > 1e-6;
+        this.lastRasterScale = input.rasterScale;
         // A spare page is kept only for a zoom that is still changing: at rest it is 4 MB of empty texture.
         this.lastMotionScale = planned.motionScale;
         this.desired = new Set(planned.requests.map(request => request.text));
@@ -308,6 +316,18 @@ export class PdfTileLayer implements Layer {
                 } else auditCount('pdf-page', 'stand-in-held');
             }
         }
+        // A landed visible exact tile goes up before anything else in the frame. Until it does, a stand-in shows in its place,
+        // and the plan's low previews and speculative tiles come first in the loop below, so they took the frame's one
+        // progress grant ahead of it. Prefetch and low previews still upload in the loop, with whatever allowance is left.
+        if (device) {
+            for (const request of planned.requests) {
+                if (request.level !== 'exact' || request.priority === 'prefetch') continue;
+                const landed = this.entries.get(request.text);
+                if (!landed?.bitmap || landed.texture?.device === device || this.failed.has(request.text)) continue;
+                if (budget.shouldYield()) { this.pendingFrame = true; break; }
+                if (this.uploadTile(device, request.text, landed, budget) === 'budget') { this.pendingFrame = true; break; }
+            }
+        }
         let running = [...this.entries.values()].filter(entry => !entry.settled).length;
         for (const request of planned.requests) {
             const key = request.text;
@@ -331,6 +351,8 @@ export class PdfTileLayer implements Layer {
                 continue;
             }
             if (this.failed.has(key) || running >= 3) continue;
+            // Held for the frame the scale rests; pendingFrame keeps the next frame coming so the rest is not missed.
+            if (zooming && this.covered(request.page, rect(request), device)) { auditCount('pdf-page', 'zoom-deferred'); this.pendingFrame = true; continue; }
             if (budget.shouldYield()) { this.pendingFrame = true; break; }
             const bytes = request.tile.textureWidth * request.tile.textureHeight * 4;
             let lease = this.host.allocator.cpu.reserve(bytes);

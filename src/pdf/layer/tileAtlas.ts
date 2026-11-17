@@ -1,13 +1,15 @@
 import type { GfxDevice, TextureHandle } from '../../platform/render';
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 
-/** The page edge in texels: 2048 is the largest 2D texture every WebGL2 device must offer, and the device's own limit
- * wins when it is smaller. */
-export const ATLAS_PAGE_EDGE = 2048;
 /** The largest tile texture: the 512 interior plus the one-texel gutter on each side. Every tile of the layer fits a slot. */
 export const ATLAS_SLOT_EDGE = 514;
 /** Slots start 2 texels apart, so a linear sample at a tile's edge reads its own gutter and never a neighbour's texels. */
 export const ATLAS_SLOT_PITCH = 516;
+/** The page edge in texels: two slots a side, four tiles. A page is charged whole, so the page size is the granularity of
+ * what GPU memory holds. Measured on doc12 at one viewport: a 2048-texel page (16.8 MB, nine slots) held two tiles' worth of
+ * pixels, and two such pages were the whole 33.5 MB of page textures canvas2d kept as 11.7 MB of bitmaps. A four-slot page
+ * is 4.3 MB. The device's own limit wins when it is smaller (every WebGL2 device offers at least 2048). */
+export const ATLAS_PAGE_EDGE = 2 * ATLAS_SLOT_PITCH;
 
 export interface AtlasPage<T> {
     readonly id: number;
@@ -35,6 +37,13 @@ export interface AtlasSlot<T> {
  * One empty page is kept as a spare so a zoom that empties and refills a page does not create it again; a second empty
  * page is destroyed. `unlink` is called for every owner whose slot disappears without the owner releasing it.
  */
+/** The smallest rank among a page's owners: the owner nearest the view decides how the whole page ranks. */
+function pageRank<T>(page: AtlasPage<T>, rank: (owner: T) => number): number {
+    let least = Infinity;
+    for (const owner of page.owners) if (owner !== null) least = Math.min(least, rank(owner));
+    return least === Infinity ? 0 : least;
+}
+
 export class TileAtlas<T> {
     private readonly pages: AtlasPage<T>[] = [];
     private spare: AtlasPage<T> | null = null;
@@ -80,12 +89,14 @@ export class TileAtlas<T> {
     }
 
     /**
-     * Destroys whole pages, least recently used first, while their owners are all `evictable`, until `bytes` are freed.
-     * A page with any owner the predicate refuses stays: its pixels are still on screen or cannot be restored.
+     * Destroys whole pages while their owners are all `evictable`, until `bytes` are freed. A page with any owner the
+     * predicate refuses stays: its pixels are still on screen or cannot be restored. Order: the highest `rank` first (a
+     * page ranks by its nearest owner, so a page that holds anything near the view goes last), then least recently used.
      */
-    evictPages(bytes: number, evictable: (owner: T) => boolean): number {
+    evictPages(bytes: number, evictable: (owner: T) => boolean, rank?: (owner: T) => number): number {
         const candidates = this.pages.filter(page => page.owners.every(owner => owner === null || evictable(owner)))
-            .sort((a, b) => a.lastUsed - b.lastUsed);
+            .map(page => ({ page, rank: rank ? pageRank(page, rank) : 0 }))
+            .sort((a, b) => b.rank - a.rank || a.page.lastUsed - b.page.lastUsed).map(candidate => candidate.page);
         let freed = 0;
         for (const page of candidates) {
             if (freed >= bytes) break;

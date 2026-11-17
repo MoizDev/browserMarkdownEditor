@@ -46,6 +46,8 @@ interface Entry {
     bitmap?: ImageBitmap;
     /** Where the pixels live on the GPU: one slot of a shared atlas page. */
     slot?: AtlasSlot<Entry>;
+    /** The last prepared frame that drew this tile: its pixels are never a trim's to take while that frame is the last one. */
+    drawnFrame?: number;
     used: number;
 }
 
@@ -213,7 +215,12 @@ export class PdfTileLayer implements Layer {
         private readonly mirror?: PdfLayerMirror, private readonly bridge?: PdfVersionBridge | null) {
         if (__BME_BENCH__) this.benchmarkRaster = true;
         this.texturePool = new PdfTexturePool(host.allocator.gpu);
-        this.tileAtlas = new TileAtlas<Entry>(host.allocator.gpu, entry => { entry.slot = undefined; this.coverCache = null; });
+        this.tileAtlas = new TileAtlas<Entry>(host.allocator.gpu, entry => {
+            entry.slot = undefined;
+            // A tile whose only pixels were its slot is re-rastered if the plan still wants it, and dropped if not.
+            if (!entry.bitmap) entry.settled = false;
+            this.coverCache = null;
+        });
     }
 
     prepare(view: ViewState, budget: FrameBudget): void {
@@ -274,6 +281,8 @@ export class PdfTileLayer implements Layer {
         // usually finishes after the zoom has moved past its scale and is thrown away (measured on a 1000-page PDF:
         // 18-32 of 66 rasters per zoom gesture dropped unused). Uncovered area is still rastered at once.
         const zooming = !!device && now - this.scaleChangedAt < ZOOM_SETTLE_MS;
+        // A spare page is kept only for a zoom that is still changing: at rest it is 4 MB of empty texture.
+        if (!zooming && !input.moving) this.tileAtlas.dropSpare();
         this.lastMotionScale = planned.motionScale;
         this.desired = new Set(planned.requests.map(request => request.text));
         if (!input.moving) {
@@ -474,6 +483,7 @@ export class PdfTileLayer implements Layer {
         }
         const device = this.host.device();
         const tiles = this.drawable(view, current);
+        for (const entry of tiles) entry.drawnFrame = this.preparedFrame;
         // Scale order is kept between groups, since different scales overlap; same-scale tiles are batched by page.
         let start = 0;
         while (start < tiles.length) {
@@ -627,7 +637,10 @@ export class PdfTileLayer implements Layer {
      * this layer prepared: for any other frame the plan does not say what is on screen, so nothing is freed. */
     evictGpu(bytes: number, frameId: number): number {
         const input = this.latestDemand;
-        if (this.disposed || !input || frameId !== this.preparedFrame) return 0;
+        if (this.disposed || !input) return 0;
+        // Between frames as well as inside one: the trim runs when the scheduler has moved on, and a layer that did not prepare
+        // that frame (a settled pane) used to answer 0 here, so the pool stayed over target. What may go is decided by the tile,
+        // not by the frame id: nothing on screen, and nothing the last prepared frame drew (see evictableTile).
         let freed = 0;
         const pooled = this.texturePool.memory();
         if (pooled > 0) {
@@ -635,16 +648,26 @@ export class PdfTileLayer implements Layer {
             freed += pooled;
         }
         freed += this.tileAtlas.dropSpare();
-        // Whole pages only: a page with a planned or bitmap-less tile on it frees no bytes, so it stays. A freed tile
-        // keeps its CPU bitmap, so it is uploaded again later rather than rastered.
-        if (freed < bytes) freed += this.tileAtlas.evictPages(bytes - freed, entry => this.evictableTile(entry, input));
+        // Whole pages only: a page with a protected tile on it stays. Off-view and other-scale tiles go first, farthest first.
+        if (freed < bytes) freed += this.tileAtlas.evictPages(bytes - freed, entry => this.evictableTile(entry, input),
+            entry => this.evictionRank(entry, input));
         if (freed) auditCount('pdf-page', 'evict-gpu', 1, { bytes: freed });
         return freed;
     }
 
-    /** A tile whose pixels can be restored without a raster (a CPU bitmap) and that the plan does not show on screen now. */
+    /** Larger is evicted first: off the view, then another scale than the one drawn, then farther from the view's centre. */
+    private evictionRank(entry: Entry, input: Omit<PdfDemandInput, 'covered' | 'previousMotionScale'>): number {
+        const box = rect(entry.request), view = input.viewport;
+        const offView = intersects(box, view) ? 0 : 1;
+        const otherScale = scaleDiffers(entry.request.scale.scale, input.rasterScale) ? 1 : 0;
+        const dx = box.x + box.width / 2 - (view.x + view.width / 2), dy = box.y + box.height / 2 - (view.y + view.height / 2);
+        return offView * 1e12 + otherScale * 1e9 + Math.hypot(dx, dy);
+    }
+
+    /** A tile a trim may take: not on the view (a tile on screen is part of every frame that draws it), and not drawn by the
+     * last prepared frame. Its pixels come back by a bitmap upload, or a raster if the plan still wants it. */
     private evictableTile(entry: Entry, input: Omit<PdfDemandInput, 'covered' | 'previousMotionScale'>): boolean {
-        return !!entry.bitmap && !(this.desired.has(entry.request.text) && intersects(rect(entry.request), input.viewport));
+        return !intersects(rect(entry.request), input.viewport) && entry.drawnFrame !== this.preparedFrame;
     }
 
     /** The atlas's answer to a refused page: free the least recently used page the plan does not show, then the layer's own

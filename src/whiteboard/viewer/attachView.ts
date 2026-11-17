@@ -62,6 +62,9 @@ export const attachView: AttachView = options => {
     let viewAsked: SceneKey | null = null, sceneAsked: SceneKey | null = null, sceneDue = false;
     // The key whose whole-scene request was refused for its size: not asked again for that key (sceneRefused stops the stage's re-arming).
     let sceneRefused: SceneKey | null = null;
+    // The sheet's whole candidate count at a revision, read from a view pin once its stream has opened: a pin counts
+    // nothing before that, so the whole-scene decision waits for it (a probe pin would never answer).
+    let wholeCount: { readonly revision: number; readonly sheet: string; readonly count: number } | null = null;
     // The view request in force: its key, its device scale and the world it covers (1.5 viewports each side).
     let viewWorld: { key: SceneKey; scale: number; world: Rect } | null = null;
     const unions = new WeakMap<ReadonlySet<string>, WeakMap<ReadonlySet<string>, ReadonlySet<string>>>();
@@ -179,7 +182,8 @@ export const attachView: AttachView = options => {
             if (failed) { failed = null; publish(); }
             // The view frame of the current key is up: the whole scene may now be asked for (once).
             // The request is made by the next prepare, which a presentation alone does not schedule: ask for that frame.
-            if (layers.onDevice() && viewAsked && revision === viewAsked.revision && !sameSceneKey(sceneAsked, viewAsked) && !sameSceneKey(sceneRefused, viewAsked)) { sceneDue = true; layers.invalidate('board-scene-request'); }
+            // Armed once per key: while the stage is already due, a presented frame must not invalidate again (that re-presented forever).
+            if (layers.onDevice() && !sceneDue && viewAsked && revision === viewAsked.revision && !sameSceneKey(sceneAsked, viewAsked) && !sameSceneKey(sceneRefused, viewAsked)) { sceneDue = true; layers.invalidate('board-scene-request'); }
             interaction?.presented?.(revision, token, frame, context);
             embedProducer?.presented(revision, token, frame, context);
         },
@@ -280,9 +284,7 @@ export const attachView: AttachView = options => {
         // pin counts nothing until its first stream opens, so the stage stays due. A refusal is latched on this key.
         let scene = onDevice && sceneDue && sameSceneKey(viewAsked, key);
         if (scene) {
-            const probe = runtime.scene.pin();
-            const whole = probe.countCandidates?.(sheet(), WHOLE_SHEET) ?? null;
-            probe.release();
+            const whole = wholeCount && wholeCount.revision === key.revision && wholeCount.sheet === key.sheet ? wholeCount.count : null;
             if (whole === null) return;
             if (!sceneFits(whole)) { sceneRefused = key; sceneDue = false; auditCount('board', 'request:scene-too-large'); scene = false; }
         }
@@ -335,6 +337,10 @@ export const attachView: AttachView = options => {
             }
             // The stream's open has built this pin's index for the sheet: the count is current before the frame prepares.
             if (world) { const landed = pin.countCandidates?.(selectedSheet, world) ?? null; if (landed !== null) lastCandidates = landed; }
+            if (!wholeCount || wholeCount.revision !== key.revision || wholeCount.sheet !== selectedSheet) {
+                const total = pin.countCandidates?.(selectedSheet, WHOLE_SHEET) ?? null;
+                if (total !== null) wholeCount = { revision: key.revision, sheet: selectedSheet, count: total };
+            }
             frames.requestStream({ stream, isCurrent: () => pin.isCurrent(), release: () => pin.release(), ...(dense ? { liveOnly: true as const } : {}),
                 open: (apron, signal, resolved) => open.call(pin, { ...identity, world: apron }, signal, resolved) });
             paintJob = null; publish();

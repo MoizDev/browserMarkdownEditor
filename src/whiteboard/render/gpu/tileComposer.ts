@@ -7,7 +7,7 @@ import type { LayerHost, TexturedQuadSpec } from '../../../platform/render/compo
 import type { GfxDevice, GpuPass, GroupToken, RectI, RgbaP, TextureHandle } from '../../../platform/render/gfx/api';
 import type { FrameBudget, GpuReleaseReason, OffscreenPasses } from '../../../platform/render/types';
 import { tileTargetBytes, tileView } from '../../../platform/render/tileTarget';
-import { auditCount, auditStage, renderAuditEnabled, type AuditStage } from '../../../platform/render/renderAudit';
+import { auditCount, auditDrawn, auditStage, renderAuditEnabled, type AuditStage } from '../../../platform/render/renderAudit';
 import { TILE_EDGE, TILE_GUTTER, TILE_SIZE } from '../imageSampling';
 import type { PaintBand } from '../material';
 import type { PaintClip, PaintInkItem, PaintItem } from '../paintStream';
@@ -781,6 +781,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         addDraw(band, item.entry, item.slot, clip);
                     }
                     liveBefore(band, Infinity, li, clip);
+                    // What this position shows: its stand-in's entries (drawn above), or nothing at all, a hole the audit counts.
+                    auditDrawn(standScratch.length ? 'stand-in' : 'hole');
                     auditCount(audit, 'tile:standin');
                 }
             }

@@ -506,7 +506,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                     finishPrepareFrame: (frame: ScheduledFrame, budget: Parameters<PaneCompositor['prepareFrame']>[1]) => {
                         drawCompositor()?.finishPrepareFrame?.(frame, budget);
                     },
-                    encode: (frame: ScheduledFrame) => {
+                    encode: (frame: ScheduledFrame, changed: boolean) => {
                         lastFrameInterval = frame.intervalMs;
                         const drawing = drawCompositor();
                         if (!drawing) return null;
@@ -516,7 +516,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                             auditCount('pane', 'cpu-raster', 1, { px: drawing.surface.width * drawing.surface.height });
                         }
                         const encodeStart = performance.now();
-                        const encoding = drawing.encode(frame);
+                        const encoding = drawing.encode(frame, changed);
                         if (!encoding && !(drawing === compositor && options.session.mirrors)) return null;
                         const revision = options.revision();
                         const sourceCamera = sampledCamera;

@@ -209,7 +209,7 @@ export interface PaneCompositor {
     prepareFrame(frame: ScheduledFrame, budget: FrameBudget): void;
     /** Admit declared peak inventory after all Layer.prepare calls, under the SAME budget/deadline. */
     finishPrepareFrame?(frame: ScheduledFrame, budget: FrameBudget): void;
-    encode(frame: ScheduledFrame): ScheduledEncoding | null;
+    encode(frame: ScheduledFrame, changed: boolean): ScheduledEncoding | null;
     coverage(frame: ScheduledFrame): CompositorCoverage;
     page(view: ViewState, index: number): CompositorPage | null;
     paneTransform(view: ViewState, frameId: number): Affine | null;

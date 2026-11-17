@@ -105,6 +105,9 @@ function leavesUncovered(area: Readonly<Rect>, cover: readonly Readonly<Rect>[])
 /** The largest tile texture: the 512 interior plus the one-texel gutter on each side. */
 const TILE_EDGE = 514;
 
+/** One display frame: a zoom-held tile's start is due the frame after the scale stops changing (a wake, not a frame request per frame). */
+const ZOOM_REST_MS = 17;
+
 function drawableOn(entry: Entry, device: GfxDevice | null): boolean {
     return device ? entry.texture?.device === device || !!entry.bitmap : !!entry.bitmap;
 }
@@ -329,6 +332,7 @@ export class PdfTileLayer implements Layer {
             }
         }
         let running = [...this.entries.values()].filter(entry => !entry.settled).length;
+        let zoomHeld = false;
         for (const request of planned.requests) {
             const key = request.text;
             let existing = this.entries.get(key);
@@ -352,7 +356,8 @@ export class PdfTileLayer implements Layer {
             }
             if (this.failed.has(key) || running >= 3) continue;
             // Held for the frame the scale rests; pendingFrame keeps the next frame coming so the rest is not missed.
-            if (zooming && this.covered(request.page, rect(request), device)) { auditCount('pdf-page', 'zoom-deferred'); this.pendingFrame = true; continue; }
+            // Held without asking for a frame: the frame that starts it is the wake armed below, one frame after the scale stops changing.
+            if (zooming && this.covered(request.page, rect(request), device)) { auditCount('pdf-page', 'zoom-deferred'); zoomHeld = true; continue; }
             if (budget.shouldYield()) { this.pendingFrame = true; break; }
             const bytes = request.tile.textureWidth * request.tile.textureHeight * 4;
             let lease = this.host.allocator.cpu.reserve(bytes);
@@ -379,7 +384,8 @@ export class PdfTileLayer implements Layer {
                 this.coverCache = null;
                 auditCount('pdf-page', 'cpu-raster', 1, { px: bitmap.width * bitmap.height });
                 this.contentRevision++;
-                this.host.invalidate('pdf-tile-arrived');
+                // A tile that landed off screen changes nothing on screen: the camera's next move presents it.
+                if (this.onScreen(entry.request)) this.host.invalidate('pdf-tile-arrived');
             }, error => {
                 const current = this.entries.get(key) === entry;
                 const cancelled = entry.controller.signal.aborted || (error instanceof Error && error.name === 'AbortError');
@@ -390,6 +396,7 @@ export class PdfTileLayer implements Layer {
                 this.host.invalidate('pdf-tile-finished');
             });
         }
+        if (zoomHeld) this.host.wakeAt(performance.now() + ZOOM_REST_MS);
         this.prepareMirror(view, input, planned.requests, budget);
         if (device) this.releaseUploadedBitmaps(view, input.viewport, device);
     }
@@ -497,6 +504,12 @@ export class PdfTileLayer implements Layer {
             start = end;
         }
         this.countStandIns(view);
+    }
+
+    /** Whether a tile lies in the viewport prepare last planned for: only such a tile changes what is on screen. */
+    private onScreen(request: PdfTileRequest): boolean {
+        const demand = this.latestDemand;
+        return !!demand && intersects(rect(request), demand.viewport);
     }
 
     /** Records one drawn quad for the stand-in count. A no-op unless the audit is on. */
@@ -1062,7 +1075,7 @@ export class PdfTileLayer implements Layer {
             if (this.mirrorIds.size > MIRROR_VERSION_LIMIT) this.pruneMirrorIds();
             job.index++;
             job.pending = false;
-            this.host.invalidate('pdf-mirror-arrived');
+            if (this.onScreen(entry.request)) this.host.invalidate('pdf-mirror-arrived');
         }, error => {
             this.host.allocator.cpu.release(lease);
             if (this.mirrorJob === job) { this.mirrorJob = null; this.onError(error, entry.request); }

@@ -316,6 +316,18 @@ export class PdfTileLayer implements Layer {
                 } else auditCount('pdf-page', 'stand-in-held');
             }
         }
+        // A landed visible exact tile goes up before anything else in the frame. Until it does, a stand-in shows in its place,
+        // and the plan's low previews and speculative tiles come first in the loop below, so they took the frame's one
+        // progress grant ahead of it. Prefetch and low previews still upload in the loop, with whatever allowance is left.
+        if (device) {
+            for (const request of planned.requests) {
+                if (request.level !== 'exact' || request.priority === 'prefetch') continue;
+                const landed = this.entries.get(request.text);
+                if (!landed?.bitmap || landed.texture?.device === device || this.failed.has(request.text)) continue;
+                if (budget.shouldYield()) { this.pendingFrame = true; break; }
+                if (this.uploadTile(device, request.text, landed, budget) === 'budget') { this.pendingFrame = true; break; }
+            }
+        }
         let running = [...this.entries.values()].filter(entry => !entry.settled).length;
         for (const request of planned.requests) {
             const key = request.text;

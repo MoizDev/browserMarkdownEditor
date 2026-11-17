@@ -10,7 +10,7 @@ import { captureGpuOwner, registerCaptureGpu } from './captureRuntime';
 import { CaptureError } from './captureError';
 import type { GpuCompositor } from './compositor';
 import { registerWebgl2PaneFactory } from './compositorFactory';
-import { GpuPaneCandidate } from './gpuPaneCandidate';
+import { GPU_RETRY_QUIET_MS, GpuPaneCandidate } from './gpuPaneCandidate';
 import type { QualifiedGpuPane } from './gpuPaneCandidate';
 import type { CameraConstraint } from './camera';
 import type { CompositorLayer, Compositor2DOptions, CreatedCompositor2D, PaneCompositor } from './compositor.types';
@@ -167,7 +167,13 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         queueMicrotask(() => { demandQueued = false; if (!disposed) runtime.refresh(); });
     };
     // A readout refuses an over-reported cache (a product failure reported elsewhere); demand then counts only the layer.
-    const heldBytes = (cache: MemoryCacheHandle | undefined): number => { try { return cache?.readout().reservedBytes ?? 0; } catch { return 0; } };
+    // A readout throws only when a cache's live bytes exceed what it has reserved: an accounting fault. It is counted and
+    // rethrown, never read as zero, since a zero would drop this cache's bytes from the demand the governor plans on.
+    const heldBytes = (cache: MemoryCacheHandle | undefined): number => {
+        if (!cache) return 0;
+        try { return cache.readout().reservedBytes; }
+        catch (error) { auditCount('governor', 'unaccounted'); throw error; }
+    };
     const layerSet = new PaneLayerSet((id, current, definition) => {
         const now = performance.now();
         const common = { paneId: options.paneId, owner: options.documentToken, hiddenAt: visible ? null : now,
@@ -277,6 +283,21 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         runtime.refresh();
         lifecycle?.invalidate('geometry');
     }, options.onError);
+    // The inputs the pane's demand is built from that move without an event of their own: size, visibility, focus, colour
+    // mode, mirrors, and what the layers hold. Reading them is a few numbers; the demand and the governor's plan are not, so
+    // they run only when one of these moved. A layer's own demand change (a plan, a refused run) still asks via requestDemand.
+    let demandMark: { pixels: number; visible: boolean; focused: boolean; inverted: boolean; mirrors: boolean; gpu: number; cpu: number } | null = null;
+    const demandMoved = (): boolean => {
+        const size = observer.current;
+        let gpu = 0, cpu = 0;
+        for (const layer of layerSet.layers) { const held = layer.memory(); gpu += held.gpuBytes; cpu += held.cpuBytes; }
+        const next = { pixels: size ? size.physical.width * size.physical.height : 0, visible, focused,
+            inverted: options.readAppearance().inverted, mirrors: !!options.session.mirrors, gpu, cpu };
+        const old = demandMark;
+        demandMark = next;
+        return !old || old.pixels !== next.pixels || old.visible !== next.visible || old.focused !== next.focused
+            || old.inverted !== next.inverted || old.mirrors !== next.mirrors || old.gpu !== next.gpu || old.cpu !== next.cpu;
+    };
     const runtimePane = {
         demand: () => {
             const size = observer.current;
@@ -341,6 +362,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         surface: () => lifecycle?.surface ?? null,
         invalidate: reason => lifecycle?.invalidate(reason),
         inputHealthy: () => healthyInputAt !== null && performance.now() - healthyInputAt <= RENDER_CONSTANTS.stalledFenceMs,
+        quiet: () => !options.isInteracting() && performance.now() - lastInputAt >= GPU_RETRY_QUIET_MS,
         frameInterval: () => lastFrameInterval,
         onEvict: bytes => trimGpu(bytes),
         onReady: ready => {
@@ -441,9 +463,9 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                         const drawing = drawCompositor();
                         drawing?.setAppearance(options.readAppearance());
                         drawing?.snapshot(view);
-                        // Arrivals and colour-mode changes alter demand without a ResizeObserver
-                        // event. Refresh before preparation, not after an allocation was refused.
-                        runtime.refresh();
+                        // Arrivals and colour-mode changes alter demand without a ResizeObserver event. Refresh before
+                        // preparation, not after an allocation was refused; a layer's own demand change asks through requestDemand.
+                        if (demandMoved()) runtime.refresh();
                     },
                     layerId: (layer: Layer) => layerSet.definition(layer)?.id ?? 'unnamed',
                     // The scheduler offers a pane its own error first. A failure of this pane's GPU work (its compositor, not the 2D path
@@ -665,6 +687,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             setVisible(false);
             disposed = true;
             options.onPresentation(null);
+            candidate.dispose();
             observer.dispose();
             removeCapture();
             lifecycle?.unmountPane();

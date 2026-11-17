@@ -537,9 +537,11 @@ export class FrameScheduler {
         return 'none';
     }
 
+    /** Every true answer names a cause: a pending poll or acknowledgement (frames only, no present), a pane's reason or
+     * motion, or a renderable layer that needs a frame. Called on every mark, so it must not allocate. */
     private needsWork(): boolean {
         if (this.polls.size || this.acknowledgements.length) return true;
-        for (const entry of [...this.panes.values()]) {
+        for (const entry of this.panes.values()) {
             if (entry.reasons.size || entry.motion) return true;
             if (entry.renderable && this.call(entry, () => entry.layers.some(layer => layer.needsFrame()))) return true;
         }
@@ -569,10 +571,13 @@ export class FrameScheduler {
             const gap = this.lastTimestamp === null ? 0 : timestamp - this.lastTimestamp;
             if (gap > 0) this.observeInterval(gap);
             this.lastTimestamp = timestamp;
+            // A gap after idle is not a reason to draw. It used to add a 'frame-gap' reason to EVERY pane, so the first
+            // input after rest presented every visible pane under a cause nobody had. Full damage alone is conservative;
+            // a pane that presents still validates its geometry in commitMetrics (§7.4:723), and a healthy context is kept.
             if (gap > frameGapMs) {
                 for (const entry of this.panes.values()) {
                     if (entry.motion?.kind === 'fling' && timestamp - entry.motion.lastTime > frameGapMs) this.cancelMotion(entry);
-                    entry.reasons.add('frame-gap'); entry.fullDamage = true; // Validate geometry, never tear down a healthy context (§7.4:723).
+                    entry.fullDamage = true;
                 }
             }
             // Detach every pane before callbacks: cross-pane invalidations during this frame
@@ -600,6 +605,11 @@ export class FrameScheduler {
                 const requested = reasons.length > 0 || entry.motion !== null ||
                     (entry.renderable && this.call(entry, () => entry.layers.some(layer => layer.needsFrame())) === true);
                 if (requested) candidates.push({ entry, batch, reasons, cause: renderAuditEnabled() ? this.presentCause(entry, reasons) : '' });
+            }
+            // A frame with no candidate presents nothing; it exists only because a poll or an unfinished acknowledgement
+            // keeps the loop alive. Naming it keeps every requested frame accounted for ('none' would be a fault).
+            if (renderAuditEnabled() && candidates.length === 0) {
+                auditCount('scheduler', this.polls.size ? 'frame:poll' : this.acknowledgements.length ? 'frame:ack' : 'frame:none');
             }
             const ready: Array<{ entry: PaneEntry; reasons: readonly string[]; batch: DamageBatch; cause: string }> = [];
             for (const { entry, batch, reasons, cause } of candidates) {
@@ -876,6 +886,7 @@ export class FrameScheduler {
     }
 
     private deliverAcknowledgements(frameId: number): void {
+        if (!this.acknowledgements.length) return;
         const pending = this.acknowledgements;
         this.acknowledgements = [];
         for (const ack of pending) {
@@ -907,6 +918,7 @@ export class FrameScheduler {
     }
 
     private runPolls(deadline: number): void {
+        if (!this.polls.size) return;
         let ran = false;
         for (const poll of [...this.polls]) {
             if (!this.running || this.suspended) break;
@@ -943,7 +955,7 @@ export class FrameScheduler {
     private refreshWakeTimer(): void {
         if (this.inFrame) return;
         const now = performance.now();
-        for (const item of [...this.sessionDeadlines]) {
+        if (this.sessionDeadlines.size) for (const item of [...this.sessionDeadlines]) {
             if (item.deadline > now || !this.sessionDeadlines.delete(item)) continue;
             try { item.callback(); } catch (error) { this.options.onError(null, error); }
         }

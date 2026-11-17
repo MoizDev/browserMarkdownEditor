@@ -137,7 +137,7 @@ export class PaneLifecycle<T extends object> {
     private readyGrant: GpuGrant | null = null;
     private uploadGeneration: number | null = null;
     private uploaded = new WeakSet<T>();
-    private budgetKey = '';
+    private budget: { pixel: number; eligible: boolean; state: MemoryPressureState; quality: number } | null = null;
     private presentationEpoch = 0;
     private prepareSerial = 0;
     private readonly detachHost: () => void;
@@ -443,10 +443,20 @@ export class PaneLifecycle<T extends object> {
         return true;
     }
 
+    /** Only what changes the picture presents: the surface's pixel grant, eligibility, pressure state and quality scale.
+     * Cache-byte targets move on every refresh under pressure, and a board at rest presented every tick while the governor
+     * was 'trimming' (large seed, 114 of 114). Their unblocking comes from the capacity waiters and their shrink from the
+     * eviction that freed the bytes, so neither needs a frame here. */
     applyBudget(grant: PaneMemoryGrant | null): void {
-        const key = grant ? JSON.stringify([grant.pixelGrant, grant.gpuCacheBytes, grant.cpuBytes, grant.state]) : '';
-        if (key === this.budgetKey) return;
-        this.budgetKey = key;
+        const seen = this.budget;
+        if (grant === null) {
+            if (seen === null) return;
+            this.budget = null;
+        } else {
+            if (seen !== null && seen.pixel === grant.pixelGrant && seen.eligible === grant.gpuEligible &&
+                seen.state === grant.state && seen.quality === grant.qualityScale) return;
+            this.budget = { pixel: grant.pixelGrant, eligible: grant.gpuEligible, state: grant.state, quality: grant.qualityScale };
+        }
         if (this.canDraw()) this.binding?.invalidate('budget');
     }
 

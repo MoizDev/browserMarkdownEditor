@@ -200,6 +200,9 @@ export interface GpuPaintAdapter {
     needsFrame(): boolean;
     memory(): { gpuBytes: number; cpuBytes: number };
     cpuWorkingSet(): { mandatoryBytes: number; prefetchBytes: number };
+    /** The governor's GPU pressure: frees up to `bytes` of idle GPU memory, path coverage sets first, then composed tiles
+     * not used this frame. Returns the bytes freed. */
+    evictGpu(bytes: number, frameId: number): number;
     dispose(): void;
 }
 
@@ -218,11 +221,14 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
     let lastFrame = -1;
     let presented: PreparedPaint2d | null = null;
     let omitPrepared: ReadonlySet<string> | null = null;
+    // The view the composed tiles were last prepared for: the store keeps the tiles on it, so its eviction spares them.
+    let lastView: ViewState | null = null;
     const lay = createLay(host);
     const cpu = createCpuRoute(host, surface, lay);
     const ink = createInkRoutes(host, surface);
     // One path route and its clip admission share one coverage kit: the composer admits every route's clips through it.
     const pathRoute = createPath(host, surface);
+    const store = createTileStore(host, surface);
     const routes: TileRoutes = {
         path: pathRoute.route,
         inkAnalytic: ink.analytic,
@@ -232,7 +238,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         cpu,
     };
     const composer = createTileComposer({
-        host, audit: surface, parts: createTileParts(host, surface), store: createTileStore(host, surface), routes,
+        host, audit: surface, parts: createTileParts(host, surface), store, routes,
         tileId, tileWorld, inkRouteFor, lay, admitClips: pathRoute.admitClips, withPreparedClips,
         ...(options.opaqueWorld ? { opaqueWorld: options.opaqueWorld } : {}),
     });
@@ -241,6 +247,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         prepare(view: ViewState, budget: FrameBudget, omit?: ReadonlySet<string>): void {
             if (disposed || lastFrame === budget.frameId) return;
             lastFrame = budget.frameId;
+            pathRoute.coverage.beginFrame(budget.frameId);
             const prepared = reference.borrowPrepared(), device = host.device();
             if (!prepared || !device || !documentMatches(prepared.root, budget.token) || !documentMatches(prepared.sourceFrame, budget.token) ||
                 device.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration) {
@@ -257,6 +264,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                 throw error;
             }
             presented = prepared;
+            lastView = view;
         },
         readyFrame(): PaintSource | null { return disposed ? null : presented?.sourceFrame ?? null; },
         readyPaint(): PreparedPaint2d | null { return disposed ? null : presented; },
@@ -280,6 +288,13 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             presented = null; omitPrepared = null; lastFrame = -1;
         },
         needsFrame(): boolean { return !disposed && composer.needsFrame(); },
+        evictGpu(bytes: number, frameId: number): number {
+            if (disposed || !(bytes > 0)) return 0;
+            pathRoute.coverage.beginFrame(frameId);
+            let freed = pathRoute.coverage.evict(bytes);
+            if (freed < bytes && lastView) freed += store.evict(bytes - freed, frameId, lastView);
+            return freed;
+        },
         // GPU bytes are the composer's: each is leased by its owner (the store, a route) on the layer's GPU pool, reported once.
         // CPU bytes are this route's own leased scratch only: a route's CPU bytes that are not leased (the text scratch, the path
         // geometry cache) are not reported, since the governor would refuse to admit bytes it has not reserved.

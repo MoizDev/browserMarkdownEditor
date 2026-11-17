@@ -11,6 +11,7 @@ import { createNativeEmbedPresentationProducer, type NativeEmbedPresentationProd
 import { boardPageStack } from '../model/pages';
 import { createBoardLayers, BOARD_BACKEND_PREFERENCE, createDrawnPagesReader, opaqueWorldOf } from '../render/boardLayers';
 import { auditCount } from '../../platform/render/renderAudit';
+import { RENDER_CONSTANTS } from '../../platform/render/constants';
 import type { DensityMode } from '../render/density';
 import { createPaintFrameAssembler } from '../render/frameAssembler';
 import { LiveNodeUnion } from '../render/nodeSets';
@@ -59,6 +60,10 @@ export const attachView: AttachView = options => {
     const sameSceneKey = (a: SceneKey | null, b: SceneKey): boolean => !!a && a.revision === b.revision && a.sheet === b.sheet
         && a.theme === b.theme && a.sensitive === b.sensitive;
     let viewAsked: SceneKey | null = null, sceneAsked: SceneKey | null = null, sceneDue = false;
+    // The key whose whole-scene request was refused for its size: not asked again for that key (sceneRefused stops the stage's re-arming).
+    let sceneRefused: SceneKey | null = null;
+    // The view request in force: its key, its device scale and the world it covers (1.5 viewports each side).
+    let viewWorld: { key: SceneKey; scale: number; world: Rect } | null = null;
     const unions = new WeakMap<ReadonlySet<string>, WeakMap<ReadonlySet<string>, ReadonlySet<string>>>();
     const union = (a: ReadonlySet<string> | null | undefined, b: ReadonlySet<string> | null | undefined): ReadonlySet<string> | null => {
         if (!a) return b ?? null;
@@ -174,7 +179,7 @@ export const attachView: AttachView = options => {
             if (failed) { failed = null; publish(); }
             // The view frame of the current key is up: the whole scene may now be asked for (once).
             // The request is made by the next prepare, which a presentation alone does not schedule: ask for that frame.
-            if (layers.onDevice() && viewAsked && revision === viewAsked.revision && !sameSceneKey(sceneAsked, viewAsked)) { sceneDue = true; layers.invalidate('board-scene-request'); }
+            if (layers.onDevice() && viewAsked && revision === viewAsked.revision && !sameSceneKey(sceneAsked, viewAsked) && !sameSceneKey(sceneRefused, viewAsked)) { sceneDue = true; layers.invalidate('board-scene-request'); }
             interaction?.presented?.(revision, token, frame, context);
             embedProducer?.presented(revision, token, frame, context);
         },
@@ -230,6 +235,21 @@ export const attachView: AttachView = options => {
         snapshot = makeSnapshot(); accessibility.invalidate();
         for (const listener of listeners) listener();
     }
+    // The whole-sheet world: board coordinates are bounded by the 1e12 world limit (as boardLayers' WHOLE_PLANE).
+    const WHOLE_SHEET: Rect = { x: -1e12, y: -1e12, width: 2e12, height: 2e12 };
+    const viewportOf = (view: { readonly camera: { readonly x: number; readonly y: number; readonly z: number };
+        readonly viewport: { readonly width: number; readonly height: number } }): Rect =>
+        ({ x: view.camera.x, y: view.camera.y, width: view.viewport.width / view.camera.z, height: view.viewport.height / view.camera.z });
+    const containsRect = (outer: Rect, inner: Rect): boolean => inner.x >= outer.x && inner.y >= outer.y
+        && inner.x + inner.width <= outer.x + outer.width && inner.y + inner.height <= outer.y + outer.height;
+    // The whole scene's estimated CPU cost: the owning band's CPU bytes for the current view, scaled from the view's item count
+    // to the sheet's. It must fit half the pane's CPU grant. The layer cannot read the grant, so the grant's floor
+    // (cpuGrantMinBytes) stands in for it: the true grant is never smaller, so the test stays the conservative one.
+    const sceneFits = (wholeItems: number): boolean => {
+        const viewItems = Math.max(1, lastCandidates ?? 1);
+        const perItem = layers.cpuMandatoryBytes() / viewItems;
+        return wholeItems * perItem <= RENDER_CONSTANTS.cpuGrantMinBytes / 2;
+    };
     function requestPaint(sensitive = interaction?.sensitiveNodeIds?.()): void {
         // A request made while the Scene is still catching up is kept and sent once it is ready: the dense
         // path asks once per missing live set, so a dropped request froze a large board (seen at 3,500 items).
@@ -240,6 +260,20 @@ export const attachView: AttachView = options => {
         // The whole scene is already asked for this key: a camera change needs no request (checked before the abort below, so the
         // scene asked in flight is not cancelled).
         if (onDevice && sameSceneKey(sceneAsked, key)) return;
+        // A view request whose world still holds the viewport, at the same key and scale, stands: a pan inside it asks nothing new.
+        const viewNow = lastView;
+        if (onDevice && !sceneDue && densityMode !== 'dense' && viewNow && viewWorld && sameSceneKey(viewWorld.key, key)
+            && viewWorld.scale === viewNow.camera.z * viewNow.viewport.dpr && containsRect(viewWorld.world, viewportOf(viewNow))) return;
+        // The whole scene, once per key, and only when its estimated cost fits (sceneFits). A count not known yet waits: a fresh
+        // pin counts nothing until its first stream opens, so the stage stays due. A refusal is latched on this key.
+        let scene = onDevice && sceneDue && sameSceneKey(viewAsked, key);
+        if (scene) {
+            const probe = runtime.scene.pin();
+            const whole = probe.countCandidates?.(sheet(), WHOLE_SHEET) ?? null;
+            probe.release();
+            if (whole === null) return;
+            if (!sceneFits(whole)) { sceneRefused = key; sceneDue = false; auditCount('board', 'request:scene-too-large'); scene = false; }
+        }
         paintWhenReady = false;
         paintJob?.abort();
         const controller = new AbortController(), sequence = ++request;
@@ -250,7 +284,8 @@ export const attachView: AttachView = options => {
         // beyond the viewport, and every live item it meets must be in the frame to be drawn live.
         const world: Rect | undefined = current ? (() => {
             const width = current.viewport.width / current.camera.z, height = current.viewport.height / current.camera.z;
-            const margin = 2 * Math.max(width, height);
+            // 1.5 viewports each side: a pan inside this world asks nothing new (viewWorld), so the margin is generous.
+            const margin = 1.5 * Math.max(width, height);
             return { x: current.camera.x - margin, y: current.camera.y - margin, width: width + 2 * margin, height: height + 2 * margin };
         })() : undefined;
         lastSensitive = sensitive;
@@ -274,11 +309,12 @@ export const attachView: AttachView = options => {
             ...(deviceScale ? { deviceScale, allowInkLod: true } : {}) };
         // The whole-scene stage: asked once per key on a device, after the view frame it follows is up. No world, so the pin
         // does not cull by the camera; no device scale, so the scene's items do not change with the zoom.
-        const scene = onDevice && sceneDue && sameSceneKey(viewAsked, key);
         const sceneShape = { sheetId: selectedSheet, theme: view.theme, sensitiveNodes };
         const shape = scene ? sceneShape : dense ? { ...identity, only: liveSet! } : { ...identity, ...(world ? { world } : {}) };
         auditCount('board', scene ? 'request:scene' : 'request:view');
         if (onDevice) { if (scene) sceneAsked = key; else viewAsked = key; }
+        // The world this view request asks for, kept until the camera leaves it (the skip at the top of requestPaint).
+        viewWorld = onDevice && !scene && !dense && world && deviceScale !== undefined ? { key, scale: deviceScale, world } : null;
         sceneDue = false;
         void open.call(pin, shape, controller.signal).then(stream => {
             if (disposed || !view.visible || controller.signal.aborted || sequence !== request) {
@@ -290,7 +326,7 @@ export const attachView: AttachView = options => {
             frames.requestStream({ stream, isCurrent: () => pin.isCurrent(), release: () => pin.release(), ...(dense ? { liveOnly: true as const } : {}),
                 open: (apron, signal, resolved) => open.call(pin, { ...identity, world: apron }, signal, resolved) });
             paintJob = null; publish();
-        }, error => { pin.release(); if (!controller.signal.aborted) report(error); });
+        }, error => { pin.release(); if (!controller.signal.aborted) { viewWorld = null; report(error); } });
     }
     const cancelReveal = () => { const job = revealJob; revealJob = null; job?.abort(); };
     const reveal = (ids: ReadonlySet<NodeId>) => {

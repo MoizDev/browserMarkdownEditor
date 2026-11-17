@@ -209,6 +209,8 @@ export interface BoardLayerPair extends Readonly<[PlatformLayerDefinition, Platf
     drawnInkNodeIds(): ReadonlySet<string>;
     /** Whether the board draws on a device (its GPU composer), so the owner may ask for whole-scene frames. */
     onDevice(): boolean;
+    /** The owning band's CPU bytes now (the direct charge, the dense plan, the device scratch): the measured cost a request's size is judged by. */
+    cpuMandatoryBytes(): number;
     /** Each band's LayerHost deadline; the scheduler's coalesced wake only invalidates, it never draws. */
     wakeAt(deadlineMs: number | null): void;
     readyFrame(): PaintSource | null;
@@ -357,7 +359,9 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     const report = (error: unknown) => {
         if (isBudgetRefusal(error)) { awaitRefusal(); return; }
         lastError = messageOf(error); refreshProgress();
-        try { options.onError(error); } catch { /* reporting cannot reject a worker callback */ }
+        // On a device route the error belongs to the pane's GPU error channel (it may demote the route); canvas2d keeps onError.
+        try { if (allocatorHost?.device()) allocatorHost.reportGpuError(error); else options.onError(error); }
+        catch { /* reporting cannot reject a worker callback */ }
     };
     // Pending while work or memory is outstanding; current only for the presented requested revision with nothing
     // outstanding. Memory denial is waiting for capacity, never a failure. A real error stands until a current
@@ -786,6 +790,12 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             mandatoryBytes: hosts.get(band) === allocatorHost ? (gpu as GpuWorkingSetReporter | null)?.gpuMandatoryBytes?.(viewport) ?? 0 : 0,
         }),
     });
+    /** The owning band's CPU bytes now: the direct charge, the dense plan, the device scratch and the frame's own. */
+    const cpuMandatory = (): number => {
+        const upcoming = !useDense && estimate?.done && !density.pending() && !reservations.has(estimate.frame) ? estimate.bytes : 0;
+        const scratch = allocatorHost?.device() ? gpu?.cpuWorkingSet().mandatoryBytes ?? 0 : 0;
+        return reserved + upcoming + scratch + (useDense ? dense?.cpuWorkingSet(estimate?.maxItemBytes ?? 0) ?? 0 : 0) + (options.frames.cpuWorkingSet?.() ?? 0);
+    };
     const definition = (band: PaintBand): PlatformLayerDefinition => ({
         id: `board-${band}`, group: 'document', ...gpuWorkingSetFor(band),
         create(host) {
@@ -886,10 +896,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             if (typeof adapter?.evictCpu === 'function') adapter.evictCpu(bytes);
         },
         cpuWorkingSet() {
-            const upcoming = !useDense && estimate?.done && !density.pending() && !reservations.has(estimate.frame) ? estimate.bytes : 0;
-            const scratch = allocatorHost?.device() ? gpu?.cpuWorkingSet().mandatoryBytes ?? 0 : 0;
-            return { mandatoryBytes: hosts.get(band) === allocatorHost
-                ? reserved + upcoming + scratch + (useDense ? dense?.cpuWorkingSet(estimate?.maxItemBytes ?? 0) ?? 0 : 0) + (options.frames.cpuWorkingSet?.() ?? 0) : 0, prefetchBytes: 0 };
+            return { mandatoryBytes: hosts.get(band) === allocatorHost ? cpuMandatory() : 0, prefetchBytes: 0 };
         },
         // Critical (its missing positions refuse the frame) only until this band's first complete coverage in this attach.
         // After that a pan that exposes positions faster than they compose presents their stand-ins instead of refusing every frame.
@@ -904,6 +911,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     pair.invalidate = (reason = 'board-content') => { for (const host of hosts.values()) host.invalidate(reason); };
     pair.drawnInkNodeIds = () => (gpu as DrawnInkReporter | null)?.drawnInkNodeIds?.() ?? NO_INK;
     pair.onDevice = () => !!activeHost()?.device();
+    pair.cpuMandatoryBytes = cpuMandatory;
     pair.wakeAt = deadlineMs => { for (const host of hosts.values()) host.wakeAt(deadlineMs); };
     pair.memory = () => allocatorHost?.allocator.cpu ?? null;
     pair.paintProgress = progressNow;

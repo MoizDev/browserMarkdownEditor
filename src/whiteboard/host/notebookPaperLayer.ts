@@ -149,7 +149,9 @@ class NotebookPaperLayer implements Layer {
     }
     private report(error: unknown, wait: SizedCapacityWait | undefined = this.workingWait()): void {
         if (isBudgetRefusal(error) && wait) { this.deny(wait); return; }
-        try { this.options.onError(error); } catch { /* errors do not escape the layer scheduler */ }
+        // A device-path error belongs to the pane's GPU error channel; budget refusals and canvas2d keep onError.
+        try { if (this.host.device() && !isBudgetRefusal(error)) this.host.reportGpuError(error); else this.options.onError(error); }
+        catch { /* errors do not escape the layer scheduler */ }
     }
     private dropStaged(): void {
         const old = this.staged; this.staged = null;

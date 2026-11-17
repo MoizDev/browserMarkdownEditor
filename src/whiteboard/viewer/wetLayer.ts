@@ -2,6 +2,7 @@ import type { ViewState } from '../../platform/types';
 import type { PlatformLayerDefinition } from '../../platform/render/attachPlatformPane.types';
 import type { LayerHost } from '../../platform/render/compositor.types';
 import type { ByteLease } from '../../platform/render/gfx/api';
+import { auditCount } from '../../platform/render/renderAudit';
 import type { FrameBudget, FrameToken, Layer, RenderToken } from '../../platform/render/types';
 import { InkCoverageJob, InkOutlineJob, type InkCoverage } from '../ink/outline';
 import { materializeCurveRange, type CurveGeometry } from '../ink/curve';
@@ -217,6 +218,8 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
             const dot: InkDot | null = offset === 0 && s.dot ? { x: real.x(0), y: real.y(0), radius: DOT_METRIC_PROVISIONAL.radius(style.width, style.width / 2, style.model) } : null;
             w.chunk = { first: offset, count, finalizing, temp, path: new Path2D(), leases: [], capacity: 0, outline: null, retained: null,
                 coverage: new InkCoverageJob(real, geometry, style, { deviceScale: w.scale, dot, maxPrimitives: 4096 }) };
+            // A non-finalized chunk is the tip: rebuilt on every publication, so this counts the per-input tessellation.
+            if (!finalizing) auditCount('wet', 'tip-build');
             return false;
         }
         const gesture = w.snapshot.identity.gestureSequence;
@@ -306,7 +309,9 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                         .map(item => item.identity.nodeId));
                     const omit = new Set<string>();
                     const paint = gpu.readyPaint();
-                    if (paint) for (const item of bandItemsOf(paint.windows, band)) if (!visible.has(item.nodeId)) omit.add(item.nodeId);
+                    let drawn = 0;
+                    if (paint) for (const item of bandItemsOf(paint.windows, band)) { if (!visible.has(item.nodeId)) omit.add(item.nodeId); else drawn++; }
+                    if (drawn) auditCount('wet', 'draw');
                     gpu.drawGpu(pass, view, band, omit);
                 },
                 draw2d(ctx, view) {

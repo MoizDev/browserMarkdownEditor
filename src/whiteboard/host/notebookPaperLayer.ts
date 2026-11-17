@@ -5,6 +5,7 @@ import type { ByteLease, GpuPass } from '../../platform/render/gfx/api';
 import { pageAt, type PageStack } from '../../platform/render/pageStack';
 import type { ScheduledFrame } from '../../platform/render/scheduler';
 import type { FrameBudget, FrameToken, GpuReleaseReason, Layer, OffscreenPasses } from '../../platform/render/types';
+import { auditDrawn } from '../../platform/render/renderAudit';
 import { boardPageStack } from '../model/pages';
 import type { HostBlock } from '../model/doc';
 import type { PaintPalette } from '../render/colour';
@@ -361,6 +362,12 @@ class NotebookPaperLayer implements Layer {
      * than they compose present what there is, instead of refusing every frame (the 0-presents class, measured on large boards). */
     critical(): boolean { return this.drawnPageRects().length === 0; }
     coverage(frame: ScheduledFrame, layer: Layer, backend: CompositorBackend): LayerCoverage {
+        const result = this.coverageNow(frame, layer, backend);
+        // What the paper draws besides the current picture, for the present audit: pages drawn before are stand-ins; none drawn is a hole.
+        if (!result.complete || !result.sharp) auditDrawn(!result.complete && this.drawnPageRects().length === 0 ? 'hole' : 'stand-in');
+        return result;
+    }
+    private coverageNow(frame: ScheduledFrame, layer: Layer, backend: CompositorBackend): LayerCoverage {
         const ready = this.ready, requested = requestedRevision(frame, layer);
         if (!ready || !sameToken(ready.token, frame.token)) return { complete: false, sharp: false };
         const current = ready.revision === requested && ready.revision === this.options.read().revision;

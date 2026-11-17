@@ -15,7 +15,7 @@ import { paintItemsOf } from './paintWindows';
 import type { PaintImageProvider } from './resources';
 import { createCanvasPaintAdapter, type CanvasPaintAdapter, type PreparedRetain } from './reference/canvasPaintAdapter';
 import { createGpuPaintAdapter } from './gpuPaintAdapter';
-import { auditCount } from '../../platform/render/renderAudit';
+import { auditCount, auditDrawn } from '../../platform/render/renderAudit';
 import { createDensePaintAdapter } from './densePlan';
 import { MEMORY_RETRY_MIN_MS, MemoryRetryGate } from './memoryRetryGate';
 import { DensityController, type DensityMode } from './density';
@@ -909,6 +909,9 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         critical() { return presented === null && !adapter?.readyFrame() && !gpu?.readyFrame(); },
         coverage(layer, frame, backend) {
             const actual = coverageOf(layer, frame, backend);
+            // What this band draws besides the current picture, for the present audit: a previous frame or a scaled tile is a
+            // stand-in; nothing drawable at all is a hole. One unit per band per frame (the band's tiles are not counted apart).
+            if (!actual.complete || !actual.sharp) auditDrawn(!actual.complete && presented === null ? 'hole' : 'stand-in');
             return options.optional && !actual.complete ? { complete: true, sharp: true } : actual;
         },
     });

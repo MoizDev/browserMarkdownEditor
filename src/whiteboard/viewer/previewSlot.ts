@@ -56,13 +56,15 @@ export function createPreviewSlot(id: string, base: PlatformLayerDefinition): Pr
             }
             return this.inner;
         }
-        // A swapped-in or absent preview changed what is drawn, whatever its instance answers: the answer says nothing about a
-        // picture that was presented from the replaced layer, so a slot that swapped (or has nothing) reports changed.
+        // The frame that swaps the slot's layer, or clears it, changed what is drawn: the answer says nothing about a picture that
+        // was presented from the replaced layer, so that frame reports changed. Once cleared, the slot draws nothing, and a frame
+        // that finds nothing to draw leaves nothing that differs from the cleared picture, so it reports unchanged.
         prepare(...args: Parameters<Layer['prepare']>): boolean | void {
             const swapped = this.innerEpoch !== epoch;
             const inner = this.sync();
-            const answer = inner?.prepare(...args);
-            return swapped || !inner ? undefined : answer;
+            if (!inner) return swapped ? undefined : false;
+            const answer = inner.prepare(...args);
+            return swapped ? undefined : answer;
         }
         drawGpu(...args: Parameters<Layer['drawGpu']>) { this.sync()?.drawGpu(...args); }
         // Without this the compositor skips the preview's offscreen tiles entirely: nothing it composes is ever drawn.

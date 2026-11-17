@@ -100,7 +100,9 @@ export const attachView: AttachView = options => {
         pin() { if (!runtime.scene) throw new Error('Scene is still loading'); return runtime.scene.pin(); },
     };
     const images = options.images ?? { acquire: async () => { throw new Error('This board view has no admitted image provider'); } };
-    const assembler = createPaintFrameAssembler(() => layers.invalidate('board-paint-ready'), report);
+    const assembler = createPaintFrameAssembler(() => layers.invalidate('board-paint-ready'), report, {
+        isActive: () => !disposed && view.visible && (typeof document === 'undefined' || !document.hidden),
+    });
     const frames = options.liveFrames ? options.liveFrames.wrap(assembler) : assembler;
     const previewOmission = (dry: PaintSource): ReadonlySet<string> | null => {
         if (!previewLayers || !view.visible || disposed) return null;

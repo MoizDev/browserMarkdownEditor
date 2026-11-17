@@ -218,10 +218,41 @@ function streamFeed(stream: PinnedPaintStream['stream'], add: Add, room: () => b
 }
 
 /** Stages source commands in bounded slices. A retired frame's source lease remains owned until
- * the backend explicitly drops it; a newer requested revision alone never frees pixels in use. */
-export function createPaintFrameAssembler(invalidate: () => void, onError: (error: unknown) => void): PaintFrameAssembler {
+ * the backend explicitly drops it; a newer requested revision alone never frees pixels in use.
+ * Staged work advances in its own task slices, not in host frames: a slice asks the host for a frame only by
+ * publishing a frame that draws something new. `isActive` parks the work while the pane is hidden. */
+export interface PaintFrameAssemblerOptions {
+    /** False while the owning pane is hidden: staged work then waits for the host's next frame for the pane. */
+    readonly isActive?: () => boolean;
+    /** Runs at the moment a frame is published, whichever task or frame staged it. */
+    readonly onPublished?: (frame: PaintSource) => void;
+}
+export function createPaintFrameAssembler(invalidate: () => void, onError: (error: unknown) => void,
+    options: PaintFrameAssemblerOptions = {}): PaintFrameAssembler {
+    const isActive = options.isActive ?? (() => true);
     let staging: Staging | null = null, latest: Published | null = null, disposed = false;
     let allocator: MemoryAllocator | null = null, blocked = false, heldBytes = 0;
+    // Measured: every staged slice used to request a host frame (start, each stream wake), and most of those frames
+    // re-encoded an unchanged picture after a drag. A MessageChannel message is not clamped to 4 ms per nested
+    // setTimeout(0), so a long staging pass is not stretched by the slice chain.
+    const TASK_SLICE_MS = 4;
+    let taskPending = false, parked = false;
+    const channel = typeof MessageChannel === 'function' ? new MessageChannel() : null;
+    const schedule = (): void => {
+        if (taskPending || disposed || !staging) return;
+        taskPending = true;
+        if (channel) channel.port2.postMessage(null); else setTimeout(runSlice, 0);
+    };
+    const runSlice = (): void => {
+        taskPending = false;
+        if (disposed || !staging) return;
+        // A hidden pane keeps its staged work and waits; the host's next frame for the pane resumes it.
+        if (!isActive()) { parked = true; return; }
+        parked = false;
+        const started = performance.now();
+        if (stage({ shouldYield: () => performance.now() - started >= TASK_SLICE_MS }) === 'yield') schedule();
+    };
+    if (channel) channel.port1.onmessage = runSlice;
     const retained = new Map<PaintSource, Published>(), retiring = new Set<Promise<void>>();
     const waiters = new Set<() => void>();
     const report = (error: unknown) => { try { onError(error); } catch { /* Cleanup must still release every lease. */ } };
@@ -242,7 +273,7 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
         try { result = owner.release(); } catch (error) { report(error); result = undefined; }
         const pending = Promise.resolve(result).catch(report).then(() => {
             releaseBlocks(blocks); complete?.();
-            if (!disposed && staging && blocked) { blocked = false; invalidate(); }
+            if (!disposed && staging && blocked) { blocked = false; schedule(); }
         }).catch(report);
         retiring.add(pending);
         void pending.then(() => { retiring.delete(pending); notifyRetired(); });
@@ -294,10 +325,10 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
         };
         work.feed = feed(add, () => !needsBlock(work));
         staging = work;
-        invalidate();
+        schedule();
     };
     // A denied block waits for a real capacity change; the wake only re-runs the staged build, it never polls.
-    const wakeStaged = () => { if (!disposed && staging && blocked) { blocked = false; invalidate(); } };
+    const wakeStaged = () => { if (!disposed && staging && blocked) { blocked = false; schedule(); } };
     const publish = (work: Staging) => {
         const o = work.owner, staged = work.items;
         const root = { token: o.token, sceneRevision: o.sceneRevision,
@@ -311,13 +342,37 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
         // An unchanged picture is not published: the presented frame stays, and no frame is requested for it.
         if (latest && sameFrame(latest.frame, frame)) { staging = null; releaseOwned(o, work.blocks); return; }
         const published: Published = { owner: o, frame, blocks: work.blocks, borrowers: 0, retired: false, releasing: false };
-        retained.set(frame, published); latest = published; staging = null; invalidate();
+        retained.set(frame, published); latest = published; staging = null;
+        options.onPublished?.(frame);
+        invalidate();
+    };
+    // One pass of staged work within the slice budget; 'yield' means work remains and the caller reschedules it.
+    const stage = (budget: { shouldYield(): boolean }): 'yield' | 'idle' => {
+        const work = staging;
+        if (disposed || !work) return 'idle';
+        blocked = false;
+        try {
+            while (!budget.shouldYield()) {
+                if (needsBlock(work)) {
+                    if (!allocator) { blocked = true; return 'idle'; }
+                    const lease = allocator.reserve(BLOCK_BYTES);
+                    if (!lease) { blocked = true; allocator.whenAvailable?.(wakeStaged); return 'idle'; }
+                    work.blocks.push({ owner: allocator, lease }); heldBytes += lease.bytes;
+                }
+                const status = work.feed.step();
+                if (status === 'pending') continue;
+                if (status === 'waiting') return 'idle';
+                if (status !== 'complete') { dropStaging(); return 'idle'; }
+                publish(work); return 'idle';
+            }
+            return 'yield';
+        } catch (error) { dropStaging(); report(error); return 'idle'; }
     };
     return {
         bindMemory(next) {
             if (disposed || allocator === next) return;
             allocator = next;
-            if (staging && blocked) { blocked = false; invalidate(); }
+            if (staging && blocked) { blocked = false; schedule(); }
         },
         cpuWorkingSet: () => heldBytes + (!disposed && staging && needsBlock(staging) ? BLOCK_BYTES : 0),
         memoryBytes: () => heldBytes,
@@ -327,28 +382,10 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
         },
         requestStream(pin) {
             if (disposed) { releaseOwned(streamOwner(pin), []); return; }
-            start(streamOwner(pin), (add, room) => streamFeed(pin.stream, add, room, () => { if (staging) invalidate(); }));
+            start(streamOwner(pin), (add, room) => streamFeed(pin.stream, add, room, () => { if (staging) schedule(); }));
         },
-        prepare(budget) {
-            const work = staging;
-            if (disposed || !work) return;
-            blocked = false;
-            try {
-                while (!budget.shouldYield()) {
-                    if (needsBlock(work)) {
-                        if (!allocator) { blocked = true; return; }
-                        const lease = allocator.reserve(BLOCK_BYTES);
-                        if (!lease) { blocked = true; allocator.whenAvailable?.(wakeStaged); return; }
-                        work.blocks.push({ owner: allocator, lease }); heldBytes += lease.bytes;
-                    }
-                    const status = work.feed.step();
-                    if (status === 'pending') continue;
-                    if (status === 'waiting') return;
-                    if (status !== 'complete') { dropStaging(); return; }
-                    publish(work); return;
-                }
-            } catch (error) { dropStaging(); report(error); }
-        },
+        // The host's frame may also advance staged work; it shares the same stage, and its leftover work is rescheduled.
+        prepare(budget) { parked = false; if (stage(budget) === 'yield') schedule(); },
         readFrame: () => disposed ? null : latest?.frame ?? null,
         isCurrent: frame => !disposed && retained.has(frame) && !retained.get(frame)!.retired && retained.get(frame)!.owner.isCurrent(),
         retain(frame) {
@@ -362,7 +399,9 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
                 freeRetired(entry); notifyRetired();
             };
         },
-        needsFrame: () => !disposed && staging !== null && !blocked && !staging.feed.waiting,
+        // Staged work is not a reason for a frame: its task slices run without one. Only a parked pane needs a frame,
+        // to resume when it is shown again.
+        needsFrame: () => !disposed && staging !== null && parked,
         // Waiting for an allocator to bind is not a denial; only a refused reservation is reported as memory pressure.
         blocked: () => !disposed && blocked && staging !== null && allocator !== null,
         replacing: () => !disposed && staging !== null,
@@ -378,6 +417,7 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
         dispose() {
             if (disposed) return;
             disposed = true; clear();
+            channel?.port1.close(); channel?.port2.close();
         },
     };
 }

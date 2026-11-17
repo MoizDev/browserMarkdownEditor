@@ -133,12 +133,14 @@ export interface ShaderLayout {
 
 // rendering-design.md:137–146, 239: mask-max is only for coverage-mask construction;
 // multiply is destination-aware composition, not a fixed-function colour blend.
+// 'modulate' is the fixed-function dst·src step of a multiply slice (rgb ZERO, SRC_COLOR; alpha ZERO, ONE): no shader,
+// no backdrop copy. It is not the destination-aware multiply of beginGroup/composite, which samples a leased backdrop.
 export interface PipelineDesc {
     shader: ShaderModule;
     topology: 'triangles' | 'triangle-strip';
     colorFormat: TextureFormat;
     samples: Samples;
-    blend: 'replace' | 'source-over' | 'mask-max' | 'add';
+    blend: 'replace' | 'source-over' | 'mask-max' | 'add' | 'modulate';
     alphaToCoverage: boolean;
     colorWrite: readonly [boolean, boolean, boolean, boolean];
     stencil: StencilState;

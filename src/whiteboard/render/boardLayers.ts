@@ -1,11 +1,13 @@
-import type { Affine, ViewState } from '../../platform/types';
+import type { Affine, Rect, ViewState } from '../../platform/types';
+import type { HostBlock } from '../model/doc';
+import { boardPageStack } from '../model/pages';
 import type { PlatformLayerDefinition } from '../../platform/render/attachPlatformPane.types';
 import { awaitCapacity, isBudgetRefusal } from './budgetRefusal';
 import type { CompositorBackend, LayerCoverage, LayerHost } from '../../platform/render/compositor.types';
 import type { ScheduledFrame } from '../../platform/render/scheduler';
 import type { ByteLease } from '../../platform/render/gfx/api';
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
-import type { FrameBudget, FrameToken, GpuReleaseReason, Layer, RenderToken } from '../../platform/render/types';
+import type { FrameBudget, FrameToken, GpuReleaseReason, Layer, OffscreenPasses, RenderToken } from '../../platform/render/types';
 import type { PaintFrameAssembler } from './frameTypes';
 import type { PaintBand } from './material';
 import { inkCoverageChunks, type PaintItem, type PaintSource } from './paintStream';
@@ -74,6 +76,16 @@ export interface BoardLayersOptions {
     /** An overlay whose absence is not a view failure (a preview). Until its current frame is ready it reports complete
      * and draws nothing, and it never draws a superseded frame, so it cannot hold back the pane's other layers. */
     readonly optional?: boolean;
+    /** The world rects under which the surface beneath board content is opaque (PLAN §3.3). Absent or empty: no claim,
+     * so a multiply keeps today's isolation composite. Supplied per host by `opaqueWorldOf`. */
+    readonly opaqueWorld?: () => readonly Rect[];
+}
+/** The opaque world of a host's board content: its page rects, which a notebook's paper and a PDF's pages fill with an opaque
+ * colour (paper: notebookPaper.ts, a full-page white path; PDF: render.ts fills each tile white before it renders). The gaps
+ * between pages are opaque only while the view is not inverted, so the rects are exact for an inverted view and conservative
+ * otherwise (C1, c1-opaque.md). A whiteboard has no page rects and claims none. */
+export function opaqueWorldOf(host: HostBlock): readonly Rect[] {
+    return boardPageStack(host)?.rects ?? [];
 }
 interface Estimate {
     readonly frame: PaintSource;
@@ -181,6 +193,10 @@ export interface BoardLayerPair extends Readonly<[PlatformLayerDefinition, Platf
     /** The canonical CPU allocator of the bound layer host, or null before the first host has drawn. */
     memory(): MemoryAllocator | null;
 }
+/** The composer's offscreen encode (PLAN §3.3, wave 2). Today's adapter has none, so the layer's call is guarded: a no-op. */
+type OffscreenEncoder = { encodeOffscreen?(passes: OffscreenPasses, view: ViewState, band: PaintBand): void };
+/** The grain of a device's direct-frame charge (see chargeDirect): densePlan's DIRECT_CHUNK, the dense direct phase's own grain. */
+const DIRECT_CHUNK = 64 * 1024;
 export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     const hosts = new Map<PaintBand, LayerHost>();
     let adapter: CanvasPaintAdapter | null = null, allocatorHost: LayerHost | null = null;
@@ -189,6 +205,12 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     const retiringDense = new Set<ReturnType<typeof createDensePaintAdapter>>();
     const density = new DensityController();
     let useDense = false, deferredClear = false;
+    // The route the last prepare took: true while the pane has a device (the GPU composer draws the direct paint).
+    let onDeviceRoute = false;
+    // The composer's adapter options (PLAN §3.3). Built as a value, not a literal: the adapter's option type gains
+    // `opaqueWorld` in wave 2, and until then today's adapter ignores it.
+    const gpuOptions = () => ({ audit: options.auditSurface ?? 'board',
+        ...(typeof options.opaqueWorld === 'function' ? { opaqueWorld: options.opaqueWorld } : {}) });
     const liveSets = new WeakMap<PaintSource, { omit: ReadonlySet<string> | null | undefined; wet: ReadonlySet<string> | undefined; live: ReadonlySet<string> }>();
     const liveFor = (frame: PaintSource): ReadonlySet<string> | undefined => {
         const omit = options.omitNodes?.(frame), wet = options.liveNodeIds?.();
@@ -421,7 +443,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 needsFrame: () => current().needsFrame(), memory: () => current().memory(),
                 dispose: () => { direct!.dispose(); dense!.dispose(); },
             };
-            gpu = createGpuPaintAdapter(adapter, host, report, { audit: options.auditSurface ?? 'board' });
+            gpu = createGpuPaintAdapter(adapter, host, report, gpuOptions());
         }
         return adapter;
     };
@@ -439,6 +461,31 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             }
         }
     };
+    /** On a device the direct frame's CPU bytes are charged as they are built: measured by `direct.memory()`, grown in
+     * DIRECT_CHUNK leases through the canonical allocator, so the governor sees what the GPU route really holds. The
+     * granularity is the dense direct phase's (densePlan DIRECT_CHUNK): the charge never grows per item. False when the
+     * grant refuses; the layer then builds nothing more and waits for capacity. */
+    const chargeDirect = (frame: PaintSource): boolean => {
+        const want = direct!.memory().cpuBytes;
+        let leases = reservations.get(frame);
+        if (!leases) { leases = []; reservations.set(frame, leases); }
+        let held = 0;
+        for (const lease of leases) held += lease.bytes;
+        if (held >= want) { denied = false; return true; }
+        if (memoryGate.closed()) { denied = true; return false; }
+        while (held < want) {
+            const lease = allocatorHost!.allocator.cpu.reserve(DIRECT_CHUNK);
+            if (!lease) {
+                memoryGate.refused(); denied = true;
+                allocatorHost!.demandChanged?.();
+                allocatorHost!.allocator.cpu.whenAvailable?.(() => allocatorHost?.invalidate('board-memory'));
+                return false;
+            }
+            memoryGate.admitted();
+            leases.push(lease); reserved += lease.bytes; held += lease.bytes;
+        }
+        denied = false; return true;
+    };
     const prepare = (view: ViewState, budget: FrameBudget) => {
         if (!adapter || disposed || lastPrepareFrame === budget.frameId) return;
         lastPrepareFrame = budget.frameId; prepareToken = budget.token; prepareFrameId = budget.frameId;
@@ -454,6 +501,37 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             // frame that never changes cannot keep the pump running with no progress.
             if (!frame || !options.frames.isCurrent(frame) || !sameToken(frame.token, budget.token)) {
                 if (frame && !replacementAsked.has(frame)) { replacementAsked.add(frame); options.requestFrame?.(); }
+                return;
+            }
+            // On a device the GPU composer draws the direct paint alone: no density latch, no estimate walk, no reservation
+            // before the build. Dense mode is the canvas2d route's; a route change resets what the other route left behind.
+            const gpuRoute = !!allocatorHost?.device();
+            if (gpuRoute !== onDeviceRoute) {
+                onDeviceRoute = gpuRoute; estimate = null; denied = false; deniedDirectSegments = null; density.reset();
+                if (gpuRoute) for (const old of [...reservations.keys()]) releaseFrame(old);
+            }
+            if (gpuRoute) {
+                if (useDense) {
+                    // Emitting 'direct' makes the owner request a full frame; the live-only frame in hand is not drawable here.
+                    useDense = false; denied = false;
+                    allocatorHost?.demandChanged?.();
+                    dense!.release('pressure');
+                    allocatorHost!.invalidate('board-density-demand-ready');
+                    options.onDensityMode?.('direct');
+                    return;
+                }
+                if (frame.liveOnly) {
+                    if (!replacementAsked.has(frame)) { replacementAsked.add(frame); options.requestFrame?.(); }
+                    return;
+                }
+                known.add(frame);
+                // Charged before the build (the grant may already refuse) and after it (what this step built is held).
+                if (!chargeDirect(frame)) return;
+                adapter.prepare(view, budget);
+                gpu?.prepare(view, withFirstUnit(budget));
+                chargeDirect(frame);
+                prune(frame, adapter.readyFrame());
+                options.onPrepared?.();
                 return;
             }
             // A live-only frame holds no other items, so it can never serve direct drawing; a direct frame
@@ -623,6 +701,10 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                         retain: () => options.frames.retain(frame), retainImages: () => leaseOf(hold) });
                     recordDraw(band, { frame, omit, ink, context, hold });
                 },
+                encodeOffscreen(passes, view) {
+                    const encoder = gpu as OffscreenEncoder | null;
+                    if (typeof encoder?.encodeOffscreen === 'function') encoder.encodeOffscreen(passes, view, band);
+                },
                 draw2d(ctx, view) {
                     const frame = adapter?.readyFrame();
                     if (!frame || !drawable(frame)) return;
@@ -671,7 +753,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                         const oldDense = dense!; oldDense.dispose(); retiringDense.add(oldDense);
                         dense = createDensePaintAdapter({ frames: options.frames, images: options.images,
                             invalidate: () => { collectRetired(); activeHost()?.invalidate('board-resource'); } }, allocatorHost, report, memoryGate);
-                        gpu?.dispose(); gpu = createGpuPaintAdapter(adapter!, allocatorHost, report, { audit: options.auditSurface ?? 'board' });
+                        gpu?.dispose(); gpu = createGpuPaintAdapter(adapter!, allocatorHost, report, gpuOptions());
                     }
                 },
             };

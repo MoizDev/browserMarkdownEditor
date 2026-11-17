@@ -4,11 +4,12 @@ import type { CompositorBackend, LayerCoverage, LayerHost } from '../../platform
 import type { ByteLease, GpuPass } from '../../platform/render/gfx/api';
 import { pageAt, type PageStack } from '../../platform/render/pageStack';
 import type { ScheduledFrame } from '../../platform/render/scheduler';
-import type { FrameBudget, FrameToken, GpuReleaseReason, Layer } from '../../platform/render/types';
+import type { FrameBudget, FrameToken, GpuReleaseReason, Layer, OffscreenPasses } from '../../platform/render/types';
 import { boardPageStack } from '../model/pages';
 import type { HostBlock } from '../model/doc';
 import type { PaintPalette } from '../render/colour';
 import type { PaintFrame, PaintPathItem } from '../render/paintStream';
+import type { PaintBand } from '../render/material';
 import { awaitCapacity, isBudgetRefusal } from '../render/budgetRefusal';
 import { createGpuPaintAdapter } from '../render/gpuPaintAdapter';
 import { preparedOfFrame, type CanvasPaintAdapter, type PreparedPaint2d } from '../render/reference/canvasPaintAdapter';
@@ -16,6 +17,8 @@ import { Path2dJob } from '../render/reference/coverage2d';
 import { paintItem2d, type PaintResources2d, type PreparedPath2d } from '../render/reference/paint2d';
 import { notebookBackdrop } from './notebookBackdrop';
 
+/** The composer's offscreen encode (PLAN §3.3, wave 2). Today's adapter has none, so the layer's call is guarded: a no-op. */
+type OffscreenEncoder = { encodeOffscreen?(passes: OffscreenPasses, view: ViewState, band: PaintBand): void };
 export type NotebookHost = Extract<HostBlock, { kind: 'notebook' }>;
 export interface NotebookPaperSnapshot {
     /** Changes whenever paper properties or page geometry change. */
@@ -81,7 +84,9 @@ class NotebookPaperLayer implements Layer {
     };
     private readonly gpu: ReturnType<typeof createGpuPaintAdapter>;
     constructor(private readonly host: LayerHost, private readonly options: NotebookPaperLayerOptions) {
-        this.gpu = createGpuPaintAdapter(this.gpuReference, host, error => this.report(error), { audit: 'notebook-paper' });
+        // The paper's own opaque world: its page rects, which the paper fills (notebookPaper.ts), exact for an inverted view.
+        const gpuOptions = { audit: 'notebook-paper', opaqueWorld: () => this.ready?.stack.rects ?? [] };
+        this.gpu = createGpuPaintAdapter(this.gpuReference, host, error => this.report(error), gpuOptions);
     }
     private report(error: unknown): void {
         if (isBudgetRefusal(error)) {
@@ -206,6 +211,11 @@ class NotebookPaperLayer implements Layer {
         this.gpuSource = { ready, first, last, token: { ...token } };
     }
     drawGpu(pass: GpuPass, view: ViewState): void { this.gpu.drawGpu(pass, view, 'content'); }
+    /** Forwards the composer's offscreen encode; a no-op until the adapter has one (PLAN §3.3, wave 2). */
+    encodeOffscreen(passes: OffscreenPasses, view: ViewState): void {
+        const encoder = this.gpu as OffscreenEncoder;
+        if (!this.disposed && typeof encoder.encodeOffscreen === 'function') encoder.encodeOffscreen(passes, view, 'content');
+    }
     draw2d(ctx: CanvasRenderingContext2D, view: ViewState): void {
         const ready = this.ready;
         if (!ready || this.disposed) return;

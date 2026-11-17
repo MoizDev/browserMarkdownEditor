@@ -294,7 +294,8 @@ export interface FrameEncoder {
 }
 
 // rendering-design.md:202, 298: completion serials guard safe pooled-storage reuse.
-export interface Submission { readonly serial: number }
+// `stateSwitches`: program, blend and framebuffer changes the replayed commands made (the audit's gl:state).
+export interface Submission { readonly serial: number; readonly stateSwitches: number }
 
 // rendering-design.md:203–206, §2.5: already canonical; the caller closes the bitmap
 // explicitly after writeTexture returns. Upload does not repeat colour conversion.

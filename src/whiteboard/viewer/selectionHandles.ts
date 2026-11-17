@@ -107,6 +107,24 @@ export function createSelectionHandles(options: SelectionHandleOptions) {
     };
     const stopSelection = runtime.selection.subscribe(refresh), stopSession = session.subscribe(refresh);
     refresh();
+    // The nodes live as long as their svg: a frame moves their coordinates, it does not build new elements.
+    const draw = (shape: OrientedBox, view: ViewState, moving: Vec2 | 'hidden' | null) => {
+        if (moving === 'hidden') { if (svg) svg.style.display = 'none'; return; }
+        if (svg) svg.style.display = '';
+        if (!svg) {
+            svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('aria-hidden', 'true');
+            svg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible'; options.overlay.append(svg);
+            handleNodes = undefined;
+        }
+        const shown: OrientedBox = moving ? { ...shape, origin: { x: shape.origin.x + moving.x, y: shape.origin.y + moving.y } } : shape;
+        const geometry = projected(shown, view);
+        const nodes = handleNodes ??= buildHandleNodes(svg, geometry.positions.length);
+        put(nodes.path, 'points', [0, 2, 4, 6].map(i => `${geometry.positions[i].x},${geometry.positions[i].y}`).join(' '));
+        put(nodes.stem, 'x1', String(geometry.positions[2].x)); put(nodes.stem, 'y1', String(geometry.positions[2].y));
+        put(nodes.stem, 'x2', String(geometry.rotate.x)); put(nodes.stem, 'y2', String(geometry.rotate.y));
+        put(nodes.rotate, 'cx', String(geometry.rotate.x)); put(nodes.rotate, 'cy', String(geometry.rotate.y));
+        geometry.positions.forEach((position, i) => { put(nodes.circles[i], 'cx', String(position.x)); put(nodes.circles[i], 'cy', String(position.y)); });
+    };
     return {
         refresh,
         contains(world: Vec2, time?: number): boolean {
@@ -134,22 +152,14 @@ export function createSelectionHandles(options: SelectionHandleOptions) {
             auditCount('select-handles', 'frame');
             if (!current() || !box) { svg?.remove(); svg = undefined; presented.clear(); return; }
             presented.present(frame.timestamp, { ...frame.view.camera });
-            if (moving === 'hidden') { if (svg) svg.style.display = 'none'; return; }
-            if (svg) svg.style.display = '';
-            if (!svg) {
-                svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('aria-hidden', 'true');
-                svg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible'; options.overlay.append(svg);
-                handleNodes = undefined;
-            }
-            const shown: OrientedBox = moving ? { ...box, origin: { x: box.origin.x + moving.x, y: box.origin.y + moving.y } } : box;
-            const geometry = projected(shown, frame.view);
-            // The nodes live as long as their svg: a frame moves their coordinates, it does not build new elements.
-            const nodes = handleNodes ??= buildHandleNodes(svg, geometry.positions.length);
-            put(nodes.path, 'points', [0, 2, 4, 6].map(i => `${geometry.positions[i].x},${geometry.positions[i].y}`).join(' '));
-            put(nodes.stem, 'x1', String(geometry.positions[2].x)); put(nodes.stem, 'y1', String(geometry.positions[2].y));
-            put(nodes.stem, 'x2', String(geometry.rotate.x)); put(nodes.stem, 'y2', String(geometry.rotate.y));
-            put(nodes.rotate, 'cx', String(geometry.rotate.x)); put(nodes.rotate, 'cy', String(geometry.rotate.y));
-            geometry.positions.forEach((position, i) => { put(nodes.circles[i], 'cx', String(position.x)); put(nodes.circles[i], 'cy', String(position.y)); });
+            draw(box, frame.view, moving);
+        }),
+        /** A move that no presented frame followed (the board stalled under the large seed): the same nodes, written with the
+         * live view. It does not present history, so a hit test still uses the camera the board actually showed. */
+        writeLive: (view: ViewState, moving: Vec2 | 'hidden' | null = null) => auditTimed('select-handles', () => {
+            auditCount('select-handles', 'live');
+            if (!current() || !box) return;
+            draw(box, view, moving);
         }),
         hide() { generation++; controller?.abort(); clear(); },
         dispose() { if (disposed) return; disposed = true; generation++; controller?.abort(); stopSelection(); stopSession(); svg?.remove(); svg = undefined; box = null; presented.clear(); },

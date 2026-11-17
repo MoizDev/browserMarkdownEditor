@@ -82,6 +82,10 @@ export interface ScheduledPane {
     prepareFrame(frame: ScheduledFrame, budget: FrameBudget): void;
     finishPrepareFrame?(frame: ScheduledFrame, budget: FrameBudget): void;
     encode(frame: ScheduledFrame): ScheduledEncoding | null;
+    /** A frame skipped because every layer answered unchanged is presented without encode or submit: the picture on screen is the
+     * one it would draw. Returns true when the pane reported that presentation (the same observers and report a present gives);
+     * false when the picture cannot be vouched for (token, revision, camera, geometry or backend moved), and the frame is encoded. */
+    presentUnchanged(frame: ScheduledFrame): boolean;
     writeOverlays(frame: ScheduledFrame): void;
     /** Read-only benchmark snapshot; never queried in production or development. */
     benchmarkMemory?(): { memory: Readonly<Record<string, number>>; grants: Readonly<Record<string, number>> };
@@ -887,10 +891,15 @@ export class FrameScheduler {
             for (const item of this.focusFirst(this.rotate(work, this.encodeCursor++))) {
                 this.call(item.entry, () => {
                     if (!item.platformPrepared || !this.valid(item.entry, item.frame.token)) return;
-                    // A frame whose layers all report unchanged presents nothing new, whatever invalidated it. Its damage stays pending
-                    // (merged back below, unsubmitted), and any work still outstanding keeps its own mark or needsFrame.
-                    if (this.unchangedPicture(item)) {
+                    // A frame whose layers all report unchanged shows the picture it would draw: the presented-frame observers run for
+                    // it (presentUnchanged), and only the GPU encode and submit are skipped, whatever invalidated the frame. Its damage
+                    // stays pending (merged back below, unsubmitted), and any work still outstanding keeps its own mark or needsFrame.
+                    // A skipped frame is a presented frame whose GPU work is skipped: the same observers, overlays and presented record
+                    // run for it. Acknowledgements are not added: nothing it draws is new, and the earlier ones still arrive on their own.
+                    if (this.unchangedPicture(item) && item.entry.pane.presentUnchanged(item.frame)) {
                         if (renderAuditEnabled()) auditCount('pane', 'present-skipped:unchanged');
+                        item.entry.presented = { token: item.frame.token, epoch: item.frame.view.epoch, geometry: item.geometry };
+                        item.entry.pane.writeOverlays(item.frame);
                         return;
                     }
                     if (renderAuditEnabled()) {

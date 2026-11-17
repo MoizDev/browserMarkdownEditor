@@ -60,7 +60,10 @@ export interface Layer {
      * Returns `false` only when a prepare ran to completion for this view and nothing the layer draws next can differ from what
      * it last presented, so a continuation frame may skip encode and present. A layer the budget or deadline skipped this frame
      * has proved nothing, so the scheduler counts it as changed. Any other answer, including no answer (every layer that does not
-     * say), means the picture may have changed. A forwarding wrapper that does not return the inner answer simply reports changed. */
+     * say), means the picture may have changed. A forwarding wrapper that does not return the inner answer simply reports changed.
+     * A frame of `false` answers is a presented frame whose GPU work is skipped: the picture on screen is the one it would draw, so
+     * the scheduler still delivers the presented-frame observers, overlays and presented record for it (only encode and submit are
+     * skipped). That is why a layer must count every change it draws, its chrome included: an unchanged answer over a change is hidden. */
     prepare(view: ViewState, budget: FrameBudget): boolean | void;
     drawGpu(pass: GpuPass, view: ViewState): void;
     /** Optional, GPU only. Encodes passes into the layer's OWN offscreen targets (tile textures) on this frame's encoder,

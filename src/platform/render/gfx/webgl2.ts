@@ -78,6 +78,8 @@ export interface Webgl2Owner extends BrokerGpuOwner, GpuIsolationAdmission {
     releaseTarget(lease: TargetLease): void;
     /** Platform quad helpers need physical storage dimensions, never a native texture. */
     textureInfo(texture: TextureHandle): Readonly<{ width: number; height: number; format: TextureFormat; usedRect: RectI }>;
+    /** The colour texture a target was created over (its atlas region key). Read-only; never allocates. */
+    targetTexture(target: TargetHandle): TextureHandle;
     closeLease(lease: ByteLease): void;
     memory(): ArenaMemory;
     leaseMemory(lease: ByteLease): ArenaLeaseMemory;
@@ -562,6 +564,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     acquireTarget(request: TargetRequest): TargetLease | null { this.#usable(); return this.#pool.acquire(request); }
     releaseTarget(lease: TargetLease): void { this.#pool.release(lease); this.#collect(); }
 
+    targetTexture(target: TargetHandle): TextureHandle { return this.#arena.validate(target, 'target').color; }
     textureInfo(texture: TextureHandle): Readonly<{ width: number; height: number; format: TextureFormat; usedRect: RectI }> {
         this.#usable();
         const native = this.#arena.validate(texture, 'texture');

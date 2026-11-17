@@ -27,6 +27,9 @@ const BANDS: readonly PaintBand[] = ['underlay', 'content'];
 const TARGET_BYTES = tileTargetBytes(SIZE);
 /** The bytes a refused position at rest asks its own store to free: a few targets, not the whole store. */
 const FREE_FOR_REFUSAL = 8 * TARGET_BYTES;
+/** A visible position refused a GPU admission retries at this deadline: the pool can change with no release that reaches the waiter
+ * (gpu-h3's stall, two runs in ten). The deadline only invalidates; the retry runs in the frame it wakes, after the governor is asked. */
+const GPU_RETRY_MS = 250;
 const CLEAR: RgbaP = [0, 0, 0, 0], WHITE: RgbaP = [1, 1, 1, 1];
 /** The texture's interior. The gutter is composed (so edges are right) and never drawn. */
 const CROP: Readonly<Rect> = Object.freeze({ x: GUTTER, y: GUTTER, width: EDGE, height: EDGE });
@@ -313,6 +316,9 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     let waiting = false;
     // The refusal that set `waiting` was a GPU admission (a budget the governor may free), not a CPU one.
     let blockedOnGpu = false;
+    // The deadline (performance.now) of the armed retry; 0 when none is armed or it was satisfied. A deadline that fires with nothing
+    // to do is a no-op: the layer's wake slot is shared with the store's trim deadline, so it is not cancelled with null.
+    let retryAt = 0;
     // The paint's live-part flag, scanned once per paint version: a stand-in position queries the parts index only when set.
     let paintScanned: PreparedPaint2d | null = null, paintHasLive = false, paintLiveOnly = false;
     let device: GfxDevice | null = null;
@@ -332,8 +338,15 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     // The governor's wake for a refusal: the parked positions may be advanced again, and the board is asked for a frame.
     const wake = (): void => {
         for (const position of building.values()) position.parked = false;
-        waiting = false; blockedOnGpu = false;
+        waiting = false; blockedOnGpu = false; retryAt = 0;
         host.invalidate('tile-composer-capacity');
+    };
+    // Arms the retry deadline for a visible GPU refusal, once: a deadline already armed for later stands.
+    const armRetry = (): void => {
+        const now = performance.now();
+        if (retryAt > now) return;
+        retryAt = now + GPU_RETRY_MS;
+        host.wakeAt(retryAt);
     };
     const refuseTarget = (): void => { denied = true; waiting = true; blockedOnGpu = true; auditCount(audit, 'tile:denied'); store.wait(TARGET_BYTES, wake); };
     const refuseAdmission = (pool: 'gpu' | 'cpu', bytes: number): void => {
@@ -648,8 +661,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 auditCount(audit, `compose:lowered:${pass}`);
                 return drive(lower, lowKey, pass);
             }
-            if (outcome === 'refused') { refuseTarget(); position.parked = true; auditCount(audit, `compose:refused:${pass}`); return true; }
-            if (outcome === 'denied') { position.parked = true; auditCount(audit, `compose:denied:${pass}`); return true; }
+            if (outcome === 'refused') { refuseTarget(); position.parked = true; if (pass !== 'ring') armRetry(); auditCount(audit, `compose:refused:${pass}`); return true; }
+            if (outcome === 'denied') { position.parked = true; if (pass !== 'ring' && blockedOnGpu) armRetry(); auditCount(audit, `compose:denied:${pass}`); return true; }
             auditCount(audit, `compose:wait:${pass}`);
             return false;
         };
@@ -1007,7 +1020,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         retireLive();
         store.releaseAll();
         for (const route of routeList) route.release();
-        denied = false; waiting = false; blockedOnGpu = false; settled = false; presenting = false;
+        denied = false; waiting = false; blockedOnGpu = false; retryAt = 0; settled = false; presenting = false;
         heldNodes.clear();
     };
 
@@ -1091,6 +1104,13 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 if (!zooming && inexactPending.size) {
                     for (const entry of inexactPending) if (entry.target && entry.key.scale === target) entry.dirty = true;
                     inexactPending.clear();
+                }
+                // The armed retry is due and the refused position still waits on the GPU: it is advanced again this frame, after the
+                // governor has been asked (the admission reserves). A refusal that persists arms the next retry.
+                if (waiting && blockedOnGpu && retryAt !== 0 && performance.now() >= retryAt) {
+                    retryAt = 0; waiting = false; blockedOnGpu = false;
+                    for (const position of building.values()) position.parked = false;
+                    auditCount(audit, 'compose:retry:deadline');
                 }
                 if (paintLiveOnly) {
                     // Drawn live at the view, so nothing is composed: any position in progress or finished is let go.

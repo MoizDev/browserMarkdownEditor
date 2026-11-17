@@ -2,7 +2,8 @@ import { RENDER_CONSTANTS as POLICY } from './constants';
 import type { ByteLease } from './gfx/api';
 import { auditCount } from './renderAudit';
 import type { ArenaMemory } from './resourceArena';
-import type { RenderToken } from './types';
+import { layerTroubleOf } from './types';
+import type { LayerTrouble, RenderToken } from './types';
 
 export type MemoryPool = 'gpu' | 'cpu';
 export type MemoryClass = 'hidden-mirror' | 'obsolete-arrival' | 'offscreen-high' |
@@ -828,6 +829,9 @@ export class MemoryGovernor {
     /** Usage low enough to step quality back up. GPU grants are planned up to the trim target, so a pane using its own
      * grant sits there; the CPU's 0.6 ratio applied to the GPU never came once it was degraded (measured: a PDF held at
      * 44 of 64 MB stayed at quality 0.8, so no webgl2 frame was ever sharp). */
+    /** What a layer reads through its host: a pure mapping of the state fields, so the read allocates nothing. */
+    trouble(): LayerTrouble { return layerTroubleOf(this.state, this.lastTrouble); }
+
     cool(): boolean {
         return this.charged.gpu < this.target.gpu * POLICY.memoryTrimTargetRatio &&
             this.charged.cpu < this.target.cpu * POLICY.memoryRecoveryRatio;

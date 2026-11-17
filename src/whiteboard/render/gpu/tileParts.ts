@@ -442,10 +442,16 @@ export const createTileParts: CreateTileParts = (_host, audit) => {
         takeChanges(): readonly Rect[] | 'all' {
             if (!changesReady) return NO_RECTS;
             changesReady = false;
-            if (pendingAll) { pendingAll = false; pending = []; return 'all'; }
+            // What each take reports, counted: an 'all' is one event, and a rect list is its size and its total area, so a
+            // drag that reports every item as changed shows as a large count and area, not only as 'all'.
+            if (pendingAll) { pendingAll = false; pending = []; auditCount(audit, 'index:take-all'); return 'all'; }
             if (!pending.length) return NO_RECTS;
             const taken = pending;
             pending = [];
+            let area = 0;
+            for (const rect of taken) area += rect.width * rect.height;
+            auditCount(audit, 'index:take-rects', taken.length);
+            auditCount(audit, 'index:take-area', area);
             return taken;
         },
         boundsOfNodes(ids: ReadonlySet<string>): readonly Rect[] {

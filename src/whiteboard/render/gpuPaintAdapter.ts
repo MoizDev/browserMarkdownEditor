@@ -21,7 +21,7 @@ import { createTileStore, tileWorld } from './gpu/tileStore';
 import { createPath, withPreparedClips } from './gpu/routePath';
 import { createInkRoutes, inkRouteFor } from './gpu/routeInk';
 import { createImageRoute } from './gpu/routeImage';
-import { createTextRoute } from './gpu/routeText';
+import { createTextRoute, type TextRoute } from './gpu/routeText';
 
 const SIZE = TILE_SIZE;
 const NO_INK: ReadonlySet<string> = new Set();
@@ -264,7 +264,8 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
     const pathRoute = createPath(host, surface);
     const store = createTileStore(host, surface);
     const imageRoute = createImageRoute(host, surface);
-    const textRoute: EvictingRoute = createTextRoute(host, surface);
+    // The factory is typed as the generic item route; the text route's own type carries its zoom hooks (setZoom, exact).
+    const textRoute = createTextRoute(host, surface) as TextRoute;
     const routes: TileRoutes = {
         path: pathRoute.route,
         inkAnalytic: ink.analytic,

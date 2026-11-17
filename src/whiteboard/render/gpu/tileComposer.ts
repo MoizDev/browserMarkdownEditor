@@ -137,9 +137,12 @@ export interface TileRoutes {
     readonly inkUnion: ItemRoute<PaintInkItem>;
     /** Absent until the route is built: its items are then rastered by `cpu`, counted as a fallback. */
     readonly image?: ItemRoute;
-    readonly text?: ItemRoute;
+    readonly text?: ItemRoute & ZoomRoute;
     readonly cpu: ItemRoute;
 }
+/** The text route's zoom hooks (gpu-h8). `setZoom` is called once per frame before the admits: while it is true a missing exact mask is
+ * drawn from its cached stand-in, never rastered. `exact` is false for a run that drew one: its tile recomposes exact once the camera rests. */
+export interface ZoomRoute { setZoom(zooming: boolean): void; exact(run: PreparedRun): boolean }
 /** A route that needs the paint's resources (decoded images, path and clip geometry); called once per paint, before admit. */
 export interface ResourcedRoute { useResources?(resources: PaintResources2d): void }
 /** Lays a composed texture on the current surface. `modulate` multiplies the surface by it; `dest` is in device pixels. */
@@ -251,6 +254,9 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     let resourcesSeen: PaintResources2d | null = null;
     // Slots live beside their entries (keyed by the entry object), so an entry the store drops takes its slot with it.
     const slots = new WeakMap<TileEntry, Slot>();
+    // Entries encoded with a run that drew a stand-in (the text route's zoom). They recompose exact once the camera rests: the last
+    // zoom frame's entries are the ones at the scale the camera rests on, so the set is cleared at the start of each zoom frame.
+    const inexactPending = new Set<TileEntry>();
     // Positions being admitted, by key. A finished position waits in `finished` for its band's encode.
     const building = new TileKeyMap<Position>();
     const staleScratch: Position[] = [];
@@ -907,6 +913,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     firstOrder: position.slices.map(part => part.firstOrder), live: position.live,
                     geometry: slice.admitted.some(admitted => isGeometryRoute(admitted.route)),
                     cpu: slice.admitted.some(admitted => admitted.route === routes.cpu) });
+                const text = routes.text;
+                if (text && slice.admitted.some(admitted => admitted.route === text && !text.exact(admitted.run))) inexactPending.add(entry);
                 store.touch(entry, frame);
             }
             for (const { route, run, clips } of slice.admitted) { route.retire(run); clips?.retire(); }
@@ -917,6 +925,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     const releaseAll = (): void => {
         for (const position of building.values()) cancel(position);
         building.clear();
+        inexactPending.clear();
         scaleIndexes.clear();
         for (const position of finished) cancel(position);
         finished = [];
@@ -961,6 +970,9 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             const zooming = lastZoom !== undefined && view.camera.z !== lastZoom;
             lastZoom = view.camera.z;
             zoomingFrame = zooming;
+            // The text route draws a missing exact mask from its stand-in while the zoom is live; the flag is set before its admits.
+            routes.text?.setZoom(zooming);
+            if (zooming) inexactPending.clear();
             const exact = exactScale(demand);
             // Compose targets the exact scale every frame, visible positions first (exact-first zoom, gpu).
             const target = exact;
@@ -1001,6 +1013,11 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     else cancel(position);
                 }
                 finished = kept;
+                // At rest, the entries that drew a stand-in during the zoom recompose exact: marked dirty, they take the dirty pass.
+                if (!zooming && inexactPending.size) {
+                    for (const entry of inexactPending) if (entry.target && entry.key.scale === target) entry.dirty = true;
+                    inexactPending.clear();
+                }
                 if (device) compose(view, budget, device, target, span);
                 // A held node stays live while a tile under it is dirty, or a visible one under it has nothing yet.
                 for (const id of heldNodes.keys()) if (!heldStillMissing(id, target, span)) heldNodes.delete(id);
@@ -1156,7 +1173,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         needsFrame(): boolean {
             if (disposed || denied || !presenting) return false;
             if (waiting) return indexing || finished.length > 0;
-            return indexing || !settled || building.size > 0 || finished.length > 0;
+            return indexing || !settled || building.size > 0 || finished.length > 0 || inexactPending.size > 0;
         },
         memory(): { gpuBytes: number; cpuBytes: number } {
             const own = store.memory();

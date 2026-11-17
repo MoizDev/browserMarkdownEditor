@@ -453,7 +453,11 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                     case 'unsupported': {
                         // The route refused the stroke: it is drawn through the CPU path, and the refusal is reported once.
                         if (!slot.reported) { slot.reported = true; report(new Error(`Wet ink route refused a stroke (${admission.why}); it is drawn through the CPU path`)); }
-                        const scrap = admitScrap(host, shown, source, material, admission.why, view, budget);
+                        // stamp has already written this publication's serial: a throw here leaves the slot pending and not current, so the
+                        // stroke is retried and the frame is never counted sharp for a tip that was not drawn.
+                        let scrap: ReturnType<typeof admitScrap>;
+                        try { scrap = admitScrap(host, shown, source, material, admission.why, view, budget); }
+                        catch (error) { slot.serial = -1; slot.state = 'pending'; throw error; }
                         if (scrap.status === 'ready') {
                             const value = scrap.value;
                             slot.viewBound = true;
@@ -670,8 +674,15 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         frameAnswer = caughtUp && work === null && admitted && !denied && routedCoverage(budget.token, view) === VERDICT_SHARP;
         return frameAnswer;
     };
+    // A band that holds nothing shown has nothing to draw, so it has nothing that differs from its last presented frame: it answers
+    // unchanged even before it has ever drawn (measured: a band with no stroke answered changed on every idle frame).
+    const bandHasInk = (band: WetBand): boolean => {
+        for (const [key, slot] of runs) if (((key & 1) === 1) === (band === 'content') && slot.shown) return true;
+        return false;
+    };
     const prepareBand = (band: WetBand) => (view: ViewState, budget: FrameBudget): boolean | undefined => {
         if (!prepareShared(view, budget)) return undefined;
+        if (drawnKey[band] === undefined) return bandHasInk(band) ? undefined : false;
         return drawnKey[band] === fingerprintOf(view) ? false : undefined;
     };
     const make = (band: WetBand): PlatformLayerDefinition => ({
@@ -726,8 +737,11 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                 },
                 releaseGpu(reason) { if (reason === 'hidden' || reason === 'pressure') clear(); else releaseRoutes(); },
                 memory() {
-                    const memory = host === owner ? routesMemory() : undefined;
-                    return { gpuBytes: memory?.gpuBytes ?? 0, cpuBytes: host === owner ? reserved + (memory?.cpuBytes ?? 0) : 0 };
+                    // The shared routes and the reserve are one set of bytes for both bands, which share an owner host. Only the layer that
+                    // cpuWorkingSet demands them for reports them: a host check alone counted them twice in the pane's sum.
+                    const reporting = !!owner && hostLayers.get(owner) === layer;
+                    const memory = reporting ? routesMemory() : undefined;
+                    return { gpuBytes: memory?.gpuBytes ?? 0, cpuBytes: reporting ? reserved + (memory?.cpuBytes ?? 0) : 0 };
                 },
                 needsFrame() { return !ended && !disposed && !denied && (dirty || !!work || (!!owner?.device() && runsPending())); },
                 dispose() { if (ended) return; ended = true; if (owner === host) { clear(); owner = null; } hosts.delete(host); hostLayers.delete(host); owner ??= hosts.values().next().value ?? null; },
@@ -742,7 +756,9 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
             const pending = !!work || snapshots.some(item => prepared.get(item.identity.gestureSequence)?.snapshot !== item);
             // Each band shares this one owner. Demand the NEXT bounded native-path/coverage
             // allocation before prepare, including a replacement while old wet pixels stay live.
-            const extra = pending ? (work?.stable.temp ? 0 : TEMP_BYTES) + PATH_BLOCK + (work?.chunk?.retained?.bytes ?? 0) : 0;
+            // A pending stroke's scratch is already held (in reserved) from its first step until it is retired: it is demanded once, not per frame.
+            const scratchHeld = snapshots.some(item => stables.get(item.identity.gestureSequence)?.temp) || !!work?.stable.temp;
+            const extra = pending ? (scratchHeld ? 0 : TEMP_BYTES) + PATH_BLOCK + (work?.chunk?.retained?.bytes ?? 0) : 0;
             return { mandatoryBytes: reserved + extra + (owner.device() ? routesMemory().cpuBytes : 0), prefetchBytes: 0 };
         },
         // A live stroke whose GPU runs are still in flight is critical: the non-critical share of a frame is one sliver,

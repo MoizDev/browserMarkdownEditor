@@ -81,7 +81,9 @@ export interface ScheduledPane {
     /** Platform target/ring admission once per frame, before any layer prepares; never draws. */
     prepareFrame(frame: ScheduledFrame, budget: FrameBudget): void;
     finishPrepareFrame?(frame: ScheduledFrame, budget: FrameBudget): void;
-    encode(frame: ScheduledFrame): ScheduledEncoding | null;
+    /** `changed`: a layer's preparation reported a change this frame, or could not prove none (drawnChange, a full repaint, or a layer
+     * not visited). The scene revisions cannot say that: an adapter can promote a newer picture under the same revision. */
+    encode(frame: ScheduledFrame, changed: boolean): ScheduledEncoding | null;
     /** A frame skipped because every layer answered unchanged is presented without encode or submit: the picture on screen is the
      * one it would draw. Returns true when the pane reported that presentation (the same observers and report a present gives);
      * false when the picture cannot be vouched for (token, revision, camera, geometry or backend moved), and the frame is encoded. */
@@ -907,7 +909,8 @@ export class FrameScheduler {
                             : item.drawnChange ? 'changed' : 'not-called';
                         auditCount('pane', 'present-kept:' + kept);
                     }
-                    const encoding = item.entry.pane.encode(item.frame);
+                    const changed = item.drawnChange || item.repaint || item.settled !== item.frame.layers.length;
+                    const encoding = item.entry.pane.encode(item.frame, changed);
                     if (encoding) encodings.push({ work: item, encoding, done: false });
                     else if (item.entry.layers.some(layer => layer.needsFrame())) {
                         // An external wait must wake the pane on arrival; polling it here spins rAF.

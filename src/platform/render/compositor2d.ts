@@ -164,6 +164,8 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
     private lastScale: number | null = null;
     private report: CompositorCoverage | null = null;
     private presentedKey = '';
+    /** Frames whose layers reported a change (see encode): each one repaints, whatever the scene key says. */
+    private drawn = 0;
     private missing = false;
     private busy = 0;
     private cropsPending = 0;
@@ -418,8 +420,9 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         } finally { target.native.restore(); }
     }
 
-    encode(frame: ScheduledFrame): ScheduledEncoding | null {
+    encode(frame: ScheduledFrame, changed: boolean): ScheduledEncoding | null {
         this.check();
+        if (changed) this.drawn++;
         this.lastFrame = frame;
         const snapshot = this.scene;
         const budget = this.budget;
@@ -427,6 +430,9 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         if (this.encodedSources.size || !snapshot?.metrics || snapshot.view !== frame.view || !back || !budget || budget.frameId !== frame.frameId ||
             !sameToken(this.options.currentToken(), frame.token) || !this.healthy()) return null;
         const key = this.key(snapshot, frame);
+        // The paint key adds the count of changed frames. The scene key alone is blind to a layer that draws a newer picture under the
+        // same scene revision (an adapter promotes it in prepare): the frame was encoded, and the same key skipped the repaint.
+        const paint = `${key}#${this.drawn}`;
         this.activeKey = key;
         this.beginSources(key);
         const availability = snapshot.layers.map(binding => binding.coverage(frame, this.backend));
@@ -440,10 +446,10 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         if (renderAuditEnabled()) auditDrawnStart();
         this.busy++;
         try {
-            if (this.job && this.job.key !== key) this.cancelJob();
-            if (this.presentedKey !== key) {
+            if (this.job && this.job.key !== paint) this.cancelJob();
+            if (this.presentedKey !== paint) {
                 if (snapshot.appearance.inverted && snapshot.layers.some(layer => layer.group === 'document')) {
-                    if (!this.paintInverted(snapshot, frame, back, key)) return null;
+                    if (!this.paintInverted(snapshot, frame, back, paint)) return null;
                 } else {
                     opaque(back.native, snapshot.appearance);
                     if (__BME_BENCH__ && benchmarkDomain) benchmarkCanvas?.managers.get(this)?.begin(back.native, benchmarkDomain.benchmarkPaintDomain(snapshot, frame));
@@ -466,8 +472,8 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
                     if (done) throw new Error('Canvas encoding already consumed');
                     try {
                     if (this.disposed || this.scene !== snapshot || !sameToken(this.options.currentToken(), frame.token) || !this.healthy()) return null;
-                    if (this.presentedKey !== key && !this.publish(back, snapshot.metrics!)) return null;
-                    this.presentedKey = key;
+                    if (this.presentedKey !== paint && !this.publish(back, snapshot.metrics!)) return null;
+                    this.presentedKey = paint;
                     this.retained = encodedSources; this.retainedCrops = encodedCrops;
                     this.report = Object.freeze({ frameId: frame.frameId, token: frame.token, presented: true,
                         complete: true, sharp: snapshot.metrics!.qualityScale === 1 && availability.every(item => item.sharp && !item.staleVersion),

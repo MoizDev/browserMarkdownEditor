@@ -85,6 +85,8 @@ export interface PreparedPathCoverage {
     readonly colour: readonly [number, number, number, number];
     readonly gpuBytes: number;
     readonly supersample: boolean;
+    /** A 'modulate' composite: its colour is the multiply source k = C·c + 1 − α·c, drawn by the modulate cover. */
+    readonly modulate: boolean;
 }
 
 const KEEP_FACE = { fail: 'keep', depthFail: 'keep', pass: 'keep' } as const;
@@ -153,6 +155,7 @@ void main() { fragmentColour=fillColour; }`,
 interface Pipelines {
     readonly increment: PipelineHandle; readonly decrement: PipelineHandle;
     readonly invert: PipelineHandle; readonly union: PipelineHandle; readonly cover: PipelineHandle; readonly coverAdd: PipelineHandle;
+    readonly coverModulate: PipelineHandle;
 }
 
 /** Platform stencil-coverage executor. Winding or union triangles fill an admitted stencil target,
@@ -253,12 +256,16 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
                 colorWrite: [true, true, true, true], stencil: COVER_STENCIL }),
             owner.createPipeline({ ...base, topology: 'triangle-strip', shader: COVER_SHADER, blend: 'add',
                 colorWrite: [true, true, true, true], stencil: COVER_RESET_STENCIL }),
-        ]).then(([increment, decrement, invert, union, cover, coverAdd]) => {
+            // The multiply cover: the device's fixed-function dst·src step writes k into every covered sample, so a white
+            // slice is multiplied by each item in turn with no backdrop copy.
+            owner.createPipeline({ ...base, topology: 'triangle-strip', shader: COVER_SHADER, blend: 'modulate',
+                colorWrite: [true, true, true, true], stencil: COVER_STENCIL }),
+        ]).then(([increment, decrement, invert, union, cover, coverAdd, coverModulate]) => {
             if (disposed || incarnation !== serial || device !== owner) {
-                for (const handle of [increment, decrement, invert, union, cover, coverAdd]) owner.destroy(handle);
+                for (const handle of [increment, decrement, invert, union, cover, coverAdd, coverModulate]) owner.destroy(handle);
                 return;
             }
-            pipelines = { increment, decrement, invert, union, cover, coverAdd };
+            pipelines = { increment, decrement, invert, union, cover, coverAdd, coverModulate };
             pending = false; host.invalidate('path-coverage-ready');
         }, error => {
             if (incarnation !== serial) return;
@@ -326,7 +333,8 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
                 drawWinding(pipelines.increment, 0, prepared.positiveVertices);
                 drawWinding(pipelines.decrement, prepared.positiveVertices, prepared.negativeVertices);
             }
-            pass.draw({ pipeline: pipelines.cover, bindings: { uniforms: [{ binding: 0, slice: coverUniforms }], textures: [] },
+            pass.draw({ pipeline: prepared.modulate ? pipelines.coverModulate : pipelines.cover,
+                bindings: { uniforms: [{ binding: 0, slice: coverUniforms }], textures: [] },
                 vertices: [], first: 0, count: 4, instances: 1, scissor: bounds });
             }
         } finally { pass.endCoverage(token, output); }
@@ -437,8 +445,11 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
                 if (error instanceof ArenaError && error.code === 'unsupported') { unsupported = true; return { status: 'unsupported' }; }
                 throw error;
             }
+            // A modulate composite's source is k = C·c + 1 − α·c at full coverage: premultiplied colour plus one minus alpha.
+            const modulate = output.kind === 'composite' && output.blend === 'modulate';
+            const [pr, pg, pb, alpha] = [request.colour[0] * request.colour[3], request.colour[1] * request.colour[3], request.colour[2] * request.colour[3], request.colour[3]];
             const colour: readonly [number, number, number, number] = output.kind === 'mask' ? [1, 1, 1, 1]
-                : [request.colour[0] * request.colour[3], request.colour[1] * request.colour[3], request.colour[2] * request.colour[3], request.colour[3]];
+                : modulate ? [pr + 1 - alpha, pg + 1 - alpha, pb + 1 - alpha, 1] : [pr, pg, pb, alpha];
             // The vertex buffer's bytes are the shared entry's, counted once; this admission owns only its target.
             const gpu = targetBytes;
             const prepared: PreparedPathCoverage = Object.freeze({ device: owner, target, vertices, clip,
@@ -446,7 +457,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
                 viewport: Object.freeze({ width: viewport.width, height: viewport.height }),
                 affine: Object.freeze([...affine]) as unknown as Affine,
                 colour: Object.freeze([...colour]) as unknown as readonly [number, number, number, number], gpuBytes: gpu,
-                supersample: request.supersample === true });
+                supersample: request.supersample === true, modulate });
             live.set(prepared, gpu); gpuBytes += gpu;
             if (composite) { compositeLive++; deviceScratch.get(owner)!.refs++; }
             return { status: 'ready', value: prepared };

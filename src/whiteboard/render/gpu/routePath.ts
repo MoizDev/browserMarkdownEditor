@@ -35,6 +35,8 @@ interface PreparedPathItem { readonly clips: readonly PreparedPathCoverage[]; re
     readonly fill: PreparedPathCoverage | null; readonly stroke: PreparedPathCoverage | null }
 /** A run of path items sharing one blend, prepared for one view. */
 interface PathRun extends PreparedRun { readonly route: 'path'; readonly items: readonly PreparedPathItem[] }
+/** The composite blend a path run is drawn with: the kit's normal cover, or the multiply-slice modulate cover. */
+type CoverBlend = 'normal' | 'modulate';
 type Stop = { readonly status: 'empty' } | { readonly status: 'denied'; readonly bytes: number } | { readonly status: 'deferred' }
     | { readonly status: 'unsupported'; readonly why: string };
 type ItemAdmission = { readonly status: 'ready'; readonly value: PreparedPathItem } | Stop;
@@ -164,7 +166,7 @@ export const createPathRoute: CreatePathRoute = (host: LayerHost, audit: string)
 
     /** One path item: its clip masks, fill and stroke. Whatever it acquires goes into `acquired`; the caller retires it on any
      * stop. An item is 'empty' when nothing of it can show in this view. */
-    const admitItem = (item: PaintPathItem, view: ViewState, viewport: Viewport, budget: FrameBudget,
+    const admitItem = (item: PaintPathItem, view: ViewState, viewport: Viewport, cover: CoverBlend, budget: FrameBudget,
         acquired: PreparedPathCoverage[]): ItemAdmission => {
         const clips: PreparedPathCoverage[] = [], rects: RectI[] = [];
         for (const clip of item.clips) {
@@ -196,7 +198,7 @@ export const createPathRoute: CreatePathRoute = (host: LayerHost, audit: string)
             const affine = geometry && deviceAffine(item.localToWorld, geometry.origin, view);
             if (!geometry || !affine) return { status: 'unsupported', why: 'path geometry' };
             const taken = take(kit.admit({ shapes: geometry, rule: item.fillRule, affine, viewport, colour: item.material.fill,
-                output: { kind: 'composite', blend: 'normal' } }, budget), acquired, geometry.bytes);
+                output: { kind: 'composite', blend: cover } }, budget), acquired, geometry.bytes);
             if (isStop(taken)) { if (taken.status !== 'empty') return taken; }
             else fill = taken;
         }
@@ -215,7 +217,7 @@ export const createPathRoute: CreatePathRoute = (host: LayerHost, audit: string)
             const affine = geometry && deviceAffine(item.localToWorld, geometry.origin, view);
             if (!geometry || !affine) return { status: 'unsupported', why: 'stroke geometry' };
             const taken = take(kit.admit({ shapes: geometry, rule: 'union', affine, viewport, colour: style.color,
-                output: { kind: 'composite', blend: 'normal' } }, budget), acquired, geometry.bytes);
+                output: { kind: 'composite', blend: cover } }, budget), acquired, geometry.bytes);
             if (isStop(taken)) { if (taken.status !== 'empty') return taken; }
             else stroke = taken;
         }
@@ -242,13 +244,12 @@ export const createPathRoute: CreatePathRoute = (host: LayerHost, audit: string)
         id: 'path',
         accepts: (item): item is PaintPathItem => item.kind === 'path',
         admit(items, view, blend, budget): Admission<PreparedRun> {
-            // Only the 'over' blend is drawn here until the kit's 'modulate' cover is admitted (step 4).
-            if (blend !== 'over') return { status: 'unsupported', why: `path blend ${blend}` };
+            const cover: CoverBlend = blend === 'modulate' ? 'modulate' : 'normal';
             const viewport: Viewport = { width: Math.round(view.viewport.width * view.viewport.dpr), height: Math.round(view.viewport.height * view.viewport.dpr) };
             const acquired: PreparedPathCoverage[] = [], prepared: PreparedPathItem[] = [];
             for (const item of items) {
                 const mark = acquired.length;
-                const admission = admitItem(item, view, viewport, budget, acquired);
+                const admission = admitItem(item, view, viewport, cover, budget, acquired);
                 if (admission.status === 'ready') { prepared.push(admission.value); continue; }
                 // What this item acquired is retired; an empty item is skipped, any other stop ends the run.
                 for (let i = acquired.length - 1; i >= mark; i--) kit.retire(acquired[i]);

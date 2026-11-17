@@ -635,6 +635,9 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         if (!texture.uses.includes('copy-dst') || src.premultiplied !== true || src.colorSpace !== 'srgb' || src.origin !== 'top-left') {
             throw new ArenaError('invalid-input');
         }
+        // An r8 texture takes its single channel from a PixelUpload only. A bitmap is RGBA: blitting it into R8 would
+        // keep one channel without any error, so it is refused here rather than after the staging copy.
+        if (texture.format === 'r8' && !('rowBytes' in src)) throw new ArenaError('invalid-input');
         if (!rect.width || !rect.height) return;
         const encoding = this.#arena.beginEncoding();
         let cpu: ByteLease | null = null;

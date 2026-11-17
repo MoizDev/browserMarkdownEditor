@@ -35,7 +35,7 @@ export class ShelfPacker {
     }
 }
 
-/** A placed mask. `pinned` counts runs that draw it; `lastFrame` is the last frame that drew it (the LRU clock). */
+/** A placed mask. `pinned` counts runs that draw it. */
 export interface AtlasEntry {
     readonly key: string;
     /** The face css the mask was rastered in: a font change retires entries by it. */
@@ -47,7 +47,6 @@ export interface AtlasEntry {
     readonly w: number;
     readonly h: number;
     pinned: number;
-    lastFrame: number;
     /** Set when a font change retires the entry: no lookup finds it, its space frees when its last pin drops. */
     retired: boolean;
 }
@@ -56,27 +55,20 @@ export interface AtlasEntry {
 export class AtlasPage {
     readonly packer: ShelfPacker;
     readonly entries = new Set<AtlasEntry>();
+    /** Runs that pin an entry on this page, counted at pin time. Kept here so an eviction test is O(1), not a scan of the page. */
+    pinned = 0;
+    /** The newest frame that drew any entry on the page: the LRU clock of the page. */
+    touched = -1;
     /** Set when the atlas is disposed while this page is pinned: its texture is destroyed by the last unpin, never earlier. */
     retiring = false;
     constructor(readonly texture: TextureHandle, readonly lease: ByteLease, readonly format: TextureFormat) {
         this.packer = new ShelfPacker(ATLAS_PAGE, ATLAS_PAGE);
     }
     /** A page may be evicted when nothing on it is pinned and nothing was drawn in the frame being built. */
-    evictable(frame: number): boolean {
-        for (const entry of this.entries) if (entry.pinned > 0 || entry.lastFrame >= frame) return false;
-        return true;
-    }
+    evictable(frame: number): boolean { return this.pinned === 0 && this.touched < frame; }
     /** Nothing on the page is pinned: no run's draw still reads it. Recency is not part of this. */
-    unpinned(): boolean {
-        for (const entry of this.entries) if (entry.pinned > 0) return false;
-        return true;
-    }
-    /** The newest frame that drew any entry on the page: the LRU clock of the page. */
-    get lastFrame(): number {
-        let newest = -1;
-        for (const entry of this.entries) if (entry.lastFrame > newest) newest = entry.lastFrame;
-        return newest;
-    }
+    unpinned(): boolean { return this.pinned === 0; }
+    touch(frame: number): void { if (frame > this.touched) this.touched = frame; }
 }
 
 /** The layer's grant. The atlas reserves each page's bytes through it and returns them on destruction. */
@@ -107,7 +99,7 @@ export class TextAtlas {
     lookup(key: string, frame: number): AtlasEntry | null {
         const entry = this.entries.get(key);
         if (!entry || entry.retired) return null;
-        entry.lastFrame = frame;
+        entry.page.touch(frame);
         auditCount(this.options.surface, 'text:mask-hit');
         return entry;
     }
@@ -119,8 +111,9 @@ export class TextAtlas {
         if (w > ATLAS_PAGE || h > ATLAS_PAGE) return 'oversize';
         const placed = this.findSlot(w, h, frame);
         if (!placed) return 'denied';
-        const entry: AtlasEntry = { key, css, page: placed.page, x: placed.x, y: placed.y, w, h, pinned: 0, lastFrame: frame, retired: false };
+        const entry: AtlasEntry = { key, css, page: placed.page, x: placed.x, y: placed.y, w, h, pinned: 0, retired: false };
         placed.page.entries.add(entry);
+        placed.page.touch(frame);
         this.entries.set(key, entry);
         return entry;
     }
@@ -132,10 +125,10 @@ export class TextAtlas {
     }
 
     /** A run pins every entry its draw reads and unpins once it retires. A pinned page is never evicted or trimmed. */
-    pin(entry: AtlasEntry): void { entry.pinned++; }
+    pin(entry: AtlasEntry): void { entry.pinned++; entry.page.pinned++; }
     unpin(entry: AtlasEntry): void {
         if (entry.pinned <= 0) throw new RangeError('Unpinning a text atlas entry that is not pinned');
-        entry.pinned--;
+        entry.pinned--; entry.page.pinned--;
         if (entry.pinned === 0 && (entry.retired || this.disposed)) this.forget(entry);
         if (entry.pinned === 0 && entry.page.retiring && entry.page.unpinned()) this.destroyRetired(entry.page);
     }
@@ -163,15 +156,24 @@ export class TextAtlas {
         }
     }
 
-    /** Pressure: destroy every page nothing pins and nothing drew this frame; returns the bytes freed. */
-    trimIdle(frame: number): number {
+    /** Governor pressure: frees whole pages that nothing pins and nothing drew this frame, coldest first, until `bytes` are
+     * freed. A page pinned or drawn this frame is never a victim, so a refusal here never breaks a frame in progress. */
+    evict(bytes: number, frame: number): number {
+        if (!Number.isFinite(bytes) || bytes < 0) throw new RangeError('Invalid text atlas eviction size');
         let freed = 0;
-        for (const page of [...this.pages]) {
-            if (!page.evictable(frame)) continue;
-            freed += page.lease.bytes;
-            this.evictPage(page);
+        while (freed < bytes) {
+            let victim: AtlasPage | undefined;
+            for (const page of this.pages) if (page.evictable(frame) && (!victim || page.touched < victim.touched)) victim = page;
+            if (!victim) break;
+            freed += victim.lease.bytes;
+            this.evictPage(victim);
         }
         return freed;
+    }
+
+    /** True while the entry is the atlas's live mask for its key: not retired, not evicted, not disposed. */
+    holds(entry: AtlasEntry): boolean {
+        return !this.disposed && !entry.retired && this.entries.get(entry.key) === entry;
     }
 
     private findSlot(w: number, h: number, frame: number): { page: AtlasPage; x: number; y: number } | null {
@@ -187,7 +189,7 @@ export class TextAtlas {
         // No free space and no new page: evict the coldest page nothing holds, then place on its space.
         let victim: AtlasPage | undefined;
         for (const page of this.pages) {
-            if (page.evictable(frame) && (!victim || page.lastFrame < victim.lastFrame)) victim = page;
+            if (page.evictable(frame) && (!victim || page.touched < victim.touched)) victim = page;
         }
         if (!victim) return null;
         this.evictPage(victim);

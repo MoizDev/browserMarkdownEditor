@@ -184,6 +184,8 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         return createLayerHost({
             auditId: id,
             allocator: { cpu, gpu: gpuCache }, generation: () => lifecycle?.surface.snapshot().gpuGeneration ?? 0,
+            // The governor's read-only state, so a layer sheds work under 'slow-gpu' or 'pressure' (h10's LayerHost.trouble).
+            trouble: () => runtime.governor.trouble(),
             // GPU uploads cannot gate CPU source acquisition, including the resize bridge.
             gpuResources: () => {
                 if (!gpu || !cpuPresented) return null;

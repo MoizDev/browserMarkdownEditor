@@ -1,4 +1,5 @@
 import { auditTimed } from '../../platform/render/renderAudit';
+import { cameraChanged, forgetCamera } from './cameraCache';
 import { worldToSurface, type CameraController } from '../../platform/render/camera';
 import type { ScheduledFrame } from '../../platform/render/scheduler';
 import type { RenderToken } from '../../platform/render/types';
@@ -63,7 +64,7 @@ export interface BoardSelectServicesOptions {
     current(token: RenderToken): boolean;
     /** The view's own editable gate. A read-only or non-editable view refuses document commands; navigation, camera and picking stay live. */
     canMutateView(): boolean;
-    readonly inputFrames: { schedule(callback: () => void): () => void };
+    readonly inputFrames: { schedule(callback: () => void, onDrop?: () => void): () => void };
     readonly editSticky: (id: NodeId) => void | Promise<void>;
     /** The embed and link-card chips' actions; absent, the cards draw no chips. */
     readonly cards?: BoardCardActions | null;
@@ -80,7 +81,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const pending = new Set<() => void>(), controllers = new Set<AbortController>();
     let disposed = false, regionPreview: SelectRegion | null = null, previewIds = new Set<NodeId>();
     let svg: SVGSVGElement | null = null, shape: SVGElement | null = null, guideSvg: SVGSVGElement | null = null, scheduled: (() => void) | null = null;
-    let scribbleSource: readonly Vec2[] | null = null, scribbleCount = 0, scribbleCamera = '';
+    let scribbleSource: readonly Vec2[] | null = null, scribbleCount = 0, scribbleCamera = new Float64Array(3).fill(Number.NaN);
     let scribbleTail: SVGPolylineElement | null = null, scribblePoints: string[] = [];
     let guides: readonly BoardSnapGuide[] = [];
     let nudgeEpoch = 0, nudgeTail: Promise<void> = Promise.resolve();
@@ -91,7 +92,9 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const report = (error: unknown) => { try { options.onError(error); } catch { /* Preserve the original operation failure. */ } };
     const requestFrame = () => {
         if (disposed || scheduled) return;
-        scheduled = options.inputFrames.schedule(() => { scheduled = null; });
+        // Both paths clear the flag: a request the input host drops (disable, cancel) would otherwise swallow every later one.
+        const clear = () => { scheduled = null; };
+        scheduled = options.inputFrames.schedule(clear, clear);
     };
     const registerPending = (cancel: () => void) => {
         if (!mutable()) throw new DOMException('Board input is no longer current', 'AbortError');
@@ -393,10 +396,12 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     };
     // Show grid is the lattice snapping uses (boardSnapGrid), drawn under the handles and guides. Its period doubles while one
     // cell is under 8 CSS px, so a zoomed-out board stays legible and the line count stays bounded at every zoom.
-    let gridSvg: SVGSVGElement | null = null, gridPath: SVGPathElement | null = null, gridKey = '';
+    let gridSvg: SVGSVGElement | null = null, gridPath: SVGPathElement | null = null;
+    // The grid's camera and viewport, as five numbers (x, y, z, width, height); NaN until drawn.
+    const gridCamera = new Float64Array(5).fill(Number.NaN);
     const drawGrid = (frame: ScheduledFrame) => {
         const lattice = boardSnapGrid(runtime.session.doc);
-        if (!lattice) { gridSvg?.remove(); gridSvg = null; gridPath = null; gridKey = ''; return; }
+        if (!lattice) { gridSvg?.remove(); gridSvg = null; gridPath = null; gridCamera.fill(Number.NaN); return; }
         const { camera, viewport } = frame.view;
         if (!(camera.z > 0) || !Number.isFinite(camera.z)) return;
         if (!gridSvg || !gridPath) {
@@ -406,11 +411,11 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             gridPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
             gridPath.setAttribute('fill', 'none'); gridPath.setAttribute('stroke', 'currentColor');
             gridPath.setAttribute('stroke-opacity', '0.14'); gridPath.setAttribute('shape-rendering', 'crispEdges');
-            gridSvg.append(gridPath); options.overlay.prepend(gridSvg); gridKey = '';
+            gridSvg.append(gridPath); options.overlay.prepend(gridSvg); gridCamera.fill(Number.NaN);
         }
-        const key = `${camera.x} ${camera.y} ${camera.z} ${viewport.width} ${viewport.height}`;
-        if (key === gridKey) return;
-        gridKey = key;
+        const seen = gridCamera;
+        if (seen[0] === camera.x && seen[1] === camera.y && seen[2] === camera.z && seen[3] === viewport.width && seen[4] === viewport.height) return;
+        seen[0] = camera.x; seen[1] = camera.y; seen[2] = camera.z; seen[3] = viewport.width; seen[4] = viewport.height;
         const z = camera.z;
         let period = lattice.step.x;
         while (period * z < 8) period *= 2;
@@ -434,7 +439,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const writeRegion = (camera: ViewState['camera']) => {
         if (!regionPreview) {
             svg?.remove(); svg = null; shape = null; shapeMode = null; scribbleSource = null; scribbleCount = 0;
-            scribbleTail = null; scribblePoints = []; scribbleCamera = ''; return;
+            scribbleTail = null; scribblePoints = []; forgetCamera(scribbleCamera); return;
         }
         if (!svg) {
             svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -445,7 +450,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         if (!shape || shape.localName !== kind) {
             shape?.remove(); shape = document.createElementNS('http://www.w3.org/2000/svg', kind); svg.append(shape);
             shapeMode = null; shapeStroke = ''; shapeBox.fill(Number.NaN);
-            scribbleSource = null; scribbleCount = 0; scribbleTail = null; scribblePoints = []; scribbleCamera = '';
+            scribbleSource = null; scribbleCount = 0; scribbleTail = null; scribblePoints = []; forgetCamera(scribbleCamera);
         }
         const stroke = previewIds.size ? '#75b7ff' : '#6a9fff';
         if (shapeStroke !== stroke) { shapeStroke = stroke; shape.setAttribute('stroke', stroke); }
@@ -462,9 +467,11 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             if (shapeBox[2] !== width) { shapeBox[2] = width; shape.setAttribute('width', String(width)); }
             if (shapeBox[3] !== height) { shapeBox[3] = height; shape.setAttribute('height', String(height)); }
         } else {
-            const source = regionPreview.points, cameraKey = `${camera.x}:${camera.y}:${camera.z}`;
-            if (scribbleSource !== source || scribbleCamera !== cameraKey || scribbleCount > source.length) {
-                shape.replaceChildren(); scribbleSource = source; scribbleCamera = cameraKey; scribbleCount = 0;
+            const source = regionPreview.points;
+            // Checked first and unconditionally: the cache must track the camera even on a frame that rebuilds for another reason.
+            const cameraMoved = cameraChanged(scribbleCamera, camera);
+            if (scribbleSource !== source || cameraMoved || scribbleCount > source.length) {
+                shape.replaceChildren(); scribbleSource = source; scribbleCount = 0;
                 scribbleTail = null; scribblePoints = [];
             }
             // Keep exact points, but bound DOM projection to four small chunks per shared frame.

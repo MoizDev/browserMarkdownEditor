@@ -244,6 +244,8 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         readonly audit?: string;
         /** Rects whose surface is opaque: a multiply slice inside one composes by modulate, elsewhere by isolation. */
         readonly opaqueWorld?: () => readonly Rect[];
+        /** An overlay: its few plain parts are drawn live each frame, with no tile grant (see the composer's liveOverlay). */
+        readonly liveOverlay?: boolean;
     } = {}): GpuPaintAdapter {
     const surface = options.audit ?? 'board';
     if (options.streaming) auditCount(surface, 'option:streaming-ignored');
@@ -279,6 +281,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         tileWorld, inkRouteFor, lay, admitClips: pathRoute.admitClips, withPreparedClips,
         layQuads: (pass, texture, quads) => host.drawTexturedQuads(pass, texture, quads, QUAD),
         ...(options.opaqueWorld ? { opaqueWorld: options.opaqueWorld } : {}),
+        ...(options.liveOverlay ? { liveOverlay: true } : {}),
         // The compose limit halves while the host reports a slow GPU, read each frame (PLAN 3.1).
         slowGpu: () => host.trouble() === 'slow-gpu',
     });

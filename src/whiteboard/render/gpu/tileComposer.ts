@@ -14,7 +14,7 @@ import type { PaintClip, PaintInkItem, PaintItem } from '../paintStream';
 import type { AdmitClips, PreparedClips } from './routePath';
 import { tileKeyNum, TileKeyMap } from './tileKeys';
 import { lowerTileKey, type NumericTileStore } from './tileStore';
-import { OmitTracker } from './tileParts';
+import { blendOf, OmitTracker } from './tileParts';
 import { VIDEO_FRAME_PREFIX } from '../../media/videoFrames';
 import type { PreparedPaint2d } from '../reference/canvasPaintAdapter';
 import type { PaintResources2d } from '../reference/paint2d';
@@ -170,6 +170,9 @@ export interface TileComposerOptions {
     readonly opaqueWorld?: () => readonly Rect[];
     /** True while the governor reports a slow GPU: the compose limit halves. */
     readonly slowGpu?: () => boolean;
+    /** An overlay (a drag's preview): a paint of a few plain 'over' parts is drawn live each frame at the view, with no tiles, so
+     * no tile grant can stall it. A paint over the threshold, or with a part that needs tiles, composes tiles as before. */
+    readonly liveOverlay?: boolean;
 }
 
 export interface TileComposer {
@@ -201,6 +204,8 @@ export interface TileComposer {
 function exactScale(demand: number): number {
     return Number(demand.toPrecision(12));
 }
+/** The most parts a live-only overlay draws each frame; a larger paint composes tiles (its per-frame admission is the cost). */
+const LIVE_OVERLAY_MAX_PARTS = 256;
 /** A live part: a video picture, whose image key carries the video prefix. It is never composed into a tile: it is drawn each
  * frame through the image route, between the slices its paint order falls between. */
 function isLivePart(item: PaintItem): boolean {
@@ -244,6 +249,15 @@ function spanAt(view: ViewState, scale: number): Span {
     const x1 = Math.ceil((c.x + v.width / c.z) * scale / EDGE), y1 = Math.ceil((c.y + v.height / c.z) * scale / EDGE);
     if (![x0, y0, x1, y1].every(Number.isSafeInteger)) throw new RangeError('Invalid board tile projection');
     return { x0, y0, x1, y1 };
+}
+/** The surface rectangle a position of `target` covers, clamped to the surface; null when none of it is on the surface. */
+function clipOnSurface(view: ViewState, target: number, x: number, y: number): Rect | null {
+    const cam = view.camera, scale = cam.z * view.viewport.dpr;
+    const surfaceW = Math.round(view.viewport.width * view.viewport.dpr), surfaceH = Math.round(view.viewport.height * view.viewport.dpr);
+    const left = Math.max(0, Math.round((x * EDGE / target - cam.x) * scale)), top = Math.max(0, Math.round((y * EDGE / target - cam.y) * scale));
+    const right = Math.min(surfaceW, Math.round(((x + 1) * EDGE / target - cam.x) * scale));
+    const bottom = Math.min(surfaceH, Math.round(((y + 1) * EDGE / target - cam.y) * scale));
+    return right <= left || bottom <= top ? null : { x: left, y: top, width: right - left, height: bottom - top };
 }
 function inSpan(span: Span, x: number, y: number): boolean {
     return x >= span.x0 && x < span.x1 && y >= span.y0 && y < span.y1;
@@ -295,7 +309,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     // every frame, which let a refused board request a frame every vsync until the wake (measured by gpu's review).
     let waiting = false;
     // The paint's live-part flag, scanned once per paint version: a stand-in position queries the parts index only when set.
-    let paintScanned: PreparedPaint2d | null = null, paintHasLive = false;
+    let paintScanned: PreparedPaint2d | null = null, paintHasLive = false, paintLiveOnly = false;
     let device: GfxDevice | null = null;
     let frame = 0, validRevision = 0;
     let omitIds: ReadonlySet<string> | null = null;
@@ -416,6 +430,18 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
      * the GPU draws from rastered or decoded pixels, and the CPU raster), which a zoom does not re-raster (gpu's ruling). */
     const isGeometryRoute = (route: ItemRoute): boolean => route === routes.path || route === routes.inkAnalytic || route === routes.inkUnion;
     /** The GPU route for an item, or the CPU route with the reason no GPU route takes it. */
+    /** A paint a live-only overlay draws without tiles: every part a plain unclipped 'over' item on a route that draws over the
+     * surface (the CPU route rasters a tile-sized scratch, so it cannot), and no more parts than the overlay's threshold. */
+    const liveOnlyPaint = (prepared: PreparedPaint2d): boolean => {
+        if (options.liveOverlay !== true) return false;
+        let count = 0;
+        for (const win of prepared.windows) for (const item of win.items) {
+            if (++count > LIVE_OVERLAY_MAX_PARTS) return false;
+            if (blendOf(item) !== 'over' || item.clips.length) return false;
+            if (!isLivePart(item) && routeOf(item).route === routes.cpu) return false;
+        }
+        return count > 0;
+    };
     const routeOf = (item: PaintItem): { route: ItemRoute; why: string | null } => {
         const kind = item.kind;
         const gpu: ItemRoute | undefined = kind === 'path' ? routes.path : kind === 'image' ? routes.image
@@ -806,18 +832,39 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         return li;
     };
 
-    const buildDraws = (view: ViewState, target: number, zooming: boolean, budget: FrameBudget): void => {
-        const surfaceW = Math.round(view.viewport.width * view.viewport.dpr), surfaceH = Math.round(view.viewport.height * view.viewport.dpr);
-        drawCount = 0;
-        const cam = view.camera, scale = cam.z * view.viewport.dpr;
+    /** A live-only overlay's parts: every part of every visible position, drawn live at the view, with no tile (liveOverlay). */
+    const collectAllLive = (band: PaintBand, target: number, x: number, y: number, view: ViewState, budget: FrameBudget): void => {
+        liveScratch.length = 0;
+        const interior = tileWorld(keyOf(band, target, x, y, 0));
+        const pad = GUTTER / target;
+        const gutter: Rect = { x: interior.x - pad, y: interior.y - pad, width: interior.width + 2 * pad, height: interior.height + 2 * pad };
+        for (const part of parts.partsFor(band, gutter, omitIds ?? undefined)) {
+            if (part.item.kind === 'ink') drawnInk.add(part.nodeId);
+            const admitted = admitLive(part.item, part.blend, view, budget);
+            if (admitted) liveScratch.push({ order: part.order, run: admitted.run, route: admitted.route });
+        }
+    };
+    /** The live-only overlay's draw list: each visible position's parts, in paint order, clipped to that position on the surface. */
+    const buildLiveDraws = (view: ViewState, target: number, budget: FrameBudget): void => {
         const span = spanAt(view, target);
-        // The surface rectangle a position of `target` covers, clamped to the surface; null when none of it is on the surface.
-        const clipAt = (x: number, y: number): Rect | null => {
-            const left = Math.max(0, Math.round((x * EDGE / target - cam.x) * scale)), top = Math.max(0, Math.round((y * EDGE / target - cam.y) * scale));
-            const right = Math.min(surfaceW, Math.round(((x + 1) * EDGE / target - cam.x) * scale));
-            const bottom = Math.min(surfaceH, Math.round(((y + 1) * EDGE / target - cam.y) * scale));
-            return right <= left || bottom <= top ? null : { x: left, y: top, width: right - left, height: bottom - top };
-        };
+        for (const band of BANDS) {
+            for (let y = span.y0; y < span.y1; y++) {
+                for (let x = span.x0; x < span.x1; x++) {
+                    const clip = clipOnSurface(view, target, x, y);
+                    if (!clip) continue;
+                    collectAllLive(band, target, x, y, view, budget);
+                    liveBefore(band, Infinity, 0, clip);
+                    auditCount(audit, 'tile:live-overlay');
+                }
+            }
+        }
+    };
+
+    const buildDraws = (view: ViewState, target: number, zooming: boolean, budget: FrameBudget): void => {
+        drawCount = 0;
+        if (paintLiveOnly) { buildLiveDraws(view, target, budget); return; }
+        const span = spanAt(view, target);
+        const clipAt = (x: number, y: number): Rect | null => clipOnSurface(view, target, x, y);
         for (const band of BANDS) {
             let complete = true;
             for (let y = span.y0; y < span.y1 && complete; y++) {
@@ -983,7 +1030,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             }
             presenting = true;
             preparedSharp = prepared.sharp !== false;
-            if (prepared !== paintScanned) { paintScanned = prepared; paintHasLive = windowsHaveLive(prepared); }
+            if (prepared !== paintScanned) { paintScanned = prepared; paintHasLive = windowsHaveLive(prepared); paintLiveOnly = liveOnlyPaint(prepared); }
             if (prepared.resources !== resourcesSeen) {
                 resourcesSeen = prepared.resources;
                 for (const route of routeList) (route as ItemRoute & ResourcedRoute).useResources?.(prepared.resources);
@@ -1040,7 +1087,13 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     for (const entry of inexactPending) if (entry.target && entry.key.scale === target) entry.dirty = true;
                     inexactPending.clear();
                 }
-                if (device) compose(view, budget, device, target, span);
+                if (paintLiveOnly) {
+                    // Drawn live at the view, so nothing is composed: any position in progress or finished is let go.
+                    for (const position of building.values()) cancel(position);
+                    building.clear();
+                    for (const position of finished) cancel(position);
+                    finished = [];
+                } else if (device) compose(view, budget, device, target, span);
                 // A held node stays live while a tile under it is dirty, or a visible one under it has nothing yet.
                 for (const id of heldNodes.keys()) if (!heldStillMissing(id, target, span)) heldNodes.delete(id);
             } else {
@@ -1051,7 +1104,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             // waits for the compose: a zoom shows what exists (gpu's ruling: geometry exact, raster scaled).
             drawnTarget = target;
             buildDraws(view, target, zooming, budget);
-            settled = !indexing && allExact(view, target);
+            settled = !indexing && (paintLiveOnly || allExact(view, target));
         },
         encodeOffscreen(passes: OffscreenPasses, _view: ViewState, band: PaintBand): void {
             // A route that converts its own inputs on the GPU (the text masks) does it once per frame, before any tile pass reads them.
@@ -1135,6 +1188,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         coverage(view: ViewState): { complete: boolean; sharp: boolean; staleVersion?: boolean } {
             if (!presenting) return { complete: false, sharp: false };
             const exact = exactScale(view.camera.z * view.viewport.dpr);
+            if (paintLiveOnly && !indexing) return { complete: true, sharp: preparedSharp && drawnTarget === exact };
             const target = drawnTarget;
             const span = spanAt(view, target);
             // A position with any picture (its tile at the drawn scale, a dirty one, or a stand-in of another scale) is

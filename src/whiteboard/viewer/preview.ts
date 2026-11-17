@@ -369,7 +369,9 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
                         // a request made after a draw is one frame late (measured: the ink trailed the pointer by three frames).
                         onPrepared: () => queueMicrotask(presentedOverlay),
                         drawOffset, drawVersion: () => offsetVersion,
-                        onOffsetUnsupported: () => queueMicrotask(rebuildTranslation) });
+                        onOffsetUnsupported: () => queueMicrotask(rebuildTranslation),
+                        // The overlay's few nodes are drawn live at the view: a refused tile store cannot stall the drag's preview.
+                        liveOverlay: true });
                     frames = assembler; pair = layers;
                     engine.setPreviewLayers({ underlay: { ...layers[0], id: 'board-preview-underlay' },
                         content: { ...layers[1], id: 'board-preview-content' } }, () => {

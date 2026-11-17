@@ -3,7 +3,7 @@
 // planning/60-implementation/gpu-handoff/PLAN.md §3.1 (scale policy, slices, compose limit, dirty, stand-ins).
 // The routes, the tile store and the parts index are injected, so this module imports no route and no store.
 import type { Rect, ViewState } from '../../../platform/types';
-import type { LayerHost } from '../../../platform/render/compositor.types';
+import type { LayerHost, TexturedQuadSpec } from '../../../platform/render/compositor.types';
 import type { GfxDevice, GpuPass, GroupToken, RectI, RgbaP, TextureHandle } from '../../../platform/render/gfx/api';
 import type { FrameBudget, GpuReleaseReason, OffscreenPasses } from '../../../platform/render/types';
 import { tileTargetBytes, tileView } from '../../../platform/render/tileTarget';
@@ -12,7 +12,9 @@ import { TILE_EDGE, TILE_GUTTER, TILE_SIZE } from '../imageSampling';
 import type { PaintBand } from '../material';
 import type { PaintClip, PaintInkItem, PaintItem } from '../paintStream';
 import type { AdmitClips, PreparedClips } from './routePath';
+import { tileKeyNum, TileKeyMap } from './tileKeys';
 import { lowerTileKey } from './tileStore';
+import { OmitTracker } from './tileParts';
 import type { PreparedPaint2d } from '../reference/canvasPaintAdapter';
 import type { PaintResources2d } from '../reference/paint2d';
 import type {
@@ -27,6 +29,9 @@ const CLEAR: RgbaP = [0, 0, 0, 0], WHITE: RgbaP = [1, 1, 1, 1];
 /** The texture's interior. The gutter is composed (so edges are right) and never drawn. */
 const CROP: Readonly<Rect> = Object.freeze({ x: GUTTER, y: GUTTER, width: EDGE, height: EDGE });
 const GROUP = Object.freeze({ opacity: 1, blend: 'multiply', colourEffect: 'none' } as const);
+/** The most quads one batched call draws: 32 bytes each (8 floats), so 4096 is 128 KiB, a quarter of the 1 MiB uniform slot. */
+const QUAD_BATCH = 4096;
+const NO_IDS: readonly string[] = Object.freeze([]);
 const NO_OPAQUE: readonly Rect[] = Object.freeze([]);
 
 /** Draws `draw` under prepared clips (masks and scissors); the route's own helper, injected. */
@@ -50,7 +55,7 @@ type Mode = 'over' | 'modulate' | 'isolated';
 /** A position's status at a scale: `missing` has no complete picture; `dirty` shows a picture a change has overtaken. */
 type Status = 'missing' | 'dirty' | 'ok';
 /** Per composed entry, kept beside the store so a store entry that is evicted and replaced starts with no slot. */
-interface Slot { readonly mode: Mode; readonly count: number }
+interface Slot { readonly mode: Mode; readonly count: number; readonly inkNodes: readonly string[] }
 /** A consecutive run of one route's items within a slice. A run the CPU route takes (a GPU route refused it, or it has no route
  * yet, or its clips were refused) carries `why` and `label`, and is counted once as a fallback. A clipped item (on a route that
  * does not clip itself) is a run of its own: its clips are admitted in prepare, into `prepared`, and drawn around its draw. */
@@ -71,6 +76,8 @@ interface Slice {
     readonly blend: Blend;
     readonly view: ViewState;
     readonly runs: Run[];
+    /** The ink nodes of this slice's parts: drawn into the composite's drawn-ink set with the tile. */
+    readonly inkNodes: readonly string[];
     next: number;
     readonly admitted: Admitted[];
     entry: TileEntry | null;
@@ -87,6 +94,8 @@ interface Position {
     parked: boolean;
     /** A visible position the governor refused, composed one level down (half the scale) until the store admits it. */
     lowered: boolean;
+    /** The position's packed building key (tileKeys.ts). */
+    readonly key: number;
 }
 /** Tile positions across a view, as integer coordinates with exclusive ends. */
 interface Span { readonly x0: number; readonly y0: number; readonly x1: number; readonly y1: number }
@@ -97,6 +106,8 @@ interface Draw {
     x: number; y: number; w: number; h: number;
     /** A stand-in is clipped to the position it covers; device pixels. */
     clipOn: boolean; cx: number; cy: number; cw: number; ch: number;
+    /** The ink nodes of the tile, added to the drawn-ink set when the draw is laid. */
+    ink: readonly string[];
 }
 
 /** The item routes a composer draws through. `cpu` takes what a GPU route refuses; its own counters name that raster. */
@@ -113,6 +124,8 @@ export interface TileRoutes {
 export interface ResourcedRoute { useResources?(resources: PaintResources2d): void }
 /** Lays a composed texture on the current surface. `modulate` multiplies the surface by it; `dest` is in device pixels. */
 export type TileLay = (pass: GpuPass, texture: TextureHandle, source: Readonly<Rect>, dest: Readonly<Rect>, blend: Blend) => void;
+/** Lays a batch of 'over' quads of one tile texture in one call (the host's batched quads, one GPU draw). */
+export type TileLayQuads = (pass: GpuPass, texture: TextureHandle, quads: readonly TexturedQuadSpec[]) => void;
 
 export interface TileComposerOptions {
     readonly host: LayerHost;
@@ -124,6 +137,7 @@ export interface TileComposerOptions {
     readonly tileWorld: TileWorldFn;
     readonly inkRouteFor: InkRouteFor;
     readonly lay: TileLay;
+    readonly layQuads: TileLayQuads;
     /** Admits an item's clips in prepare (rectangles as scissors, others as masks), and draws under them. The composer owns
      * clipping for every route but the path route, which clips its own items. */
     readonly admitClips: AdmitClips;
@@ -146,6 +160,12 @@ export interface TileComposer {
     /** The ids whose every visible position is composed exactly at the drawn scale (no stand-in, no dirty tile, no index in
      * progress). The board shows a wet stroke until its node is in this set, so committed and wet ink overlap, never gap. */
     inkComposed(view: ViewState, ids: ReadonlySet<string>): Set<string>;
+    /** The ink node ids in the tiles drawn by the last drawGpu calls of this composite. Filled in drawGpu, cleared in prepare;
+     * one set reused for the composer's life. */
+    drawnInkNodeIds(): ReadonlySet<string>;
+    /** The GPU bytes the visible tiles at the drawn scale hold, for a viewport of `width` by `height` (view units): one
+     * tile target per slice of each visible position that is composed. The governor's mandatory working set. */
+    mandatoryBytes(width: number, height: number): number;
     /** False while nothing can make progress this frame: composed and settled, or waiting for memory. */
     needsFrame(): boolean;
     memory(): { gpuBytes: number; cpuBytes: number };
@@ -171,15 +191,19 @@ function cutSlices(parts: readonly TilePart[]): { blend: Blend; parts: TilePart[
     }
     return out;
 }
+/** The ink nodes among a slice's parts, each once. Built once per position, when its slices are cut. */
+function inkNodesOf(parts: readonly TilePart[]): readonly string[] {
+    let out: string[] | null = null;
+    for (const part of parts) {
+        if (part.item.kind !== 'ink') continue;
+        out ??= [];
+        if (!out.includes(part.nodeId)) out.push(part.nodeId);
+    }
+    return out ?? NO_IDS;
+}
 function covers(outer: Readonly<Rect>, inner: Readonly<Rect>): boolean {
     return outer.x <= inner.x && outer.y <= inner.y
         && outer.x + outer.width >= inner.x + inner.width && outer.y + outer.height >= inner.y + inner.height;
-}
-function sameOmit(a: ReadonlySet<string> | null, b: ReadonlySet<string> | null): boolean {
-    if (!a || !b) return a === b;
-    if (a.size !== b.size) return false;
-    for (const id of b) if (!a.has(id)) return false;
-    return true;
 }
 function spanAt(view: ViewState, scale: number): Span {
     const { camera: c, viewport: v } = view;
@@ -193,19 +217,35 @@ function inSpan(span: Span, x: number, y: number): boolean {
 }
 
 export function createTileComposer(options: TileComposerOptions): TileComposer {
-    const { host, audit, parts, store, routes, tileId, tileWorld, inkRouteFor, lay, admitClips, withPreparedClips } = options;
+    const { host, audit, parts, store, routes, tileId, tileWorld, inkRouteFor, lay, layQuads, admitClips, withPreparedClips } = options;
     const routeList: ItemRoute[] = [routes.path, routes.inkAnalytic, routes.inkUnion, routes.image, routes.text, routes.cpu]
         .filter((route): route is ItemRoute => route !== undefined);
     let resourcesSeen: PaintResources2d | null = null;
     // Slots live beside their entries (keyed by the entry object), so an entry the store drops takes its slot with it.
     const slots = new WeakMap<TileEntry, Slot>();
     // Positions being admitted, by key. A finished position waits in `finished` for its band's encode.
-    const building = new Map<string, Position>();
+    const building = new TileKeyMap<Position>();
+    const staleScratch: Position[] = [];
+    // Scale indexes for the building keys: the key's index is a small integer, so the scales in use are interned. The table
+    // is cleared whenever it could pass the key's 64 indexes (prepare does that, before any position of the frame is begun).
+    const scaleIndexes = new Map<number, number>();
+    const scaleIndexOf = (scale: number): number => {
+        let index = scaleIndexes.get(scale);
+        if (index === undefined) { index = scaleIndexes.size; scaleIndexes.set(scale, index); }
+        return index;
+    };
     let finished: Position[] = [];
     const draws: Draw[] = [];
+    // The ink nodes the composite draws, filled in drawGpu and cleared in prepare: one set for the composer's life.
+    const drawnInk = new Set<string>();
+    // Batch scratch: the quads of one call, reused. The pool holds spec objects for the composer's life.
+    const quadPool: { sourceRect: Rect; destRect: Rect }[] = [];
+    const quadList: TexturedQuadSpec[] = [];
     let drawCount = 0;
 
     let disposed = false, presenting = false, indexing = false;
+    let routesEncodedFrame = -1;
+    const omitTracker = new OmitTracker();
     let denied = false, settled = false, preparedSharp = true;
     let device: GfxDevice | null = null;
     let frame = 0, validRevision = 0;
@@ -214,6 +254,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     // The scale the last prepare composed and drew. Coverage describes this scale, not the exact demand: a zoom draws its
     // ladder scale, and coverage asked about the exact one, where nothing is composed, so every frame of a zoom read incomplete.
     let drawnTarget = 0;
+    let drawnCamX = 0, drawnCamY = 0, drawnCamZ = 1;
 
     // The governor's wake for a refusal: the parked positions may be advanced again, and the board is asked for a frame.
     const wake = (): void => {
@@ -228,7 +269,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
 
     const keyOf = (band: PaintBand, scale: number, x: number, y: number, slice: number): TileKey => ({ band, scale, x, y, slice });
     const idOf = (band: PaintBand, scale: number, x: number, y: number, slice: number): string => tileId(keyOf(band, scale, x, y, slice));
-    const positionKey = (band: PaintBand, scale: number, x: number, y: number): string => `${band}|${scale}|${x}|${y}`;
+    const positionKey = (band: PaintBand, scale: number, x: number, y: number): number => tileKeyNum(band, scaleIndexOf(scale), x, y, 0);
 
     /** A position's status at a scale, from its slices: every slice present, none overtaken by a change. */
     const statusAt = (band: PaintBand, scale: number, x: number, y: number): Status => {
@@ -305,7 +346,6 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         run.prepared?.retire();
         run.prepared = null; run.clips = null;
         run.route = routes.cpu; run.why = why; run.label = label;
-        countFallback(run);
     };
 
     /** Admits a slice's runs in order: a run's clips first, then its items. 'deferred' resumes next frame, with the clips it has
@@ -321,7 +361,6 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 if (clipped.status === 'unsupported') toCpu(run, clipped.why, 'clip');
                 else { run.prepared = clipped.value; run.clips = null; }
             }
-            countFallback(run);
             let outcome = run.route.admit(run.items, slice.view, slice.blend, budget);
             if (outcome.status === 'unsupported') {
                 // A GPU route that refuses a run hands it to the CPU route for good, with the reason (the raster paints its clips).
@@ -329,7 +368,10 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 outcome = run.route.admit(run.items, slice.view, slice.blend, budget);
             }
             switch (outcome.status) {
-                case 'ready': slice.admitted.push({ route: run.route, run: outcome.value, clips: run.prepared }); run.prepared = null; slice.next++; break;
+                case 'ready':
+                    // Counted where the CPU route's raster succeeded: a deferred or refused attempt is not a fallback.
+                    if (run.route === routes.cpu) countFallback(run);
+                    slice.admitted.push({ route: run.route, run: outcome.value, clips: run.prepared }); run.prepared = null; slice.next++; break;
                 case 'empty': run.prepared?.retire(); run.prepared = null; slice.next++; break;
                 case 'deferred': return 'deferred';
                 case 'denied': return { pool: outcome.pool, bytes: outcome.bytes };
@@ -348,7 +390,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         const cut = cutSlices(parts.partsFor(band, gutter, omitIds ?? undefined));
         if (!cut.length) {
             const entry = store.putEmpty(key0);
-            slots.set(entry, { mode: 'over', count: 0 });
+            slots.set(entry, { mode: 'over', count: 0, inkNodes: NO_IDS });
             auditCount(audit, 'tile:empty');
             return null;
         }
@@ -362,10 +404,10 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             const existing = store.get(id);
             return {
                 key, id, mode, blend: mode === 'modulate' ? 'modulate' : 'over', view: tile, runs: runsOf(group.parts),
-                next: 0, admitted: [], entry: existing && existing.target ? existing : null,
+                next: 0, admitted: [], entry: existing && existing.target ? existing : null, inkNodes: inkNodesOf(group.parts),
             };
         });
-        return { band, scale, x, y, slices, cursor: 0, parked: false, lowered: false };
+        return { band, scale, x, y, slices, cursor: 0, parked: false, lowered: false, key: positionKey(band, scale, x, y) };
     };
 
     /** Admits and acquires a position's slices in order. 'wait' resumes next frame; 'denied' waits for memory. */
@@ -418,7 +460,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             return list.length > 0 && list[0].key.scale >= demand / 2;
         };
         // Advances one position. False when this frame's compose is spent (limit, budget, a wait); true when the pass goes on.
-        const drive = (position: Position, key: string, pass: 'dirty' | 'missing' | 'ring'): boolean => {
+        const drive = (position: Position, key: number, pass: 'dirty' | 'missing' | 'ring'): boolean => {
             if (position.parked) return true;
             // Why a frame composes nothing is the zoom question: each exit is counted (pass and cause).
             if (composed >= limit) { auditCount(audit, `compose:limit:${pass}`); return false; }
@@ -486,19 +528,47 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         route.draw(pass, run);
     };
 
+    /** Fills `spec` with the surface rect of `draw` and the texels that show it. A clipped draw shows only its clip: its source is
+     * the part of the tile texture under that part, so the batch needs no scissor. False when none of it is on the surface. */
+    const quadOf = (draw: Draw, spec: { sourceRect: Rect; destRect: Rect }, camX: number, camY: number, scale: number,
+        surfaceW: number, surfaceH: number): boolean => {
+        const x0 = (draw.x - camX) * scale, y0 = (draw.y - camY) * scale;
+        const w = draw.w * scale, h = draw.h * scale;
+        let dx0 = x0, dy0 = y0, dx1 = x0 + w, dy1 = y0 + h;
+        if (draw.clipOn) {
+            dx0 = Math.max(dx0, draw.cx); dy0 = Math.max(dy0, draw.cy);
+            dx1 = Math.min(dx1, draw.cx + draw.cw); dy1 = Math.min(dy1, draw.cy + draw.ch);
+        }
+        dx0 = Math.max(dx0, 0); dy0 = Math.max(dy0, 0); dx1 = Math.min(dx1, surfaceW); dy1 = Math.min(dy1, surfaceH);
+        if (dx1 <= dx0 || dy1 <= dy0) return false;
+        // The interior's EDGE texels span w by h device pixels: a device pixel is EDGE / w texels across.
+        const tx = EDGE / w, ty = EDGE / h;
+        spec.destRect.x = dx0; spec.destRect.y = dy0; spec.destRect.width = dx1 - dx0; spec.destRect.height = dy1 - dy0;
+        spec.sourceRect.x = GUTTER + (dx0 - x0) * tx; spec.sourceRect.y = GUTTER + (dy0 - y0) * ty;
+        spec.sourceRect.width = (dx1 - dx0) * tx; spec.sourceRect.height = (dy1 - dy0) * ty;
+        return true;
+    };
+    /** Lays the first `count` quads of the pool as one batched call. */
+    const layBatch = (pass: GpuPass, texture: TextureHandle, count: number): void => {
+        quadList.length = 0;
+        for (let k = 0; k < count; k++) quadList.push(quadPool[k]);
+        layQuads(pass, texture, quadList);
+    };
+
     const addDraw = (band: PaintBand, entry: TileEntry, slot: Slot, clip: Rect | null): void => {
         const target = entry.target;
         if (!target) return;
         const world = tileWorld(entry.key);
         let draw = draws[drawCount];
         if (!draw) {
-            draw = { band, texture: target.texture, mode: slot.mode, x: 0, y: 0, w: 0, h: 0, clipOn: false, cx: 0, cy: 0, cw: 0, ch: 0 };
+            draw = { band, texture: target.texture, mode: slot.mode, x: 0, y: 0, w: 0, h: 0, clipOn: false, cx: 0, cy: 0, cw: 0, ch: 0, ink: NO_IDS };
             draws.push(draw);
         }
         drawCount++;
         draw.band = band; draw.texture = target.texture; draw.mode = slot.mode;
         draw.x = world.x; draw.y = world.y; draw.w = world.width; draw.h = world.height;
         draw.clipOn = clip !== null;
+        draw.ink = slot.inkNodes;
         if (clip) { draw.cx = clip.x; draw.cy = clip.y; draw.cw = clip.width; draw.ch = clip.height; }
         if (draw.mode === 'isolated') auditCount(audit, 'isolation:copy');
         store.touch(entry, frame);
@@ -533,7 +603,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         // A lowered tile covers four positions: each draw is clipped to the position it shows.
                         const pendingClip = pending.lowered ? clipAt(x, y) : null;
                         if (pending.lowered && !pendingClip) continue;
-                        for (const slice of pending.slices) if (slice.entry) addDraw(band, slice.entry, { mode: slice.mode, count: pending.slices.length }, pendingClip);
+                        for (const slice of pending.slices) if (slice.entry) addDraw(band, slice.entry, { mode: slice.mode, count: pending.slices.length, inkNodes: slice.inkNodes }, pendingClip);
                         auditCount(audit, 'tile:encoding');
                         continue;
                     }
@@ -595,7 +665,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 pass.end();
                 auditCount(audit, 'tile:compose', 1, { px: target.size * target.size });
                 entry.dirty = false; entry.composed = true; entry.revision = validRevision;
-                slots.set(entry, { mode: slice.mode, count: position.slices.length });
+                slots.set(entry, { mode: slice.mode, count: position.slices.length, inkNodes: slice.inkNodes });
                 store.touch(entry, frame);
             }
             for (const { route, run, clips } of slice.admitted) { route.retire(run); clips?.retire(); }
@@ -606,6 +676,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     const releaseAll = (): void => {
         for (const position of building.values()) cancel(position);
         building.clear();
+        scaleIndexes.clear();
         for (const position of finished) cancel(position);
         finished = [];
         drawCount = 0;
@@ -618,6 +689,12 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         prepare(view: ViewState, budget: FrameBudget, prepared: PreparedPaint2d | null, omit?: ReadonlySet<string>): void {
             if (disposed) return;
             frame = budget.frameId;
+            drawnInk.clear();
+            if (scaleIndexes.size >= 60) {
+                // The keys' scale indexes are nearly spent: the positions in progress are restarted, which frees their indexes.
+                for (const position of building.values()) cancel(position);
+                building.clear(); scaleIndexes.clear();
+            }
             denied = false; settled = false;
             const demand = view.camera.z * view.viewport.dpr;
             device = host.device();
@@ -640,6 +717,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             const exact = exactScale(demand);
             const target = zooming ? zoomScale : exact;
             drawnTarget = target;
+            drawnCamX = view.camera.x; drawnCamY = view.camera.y; drawnCamZ = view.camera.z;
 
             indexing = !parts.sync(prepared, budget);
             if (!indexing) {
@@ -648,9 +726,10 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 if (changes === 'all') { store.markDirty('all'); invalidated = true; }
                 else if (changes.length) { for (const rect of changes) store.markDirty(rect); invalidated = true; }
                 validRevision = prepared.root.sceneRevision;
-                // A node a drag omits leaves the tiles it painted: its old bounds are recomposed once, when the set changes.
-                const nextOmit = omit && omit.size ? omit : null;
-                if (!sameOmit(omitIds, nextOmit)) {
+                // A node a drag omits leaves the tiles it painted: its old bounds are recomposed once, when the set changes. The
+                // tracker reports a change of members only, so a new Set of the same nodes costs nothing here.
+                if (omitTracker.changed(omit)) {
+                    const nextOmit = omit && omit.size ? omit : null;
                     const diff = new Set<string>();
                     for (const id of omitIds ?? []) if (!nextOmit?.has(id)) diff.add(id);
                     for (const id of nextOmit ?? []) if (!omitIds?.has(id)) diff.add(id);
@@ -662,10 +741,10 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 // yet, so markDirty cannot reach it): every position in progress restarts when either changes.
                 const span = spanAt(view, target);
                 const ring: Span = { x0: span.x0 - 1, y0: span.y0 - 1, x1: span.x1 + 1, y1: span.y1 + 1 };
-                for (const [key, position] of building) {
-                    if (!invalidated && stillWanted(position, target, ring)) continue;
-                    cancel(position); building.delete(key);
-                }
+                staleScratch.length = 0;
+                for (const position of building.values()) if (invalidated || !stillWanted(position, target, ring)) staleScratch.push(position);
+                for (const position of staleScratch) { cancel(position); building.delete(position.key); }
+                staleScratch.length = 0;
                 // A finished position still valid for this content and scale waits for this frame's encode, so it is kept.
                 const kept: Position[] = [];
                 for (const position of finished) {
@@ -682,6 +761,11 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             settled = !indexing && allExact(view, target);
         },
         encodeOffscreen(passes: OffscreenPasses, _view: ViewState, band: PaintBand): void {
+            // A route that converts its own inputs on the GPU (the text masks) does it once per frame, before any tile pass reads them.
+            if (routesEncodedFrame !== frame) {
+                routesEncodedFrame = frame;
+                for (const route of routeList) route.encodeOffscreen?.(passes);
+            }
             if (!finished.length) return;
             let kept = 0;
             for (const position of finished) {
@@ -698,13 +782,31 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             const dest: Rect = { x: 0, y: 0, width: 0, height: 0 };
             const scissor: RectI = { x: 0, y: 0, width: 0, height: 0 };
             const bounds: RectI = { x: 0, y: 0, width: 0, height: 0 };
-            for (let i = 0; i < drawCount; i++) {
+            let i = 0;
+            while (i < drawCount) {
                 const draw = draws[i];
-                if (draw.band !== band) continue;
+                if (draw.band !== band) { i++; continue; }
+                if (draw.mode === 'over') {
+                    // Consecutive 'over' draws of one texture are batched, in their order: one call per QUAD_BATCH quads.
+                    let count = 0, j = i;
+                    for (; j < drawCount && draws[j].band === band && draws[j].mode === 'over' && draws[j].texture === draw.texture; j++) {
+                        const d = draws[j];
+                        const spec = quadPool[count] ?? (quadPool[count] = { sourceRect: { x: 0, y: 0, width: 0, height: 0 }, destRect: { x: 0, y: 0, width: 0, height: 0 } });
+                        if (!quadOf(d, spec, cam.x, cam.y, scale, surfaceW, surfaceH)) continue;
+                        for (const id of d.ink) drawnInk.add(id);
+                        count++;
+                        if (count === QUAD_BATCH) { layBatch(pass, draw.texture, count); count = 0; }
+                    }
+                    if (count) layBatch(pass, draw.texture, count);
+                    i = j;
+                    continue;
+                }
+                // Isolated and modulate draws keep their own pass: a group, or the fixed-function modulate, with a clip per draw.
                 dest.x = (draw.x - cam.x) * scale; dest.y = (draw.y - cam.y) * scale;
                 dest.width = draw.w * scale; dest.height = draw.h * scale;
                 // A draw wholly off the surface draws nothing; it is skipped before any clip or group is pushed.
-                if (dest.x + dest.width <= 0 || dest.y + dest.height <= 0 || dest.x >= surfaceW || dest.y >= surfaceH) continue;
+                if (dest.x + dest.width <= 0 || dest.y + dest.height <= 0 || dest.x >= surfaceW || dest.y >= surfaceH) { i++; continue; }
+                for (const id of draw.ink) drawnInk.add(id);
                 let clip: ReturnType<GpuPass['pushClip']> | null = null;
                 if (draw.clipOn) {
                     scissor.x = draw.cx; scissor.y = draw.cy; scissor.width = draw.cw; scissor.height = draw.ch;
@@ -721,6 +823,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 lay(pass, draw.texture, CROP, dest, draw.mode === 'modulate' ? 'modulate' : 'over');
                 if (group) pass.endGroup(group);
                 if (clip) pass.popClip(clip);
+                i++;
             }
         },
         coverage(view: ViewState): { complete: boolean; sharp: boolean; staleVersion?: boolean } {
@@ -745,6 +848,29 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 }
             }
             return { complete, sharp: complete && sharp, ...(stale ? { staleVersion: true } : {}) };
+        },
+        drawnInkNodeIds(): ReadonlySet<string> { return drawnInk; },
+        mandatoryBytes(width: number, height: number): number {
+            if (disposed || !presenting) return 0;
+            const target = drawnTarget;
+            // The span of the viewport at the drawn scale, as spanAt computes it, without an object.
+            const x0 = Math.floor(drawnCamX * target / EDGE), y0 = Math.floor(drawnCamY * target / EDGE);
+            const x1 = Math.ceil((drawnCamX + width / drawnCamZ) * target / EDGE), y1 = Math.ceil((drawnCamY + height / drawnCamZ) * target / EDGE);
+            let bytes = 0;
+            for (const band of BANDS) {
+                for (let y = y0; y < y1; y++) {
+                    for (let x = x0; x < x1; x++) {
+                        const first = store.get(idOf(band, target, x, y, 0));
+                        const slot = first && slots.get(first);
+                        if (!slot) continue;
+                        for (let s = 0; s < slot.count; s++) {
+                            const entry = store.get(idOf(band, target, x, y, s));
+                            if (entry && entry.target) bytes += TARGET_BYTES;
+                        }
+                    }
+                }
+            }
+            return bytes;
         },
         inkComposed(view: ViewState, ids: ReadonlySet<string>): Set<string> {
             const out = new Set<string>();

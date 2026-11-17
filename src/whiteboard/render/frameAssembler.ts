@@ -12,6 +12,9 @@ import type { PaintFrameAssembler, PinnedPaintSource, PinnedPaintStream } from '
 import type { SessionDenseRasters } from './sessionDenseRasters';
 import type { ScenePaintNodeStream } from './scenePaintStream';
 import type { ResolvedNodeCache } from './resolvedNodeCache';
+import { auditCount } from '../../platform/render/renderAudit';
+/** The audit surface of the frame assembler: `board-frame:<event>` counters for staging, publication and drops. */
+const AUDIT = 'board-frame';
 
 const BLOCK_BYTES = 64 * 1024;
 // Array capacity and Set bookkeeping are JS-engine dependent; retain conservative per-entry
@@ -193,6 +196,7 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
     const dropStaging = () => {
         const work = staging; staging = null; blocked = false;
         if (!work) return;
+        auditCount(AUDIT, 'frame:dropped');
         try { work.feed.cancel(); } catch (error) { report(error); }
         releaseOwned(work.owner, work.blocks);
     };
@@ -252,6 +256,7 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
             ? Object.freeze({ ...root, liveOnly: true as const, windows: Object.freeze([...staged.underlay.finish(), ...staged.content.finish()]) })
             : Object.freeze({ ...root, underlay: Object.freeze(staged.underlay), content: Object.freeze(staged.content) });
         const published: Published = { owner: o, frame, blocks: work.blocks, borrowers: 0, retired: false, releasing: false };
+        auditCount(AUDIT, 'frame:published', 1, { items: work.windowed || (staged.kind === 'arrays' ? staged.underlay.length + staged.content.length : 0) });
         retained.set(frame, published); latest = published; staging = null; invalidate();
     };
     return {
@@ -279,7 +284,7 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
                     if (needsBlock(work)) {
                         if (!allocator) { blocked = true; return; }
                         const lease = allocator.reserve(BLOCK_BYTES);
-                        if (!lease) { blocked = true; allocator.whenAvailable?.(wakeStaged); return; }
+                        if (!lease) { blocked = true; auditCount(AUDIT, 'frame:block-wait'); allocator.whenAvailable?.(wakeStaged); return; }
                         work.blocks.push({ owner: allocator, lease }); heldBytes += lease.bytes;
                     }
                     const status = work.feed.step();

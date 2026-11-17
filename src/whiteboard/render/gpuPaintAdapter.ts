@@ -55,7 +55,9 @@ function createLay(host: LayerHost): TileLay {
     const bounds: RectI = { x: 0, y: 0, width: 0, height: 0 };
     return (pass: GpuPass, texture: TextureHandle, source: Readonly<Rect>, dest: Readonly<Rect>, blend: Blend): void => {
         if (blend !== 'modulate') { host.drawTexturedQuad(pass, texture, source, dest, QUAD); return; }
-        bounds.x = Math.floor(dest.x); bounds.y = Math.floor(dest.y);
+        // The group's origin is never negative: a tile that starts left of or above the surface is grouped from 0 (the device
+        // refuses a negative origin); its part off the surface is clipped by the surface anyway.
+        bounds.x = Math.max(0, Math.floor(dest.x)); bounds.y = Math.max(0, Math.floor(dest.y));
         bounds.width = Math.ceil(dest.x + dest.width) - bounds.x; bounds.height = Math.ceil(dest.y + dest.height) - bounds.y;
         const group = pass.beginGroup(bounds, MODULATE_GROUP);
         host.drawTexturedQuad(pass, texture, source, dest, QUAD);

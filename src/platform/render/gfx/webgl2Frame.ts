@@ -40,6 +40,9 @@ export interface FrameTarget {
     readonly retained: { colorStored: boolean; stencilStored: boolean };
 }
 export interface FrameSampler { readonly sampler: WebGLSampler; }
+/** A quad's pinned objects, opaque to the frame: the backend owns what they are. */
+export interface QuadPin { readonly program: unknown; readonly sampler: unknown }
+
 export interface FramePipeline {
     readonly descriptor: PipelineDesc;
     draw(command: EncodedDraw, context: DrawContext): void;
@@ -102,7 +105,10 @@ export interface FrameBackend {
     white(): FrameTexture;
     uniforms(bytes: ArrayBufferView): UniformSlice;
     uploadUniforms(): void;
-    quad(command: QuadCommand): () => void;
+    /** The pinned program and sampler for a quad. Cached per frame and variant by the backend, so a quad allocates nothing. */
+    quad(command: QuadCommand): QuadPin;
+    /** Draws a quad recorded with its pin: the replayed operation, with no closure per quad. */
+    runQuad(pin: QuadPin, command: QuadCommand): void;
     acquireTarget(request: TargetRequest): TargetLease | null;
     releaseTarget(lease: TargetLease): void;
     acquireIsolation(request: TargetRequest): TargetLease;
@@ -232,7 +238,10 @@ export function createWebgl2Frame(backend: FrameBackend): ControlledFrame {
  * boundary, a blit, a quad) keeps its closure in `run`. Records live in a reused array and are re-filled each frame, so a
  * frame of N draws allocates no closure per draw. By reading: each draw used to allocate `() => pipeline.draw(…)` and
  * the array of replay closures was rebuilt every frame. */
-interface Recorded { pipeline: FramePipeline | null; command: EncodedDraw | null; context: DrawContext | null; run: (() => void) | null }
+interface Recorded {
+    pipeline: FramePipeline | null; command: EncodedDraw | null; context: DrawContext | null; run: (() => void) | null;
+    quad: QuadPin | null; quadCommand: QuadCommand | null;
+}
 
 class DeviceFrame implements ControlledFrame {
     readonly #backend: FrameBackend;
@@ -327,6 +336,7 @@ class DeviceFrame implements ControlledFrame {
                 this.#backend.beginReplay();
                 for (const record of this.#replayList()) {
                     if (record.pipeline) record.pipeline.draw(record.command!, record.context!);
+                    else if (record.quad) this.#backend.runQuad(record.quad, record.quadCommand!);
                     else record.run!();
                 }
                 const stateSwitches = this.#backend.endReplay();
@@ -362,7 +372,7 @@ class DeviceFrame implements ControlledFrame {
     #clearCommands(): void {
         for (let i = 0; i < this.#count; i++) {
             const slot = this.#commands[i];
-            slot.pipeline = null; slot.command = null; slot.context = null; slot.run = null;
+            slot.pipeline = null; slot.command = null; slot.context = null; slot.run = null; slot.quad = null; slot.quadCommand = null;
         }
         this.#count = 0;
     }
@@ -436,16 +446,21 @@ class DeviceFrame implements ControlledFrame {
     }
     command(operation: () => void): void {
         const slot = this.#slot();
-        slot.pipeline = null; slot.command = null; slot.context = null; slot.run = operation;
+        slot.pipeline = null; slot.command = null; slot.context = null; slot.run = operation; slot.quad = null; slot.quadCommand = null;
+    }
+    /** Records a quad by its pin and command, as plain fields of a reused slot. */
+    recordQuad(pin: QuadPin, command: QuadCommand): void {
+        const slot = this.#slot();
+        slot.pipeline = null; slot.command = null; slot.context = null; slot.run = null; slot.quad = pin; slot.quadCommand = command;
     }
     /** Records a draw as plain fields of a reused slot, not as a closure. */
     recordDraw(pipeline: FramePipeline, command: EncodedDraw, context: DrawContext): void {
         const slot = this.#slot();
-        slot.pipeline = pipeline; slot.command = command; slot.context = context; slot.run = null;
+        slot.pipeline = pipeline; slot.command = command; slot.context = context; slot.run = null; slot.quad = null; slot.quadCommand = null;
     }
     #slot(): Recorded {
         let slot = this.#commands[this.#count];
-        if (!slot) { slot = { pipeline: null, command: null, context: null, run: null }; this.#commands.push(slot); }
+        if (!slot) { slot = { pipeline: null, command: null, context: null, run: null, quad: null, quadCommand: null }; this.#commands.push(slot); }
         this.#count++;
         return slot;
     }
@@ -592,7 +607,7 @@ class DeviceFrame implements ControlledFrame {
             blend: options.blend === 'modulate' ? 'modulate' : options.blend === 'multiply' ? 'replace' : scope.coverage ? 'mask-max' : 'source-over',
             ...(options.blend === 'modulate' ? { variant: 'modulate' as const } : {}),
         };
-        this.command(this.#backend.quad(command));
+        this.recordQuad(this.#backend.quad(command), command);
         if (backdrop) this.releaseTemporary(backdrop.lease);
     }
     /** Resolves a grid coverage target and paints it in one composite. The texel block of device pixel p is
@@ -621,7 +636,7 @@ class DeviceFrame implements ControlledFrame {
             uniforms: { buffer: this.#backend.buffer(packed.buffer), slice: packed }, scissor: area,
             blend: output.blend === 'modulate' ? 'modulate' : 'source-over', variant: 'grid',
         };
-        this.command(this.#backend.quad(command));
+        this.recordQuad(this.#backend.quad(command), command);
     }
 }
 

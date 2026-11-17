@@ -6,7 +6,7 @@ import type {
 } from './api';
 import { RENDER_CONSTANTS } from '../constants';
 import { createWebgl2Frame } from './webgl2Frame';
-import type { ControlledFrame, DrawContext, EncodedDraw, FrameBackend, FrameTarget, FrameTexture, QuadCommand, TargetRequest } from './webgl2Frame';
+import type { ControlledFrame, DrawContext, EncodedDraw, FrameBackend, FrameTarget, FrameTexture, QuadCommand, QuadPin, TargetRequest } from './webgl2Frame';
 import { Webgl2TargetPool } from './webgl2Pool';
 import type { PoolStorage } from './webgl2Pool';
 import { COMPOSITION_SHADER, GRID_RESOLVE_SHADER, MODULATE_COMPOSITE_SHADER } from './webgl2Shaders';
@@ -192,6 +192,8 @@ interface FrameWork {
     issued: number | null;
     finished: boolean;
     coverage?: CoveragePlan | null;
+    /** Quad pins for this frame, one per composition program: pinned once per frame, reused by every quad. */
+    quadPins: Map<object, QuadPin>;
 }
 type CoveragePlan = { tag: CoverageFrameTag; domain: BenchmarkPaintDomain; root: CoverageRoot | null; missing: boolean; standInRatio: number; width: number; height: number };
 type CoverageRoot = { width: number; height: number; texture: TextureHandle; target: TargetHandle };
@@ -541,7 +543,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         this.#usable();
         if (!this.#white) throw new ArenaError('out-of-budget');
         const encoding = this.#arena.beginEncoding();
-        const work: FrameWork = { encoding, controller: null, signal: this.#work.signal, slot: null,
+        const work: FrameWork = { encoding, controller: null, signal: this.#work.signal, slot: null, quadPins: new Map(),
             offset: 0, passes: false, surface: false, surfaceRevision: this.#surfaceRevision, issued: null, finished: false };
         this.#frames.set(encoding, work);
         this.#isolation.begin(encoding);
@@ -1271,11 +1273,19 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             quad: command => {
                 const handle = command.variant === 'grid' ? this.#gridComposition : command.variant === 'modulate' ? this.#modulateComposition : this.#composition;
                 if (!handle) throw new ArenaError('invalid-resource');
+                const cached = work.quadPins.get(handle);
+                if (cached) return cached;
                 const program = this.#pin(work.encoding, handle, 'pipeline');
                 const samplerHandle = this.#samplers.get('linear');
                 if (program.role !== 'program' || !samplerHandle) throw new ArenaError('invalid-resource');
                 const sampler = this.#pin(work.encoding, samplerHandle, 'sampler');
-                return () => this.#drawQuad(program, sampler, command);
+                const pin = { program, sampler };
+                work.quadPins.set(handle, pin);
+                return pin;
+            },
+            runQuad: (pin, command) => {
+                // The pin came from quad() above, which returns the native objects this frame pinned; the frame keeps them opaque.
+                this.#drawQuad(pin.program as NativeProgram, pin.sampler as Objects['sampler'], command);
             },
             acquireTarget: request => this.#isolation.borrow(work.encoding, request, true),
             releaseTarget: lease => this.#isolation.put(work.encoding, lease, true),

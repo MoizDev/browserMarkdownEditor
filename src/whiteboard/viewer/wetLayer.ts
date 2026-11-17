@@ -102,7 +102,12 @@ interface WetShown { readonly clips: readonly PaintClip[]; readonly draw: () => 
  * deferred or denied admission keeps drawing the last shown tip while coverage waits for the new one. */
 interface WetRunSlot {
     readonly gesture: number;
-    serial: number; scale: number; colour: string; token: FrameToken;
+    serial: number; scale: number; token: FrameToken;
+    /** The palette and material the item was built with: a retry of the same publication reuses both, and so the item. */
+    palette: PaintPalette | null; material: InkMaterial | null;
+    /** The route's input for this publication. Its identity is the key of the route's per-stroke triangle cache, so a
+     * deferred or denied retry reuses it instead of re-joining the whole stroke. */
+    item: PaintInkItem | null;
     state: 'pending' | 'ready' | 'empty' | 'denied';
     shown: WetShown | null;
     /** The admission depends on the view (an empty result, or a CPU scrap): it is current for `viewKey` only. */
@@ -274,50 +279,54 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
             if (!attached) host.allocator.gpu.release(lease);
         }
     };
+    const setShown = (slot: WetRunSlot, next: WetShown | null, state: WetRunSlot['state']): void => { slot.shown?.dispose(); slot.shown = next; slot.state = state; };
     // Admits every band of every pending stroke whose run is not current. A live stroke is one input ahead of its
     // tessellation, so the run admitted is the last completed publication of the node (the same match draw2d uses), and
     // the newest publication is admitted once it completes. Only the tip is new work: the route keys its geometry by chunk.
     const admitRuns = (host: LayerHost, view: ViewState, budget: FrameBudget): void => {
         const routes = inkRoutes ??= gpuRoutes.createInkRoutes(host, 'board-wet');
-        const palette = options.palette(), pending = handover?.pendingSnapshots() ?? [], live = new Set<number>(), viewKey = viewKeyOf(view);
-        for (const snapshot of pending) live.add(snapshot.identity.gestureSequence);
-        for (const [key, slot] of [...runs]) if (!live.has(slot.gesture)) dropSlot(key);
+        const palette = options.palette(), pending = handover?.pendingSnapshots() ?? [], viewKey = viewKeyOf(view);
+        const audited = renderAuditEnabled();
+        // Deleting the entry being visited is safe in a Map's iteration; a slot whose stroke is gone is dropped here.
+        for (const [key, slot] of runs) if (!pending.some(item => item.identity.gestureSequence === slot.gesture)) dropSlot(key);
         for (const snapshot of pending) {
             const gesture = snapshot.identity.gestureSequence, source = prepared.get(gesture);
-            if (!source || source.snapshot.identity.nodeId !== snapshot.identity.nodeId) { auditCount('wet', 'admit-skip:unprepared'); continue; }
+            if (!source || source.snapshot.identity.nodeId !== snapshot.identity.nodeId) { if (audited) auditCount('wet', 'admit-skip:unprepared'); continue; }
             const shown = source.snapshot;
             for (const band of BANDS) {
-                const key = runKey(gesture, band), material = bandMaterial(shown, band, palette);
-                if (!material) { dropSlot(key); continue; }
-                const colour = material.color.join(','), current = runs.get(key);
-                if (current && current.serial === source.serial && current.scale === source.scale && current.colour === colour
+                const key = runKey(gesture, band), current = runs.get(key);
+                if (current && current.serial === source.serial && current.scale === source.scale && current.palette === palette
                     && sameFrameToken(current.token, budget.token) && (current.state === 'ready' || current.state === 'empty')
-                    && (!current.viewBound || current.viewKey === viewKey)) { auditCount('wet', 'admit-skip:fresh'); continue; }
+                    && (!current.viewBound || current.viewKey === viewKey)) { if (audited) auditCount('wet', 'admit-skip:fresh'); continue; }
                 // A band with nothing shown yet is admitted even past the frame's budget: the tessellation spent it, and a
                 // stroke with no run is refused by coverage (measured: 41 yields left drawing frames incomplete).
-                if (current?.shown && budget.shouldYield()) { auditCount('wet', 'admit-skip:yield'); return; }
-                const item: PaintInkItem = { kind: 'ink', key: `wet/${gesture}/${band}`, nodeId: shown.identity.nodeId,
+                if (current?.shown && budget.shouldYield()) { if (audited) auditCount('wet', 'admit-skip:yield'); return; }
+                const reuse = current && current.serial === source.serial && current.palette === palette ? current : null;
+                const material = reuse ? reuse.material : bandMaterial(shown, band, palette);
+                if (!material) { dropSlot(key); continue; }
+                const item = reuse?.item ?? { kind: 'ink', key: `wet/${gesture}/${band}`, nodeId: shown.identity.nodeId,
                     geometryKey: `wet/${gesture}/${source.serial}`, localToWorld: shown.presentation.localToWorld,
-                    clips: shown.presentation.clips ?? [], coverage: source.coverageChunks, material };
+                    clips: shown.presentation.clips ?? [], coverage: source.coverageChunks, material } satisfies PaintInkItem;
                 const route = gpuRoutes.inkRouteFor(item) === 'ink-analytic' ? routes.analytic : routes.union;
-                const audited = renderAuditEnabled(), before = audited ? route.memory().gpuBytes : 0;
+                const before = audited ? route.memory().gpuBytes : 0;
                 const admission = route.admit([item], view, 'over', budget);
-                auditCount('wet', `admit:${admission.status}`, 1, { [route.id]: 1 });
-                if (audited) { const grown = route.memory().gpuBytes - before; if (grown > 0) auditCount('wet', 'upload:vertex', 1, { bytes: grown }); }
-                const slot: WetRunSlot = current ?? { gesture, serial: 0, scale: 0, colour: '', token: budget.token, state: 'pending',
-                    shown: null, viewBound: false, viewKey: '', reported: false };
-                slot.serial = source.serial; slot.scale = source.scale; slot.colour = colour; slot.token = { ...budget.token };
-                slot.viewBound = false; slot.viewKey = viewKey;
+                if (audited) {
+                    auditCount('wet', `admit:${admission.status}`, 1, { [route.id]: 1 });
+                    const grown = route.memory().gpuBytes - before; if (grown > 0) auditCount('wet', 'upload:vertex', 1, { bytes: grown });
+                }
+                const slot: WetRunSlot = current ?? { gesture, serial: 0, scale: 0, palette: null, material: null, item: null,
+                    token: budget.token, state: 'pending', shown: null, viewBound: false, viewKey: '', reported: false };
+                slot.serial = source.serial; slot.scale = source.scale; slot.palette = palette; slot.material = material; slot.item = item;
+                slot.token = { ...budget.token }; slot.viewBound = false; slot.viewKey = viewKey;
                 runs.set(key, slot);
-                // A replaced shown is disposed only when its successor is admitted: a deferred or denied admission keeps the last tip.
-                const replace = (next: WetShown | null, state: WetRunSlot['state']) => { slot.shown?.dispose(); slot.shown = next; slot.state = state; };
                 switch (admission.status) {
                     case 'ready': {
-                        const run = admission.value, clips = item.clips;
-                        replace({ clips, draw: () => { if (drawCall.pass) route.draw(drawCall.pass, run); }, dispose: () => route.retire(run) }, 'ready');
+                        const run = admission.value;
+                        setShown(slot, { clips: item.clips, draw: () => { if (drawCall.pass) route.draw(drawCall.pass, run); }, dispose: () => route.retire(run) }, 'ready');
                         break;
                     }
-                    case 'empty': slot.viewBound = true; replace(null, 'empty'); break;
+                    // A replaced shown is disposed only when its successor is admitted: a deferred or denied admission keeps the last tip.
+                    case 'empty': slot.viewBound = true; setShown(slot, null, 'empty'); break;
                     case 'deferred': slot.state = 'pending'; break;
                     case 'denied': slot.state = 'denied'; denied = true; awaitCapacity(host, invalidate); break;
                     case 'unsupported': {
@@ -327,9 +336,9 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                         if (scrap.status === 'ready') {
                             const value = scrap.value;
                             slot.viewBound = true;
-                            replace({ clips: item.clips, dispose: () => value.device.destroy(value.texture),
+                            setShown(slot, { clips: item.clips, dispose: () => value.device.destroy(value.texture),
                                 draw: () => { if (drawCall.pass && drawCall.view && drawCall.host) drawScrap(drawCall.pass, drawCall.view, drawCall.host, value); } }, 'ready');
-                        } else if (scrap.status === 'empty') { slot.viewBound = true; replace(null, 'empty'); }
+                        } else if (scrap.status === 'empty') { slot.viewBound = true; setShown(slot, null, 'empty'); }
                         else if (scrap.status === 'deferred') slot.state = 'pending';
                         else { slot.state = 'denied'; denied = true; awaitCapacity(host, invalidate); }
                         break;

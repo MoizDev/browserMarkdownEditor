@@ -68,6 +68,9 @@ function clipped(box: Readonly<Rect>, viewport: Readonly<Rect>): Rect | null {
 /** A zoom gesture's scale changes every few frames; this long without a change, it has settled enough to raster. */
 const ZOOM_SETTLE_MS = 150;
 
+/** A tile or mirror drawn at a scale other than the frame's is a stand-in. The two scales are computed separately, so one zoom can
+ * differ in its last float bits (1.4379084967320261 vs ...255): a relative tolerance, as the supersession check uses, not equality. */
+function scaleDiffers(scale: number, frame: number): boolean { return Math.abs(scale / frame - 1) > 1e-6; }
 function drawableOn(entry: Entry, device: GfxDevice | null): boolean {
     return device ? entry.texture?.device === device || !!entry.bitmap : !!entry.bitmap;
 }
@@ -429,18 +432,18 @@ export class PdfTileLayer implements Layer {
             const snapshot = this.mirror?.view(view);
             if (!texture || texture.device !== this.host.device() || !snapshot) continue;
             const quad = this.mirror!.store.mirrorQuad(item, snapshot);
-            // The bridge's mirror is a stand-in for the page, never this view's own pixels.
-            auditDrawn('stand-in');
+            // A mirror quad is a stand-in only at another scale: its pixels are this view's, drawn at the frame's zoom when it matches.
+            if (scaleDiffers(item.pixels.source.width / item.pixels.world.width, rasterScale)) auditDrawn('stand-in');
             this.host.drawTexturedQuad(pass, texture.handle, quad.sourceRect, quad.destRect, { opacity: 1, sampling: 'linear',
                 ...(__BME_BENCH__ ? { coverage: 'standin' as const, standInRatio: item.pixels.source.width / item.pixels.world.width / rasterScale } : {}) });
         }
         for (const entry of this.drawable(view, current)) {
             if (!entry.texture || entry.texture.device !== this.host.device()) continue;
             const { source, destination } = this.quad(entry.request, stack.rects[entry.request.page], view);
-            if (entry.request.scale.scale !== rasterScale) auditDrawn('stand-in');
+            if (scaleDiffers(entry.request.scale.scale, rasterScale)) auditDrawn('stand-in');
             this.host.drawTexturedQuad(pass, entry.texture.handle, source, destination,
                 { opacity: 1, sampling: 'linear', ...(__BME_BENCH__ ? {
-                    coverage: entry.request.scale.scale === rasterScale ? 'current' as const : 'standin' as const,
+                    coverage: scaleDiffers(entry.request.scale.scale, rasterScale) ? 'standin' as const : 'current' as const,
                     standInRatio: entry.request.scale.scale / rasterScale,
                 } : {}) });
         }
@@ -462,18 +465,18 @@ export class PdfTileLayer implements Layer {
             const snapshot = this.mirror?.view(view);
             if (!snapshot || !this.bridgeReady.has(item.entry.id)) continue;
             const quad = this.mirror!.store.mirrorQuad(item, snapshot);
-            // The bridge's mirror is a stand-in for the page, never this view's own pixels.
-            auditDrawn('stand-in');
+            // A mirror quad is a stand-in only at another scale: its pixels are this view's, drawn at the frame's zoom when it matches.
+            if (scaleDiffers(item.pixels.source.width / item.pixels.world.width, rasterScale)) auditDrawn('stand-in');
             this.host.drawTexturedQuad(ctx, item.pixels.bitmap, quad.sourceRect, quad.destRect, { opacity: 1, sampling: 'linear',
                 ...(__BME_BENCH__ ? { coverage: 'standin' as const, standInRatio: item.pixels.source.width / item.pixels.world.width / rasterScale } : {}) });
         }
         for (const entry of this.drawable(view, current)) {
             if (!entry.bitmap) continue;
             const { source, destination } = this.quad(entry.request, stack.rects[entry.request.page], view);
-            if (entry.request.scale.scale !== rasterScale) auditDrawn('stand-in');
+            if (scaleDiffers(entry.request.scale.scale, rasterScale)) auditDrawn('stand-in');
             this.host.drawTexturedQuad(ctx, entry.bitmap, source, destination,
                 { opacity: 1, sampling: 'linear', ...(__BME_BENCH__ ? {
-                    coverage: entry.request.scale.scale === rasterScale ? 'current' as const : 'standin' as const,
+                    coverage: scaleDiffers(entry.request.scale.scale, rasterScale) ? 'standin' as const : 'current' as const,
                     standInRatio: entry.request.scale.scale / rasterScale,
                 } : {}) });
             consumePdfTileArrival(entry.bitmap);

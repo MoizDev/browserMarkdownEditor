@@ -338,7 +338,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     // The governor's wake for a refusal: the parked positions may be advanced again, and the board is asked for a frame.
     const wake = (): void => {
         for (const position of building.values()) position.parked = false;
-        waiting = false; blockedOnGpu = false; retryAt = 0;
+        waiting = false; blockedOnGpu = false;
+        if (retryAt !== 0) { retryAt = 0; host.wakeAt(null); }
         host.invalidate('tile-composer-capacity');
     };
     // Arms the retry deadline for a visible GPU refusal, once: a deadline already armed for later stands.
@@ -1108,10 +1109,12 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 // The armed retry is due and the refused position still waits on the GPU: it is advanced again this frame, after the
                 // governor has been asked (the admission reserves). A refusal that persists arms the next retry.
                 if (waiting && blockedOnGpu && retryAt !== 0 && performance.now() >= retryAt) {
-                    retryAt = 0; waiting = false; blockedOnGpu = false;
+                    retryAt = 0; host.wakeAt(null); waiting = false; blockedOnGpu = false;
                     for (const position of building.values()) position.parked = false;
                     auditCount(audit, 'compose:retry:deadline');
                 }
+                // The free list's idle trim: released once the store has been idle, and re-armed on the layer's wake while it is not due.
+                store.trimIdle(performance.now());
                 if (paintLiveOnly) {
                     // Drawn live at the view, so nothing is composed: any position in progress or finished is let go.
                     for (const position of building.values()) cancel(position);

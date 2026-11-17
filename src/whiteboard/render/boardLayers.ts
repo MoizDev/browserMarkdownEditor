@@ -1,7 +1,8 @@
 import type { Affine, Rect, ViewState } from '../../platform/types';
 import type { HostBlock } from '../model/doc';
 import type { PlatformLayerDefinition } from '../../platform/render/attachPlatformPane.types';
-import { awaitCapacity, awaitSizedCapacity, isBudgetRefusal } from './budgetRefusal';
+import { awaitSizedCapacity, isBudgetRefusal } from './budgetRefusal';
+import { withFirstUnit } from './firstUnit';
 import type { CompositorBackend, LayerCoverage, LayerHost } from '../../platform/render/compositor.types';
 import type { ScheduledFrame } from '../../platform/render/scheduler';
 import type { ByteLease } from '../../platform/render/gfx/api';
@@ -29,18 +30,6 @@ export type PaintProgress = { readonly kind: 'current' } | { readonly kind: 'pen
     | { readonly kind: 'failed'; readonly message: string };
 function sameProgress(a: PaintProgress, b: PaintProgress): boolean { return JSON.stringify(a) === JSON.stringify(b); }
 function messageOf(error: unknown): string { return error instanceof Error ? error.message : String(error); }
-/** The budget one layer prepares under: the frame's own budget with one unit of work always admitted. A frame's prepare
- * slice can be zero (input and presentation take the whole target), and then no layer advances: nothing wakes a stalled
- * build but the next frame, which has no time either. One unit is one bounded step, so a frame costs one step more. */
-function withFirstUnit(budget: FrameBudget): FrameBudget {
-    let admitted = false;
-    // A plain copy, never a prototype wrapper: a nested `{ ...budget }` keeps only own fields, and an inherited frameId
-    // spread away as undefined left each dense tile's item adapter stepping once and never again (frameId guard).
-    return { ...budget, shouldYield: (): boolean => {
-        if (!admitted) { admitted = true; return false; }
-        return budget.shouldYield();
-    } };
-}
 export interface BoardLayersOptions {
     readonly frames: PaintFrameAssembler;
     readonly images: PaintImageProvider;
@@ -88,10 +77,26 @@ export function opaqueWorldOf(host: HostBlock, inverted: boolean, drawnPages?: r
     if (host.kind === 'whiteboard') return inverted ? [] : WHOLE_PLANE;
     return drawnPages ?? [];
 }
+const NO_RECTS: readonly Rect[] = Object.freeze([]);
+const NO_IMAGES: readonly PresentedImage[] = Object.freeze([]);
 /** The pages the host's own layers have painted at least once, read from each layer that reports them (`drawnPageRects`: a
- * notebook's paper, a PDF's page layer). A layer that reports none contributes nothing, so a claim is never made early. */
-export function drawnPagesOf(layers: readonly unknown[]): readonly Rect[] {
-    return layers.flatMap(layer => (layer as { drawnPageRects?: () => readonly Rect[] }).drawnPageRects?.() ?? []);
+ * notebook's paper, a PDF's page layer). A layer that reports none contributes nothing, so a claim is never made early.
+ * The composer asks once per tile: a layer's claim array keeps its identity while the claim is unchanged, so the reader
+ * rebuilds its answer only when one of those arrays changes, and allocates nothing while they hold. */
+export function createDrawnPagesReader(): (layers: readonly unknown[]) => readonly Rect[] {
+    let sources: (readonly Rect[])[] = [], result: readonly Rect[] = NO_RECTS;
+    return layers => {
+        let changed = sources.length !== layers.length;
+        for (let i = 0; i < layers.length; i++) {
+            const rects = (layers[i] as { drawnPageRects?: () => readonly Rect[] }).drawnPageRects?.() ?? NO_RECTS;
+            if (sources[i] !== rects) { sources[i] = rects; changed = true; }
+        }
+        if (changed) {
+            sources.length = layers.length;
+            result = Object.freeze(sources.flat());
+        }
+        return result;
+    };
 }
 interface Estimate {
     readonly frame: PaintSource;
@@ -120,6 +125,15 @@ function copyView(view: ViewState): ViewState {
  * `offset` when the camera moves by `−offset`. Every backend paints through the camera, so no backend needs its own offset. */
 function shiftedView(view: ViewState, offset: Readonly<{ x: number; y: number }>): ViewState {
     return Object.freeze({ ...view, camera: Object.freeze({ ...view.camera, x: view.camera.x - offset.x, y: view.camera.y - offset.y }) });
+}
+// One snapshot per omitted set: the drag's set keeps its identity across draws (attachView's union caches it), so a copy per
+// draw would be the same copy again. A set edited in place would keep its first snapshot, so the sets are built immutable.
+const omittedSnapshots = new WeakMap<ReadonlySet<string>, OmittedSnapshot>();
+function omittedOf(omit: ReadonlySet<string> | null): OmittedSnapshot | null {
+    if (!omit) return null;
+    let snapshot = omittedSnapshots.get(omit);
+    if (!snapshot) { snapshot = new OmittedSnapshot(omit); omittedSnapshots.set(omit, snapshot); }
+    return snapshot;
 }
 function sameView(a: ViewState | null | undefined, b: ViewState): boolean {
     return !!a && a.epoch === b.epoch && a.camera.x === b.camera.x && a.camera.y === b.camera.y && a.camera.z === b.camera.z
@@ -209,6 +223,8 @@ type OffscreenEncoder = { encodeOffscreen?(passes: OffscreenPasses, view: ViewSt
  * until impl/gpu merges: an absent method frees nothing. */
 type GpuEvicting = { evictGpu?(bytes: number, frameId: number): number };
 type LayerEvicting = { evictGpu?(bytes: number, frameId: number): number };
+/** The adapter's CPU reclaim (h2, `evictCpu` on impl/lane/gpu-h2): typeof-guarded until it merges, so an absent method frees nothing. */
+type CpuEvicting = { evictCpu?(bytes: number): number };
 /** The grain of a device's direct-frame charge (see chargeDirect): densePlan's DIRECT_CHUNK, the dense direct phase's own grain. */
 const DIRECT_CHUNK = 64 * 1024;
 /** The coverage a layer reports while it cannot draw the frame: shared, so the per-frame check allocates nothing. */
@@ -323,8 +339,21 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     let reserved = 0;
     const activeHost = () => hosts.get('underlay') ?? hosts.get('content');
     let lastError: string | null = null, lastProgress: PaintProgress | null = null;
+    // A refusal whose size its thrower did not report (the device and arena errors carry none) waits on each pool once: one
+    // waiter per pool until that pool fires. A waiter per refusal would pile up for as long as a stall lasts, one per frame.
+    const refusalWaiting = { cpu: false, gpu: false };
+    const awaitRefusal = (): void => {
+        const owner = activeHost();
+        if (!owner) return;
+        for (const pool of ['cpu', 'gpu'] as const) {
+            const allocator = owner.allocator[pool];
+            if (refusalWaiting[pool] || !allocator.whenAvailable) continue;
+            refusalWaiting[pool] = true;
+            allocator.whenAvailable(() => { refusalWaiting[pool] = false; for (const host of hosts.values()) host.invalidate('board-capacity'); });
+        }
+    };
     const report = (error: unknown) => {
-        if (isBudgetRefusal(error)) { awaitCapacity(activeHost(), () => { for (const host of hosts.values()) host.invalidate('board-capacity'); }); return; }
+        if (isBudgetRefusal(error)) { awaitRefusal(); return; }
         lastError = messageOf(error); refreshProgress();
         try { options.onError(error); } catch { /* reporting cannot reject a worker callback */ }
     };
@@ -401,33 +430,46 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     };
     // Takes the draw's borrow right after the draw read its snapshot. A draw whose images cannot be proven (the
     // frame has moved on, or a drawn image is neither a live ImageBitmap nor a VideoFrame) has no hold, so its facts stay unknown.
+    // The image walk of one prepared snapshot, per omitted set. A draw repeats both until the snapshot changes, so the walk
+    // runs once for them; each draw still takes its own borrow, so the hold's lifetime stays per draw. Keyed weakly: an entry
+    // lives only as long as the snapshot it describes.
+    const imageWalks = new WeakMap<object, { omit: ReadonlySet<string> | null; images: readonly PresentedImage[] }>();
     const captureDraw = (frame: PaintSource, omit: ReadonlySet<string> | null): DrawHold | null => {
         const borrow = adapter?.retainPrepared() ?? null;
         if (!borrow) return null;
         const { prepared } = borrow;
         const source = prepared.sourceFrame;
         let usable = source.sceneRevision === frame.sceneRevision && sameToken(source.token, frame.token);
-        const images: PresentedImage[] = [];
+        let images: readonly PresentedImage[] = NO_IMAGES;
         if (usable) {
-            try {
-                // Windows are walked in canonical order, one bounded window at a time.
-                windows: for (const window of prepared.windows) {
-                    for (const item of window.items) {
-                        if (item.kind !== 'image' || omit?.has(item.nodeId)) continue;
-                        // A standin draws a crop with no quad to classify: it gets no facts, so the embed keeps its poster.
-                        if (prepared.resources.imageCrop?.(item.imageKey)) continue;
-                        const bitmap = prepared.resources.image(item.imageKey);
-                        // A video frame draws like a bitmap (drawImage takes both) but has no readback for the image facts: it
-                        // is drawn without an entry, so its facts stay unknown (embedPresentationFacts) while the draw stays usable.
-                        if (bitmap instanceof VideoFrame) continue;
-                        if (!(bitmap instanceof ImageBitmap)) { usable = false; break windows; }
-                        images.push({ nodeId: item.nodeId, item, source: bitmap });
+            const walked = imageWalks.get(prepared);
+            if (walked && walked.omit === omit) images = walked.images;
+            else {
+                const found: PresentedImage[] = [];
+                try {
+                    // Windows are walked in canonical order, one bounded window at a time.
+                    windows: for (const window of prepared.windows) {
+                        for (const item of window.items) {
+                            if (item.kind !== 'image' || omit?.has(item.nodeId)) continue;
+                            // A standin draws a crop with no quad to classify: it gets no facts, so the embed keeps its poster.
+                            if (prepared.resources.imageCrop?.(item.imageKey)) continue;
+                            const bitmap = prepared.resources.image(item.imageKey);
+                            // A video frame draws like a bitmap (drawImage takes both) but has no readback for the image facts: it
+                            // is drawn without an entry, so its facts stay unknown (embedPresentationFacts) while the draw stays usable.
+                            if (bitmap instanceof VideoFrame) continue;
+                            if (!(bitmap instanceof ImageBitmap)) { usable = false; break windows; }
+                            found.push({ nodeId: item.nodeId, item, source: bitmap });
+                        }
                     }
+                } catch { usable = false; }
+                if (usable) {
+                    images = Object.freeze(found);
+                    imageWalks.set(prepared, { omit, images });
                 }
-            } catch { usable = false; }
+            }
         }
         if (!usable) { borrow.release(); return null; }
-        return { frame: source, images: Object.freeze(images), borrow };
+        return { frame: source, images, borrow };
     };
     // Each consumer lease is its own borrow of the same snapshot, so releasing it cannot free the draw's backing.
     const leaseOf = (hold: DrawHold | null): PresentedImageLease | null => {
@@ -606,7 +648,9 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 if (missing && !replacementAsked.has(frame)) { replacementAsked.add(frame); options.requestFrame?.(); }
             }
             startEstimate(frame);
-            while (!estimate!.done && !budget.shouldYield()) estimateStep(estimate!);
+            // One step is always admitted: under a zero slice the estimate never advances, and it re-invalidates forever.
+            const estimateBudget = withFirstUnit(budget);
+            while (!estimate!.done && !estimateBudget.shouldYield()) estimateStep(estimate!);
             // An estimate split across frames must ask for the next one: nothing else wakes a still view
             // (seen: a 3,500-item board froze in 'building' after switching to dense).
             if (!estimate!.done) { allocatorHost!.invalidate('board-estimate-continue'); return; }
@@ -761,7 +805,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     const hold = captureDraw(frame, omit);
                     const context = Object.freeze({ view: actualView, frameId: prepareFrameId,
                         paneTransform: host.paneTransform(actualView, prepareFrameId),
-                        token: Object.freeze({ ...prepareToken }), omittedNodeIds: omit ? new OmittedSnapshot(omit) : null,
+                        token: Object.freeze({ ...prepareToken }), omittedNodeIds: omittedOf(omit),
                         retain: () => options.frames.retain(frame), retainImages: () => leaseOf(hold) });
                     recordDraw(band, { frame, omit, ink, context, hold });
                 },
@@ -788,7 +832,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     const hold = captureDraw(frame, omit);
                     const context = Object.freeze({ view: actualView, frameId: prepareFrameId,
                         paneTransform: host.paneTransform(actualView, prepareFrameId),
-                        token: Object.freeze({ ...prepareToken }), omittedNodeIds: omit ? new OmittedSnapshot(omit) : null,
+                        token: Object.freeze({ ...prepareToken }), omittedNodeIds: omittedOf(omit),
                         retain: () => options.frames.retain(frame), retainImages: () => leaseOf(hold) });
                     recordDraw(band, { frame, omit, ink, context, hold });
                 },
@@ -833,7 +877,11 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         drawVersion() { return options.drawVersion?.() ?? 0; },
         cpuEvict(_layer, bytes) {
             // Only the band that holds the session's memory reclaims it; the other band's grant has nothing of the dense plan.
-            if (hosts.get(band) === allocatorHost) dense?.reclaim(bytes);
+            if (hosts.get(band) !== allocatorHost) return;
+            dense?.reclaim(bytes);
+            // The device's CPU bytes are the direct build's and the GPU composer's scratch: the adapter gives back what it holds.
+            const adapter = gpu as CpuEvicting | null;
+            if (typeof adapter?.evictCpu === 'function') adapter.evictCpu(bytes);
         },
         cpuWorkingSet() {
             const upcoming = !useDense && estimate?.done && !density.pending() && !reservations.has(estimate.frame) ? estimate.bytes : 0;

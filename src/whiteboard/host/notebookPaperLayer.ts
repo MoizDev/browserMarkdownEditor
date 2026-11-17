@@ -11,6 +11,7 @@ import type { PaintPalette } from '../render/colour';
 import type { PaintFrame, PaintPathItem } from '../render/paintStream';
 import type { PaintBand } from '../render/material';
 import { awaitSizedCapacity, isBudgetRefusal, type SizedCapacityWait } from '../render/budgetRefusal';
+import { withFirstUnit } from '../render/firstUnit';
 import { createGpuPaintAdapter } from '../render/gpuPaintAdapter';
 import { preparedOfFrame, type CanvasPaintAdapter, type PreparedPaint2d } from '../render/reference/canvasPaintAdapter';
 import { Path2dJob } from '../render/reference/coverage2d';
@@ -220,7 +221,8 @@ class NotebookPaperLayer implements Layer {
         }
     }
     prepare(view: ViewState, budget: FrameBudget): void {
-        this.preparePaper(budget);
+        // One page step is always admitted: under a zero slice the staging never advances, and needsFrame keeps asking.
+        this.preparePaper(withFirstUnit(budget));
         if (this.disposed || !this.host.device()) return;
         try {
             this.prepareGpuSource(view, budget.token);

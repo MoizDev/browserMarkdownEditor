@@ -267,8 +267,8 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
     const retireRun = (run: TextRun): void => {
         if (!live.delete(run)) return;
         for (let i = 0; i < run.pinEntries.length; i++) run.pinAtlases[i].unpin(run.pinEntries[i]);
+        // The buffer was created on its lease, which the device owns: destroying it returns the lease when it retires.
         run.device.destroy(run.buffer);
-        host.allocator.gpu.release(run.bufferLease);
     };
     /** The canvas and its memo: freed on release and on governor pressure, and created again by the next raster. */
     const releaseRaster = (): void => {
@@ -289,9 +289,9 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
             if (stage) owner.destroy(stage.texture);
         }
         mono?.dispose(); colour?.dispose();
-        if (whiteLease) host.allocator.gpu.release(whiteLease);
-        if (stage) host.allocator.gpu.release(stage.lease);
-        if (convertLease) host.allocator.gpu.release(convertLease);
+        // The white texture, the staging texture and the conversion buffer were created on their leases: the device owns those
+        // leases and returns them when the resources retire (or at loss, on abandon). Releasing them here too returned them
+        // before the GPU had retired the resource.
         // The CPU scratch goes with the device: each is leased again on demand by the next admit.
         if (scratchLease) host.allocator.cpu.release(scratchLease);
         if (uniformLease) host.allocator.cpu.release(uniformLease);
@@ -315,14 +315,16 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         if (pipelinesPending || failed) return false;
         const serial = incarnation;
         pipelinesPending = true;
+        // Each pipeline is created as it is listed. A synchronous throw part-way leaves the earlier ones unawaited, so they are
+        // destroyed once they settle: nothing else owns them.
+        const created: Promise<PipelineHandle>[] = [];
         try {
-            Promise.all([
-                ...VARIANTS.map(variant => owner.createPipeline({ shader: shaderFor(variant), topology: 'triangle-strip',
-                    colorFormat: 'rgba8', samples: 1, blend: variant.endsWith('modulate') ? 'modulate' : 'source-over',
-                    alphaToCoverage: false, colorWrite: [true, true, true, true], stencil: { enabled: false } })),
-                owner.createPipeline({ shader: convertShader(), topology: 'triangle-strip', colorFormat: 'r8', samples: 1,
-                    blend: 'replace', alphaToCoverage: false, colorWrite: [true, true, true, true], stencil: { enabled: false } }),
-            ]).then(made => {
+            for (const variant of VARIANTS) created.push(owner.createPipeline({ shader: shaderFor(variant), topology: 'triangle-strip',
+                colorFormat: 'rgba8', samples: 1, blend: variant.endsWith('modulate') ? 'modulate' : 'source-over',
+                alphaToCoverage: false, colorWrite: [true, true, true, true], stencil: { enabled: false } }));
+            created.push(owner.createPipeline({ shader: convertShader(), topology: 'triangle-strip', colorFormat: 'r8', samples: 1,
+                blend: 'replace', alphaToCoverage: false, colorWrite: [true, true, true, true], stencil: { enabled: false } }));
+            Promise.all(created).then(made => {
                 if (serial !== incarnation || device !== owner) { for (const pipeline of made) owner.destroy(pipeline); return; }
                 for (let i = 0; i < VARIANTS.length; i++) pipelines[i] = made[i];
                 convertPipeline = made[VARIANTS.length];
@@ -331,7 +333,12 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
                 if (serial !== incarnation) return;
                 pipelinesPending = false; failed = true; host.invalidate('text-pipelines-failed');
             });
-        } catch { pipelinesPending = false; failed = true; }
+        } catch {
+            pipelinesPending = false; failed = true;
+            void Promise.allSettled(created).then(results => {
+                for (const result of results) if (result.status === 'fulfilled') owner.destroy(result.value);
+            });
+        }
         return false;
     };
 
@@ -344,8 +351,9 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         if (!white) {
             const lease = host.allocator.gpu.reserve(1);
             if (!lease) return { status: 'denied', pool: 'gpu', bytes: 1 };
+            try { white = owner.createTexture(1, 1, 'r8', ['sample', 'copy-dst'], lease); }
+            catch (error) { host.allocator.gpu.release(lease); throw error; }
             whiteLease = lease;
-            white = owner.createTexture(1, 1, 'r8', ['sample', 'copy-dst'], lease);
             owner.writeTexture(white, { x: 0, y: 0, width: 1, height: 1 },
                 { source: new Uint8Array([255]), rowBytes: 1, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
         }
@@ -389,8 +397,8 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         let buffer: BufferHandle;
         try { buffer = device!.createBuffer(bytes, ['vertex', 'copy-dst'], gpuLease); }
         catch (error) { host.allocator.gpu.release(gpuLease); host.allocator.cpu.release(cpuLease); throw error; }
+        // The old buffer's lease is the device's: destroying the buffer returns it when it retires.
         if (convertBuffer) device!.destroy(convertBuffer);
-        if (convertLease) host.allocator.gpu.release(convertLease);
         if (convertScratchLease) host.allocator.cpu.release(convertScratchLease);
         convertBuffer = buffer; convertLease = gpuLease; convertCapacity = capacity;
         convertScratch = new Float32Array(capacity * 12); convertScratchLease = cpuLease;
@@ -415,8 +423,8 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
     const releaseStage = (): void => {
         if (!stage) return;
         clearStageTimer();
+        // Created on its lease, which the device returns when the texture retires.
         device!.destroy(stage.texture);
-        host.allocator.gpu.release(stage.lease);
         stage = null;
     };
     /** Arms the idle release: after STAGE_IDLE_MS with no conversion pending, the texture is destroyed from the timer. */
@@ -593,13 +601,16 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
     const stageMono = (req: MaskRequest, label: string, geometry: MaskGeometry, cellIndex: number, frame: number, budget: FrameBudget): Stop | null => {
         const at = sliceCell(geometry, cellIndex, cell);
         const bytes = at.w * at.h * 4;
-        if (!budget.claimUpload(bytes)) return { status: 'deferred' };
+        // Storage before budget: a claim spent on a refused reservation starved the next cell of this frame's allowance. The
+        // staging spot and the conversion capacity are checked first; a spot taken and then deferred by the claim is reclaimed
+        // at the next staging reset, as a refused cell's spot always was.
         const spot = stageSpot(at.w, at.h);
         if (spot === 'denied') return { status: 'denied', pool: 'gpu', bytes };
         // A full staging texture is the frame's limit: the run waits for the next frame, which starts with the staging reset.
         if (!spot) { host.invalidate('text-stage-full'); return { status: 'deferred' }; }
-        const staged = stage!;
         if (!ensureConvertCapacity(pendingCount + 1)) return { status: 'denied', pool: 'gpu', bytes };
+        if (!budget.claimUpload(bytes)) return { status: 'deferred' };
+        const staged = stage!;
         const made = raster.rasteriseBitmap(req, geometry, cellIndex, null);
         try {
             const placed = mono!.place(fillIdentity(probe, req, cellIndex, null), at.w, at.h, frame);
@@ -758,6 +769,12 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
             const x1 = Math.min(viewW, Math.ceil(build.x1)), y1 = Math.min(viewH, Math.ceil(build.y1));
             if (x1 <= x0 || y1 <= y0) return { status: 'empty' };
             const bytes = build.count * INSTANCE_BYTES;
+            // Every object the run needs is checked before any budget or storage is spent: a missing one throws with nothing
+            // allocated, where it used to throw after the buffer was created and its lease left unpinned.
+            if (!sampler) throw new Error('Text sampler missing');
+            for (let i = 0; i < build.batchCount; i++) {
+                if (!pipelines[pipelineIndex(build.batches[i].mode, blend)]) throw new Error('Text pipeline missing');
+            }
             if (!budget.claimUpload(bytes)) return { status: 'deferred' };
             const lease = host.allocator.gpu.reserve(bytes);
             if (!lease) return { status: 'denied', pool: 'gpu', bytes };
@@ -768,18 +785,17 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
                 auditCount(audit, 'upload:vertex', 1, { bytes });
                 auditCount(audit, 'geom:build');
             } catch (error) {
+                // A created buffer owns its lease (destroying it returns the lease); a refused creation left the lease ours.
                 if (buffer) owner.destroy(buffer);
-                host.allocator.gpu.release(lease);
+                else host.allocator.gpu.release(lease);
                 throw error;
             }
             // The run keeps its own batches, commands and pins: the build's objects are reused by the next composition.
-            if (!sampler) throw new Error('Text sampler missing');
             const scissor: RectI = { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
             const batches: Batch[] = new Array<Batch>(build.batchCount);
             for (let i = 0; i < build.batchCount; i++) {
                 const b = build.batches[i];
-                const pipeline = pipelines[pipelineIndex(b.mode, blend)];
-                if (!pipeline) throw new Error('Text pipeline missing');
+                const pipeline = pipelines[pipelineIndex(b.mode, blend)]!;
                 // The uniform slice is the frame's, written at each draw; the placeholder is never submitted.
                 const uniform = { binding: 0, slice: NO_UNIFORM };
                 const command: DrawCommand = { pipeline, bindings: { uniforms: [uniform],
@@ -798,7 +814,12 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         },
         draw(pass: GpuPass, prepared: PreparedRun): void {
             const run = prepared as TextRun;
-            if (!live.has(run) || device !== run.device || host.device() !== run.device) throw new Error('Stale text run');
+            // A run from a device this route no longer holds (lost, or released since admit) draws nothing. Throwing here
+            // would end the composer's frame; the count keeps it visible, and the run's owner admits it again on the next frame.
+            if (!live.has(run) || device !== run.device || host.device() !== run.device) {
+                auditCount(audit, 'text:stale-run-skipped');
+                return;
+            }
             // The uniform block is packed into the encoder's ring at this call, so one leased scratch serves every run.
             const data = uniformData!;
             data[0] = run.viewW; data[1] = run.viewH; data[2] = 0; data[3] = 0;

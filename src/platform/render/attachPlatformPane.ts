@@ -1,4 +1,4 @@
-import { auditCount, auditFrame, renderAuditEnabled } from './renderAudit';
+import { auditCount, auditFrame, auditPresent, renderAuditEnabled } from './renderAudit';
 import type { ViewState } from '../types';
 const benchmarkMemory = __BME_BENCH__ ? await import('./benchmarkMemory') : null;
 import type { DamageRecord } from './damage';
@@ -556,6 +556,11 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                                         return null;
                                     }
                                 }
+                                // A mirrored frame is presented from the 2D mirror without an encode: it is recorded here, as the 2D
+                                // compositor records its own, so the present audit counts every presented frame. The mirror is a 2D picture: canvas2d.
+                                if (mirrored && renderAuditEnabled()) auditPresent({ pane: options.paneId, frame: frame.frameId,
+                                    rawTick: frame.timestamp, backend: 'canvas2d', complete, canvas: null, standIns: 0, holes: 0,
+                                    refusal: null });
                                 auditFrame(drawing.backend, performance.now() - encodeStart);
                                 touchedFrame = frame.frameId;
                                 if (qualityScale < 1) auditCount('pane', 'quality-below-1');

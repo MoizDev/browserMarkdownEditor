@@ -4,6 +4,8 @@ import type { GpuPreparation, ResizeSurface } from './surfaceBroker.types';
 
 /** Internal registration seam; consumers enter through attachPlatformPane, never a backend factory. */
 export interface GpuPaneFactoryOptions {
+    /** The pane this compositor draws for, carried to the present audit. */
+    readonly paneId: string;
     readonly preparation: GpuPreparation;
     readonly services: Webgl2Services;
     /** Bound to this preparation; rejects before/after its current broker grant. Never the raw owner callback. */

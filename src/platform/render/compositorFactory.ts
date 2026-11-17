@@ -24,7 +24,7 @@ export const createGpuPane: GpuPaneFactory = async options => {
     };
     const owner = await createWebgl2Factory(services)(options.preparation);
     try {
-        compositor = createGpuCompositor({ owner, canvas: options.preparation.canvas,
+        compositor = createGpuCompositor({ owner, canvas: options.preparation.canvas, paneId: options.paneId,
             target: { generation: options.preparation.generation, limits: owner.limits, resizeSurface: options.resizeSurface },
             invalidate: options.invalidate, onError: options.onError, onDeferred: options.onDeferred });
         return { owner, compositor };

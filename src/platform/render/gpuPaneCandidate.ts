@@ -117,7 +117,7 @@ export class GpuPaneCandidate {
         generationRef.current = generation;
         this.current = generation;
         try {
-            const bundle = await factory({ preparation, services: services.services,
+            const bundle = await factory({ paneId: this.options.paneId, preparation, services: services.services,
                 resizeSurface: (width, height) => {
                     const grant = generation.grant;
                     if (this.current !== generation || generation.disposed || !grant || preparation.signal.aborted) {

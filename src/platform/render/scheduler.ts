@@ -42,6 +42,9 @@ export interface PresentedLayerRevision {
 export interface ScheduledSubmission {
     readonly drawn: readonly PresentedLayerRevision[];
     readonly completed?: () => boolean;
+    /** True once the submission can never complete (its context was released, or the compositor was disposed). Its acknowledgement
+     * is dropped: the layers are not told it presented, and no frame is kept requested for a submission that is gone. */
+    readonly superseded?: () => boolean;
     /** Benchmark observation is committed only after this exact display and its overlays agree. */
     readonly commitObservation?: () => void;
     readonly cancelObservation?: () => void;
@@ -266,14 +269,15 @@ interface FrameWork { entry: PaneEntry; frame: ScheduledFrame; batch: DamageBatc
     first: boolean[] | null;
     /** A layer's prepare reported (or may have) drawn something different, or the frame was granted an upload. */
     drawnChange: boolean;
-    /** Layers whose prepare ran to completion this frame (a skipped layer is not counted). */
-    called: number;
+    /** Layers settled this frame: prepared to completion (whatever it answered), or passed over while settled (see passedOver). */
+    settled: number;
     /** A full repaint is due (see the damage decision in the work pass): this frame must reach the canvas. */
     repaint: boolean;
     /** The audit's name for what asked for this frame; '' when the render audit is off. */
     cause: string }
 interface PendingAcknowledgement { entry: PaneEntry; frameId: number; token: FrameToken; submission: ScheduledSubmission }
-interface ScheduledPoll { callback: () => void; earliestFrame: number }
+/** A poll is the owner's persistent work; a throwing poll is kept (the owner's cancel handle stays valid) and backs off in time. */
+interface ScheduledPoll { callback: () => void; earliestFrame: number; failures: number; retryAt: number }
 interface UploadMeter {
     allowance: number;
     sliceMs: number;
@@ -294,8 +298,10 @@ function sameToken(a: FrameToken, b: FrameToken | null): boolean {
 
 let schedulerStarted = false;
 /** A failed frame holds the loop for this back-off before it runs again: doubling from the minimum, capped at the maximum. */
-const FRAME_RETRY_MIN_MS = 1000;
-const FRAME_RETRY_MAX_MS = 30000;
+const RETRY_MIN_MS = 1000;
+const RETRY_MAX_MS = 30000;
+/** The back-off for failing work: doubling from RETRY_MIN_MS, capped at RETRY_MAX_MS. */
+function retryDelay(failures: number): number { return Math.min(RETRY_MAX_MS, RETRY_MIN_MS * 2 ** Math.min(failures - 1, 5)); }
 
 /** One app-wide rAF owner, explicitly started; importing it installs no listeners (C4.6:624–628).
  * Sanctioned deadline path: wakeAt coalesces future layer work into one timer that ONLY invalidates,
@@ -319,6 +325,8 @@ export class FrameScheduler {
     private frameFailures = 0;
     /** The back-off timer after a failed frame: while it runs, no frame is requested. */
     private frameHold: ReturnType<typeof setTimeout> | null = null;
+    /** Each layer's last prepare answer and the scene revision it was prepared at (see passedOver). */
+    private readonly layerAnswers = new WeakMap<Layer, { revision: number; unchanged: boolean }>();
     private hiddenTimer: ReturnType<typeof setTimeout> | null = null;
     private hiddenAt: number | null = null;
     private retainedReleased = false;
@@ -429,7 +437,7 @@ export class FrameScheduler {
 
     /** Persistent until cancelled; callbacks added during a frame are not run recursively in it. */
     schedulePoll(callback: () => void): () => void {
-        const poll = { callback, earliestFrame: this.frameId + 1 };
+        const poll: ScheduledPoll = { callback, earliestFrame: this.frameId + 1, failures: 0, retryAt: 0 };
         this.polls.add(poll);
         this.ensureFrame();
         return () => { this.polls.delete(poll); this.ensureFrame(); };
@@ -572,6 +580,11 @@ export class FrameScheduler {
         const bound = entry.binding;
         if (bound && (bound.vaultEpoch !== token.vaultEpoch || bound.documentId !== token.documentId ||
             bound.session !== token.session || bound.viewLease !== token.viewLease)) {
+            // A token change is a rebind: the owner attaches a new pane with the new token (usePlatformPane re-attaches on any
+            // session or byte-generation change; a native view's viewLease is fixed per pane). This pane is unregistered and
+            // suspended with 'unregistered' because its replacement takes over; nothing re-registers it, by design. Counted so a
+            // drop without a rebind would show up: none was found reading the owners (gpu-h11 R7).
+            if (renderAuditEnabled()) auditCount('scheduler', 'binding-dropped');
             this.unregister(entry);
             return null;
         }
@@ -588,8 +601,19 @@ export class FrameScheduler {
      * repaint (a full damage, a new token, camera or geometry since the last presented picture). A pane with a pending
      * acknowledgement presents, because its submission is awaited. A layer that was passed over, or returns nothing, is a
      * change: nothing was proved about it. The reason does not matter when nothing drawn changed. */
+    /** A layer not prepared this frame (the window was exhausted, or the frame's share ran out) settles unchanged only when it
+     * has no pending work: its scene revision has not moved since it last prepared, it does not ask for a frame, and its last
+     * answer was unchanged. Any other passed-over layer is a change, so the frame presents. */
+    private passedOver(item: FrameWork, meta: ScheduledLayerSnapshot): void {
+        const last = this.layerAnswers.get(meta.layer);
+        const pending = last === undefined || !last.unchanged || last.revision !== meta.sceneRevision || meta.layer.needsFrame();
+        if (pending) item.drawnChange = true;
+        else item.settled++;
+        if (renderAuditEnabled()) auditCount('pane', 'prepare-passed-over:' + (item.entry.pane.layerId?.(meta.layer) ?? 'unnamed'));
+    }
+
     private unchangedPicture(item: FrameWork): boolean {
-        if (item.drawnChange || item.called !== item.frame.layers.length || item.repaint) return false;
+        if (item.drawnChange || item.settled !== item.frame.layers.length || item.repaint) return false;
         for (const ack of this.acknowledgements) if (ack.entry === item.entry) return false;
         return true;
     }
@@ -643,8 +667,12 @@ export class FrameScheduler {
 
     private ensureFrame(): void {
         if (this.inFrame || this.frameHold !== null) return;
-        if (!this.running || this.suspended || !this.needsWork()) { this.cancelFrame(); return; }
-        if (this.raf === null) this.raf = requestAnimationFrame(this.runFrame);
+        if (!this.running || this.suspended) { this.cancelFrame(); return; }
+        // A frame already requested decides for itself when it runs (it re-checks at its end), so a burst of marks does not scan
+        // every pane and layer each time (gpu-h11 R11): the scan runs once per frame request, not once per mark.
+        if (this.raf !== null) return;
+        if (!this.needsWork()) return;
+        this.raf = requestAnimationFrame(this.runFrame);
     }
 
     private readonly runFrame = (timestamp: number): void => {
@@ -784,7 +812,7 @@ export class FrameScheduler {
                     const repaint = moved || explicitFull;
                     const damage = batch.damage.freeze()!;
                     const frame = Object.freeze({ frameId, timestamp, intervalMs: this.intervalMs, token, view, layers, reasons, damage });
-                    work.push({ entry, frame, batch, geometry, hadInput: entry.inputPriority || reasons.includes('input'), platformPrepared: false, skipped: false, first: null, drawnChange: false, called: 0, repaint, cause });
+                    work.push({ entry, frame, batch, geometry, hadInput: entry.inputPriority || reasons.includes('input'), platformPrepared: false, skipped: false, first: null, drawnChange: false, settled: 0, repaint, cause });
                     entry.inputPriority = false;
                 });
             }
@@ -932,7 +960,7 @@ export class FrameScheduler {
             this.frameFailures++;
             if (this.frameFailures === 1) this.options.onError(null, error);
             else if (renderAuditEnabled()) auditCount('scheduler', 'frame-failed');
-            this.holdFrames(Math.min(FRAME_RETRY_MAX_MS, FRAME_RETRY_MIN_MS * 2 ** Math.min(this.frameFailures - 1, 5)));
+            this.holdFrames(retryDelay(this.frameFailures));
         } finally {
             for (const item of encodings) if (!item.done) this.discard(item.work.entry, item.encoding);
             for (const batch of batches) if (!batch.submitted && this.live(batch.entry)) {
@@ -984,7 +1012,7 @@ export class FrameScheduler {
             const platform = meta === null;
             if (exhausted && !requesting && !platform) {
                 item.skipped = true;
-                if (renderAuditEnabled() && meta) auditCount('pane', 'prepare-passed-over:' + (item.entry.pane.layerId?.(meta.layer) ?? 'unnamed'));
+                if (meta) this.passedOver(item, meta);
                 return;
             }
             const limit = exhausted && !platform ? performance.now() + meter.sliceMs : deadline;
@@ -1041,13 +1069,16 @@ export class FrameScheduler {
                 }
             } else if (meta && !shouldYield()) {
                 // prepare returns false only when a completed prepare left nothing it draws next different (types.ts). A layer
-                // that returns nothing, or that was not called, leaves the frame's picture open: it is presented.
+                // that returns nothing leaves the frame's picture open: it is presented.
                 const unchanged = meta.layer.prepare(item.frame.view, budget) === false;
-                item.called++;
+                this.layerAnswers.set(meta.layer, { revision: meta.sceneRevision, unchanged });
+                item.settled++;
                 if (!unchanged) {
                     item.drawnChange = true;
                     if (renderAuditEnabled()) auditCount('pane', 'prepare-changed:' + (item.entry.pane.layerId?.(meta.layer) ?? 'unnamed'));
                 }
+            } else if (meta) {
+                this.passedOver(item, meta);
             }
             overshoot = Math.max(0, performance.now() - deadline);
         });
@@ -1067,6 +1098,7 @@ export class FrameScheduler {
         for (const ack of pending) {
             this.call(ack.entry, () => {
                 if (!this.valid(ack.entry, ack.token)) return;
+                if (ack.submission.superseded?.()) return;
                 if (ack.frameId >= frameId || (ack.submission.completed && !ack.submission.completed())) {
                     this.acknowledgements.push(ack);
                     return;
@@ -1103,14 +1135,20 @@ export class FrameScheduler {
         let ran = false;
         for (const poll of [...this.polls]) {
             if (!this.running || this.suspended) break;
-            if (!this.polls.has(poll) || poll.earliestFrame > this.frameId) continue;
+            if (!this.polls.has(poll) || poll.earliestFrame > this.frameId || poll.retryAt > performance.now()) continue;
             if (ran && performance.now() >= deadline) break;
             // Rotate persistent work so a tight frame cannot starve later fences. One gets progress.
             this.polls.delete(poll);
             this.polls.add(poll);
             ran = true;
-            try { poll.callback(); }
-            catch (error) { this.polls.delete(poll); this.options.onError(null, error); }
+            try { poll.callback(); poll.failures = 0; }
+            catch (error) {
+                // Kept, not dropped: the owner cancels through its handle, and a dropped poll left that handle pointing at nothing.
+                poll.failures++;
+                if (poll.failures === 1) this.options.onError(null, error);
+                else if (renderAuditEnabled()) auditCount('scheduler', 'poll-failed');
+                poll.retryAt = performance.now() + retryDelay(poll.failures);
+            }
         }
     }
 

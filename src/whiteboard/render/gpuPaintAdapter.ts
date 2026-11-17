@@ -4,7 +4,7 @@
 // Design: planning/60-implementation/gpu-handoff/PLAN.md §3.3.
 import type { Rect, ViewState } from '../../platform/types';
 import type { LayerHost } from '../../platform/render/compositor.types';
-import type { GfxDevice, GpuPass, RectI, TextureHandle } from '../../platform/render/gfx/api';
+import type { ByteLease, GfxDevice, GpuPass, RectI, TextureHandle } from '../../platform/render/gfx/api';
 import type { FrameBudget, FrameToken, GpuReleaseReason, OffscreenPasses } from '../../platform/render/types';
 import { auditCount, auditStage, renderAuditEnabled, type AuditStage } from '../../platform/render/renderAudit';
 import type { PaintBand } from './material';
@@ -77,6 +77,8 @@ type CpuRoute = ItemRoute & ResourcedRoute;
 function createCpuRoute(host: LayerHost, surface: string, lay: TileLay): CpuRoute {
     let resources: PaintResources2d | null = null;
     let scratch: OffscreenCanvas | null = null;
+    // The scratch canvas is CPU memory the governor must see: it is leased on the layer's CPU pool, and only that lease is reported.
+    let scratchLease: ByteLease | null = null;
     const live = new Set<CpuRun>();
     // Path geometry of a fragment or ink part, built once per item and device scale: the reference holds only its own items' paths.
     const paths = new WeakMap<PaintItem, { scale: number; prepared: PreparedPath2d }>();
@@ -117,12 +119,17 @@ function createCpuRoute(host: LayerHost, surface: string, lay: TileLay): CpuRout
             const device = host.device();
             if (!paint || !device) return { status: 'unsupported', why: 'no-paint-or-device' };
             if (!budget.claimUpload(TILE_BYTES)) return { status: 'deferred' };
+            if (!scratch) {
+                const cpuLease = host.allocator.cpu.reserve(TILE_BYTES);
+                if (!cpuLease) return { status: 'denied', pool: 'cpu', bytes: TILE_BYTES };
+                scratchLease = cpuLease;
+                scratch = new OffscreenCanvas(SIZE, SIZE);
+            }
             const lease = host.allocator.gpu.reserve(TILE_BYTES);
             if (!lease) return { status: 'denied', pool: 'gpu', bytes: TILE_BYTES };
             let texture: TextureHandle | null = null;
             let bitmap: ImageBitmap | null = null;
             try {
-                scratch ??= new OffscreenCanvas(SIZE, SIZE);
                 const ctx = scratch.getContext('2d');
                 if (!ctx) throw new Error('Offscreen 2D canvas unavailable');
                 ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -166,10 +173,12 @@ function createCpuRoute(host: LayerHost, surface: string, lay: TileLay): CpuRout
         release(): void {
             for (const run of live) run.device.destroy(run.texture);
             live.clear();
+            if (scratchLease) host.allocator.cpu.release(scratchLease);
+            scratchLease = null;
             scratch = null;
         },
         memory(): { gpuBytes: number; cpuBytes: number } {
-            return { gpuBytes: live.size * TILE_BYTES, cpuBytes: scratch ? TILE_BYTES : 0 };
+            return { gpuBytes: live.size * TILE_BYTES, cpuBytes: scratchLease?.bytes ?? 0 };
         },
     };
     return route;
@@ -271,7 +280,10 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             presented = null; omitPrepared = null; lastFrame = -1;
         },
         needsFrame(): boolean { return !disposed && composer.needsFrame(); },
-        memory(): { gpuBytes: number; cpuBytes: number } { return composer.memory(); },
+        // GPU bytes are the composer's: each is leased by its owner (the store, a route) on the layer's GPU pool, reported once.
+        // CPU bytes are this route's own leased scratch only: a route's CPU bytes that are not leased (the text scratch, the path
+        // geometry cache) are not reported, since the governor would refuse to admit bytes it has not reserved.
+        memory(): { gpuBytes: number; cpuBytes: number } { return { gpuBytes: composer.memory().gpuBytes, cpuBytes: cpu.memory().cpuBytes }; },
         cpuWorkingSet(): { mandatoryBytes: number; prefetchBytes: number } {
             return { mandatoryBytes: composer.memory().cpuBytes, prefetchBytes: 0 };
         },

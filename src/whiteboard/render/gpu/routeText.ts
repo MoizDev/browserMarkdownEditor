@@ -1,18 +1,20 @@
 import type { Rgba } from '../../../platform/types';
 import type { LayerHost } from '../../../platform/render/compositor.types';
 import type { BufferHandle, ByteLease, GfxDevice, GpuPass, PipelineHandle, RectI, SamplerHandle, ShaderModule, TextureHandle } from '../../../platform/render/gfx/api';
-import type { FrameBudget } from '../../../platform/render/types';
+import type { FrameBudget, OffscreenPasses } from '../../../platform/render/types';
 import { auditCount } from '../../../platform/render/renderAudit';
 import type { FontKey } from '../../text/fonts';
 import type { PaintItem, PaintTextItem } from '../paintStream';
-import { ATLAS_PAGE, IdentityIndex, TextAtlas, type AtlasEntry, type Indexed } from '../textAtlas';
+import { ATLAS_PAGE, IdentityIndex, ShelfPacker, TextAtlas, type AtlasEntry, type AtlasPage, type Indexed } from '../textAtlas';
 import { MASK_CANVAS_BYTES, copyIdentity, createCpuAccount, createMaskRaster, fillIdentity, identityHash, needsColourMask,
     newIdentity, sliceCell, type CpuAccount, type MaskCell, type MaskGeometry, type MaskIdentity, type MaskRaster, type MaskRequest } from './textMasks';
 import type { Admission, Blend, CreateTextRoute, ItemRoute, PreparedRun } from './contracts';
 
-/** The text route as the composer sees it. `evictTextures` is the governor's hook (h9): whole atlas pages, coldest first. */
+/** The text route as the composer sees it. `evictTextures` is the governor's hook (h9): whole atlas pages, coldest first.
+ * `encodeOffscreen` converts this frame's staged mono coverage into its R8 pages, before any tile pass (a2ff745b). */
 export interface TextRoute extends ItemRoute<PaintTextItem> {
     evictTextures(bytes: number, frameId: number): number;
+    encodeOffscreen(passes: OffscreenPasses): void;
 }
 
 // The board's text route. A text run is drawn from exact-size mask cells (textMasks.ts) that live on atlas pages
@@ -20,6 +22,7 @@ export interface TextRoute extends ItemRoute<PaintTextItem> {
 // decorations are analytic-coverage rectangles in the same instance stream, so one run is one buffer and a few instanced
 // draws, in paint order: backgrounds, glyph masks, decorations, per item. Keys are numbers, and a composition reuses its
 // arrays: the only objects it makes are the ones a run keeps (its batches and pins), once per run, never per quad.
+// A mono cell is never read back: its bitmap is staged and converted on the GPU into its R8 page.
 
 /** Per instance: device rect (x, y, w, h), page uv rect (u0, v0, u1, v1; u0 = -1 marks a solid rect), premultiplied colour. */
 const INSTANCE_BYTES = 48;
@@ -32,6 +35,8 @@ const STANDIN_LIMIT = 4096;
 const MEMO_CHUNK = 64 * 1024;
 /** The instance scratch starts at this many floats (one quad is 12) and doubles; its lease is exact, so it is never over-reported. */
 const SCRATCH_FLOOR = 12 * 64;
+/** The conversion's instance buffer starts at this many cells and doubles, as the scratch does. */
+const CONVERT_FLOOR = 64;
 
 const ATTRIBUTES: ShaderModule['layout']['attributes'] = [
     { location: 0, bufferSlot: 0, offset: 0, stride: INSTANCE_BYTES, format: 'float32x4', step: 'instance' },
@@ -114,6 +119,26 @@ void main() { float m = coverage(); gfxColour = vec4(vec3(1.0) - m * colour.a + 
     'colour-modulate': `void main() { vec4 t = textureLod(gfxTexture0, uv, 0.0); gfxColour = vec4(vec3(1.0) - t.a + t.rgb, 1.0); }`,
 };
 
+/** The conversion: a staged RGBA cell's alpha is written as the R8 page's coverage. Its quad lands on the page rect and samples
+ * the staging rect with the same uv convention as a mask quad, so texel (i, j) of the cell lands on page pixel (x + i, y + j). */
+const CONVERT_VERTEX = `#version 300 es
+precision highp float;
+layout(location=0) in vec4 instanceRect;
+layout(location=1) in vec4 instanceUv;
+out vec2 uv;
+void main() {
+    vec2 corner = vec2(float(gl_VertexID & 1), float((gl_VertexID >> 1) & 1));
+    vec2 unit = (instanceRect.xy + corner * instanceRect.zw) / ${ATLAS_PAGE}.0;
+    uv = mix(instanceUv.xy, instanceUv.zw, corner);
+    gl_Position = vec4(unit.x * 2.0 - 1.0, 1.0 - unit.y * 2.0, 0.0, 1.0);
+}`;
+const CONVERT_FRAGMENT = `#version 300 es
+precision highp float;
+uniform sampler2D gfxTexture0;
+in vec2 uv;
+layout(location=0) out vec4 gfxColour;
+void main() { gfxColour = vec4(textureLod(gfxTexture0, uv, 0.0).a, 0.0, 0.0, 1.0); }`;
+
 type Mode = 'mono' | 'colour';
 type Variant = `${Mode}-${Blend}`;
 /** Index order is the pipeline table's: the variant of (mode, blend) sits at pipelineIndex(mode, blend). */
@@ -125,6 +150,11 @@ function shaderFor(variant: Variant): ShaderModule {
     return { id: `board-text-${variant}`, revision: 1,
         layout: { uniforms: [{ binding: 0, byteSize: 16 }], textures: [{ binding: 0, format: mode === 'mono' ? 'r8' : 'rgba8' }], attributes: ATTRIBUTES },
         glsl: { vertex: VERTEX, fragment: HEADER + BODY[variant] } };
+}
+function convertShader(): ShaderModule {
+    return { id: 'board-text-convert', revision: 1,
+        layout: { uniforms: [], textures: [{ binding: 0, format: 'rgba8' }], attributes: ATTRIBUTES.slice(0, 2) },
+        glsl: { vertex: CONVERT_VERTEX, fragment: CONVERT_FRAGMENT } };
 }
 
 /** A face's stand-in label, from its upstream key and not its css: the css of an unloaded face is its fallback family, so it
@@ -143,6 +173,10 @@ interface BuildBatch { mode: Mode; texture: TextureHandle; first: number; count:
 interface StandIn extends Indexed { readonly atlas: TextAtlas; readonly entry: AtlasEntry; readonly scale: number; readonly originX: number; readonly originY: number; readonly w: number; readonly h: number }
 /** What the last cell lookup found: an exact entry, or a stand-in with the device rect it is drawn in. One object, reused. */
 interface Slot { entry: AtlasEntry | null; rgba: boolean; standIn: boolean; x: number; y: number; w: number; h: number }
+/** A staged mono cell awaiting its conversion: the entry it fills and where its bitmap sits in the staging texture. */
+interface PendingCell { entry: AtlasEntry; x: number; y: number }
+/** One R8 page's share of the conversion: its cells are the instances [first, first + count) of the conversion buffer. */
+interface PageRun { page: AtlasPage; first: number; count: number; fill: number }
 interface TextRun extends PreparedRun {
     readonly device: GfxDevice;
     readonly buffer: BufferHandle;
@@ -168,7 +202,7 @@ interface Build {
 type Writable<T> = { -readonly [K in keyof T]: T[K] };
 
 export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string): TextRoute => {
-    // Every CPU byte the route holds is leased: the canvas, the instance and uniform scratch, and the stand-in memo.
+    // Every CPU byte the route holds is leased: the canvas, the instance, uniform and conversion scratch, and the stand-in memo.
     const memoAccount: CpuAccount = createCpuAccount(host.allocator.cpu, MEMO_CHUNK);
     const raster: MaskRaster = createMaskRaster(memoAccount);
     let rasterLease: ByteLease | null = null;
@@ -177,9 +211,19 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
     let device: GfxDevice | null = null;
     let incarnation = 0;
     let pipelines: (PipelineHandle | undefined)[] = [undefined, undefined, undefined, undefined];
+    let convertPipeline: PipelineHandle | null = null;
     let pipelinesReady = false, pipelinesPending = false, failed = false;
     let mono: TextAtlas | null = null, colour: TextAtlas | null = null;
     let white: TextureHandle | null = null, whiteLease: ByteLease | null = null, sampler: SamplerHandle | null = null;
+    /** The RGBA staging texture the mono bitmaps are written into, one frame's worth at a time, reset after its conversion. */
+    let stage: { texture: TextureHandle; lease: ByteLease; packer: ShelfPacker } | null = null;
+    /** The conversion's instance buffer and its CPU twin: grown to the pending count, never shrunk. */
+    let convertBuffer: BufferHandle | null = null, convertLease: ByteLease | null = null, convertCapacity = 0;
+    let convertScratch: Float32Array<ArrayBuffer> = new Float32Array(0), convertScratchLease: ByteLease | null = null;
+    const pending: PendingCell[] = [];
+    let pendingCount = 0;
+    const pageRuns: PageRun[] = [];
+    let pageRunCount = 0;
     const live = new Set<TextRun>();
     /** The latest single-cell mask of each identity, ignoring the font epoch: the stand-in for motion, and for a face that is
      * still loading. Keys are numeric and compared exactly. */
@@ -212,37 +256,48 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         const owner = device;
         if (owner) {
             for (const pipeline of pipelines) if (pipeline) owner.destroy(pipeline);
+            if (convertPipeline) owner.destroy(convertPipeline);
             if (sampler) owner.destroy(sampler);
             if (white) owner.destroy(white);
+            if (convertBuffer) owner.destroy(convertBuffer);
+            if (stage) owner.destroy(stage.texture);
         }
         mono?.dispose(); colour?.dispose();
         if (whiteLease) host.allocator.gpu.release(whiteLease);
-        pipelines = [undefined, undefined, undefined, undefined]; pipelinesReady = false; pipelinesPending = false; failed = false;
+        if (stage) host.allocator.gpu.release(stage.lease);
+        if (convertLease) host.allocator.gpu.release(convertLease);
+        pipelines = [undefined, undefined, undefined, undefined]; convertPipeline = null;
+        pipelinesReady = false; pipelinesPending = false; failed = false;
         mono = null; colour = null; white = null; whiteLease = null; sampler = null;
+        stage = null; convertBuffer = null; convertLease = null; convertCapacity = 0; pendingCount = 0; pageRunCount = 0;
         // Stand-in records name the atlases this device just disposed: none may be drawn from again.
         standIns.clear();
         releaseRaster();
         device = null;
     };
 
-    /** Creates the four variants once per device. Until they land, a run waits: the composer retries on the wake. */
+    /** Creates the variants and the conversion once per device. Until they land, a run waits: the composer retries on the wake. */
     const ensurePipelines = (owner: GfxDevice): boolean => {
         if (pipelinesReady) return true;
         if (pipelinesPending || failed) return false;
         const serial = incarnation;
         pipelinesPending = true;
         try {
-            Promise.all(VARIANTS.map(variant => owner.createPipeline({ shader: shaderFor(variant), topology: 'triangle-strip',
-                colorFormat: 'rgba8', samples: 1, blend: variant.endsWith('modulate') ? 'modulate' : 'source-over',
-                alphaToCoverage: false, colorWrite: [true, true, true, true], stencil: { enabled: false } })))
-                .then(made => {
-                    if (serial !== incarnation || device !== owner) { for (const pipeline of made) owner.destroy(pipeline); return; }
-                    made.forEach((pipeline, i) => { pipelines[i] = pipeline; });
-                    pipelinesReady = true; pipelinesPending = false; host.invalidate('text-pipelines-ready');
-                }, () => {
-                    if (serial !== incarnation) return;
-                    pipelinesPending = false; failed = true; host.invalidate('text-pipelines-failed');
-                });
+            Promise.all([
+                ...VARIANTS.map(variant => owner.createPipeline({ shader: shaderFor(variant), topology: 'triangle-strip',
+                    colorFormat: 'rgba8', samples: 1, blend: variant.endsWith('modulate') ? 'modulate' : 'source-over',
+                    alphaToCoverage: false, colorWrite: [true, true, true, true], stencil: { enabled: false } })),
+                owner.createPipeline({ shader: convertShader(), topology: 'triangle-strip', colorFormat: 'r8', samples: 1,
+                    blend: 'replace', alphaToCoverage: false, colorWrite: [true, true, true, true], stencil: { enabled: false } }),
+            ]).then(made => {
+                if (serial !== incarnation || device !== owner) { for (const pipeline of made) owner.destroy(pipeline); return; }
+                for (let i = 0; i < VARIANTS.length; i++) pipelines[i] = made[i];
+                convertPipeline = made[VARIANTS.length];
+                pipelinesReady = true; pipelinesPending = false; host.invalidate('text-pipelines-ready');
+            }, () => {
+                if (serial !== incarnation) return;
+                pipelinesPending = false; failed = true; host.invalidate('text-pipelines-failed');
+            });
         } catch { pipelinesPending = false; failed = true; }
         return false;
     };
@@ -260,6 +315,15 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
             white = owner.createTexture(1, 1, 'r8', ['sample', 'copy-dst'], lease);
             owner.writeTexture(white, { x: 0, y: 0, width: 1, height: 1 },
                 { source: new Uint8Array([255]), rowBytes: 1, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
+        }
+        if (!stage) {
+            const bytes = ATLAS_PAGE * ATLAS_PAGE * 4;
+            const lease = host.allocator.gpu.reserve(bytes);
+            if (!lease) return { status: 'denied', pool: 'gpu', bytes };
+            let texture: TextureHandle;
+            try { texture = owner.createTexture(ATLAS_PAGE, ATLAS_PAGE, 'rgba8', ['sample', 'copy-dst'], lease); }
+            catch (error) { host.allocator.gpu.release(lease); throw error; }
+            stage = { texture, lease, packer: new ShelfPacker(ATLAS_PAGE, ATLAS_PAGE) };
         }
         return null;
     };
@@ -286,6 +350,26 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         grown.set(scratch);
         if (scratchLease) host.allocator.cpu.release(scratchLease);
         scratch = grown; scratchLease = lease;
+        return true;
+    };
+    /** Grows the conversion's buffers to hold `cells` instances. Nothing is copied: a pending cell is read at encode time. False
+     * when the pool or the grant refuses, and then nothing is placed: a cell the conversion cannot draw is never in the atlas. */
+    const ensureConvertCapacity = (cells: number): boolean => {
+        if (cells <= convertCapacity) return true;
+        const capacity = Math.max(cells, convertCapacity * 2, CONVERT_FLOOR);
+        const bytes = capacity * INSTANCE_BYTES;
+        const gpuLease = host.allocator.gpu.reserve(bytes);
+        if (!gpuLease) return false;
+        const cpuLease = host.allocator.cpu.reserve(capacity * 12 * 4);
+        if (!cpuLease) { host.allocator.gpu.release(gpuLease); return false; }
+        let buffer: BufferHandle;
+        try { buffer = device!.createBuffer(bytes, ['vertex', 'copy-dst'], gpuLease); }
+        catch (error) { host.allocator.gpu.release(gpuLease); host.allocator.cpu.release(cpuLease); throw error; }
+        if (convertBuffer) device!.destroy(convertBuffer);
+        if (convertLease) host.allocator.gpu.release(convertLease);
+        if (convertScratchLease) host.allocator.cpu.release(convertScratchLease);
+        convertBuffer = buffer; convertLease = gpuLease; convertCapacity = capacity;
+        convertScratch = new Float32Array(capacity * 12); convertScratchLease = cpuLease;
         return true;
     };
     const WHITE: Rgba = [1, 1, 1, 1];
@@ -424,38 +508,50 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         return null;
     };
 
+    /** A mono cell: its bitmap is written into the staging texture, and the conversion puts its alpha into the R8 page at the end
+     * of the frame. The page entry is placed now, so the frame's draws see it once the conversion has been encoded. */
+    const stageMono = (req: MaskRequest, label: string, geometry: MaskGeometry, cellIndex: number, frame: number, budget: FrameBudget): Stop | null => {
+        const at = sliceCell(geometry, cellIndex, cell);
+        const bytes = at.w * at.h * 4;
+        if (!budget.claimUpload(bytes)) return { status: 'deferred' };
+        const staged = stage!;
+        const spot = staged.packer.place(at.w, at.h);
+        // A full staging texture is the frame's limit: the run waits for the next frame, which starts with the staging reset.
+        if (!spot) { host.invalidate('text-stage-full'); return { status: 'deferred' }; }
+        if (!ensureConvertCapacity(pendingCount + 1)) return { status: 'denied', pool: 'gpu', bytes };
+        const made = raster.rasteriseBitmap(req, geometry, cellIndex, null);
+        try {
+            const placed = mono!.place(fillIdentity(probe, req, cellIndex, null), at.w, at.h, frame);
+            if (placed === 'oversize') return { status: 'unsupported', why: 'oversize' };
+            if (placed === 'denied') return { status: 'denied', pool: 'gpu', bytes: at.w * at.h };
+            device!.writeTexture(staged.texture, { x: spot.x, y: spot.y, width: at.w, height: at.h },
+                { source: made.bitmap, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
+            let next = pending[pendingCount];
+            if (next) { next.entry = placed; next.x = spot.x; next.y = spot.y; }
+            else { next = { entry: placed, x: spot.x, y: spot.y }; pending.push(next); }
+            pendingCount++;
+            auditCount(audit, 'text:mask-raster', 1, { px: at.w * at.h });
+            auditCount(audit, 'upload:mask', 1, { bytes });
+            recordStandIn(req, label, null, mono!, placed, geometry.slices, geometry);
+            slot.entry = placed; slot.rgba = false; slot.standIn = false;
+            return null;
+        } finally { made.bitmap.close(); }
+    };
+
     /** One cell of a glyph mask: the exact hit, a stand-in during motion, or the raster and its upload. Writes the slot;
-     * null when the slot is filled, a stop otherwise. */
+     * null when the slot is filled, a stop otherwise. A run whose text may draw colour glyphs is rastered in its ink colour;
+     * every other run is coverage, decided from its text alone (needsColourMask), so no cell is read back to find out. */
     const cellEntry = (req: MaskRequest, label: string, geometry: MaskGeometry, cellIndex: number, colourOf: Rgba,
         frame: number, budget: FrameBudget, moving: boolean): Stop | null => {
         const emoji = needsColourMask(req.text);
         const exact = (emoji ? colour! : mono!).lookup(fillIdentity(probe, req, cellIndex, emoji ? colourOf : null), frame);
         if (exact) { slot.entry = exact; slot.rgba = emoji; slot.standIn = false; return null; }
-        if (!emoji) {
-            // A mono run may still draw colour glyphs, which a probe finds: their cell is in the colour atlas under its ink.
-            const flagged = colour!.lookup(fillIdentity(probe, req, cellIndex, colourOf), frame);
-            if (flagged) { slot.entry = flagged; slot.rgba = true; slot.standIn = false; return null; }
-        }
         // Motion draws what exists: a missing exact cell is a stand-in, not a raster, until the view settles.
         if (moving && geometry.slices === 1 && standInFor(req, label, colourOf, emoji, false)) return null;
         if (budget.shouldYield()) return { status: 'deferred' };
         if (!ensureRasterLease()) return { status: 'denied', pool: 'cpu', bytes: MASK_CANVAS_BYTES };
-        if (!emoji) {
-            const probeMask = raster.rasterise(req, geometry, cellIndex, null);
-            if (!probeMask.colourGlyphs) {
-                if (!budget.claimUpload(probeMask.pixels.byteLength)) return { status: 'deferred' };
-                const placed = mono!.place(fillIdentity(probe, req, cellIndex, null), probeMask.w, probeMask.h, frame);
-                if (placed === 'oversize') return { status: 'unsupported', why: 'oversize' };
-                if (placed === 'denied') return { status: 'denied', pool: 'gpu', bytes: probeMask.pixels.byteLength };
-                mono!.upload(placed, probeMask.pixels, probeMask.w);
-                auditCount(audit, 'text:mask-raster', 1, { px: probeMask.w * probeMask.h });
-                auditCount(audit, 'upload:mask', 1, { bytes: probeMask.pixels.byteLength });
-                recordStandIn(req, label, null, mono!, placed, geometry.slices, geometry);
-                slot.entry = placed; slot.rgba = false; slot.standIn = false;
-                return null;
-            }
-        }
-        return rasterColour(req, geometry, cellIndex, colourOf, frame, budget, label);
+        return emoji ? rasterColour(req, geometry, cellIndex, colourOf, frame, budget, label)
+            : stageMono(req, label, geometry, cellIndex, frame, budget);
     };
 
     /** Draws the slot's cell as one quad, unless it lies outside the view. The pin is recorded for the run to take at admission. */
@@ -528,6 +624,19 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         return rects(it.paint.backgrounds, it.material.backgrounds, map, viewW, viewH)
             ?? glyphs(it, map, frame, viewW, viewH, budget, view.moving)
             ?? rects(it.paint.decorations, it.material.decorations, map, viewW, viewH);
+    };
+
+    /** The page's run in this frame's conversion, found or added. The runs are few (a page each), so a scan is the cheap form. */
+    const runOf = (page: AtlasPage): PageRun | null => {
+        for (let r = 0; r < pageRunCount; r++) if (pageRuns[r].page === page) return pageRuns[r];
+        return null;
+    };
+    const addRun = (page: AtlasPage): PageRun => {
+        let run = pageRuns[pageRunCount];
+        if (run) { run.page = page; run.first = 0; run.count = 0; run.fill = 0; }
+        else { run = { page, first: 0, count: 0, fill: 0 }; pageRuns.push(run); }
+        pageRunCount++;
+        return run;
     };
 
     return {
@@ -603,6 +712,49 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
                     first: 0, count: 4, instances: batch.count, scissor: run.scissor });
             }
         },
+        encodeOffscreen(passes: OffscreenPasses): void {
+            if (pendingCount === 0) return;
+            const owner = device, staged = stage, pipeline = convertPipeline;
+            if (!owner || !staged || !pipeline || !convertBuffer || !sampler || !mono) throw new Error('Text conversion without its objects');
+            // Gather this frame's live cells per page, in page order, into the conversion buffer: one instance range per page.
+            pageRunCount = 0;
+            for (let i = 0; i < pendingCount; i++) {
+                const p = pending[i];
+                if (!mono.holds(p.entry)) continue;
+                (runOf(p.entry.page) ?? addRun(p.entry.page)).count++;
+            }
+            let total = 0;
+            for (let r = 0; r < pageRunCount; r++) { pageRuns[r].first = total; total += pageRuns[r].count; }
+            for (let i = 0; i < pendingCount; i++) {
+                const p = pending[i];
+                if (!mono.holds(p.entry)) continue;
+                const run = runOf(p.entry.page)!;
+                const o = (run.first + run.fill) * 12;
+                run.fill++;
+                const e = p.entry;
+                convertScratch[o] = e.x; convertScratch[o + 1] = e.y; convertScratch[o + 2] = e.w; convertScratch[o + 3] = e.h;
+                convertScratch[o + 4] = p.x / ATLAS_PAGE; convertScratch[o + 5] = 1 - p.y / ATLAS_PAGE;
+                convertScratch[o + 6] = (p.x + e.w) / ATLAS_PAGE; convertScratch[o + 7] = 1 - (p.y + e.h) / ATLAS_PAGE;
+                convertScratch[o + 8] = 0; convertScratch[o + 9] = 0; convertScratch[o + 10] = 0; convertScratch[o + 11] = 0;
+            }
+            if (total > 0) owner.writeBuffer(convertBuffer, 0, convertScratch.subarray(0, total * 12));
+            // One pass per R8 page that has cells this frame. Each pass loads the page (its other texels stay), and draws its cells.
+            for (let r = 0; r < pageRunCount; r++) {
+                const run = pageRuns[r];
+                if (run.count === 0) continue;
+                const target = run.page.target;
+                if (!target) throw new Error('R8 text page without a conversion target');
+                const viewport = { x: 0, y: 0, width: ATLAS_PAGE, height: ATLAS_PAGE };
+                const gpuPass = passes.begin(target, viewport, { clear: null, stencil: false });
+                gpuPass.draw({ pipeline, bindings: { uniforms: [], textures: [{ binding: 0, texture: staged.texture, sampler }] },
+                    vertices: [{ buffer: convertBuffer, offset: run.first * INSTANCE_BYTES, bytes: run.count * INSTANCE_BYTES }],
+                    first: 0, count: 4, instances: run.count, scissor: viewport });
+                gpuPass.end();
+            }
+            // The staging texture is free again: its cells are on their pages. Its shelves reset, and so does the pending list.
+            staged.packer.reset();
+            pendingCount = 0; pageRunCount = 0;
+        },
         retire(prepared: PreparedRun): void { retireRun(prepared as TextRun); },
         release(): void { releaseGpu(); },
         evictTextures(bytes: number, frameId: number): number {
@@ -614,9 +766,10 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
             return freed;
         },
         memory(): { gpuBytes: number; cpuBytes: number } {
-            let gpuBytes = (mono?.bytes ?? 0) + (colour?.bytes ?? 0) + (whiteLease?.bytes ?? 0);
+            let gpuBytes = (mono?.bytes ?? 0) + (colour?.bytes ?? 0) + (whiteLease?.bytes ?? 0) + (stage?.lease.bytes ?? 0) + (convertLease?.bytes ?? 0);
             for (const run of live) gpuBytes += run.bytes;
-            const cpuBytes = (rasterLease?.bytes ?? 0) + (scratchLease?.bytes ?? 0) + (uniformLease?.bytes ?? 0) + memoAccount.bytes;
+            const cpuBytes = (rasterLease?.bytes ?? 0) + (scratchLease?.bytes ?? 0) + (uniformLease?.bytes ?? 0) +
+                (convertScratchLease?.bytes ?? 0) + memoAccount.bytes;
             return { gpuBytes, cpuBytes };
         },
     };

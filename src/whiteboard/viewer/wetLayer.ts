@@ -15,7 +15,8 @@ import type { PaintSource, PaintInkItem } from '../render/paintStream';
 import { createGpuPaintAdapter } from '../render/gpuPaintAdapter';
 import { bandItemsOf } from '../render/paintWindows';
 import { preparedOfFrame, type CanvasPaintAdapter, type PreparedPaint2d } from '../render/reference/canvasPaintAdapter';
-import { appendPath2d } from '../render/reference/coverage2d';
+import { appendPath2d, path2d } from '../render/reference/coverage2d';
+import type { PaintClip } from '../render/paintStream';
 
 // Provenance: wet/dry ink handover, bounded ink outline and C4 layer contracts;
 // independently wired renderer, no third-party source.
@@ -88,6 +89,18 @@ class ImmutableIds implements ReadonlySet<string> {
     }
 }
 const EMPTY_LIVE_IDS: ReadonlySet<string> = new ImmutableIds();
+
+// Frame clips of continuation strokes, built once per clip geometry. Only a continuation of a framed stroke has any, so
+// the table stays tiny; it is cleared past a few dozen entries rather than tracked per stroke.
+const clipPaths = new Map<string, { readonly d: PaintClip['d']; readonly path: Path2D }>();
+function clipPathFor(clip: PaintClip): Path2D {
+    const held = clipPaths.get(clip.key);
+    if (held && held.d === clip.d) return held.path;
+    if (clipPaths.size >= 64) clipPaths.clear();
+    const path = path2d(clip.d); clipPaths.set(clip.key, { d: clip.d, path });
+    return path;
+}
+function clipPathOf(key: string): Path2D | undefined { return clipPaths.get(key)?.path; }
 
 export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer {
     let handover: WetInkHandover | null = null, disposed = false, generation = 0, dirty = false, denied = false;
@@ -234,11 +247,12 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
             const highlight = snapshot.presentation.tool === 'highlighter';
             const pigment = resolveSwatch(palette, snapshot.presentation.color as Swatch, highlight ? 'highlight' : 'stroke');
             if (!pigment) continue;
+            for (const clip of snapshot.presentation.clips ?? []) clipPathFor(clip);
             const emit = (band: 'underlay' | 'content', alpha: number) => {
                 const item: PaintInkItem = { kind: 'ink', key: `wet/${snapshot.identity.gestureSequence}/${band}`,
                     nodeId: snapshot.identity.nodeId, geometryKey: `wet/${snapshot.identity.gestureSequence}/${source.serial}`,
-                    localToWorld: snapshot.presentation.localToWorld, clips: [], coverage: source.coverageChunks,
-                    material: { blend: 'normal', color: withOpacity(pigment, alpha) } };
+                    localToWorld: snapshot.presentation.localToWorld, clips: snapshot.presentation.clips ?? [], coverage: source.coverageChunks,
+                    material: { blend: 'normal', color: withOpacity(pigment, alpha * (snapshot.presentation.opacity ?? 1)) } };
                 paths.set(item, source); (band === 'underlay' ? underlay : content).push(item);
             };
             if (highlight) emit('underlay', HIGHLIGHT_UNDERLAY_ALPHA);
@@ -247,7 +261,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         const frame: PaintSource = { token: options.token, sceneRevision: generation, inkNodeIds: new Set(), underlay, content };
         gpuPrepared = preparedOfFrame(frame, {
             path: item => { const source = paths.get(item as PaintInkItem); if (!source) throw new Error('Wet GPU path unavailable'); return { path: source.path, origin: source.origin }; },
-            clip: () => { throw new Error('Wet ink has no clips'); }, image: () => { throw new Error('Wet ink has no images'); },
+            clip: key => { const clip = clipPathOf(key); if (!clip) throw new Error('Wet ink clip unavailable'); return { path: clip, origin: [0, 0] }; }, image: () => { throw new Error('Wet ink has no images'); },
         });
         sourceVersion = publicationVersion; sourceGeneration = generation; paletteRevision = palette.revision;
     };
@@ -324,9 +338,19 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                             if (!isHighlight && band === 'underlay') continue;
                             const pigment = resolveSwatch(options.palette(), snapshot.presentation.color as Swatch, isHighlight ? 'highlight' : 'stroke');
                             if (!pigment) continue;
-                            const alpha = isHighlight ? (band === 'underlay' ? HIGHLIGHT_UNDERLAY_ALPHA : HIGHLIGHT_OVERLAY_ALPHA) : 1;
+                            // A continuation inherits its node's opacity and ancestor frame clips; live ink drew without them, so
+                            // a segment drawn outside its frame showed live and vanished at pen-up (reproduced: Shift+pen past a
+                            // framed stroke's frame on canvas2d).
+                            const alpha = (isHighlight ? (band === 'underlay' ? HIGHLIGHT_UNDERLAY_ALPHA : HIGHLIGHT_OVERLAY_ALPHA) : 1)
+                                * (snapshot.presentation.opacity ?? 1);
                             ctx.save();
                             try {
+                                const base = ctx.getTransform();
+                                for (const clip of snapshot.presentation.clips ?? []) {
+                                    const path = clipPathFor(clip);
+                                    ctx.setTransform(base); ctx.transform(...clip.localToWorld); ctx.clip(path, clip.fillRule);
+                                }
+                                ctx.setTransform(base);
                                 const [a, b, c, d, e, f] = snapshot.presentation.localToWorld;
                                 ctx.transform(a, b, c, d, e, f); ctx.translate(item.origin[0], item.origin[1]);
                                 ctx.fillStyle = colourCss(withOpacity(pigment, alpha)); ctx.fill(item.path, 'nonzero');

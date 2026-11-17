@@ -196,6 +196,10 @@ export interface BoardLayerPair extends Readonly<[PlatformLayerDefinition, Platf
 }
 /** The composer's offscreen encode (PLAN §3.3, wave 2). Today's adapter has none, so the layer's call is guarded: a no-op. */
 type OffscreenEncoder = { encodeOffscreen?(passes: OffscreenPasses, view: ViewState, band: PaintBand): void };
+/** The layer's GPU eviction hook (`Layer.evictGpu` on impl/gpu) and the adapter's method behind it (h2). Typeof-guarded
+ * until impl/gpu merges: an absent method frees nothing. */
+type GpuEvicting = { evictGpu?(bytes: number, frameId: number): number };
+type LayerEvicting = { evictGpu?(bytes: number, frameId: number): number };
 /** The grain of a device's direct-frame charge (see chargeDirect): densePlan's DIRECT_CHUNK, the dense direct phase's own grain. */
 const DIRECT_CHUNK = 64 * 1024;
 /** The composer's prepare takes the drag's omitted set (PLAN §3.3, wave 2). Today's adapter ignores the third argument. */
@@ -689,7 +693,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             if (disposed || hosts.has(band)) throw new Error('Board layer already attached');
             hosts.set(band, host); ensureAdapter(host);
             let ended = false;
-            const layer: Layer = {
+            const layer: Layer & LayerEvicting = {
                 prepare,
                 drawGpu(pass, view) {
                     const frame = gpu?.readyFrame();
@@ -707,6 +711,12 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                         token: Object.freeze({ ...prepareToken }), omittedNodeIds: omit ? new OmittedSnapshot(omit) : null,
                         retain: () => options.frames.retain(frame), retainImages: () => leaseOf(hold) });
                     recordDraw(band, { frame, omit, ink, context, hold });
+                },
+                evictGpu(bytes, frameId) {
+                    // Only the band that owns the GPU adapter frees it: the other band's trim has nothing of the adapter's.
+                    if (hosts.get(band) !== allocatorHost) return 0;
+                    const adapter = gpu as GpuEvicting | null;
+                    return typeof adapter?.evictGpu === 'function' ? adapter.evictGpu(bytes, frameId) : 0;
                 },
                 encodeOffscreen(passes, view) {
                     const encoder = gpu as OffscreenEncoder | null;

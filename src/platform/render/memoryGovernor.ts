@@ -131,12 +131,6 @@ interface LeaseRecord {
     returned: boolean;
 }
 
-/** One denied owner. Keyed by record, not by wake: one wake may wait on both pools with different sizes. */
-interface CapacityWaiter {
-    readonly wake: () => void;
-    readonly cache: CacheRecord;
-    readonly bytes: number | undefined;
-}
 
 interface Share {
     readonly id: string;
@@ -213,7 +207,9 @@ export class MemoryGovernor {
     readonly deviceClass: DeviceMemoryClass;
     private readonly caches = new Map<string, CacheRecord>();
     // Denied owners waiting for the next capacity change; each wake is one-shot and removed when it runs.
-    private readonly capacityWaiters = new Set<CapacityWaiter>();
+    // Denied owners per cache, each with the bytes it needs (undefined: any release). One entry per owner however often it
+    // asks again while denied; a closed cache's entry is dropped when it closes.
+    private readonly capacityWaiters = new Map<CacheRecord, Map<() => void, number | undefined>>();
     private readonly leases = new WeakMap<ByteLease, LeaseRecord>();
     private readonly cacheHandles = new WeakMap<MemoryCacheHandle, CacheRecord>();
     private readonly charged = { gpu: 0, cpu: 0 };
@@ -262,7 +258,12 @@ export class MemoryGovernor {
             handle: {
                 reserve: bytes => this.reserve(cache, bytes),
                 release: lease => this.release(lease, cache),
-                whenAvailable: (wake, bytes) => { if (!cache.closed) this.capacityWaiters.add({ wake, cache, bytes }); },
+                whenAvailable: (wake, bytes) => {
+                    if (cache.closed) return;
+                    const waiters = this.capacityWaiters.get(cache) ?? new Map<() => void, number | undefined>();
+                    waiters.set(wake, bytes);
+                    this.capacityWaiters.set(cache, waiters);
+                },
                 readout: () => this.cacheReadout(cache),
                 updateActivity: activity => {
                     activityValid(activity);
@@ -273,6 +274,12 @@ export class MemoryGovernor {
                 close: () => {
                     if (cache.closed) return;
                     cache.closed = true;
+                    // Its owner is told once, after this call, so it can see the closure; a closed cache keeps no waiters.
+                    const waiting = this.capacityWaiters.get(cache);
+                    if (waiting) {
+                        this.capacityWaiters.delete(cache);
+                        queueMicrotask(() => { for (const wake of waiting.keys()) wake(); });
+                    }
                     if (!cache.leaseCount) this.caches.delete(registration.id);
                 },
             },
@@ -700,10 +707,13 @@ export class MemoryGovernor {
     private notifyCapacity(): void {
         if (!this.capacityWaiters.size) return;
         const woken = new Set<() => void>();
-        for (const waiter of [...this.capacityWaiters]) {
-            if (waiter.bytes !== undefined && !waiter.cache.closed && !this.fits(waiter.cache, waiter.bytes)) continue;
-            this.capacityWaiters.delete(waiter);
-            woken.add(waiter.wake);
+        for (const [cache, waiters] of this.capacityWaiters) {
+            for (const [wake, bytes] of waiters) {
+                if (bytes !== undefined && !this.fits(cache, bytes)) continue;
+                waiters.delete(wake);
+                woken.add(wake);
+            }
+            if (!waiters.size) this.capacityWaiters.delete(cache);
         }
         for (const wake of woken) wake();
     }

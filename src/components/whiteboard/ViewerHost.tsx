@@ -11,7 +11,8 @@ import './viewerHost.css';
 export interface ViewerViewHandle {
     readonly accessibility: BoardAccessibilitySource;
     readonly sourceToken?: RenderToken;
-    subscribe(listener: () => void): () => void;
+    /** `'paint'` is a paint-progress change, which does not change the picture and must not invalidate the pane. */
+    subscribe(listener: (change?: 'state' | 'paint') => void): () => void;
     setView(view: { visible: boolean; focused: boolean; theme: 'light' | 'dark'; inverted: boolean }): void;
     /** The view installs mode-appropriate input on the interaction root. */
     attachInput(interaction: HTMLElement, overlay: HTMLElement): () => void;
@@ -67,7 +68,7 @@ export default function ViewerHost<T extends object>({
     useLayoutEffect(() => () => {
         view.setView({ ...viewState.current, visible: false, focused: false });
     }, [view]);
-    useLayoutEffect(() => view.subscribe(() => pane.current?.invalidate('board-view')), [view, pane]);
+    useLayoutEffect(() => view.subscribe(change => { if (change !== 'paint') pane.current?.invalidate('board-view'); }), [view, pane]);
     useLayoutEffect(() => {
         if (!isVisible || !interaction || !overlay) return;
         return view.attachInput(interaction, overlay);

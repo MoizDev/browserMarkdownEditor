@@ -410,6 +410,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
                     const piece = Math.min(PATH_COVERAGE_UPLOAD_CHUNK_BYTES, up.bytes - up.written);
                     if (!budget.claimUpload(piece)) return { status: 'deferred' };
                     owner.writeBuffer(up.buffer, up.written, up.data.subarray(up.written / 4, (up.written + piece) / 4));
+                    auditCount(audit, 'upload:vertex', 1, { bytes: piece });
                     up.written += piece;
                 }
                 uploading.delete(shapes.positive); host.allocator.cpu.release(up.staging);

@@ -14,6 +14,10 @@ export const MASK_SLICE = 1024;
 export const MASK_MAX_HEIGHT = 2048;
 /** Widest run that is rastered as slices: beyond this many slices the run is oversize (an extreme zoom). */
 const MASK_MAX_SLICES = 8;
+/** The one canvas's bytes, which the route reserves from the CPU pool before its first raster. */
+export const MASK_CANVAS_BYTES = MASK_SLICE * MASK_MAX_HEIGHT * 4;
+/** Measurements kept per raster. Cleared whole when full: a run is measured again on its next use, which is cheap. */
+const MEASURE_CACHE_LIMIT = 4096;
 
 export interface MaskRequest {
     /** The board's font epoch. A font change makes new keys; the old masks age out of the atlas. */
@@ -32,10 +36,11 @@ export interface MaskRequest {
     readonly y: number;
 }
 
-/** Where a run's mask sits. `x`/`y` are absolute view pixels: whole pixels, so the quad samples the mask 1:1. */
+/** Where a run's mask sits, relative to the origin's whole pixel (floor of its x and y), so one measurement serves every
+ * position that shares the key's fractional origin. The quad lands at floor(x) + left, floor(y) + top. */
 export interface MaskGeometry {
-    readonly x: number;
-    readonly y: number;
+    readonly left: number;
+    readonly top: number;
     readonly w: number;
     readonly h: number;
     /** The fractional part of the origin: part of the key, since it changes the rasterised pixels. */
@@ -65,7 +70,6 @@ export interface GlyphMask {
 
 /** One reusable offscreen canvas, MASK_SLICE × MASK_MAX_HEIGHT, sized once so a raster never reallocates it. */
 export interface MaskRaster {
-    readonly bytes: number;
     measure(req: MaskRequest): MaskMeasure;
     rasterise(req: MaskRequest, geometry: MaskGeometry, slice: number, colour: Rgba | null): GlyphMask;
 }
@@ -85,45 +89,52 @@ function edges(origin: number, lo: number, hi: number): { near: number; far: num
 
 export function createMaskRaster(): MaskRaster {
     // Created on the first raster only: an 8 MB canvas is not worth holding for a board without text.
-    let canvas: OffscreenCanvas | null = null;
     let ctx: OffscreenCanvasRenderingContext2D | null = null;
+    const measured = new Map<string, MaskMeasure>();
     const context = (): OffscreenCanvasRenderingContext2D => {
         if (ctx) return ctx;
-        canvas = new OffscreenCanvas(MASK_SLICE, MASK_MAX_HEIGHT);
         // Read back on the CPU: an accelerated canvas would make every getImageData a GPU readback.
-        const made = canvas.getContext('2d', { willReadFrequently: true });
+        const made = new OffscreenCanvas(MASK_SLICE, MASK_MAX_HEIGHT).getContext('2d', { willReadFrequently: true });
         if (!made) throw new Error('Offscreen 2D canvas unavailable');
         ctx = made;
         return made;
     };
+    const measureUncached = (req: MaskRequest): MaskMeasure => {
+        const measureCtx = context();
+        setup(measureCtx, req, '#000');
+        const m = measureCtx.measureText(req.text);
+        const left = m.actualBoundingBoxLeft, right = m.actualBoundingBoxRight;
+        const ascent = m.actualBoundingBoxAscent, descent = m.actualBoundingBoxDescent;
+        if (!Number.isFinite(left) || !Number.isFinite(right) || !Number.isFinite(ascent) || !Number.isFinite(descent)) {
+            return { status: 'unsupported', why: 'metrics' };
+        }
+        // Ink in the 64 px font's units: x from -left to right, y from -ascent to descent.
+        if (left + right <= 0 || ascent + descent <= 0) return { status: 'empty' };
+        // The glyph box's corners, mapped by the device linear map (canvas order: x' = a·x + c·y, y' = b·x + d·y).
+        const corners = [[-left, -ascent], [right, -ascent], [-left, descent], [right, descent]];
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        for (const [x, y] of corners) {
+            const dx = req.a * x + req.c * y, dy = req.b * x + req.d * y;
+            minX = Math.min(minX, dx); maxX = Math.max(maxX, dx);
+            minY = Math.min(minY, dy); maxY = Math.max(maxY, dy);
+        }
+        const fracX = req.x - Math.floor(req.x), fracY = req.y - Math.floor(req.y);
+        const horizontal = edges(fracX, minX, maxX), vertical = edges(fracY, minY, maxY);
+        const w = horizontal.far - horizontal.near, h = vertical.far - vertical.near;
+        if (h > MASK_MAX_HEIGHT || Math.ceil(w / MASK_SLICE) > MASK_MAX_SLICES) return { status: 'oversize' };
+        return { status: 'ok', geometry: { left: horizontal.near, top: vertical.near, w, h, fracX, fracY,
+            originX: fracX - horizontal.near, originY: fracY - vertical.near, slices: Math.ceil(w / MASK_SLICE) } };
+    };
     return {
-        get bytes(): number { return canvas ? MASK_SLICE * MASK_MAX_HEIGHT * 4 : 0; },
         measure(req: MaskRequest): MaskMeasure {
-            const measureCtx = context();
-            setup(measureCtx, req, '#000');
-            const m = measureCtx.measureText(req.text);
-            const left = m.actualBoundingBoxLeft, right = m.actualBoundingBoxRight;
-            const ascent = m.actualBoundingBoxAscent, descent = m.actualBoundingBoxDescent;
-            if (!Number.isFinite(left) || !Number.isFinite(right) || !Number.isFinite(ascent) || !Number.isFinite(descent)) {
-                return { status: 'unsupported', why: 'metrics' };
-            }
-            // Ink in the 64 px font's units: x from -left to right, y from -ascent to descent.
-            if (left + right <= 0 || ascent + descent <= 0) return { status: 'empty' };
-            // The glyph box's corners, mapped by the device linear map (canvas order: x' = a·x + c·y, y' = b·x + d·y).
-            const corners = [[-left, -ascent], [right, -ascent], [-left, descent], [right, descent]];
-            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-            for (const [x, y] of corners) {
-                const dx = req.a * x + req.c * y, dy = req.b * x + req.d * y;
-                minX = Math.min(minX, dx); maxX = Math.max(maxX, dx);
-                minY = Math.min(minY, dy); maxY = Math.max(maxY, dy);
-            }
-            const fracX = req.x - Math.floor(req.x), fracY = req.y - Math.floor(req.y);
-            const horizontal = edges(fracX, minX, maxX), vertical = edges(fracY, minY, maxY);
-            const w = horizontal.far - horizontal.near, h = vertical.far - vertical.near;
-            if (h > MASK_MAX_HEIGHT || Math.ceil(w / MASK_SLICE) > MASK_MAX_SLICES) return { status: 'oversize' };
-            return { status: 'ok', geometry: { x: Math.floor(req.x) + horizontal.near, y: Math.floor(req.y) + vertical.near,
-                w, h, fracX, fracY, originX: fracX - horizontal.near, originY: fracY - vertical.near,
-                slices: Math.ceil(w / MASK_SLICE) } };
+            // The ink depends on the font (epoch and css), the map and the fractional origin, never on the whole-pixel position.
+            const key = JSON.stringify([req.epoch, req.css, req.text, req.rtl, req.a, req.b, req.c, req.d, req.x - Math.floor(req.x), req.y - Math.floor(req.y)]);
+            const hit = measured.get(key);
+            if (hit) return hit;
+            const result = measureUncached(req);
+            if (measured.size >= MEASURE_CACHE_LIMIT) measured.clear();
+            measured.set(key, result);
+            return result;
         },
         rasterise(req: MaskRequest, geometry: MaskGeometry, slice: number, colour: Rgba | null): GlyphMask {
             const rasterCtx = context();

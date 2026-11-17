@@ -1,4 +1,4 @@
-import type { ByteLease, GfxDevice, TextureFormat, TextureHandle } from '../../platform/render/gfx/api';
+import type { ByteLease, GfxDevice, TargetHandle, TextureFormat, TextureHandle } from '../../platform/render/gfx/api';
 import { auditCount } from '../../platform/render/renderAudit';
 import { copyIdentity, identityHash, sameIdentity, type MaskIdentity } from './gpu/textMasks';
 
@@ -68,6 +68,8 @@ export class ShelfPacker {
         this.used += rowHeight;
         return { x: 0, y: shelf.y };
     }
+    /** Forgets every placement: the space is free again. Used for a staging texture, whose cells are converted each frame. */
+    reset(): void { this.shelves.length = 0; this.used = 0; }
 }
 
 /** A placed mask cell. `pinned` counts runs that draw it. `dropped` is set once it has left the atlas for good. */
@@ -84,7 +86,8 @@ export interface AtlasEntry extends Indexed {
     dropped: boolean;
 }
 
-/** One GPU page: a texture from the layer's grant, its packer and the entries placed on it. */
+/** One GPU page: a texture from the layer's grant, its packer and the entries placed on it. An R8 page also has the render
+ * target its coverage is converted into on the GPU (`target`), created on the page's own lease and destroyed with it. */
 export class AtlasPage {
     readonly packer: ShelfPacker;
     readonly entries = new Set<AtlasEntry>();
@@ -94,6 +97,7 @@ export class AtlasPage {
     touched = -1;
     /** Set when the atlas is disposed while this page is pinned: its texture is destroyed by the last unpin, never earlier. */
     retiring = false;
+    target: TargetHandle | null = null;
     constructor(readonly texture: TextureHandle, readonly lease: ByteLease, readonly format: TextureFormat) {
         this.packer = new ShelfPacker(ATLAS_PAGE, ATLAS_PAGE);
     }
@@ -138,8 +142,8 @@ export class TextAtlas {
     }
 
     /** Places a w x h cell under the identity and returns the entry, or 'oversize' when no page can hold it, or 'denied' when
-     * the grant refuses a page. The atlas keeps its own copy of the identity. The pixels are written by `upload`; the entry is
-     * not drawable before it. */
+     * the grant refuses a page. The atlas keeps its own copy of the identity. The pixels are written by the caller; the entry is
+     * not drawable before they are. */
     place(probe: MaskIdentity, w: number, h: number, frame: number): AtlasEntry | 'oversize' | 'denied' {
         if (this.disposed) return 'denied';
         if (w > ATLAS_PAGE || h > ATLAS_PAGE) return 'oversize';
@@ -161,7 +165,7 @@ export class TextAtlas {
     }
 
     /** Writes a cell's ImageBitmap into its page sub-rect with no readback. The caller closes the bitmap: this only reads it.
-     * Colour pages only: an R8 page needs a conversion pass the route cannot begin (see routeText.ts, mono cells). */
+     * Colour pages only; an R8 cell is staged and converted by the route, which owns the staging texture. */
     uploadBitmap(entry: AtlasEntry, bitmap: ImageBitmap): void {
         if (this.options.format !== 'rgba8') throw new RangeError('A bitmap uploads only to an rgba8 atlas page');
         this.device.writeTexture(entry.page.texture, { x: entry.x, y: entry.y, width: entry.w, height: entry.h },
@@ -248,12 +252,20 @@ export class TextAtlas {
         const bytes = ATLAS_PAGE * ATLAS_PAGE * (this.options.format === 'r8' ? 1 : 4);
         const lease = this.host.reserve(bytes);
         if (!lease) return null;
-        let texture: TextureHandle;
-        try { texture = this.device.createTexture(ATLAS_PAGE, ATLAS_PAGE, this.options.format, ['sample', 'copy-dst'], lease); }
-        catch (error) { this.host.release(lease); throw error; }
-        const page = new AtlasPage(texture, lease, this.options.format);
-        this.pages.push(page);
-        return page;
+        // An R8 page is a conversion target: the route draws its staged coverage into it, so it must be renderable.
+        const uses: ('sample' | 'copy-dst' | 'render')[] = this.options.format === 'r8' ? ['sample', 'copy-dst', 'render'] : ['sample', 'copy-dst'];
+        let texture: TextureHandle | null = null;
+        try {
+            texture = this.device.createTexture(ATLAS_PAGE, ATLAS_PAGE, this.options.format, uses, lease);
+            const page = new AtlasPage(texture, lease, this.options.format);
+            if (this.options.format === 'r8') page.target = this.device.createTarget(texture, { samples: 1, stencil: false }, lease);
+            this.pages.push(page);
+            return page;
+        } catch (error) {
+            if (texture) this.device.destroy(texture);
+            this.host.release(lease);
+            throw error;
+        }
     }
 
     private evictPage(page: AtlasPage): void {
@@ -264,6 +276,7 @@ export class TextAtlas {
     }
 
     private destroyPage(page: AtlasPage): void {
+        if (page.target) this.device.destroy(page.target);
         this.device.destroy(page.texture);
         this.host.release(page.lease);
     }

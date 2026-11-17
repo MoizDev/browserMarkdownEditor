@@ -200,20 +200,37 @@ export interface GroupToken { readonly id: number }
 
 // Pre-admitted stencil coverage storage: a colour texture plus a stencil-backed target on the same
 // lease. Created in prepare through the device, never inside a draw; the frame borrows it per scope.
+// `grid` 4: one texel per subsample, a (4·width)×(4·height) r8 texture with no MSAA. Draws rasterise at 4× device pixels
+// inside beginCoverage, and endCoverage box-averages each 4×4 block in the composite ('paint' output). Default 1: the
+// rgba8 colour target (MSAA or not) that composites its premultiplied colour, unchanged.
+export interface CoverageTargetOptions { readonly grid?: 1 | 4 }
 export interface CoverageTarget {
     readonly target: TargetHandle;
     readonly texture: TextureHandle;
     readonly width: number;
     readonly height: number;
     readonly samples: Samples;
+    readonly grid: 1 | 4;
 }
 export interface CoverageToken { readonly id: number }
 // 'modulate' lays the resolved slice on the surface by fixed-function dst·src (see PipelineDesc.blend), not by backdrop copy.
-export type CoverageOutput = { readonly kind: 'composite'; readonly blend: 'normal' | 'multiply' | 'modulate' } | { readonly kind: 'mask' };
+// 'paint' (grid targets only) resolves the coverage c first and then composites once: 'normal' is source-over of rgb with
+// alpha·c; 'modulate' is one dst·k step with k = mix(1, rgb, alpha·c), so overlapping subsamples never compound.
+export type CoverageOutput =
+    | { readonly kind: 'composite'; readonly blend: 'normal' | 'multiply' | 'modulate' }
+    | { readonly kind: 'paint'; readonly blend: 'normal' | 'modulate'; readonly rgb: readonly [number, number, number]; readonly alpha: number }
+    | { readonly kind: 'mask' };
 // Exact charge for a coverage target: RGBA8 colour, multisample colour where requested, and at
 // least 8 B/px/sample of stencil (the backend's own rule, matching webgl2 #targetBytes).
-export function coverageTargetBytes(width: number, height: number, samples: Samples): number {
+export function coverageTargetBytes(width: number, height: number, samples: Samples, grid: 1 | 4 = 1): number {
     if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0) throw new RangeError('Invalid coverage size');
+    if (grid !== 1 && grid !== 4 || grid !== 1 && samples !== 1) throw new RangeError('Invalid coverage grid');
+    if (grid === 4) {
+        // One r8 byte and the 8 B stencil per texel, at grid² texels per device pixel.
+        const texels = width * grid * height * grid;
+        if (!Number.isSafeInteger(texels * 9)) throw new RangeError('Coverage target exceeds safe accounting');
+        return texels * 9;
+    }
     const pixels = width * height;
     const bytes = pixels * 4 + pixels * ((samples === 4 ? 4 * 4 : 0) + 8 * samples);
     if (!Number.isSafeInteger(bytes)) throw new RangeError('Coverage target exceeds safe accounting');
@@ -252,9 +269,11 @@ export interface GpuPass {
     pushClip(clip: RectI | ClipHandle): ClipToken;
     popClip(token: ClipToken): void;
     // Ordinary node/ancestor opacity multiplies emitted paints, without isolation.
+    // 'modulate' composites the group's premultiplied colour over white by fixed-function dst·k, k = rgb + (1 − a): the
+    // multiply slice of a group drawn normally, with no backdrop copy. It takes colourEffect 'none' only.
     beginGroup(bounds: RectI, options: {
         opacity: number;
-        blend: 'normal' | 'multiply';
+        blend: 'normal' | 'multiply' | 'modulate';
         colourEffect: 'none' | 'page-invert';
     }): GroupToken;
     endGroup(token: GroupToken): void;
@@ -339,7 +358,7 @@ export interface GfxDevice {
     createSampler(filter: 'nearest' | 'linear' | 'linear-mipmap'): SamplerHandle;
     createClip(mask: TextureHandle, deviceBounds: RectI): ClipHandle;
     // Admitted in prepare on the same lease (texture then stencil target). Destroy both to retire it.
-    createCoverageTarget(width: number, height: number, samples: Samples, lease: ByteLease): CoverageTarget;
+    createCoverageTarget(width: number, height: number, samples: Samples, lease: ByteLease, options?: CoverageTargetOptions): CoverageTarget;
     /** A sampleable rgba8 texture with its own single-sample, stencil-less render target, charged through one lease
      * (width × height × 4): a layer's offscreen tile, composed on the GPU and then sampled by the layer. */
     createRenderTexture(width: number, height: number, lease: ByteLease): { texture: TextureHandle; target: TargetHandle };

@@ -1,4 +1,5 @@
-import type { Affine, ViewState } from '../../platform/types';
+import type { Affine, Rect, ViewState } from '../../platform/types';
+import type { HostBlock } from '../model/doc';
 import type { PlatformLayerDefinition } from '../../platform/render/attachPlatformPane.types';
 import { awaitCapacity, isBudgetRefusal } from './budgetRefusal';
 import type { CompositorBackend, LayerCoverage, LayerHost } from '../../platform/render/compositor.types';
@@ -74,6 +75,18 @@ export interface BoardLayersOptions {
     /** An overlay whose absence is not a view failure (a preview). Until its current frame is ready it reports complete
      * and draws nothing, and it never draws a superseded frame, so it cannot hold back the pane's other layers. */
     readonly optional?: boolean;
+    /** The world rects under which the surface beneath board content is opaque (PLAN §3.3). Absent or empty: no claim,
+     * so a multiply keeps today's isolation composite. Supplied per host by `opaqueWorldOf`. */
+    readonly opaqueWorld?: () => readonly Rect[];
+}
+/** The whole plane, in world units: board coordinates are bounded by the 1e12 world limit (services.ts inverse). */
+const WHOLE_PLANE: readonly Rect[] = Object.freeze([Object.freeze({ x: -1e12, y: -1e12, width: 2e12, height: 2e12 })]);
+/** The opaque world of a host's board content (C1, c1-opaque.md). A whiteboard's surface beneath its content is the
+ * appearance clear, opaque everywhere unless the view is inverted (the document group then starts transparent). A page
+ * host's surface is opaque only where its pages are drawn: `drawnPages` is the paper's claim, readiness-gated by it. */
+export function opaqueWorldOf(host: HostBlock, inverted: boolean, drawnPages?: readonly Rect[]): readonly Rect[] {
+    if (host.kind === 'whiteboard') return inverted ? [] : WHOLE_PLANE;
+    return drawnPages ?? [];
 }
 interface Estimate {
     readonly frame: PaintSource;
@@ -183,8 +196,14 @@ export interface BoardLayerPair extends Readonly<[PlatformLayerDefinition, Platf
 }
 /** The composer's offscreen encode (PLAN §3.3, wave 2). Today's adapter has none, so the layer's call is guarded: a no-op. */
 type OffscreenEncoder = { encodeOffscreen?(passes: OffscreenPasses, view: ViewState, band: PaintBand): void };
+/** The layer's GPU eviction hook (`Layer.evictGpu` on impl/gpu) and the adapter's method behind it (h2). Typeof-guarded
+ * until impl/gpu merges: an absent method frees nothing. */
+type GpuEvicting = { evictGpu?(bytes: number, frameId: number): number };
+type LayerEvicting = { evictGpu?(bytes: number, frameId: number): number };
 /** The grain of a device's direct-frame charge (see chargeDirect): densePlan's DIRECT_CHUNK, the dense direct phase's own grain. */
 const DIRECT_CHUNK = 64 * 1024;
+/** The composer's prepare takes the drag's omitted set (PLAN §3.3, wave 2). Today's adapter ignores the third argument. */
+type OmitAwarePrepare = { prepare(view: ViewState, budget: FrameBudget, omit?: ReadonlySet<string>): void };
 export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     const hosts = new Map<PaintBand, LayerHost>();
     let adapter: CanvasPaintAdapter | null = null, allocatorHost: LayerHost | null = null;
@@ -195,6 +214,14 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     let useDense = false, deferredClear = false;
     // The route the last prepare took: true while the pane has a device (the GPU composer draws the direct paint).
     let onDeviceRoute = false;
+    // The composer's adapter options (PLAN §3.3). Built as a value, not a literal: the adapter's option type gains
+    // `opaqueWorld` in wave 2, and until then today's adapter ignores it.
+    const gpuOptions = () => ({ audit: options.auditSurface ?? 'board',
+        ...(typeof options.opaqueWorld === 'function' ? { opaqueWorld: options.opaqueWorld } : {}) });
+    // The drag's omitted set reaches the tiles the adapter builds. The draw still takes it too (drawGpu's omit argument) until
+    // the composer owns omission; the two must agree, and they do while both read the same omitNodes(frame).
+    const prepareGpu = (view: ViewState, budget: FrameBudget, frame: PaintSource): void =>
+        (gpu as OmitAwarePrepare | null)?.prepare(view, withFirstUnit(budget), options.omitNodes?.(frame) ?? undefined);
     const liveSets = new WeakMap<PaintSource, { omit: ReadonlySet<string> | null | undefined; wet: ReadonlySet<string> | undefined; live: ReadonlySet<string> }>();
     const liveFor = (frame: PaintSource): ReadonlySet<string> | undefined => {
         const omit = options.omitNodes?.(frame), wet = options.liveNodeIds?.();
@@ -427,7 +454,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 needsFrame: () => current().needsFrame(), memory: () => current().memory(),
                 dispose: () => { direct!.dispose(); dense!.dispose(); },
             };
-            gpu = createGpuPaintAdapter(adapter, host, report, { audit: options.auditSurface ?? 'board' });
+            gpu = createGpuPaintAdapter(adapter, host, report, gpuOptions());
         }
         return adapter;
     };
@@ -512,7 +539,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 // Charged before the build (the grant may already refuse) and after it (what this step built is held).
                 if (!chargeDirect(frame)) return;
                 adapter.prepare(view, budget);
-                gpu?.prepare(view, withFirstUnit(budget));
+                prepareGpu(view, budget, frame);
                 chargeDirect(frame);
                 prune(frame, adapter.readyFrame());
                 options.onPrepared?.();
@@ -604,7 +631,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             }
             denied = false;
             adapter.prepare(view, budget);
-            gpu?.prepare(view, withFirstUnit(budget));
+            prepareGpu(view, budget, frame);
             prune(frame, adapter.readyFrame());
             options.onPrepared?.();
         } catch (error) { report(error); }
@@ -666,7 +693,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             if (disposed || hosts.has(band)) throw new Error('Board layer already attached');
             hosts.set(band, host); ensureAdapter(host);
             let ended = false;
-            const layer: Layer = {
+            const layer: Layer & LayerEvicting = {
                 prepare,
                 drawGpu(pass, view) {
                     const frame = gpu?.readyFrame();
@@ -684,6 +711,12 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                         token: Object.freeze({ ...prepareToken }), omittedNodeIds: omit ? new OmittedSnapshot(omit) : null,
                         retain: () => options.frames.retain(frame), retainImages: () => leaseOf(hold) });
                     recordDraw(band, { frame, omit, ink, context, hold });
+                },
+                evictGpu(bytes, frameId) {
+                    // Only the band that owns the GPU adapter frees it: the other band's trim has nothing of the adapter's.
+                    if (hosts.get(band) !== allocatorHost) return 0;
+                    const adapter = gpu as GpuEvicting | null;
+                    return typeof adapter?.evictGpu === 'function' ? adapter.evictGpu(bytes, frameId) : 0;
                 },
                 encodeOffscreen(passes, view) {
                     const encoder = gpu as OffscreenEncoder | null;
@@ -737,7 +770,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                         const oldDense = dense!; oldDense.dispose(); retiringDense.add(oldDense);
                         dense = createDensePaintAdapter({ frames: options.frames, images: options.images,
                             invalidate: () => { collectRetired(); activeHost()?.invalidate('board-resource'); } }, allocatorHost, report, memoryGate);
-                        gpu?.dispose(); gpu = createGpuPaintAdapter(adapter!, allocatorHost, report, { audit: options.auditSurface ?? 'board' });
+                        gpu?.dispose(); gpu = createGpuPaintAdapter(adapter!, allocatorHost, report, gpuOptions());
                     }
                 },
             };

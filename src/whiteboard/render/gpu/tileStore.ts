@@ -134,6 +134,16 @@ class GpuTileStore implements TileStore {
         return slot;
     }
 
+    /** Removes the entry at `key` (one slice of a position; the composer removes each slice it no longer needs). Its
+     * target goes to the free list, as in putEmpty. Returns whether an entry was there. */
+    remove(key: TileKey): boolean {
+        const slot = this.byId.get(tileId(key));
+        if (!slot) return false;
+        const target = this.unlink(slot);
+        if (target) this.keepFree(target);
+        return true;
+    }
+
     markDirty(world: Readonly<Rect> | 'all', band?: PaintBand): number {
         if (world === 'all') {
             const slots = this.slotsIn(band);
@@ -428,6 +438,13 @@ class GpuTileStore implements TileStore {
 }
 
 export const createTileStore: CreateTileStore = (host, audit) => new GpuTileStore(host, audit);
+
+/** Removes one entry from a store made by createTileStore. `remove` is not on the TileStore contract, so the composer reaches
+ * it through here; a store of any other origin is refused rather than silently ignored. */
+export function removeTile(store: TileStore, key: TileKey): boolean {
+    if (!(store instanceof GpuTileStore)) throw new TypeError('removeTile needs a store from createTileStore');
+    return store.remove(key);
+}
 
 /** The tile one level down that covers `key`'s world at half the scale. Four positions of `key`'s scale share one of these,
  * so a visible position that is lowered costs a quarter of the bytes. It is an ordinary tile: the stand-in rule finds it

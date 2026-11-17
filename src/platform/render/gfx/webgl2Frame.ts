@@ -49,6 +49,8 @@ export interface DrawContext {
     readonly viewport: RectI;
     readonly originX: number;
     readonly originY: number;
+    /** Target texels per device pixel: 1, or the grid of a coverage target (draws rasterise at that many subsamples). */
+    readonly scale: number;
 }
 export interface EncodedDraw {
     readonly pipeline: FramePipeline;
@@ -79,6 +81,9 @@ export interface QuadCommand {
     readonly uniforms: { buffer: FrameBuffer; slice: UniformSlice };
     readonly scissor: RectI;
     readonly blend: 'source-over' | 'replace' | 'mask-max' | 'add' | 'modulate';
+    /** Which composition program lays the quad: the default colour composite, the grid coverage resolve (`source` is then the
+     * r8 grid texture), or the modulate composite (`k = rgb + (1 − a)` over white, laid by fixed-function modulate). */
+    readonly variant?: 'grid' | 'modulate';
 }
 export interface FrameBackend {
     readonly signal: AbortSignal;
@@ -152,7 +157,7 @@ interface Isolation {
     readonly child: Scope;
     readonly lease: TargetLease | null;
     readonly mask: Mask | null;
-    readonly options: { opacity: number; blend: 'normal' | 'multiply'; colourEffect: 'none' | 'page-invert' };
+    readonly options: { opacity: number; blend: 'normal' | 'multiply' | 'modulate'; colourEffect: 'none' | 'page-invert' };
 }
 interface ClipEntry {
     readonly token: ClipToken;
@@ -512,8 +517,10 @@ class DeviceFrame implements ControlledFrame {
     composite(scope: Scope, clip: RectI, source: FrameTexture, sourceRect: RectI, bounds: RectI,
         options: { opacity: number; blend: 'normal' | 'multiply' | 'modulate'; colourEffect: 'none' | 'page-invert' }, mask: Mask | null): void {
         opacity(options.opacity);
+        if (scope.scale !== 1) throw new ArenaError('invalid-input');
         if (!['normal', 'multiply', 'modulate'].includes(options.blend) || !['none', 'page-invert'].includes(options.colourEffect) ||
             scope.capture && options.colourEffect === 'page-invert') throw new ArenaError('invalid-input');
+        if (options.blend === 'modulate' && (options.colourEffect !== 'none' || scope.target.format !== 'rgba8')) throw new ArenaError('invalid-input');
         const area = intersect(intersect(bounds, clip), scope.bounds);
         if (scope.empty || !area.width || !area.height || options.opacity === 0) return;
         if (source.texture === scope.target.color?.texture || mask !== null && mask.texture.texture === scope.target.color?.texture) {
@@ -539,9 +546,38 @@ class DeviceFrame implements ControlledFrame {
             context: scope, source, backdrop: backdrop?.texture ?? this.#backend.white(), mask: mask?.texture ?? this.#backend.white(),
             uniforms: { buffer: this.#backend.buffer(packed.buffer), slice: packed }, scissor: area,
             blend: options.blend === 'modulate' ? 'modulate' : options.blend === 'multiply' ? 'replace' : scope.coverage ? 'mask-max' : 'source-over',
+            ...(options.blend === 'modulate' ? { variant: 'modulate' as const } : {}),
         };
         this.command(this.#backend.quad(command));
         if (backdrop) this.releaseTemporary(backdrop.lease);
+    }
+    /** Resolves a grid coverage target and paints it in one composite. The texel block of device pixel p is
+     * (p − bounds.origin)·grid, so the scope's destination and the target's origin line up exactly. */
+    compositeGrid(scope: Scope, clip: RectI, source: FrameTexture, bounds: RectI, grid: number,
+        output: { blend: 'normal' | 'modulate'; rgb: readonly [number, number, number]; alpha: number }): void {
+        if (scope.scale !== 1 || grid !== 4 || !['normal', 'modulate'].includes(output.blend) ||
+            !output.rgb.every(value => Number.isFinite(value) && value >= 0 && value <= 1) ||
+            !Number.isFinite(output.alpha) || output.alpha < 0 || output.alpha > 1) throw new ArenaError('invalid-input');
+        const area = intersect(intersect(bounds, clip), scope.bounds);
+        if (scope.empty || !area.width || !area.height || output.alpha === 0) return;
+        // The texture is the whole band; the borrowed rectangle is a corner of it, so it need only be at least that large.
+        if (source.texture === scope.target.color?.texture || source.width < bounds.width * grid || source.height < bounds.height * grid) {
+            throw new ArenaError('invalid-resource');
+        }
+        const data = new Float32Array(32);
+        data.set([scope.viewport.x, scope.viewport.y, scope.viewport.width, scope.viewport.height], 0);
+        data.set([area.x, area.y, area.width, area.height], 4);
+        data.set([bounds.x, bounds.y, grid, 0], 8);
+        data.set([source.width, source.height, 1, 0], 12);
+        data.set([output.rgb[0], output.rgb[1], output.rgb[2], output.alpha], 16);
+        data.set([output.blend === 'modulate' ? 1 : 0, 0, 0, 0], 28);
+        const packed = this.uniforms(data);
+        const command: QuadCommand = {
+            context: scope, source, backdrop: this.#backend.white(), mask: this.#backend.white(),
+            uniforms: { buffer: this.#backend.buffer(packed.buffer), slice: packed }, scissor: area,
+            blend: output.blend === 'modulate' ? 'modulate' : 'source-over', variant: 'grid',
+        };
+        this.command(this.#backend.quad(command));
     }
 }
 
@@ -563,7 +599,7 @@ class DevicePass implements GpuPass {
         this.#backend = backend;
         this.#root = target;
         this.#desc = desc;
-        this.#scope = { target, viewport: desc.viewport, originX: 0, originY: 0,
+        this.#scope = { target, viewport: desc.viewport, originX: 0, originY: 0, scale: 1,
             bounds: { ...target.usedRect }, capture: target.capture,
             empty: false, coverage: target.format === 'r8' };
         this.#clip = intersect(this.#scope.bounds, desc.viewport);
@@ -691,7 +727,7 @@ class DevicePass implements GpuPass {
             this.#clip = entry.previous;
         });
     }
-    beginGroup(bounds: RectI, options: { opacity: number; blend: 'normal' | 'multiply'; colourEffect: 'none' | 'page-invert' }): GroupToken {
+    beginGroup(bounds: RectI, options: { opacity: number; blend: 'normal' | 'multiply' | 'modulate'; colourEffect: 'none' | 'page-invert' }): GroupToken {
         this.#frame.markBarrier();
         return this.#guard(() => {
             const token = Object.freeze({ id: this.#frame.token() });
@@ -720,8 +756,9 @@ class DevicePass implements GpuPass {
             if (this.#groups.some(entry => entry.kind === 'coverage')) throw new ArenaError('invalid-input');
             const native = this.#backend.target(target.target), texture = this.#backend.texture(target.texture);
             const parent = this.#scope;
-            if (!native.stencil || native.samples !== target.samples || native.format !== 'rgba8' ||
-                native.width !== target.width || native.height !== target.height || !texture.uses.includes('sample') ||
+            const grid = target.grid;
+            if (!native.stencil || native.samples !== target.samples || native.format !== (grid === 1 ? 'rgba8' : 'r8') ||
+                native.width !== target.width * grid || native.height !== target.height * grid || !texture.uses.includes('sample') ||
                 texture.texture === parent.target.color?.texture || [bounds.x, bounds.y, bounds.width, bounds.height].some(value => !Number.isSafeInteger(value)) ||
                 bounds.width <= 0 || bounds.height <= 0 || bounds.width > target.width || bounds.height > target.height) throw new ArenaError('invalid-input');
             const token = Object.freeze({ id: this.#frame.token() });
@@ -735,7 +772,7 @@ class DevicePass implements GpuPass {
                     load: { kind: 'clear', color: [0, 0, 0, 0] }, store: 'store',
                     stencil: { load: { kind: 'clear', value: 0 }, store: 'discard' } });
             }
-            const child: Scope = { ...parent, target: native, bounds, originX: bounds.x, originY: bounds.y, empty, coverage: parent.coverage };
+            const child: Scope = { ...parent, target: native, bounds, originX: bounds.x, originY: bounds.y, scale: grid, empty, coverage: parent.coverage };
             const isolation: Isolation = { parent, child, lease: null, mask: null, options };
             this.#groups.push({ kind: 'coverage', token, previous, clipDepth: this.#clips.length, isolation });
             this.#scope = child;
@@ -748,7 +785,12 @@ class DevicePass implements GpuPass {
         this.#guard(() => {
             const entry = this.#groups.at(-1);
             if (!entry || entry.kind !== 'coverage' || entry.token !== token || entry.clipDepth !== this.#clips.length) throw new ArenaError('invalid-input');
-            if (output.kind === 'composite' ? !['normal', 'multiply', 'modulate'].includes(output.blend) : output.kind !== 'mask') throw new ArenaError('invalid-input');
+            // A grid target resolves only through 'paint'; device-resolution targets never take it.
+            const grid = entry.isolation.child.scale > 1;
+            const valid = output.kind === 'paint' ? grid
+                : output.kind === 'composite' ? !grid && ['normal', 'multiply', 'modulate'].includes(output.blend)
+                : output.kind === 'mask' && !grid;
+            if (!valid) throw new ArenaError('invalid-input');
             this.#groups.pop();
             this.#closeCoverage(entry.isolation, entry.previous, output);
             this.#clip = entry.previous;
@@ -767,6 +809,13 @@ class DevicePass implements GpuPass {
             this.#frame.blit(child.target, { x: 0, y: 0, width: child.bounds.width, height: child.bounds.height }, resolve, 0, 0);
         }
         if (output.kind === 'mask') return;
+        if (output.kind === 'paint') {
+            if (child.coverage) this.#scope.coverage = true;
+            const grid = child.target.color;
+            if (!grid) throw new ArenaError('invalid-resource');
+            this.#frame.compositeGrid(this.#scope, clip, grid, child.bounds, child.scale, output);
+            return;
+        }
         if (child.coverage) this.#scope.coverage = true;
         const texture = child.target.color;
         if (!texture) throw new ArenaError('invalid-resource');
@@ -790,9 +839,15 @@ class DevicePass implements GpuPass {
         });
     }
     #isolate(bounds: RectI, options: Isolation['options'], mask: Mask | null): Isolation {
+        // A group or mask needs a device-resolution target; inside a grid scope there is none to composite from.
+        if (this.#scope.scale !== 1) throw new ArenaError('invalid-input');
         opacity(options.opacity);
-        if (!['normal', 'multiply'].includes(options.blend) || !['none', 'page-invert'].includes(options.colourEffect) ||
+        if (!['normal', 'multiply', 'modulate'].includes(options.blend) || !['none', 'page-invert'].includes(options.colourEffect) ||
             this.#scope.capture && options.colourEffect === 'page-invert') throw new ArenaError('invalid-input');
+        // A modulate group is laid by fixed-function blending, so it carries no page inversion and sits on an rgba8 target.
+        if (options.blend === 'modulate' && (options.colourEffect !== 'none' || this.#scope.target.format !== 'rgba8')) {
+            throw new ArenaError('invalid-input');
+        }
         const parent = this.#scope;
         if (!bounds.width || !bounds.height || parent.empty) return { parent, child: { ...parent, bounds, empty: true }, lease: null, mask, options };
         const lease = this.#frame.temporary({ width: bounds.width, height: bounds.height, format: parent.target.format,

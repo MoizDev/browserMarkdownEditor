@@ -9,7 +9,7 @@ import type { EmbedPresentationPort } from '../../platform/render/embedPresentat
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import { createNativeEmbedPresentationProducer, type NativeEmbedPresentationProducer } from '../host/embedPresentationFacts';
 import { boardPageStack } from '../model/pages';
-import { createBoardLayers, BOARD_BACKEND_PREFERENCE } from '../render/boardLayers';
+import { createBoardLayers, BOARD_BACKEND_PREFERENCE, opaqueWorldOf } from '../render/boardLayers';
 import type { DensityMode } from '../render/density';
 import { createPaintFrameAssembler } from '../render/frameAssembler';
 import { LiveNodeUnion } from '../render/nodeSets';
@@ -123,6 +123,7 @@ export const attachView: AttachView = options => {
         view.visible ? embedPort?.inlineNodeIds() : null), view.visible ? embedPort?.requestedNodeIds() : null), sensitive));
     const liveNodeIds = () => precisionNodeIds(interaction?.sensitiveNodeIds?.()) ?? undefined;
     const layers = createBoardLayers({ frames, images, onError: report, requestedRevision: () => options.session.doc.rev, requestedTheme: () => view.theme, omitNodes: omitPreview,
+        opaqueWorld: () => opaqueWorldOf(options.session.doc.host, view.inverted, paper?.drawnRects()),
         liveNodeIds, candidates: () => lastCandidates,
         onDensityMode(mode) { if (densityMode !== mode && !disposed) { densityMode = mode; requestPaint(); } },
         requestFrame: () => { if (!disposed) requestPaint(); },

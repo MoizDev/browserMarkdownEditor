@@ -1,17 +1,17 @@
-// The path route: every path item the board draws on the GPU, from geometry kept in item-local space.
+// The path route: every path item the board draws on the GPU, from triangles kept in item-local space.
 // A copy of the adapter's path admission and draw (gpuPaintAdapter.ts admitPathItem, drawPathItem, deviceAffine,
-// deviceClipRect), reworked so that a pan or a zoom inside one tolerance band triangulates nothing and uploads nothing:
-// the triangles are keyed by content and band, and the device affine is a uniform of the coverage kit.
+// deviceClipRect), reworked so that a pan or a zoom inside one tolerance band triangulates nothing and uploads nothing.
+// Triangles are keyed by the commands' content and a band; the device affine is a uniform of the coverage kit.
 import type { Affine, PathCommand, ViewState } from '../../../platform/types';
 import type { LayerHost } from '../../../platform/render/compositor.types';
-import type { ClipToken, GpuPass, RectI } from '../../../platform/render/gfx/api';
+import type { ByteLease, ClipToken, GpuPass, RectI } from '../../../platform/render/gfx/api';
 import type { FrameBudget } from '../../../platform/render/types';
 import { auditCount } from '../../../platform/render/renderAudit';
 import { createPathCoverageKit, type PathCoverageAdmission, type PreparedPathCoverage } from '../../../platform/render/pathCoverage';
 import { pathFillTriangles } from '../pathFillTriangles';
 import { pathStrokeTriangles } from '../pathStrokeTriangles';
 import type { PaintClip, PaintPathItem } from '../paintStream';
-import type { Admission, Blend, CreatePathRoute, ItemRoute, PreparedRun, WithClips } from './contracts';
+import type { Admission, CreatePathRoute, ItemRoute, PreparedRun, WithClips } from './contracts';
 
 /** Device pixels of flattening error allowed for a stencil-covered path (design §5.1: ≤0.1 px). */
 const FLATTEN_DEVICE_PX = 0.1;
@@ -25,20 +25,35 @@ const WHITE = Object.freeze([1, 1, 1, 1] as const);
 type Origin = Readonly<{ x: number; y: number }>;
 type Bounds = Readonly<{ x0: number; y0: number; x1: number; y1: number }>;
 interface Shapes { readonly positive: Float64Array; readonly negative: Float64Array; readonly edges: number; readonly bounds: Bounds }
-/** One triangle set in item-local space, origin-relative. Its arrays are the kit's shared-buffer keys: identity is the cache. */
-interface Outline extends Shapes { readonly d: readonly PathCommand[]; readonly origin: Origin; readonly bytes: number }
+/** One triangle set in item-local space, origin-relative. Its arrays are the kit's shared-buffer keys: the cache holds them. */
+/** Its triangle arrays are CPU memory leased from the pane's CPU allocator; the lease lives while the cache or the coverage kit holds
+ * the array (see createPath), so `bytes` is always accounted. */
+interface Outline extends Shapes { readonly origin: Origin; readonly bytes: number; usedFrame: number }
+/** An outline the CPU grant refused: its admission is denied on the CPU pool, and nothing is built or held for it. */
+interface Refused { readonly refused: number }
 interface LocalRect { readonly x0: number; readonly x1: number; readonly y0: number; readonly y1: number }
 interface Viewport { readonly width: number; readonly height: number }
-
-/** One path item's admitted work, in draw order: clip masks, then the fill and stroke inside the pushed clips. */
-interface PreparedPathItem { readonly clips: readonly PreparedPathCoverage[]; readonly rects: readonly RectI[];
-    readonly fill: PreparedPathCoverage | null; readonly stroke: PreparedPathCoverage | null }
-/** A run of path items sharing one blend, prepared for one view. */
-interface PathRun extends PreparedRun { readonly route: 'path'; readonly items: readonly PreparedPathItem[] }
 /** The composite blend a path run is drawn with: the kit's normal cover, or the multiply-slice modulate cover. */
 type CoverBlend = 'normal' | 'modulate';
-type Stop = { readonly status: 'empty' } | { readonly status: 'denied'; readonly bytes: number } | { readonly status: 'deferred' }
+type Stop = { readonly status: 'empty' } | { readonly status: 'denied'; readonly bytes: number; readonly pool: 'cpu' | 'gpu' } | { readonly status: 'deferred' }
     | { readonly status: 'unsupported'; readonly why: string };
+
+/** The clips of one item (or one list of clips), admitted for one view. Rectangle clips are scissors; the others are the coverage
+ * masks admitted for them. Built by `admitClips`, drawn by `withPreparedClips`; `retire` frees the masks and is idempotent. */
+export interface PreparedClips {
+    readonly scissors: readonly RectI[];
+    readonly masks: readonly PreparedPathCoverage[];
+    /** Draws one of these masks, bound to the kit that admitted it. */
+    readonly drawMask: (pass: GpuPass, mask: PreparedPathCoverage) => void;
+    readonly retire: () => void;
+}
+/** Admits the clips of one draw for one view. Empty when a clip excludes the view (the caller hides what it clips). */
+export type AdmitClips = (clips: readonly PaintClip[], view: ViewState, budget: FrameBudget) => Admission<PreparedClips>;
+
+/** One path item's admitted work, in draw order: clip masks, then the fill and stroke inside the pushed clips. */
+interface PreparedPathItem { readonly clips: PreparedClips; readonly fill: PreparedPathCoverage | null; readonly stroke: PreparedPathCoverage | null }
+/** A run of path items sharing one blend, prepared for one view. */
+interface PathRun extends PreparedRun { readonly route: 'path'; readonly items: readonly PreparedPathItem[] }
 type ItemAdmission = { readonly status: 'ready'; readonly value: PreparedPathItem } | Stop;
 
 /** Half-octave band of a device scale: band b holds scales in [2^(b/2), 2^((b+1)/2)). Geometry is flattened to the band's
@@ -74,6 +89,25 @@ function deviceAffine(localToWorld: Affine, origin: Origin, view: ViewState): Af
     if (!(Math.hypot(a, b, c, d) > 0) || !Number.isFinite(scale) || scale <= 0) return null;
     return [scale * a, scale * b, scale * c, scale * d,
         scale * (a * origin.x + c * origin.y + e - view.camera.x), scale * (b * origin.x + d * origin.y + f - view.camera.y)];
+}
+
+/** A content key for a command list: a 53-bit hash of its JSON plus its length, computed once per array. geometryKey names a
+ * node revision (vectorGeometry.ts), not the commands, so the same commands in a new revision must be recognised here. */
+const commandKeys = new WeakMap<readonly PathCommand[], string>();
+function commandKey(d: readonly PathCommand[]): string {
+    const known = commandKeys.get(d);
+    if (known !== undefined) return known;
+    const text = JSON.stringify(d);
+    let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+    for (let i = 0; i < text.length; i++) {
+        const ch = text.charCodeAt(i);
+        h1 = Math.imul(h1 ^ ch, 2654435761); h2 = Math.imul(h2 ^ ch, 1597334677);
+    }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    const key = `${(4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36)}:${text.length}`;
+    commandKeys.set(d, key);
+    return key;
 }
 
 const localRects = new WeakMap<PaintClip, LocalRect | null>();
@@ -122,34 +156,130 @@ function clipDeviceRect(clip: PaintClip, view: ViewState): RectI | null {
     return { x: rx0, y: ry0, width: Math.round(Math.max(ax, bx)) - rx0, height: Math.round(Math.max(ay, by)) - ry0 };
 }
 
-/** The clip stack of one draw. Draws do not nest, so one array serves every item and no draw allocates. */
+/** The clip stack shared by every draw that pushes clips. Draws do not nest on one pass, and each restores the stack to its base. */
 const clipTokens: ClipToken[] = [];
 
-export const createPathRoute: CreatePathRoute = (host: LayerHost, audit: string) => {
-    const kit = createPathCoverageKit(host, () => auditCount(audit, 'kit:pipeline-failed'), audit);
-    // Triangles by content and band, most recently used last. A hit needs the same command array: a content key never
-    // serves another path's triangles.
+/** Draws `draw` under prepared clips: the masks are drawn first, then the scissors and mask clips are pushed around `draw`. */
+export function withPreparedClips(pass: GpuPass, prepared: PreparedClips, draw: () => void): void {
+    for (const mask of prepared.masks) prepared.drawMask(pass, mask);
+    const base = clipTokens.length;
+    try {
+        for (const rect of prepared.scissors) clipTokens.push(pass.pushClip(rect));
+        for (const mask of prepared.masks) clipTokens.push(pass.pushClip(mask.clip!));
+        draw();
+    } finally {
+        for (let i = clipTokens.length - 1; i >= base; i--) pass.popClip(clipTokens[i]);
+        clipTokens.length = base;
+    }
+}
+
+/** Draws `draw` under an item's rectangle clips as scissors. A clip that is not a rectangle needs its coverage mask, which only
+ * an admission makes; this route's `withPreparedClips` takes prepared masks. With the signature fixed, this returns 'unsupported'
+ * without drawing for such a clip, and the caller counts that fallback. */
+export const withClips: WithClips = (pass, clips, view, draw) => {
+    for (const clip of clips) if (!clipLocalRect(clip)) return { status: 'unsupported', why: 'clip mask not admitted' };
+    const viewport = { width: Math.round(view.viewport.width * view.viewport.dpr), height: Math.round(view.viewport.height * view.viewport.dpr) };
+    const base = clipTokens.length;
+    try {
+        for (const clip of clips) {
+            const rect = clipDeviceRect(clip, view)!;
+            const x0 = Math.max(0, rect.x), y0 = Math.max(0, rect.y);
+            const x1 = Math.min(viewport.width, rect.x + rect.width), y1 = Math.min(viewport.height, rect.y + rect.height);
+            if (x1 <= x0 || y1 <= y0) return { status: 'empty' };
+            clipTokens.push(pass.pushClip({ x: x0, y: y0, width: x1 - x0, height: y1 - y0 }));
+        }
+        draw();
+    } finally {
+        for (let i = clipTokens.length - 1; i >= base; i--) pass.popClip(clipTokens[i]);
+        clipTokens.length = base;
+    }
+    return { status: 'ready', value: undefined };
+};
+
+/** Prepared coverage and prepared clips carry no `status`; every stop does. */
+const isStop = (value: object): value is Stop => 'status' in value;
+function stopAdmission(stop: Stop): Admission<never> {
+    if (stop.status === 'denied') return { status: 'denied', pool: stop.pool, bytes: stop.bytes };
+    if (stop.status === 'unsupported') return { status: 'unsupported', why: stop.why };
+    return { status: stop.status };
+}
+function viewportOf(view: ViewState): Viewport {
+    return { width: Math.round(view.viewport.width * view.viewport.dpr), height: Math.round(view.viewport.height * view.viewport.dpr) };
+}
+
+/** The path route and its clip admission, sharing one coverage kit per host. `route` draws path items; `clips` admits clips for
+ * any route's items; `coverage` is the kit itself (multi-set admission, draw, retire) for routes that draw their own triangles. */
+export function createPath(host: LayerHost, audit: string): {
+    readonly route: ItemRoute<PaintPathItem>;
+    readonly admitClips: AdmitClips;
+    readonly coverage: ReturnType<typeof createPathCoverageKit>;
+    readonly beginFrame: (frame: number) => void;
+    readonly evictCpu: (bytes: number) => number;
+} {
+    // Triangles by content and band, most recently used last. An array's CPU lease lives while the cache or the kit holds the array:
+    // the last holder to let go releases it, so the lease is never released over memory still alive, and no array is alive without one.
     const outlines = new Map<string, Outline>();
-    let outlineBytes = 0;
+    const cachedArrays = new Set<Float64Array>();
+    const leases = new Map<Float64Array, { readonly lease: ByteLease; readonly bytes: number }>();
+    let outlineBytes = 0, leasedBytes = 0, frame = 0;
+    /** Releases the lease of an array nothing holds; returns the bytes given back to the CPU grant. */
+    const releaseLease = (array: Float64Array): number => {
+        const held = leases.get(array);
+        if (!held) return 0;
+        leases.delete(array); leasedBytes -= held.bytes; host.allocator.cpu.release(held.lease);
+        return held.bytes;
+    };
+    const kit = createPathCoverageKit(host, () => auditCount(audit, 'kit:pipeline-failed'), audit,
+        // The kit has let go of an array: its lease goes unless the cache still holds the array.
+        array => { if (!cachedArrays.has(array)) releaseLease(array); });
+    /** Takes an outline out of the cache. Its lease goes now unless the kit still holds the array; if it does, the kit's
+     * release (onFreed) returns the lease. Returns the bytes given back now. */
+    const dropFromCache = (key: string, old: Outline): number => {
+        outlines.delete(key); cachedArrays.delete(old.positive); outlineBytes -= old.bytes;
+        return kit.holds(old.positive) ? 0 : releaseLease(old.positive);
+    };
+    /** Frees unused outlines the kit does not hold, oldest first, until `bytes` are given back to the CPU grant. */
+    const reclaimLeases = (bytes: number): number => {
+        let freed = 0;
+        for (const [key, old] of outlines) {
+            if (freed >= bytes) break;
+            if (old.usedFrame >= frame || kit.holds(old.positive)) continue;
+            freed += dropFromCache(key, old);
+        }
+        return freed;
+    };
+    /** Reserves `bytes` of CPU grant for an outline. A refusal reclaims what unused outlines hold, then tries once more. */
+    const leaseBytes = (bytes: number): ByteLease | null => {
+        let lease = host.allocator.cpu.reserve(bytes);
+        if (!lease && reclaimLeases(bytes) > 0) lease = host.allocator.cpu.reserve(bytes);
+        return lease;
+    };
+    const isRefused = (geometry: Outline | Refused | null): geometry is Refused => geometry !== null && 'refused' in geometry;
     const outlineFor = (key: string, d: readonly PathCommand[], band: number,
-        build: (tolerance: number, origin: Origin) => Shapes | null): Outline | null => {
+        build: (tolerance: number, origin: Origin) => Shapes | null): Outline | Refused | null => {
         const cached = outlines.get(key);
-        if (cached && cached.d === d) {
-            outlines.delete(key); outlines.set(key, cached);
+        if (cached) {
+            outlines.delete(key); outlines.set(key, cached); cached.usedFrame = frame;
             auditCount(audit, 'geom:hit');
             return cached;
         }
         const origin = pathOrigin(d);
         const shapes = build(flattenTolerance(band), origin);
         if (!shapes) return null;
-        if (cached) { outlines.delete(key); outlineBytes -= cached.bytes; }
         auditCount(audit, 'geom:build');
         const bytes = shapes.positive.byteLength + shapes.negative.byteLength;
-        const outline: Outline = { d, origin, positive: shapes.positive, negative: shapes.negative, edges: shapes.edges, bounds: shapes.bounds, bytes };
-        outlines.set(key, outline); outlineBytes += bytes;
-        for (const [oldKey, old] of outlines) {
-            if (outlineBytes <= GEOMETRY_CACHE_BYTES || oldKey === key) break;
-            outlines.delete(oldKey); outlineBytes -= old.bytes;
+        const lease = leaseBytes(bytes);
+        if (!lease) { auditCount(audit, 'geom:refused'); return { refused: bytes }; }
+        leases.set(shapes.positive, { lease, bytes }); leasedBytes += bytes;
+        const outline: Outline = { origin, positive: shapes.positive, negative: shapes.negative, edges: shapes.edges, bounds: shapes.bounds,
+            bytes, usedFrame: frame };
+        outlines.set(key, outline); cachedArrays.add(shapes.positive); outlineBytes += bytes;
+        // The bound is soft: an outline used this frame is never dropped, so the cache is trimmed by what other frames left behind.
+        if (outlineBytes > GEOMETRY_CACHE_BYTES) {
+            for (const [oldKey, old] of outlines) {
+                if (outlineBytes <= GEOMETRY_CACHE_BYTES) break;
+                if (old.usedFrame < frame && oldKey !== key) dropFromCache(oldKey, old);
+            }
         }
         return outline;
     };
@@ -157,44 +287,58 @@ export const createPathRoute: CreatePathRoute = (host: LayerHost, audit: string)
     /** Takes the kit's result into `acquired`, or says why not. */
     const take = (result: PathCoverageAdmission, acquired: PreparedPathCoverage[], bytes: number): PreparedPathCoverage | Stop => {
         if (result.status === 'ready') { acquired.push(result.value); return result.value; }
-        if (result.status === 'denied') return { status: 'denied', bytes };
+        if (result.status === 'denied') return { status: 'denied', bytes, pool: 'gpu' };
         if (result.status === 'deferred') return { status: 'deferred' };
         if (result.status === 'empty') return { status: 'empty' };
         return { status: 'unsupported', why: 'coverage kit' };
     };
-    const isStop = (value: PreparedPathCoverage | Stop): value is Stop => 'status' in value;
-
-    /** One path item: its clip masks, fill and stroke. Whatever it acquires goes into `acquired`; the caller retires it on any
-     * stop. An item is 'empty' when nothing of it can show in this view. */
-    const admitItem = (item: PaintPathItem, view: ViewState, viewport: Viewport, cover: CoverBlend, budget: FrameBudget,
-        acquired: PreparedPathCoverage[]): ItemAdmission => {
-        const clips: PreparedPathCoverage[] = [], rects: RectI[] = [];
-        for (const clip of item.clips) {
+    const makeClips = (scissors: RectI[], masks: PreparedPathCoverage[]): PreparedClips => ({
+        scissors: Object.freeze(scissors),
+        masks: Object.freeze(masks),
+        drawMask: (pass, mask) => kit.drawMask(pass, mask),
+        retire: () => { for (const mask of masks) kit.retire(mask); },
+    });
+    /** Admits a clip list. Masks it acquires go into `acquired`; the caller retires them on any stop. */
+    const admitClipList = (clips: readonly PaintClip[], view: ViewState, viewport: Viewport, budget: FrameBudget,
+        acquired: PreparedPathCoverage[]): PreparedClips | Stop => {
+        const scissors: RectI[] = [], masks: PreparedPathCoverage[] = [];
+        for (const clip of clips) {
             const rect = clipDeviceRect(clip, view);
             if (rect) {
                 const x0 = Math.max(0, rect.x), y0 = Math.max(0, rect.y);
                 const x1 = Math.min(viewport.width, rect.x + rect.width), y1 = Math.min(viewport.height, rect.y + rect.height);
-                if (x1 <= x0 || y1 <= y0) return { status: 'empty' };  // a clip that excludes the viewport hides the item
-                rects.push({ x: x0, y: y0, width: x1 - x0, height: y1 - y0 });
+                if (x1 <= x0 || y1 <= y0) return { status: 'empty' };  // a clip that excludes the viewport hides what it clips
+                scissors.push({ x: x0, y: y0, width: x1 - x0, height: y1 - y0 });
                 continue;
             }
             const band = bandOf(clip.localToWorld, view);
             if (band === null) return { status: 'unsupported', why: 'clip transform' };
-            const geometry = outlineFor(`clip|${clip.key}|${band}`, clip.d, band,
-                (tolerance, origin) => pathFillTriangles(clip.d, { tolerance, origin: [origin.x, origin.y] }));
+            const key = `clip|${commandKey(clip.d)}|${band}`;
+            const geometry = outlineFor(key, clip.d, band, (tolerance, origin) => pathFillTriangles(clip.d, { tolerance, origin: [origin.x, origin.y] }));
+            if (isRefused(geometry)) return { status: 'denied', bytes: geometry.refused, pool: 'cpu' };
             const affine = geometry && deviceAffine(clip.localToWorld, geometry.origin, view);
             if (!geometry || !affine) return { status: 'unsupported', why: 'clip geometry' };
             const taken = take(kit.admit({ shapes: geometry, rule: clip.fillRule, affine, viewport, colour: WHITE, output: { kind: 'mask' } }, budget),
                 acquired, geometry.bytes);
-            if (isStop(taken)) return taken.status === 'empty' ? { status: 'empty' } : taken;
-            clips.push(taken);
+            if (isStop(taken)) return taken;
+            masks.push(taken);
         }
+        return makeClips(scissors, masks);
+    };
+
+    /** One path item: its clips, fill and stroke. Whatever it acquires goes into `acquired`; the caller retires it on any stop.
+     * An item is 'empty' when nothing of it can show in this view. */
+    const admitItem = (item: PaintPathItem, view: ViewState, viewport: Viewport, cover: CoverBlend, budget: FrameBudget,
+        acquired: PreparedPathCoverage[]): ItemAdmission => {
+        const clips = admitClipList(item.clips, view, viewport, budget, acquired);
+        if (isStop(clips)) return clips;
         let fill: PreparedPathCoverage | null = null;
         if (item.material.fill) {
             const band = bandOf(item.localToWorld, view);
             if (band === null) return { status: 'unsupported', why: 'path transform' };
-            const geometry = outlineFor(`fill|${item.geometryKey}|${band}`, item.d, band,
+            const geometry = outlineFor(`fill|${commandKey(item.d)}|${band}`, item.d, band,
                 (tolerance, origin) => pathFillTriangles(item.d, { tolerance, origin: [origin.x, origin.y] }));
+            if (isRefused(geometry)) return { status: 'denied', bytes: geometry.refused, pool: 'cpu' };
             const affine = geometry && deviceAffine(item.localToWorld, geometry.origin, view);
             if (!geometry || !affine) return { status: 'unsupported', why: 'path geometry' };
             const taken = take(kit.admit({ shapes: geometry, rule: item.fillRule, affine, viewport, colour: item.material.fill,
@@ -208,12 +352,13 @@ export const createPathRoute: CreatePathRoute = (host: LayerHost, audit: string)
             const band = bandOf(item.localToWorld, view);
             if (band === null) return { status: 'unsupported', why: 'path transform' };
             const dash = style.dash ? `${style.dash.phase}:${style.dash.array.join(',')}` : '';
-            const geometry = outlineFor(`stroke|${item.geometryKey}|${band}|${style.width}|${style.cap}|${style.join}|${style.miterLimit}|${dash}`,
-                item.d, band, (tolerance, origin) => {
-                    const outline = pathStrokeTriangles(item.d, { width: style.width, cap: style.cap, join: style.join, miterLimit: style.miterLimit,
-                        ...(style.dash ? { dash: style.dash } : {}), tolerance, origin: [origin.x, origin.y] });
-                    return outline && { positive: outline.triangles, negative: NO_TRIANGLES, edges: 0, bounds: outline.bounds };
-                });
+            const key = `stroke|${commandKey(item.d)}|${band}|${style.width}|${style.cap}|${style.join}|${style.miterLimit}|${dash}`;
+            const geometry = outlineFor(key, item.d, band, (tolerance, origin) => {
+                const outline = pathStrokeTriangles(item.d, { width: style.width, cap: style.cap, join: style.join, miterLimit: style.miterLimit,
+                    ...(style.dash ? { dash: style.dash } : {}), tolerance, origin: [origin.x, origin.y] });
+                return outline && { positive: outline.triangles, negative: NO_TRIANGLES, edges: 0, bounds: outline.bounds };
+            });
+            if (isRefused(geometry)) return { status: 'denied', bytes: geometry.refused, pool: 'cpu' };
             const affine = geometry && deviceAffine(item.localToWorld, geometry.origin, view);
             if (!geometry || !affine) return { status: 'unsupported', why: 'stroke geometry' };
             const taken = take(kit.admit({ shapes: geometry, rule: 'union', affine, viewport, colour: style.color,
@@ -222,22 +367,20 @@ export const createPathRoute: CreatePathRoute = (host: LayerHost, audit: string)
             else stroke = taken;
         }
         if (!fill && !stroke) return { status: 'empty' };
-        return { status: 'ready', value: { clips, rects, fill, stroke } };
+        return { status: 'ready', value: { clips, fill, stroke } };
     };
 
-    /** Draw order inside one item: clip masks render first, then the item's coverage inside the pushed clips. */
+    // One closure for every item: the pass and item of the draw in progress are held here, so a draw builds no closure.
+    let drawPass: GpuPass | null = null, drawingItem: PreparedPathItem | null = null;
+    const drawInside = (): void => {
+        const pass = drawPass!, item = drawingItem!;
+        if (item.fill) kit.draw(pass, item.fill);
+        if (item.stroke) kit.draw(pass, item.stroke);
+    };
     const drawItem = (pass: GpuPass, item: PreparedPathItem): void => {
-        for (const clip of item.clips) kit.drawMask(pass, clip);
-        const base = clipTokens.length;
-        try {
-            for (const rect of item.rects) clipTokens.push(pass.pushClip(rect));
-            for (const clip of item.clips) clipTokens.push(pass.pushClip(clip.clip!));
-            if (item.fill) kit.draw(pass, item.fill);
-            if (item.stroke) kit.draw(pass, item.stroke);
-        } finally {
-            for (let i = clipTokens.length - 1; i >= base; i--) pass.popClip(clipTokens[i]);
-            clipTokens.length = base;
-        }
+        drawPass = pass; drawingItem = item;
+        try { withPreparedClips(pass, item.clips, drawInside); }
+        finally { drawPass = null; drawingItem = null; }
     };
 
     const route: ItemRoute<PaintPathItem> = {
@@ -245,7 +388,7 @@ export const createPathRoute: CreatePathRoute = (host: LayerHost, audit: string)
         accepts: (item): item is PaintPathItem => item.kind === 'path',
         admit(items, view, blend, budget): Admission<PreparedRun> {
             const cover: CoverBlend = blend === 'modulate' ? 'modulate' : 'normal';
-            const viewport: Viewport = { width: Math.round(view.viewport.width * view.viewport.dpr), height: Math.round(view.viewport.height * view.viewport.dpr) };
+            const viewport = viewportOf(view);
             const acquired: PreparedPathCoverage[] = [], prepared: PreparedPathItem[] = [];
             for (const item of items) {
                 const mark = acquired.length;
@@ -256,9 +399,7 @@ export const createPathRoute: CreatePathRoute = (host: LayerHost, audit: string)
                 acquired.length = mark;
                 if (admission.status === 'empty') continue;
                 for (const held of acquired) kit.retire(held);
-                if (admission.status === 'denied') return { status: 'denied', pool: 'gpu', bytes: admission.bytes };
-                if (admission.status === 'unsupported') return { status: 'unsupported', why: admission.why };
-                return { status: admission.status };
+                return stopAdmission(admission);
             }
             if (!prepared.length) return { status: 'empty' };
             auditCount(audit, 'route:path', prepared.length);
@@ -272,41 +413,37 @@ export const createPathRoute: CreatePathRoute = (host: LayerHost, audit: string)
         retire(run: PreparedRun): void {
             if (run.route !== 'path') throw new Error('Path route retired a run of another route');
             for (const item of (run as PathRun).items) {
-                for (const clip of item.clips) kit.retire(clip);
+                item.clips.retire();
                 if (item.fill) kit.retire(item.fill);
                 if (item.stroke) kit.retire(item.stroke);
             }
         },
         release(): void {
+            // The cache lets go first, so the kit's releases return every lease (a lease is kept while the cache holds its array).
+            outlines.clear(); cachedArrays.clear(); outlineBytes = 0;
             kit.release();
-            outlines.clear(); outlineBytes = 0;
+            for (const array of [...leases.keys()]) releaseLease(array);
         },
         memory(): { gpuBytes: number; cpuBytes: number } {
-            return { gpuBytes: kit.memory().gpuBytes, cpuBytes: outlineBytes };
+            return { gpuBytes: kit.memory().gpuBytes, cpuBytes: leasedBytes };
         },
     };
-    return route;
-};
-
-/** Draws `draw` under an item's clips, through the clip stack the path route uses. Rectangle clips are scissors. A clip that is
- * not a rectangle needs its coverage mask, which only an admission can make (the path route admits its own item's masks in
- * prepare); with the signature fixed, this returns 'unsupported' without drawing and the caller counts that fallback. */
-export const withClips: WithClips = (pass, clips, view, draw) => {
-    for (const clip of clips) if (!clipLocalRect(clip)) return { status: 'unsupported', why: 'clip mask not admitted' };
-    const viewport = { width: Math.round(view.viewport.width * view.viewport.dpr), height: Math.round(view.viewport.height * view.viewport.dpr) };
-    const base = clipTokens.length;
-    try {
-        for (const clip of clips) {
-            const rect = clipDeviceRect(clip, view);
-            const x0 = Math.max(0, rect!.x), y0 = Math.max(0, rect!.y);
-            const x1 = Math.min(viewport.width, rect!.x + rect!.width), y1 = Math.min(viewport.height, rect!.y + rect!.height);
-            if (x1 <= x0 || y1 <= y0) return { status: 'empty' };
-            clipTokens.push(pass.pushClip({ x: x0, y: y0, width: x1 - x0, height: y1 - y0 }));
+    const admitClips: AdmitClips = (clips, view, budget) => {
+        const acquired: PreparedPathCoverage[] = [];
+        const result = admitClipList(clips, view, viewportOf(view), budget, acquired);
+        if (isStop(result)) {
+            for (const held of acquired) kit.retire(held);
+            return stopAdmission(result);
         }
-        draw();
-    } finally {
-        for (let i = clipTokens.length - 1; i >= base; i--) pass.popClip(clipTokens[i]);
-        clipTokens.length = base;
-    }
-    return { status: 'ready', value: undefined };
-};
+        return { status: 'ready', value: result };
+    };
+    return {
+        route, admitClips, coverage: kit,
+        /** Marks the frame for both caches: a triangle set or outline used in this frame is never reclaimed. Call once per frame. */
+        beginFrame(next: number): void { frame = next; kit.beginFrame(next); },
+        /** The governor's CPU reclaim for the outline cache: frees unused outlines oldest first and returns the bytes freed. */
+        evictCpu(bytes: number): number { return reclaimLeases(bytes); },
+    };
+}
+
+export const createPathRoute: CreatePathRoute = (host, audit) => createPath(host, audit).route;

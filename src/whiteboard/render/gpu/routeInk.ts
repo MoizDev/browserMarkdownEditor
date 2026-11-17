@@ -61,13 +61,13 @@ export const createInkRoutes: CreateInkRoutes = (host: LayerHost, audit: string)
         id: 'ink-union',
         accepts: (item: PaintItem): item is PaintInkItem => item.kind === 'ink' && inkRouteFor(item) === 'ink-union',
         admit(items, view, blend, budget): Admission<PreparedRun> {
-            // TODO(gpu-h5): 'modulate' needs h4's kit cover variant (step 4) and h10's device blend; until both land a
-            // multiply slice is refused, so it is counted by the composer rather than drawn with the wrong blend.
-            if (blend === 'modulate') return { status: 'unsupported', why: 'modulate-cover-pending' };
+            // Both blends sample the measured 4x4 grid (the proxy's sample positions). A multiply slice is laid by the kit's
+            // modulate cover: each stroke multiplies k = C·c + 1 − α·c into the white slice, once per sample.
+            const modulate = blend === 'modulate';
             const admitted: PreparedPathCoverage[] = [];
             const retireAll = (): void => { for (const stroke of admitted) kit.retire(stroke); };
             for (const item of items) {
-                if (item.material.blend !== 'normal') { retireAll(); return { status: 'unsupported', why: 'blend-mismatch' }; }
+                if (item.material.blend !== (modulate ? 'multiply' : 'normal')) { retireAll(); return { status: 'unsupported', why: 'blend-mismatch' }; }
                 const [a, b, c, d] = item.localToWorld;
                 const deviceScale = view.camera.z * view.viewport.dpr * Math.hypot(a, b, c, d);
                 if (!(deviceScale > 0) || !Number.isFinite(deviceScale)) { retireAll(); return { status: 'unsupported', why: 'scale' }; }
@@ -76,7 +76,8 @@ export const createInkRoutes: CreateInkRoutes = (host: LayerHost, audit: string)
                 const result: PathCoverageAdmission = kit.admit({
                     shapes: { positive: stroke.triangles, negative: NO_TRIANGLES, edges: stroke.edges, bounds: stroke.bounds },
                     rule: 'union', affine: affineAt(item.localToWorld, stroke.origin, view), viewport: pixels(view),
-                    colour: item.material.color, output: { kind: 'composite', blend: 'normal' }, supersample: true,
+                    colour: item.material.color, output: { kind: 'composite', blend: modulate ? 'modulate' : 'normal' },
+                    sampling: 'grid4',
                 }, budget);
                 if (result.status === 'ready') admitted.push(result.value);
                 else if (result.status !== 'empty') {
@@ -92,8 +93,7 @@ export const createInkRoutes: CreateInkRoutes = (host: LayerHost, audit: string)
         },
         draw(pass: GpuPass, run: PreparedRun): void {
             if (!(run instanceof UnionInkRun)) throw new Error('Not a union ink run');
-            // TODO(gpu-h5): draw under each item's clips through withClips (G/routePath.ts, h4) once it lands. Until then
-            // clipped ink draws unclipped, which is wrong for it; the switch that routes clipped ink here waits for that.
+            // Routes never clip: the caller applies item clips (withClips / withPreparedClips), so this draw is unclipped.
             for (const stroke of run.strokes) kit.draw(pass, stroke);
         },
         retire(run: PreparedRun): void {

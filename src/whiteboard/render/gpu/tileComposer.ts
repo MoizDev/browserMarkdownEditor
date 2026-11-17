@@ -308,6 +308,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     let disposed = false, presenting = false, indexing = false;
     // This frame's zoom, set in prepare: while zooming, coverage does not hold the frame for a position with nothing (see coverage).
     let zoomingFrame = false;
+    // The visible span at the compose scale while zooming, null otherwise: the positions a superseded entry must be exact under to be dropped.
+    let zoomSpan: Span | null = null;
     let routesEncodedFrame = -1;
     const omitTracker = new OmitTracker();
     let denied = false, settled = false, preparedSharp = true;
@@ -409,6 +411,33 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             content = true; geometry ||= slot.geometry; cpu ||= slot.cpu;
         }
         return content && (!geometry || cpu);
+    };
+
+    /** Whether every visible position under a stored entry is exact at `scale` (composed, or finished this frame). */
+    const exactUnder = (band: PaintBand, scale: number, entry: TileEntry, span: Span): boolean => {
+        const world = tileWorld(entry.key);
+        const x0 = Math.max(span.x0, Math.floor(world.x * scale / EDGE)), x1 = Math.min(span.x1, Math.ceil((world.x + world.width) * scale / EDGE));
+        const y0 = Math.max(span.y0, Math.floor(world.y * scale / EDGE)), y1 = Math.min(span.y1, Math.ceil((world.y + world.height) * scale / EDGE));
+        for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+            if (statusAt(band, scale, x, y) !== 'ok' && !finishedAt(band, scale, x, y)) return false;
+        }
+        return true;
+    };
+    /** While zooming, a position encoded at its exact scale supersedes its stand-ins at other scales. Each such entry, once every visible
+     * position under it is exact, is dropped: its target goes to the free list, and the next composition takes it. A zoom then keeps one
+     * scale's targets, not one set per frame (gpu's zoom memory rule). An entry that still stands in for a position not yet exact stays. */
+    const dropSuperseded = (band: PaintBand, scale: number, x: number, y: number): void => {
+        const span = zoomSpan;
+        if (!span) return;
+        for (let guard = 0; guard < 16; guard++) {
+            let victim: TileEntry | null = null;
+            for (const entry of standInsOf(band, scale, x, y)) {
+                if (slots.has(entry) && exactUnder(band, scale, entry, span)) { victim = entry; break; }
+            }
+            if (!victim) return;
+            store.remove(victim.key);
+            auditCount(audit, 'compose:zoom:superseded');
+        }
     };
 
     /** The admitted, not yet encoded position at (x, y) of `scale`, when its entries are still stored with targets. The compositor
@@ -691,6 +720,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             }
         }
         for (const pass of ['dirty', 'missing', 'ring'] as const) {
+            // While zooming only the visible positions are composed: the ring is the next view's, and the zoom's compose is its cost.
+            if (pass === 'ring' && zoomingFrame) continue;
             const margin = pass === 'ring' ? 1 : 0;
             for (const band of BANDS) {
                 for (let y = span.y0 - margin; y < span.y1 + margin; y++) {
@@ -1064,6 +1095,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             const exact = exactScale(demand);
             // Compose targets the exact scale every frame, visible positions first (exact-first zoom, gpu).
             const target = exact;
+            zoomSpan = zooming ? spanAt(view, target) : null;
             drawnCamX = view.camera.x; drawnCamY = view.camera.y; drawnCamZ = view.camera.z;
 
             indexing = !parts.sync(prepared, budget);
@@ -1145,6 +1177,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             for (const position of finished) {
                 if (position.band !== band) { finished[kept++] = position; continue; }
                 encodePosition(passes, position);
+                if (zoomSpan) dropSuperseded(position.band, position.scale, position.x, position.y);
             }
             finished.length = kept;
         },

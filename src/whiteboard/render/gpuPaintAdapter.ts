@@ -17,7 +17,7 @@ import { TILE_SIZE } from './imageSampling';
 import type { Blend, ItemRoute, PreparedRun } from './gpu/contracts';
 import { createTileComposer, type ResourcedRoute, type TileLay, type TileRoutes } from './gpu/tileComposer';
 import { createTileParts } from './gpu/tileParts';
-import { createTileStore, tileId, tileWorld } from './gpu/tileStore';
+import { createTileStore, tileWorld } from './gpu/tileStore';
 import { createPath, withPreparedClips } from './gpu/routePath';
 import { createInkRoutes, inkRouteFor } from './gpu/routeInk';
 import { createImageRoute } from './gpu/routeImage';
@@ -253,7 +253,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
     };
     const composer = createTileComposer({
         host, audit: surface, parts: createTileParts(host, surface), store, routes,
-        tileId, tileWorld, inkRouteFor, lay, admitClips: pathRoute.admitClips, withPreparedClips,
+        tileWorld, inkRouteFor, lay, admitClips: pathRoute.admitClips, withPreparedClips,
         layQuads: (pass, texture, quads) => host.drawTexturedQuads(pass, texture, quads, QUAD),
         ...(options.opaqueWorld ? { opaqueWorld: options.opaqueWorld } : {}),
         // The compose limit halves while the host reports a slow GPU, read each frame (PLAN 3.1).

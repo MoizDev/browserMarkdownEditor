@@ -318,6 +318,9 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     // position being drawn, in paint order.
     const liveRuns: LiveAdmission[] = [];
     const liveAdmitted = new Map<PaintItem, LiveAdmission | null>();
+    // A live part deferred this frame asks for the next one. Consecutive deferred frames are counted and the asking stops at the
+    // retry limit (a part that never fits its upload budget must not keep the board framing at rest).
+    let liveDeferredNow = false, liveDeferredFrames = 0;
     const liveScratch: { order: number; run: PreparedRun; route: ItemRoute }[] = [];
     const standScratch: { order: number; entry: TileEntry; slot: Slot }[] = [];
     // Batch scratch: the quads of one call, reused. The pool holds spec objects for the composer's life.
@@ -870,7 +873,13 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             const outcome = route.admit([item], view, blend, budget);
             if (outcome.status === 'ready') { admitted = { route, run: outcome.value }; liveRuns.push(admitted); }
             else if (outcome.status === 'unsupported') auditCount(audit, `live:dropped:${outcome.why}`);
-            else if (outcome.status !== 'empty') auditCount(audit, `live:dropped:${outcome.status}`);
+            else if (outcome.status === 'deferred') {
+                // A deferral is a frame wait: nothing else invalidates the board for it, so the next frame asks again (bounded, below).
+                liveDeferredNow = true; auditCount(audit, 'live:dropped:deferred');
+            } else if (outcome.status === 'denied') {
+                // A denial waits on the governor like a tile's: the wake is the capacity change, not a timer, so a steady pool costs nothing.
+                refuseAdmission(outcome.pool, outcome.bytes); auditCount(audit, 'live:dropped:denied');
+            }
         }
         liveAdmitted.set(item, admitted);
         return admitted;
@@ -1126,6 +1135,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 building.clear(); scaleIndexes.clear();
             }
             denied = false; settled = false;
+            liveDeferredFrames = liveDeferredNow ? liveDeferredFrames + 1 : 0; liveDeferredNow = false;
             const demand = view.camera.z * view.viewport.dpr;
             device = host.device();
             if (!prepared || !device || !(demand > 0) || !Number.isFinite(demand)) {
@@ -1399,6 +1409,10 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         },
         needsFrame(): boolean {
             if (disposed || denied || !presenting) return false;
+            if (liveDeferredNow) {
+                if (liveDeferredFrames < GPU_RETRY_LIMIT) return true;
+                auditCount(audit, 'live:deferred:stopped');
+            }
             if (waiting) return indexing || finished.length > 0;
             return indexing || !settled || building.size > 0 || finished.length > 0 || inexactPending.size > 0;
         },

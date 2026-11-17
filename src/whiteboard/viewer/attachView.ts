@@ -425,7 +425,9 @@ export const attachView: AttachView = options => {
             if (old.theme !== view.theme) interaction?.paletteChanged?.();
             if (old.visible !== view.visible) embedPort?.setVisible(view.visible);
             if (view.visible && (old.theme !== view.theme || old.sheetId !== view.sheetId)) clearPreview?.();
-            if (!view.visible) { clearPreview?.(); paintJob?.abort(); cancelReveal(); frames.clear(); drawnFrame = null; interaction?.finishGesture(); interaction?.finishComposition(); }
+            // A hidden pane's frames and stream are gone, and its camera may change before it is shown again (a resize, a restored
+            // position): the request state that assumes the old stream and camera is dropped, so a show always asks for the current one.
+            if (!view.visible) { clearPreview?.(); paintJob?.abort(); cancelReveal(); frames.clear(); drawnFrame = null; viewWorld = null; viewAsked = null; sceneAsked = null; interaction?.finishGesture(); interaction?.finishComposition(); }
             publish();
             if (view.visible && (!old.visible || view.theme !== old.theme || view.sheetId !== old.sheetId)) requestPaint();
             layers.invalidate('board-view');

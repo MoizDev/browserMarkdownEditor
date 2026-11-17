@@ -276,7 +276,8 @@ interface FrameWork { entry: PaneEntry; frame: ScheduledFrame; batch: DamageBatc
     /** The audit's name for what asked for this frame; '' when the render audit is off. */
     cause: string }
 interface PendingAcknowledgement { entry: PaneEntry; frameId: number; token: FrameToken; submission: ScheduledSubmission }
-interface ScheduledPoll { callback: () => void; earliestFrame: number }
+/** A poll is the owner's persistent work; a throwing poll is kept (the owner's cancel handle stays valid) and backs off in time. */
+interface ScheduledPoll { callback: () => void; earliestFrame: number; failures: number; retryAt: number }
 interface UploadMeter {
     allowance: number;
     sliceMs: number;
@@ -297,8 +298,10 @@ function sameToken(a: FrameToken, b: FrameToken | null): boolean {
 
 let schedulerStarted = false;
 /** A failed frame holds the loop for this back-off before it runs again: doubling from the minimum, capped at the maximum. */
-const FRAME_RETRY_MIN_MS = 1000;
-const FRAME_RETRY_MAX_MS = 30000;
+const RETRY_MIN_MS = 1000;
+const RETRY_MAX_MS = 30000;
+/** The back-off for failing work: doubling from RETRY_MIN_MS, capped at RETRY_MAX_MS. */
+function retryDelay(failures: number): number { return Math.min(RETRY_MAX_MS, RETRY_MIN_MS * 2 ** Math.min(failures - 1, 5)); }
 
 /** One app-wide rAF owner, explicitly started; importing it installs no listeners (C4.6:624–628).
  * Sanctioned deadline path: wakeAt coalesces future layer work into one timer that ONLY invalidates,
@@ -434,7 +437,7 @@ export class FrameScheduler {
 
     /** Persistent until cancelled; callbacks added during a frame are not run recursively in it. */
     schedulePoll(callback: () => void): () => void {
-        const poll = { callback, earliestFrame: this.frameId + 1 };
+        const poll: ScheduledPoll = { callback, earliestFrame: this.frameId + 1, failures: 0, retryAt: 0 };
         this.polls.add(poll);
         this.ensureFrame();
         return () => { this.polls.delete(poll); this.ensureFrame(); };
@@ -948,7 +951,7 @@ export class FrameScheduler {
             this.frameFailures++;
             if (this.frameFailures === 1) this.options.onError(null, error);
             else if (renderAuditEnabled()) auditCount('scheduler', 'frame-failed');
-            this.holdFrames(Math.min(FRAME_RETRY_MAX_MS, FRAME_RETRY_MIN_MS * 2 ** Math.min(this.frameFailures - 1, 5)));
+            this.holdFrames(retryDelay(this.frameFailures));
         } finally {
             for (const item of encodings) if (!item.done) this.discard(item.work.entry, item.encoding);
             for (const batch of batches) if (!batch.submitted && this.live(batch.entry)) {
@@ -1123,14 +1126,20 @@ export class FrameScheduler {
         let ran = false;
         for (const poll of [...this.polls]) {
             if (!this.running || this.suspended) break;
-            if (!this.polls.has(poll) || poll.earliestFrame > this.frameId) continue;
+            if (!this.polls.has(poll) || poll.earliestFrame > this.frameId || poll.retryAt > performance.now()) continue;
             if (ran && performance.now() >= deadline) break;
             // Rotate persistent work so a tight frame cannot starve later fences. One gets progress.
             this.polls.delete(poll);
             this.polls.add(poll);
             ran = true;
-            try { poll.callback(); }
-            catch (error) { this.polls.delete(poll); this.options.onError(null, error); }
+            try { poll.callback(); poll.failures = 0; }
+            catch (error) {
+                // Kept, not dropped: the owner cancels through its handle, and a dropped poll left that handle pointing at nothing.
+                poll.failures++;
+                if (poll.failures === 1) this.options.onError(null, error);
+                else if (renderAuditEnabled()) auditCount('scheduler', 'poll-failed');
+                poll.retryAt = performance.now() + retryDelay(poll.failures);
+            }
         }
     }
 

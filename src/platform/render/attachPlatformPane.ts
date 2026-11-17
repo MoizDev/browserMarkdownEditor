@@ -201,7 +201,9 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         caches.push({ cpu, gpu: gpuCache, layer: current });
         return createLayerHost({
             auditId: id,
-            allocator: { cpu, gpu: gpuCache }, generation: () => lifecycle?.surface.snapshot().gpuGeneration ?? 0,
+            // The pane's current CPU grant: a layer sizes its CPU working set against it (0 while the pane has none).
+            allocator: { cpu, gpu: gpuCache, cpuGrantBytes: () => runtime.governor.grant(options.paneId)?.cpuBytes ?? 0 },
+            generation: () => lifecycle?.surface.snapshot().gpuGeneration ?? 0,
             // The governor's read-only state, so a layer sheds work under 'slow-gpu' or 'pressure' (h10's LayerHost.trouble).
             trouble: () => runtime.governor.trouble(),
             // A GPU error a layer caught (an acquisition or prepare error on the device route) demotes the pane, the same way a

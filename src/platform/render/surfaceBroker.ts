@@ -85,6 +85,7 @@ class SurfaceBroker {
     private windowVisible = true;
     private terminalContextActive = false;
     private notificationQueued = false;
+    private contextReserveWaiting = false;
     private contextAllocator: MemoryAllocator | null = null;
 
     configure({ contextAllocator }: SurfaceBrokerConfiguration): void {
@@ -312,7 +313,10 @@ class SurfaceBroker {
             if (!this.matches(entry, stamp)) return Promise.resolve({ kind: 'stale' });
             if (!drawable(entry) || !this.windowVisible) return Promise.resolve({ kind: 'ineligible' });
             if (entry.pending || entry.reservation || entry.circuit.pinned) return this.requestGpu(entry, canvas, stamp);
-            entry.failed = 'out-of-budget';
+            // Shared memory is short: this pane shows 2D now and waits for the reserve to fit. Marking it failed instead kept
+            // it on 2D until an explicit retry, even after the memory freed; the waiter is the real capacity event.
+            this.awaitContextReserve();
+            entry.waiting = true;
             return Promise.resolve(this.fallback(entry, 'out-of-budget'));
         }
         const reservation: Reservation = {
@@ -583,6 +587,14 @@ class SurfaceBroker {
                 this.notifyAvailable();
             }
         }
+    }
+
+    /** One sized waiter for the whole broker: it wakes once the context reserve fits, and the waiting panes retry then. */
+    private awaitContextReserve(): void {
+        if (this.contextReserveWaiting || !this.contextAllocator?.whenAvailable) return;
+        this.contextReserveWaiting = true;
+        this.contextAllocator.whenAvailable(() => { this.contextReserveWaiting = false; this.notifyAvailable(); },
+            RENDER_CONSTANTS.keptContextReserveBytes);
     }
 
     private waitForCapacity(entry: SurfaceEntry): GpuRequestResult {

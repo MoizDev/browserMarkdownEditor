@@ -70,6 +70,9 @@ export interface BoardWetRenderer extends BoardWetLayer {
     readonly layers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }>;
     consumeInput(): void;
     liveNodeIds(): ReadonlySet<string>;
+    /** Whether this band's wet layer paints the node at `view` on the given backend. A changed node the live layer paints is covered
+     * by the picture it drew; one it does not paint (not a stroke it holds, or not yet shown) is not. */
+    drawsLive(nodeId: string, band: WetBand, view: ViewState, canvas: boolean): boolean;
     presented(revision: number, token: RenderToken, frame?: PaintSource): void;
     clear(): void;
     dispose(): void;
@@ -792,6 +795,22 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         onInputFrame(callback) { callbacks.add(callback); return () => { callbacks.delete(callback); }; },
         invalidate,
         consumeInput() { if (disposed || !options.current()) return; for (const callback of callbacks) callback(); },
+        // The same conditions the band's draw applies to this stroke: a pending stroke this band draws (its source, its
+        // pigment on canvas2d, its shown run on a device), an off-screen one (no pixel of the view changes), or one this band
+        // never paints (the underlay holds only highlighters). Board-drawn ink is the board's, so it is not covered here.
+        drawsLive(nodeId, band, view, canvas) {
+            if (disposed || !options.current()) return false;
+            const snapshot = (handover?.pendingSnapshots() ?? []).find(item => item.identity.nodeId === nodeId);
+            if (!snapshot) return false;
+            const source = sourceOf(snapshot);
+            if (!source) return false;
+            if (offScreen(source.bounds, snapshot.presentation.localToWorld, view)) return true;
+            const isHighlight = snapshot.presentation.tool === 'highlighter';
+            if (band === 'underlay' && !isHighlight) return true;
+            if (options.boardDrawnInk().has(nodeId)) return false;
+            if (!canvas) return !!runs.get(runKey(snapshot.identity.gestureSequence, band))?.shown;
+            return !!resolveSwatch(options.palette(), snapshot.presentation.color as Swatch, isHighlight ? 'highlight' : 'stroke');
+        },
         liveNodeIds() {
             if (disposed) return EMPTY_LIVE_IDS;
             // Compared in place: the set is rebuilt only when it changes, since the board reads it every frame.

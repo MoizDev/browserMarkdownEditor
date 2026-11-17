@@ -44,6 +44,9 @@ export interface BoardLayersOptions {
     /** View-only suppression, evaluated against the actual ready preview frame. */
     readonly omitNodes?: (frame: PaintSource) => ReadonlySet<string> | null;
     readonly liveNodeIds?: () => ReadonlySet<string> | undefined;
+    /** Whether the live layer paints this changed node in the frame at `view`: a changed node counts as covered by the picture
+     * only then (or when it is omitted, a drag's preview). Membership in liveNodeIds alone is not coverage. */
+    readonly liveDraws?: (nodeId: string, band: PaintBand, view: ViewState, canvas: boolean) => boolean;
     readonly beforePrepare?: (view: ViewState, budget: FrameBudget) => void;
     readonly onPresented?: (revision: number, token: RenderToken, frame: PaintSource, context?: ViewerPaintPresentation) => void;
     /** Called after every prepare that reached the adapter, before a compositor frame draws what it built; a caller checks what is built. */
@@ -821,17 +824,17 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     // it is one the band does not draw: the omitted nodes (a drag's moving node, drawn by the preview) and the live ones (drawn
     // by their live layer). A drag moves only those, so its base picture stays current (measured: stale:revision on 186 of 186
     // drag-sat frames). Unknown history (null, or a structural change) is stale.
-    const undrawnChangeSince = (from: number, to: number): boolean => {
+    const undrawnChangeSince = (from: number, to: number, band: PaintBand, view: ViewState, canvas: boolean): boolean => {
         // The live scene history first (it names the revisions a frame lags behind); the pinned frame's own history when the
         // live one is not retained for this span.
         const now = options.frames.readFrame();
         const changed = options.changedNodesSince?.(from, to) ?? (now && now.sceneRevision === to ? now.changedNodesSince?.(from) : null);
         if (!changed) return false;
-        const omitted = now ? options.omitNodes?.(now) ?? null : null, live = options.liveNodeIds?.();
-        for (const id of changed) if (!omitted?.has(id) && !live?.has(id)) return false;
+        const omitted = now ? options.omitNodes?.(now) ?? null : null;
+        for (const id of changed) if (!omitted?.has(id) && !options.liveDraws?.(id, band, view, canvas)) return false;
         return true;
     };
-    const coverageOf = (layer: Layer, frame: ScheduledFrame, backend: CompositorBackend): LayerCoverage => {
+    const coverageOf = (band: PaintBand, frame: ScheduledFrame, backend: CompositorBackend): LayerCoverage => {
         const gpuCoverage = backend !== 'canvas2d' ? gpu?.coverage(frame.view) : null;
         const ready = backend === 'canvas2d' ? adapter?.readyFrame() : gpu?.readyFrame();
         const denseCoverage = useDense && ready ? dense?.coverage(frame.view, liveFor(ready)) : null;
@@ -841,7 +844,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         const latest = options.requestedRevision();
         // The picture drawn is current at the latest revision, whatever revision this layer's frame was scheduled for (a preview
         // band's scheduled frame lags the drag's moves while its picture is already the latest: measured 62 of 62 as stale).
-        const current = (ready.sceneRevision === latest || undrawnChangeSince(ready.sceneRevision, latest))
+        const current = (ready.sceneRevision === latest || undrawnChangeSince(ready.sceneRevision, latest, band, frame.view, backend === 'canvas2d'))
             && ready.theme === options.requestedTheme() && options.frames.isCurrent(ready);
         return current ? { complete: true, sharp: (gpuCoverage?.sharp ?? true) && (denseCoverage?.sharp ?? true) } : STALE;
     };
@@ -973,7 +976,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         // froze the pane (a board whose ink tile could not be admitted refused every frame, and nothing requested another).
         critical() { return presented === null && !adapter?.readyFrame() && !gpu?.readyFrame() && !gpu?.memoryBlocked(); },
         coverage(layer, frame, backend) {
-            const actual = coverageOf(layer, frame, backend);
+            const actual = coverageOf(band, frame, backend);
             // What the board draws besides the current picture, for the present audit: a previous frame or a scaled tile is a
             // stand-in; nothing drawable at all is a hole. Both bands read the same composer and adapter, so their coverage is one
             // state: it is reported once per frame, from the underlay band, not once per band.

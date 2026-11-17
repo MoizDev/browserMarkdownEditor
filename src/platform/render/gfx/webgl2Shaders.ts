@@ -143,6 +143,50 @@ void main() {
     },
 };
 
+/** Resolves one overlap-atlas slot into an r8 coverage plane (endCoverage 'coverage'): plane pixel p reads the atlas device pixel
+ * slot + (p − destination.xy) and box-averages its 16×16 texels, so the value is exact (no filter). The uniform block is the
+ * composition block: destination is the plane rectangle, sourceRect.xy the slot's atlas device origin, and
+ * sourceSizeOpacityEffect.y the atlas height in texels. It writes one channel and no backdrop, so it is never composited. */
+export const GRID16_RESOLVE_SHADER: ShaderModule = {
+    id: 'platform-private-grid16-resolve', revision: 1,
+    glsl: {
+        vertex: `#version 300 es
+precision highp float;
+${block}
+out vec2 pixel;
+void main() {
+    vec2 corner = vec2(float(gl_VertexID & 1), float((gl_VertexID >> 1) & 1));
+    pixel = destination.xy + corner * destination.zw;
+    vec2 unit = (pixel - viewport.xy) / viewport.zw;
+    gl_Position = vec4(unit.x * 2.0 - 1.0, 1.0 - unit.y * 2.0, 0.0, 1.0);
+}`,
+        fragment: `#version 300 es
+precision highp float;
+${block}
+uniform sampler2D gfxTexture0;
+in vec2 pixel;
+layout(location=0) out vec4 gfxColour;
+void main() {
+    ivec2 local = ivec2(floor(pixel)) - ivec2(destination.xy);
+    ivec2 first = (ivec2(sourceRect.xy) + local) * 16;
+    int rows = int(sourceSizeOpacityEffect.y);
+    float sum = 0.0;
+    for (int j = 0; j < 16; j++) {
+        for (int i = 0; i < 16; i++) {
+            ivec2 texel = first + ivec2(i, j);
+            sum += texelFetch(gfxTexture0, ivec2(texel.x, rows - 1 - texel.y), 0).r;
+        }
+    }
+    gfxColour = vec4(sum / 256.0, 0.0, 0.0, 1.0);
+}`,
+    },
+    layout: {
+        uniforms: [{ binding: 0, byteSize: 128 }],
+        textures: [{ binding: 0, format: 'r8' as const }],
+        attributes: [],
+    },
+};
+
 /** Lays a group that is composited with 'modulate': the premultiplied colour over white, k = rgb + (1 − a) (each channel),
  * scaled by opacity and the clip mask first, so a transparent pixel is exactly neutral (k = 1). The fixed-function blend
  * then multiplies the surface by k once. The composition vertex stage is shared; only the output differs. */

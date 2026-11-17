@@ -209,13 +209,15 @@ export interface GroupToken { readonly id: number }
 // inside beginCoverage, and endCoverage box-averages each 4×4 block in the composite ('paint' output). Default 1: the
 // rgba8 colour target (MSAA or not) that composites its premultiplied colour, unchanged.
 export interface CoverageTargetOptions { readonly grid?: 1 | 4 }
+/** Atlas tile: one device-pixel square per slot, the candidate tile size of the union ink route. */
+export const COVERAGE_ATLAS_TILE = 8;
 export interface CoverageTarget {
     readonly target: TargetHandle;
     readonly texture: TextureHandle;
     readonly width: number;
     readonly height: number;
     readonly samples: Samples;
-    readonly grid: 1 | 4;
+    readonly grid: 1 | 4 | 16;
 }
 export interface CoverageToken { readonly id: number }
 // 'modulate' lays the resolved slice on the surface by fixed-function dst·src (see PipelineDesc.blend), not by backdrop copy.
@@ -224,14 +226,17 @@ export interface CoverageToken { readonly id: number }
 export type CoverageOutput =
     | { readonly kind: 'composite'; readonly blend: 'normal' | 'multiply' | 'modulate' }
     | { readonly kind: 'paint'; readonly blend: 'normal' | 'modulate'; readonly rgb: readonly [number, number, number]; readonly alpha: number }
+    /** 'coverage' (atlas targets only) resolves one slot's 16×16 texels per device pixel into `target`, an r8 render target of
+     * device size, at the device rectangle `at`. It writes through its own pass: no backdrop, no blend, no scope composite. */
+    | { readonly kind: 'coverage'; readonly target: TargetHandle; readonly at: RectI }
     | { readonly kind: 'mask' };
 // Exact charge for a coverage target: RGBA8 colour, multisample colour where requested, and at
 // least 8 B/px/sample of stencil (the backend's own rule, matching webgl2 #targetBytes).
-export function coverageTargetBytes(width: number, height: number, samples: Samples, grid: 1 | 4 = 1): number {
+export function coverageTargetBytes(width: number, height: number, samples: Samples, grid: 1 | 4 | 16 = 1): number {
     if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0) throw new RangeError('Invalid coverage size');
-    if (grid !== 1 && grid !== 4 || grid !== 1 && samples !== 1) throw new RangeError('Invalid coverage grid');
-    if (grid === 4) {
-        // One r8 byte and the 8 B stencil per texel, at grid² texels per device pixel.
+    if (grid !== 1 && grid !== 4 && grid !== 16 || grid !== 1 && samples !== 1) throw new RangeError('Invalid coverage grid');
+    if (grid === 4 || grid === 16) {
+        // One r8 byte and the 8 B stencil per texel, at grid² texels per device pixel (4 or 16 per side).
         const texels = width * grid * height * grid;
         if (!Number.isSafeInteger(texels * 9)) throw new RangeError('Coverage target exceeds safe accounting');
         return texels * 9;
@@ -380,6 +385,8 @@ export interface GfxDevice {
     createClip(mask: TextureHandle, deviceBounds: RectI): ClipHandle;
     // Admitted in prepare on the same lease (texture then stencil target). Destroy both to retire it.
     createCoverageTarget(width: number, height: number, samples: Samples, lease: ByteLease, options?: CoverageTargetOptions): CoverageTarget;
+    /** An overlap atlas: `slotsAcross`×`slotsDown` slots of COVERAGE_ATLAS_TILE device px, each at 16 texels per device px (grid 16). */
+    createCoverageAtlas(slotsAcross: number, slotsDown: number, lease: ByteLease): CoverageTarget;
     /** A sampleable rgba8 texture with its own single-sample, stencil-less render target, charged through one lease
      * (width × height × 4): a layer's offscreen tile, composed on the GPU and then sampled by the layer. */
     createRenderTexture(width: number, height: number, lease: ByteLease, options?: { format?: 'rgba8' | 'r8'; copyDst?: boolean }): { texture: TextureHandle; target: TargetHandle };

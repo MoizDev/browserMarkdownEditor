@@ -10,7 +10,7 @@ import type { HostBlock } from '../model/doc';
 import type { PaintPalette } from '../render/colour';
 import type { PaintFrame, PaintPathItem } from '../render/paintStream';
 import type { PaintBand } from '../render/material';
-import { awaitCapacity, isBudgetRefusal } from '../render/budgetRefusal';
+import { awaitSizedCapacity, isBudgetRefusal, type SizedCapacityWait } from '../render/budgetRefusal';
 import { createGpuPaintAdapter } from '../render/gpuPaintAdapter';
 import { preparedOfFrame, type CanvasPaintAdapter, type PreparedPaint2d } from '../render/reference/canvasPaintAdapter';
 import { Path2dJob } from '../render/reference/coverage2d';
@@ -94,12 +94,20 @@ class NotebookPaperLayer implements Layer {
         const gpuOptions = { audit: 'notebook-paper', opaqueWorld: () => this.drawnPageRects() };
         this.gpu = createGpuPaintAdapter(this.gpuReference, host, error => this.report(error), gpuOptions);
     }
-    private report(error: unknown): void {
-        if (isBudgetRefusal(error)) {
-            this.denied = true;
-            awaitCapacity(this.host, () => { this.denied = false; this.host.invalidate('notebook-paper-capacity'); });
-            return;
-        }
+    /** The paper's CPU working set for its current snapshot: the size a refused staging waits for. */
+    private workingWait(): SizedCapacityWait | undefined {
+        const snapshot = this.desired, stack = snapshot && boardPageStack(snapshot.host);
+        return snapshot && stack ? { pool: 'cpu', bytes: workingBytes(snapshot, stack) } : undefined;
+    }
+    /** A refusal waits once, sized, and wakes the layer when it fits. Without a size a refusal is an error, not a silent wait. */
+    private deny(wait: SizedCapacityWait): void {
+        // needsFrame is false while denied and prepare can run again each frame: one waiter per denial, or they pile up.
+        if (this.denied) return;
+        this.denied = true;
+        awaitSizedCapacity(this.host, () => { this.denied = false; this.host.invalidate('notebook-paper-capacity'); }, wait);
+    }
+    private report(error: unknown, wait: SizedCapacityWait | undefined = this.workingWait()): void {
+        if (isBudgetRefusal(error) && wait) { this.deny(wait); return; }
         try { this.options.onError(error); } catch { /* errors do not escape the layer scheduler */ }
     }
     private dropStaged(): void {
@@ -132,7 +140,7 @@ class NotebookPaperLayer implements Layer {
                 const stack = boardPageStack(snapshot.host);
                 if (!stack || stack.rects.length !== snapshot.pages.length) throw new RangeError('Invalid notebook page stack');
                 const lease = this.host.allocator.cpu.reserve(workingBytes(snapshot, stack));
-                if (!lease) { this.denied = true; return; }
+                if (!lease) { this.deny({ pool: 'cpu', bytes: workingBytes(snapshot, stack) }); return; }
                 this.denied = false;
                 this.staged = { snapshot, stack, lease, token: { ...budget.token }, items: [], page: 0, iterator: null, job: null };
             }

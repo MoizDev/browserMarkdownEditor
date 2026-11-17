@@ -9,7 +9,7 @@ import type { EmbedPresentationPort } from '../../platform/render/embedPresentat
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import { createNativeEmbedPresentationProducer, type NativeEmbedPresentationProducer } from '../host/embedPresentationFacts';
 import { boardPageStack } from '../model/pages';
-import { createBoardLayers, BOARD_BACKEND_PREFERENCE, drawnPagesOf, opaqueWorldOf } from '../render/boardLayers';
+import { createBoardLayers, BOARD_BACKEND_PREFERENCE, createDrawnPagesReader, opaqueWorldOf } from '../render/boardLayers';
 import { auditCount } from '../../platform/render/renderAudit';
 import type { DensityMode } from '../render/density';
 import { createPaintFrameAssembler } from '../render/frameAssembler';
@@ -130,8 +130,18 @@ export const attachView: AttachView = options => {
     const precisionNodeIds = (sensitive: ReadonlySet<string> | undefined) => union(selectionIds(), union(union(union(interaction?.liveNodeIds?.(),
         view.visible ? embedPort?.inlineNodeIds() : null), view.visible ? embedPort?.requestedNodeIds() : null), sensitive));
     const liveNodeIds = () => precisionNodeIds(interaction?.sensitiveNodeIds?.()) ?? undefined;
+    // The composer asks for the opaque world once per tile: the page list is rebuilt only when a layer's claim changes.
+    const drawnPages = createDrawnPagesReader(), pageLayers: unknown[] = [];
+    const opaqueWorld = (): readonly Rect[] => {
+        const host = options.session.doc.host;
+        if (host.kind === 'whiteboard') return opaqueWorldOf(host, view.inverted);
+        pageLayers.length = 0;
+        if (view.backdrops) for (const backdrop of view.backdrops) pageLayers.push(backdrop);
+        if (paper) pageLayers.push(paper);
+        return opaqueWorldOf(host, view.inverted, drawnPages(pageLayers));
+    };
     const layers = createBoardLayers({ frames, images, onError: report, requestedRevision: () => options.session.doc.rev, requestedTheme: () => view.theme, omitNodes: omitPreview,
-        opaqueWorld: () => opaqueWorldOf(options.session.doc.host, view.inverted, drawnPagesOf([...view.backdrops ?? [], ...paper ? [paper] : []])),
+        opaqueWorld,
         liveNodeIds, candidates: () => lastCandidates,
         onDensityMode(mode) { if (densityMode !== mode && !disposed) { densityMode = mode; requestPaint(); } },
         requestFrame: () => { if (!disposed) requestPaint(); },
@@ -159,6 +169,9 @@ export const attachView: AttachView = options => {
         },
         onPresented(revision, token, frame, context) {
             drawnFrame = { sceneRevision: revision, token, frame, context };
+            // A completed presentation is the layers working again: a failure reported before it no longer stands
+            // (the layer's own error clears on the same event, so the view must not keep showing one it does not hold).
+            if (failed) { failed = null; publish(); }
             // The view frame of the current key is up: the whole scene may now be asked for (once).
             // The request is made by the next prepare, which a presentation alone does not schedule: ask for that frame.
             if (layers.onDevice() && viewAsked && revision === viewAsked.revision && !sameSceneKey(sceneAsked, viewAsked)) { sceneDue = true; layers.invalidate('board-scene-request'); }

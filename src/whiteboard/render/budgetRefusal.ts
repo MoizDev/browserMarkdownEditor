@@ -17,11 +17,3 @@ export function awaitSizedCapacity(host: Pick<LayerHost, 'allocator'> | null | u
     if (!Number.isSafeInteger(wait.bytes) || wait.bytes < 0) throw new RangeError('A capacity wait needs a byte count');
     host?.allocator[wait.pool].whenAvailable?.(wake, wait.bytes);
 }
-
-/** The unsized wait, for a refusal whose size its thrower did not report. It wakes on the first capacity change of
- * either pool, and only once. New code sizes its wait with awaitSizedCapacity. */
-export function awaitCapacity(host: Pick<LayerHost, 'allocator'> | null | undefined, wake: () => void): void {
-    let woken = false;
-    const once = (): void => { if (!woken) { woken = true; wake(); } };
-    host?.allocator.cpu.whenAvailable?.(once); host?.allocator.gpu.whenAvailable?.(once);
-}

@@ -68,8 +68,6 @@ function clipped(box: Readonly<Rect>, viewport: Readonly<Rect>): Rect | null {
 }
 
 /** Pixels this backend can draw: the device's texture, or the CPU bitmap (which a GPU backend can still upload). */
-/** A zoom gesture's scale changes every few frames; this long without a change, it has settled enough to raster. */
-const ZOOM_SETTLE_MS = 150;
 
 /** A tile or mirror drawn at a scale other than the frame's is a stand-in. The two scales are computed separately, so one zoom can
  * differ in its last float bits (1.4379084967320261 vs ...255): a relative tolerance, as the supersession check uses, not equality. */
@@ -177,8 +175,6 @@ export class PdfTileLayer implements Layer {
     private contentIdentity = '';
     private lastMotionScale: PdfDemandInput['previousMotionScale'];
     private motionScaleAt = 0;
-    private lastZoomValue = 0;
-    private scaleChangedAt = 0;
     private latestDemand: Omit<PdfDemandInput, 'covered' | 'previousMotionScale'> | null = null;
     private latestView: ViewState | null = null;
     private mirrorJob: MirrorJob | null = null;
@@ -268,14 +264,6 @@ export class PdfTileLayer implements Layer {
             motionScaleOverride: holdMotionScale ? this.lastMotionScale : undefined,
             covered: (page, area) => this.covered(page, area, device) });
         if (input.moving && !holdMotionScale) this.motionScaleAt = now;
-        // The camera's zoom, not the tile scale's kind: a pan or drag flips between motion and exact tiles at about the
-        // same scale, and counting that as a zoom deferred tiles during plain drags (measured: 40 per drag).
-        const zoomValue = input.rasterScale;
-        if (!this.lastZoomValue || Math.abs(zoomValue / this.lastZoomValue - 1) > 0.01) { this.lastZoomValue = zoomValue; this.scaleChangedAt = now; }
-        // While a zoom is still changing the scale, a tile whose area a stand-in already shows is not started: it
-        // usually finishes after the zoom has moved past its scale and is thrown away (measured on a 1000-page PDF:
-        // 18-32 of 66 rasters per zoom gesture dropped unused). Uncovered area is still rastered at once.
-        const zooming = !!device && now - this.scaleChangedAt < ZOOM_SETTLE_MS;
         // A spare page is kept only for a zoom that is still changing: at rest it is 4 MB of empty texture.
         this.lastMotionScale = planned.motionScale;
         this.desired = new Set(planned.requests.map(request => request.text));
@@ -343,7 +331,6 @@ export class PdfTileLayer implements Layer {
                 continue;
             }
             if (this.failed.has(key) || running >= 3) continue;
-            if (zooming && this.covered(request.page, rect(request), device)) { auditCount('pdf-page', 'zoom-deferred'); this.pendingFrame = true; continue; }
             if (budget.shouldYield()) { this.pendingFrame = true; break; }
             const bytes = request.tile.textureWidth * request.tile.textureHeight * 4;
             let lease = this.host.allocator.cpu.reserve(bytes);

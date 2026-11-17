@@ -304,12 +304,11 @@ class GpuTileStore implements TileStore {
         return dropped;
     }
 
-    /** Waits for governor capacity. */
+    /** Waits until the governor would admit `bytes`: the sized waiter does not wake on unrelated releases. */
     wait(bytes: number, wake: () => void): void {
         if (!Number.isSafeInteger(bytes) || bytes < 0) throw new RangeError('Invalid wait size');
-        // Wave 3 (h9): the sized form takes `bytes` here, so the waiter wakes only when that much fits.
         if (!this.allocator.whenAvailable) throw new Error('GPU allocator cannot wake a waiter');
-        this.allocator.whenAvailable(wake);
+        this.allocator.whenAvailable(wake, bytes);
     }
 
     /** Gives every target back and forgets every entry, so the store is empty and its bytes read zero when this returns.
@@ -429,3 +428,21 @@ class GpuTileStore implements TileStore {
 }
 
 export const createTileStore: CreateTileStore = (host, audit) => new GpuTileStore(host, audit);
+
+/** The tile one level down that covers `key`'s world at half the scale. Four positions of `key`'s scale share one of these,
+ * so a visible position that is lowered costs a quarter of the bytes. It is an ordinary tile: the stand-in rule finds it
+ * by world rect, and the composer draws it the same way. */
+export function lowerTileKey(key: TileKey): TileKey {
+    checkKey(key);
+    return { band: key.band, scale: key.scale / 2, x: Math.floor(key.x / 2), y: Math.floor(key.y / 2), slice: key.slice };
+}
+
+/** What a position that must be on screen gets: its entry, or `'lower'` when the governor refused it. On `'lower'` the
+ * composer composes `lowerTileKey(key)` through this again; a second refusal keeps the stand-in and waits. */
+export type VisibleAcquire = TileEntry | 'lower';
+
+/** `store.acquire` for a visible position: a refusal reports `'lower'` instead of `null`. The governor's own refusal is
+ * the only source, so a `'lower'` is never a silent fallback to the CPU. */
+export function acquireVisible(store: TileStore, key: TileKey, blend: Blend, device: GfxDevice): VisibleAcquire {
+    return store.acquire(key, blend, device) ?? 'lower';
+}

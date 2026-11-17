@@ -527,7 +527,16 @@ export class MemoryGovernor {
             throw new MemoryAdmissionError('invalid-input');
         }
         count(samples);
-        if (samples >= POLICY.slowGpuSampleCount && p95Ms > frameIntervalMs) this.signalTrouble('slow-gpu');
+        if (samples >= POLICY.slowGpuSampleCount && p95Ms > frameIntervalMs) this.signalSlowGpu();
+    }
+
+    /** A slow GPU window is timing evidence, not memory. Trouble trims both pools and steps quality down for every pane, so
+     * on a timing window alone it evicted a notebook's visible-set tiles in the middle of a zoom (the rebuild is more GPU work
+     * in the same zoom) and dropped the quality of a three-stroke notebook whose GPU pool held 55 of 64 MB. Only a pool over its
+     * target is pressure; below it the window is counted and nothing is trimmed or degraded. */
+    private signalSlowGpu(): void {
+        auditCount('governor', 'slow-gpu', 1);
+        if (this.charged.gpu > this.target.gpu) this.signalTrouble('slow-gpu');
     }
 
     observeFence(oldestPendingMs: number, mainThreadInputHealthy: boolean): void {

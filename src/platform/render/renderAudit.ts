@@ -152,6 +152,24 @@ export function auditPresents(): { dropped: number; records: readonly PresentRec
     return { dropped: presentTotal - kept, records };
 }
 
+/** Named gauges: a surface registers a read of a live value (a node count, a cache size) and the audit reads it when asked.
+ * Off, registering returns a no-op and nothing is kept. A registration under a name replaces the earlier one; the returned
+ * function removes it only while it is still this one. */
+const gauges = new Map<string, () => number>();
+export function auditGauge(name: string, read: () => number): () => void {
+    if (!enabled) return () => {};
+    gauges.set(name, read);
+    return () => { if (gauges.get(name) === read) gauges.delete(name); };
+}
+/** The current value of every registered gauge; a read that throws reads as NaN. */
+export function auditGauges(): Record<string, number> {
+    const values: Record<string, number> = {};
+    for (const [name, read] of gauges) {
+        try { values[name] = read(); } catch { values[name] = Number.NaN; }
+    }
+    return values;
+}
+
 export function auditSnapshot(): RenderAuditSnapshot {
     return { enabled, since, counters: Object.fromEntries(counters),
         frames: Object.fromEntries([...frames].map(([key, value]) => [key, { ...value }])),
@@ -165,5 +183,5 @@ export function auditReset(): void {
 }
 
 if (enabled && typeof window !== 'undefined') {
-    (window as unknown as { __bmeRenderAudit?: unknown }).__bmeRenderAudit = { snapshot: auditSnapshot, reset: auditReset, presents: auditPresents };
+    (window as unknown as { __bmeRenderAudit?: unknown }).__bmeRenderAudit = { snapshot: auditSnapshot, reset: auditReset, presents: auditPresents, gauges: auditGauges };
 }

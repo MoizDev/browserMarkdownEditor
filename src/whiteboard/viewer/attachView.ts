@@ -10,7 +10,7 @@ import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import { createNativeEmbedPresentationProducer, type NativeEmbedPresentationProducer } from '../host/embedPresentationFacts';
 import { boardPageStack } from '../model/pages';
 import { createBoardLayers, BOARD_BACKEND_PREFERENCE, createDrawnPagesReader, opaqueWorldOf } from '../render/boardLayers';
-import { auditCount } from '../../platform/render/renderAudit';
+import { auditCount, auditGauge } from '../../platform/render/renderAudit';
 import { RENDER_CONSTANTS } from '../../platform/render/constants';
 import type { DensityMode } from '../render/density';
 import { createPaintFrameAssembler } from '../render/frameAssembler';
@@ -399,8 +399,11 @@ export const attachView: AttachView = options => {
         publish(); if (runtime.scene?.ready) requestPaint();
     });
     snapshot = makeSnapshot();
+    // The node count on the shown sheet, for the audit's node-count check. Registered only while the audit is on (no-op off).
+    const dropNodeGauge = auditGauge(`board:nodes:${options.auditPane ?? options.token.documentId}`, () => options.session.doc.bySheet.get(sheet())?.size ?? 0);
     const dispose = () => {
         if (disposed) return;
+        dropNodeGauge();
         clearPreview?.(); clearPreview = null;
         const oldProducer = embedProducer; embedProducer = null; oldProducer?.dispose();
         const oldEmbed = embedPort; embedPort = null;

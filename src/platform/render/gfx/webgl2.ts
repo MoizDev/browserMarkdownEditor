@@ -246,7 +246,7 @@ function mipChainBytes(width: number, height: number, channels: number, levels: 
 }
 function rectangle(rect: RectI, width: number, height: number): void {
     for (const value of [rect.x, rect.y, rect.width, rect.height]) count(value);
-    if (rect.x > width - rect.width || rect.y > height - rect.height) throw new ArenaError('invalid-input');
+    if (rect.x > width - rect.width || rect.y > height - rect.height) throw new ArenaError('invalid-input', { site: 'rectangle', rect: { ...rect }, target: { width, height } });
 }
 function uniqueUses<T extends string>(uses: readonly T[], allowed: readonly T[]): readonly T[] {
     if (!uses.length || uses.some(use => !allowed.includes(use))) throw new ArenaError('invalid-input');
@@ -656,7 +656,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         }
         // An r8 texture takes its single channel from a PixelUpload only. A bitmap is RGBA: blitting it into R8 would
         // keep one channel without any error, so it is refused here rather than after the staging copy.
-        if (texture.format === 'r8' && !('rowBytes' in src)) throw new ArenaError('invalid-input');
+        if (texture.format === 'r8' && !('rowBytes' in src)) throw new ArenaError('invalid-input', { site: 'writeTexture:r8-bitmap', rect: { ...rect }, format: texture.format });
         if (!rect.width || !rect.height) return;
         const encoding = this.#arena.beginEncoding();
         let cpu: ByteLease | null = null;
@@ -668,7 +668,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 const row = byteSize(rect.width, channels);
                 count(src.rowBytes);
                 const needed = byteSize(src.rowBytes, rect.height - 1) + row;
-                if (src.rowBytes < row || !Number.isSafeInteger(needed) || src.source.byteLength < needed) throw new ArenaError('invalid-input');
+                if (src.rowBytes < row || !Number.isSafeInteger(needed) || src.source.byteLength < needed) throw new ArenaError('invalid-input', { site: 'writeTexture:rowBytes', rect: { ...rect }, rowBytes: src.rowBytes, row, needed, sourceBytes: src.source.byteLength, format: texture.format });
                 cpu = this.#reserve(this.#services.cpuStaging, byteSize(row, rect.height), false);
                 const flipped = new Uint8Array(row * rect.height);
                 for (let y = 0; y < rect.height; y++) {
@@ -683,7 +683,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             } else {
                 // A VideoFrame has no width or height of its own; its display size is the size WebGL reads it at.
                 const size = 'displayWidth' in src.source ? { width: src.source.displayWidth, height: src.source.displayHeight } : src.source;
-                if (size.width !== rect.width || size.height !== rect.height) throw new ArenaError('invalid-input');
+                if (size.width !== rect.width || size.height !== rect.height) throw new ArenaError('invalid-input', { site: 'writeTexture:size', rect: { ...rect }, source: { width: size.width, height: size.height }, format: texture.format });
                 staging = this.acquireTarget({ width: rect.width, height: rect.height, format: 'rgba8', samples: 1, stencil: false, purpose: 'group' });
                 if (!staging) throw new ArenaError('out-of-budget');
                 const stageTexture = this.#pin(encoding, staging.texture, 'texture');
@@ -1104,7 +1104,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         const error = gl.getError();
         if (error !== gl.NO_ERROR) {
             this.#healthy();
-            throw new ArenaError(error === gl.OUT_OF_MEMORY ? 'allocation' : 'invalid-input');
+            throw new ArenaError(error === gl.OUT_OF_MEMORY ? 'allocation' : 'invalid-input', { site: 'gl-error', glError: error });
         }
     }
 

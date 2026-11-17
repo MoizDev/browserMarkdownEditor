@@ -60,11 +60,19 @@ interface SurfaceEntry {
     /** A visibility change upgrades at once, without the quiet-moment wait. Consumed by the next capacity notification. */
     upgradeBypass: boolean;
     upgradeTimer: ReturnType<typeof setTimeout> | null;
+    /** Back-off for re-qualifying a timed-out restore: the Nth attempt waits REQUALIFY_MIN_MS * 2^N, capped (see armRequalify). */
+    requalifyAttempts: number;
+    requalifyTimer: ReturnType<typeof setTimeout> | null;
     lease: SurfaceLease;
 }
 
 /** A gesture is over once input and camera motion have been quiet this long; the upgrade waits for that, never mid-gesture. */
 const UPGRADE_QUIET_MS = 250;
+
+/** A timed-out restore is not permanent for a visible pane: the pane asks for a fresh context again after this back-off, doubling,
+ * capped. Measured need: a context lost with no restore left the pane on 2D for the session, until hidden and shown. */
+const REQUALIFY_MIN_MS = 5_000;
+const REQUALIFY_MAX_MS = 60_000;
 
 function sessionKey(token: RenderToken): string {
     return JSON.stringify([token.vaultEpoch, token.documentId, token.session]);
@@ -133,6 +141,7 @@ class SurfaceBroker {
             hiddenAt: registration.view.visible ? null : performance.now(),
             generation: circuit.generation, checkedGeneration: null, reservation: null,
             pending: null, failed: null, waiting: false, budgetFallback: false, upgradeBypass: false, upgradeTimer: null,
+            requalifyAttempts: 0, requalifyTimer: null,
             lease: {
                 get stamp() { return stampOf(entry); },
                 updateView: view => this.updateView(entry, view),
@@ -190,6 +199,7 @@ class SurfaceBroker {
                 else this.armRestoreClock(entry, reservation);
             }
         }
+        for (const entry of this.surfaces.values()) if (visible && entry.failed === 'restore-timeout') this.armRequalify(entry);
         if (visible) this.notifyAvailable();
     }
 
@@ -276,6 +286,8 @@ class SurfaceBroker {
             // A zero-size pane can still receive a loss while geometry is changing.
             this.abandon(entry, 'context-lost');
         } else if (!wasDrawable && drawable(entry)) {
+            // Showing a pane is a fresh chance for it: the back-off starts again.
+            this.clearRequalify(entry);
             entry.failed = null;
             entry.waiting = !entry.circuit.pinned;
             // Showing a pane is the visibility change the upgrade waits for: it is not a gesture, so it skips the quiet wait.
@@ -458,6 +470,7 @@ class SurfaceBroker {
     private markPresented(entry: SurfaceEntry, stamp: SurfaceStamp, generation: number): boolean {
         if (!this.canMarkPresented(entry, stamp, generation)) return false;
         entry.state = 'gpu-visible';
+        entry.requalifyAttempts = 0;
         return true;
     }
 
@@ -557,6 +570,30 @@ class SurfaceBroker {
         this.abandon(entry, 'restore-timeout');
         entry.failed = 'restore-timeout';
         if (drawable(entry)) this.fallback(entry, 'restore-timeout');
+        this.armRequalify(entry);
+    }
+
+    /** Re-qualifies a timed-out pane with a fresh context after a back-off: a visible pane must not stay on 2D for the session.
+     * The wait doubles per attempt (5 s, 10 s, 20 s, ... to 60 s); a hidden or window-hidden pane arms nothing and is re-armed
+     * when it is shown. The re-qualification goes through the normal capacity path, so the context limits still apply. */
+    private armRequalify(entry: SurfaceEntry): void {
+        if (entry.requalifyTimer !== null || entry.failed !== 'restore-timeout' || !this.windowVisible || !drawable(entry)) return;
+        const delay = Math.min(REQUALIFY_MAX_MS, REQUALIFY_MIN_MS * 2 ** Math.min(entry.requalifyAttempts, 10));
+        entry.requalifyAttempts++;
+        entry.requalifyTimer = setTimeout(() => {
+            entry.requalifyTimer = null;
+            if (!this.current(entry) || entry.failed !== 'restore-timeout') return;
+            if (!this.windowVisible || !drawable(entry)) return;
+            auditCount('broker', 'requalify');
+            entry.failed = null;
+            entry.waiting = !entry.circuit.pinned;
+            this.notifyAvailable();
+        }, delay);
+    }
+
+    private clearRequalify(entry: SurfaceEntry): void {
+        if (entry.requalifyTimer !== null) { clearTimeout(entry.requalifyTimer); entry.requalifyTimer = null; }
+        entry.requalifyAttempts = 0;
     }
 
     private abandon(entry: SurfaceEntry, reason: ContextDisposeReason): void {
@@ -609,6 +646,7 @@ class SurfaceBroker {
                 entry.waiting = false;
                 entry.budgetFallback = false;
                 if (entry.upgradeTimer !== null) { clearTimeout(entry.upgradeTimer); entry.upgradeTimer = null; }
+                this.clearRequalify(entry);
                 entry.state = 'disposed';
                 this.surfaces.delete(entry.paneId);
                 this.notifyAvailable();

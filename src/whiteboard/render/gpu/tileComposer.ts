@@ -390,6 +390,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     const refuseTarget = (): void => { denied = true; waiting = true; blockedOnGpu = true; auditCount(audit, 'tile:denied'); store.wait(TARGET_BYTES, wake); };
     const refuseAdmission = (pool: 'gpu' | 'cpu', bytes: number): void => {
         denied = true; waiting = true; blockedOnGpu = pool === 'gpu'; auditCount(audit, 'tile:denied');
+        auditCount(audit, `refusal:${pool}:bucket:${2 ** Math.ceil(Math.log2(Math.max(1, bytes)))}`);
         if (pool === 'gpu') store.wait(bytes, wake); else host.allocator.cpu.whenAvailable?.(wake, bytes);
     };
 

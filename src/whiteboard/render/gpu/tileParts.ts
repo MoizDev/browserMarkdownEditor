@@ -113,6 +113,32 @@ function newGrid(): Grid {
     return { cells: new Map(), populated: [], wide: [], count: 0 };
 }
 /** A paint item's blend as a tile sees it: a multiply item is laid by `modulate`, everything else by `over`. */
+/** Whether two number arrays hold the same values (an affine, a rect). */
+function sameNumbers(a: readonly number[], b: readonly number[]): boolean {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
+}
+/** The content of an item beyond its paint's named parts: its material and bounds, and an image's placement. */
+function contentTail(item: PaintItem): unknown {
+    if (item.kind === 'image') return [item.imageKey, item.rect, item.sourceRect ?? null, item.opacity, item.inverted, item.blend,
+        item.retainedTile ?? false, item.allocationBounds ?? null];
+    return [item.material, item.allocationBounds ?? null];
+}
+/**
+ * Whether two items paint the same content. A source rebuilds its item objects on every stream, so identity says nothing about
+ * content. The geometry is named by geometryKey, which names a node revision (its commands and coverage follow from it), so a
+ * matching key, geometry key, placement, clips and material is the same paint.
+ */
+export function sameItemContent(a: PaintItem, b: PaintItem): boolean {
+    if (a.kind !== b.kind || a.nodeId !== b.nodeId || a.key !== b.key || a.geometryKey !== b.geometryKey) return false;
+    if (!sameNumbers(a.localToWorld, b.localToWorld) || a.clips.length !== b.clips.length) return false;
+    for (let i = 0; i < a.clips.length; i++) {
+        const x = a.clips[i], y = b.clips[i];
+        if (x.key !== y.key || x.fillRule !== y.fillRule || !sameNumbers(x.localToWorld, y.localToWorld) || JSON.stringify(x.d) !== JSON.stringify(y.d)) return false;
+    }
+    return JSON.stringify(contentTail(a)) === JSON.stringify(contentTail(b));
+}
 export function blendOf(item: PaintItem): Blend {
     return (item.kind === 'image' ? item.blend : item.material.blend) === 'multiply' ? 'modulate' : 'over';
 }
@@ -274,8 +300,9 @@ export const createTileParts: CreateTileParts = (_host, audit) => {
         if (candidate) {
             const sameEpoch = candidate.epoch === epoch;
             if (sameEpoch && candidate.band === band && candidate.blend === blend) {
-                // Without region history an item's content is unknown unless it is the same object: only that reuse is safe.
-                if (candidate.item === item || (!build.unknown && !reachesAnyRegion(candidate, build))) {
+                // An item is reused when its content is the same, or, with region history, when no changed region reaches it.
+                // Without region history only the content decides: a new object for the same paint is not a change.
+                if (candidate.item === item || sameItemContent(candidate.item, item) || (!build.unknown && !reachesAnyRegion(candidate, build))) {
                     candidate.item = item; candidate.seq = seq; candidate.stamp = build.pass;
                     build.next.push(candidate);
                     return;

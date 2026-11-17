@@ -128,8 +128,6 @@ class NotebookPaperLayer implements Layer {
         needsFrame: () => false, memory: () => ({ gpuBytes: 0, cpuBytes: 0 }), dispose: () => {},
     };
     private readonly gpu: ReturnType<typeof createGpuPaintAdapter>;
-    /** True once coverage has been complete in this attach (see `critical`). */
-    private completed = false;
     constructor(private readonly host: LayerHost, private readonly options: NotebookPaperLayerOptions) {
         // The paper's own opaque world: its page rects, which the paper fills (notebookPaper.ts), exact for an inverted view.
         const gpuOptions = { audit: 'notebook-paper', opaqueWorld: () => this.drawnPageRects() };
@@ -359,15 +357,10 @@ class NotebookPaperLayer implements Layer {
         return this.memory().cpuBytes + (this.host.device() ? this.gpu.cpuWorkingSet().mandatoryBytes : 0) +
             (this.ready?.revision === snapshot.revision || this.staged?.snapshot.revision === snapshot.revision ? 0 : workingBytes(snapshot, stack));
     }
-    /** Critical only until the paper's first complete coverage in this attach: a pan that exposes pages faster than they
-     * compose then presents their stand-ins, instead of refusing every frame (the 0-presents class). */
-    critical(): boolean { return !this.completed; }
+    /** Critical only while the paper has drawn no page at all: a stand-in (any drawn page) lets a pan that exposes pages faster
+     * than they compose present what there is, instead of refusing every frame (the 0-presents class, measured on large boards). */
+    critical(): boolean { return this.drawnPageRects().length === 0; }
     coverage(frame: ScheduledFrame, layer: Layer, backend: CompositorBackend): LayerCoverage {
-        const result = this.coverageNow(frame, layer, backend);
-        if (result.complete) this.completed = true;
-        return result;
-    }
-    private coverageNow(frame: ScheduledFrame, layer: Layer, backend: CompositorBackend): LayerCoverage {
         const ready = this.ready, requested = requestedRevision(frame, layer);
         if (!ready || !sameToken(ready.token, frame.token)) return { complete: false, sharp: false };
         const current = ready.revision === requested && ready.revision === this.options.read().revision;

@@ -643,7 +643,9 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
     };
 
     /** Draws the slot's cell as one quad, unless it lies outside the view. The pin is recorded for the run to take at admission. */
-    const drawSlot = (colourOf: Rgba, viewW: number, viewH: number): Stop | null => {
+    /** `recomposes`: a stand-in drawn here is one the composer recomposes exact at rest (a motion or zoom stand-in). An unloaded face's
+     * stand-in is not: its exact masks arrive with the font's epoch, which rebuilds the paint, so it must not hold the run inexact. */
+    const drawSlot = (colourOf: Rgba, viewW: number, viewH: number, recomposes: boolean): Stop | null => {
         const e = slot.entry!;
         const x = slot.x, y = slot.y, w = slot.w, h = slot.h;
         if (x + w <= 0 || y + h <= 0 || x >= viewW || y >= viewH) return null;
@@ -651,7 +653,7 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         // A colour run is tinted by nothing: its own colour is in the texels, so the instance carries white.
         if (!put(slot.rgba ? 'colour' : 'mono', e.page.texture, x, y, w, h, u0, v0, u1, v1, slot.rgba ? WHITE : colourOf)) return denied();
         widen(x, y, x + w, y + h);
-        if (slot.standIn) build.inexact = true;
+        if (slot.standIn && recomposes) build.inexact = true;
         build.pinAtlas.push(slot.rgba ? colour! : mono!);
         build.pinEntry.push(e);
         return null;
@@ -680,7 +682,7 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
                 // The face is still loading: its glyphs are not rastered in the fallback face. An earlier mask of them draws for
                 // now; with none, the run waits, and the load's font epoch rebuilds the paint.
                 if (!standInFor(req, label, colourOf, needsColourMask(req.text), true)) return { status: 'deferred' };
-                const drawn = drawSlot(colourOf, viewW, viewH);
+                const drawn = drawSlot(colourOf, viewW, viewH, false);
                 if (drawn) return drawn;
                 continue;
             }
@@ -696,7 +698,7 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
                     slot.x = Math.floor(req.x) + geometry.left + at.x; slot.y = Math.floor(req.y) + geometry.top + at.y;
                     slot.w = at.w; slot.h = at.h;
                 }
-                const drawn = drawSlot(colourOf, viewW, viewH);
+                const drawn = drawSlot(colourOf, viewW, viewH, true);
                 if (drawn) return drawn;
             }
         }

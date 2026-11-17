@@ -283,6 +283,21 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         runtime.refresh();
         lifecycle?.invalidate('geometry');
     }, options.onError);
+    // The inputs the pane's demand is built from that move without an event of their own: size, visibility, focus, colour
+    // mode, mirrors, and what the layers hold. Reading them is a few numbers; the demand and the governor's plan are not, so
+    // they run only when one of these moved. A layer's own demand change (a plan, a refused run) still asks via requestDemand.
+    let demandMark: { pixels: number; visible: boolean; focused: boolean; inverted: boolean; mirrors: boolean; gpu: number; cpu: number } | null = null;
+    const demandMoved = (): boolean => {
+        const size = observer.current;
+        let gpu = 0, cpu = 0;
+        for (const layer of layerSet.layers) { const held = layer.memory(); gpu += held.gpuBytes; cpu += held.cpuBytes; }
+        const next = { pixels: size ? size.physical.width * size.physical.height : 0, visible, focused,
+            inverted: options.readAppearance().inverted, mirrors: !!options.session.mirrors, gpu, cpu };
+        const old = demandMark;
+        demandMark = next;
+        return !old || old.pixels !== next.pixels || old.visible !== next.visible || old.focused !== next.focused
+            || old.inverted !== next.inverted || old.mirrors !== next.mirrors || old.gpu !== next.gpu || old.cpu !== next.cpu;
+    };
     const runtimePane = {
         demand: () => {
             const size = observer.current;
@@ -447,9 +462,9 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                         const drawing = drawCompositor();
                         drawing?.setAppearance(options.readAppearance());
                         drawing?.snapshot(view);
-                        // Arrivals and colour-mode changes alter demand without a ResizeObserver
-                        // event. Refresh before preparation, not after an allocation was refused.
-                        runtime.refresh();
+                        // Arrivals and colour-mode changes alter demand without a ResizeObserver event. Refresh before
+                        // preparation, not after an allocation was refused; a layer's own demand change asks through requestDemand.
+                        if (demandMoved()) runtime.refresh();
                     },
                     layerId: (layer: Layer) => layerSet.definition(layer)?.id ?? 'unnamed',
                     // The scheduler offers a pane its own error first. A failure of this pane's GPU work (its compositor, not the 2D path

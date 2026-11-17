@@ -167,7 +167,12 @@ export class PaneLifecycle<T extends object> {
                         }
                     },
                     onCpuFallback: reason => {
-                        if (!this.disposed && this.visible) this.begin2D();
+                        if (!this.disposed && this.visible) {
+                            this.begin2D();
+                            // A budget fallback starts a live 2D presentation whatever picture was last shown: present it now,
+                            // not on the next change, or the pane sits on a static picture.
+                            if (reason === 'budget') this.invalidate('budget-fallback');
+                        }
                         callbacks.onCpuFallback(reason);
                     },
                     onSlotAvailable: () => { if (this.visible && !this.suspended && !this.disposed) callbacks.onSlotAvailable(); },

@@ -205,8 +205,8 @@ export interface InkTriangles {
     readonly bounds: Readonly<{ x0: number; y0: number; x1: number; y1: number }>;
     readonly edges: number;
 }
-const ZERO_ORIGIN: Readonly<{ x: number; y: number }> = Object.freeze({ x: 0, y: 0 });
 const ZERO_BOUNDS: Readonly<{ x0: number; y0: number; x1: number; y1: number }> = Object.freeze({ x0: 0, y0: 0, x1: 0, y1: 0 });
+const ZERO_ORIGIN: Readonly<{ x: number; y: number }> = Object.freeze({ x: 0, y: 0 });
 
 /** Each chunk's triangles, kept on the chunk: a chunk is immutable and the scene keeps it while it is drawn, so a
  * committed stroke is tessellated once per band, and a live stroke re-tessellates only the chunk it is still adding to. */
@@ -252,42 +252,43 @@ function foldUnion(shapes: PathFillTriangles, origin: Readonly<{ x: number; y: n
     return { triangles, origin, bounds: triangles.length ? shapes.bounds : ZERO_BOUNDS, edges: shapes.edges };
 }
 
-/** The union triangles of one stroke, rebased to its first chunk's corner. The array is the identity the path kit shares a
- * vertex buffer by, so it is kept per item and band: each tile of one stroke at one band uploads it once. A live stroke
- * that appends chunks rebuilds this copy (a memory copy, no re-tessellation). `null` when any chunk is refused. */
-const strokeTriangles = new WeakMap<PaintInkItem, { band: number; value: InkTriangles | null }>();
-export function inkStrokeTriangles(item: PaintInkItem, band: number, audit: string): InkTriangles | null {
-    const held = strokeTriangles.get(item);
-    if (held && held.band === band) return held.value;
-    const parts: InkTriangles[] = [];
-    let refused = false;
-    for (const chunk of inkCoverageChunks(item.coverage)) {
-        const part = inkChunkTriangles(chunk, band, audit);
-        if (!part) { refused = true; break; }
-        parts.push(part);
-    }
-    const value = refused ? null : joinChunks(parts);
-    strokeTriangles.set(item, { band, value });
+/** A chunk's union triangles rebased to a stroke's origin (its first chunk's corner), so every chunk of the stroke shares
+ * one affine. The placed array is the identity the kit shares a vertex buffer by: kept per chunk, band and origin, a new
+ * publication uploads only the chunks it adds, and a rebase is a copy, never a re-tessellation. */
+const placedTriangles = new WeakMap<InkCoverage, { band: number; x: number; y: number; value: InkTriangles | null }>();
+function placedOn(chunk: InkCoverage, band: number, origin: Readonly<{ x: number; y: number }>, audit: string): InkTriangles | null {
+    const held = placedTriangles.get(chunk);
+    if (held && held.band === band && held.x === origin.x && held.y === origin.y) return held.value;
+    const local = inkChunkTriangles(chunk, band, audit);
+    const value = local && rebase(local, origin);
+    placedTriangles.set(chunk, { band, x: origin.x, y: origin.y, value });
     return value;
 }
-function joinChunks(parts: readonly InkTriangles[]): InkTriangles {
-    if (!parts.length) return { triangles: new Float64Array(0), origin: ZERO_ORIGIN, bounds: ZERO_BOUNDS, edges: 0 };
-    const origin = parts[0].origin;
-    let length = 0, edges = 0;
-    for (const part of parts) { length += part.triangles.length; edges += part.edges; }
-    const triangles = new Float64Array(length);
-    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, offset = 0;
-    for (const part of parts) {
-        const dx = part.origin.x - origin.x, dy = part.origin.y - origin.y, source = part.triangles;
-        for (let i = 0; i < source.length; i += 2) {
-            triangles[offset + i] = source[i] + dx;
-            triangles[offset + i + 1] = source[i + 1] + dy;
-        }
-        if (source.length) {
-            x0 = Math.min(x0, part.bounds.x0 + dx); y0 = Math.min(y0, part.bounds.y0 + dy);
-            x1 = Math.max(x1, part.bounds.x1 + dx); y1 = Math.max(y1, part.bounds.y1 + dy);
-        }
-        offset += source.length;
+function rebase(local: InkTriangles, origin: Readonly<{ x: number; y: number }>): InkTriangles {
+    const dx = local.origin.x - origin.x, dy = local.origin.y - origin.y;
+    if (dx === 0 && dy === 0) return local;
+    const source = local.triangles, triangles = new Float64Array(source.length);
+    for (let i = 0; i < source.length; i += 2) {
+        triangles[i] = source[i] + dx;
+        triangles[i + 1] = source[i + 1] + dy;
     }
-    return { triangles, origin, bounds: length ? { x0, y0, x1, y1 } : ZERO_BOUNDS, edges };
+    const b = local.bounds;
+    return { triangles, origin, bounds: source.length ? { x0: b.x0 + dx, y0: b.y0 + dy, x1: b.x1 + dx, y1: b.y1 + dy } : ZERO_BOUNDS,
+        edges: local.edges };
+}
+
+/** A stroke as its chunks' sets, all relative to `origin`. Only non-empty sets are listed. `null` when any chunk is refused. */
+export interface InkStrokeSets { readonly origin: Readonly<{ x: number; y: number }>; readonly sets: readonly InkTriangles[] }
+export function inkStrokeSets(item: PaintInkItem, band: number, audit: string): InkStrokeSets | null {
+    const chunks = inkCoverageChunks(item.coverage);
+    if (!chunks.length) return { origin: ZERO_ORIGIN, sets: [] };
+    // The first chunk's corner: it is fixed while a live stroke appends chunks, so the placed sets stay valid across publications.
+    const origin = { x: chunks[0].boundsLocal.x, y: chunks[0].boundsLocal.y };
+    const sets: InkTriangles[] = [];
+    for (const chunk of chunks) {
+        const set = placedOn(chunk, band, origin, audit);
+        if (!set) return null;
+        if (set.triangles.length) sets.push(set);
+    }
+    return { origin, sets };
 }

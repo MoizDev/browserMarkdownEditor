@@ -292,9 +292,8 @@ export function createImageTextures(host: LayerHost, audit: string): ImageTextur
             }
             writeRows(slot, device, { x: 0, y: 0, width: w, height: h }, frame.source, 'upload:video');
             slot.version = version; slot.ready = true;
-            // The device has read the frame, and the call that read it has returned: the frame is closed now. Closing it again later
-            // is harmless, since the registry closes its frames too.
-            if (typeof VideoFrame !== 'undefined' && frame.source instanceof VideoFrame) frame.source.close();
+            // The frame is the registry's: it stays open, since a 2D fallback may still draw this lease. The version recorded above
+            // makes the next call for this node a no-op, so a node uploads at most once per presented frame.
             slot.refs++;
             return { status: 'ready', value: slot.view };
         },

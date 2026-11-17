@@ -47,15 +47,6 @@ function sameDocument(a: RenderToken, b: RenderToken): boolean {
         a.bytesGeneration === b.bytesGeneration && a.session === b.session;
 }
 
-/** Optional partial eviction (`evictGpu` on a layer): frees up to `bytes` of its GPU residency now and returns the bytes it
- * freed, never anything it touched in `frameId`. Read through a cast until Layer declares it, so a layer without it frees 0. */
-function partialGpuEvict(layer: Layer, bytes: number, frameId: number): number {
-    const hook = (layer as Layer & { readonly evictGpu?: (bytes: number, frameId: number) => number }).evictGpu;
-    if (typeof hook !== 'function') return 0;
-    const freed = hook.call(layer, bytes, frameId);
-    return typeof freed === 'number' && Number.isFinite(freed) ? Math.max(0, freed) : 0;
-}
-
 function sameFrame(a: FrameToken, b: FrameToken): boolean {
     return sameDocument(a, b) && a.viewLease === b.viewLease && a.deviceGeneration === b.deviceGeneration;
 }
@@ -130,7 +121,9 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             // A layer that can give back part of its residency does so first, synchronously, and the whole layer is released
             // only when that falls short of the ask. Without the hook the layer is released whole, as before.
             const want = bytes - freed;
-            const partial = partialGpuEvict(layer, want, frameId);
+            // A layer without the hook frees nothing here and is released whole; a non-finite report counts as nothing freed.
+            const reported = layer.evictGpu ? layer.evictGpu(want, frameId) : 0;
+            const partial = Number.isFinite(reported) ? Math.max(0, reported) : 0;
             if (partial > 0) {
                 freed += partial;
                 auditCount('governor', `evict-partial:${layerSet.definition(layer)?.id ?? 'unnamed'}`, 1, { bytes: partial });

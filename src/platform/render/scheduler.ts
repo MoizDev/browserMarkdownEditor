@@ -293,6 +293,9 @@ function sameToken(a: FrameToken, b: FrameToken | null): boolean {
 }
 
 let schedulerStarted = false;
+/** A failed frame holds the loop for this back-off before it runs again: doubling from the minimum, capped at the maximum. */
+const FRAME_RETRY_MIN_MS = 1000;
+const FRAME_RETRY_MAX_MS = 30000;
 
 /** One app-wide rAF owner, explicitly started; importing it installs no listeners (C4.6:624–628).
  * Sanctioned deadline path: wakeAt coalesces future layer work into one timer that ONLY invalidates,
@@ -312,6 +315,10 @@ export class FrameScheduler {
     private wakeTimer: ReturnType<typeof setTimeout> | null = null;
     private wakeDeadline: number | null = null;
     private wakeEpoch = 0;
+    /** Frames in a row that threw outside every pane's callback; a successful frame resets it. */
+    private frameFailures = 0;
+    /** The back-off timer after a failed frame: while it runs, no frame is requested. */
+    private frameHold: ReturnType<typeof setTimeout> | null = null;
     private hiddenTimer: ReturnType<typeof setTimeout> | null = null;
     private hiddenAt: number | null = null;
     private retainedReleased = false;
@@ -352,6 +359,7 @@ export class FrameScheduler {
         this.running = false;
         schedulerStarted = false;
         this.cancelFrame();
+        if (this.frameHold !== null) { clearTimeout(this.frameHold); this.frameHold = null; }
         this.clearWakeTimer();
         this.clearHiddenTimer();
         document.removeEventListener('visibilitychange', this.visibilityChanged);
@@ -626,8 +634,15 @@ export class FrameScheduler {
 
     private cancelFrame(): void { if (this.raf !== null) { cancelAnimationFrame(this.raf); this.raf = null; } }
 
+    /** Requests the back-off after a failed frame: no frame is requested until it runs out, then the loop resumes as needed. */
+    private holdFrames(ms: number): void {
+        if (this.frameHold !== null) clearTimeout(this.frameHold);
+        this.cancelFrame();
+        this.frameHold = setTimeout(() => { this.frameHold = null; this.ensureFrame(); }, ms);
+    }
+
     private ensureFrame(): void {
-        if (this.inFrame) return;
+        if (this.inFrame || this.frameHold !== null) return;
         if (!this.running || this.suspended || !this.needsWork()) { this.cancelFrame(); return; }
         if (this.raf === null) this.raf = requestAnimationFrame(this.runFrame);
     }
@@ -908,9 +923,16 @@ export class FrameScheduler {
             const maintenanceStart = performance.now();
             this.runPolls(started + targetMs);
             this.maintenanceMs = performance.now() - maintenanceStart;
+            this.frameFailures = 0;
         } catch (error) {
-            this.stop();
-            this.options.onError(null, error);
+            // The scheduler never stops for good: a stopped scheduler freezes every pane, healthy ones included, and start() is
+            // one-shot. A pane's own callbacks are contained by call(), which names the pane it demotes or unregisters; an error
+            // that reaches here escaped every pane, so it names no pane. The loop holds for a back-off (1 s, doubling, to 30 s)
+            // and resumes; the first failure of a streak is reported, the rest are counted.
+            this.frameFailures++;
+            if (this.frameFailures === 1) this.options.onError(null, error);
+            else if (renderAuditEnabled()) auditCount('scheduler', 'frame-failed');
+            this.holdFrames(Math.min(FRAME_RETRY_MAX_MS, FRAME_RETRY_MIN_MS * 2 ** Math.min(this.frameFailures - 1, 5)));
         } finally {
             for (const item of encodings) if (!item.done) this.discard(item.work.entry, item.encoding);
             for (const batch of batches) if (!batch.submitted && this.live(batch.entry)) {
@@ -930,11 +952,14 @@ export class FrameScheduler {
                     const complete = meter.reportedCalls > 0 && meter.admittedBytes === meter.reportedBytes;
                     const missingMeasurement = !complete && (meter.admittedBytes > 0 || meter.reportedBytes > 0);
                     if (elapsedMs > targetMs || prepareOvershootMs > 0 || bytes > meter.allowance || meter.callMs > meter.sliceMs || missingMeasurement) {
-                        this.options.onPressure(Object.freeze({ frameId, targetMs, elapsedMs, prepareOvershootMs,
-                            admittedUploadBytes: meter.admittedBytes, uploadByteAllowance: meter.allowance,
-                            uploadByteOvershoot: Math.max(0, bytes - meter.allowance), reportedUploadBytes: meter.reportedBytes,
-                            reportedUploadCalls: meter.reportedCalls, uploadCallMs: meter.callMs, uploadTimeAllowanceMs: meter.sliceMs,
-                            uploadTimeOvershootMs: Math.max(0, meter.callMs - meter.sliceMs), uploadMeasurementsComplete: complete }));
+                        // The pressure report is the owner's code: its throw is reported without leaving the frame's bookkeeping.
+                        try {
+                            this.options.onPressure(Object.freeze({ frameId, targetMs, elapsedMs, prepareOvershootMs,
+                                admittedUploadBytes: meter.admittedBytes, uploadByteAllowance: meter.allowance,
+                                uploadByteOvershoot: Math.max(0, bytes - meter.allowance), reportedUploadBytes: meter.reportedBytes,
+                                reportedUploadCalls: meter.reportedCalls, uploadCallMs: meter.callMs, uploadTimeAllowanceMs: meter.sliceMs,
+                                uploadTimeOvershootMs: Math.max(0, meter.callMs - meter.sliceMs), uploadMeasurementsComplete: complete }));
+                        } catch (error) { this.options.onError(null, error); }
                     }
                 }
             } finally { this.refreshWakeTimer(); this.ensureFrame(); }

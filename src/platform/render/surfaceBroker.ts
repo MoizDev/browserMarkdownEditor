@@ -333,8 +333,9 @@ class SurfaceBroker {
             if (entry.pending || entry.reservation || entry.circuit.pinned) return this.requestGpu(entry, canvas, stamp);
             // Shared memory is short: this pane shows 2D now and waits for the reserve to fit. Marking it failed instead kept
             // it on 2D until an explicit retry, even after the memory freed; the waiter is the real capacity event.
-            this.awaitContextReserve();
-            entry.waiting = true;
+            // With no sized waiter the pane would wait for nothing: it takes the explicit retry path instead.
+            if (this.awaitContextReserve()) entry.waiting = true;
+            else entry.failed = 'out-of-budget';
             return Promise.resolve(this.fallback(entry, 'out-of-budget'));
         }
         const reservation: Reservation = {
@@ -615,12 +616,15 @@ class SurfaceBroker {
         }
     }
 
-    /** One sized waiter for the whole broker: it wakes once the context reserve fits, and the waiting panes retry then. */
-    private awaitContextReserve(): void {
-        if (this.contextReserveWaiting || !this.contextAllocator?.whenAvailable) return;
+    /** One sized waiter for the whole broker: it wakes once the context reserve fits, and the waiting panes retry then. Returns
+     * false when no waiter can be registered (the allocator cannot wake one), so the caller must not wait for it. */
+    private awaitContextReserve(): boolean {
+        if (this.contextReserveWaiting) return true;
+        if (!this.contextAllocator?.whenAvailable) return false;
         this.contextReserveWaiting = true;
         this.contextAllocator.whenAvailable(() => { this.contextReserveWaiting = false; this.notifyAvailable(); },
             RENDER_CONSTANTS.keptContextReserveBytes);
+        return true;
     }
 
     /** The visible-context cap is full (a sixth visible pane, or the platform ceiling). The pane is live 2D at once, through the

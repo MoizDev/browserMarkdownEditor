@@ -81,8 +81,9 @@ export interface QuadCommand {
     readonly uniforms: { buffer: FrameBuffer; slice: UniformSlice };
     readonly scissor: RectI;
     readonly blend: 'source-over' | 'replace' | 'mask-max' | 'add' | 'modulate';
-    /** A grid coverage resolve (GRID_RESOLVE_SHADER): `source` is the r8 grid texture, not a colour group. */
-    readonly grid?: true;
+    /** Which composition program lays the quad: the default colour composite, the grid coverage resolve (`source` is then the
+     * r8 grid texture), or the modulate composite (`k = rgb + (1 − a)` over white, laid by fixed-function modulate). */
+    readonly variant?: 'grid' | 'modulate';
 }
 export interface FrameBackend {
     readonly signal: AbortSignal;
@@ -156,7 +157,7 @@ interface Isolation {
     readonly child: Scope;
     readonly lease: TargetLease | null;
     readonly mask: Mask | null;
-    readonly options: { opacity: number; blend: 'normal' | 'multiply'; colourEffect: 'none' | 'page-invert' };
+    readonly options: { opacity: number; blend: 'normal' | 'multiply' | 'modulate'; colourEffect: 'none' | 'page-invert' };
 }
 interface ClipEntry {
     readonly token: ClipToken;
@@ -519,6 +520,7 @@ class DeviceFrame implements ControlledFrame {
         if (scope.scale !== 1) throw new ArenaError('invalid-input');
         if (!['normal', 'multiply', 'modulate'].includes(options.blend) || !['none', 'page-invert'].includes(options.colourEffect) ||
             scope.capture && options.colourEffect === 'page-invert') throw new ArenaError('invalid-input');
+        if (options.blend === 'modulate' && (options.colourEffect !== 'none' || scope.target.format !== 'rgba8')) throw new ArenaError('invalid-input');
         const area = intersect(intersect(bounds, clip), scope.bounds);
         if (scope.empty || !area.width || !area.height || options.opacity === 0) return;
         if (source.texture === scope.target.color?.texture || mask !== null && mask.texture.texture === scope.target.color?.texture) {
@@ -544,6 +546,7 @@ class DeviceFrame implements ControlledFrame {
             context: scope, source, backdrop: backdrop?.texture ?? this.#backend.white(), mask: mask?.texture ?? this.#backend.white(),
             uniforms: { buffer: this.#backend.buffer(packed.buffer), slice: packed }, scissor: area,
             blend: options.blend === 'modulate' ? 'modulate' : options.blend === 'multiply' ? 'replace' : scope.coverage ? 'mask-max' : 'source-over',
+            ...(options.blend === 'modulate' ? { variant: 'modulate' as const } : {}),
         };
         this.command(this.#backend.quad(command));
         if (backdrop) this.releaseTemporary(backdrop.lease);
@@ -572,7 +575,7 @@ class DeviceFrame implements ControlledFrame {
         const command: QuadCommand = {
             context: scope, source, backdrop: this.#backend.white(), mask: this.#backend.white(),
             uniforms: { buffer: this.#backend.buffer(packed.buffer), slice: packed }, scissor: area,
-            blend: output.blend === 'modulate' ? 'modulate' : 'source-over', grid: true,
+            blend: output.blend === 'modulate' ? 'modulate' : 'source-over', variant: 'grid',
         };
         this.command(this.#backend.quad(command));
     }
@@ -724,7 +727,7 @@ class DevicePass implements GpuPass {
             this.#clip = entry.previous;
         });
     }
-    beginGroup(bounds: RectI, options: { opacity: number; blend: 'normal' | 'multiply'; colourEffect: 'none' | 'page-invert' }): GroupToken {
+    beginGroup(bounds: RectI, options: { opacity: number; blend: 'normal' | 'multiply' | 'modulate'; colourEffect: 'none' | 'page-invert' }): GroupToken {
         this.#frame.markBarrier();
         return this.#guard(() => {
             const token = Object.freeze({ id: this.#frame.token() });
@@ -839,8 +842,12 @@ class DevicePass implements GpuPass {
         // A group or mask needs a device-resolution target; inside a grid scope there is none to composite from.
         if (this.#scope.scale !== 1) throw new ArenaError('invalid-input');
         opacity(options.opacity);
-        if (!['normal', 'multiply'].includes(options.blend) || !['none', 'page-invert'].includes(options.colourEffect) ||
+        if (!['normal', 'multiply', 'modulate'].includes(options.blend) || !['none', 'page-invert'].includes(options.colourEffect) ||
             this.#scope.capture && options.colourEffect === 'page-invert') throw new ArenaError('invalid-input');
+        // A modulate group is laid by fixed-function blending, so it carries no page inversion and sits on an rgba8 target.
+        if (options.blend === 'modulate' && (options.colourEffect !== 'none' || this.#scope.target.format !== 'rgba8')) {
+            throw new ArenaError('invalid-input');
+        }
         const parent = this.#scope;
         if (!bounds.width || !bounds.height || parent.empty) return { parent, child: { ...parent, bounds, empty: true }, lease: null, mask, options };
         const lease = this.#frame.temporary({ width: bounds.width, height: bounds.height, format: parent.target.format,

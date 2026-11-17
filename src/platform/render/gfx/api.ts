@@ -269,9 +269,11 @@ export interface GpuPass {
     pushClip(clip: RectI | ClipHandle): ClipToken;
     popClip(token: ClipToken): void;
     // Ordinary node/ancestor opacity multiplies emitted paints, without isolation.
+    // 'modulate' composites the group's premultiplied colour over white by fixed-function dst·k, k = rgb + (1 − a): the
+    // multiply slice of a group drawn normally, with no backdrop copy. It takes colourEffect 'none' only.
     beginGroup(bounds: RectI, options: {
         opacity: number;
-        blend: 'normal' | 'multiply';
+        blend: 'normal' | 'multiply' | 'modulate';
         colourEffect: 'none' | 'page-invert';
     }): GroupToken;
     endGroup(token: GroupToken): void;

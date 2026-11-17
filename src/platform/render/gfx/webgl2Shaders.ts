@@ -142,3 +142,37 @@ void main() {
         attributes: [],
     },
 };
+
+/** Lays a group that is composited with 'modulate': the premultiplied colour over white, k = rgb + (1 − a) (each channel),
+ * scaled by opacity and the clip mask first, so a transparent pixel is exactly neutral (k = 1). The fixed-function blend
+ * then multiplies the surface by k once. The composition vertex stage is shared; only the output differs. */
+export const MODULATE_COMPOSITE_SHADER: ShaderModule = {
+    id: 'platform-private-modulate-composite', revision: 1,
+    glsl: {
+        vertex: COMPOSITION_SHADER.glsl.vertex,
+        fragment: `#version 300 es
+precision highp float;
+${block}
+uniform sampler2D gfxTexture0;
+uniform sampler2D gfxTexture2;
+in vec2 sourceUV;
+in vec2 pixel;
+layout(location=0) out vec4 gfxColour;
+void main() {
+    vec4 source = texture(gfxTexture0, sourceUV);
+    float coverage = sourceSizeOpacityEffect.z;
+    if (options.y > 0.5) {
+        vec2 unit = (pixel - maskBounds.xy) / maskBounds.zw;
+        if (any(lessThan(unit, vec2(0.0))) || any(greaterThanEqual(unit, vec2(1.0)))) coverage = 0.0;
+        else coverage *= texture(gfxTexture2, vec2(maskUV.z + unit.x * maskUV.x, maskUV.w - unit.y * maskUV.y)).r;
+    }
+    source *= coverage;
+    gfxColour = vec4(source.rgb + vec3(1.0 - source.a), 1.0);
+}`,
+    },
+    layout: {
+        uniforms: [{ binding: 0, byteSize: 128 }],
+        textures: [{ binding: 0, format: 'rgba8' as const }, { binding: 2, format: 'rgba8' as const }],
+        attributes: [],
+    },
+};

@@ -276,6 +276,8 @@ export class TextAtlas {
     }
 
     private destroyPage(page: AtlasPage): void {
+        // The page's entries are dropped before it goes: a stand-in record that still names one must not keep the page's set alive.
+        page.entries.clear();
         if (page.target) this.device.destroy(page.target);
         this.device.destroy(page.texture);
         this.host.release(page.lease);

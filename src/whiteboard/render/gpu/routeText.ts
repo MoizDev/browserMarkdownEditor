@@ -1,12 +1,12 @@
 import type { Rgba } from '../../../platform/types';
 import type { LayerHost } from '../../../platform/render/compositor.types';
-import type { BufferHandle, ByteLease, GfxDevice, GpuPass, PipelineHandle, RectI, SamplerHandle, ShaderModule, TextureHandle } from '../../../platform/render/gfx/api';
+import type { BufferHandle, ByteLease, DrawCommand, GfxDevice, GpuPass, PipelineHandle, RectI, SamplerHandle, ShaderModule, TextureHandle, UniformSlice } from '../../../platform/render/gfx/api';
 import type { FrameBudget, OffscreenPasses } from '../../../platform/render/types';
 import { auditCount } from '../../../platform/render/renderAudit';
 import type { FontKey } from '../../text/fonts';
 import type { PaintItem, PaintTextItem } from '../paintStream';
 import { ATLAS_PAGE, IdentityIndex, ShelfPacker, TextAtlas, type AtlasEntry, type AtlasPage, type Indexed } from '../textAtlas';
-import { MASK_CANVAS_BYTES, copyIdentity, createCpuAccount, createMaskRaster, fillIdentity, identityHash, needsColourMask,
+import { MASK_CANVAS_BYTES, MEMO_ENTRY_BYTES, copyIdentity, createCpuAccount, createMaskRaster, fillIdentity, identityHash, needsColourMask,
     newIdentity, sliceCell, type CpuAccount, type MaskCell, type MaskGeometry, type MaskIdentity, type MaskRaster, type MaskRequest } from './textMasks';
 import type { Admission, Blend, CreateTextRoute, ItemRoute, PreparedRun } from './contracts';
 
@@ -26,6 +26,8 @@ export interface TextRoute extends ItemRoute<PaintTextItem> {
 
 /** Per instance: device rect (x, y, w, h), page uv rect (u0, v0, u1, v1; u0 = -1 marks a solid rect), premultiplied colour. */
 const INSTANCE_BYTES = 48;
+/** A batch's uniform before its first draw writes the frame's slice into it. It is never submitted. */
+const NO_UNIFORM: UniformSlice = { buffer: null as unknown as BufferHandle, offset: 0, bytes: 0 };
 const SOLID_UV = -1;
 const PARALLELOGRAM_UV = -2;
 const MONO_PAGES = 8, COLOUR_PAGES = 2;
@@ -170,8 +172,10 @@ function faceLabel(key: FontKey): string {
     return FACE_LABELS[FAMILY_INDEX[key.family] * 4 + (key.bold ? 2 : 0) + (key.italic ? 1 : 0)];
 }
 
-/** A run's quads, in paint order. Each batch is consecutive quads that share a pipeline and texture: one instanced draw. */
-interface Batch { readonly mode: Mode; readonly texture: TextureHandle; readonly first: number; readonly count: number; readonly pipeline: PipelineHandle }
+/** A run's quads, in paint order. Each batch is consecutive quads that share a pipeline and texture: one instanced draw.
+ * `command` is built once at admission and reused by every draw of the run: a draw writes only `uniform.slice`, the frame's uniforms. */
+interface Batch { readonly mode: Mode; readonly texture: TextureHandle; readonly first: number; readonly count: number; readonly pipeline: PipelineHandle;
+    readonly uniform: { binding: number; slice: UniformSlice }; readonly command: DrawCommand }
 /** A batch under construction. The build keeps these objects and reuses them across compositions. */
 interface BuildBatch { mode: Mode; texture: TextureHandle; first: number; count: number }
 /** A single-cell mask the index can stand in for, with the geometry it is scaled from. */
@@ -209,7 +213,10 @@ type Writable<T> = { -readonly [K in keyof T]: T[K] };
 export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string): TextRoute => {
     // Every CPU byte the route holds is leased: the canvas, the instance, uniform and conversion scratch, and the stand-in memo.
     const memoAccount: CpuAccount = createCpuAccount(host.allocator.cpu, MEMO_CHUNK);
-    const raster: MaskRaster = createMaskRaster(memoAccount);
+    // The stand-in records have their own account, so clearing them returns their chunks without touching the measure memo's.
+    const standAccount: CpuAccount = createCpuAccount(host.allocator.cpu, MEMO_CHUNK);
+    // Refused measurements are counted under the audit surface (h13's text:measure-uncached), so a pool at its limit shows.
+    const raster: MaskRaster = createMaskRaster(memoAccount, audit);
     let rasterLease: ByteLease | null = null;
     let scratch: Float32Array<ArrayBuffer> = new Float32Array(0), scratchLease: ByteLease | null = null;
     let uniformData: Float32Array<ArrayBuffer> | null = null, uniformLease: ByteLease | null = null;
@@ -274,12 +281,19 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         if (whiteLease) host.allocator.gpu.release(whiteLease);
         if (stage) host.allocator.gpu.release(stage.lease);
         if (convertLease) host.allocator.gpu.release(convertLease);
+        // The CPU scratch goes with the device: each is leased again on demand by the next admit.
+        if (scratchLease) host.allocator.cpu.release(scratchLease);
+        if (uniformLease) host.allocator.cpu.release(uniformLease);
+        if (convertScratchLease) host.allocator.cpu.release(convertScratchLease);
+        scratch = new Float32Array(0); scratchLease = null;
+        uniformData = null; uniformLease = null;
+        convertScratch = new Float32Array(0); convertScratchLease = null;
         pipelines = [undefined, undefined, undefined, undefined]; convertPipeline = null;
         pipelinesReady = false; pipelinesPending = false; failed = false;
         mono = null; colour = null; white = null; whiteLease = null; sampler = null;
         clearStageTimer(); stage = null; convertBuffer = null; convertLease = null; convertCapacity = 0; pendingCount = 0; pageRunCount = 0;
         // Stand-in records name the atlases this device just disposed: none may be drawn from again.
-        standIns.clear();
+        standIns.clear(); standAccount.reset();
         releaseRaster();
         device = null;
     };
@@ -407,6 +421,9 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
      * when the grant refuses the texture. The texture doubles only when nothing is pending, so the frame's cells are never copied. */
     const stageSpot = (w: number, h: number): { x: number; y: number } | null | 'denied' => {
         if (!stage && !createStage(device!, STAGE_MIN_HEIGHT)) return 'denied';
+        // With nothing pending no staged bitmap still needs its place. A spot a refused cell took and never filled is leaked until
+        // a conversion resets the packer, and no conversion runs with nothing pending: so the shelves are reset here.
+        if (pendingCount === 0) stage!.packer.reset();
         const spot = stage!.packer.place(w, h);
         if (spot) return spot;
         if (pendingCount > 0) return null;
@@ -507,8 +524,13 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         const key = standProbeOf(req, label, colourOf);
         if (!key) return;
         const existing = standIns.find(key);
+        // A replaced record keeps the charge it already holds: the same identity holds the same bytes, so none is taken again.
         if (existing) standIns.delete(existing);
-        else if (standIns.size >= STANDIN_LIMIT) standIns.clear();
+        else {
+            if (standIns.size >= STANDIN_LIMIT) { standIns.clear(); standAccount.reset(); }
+            // A record the pool will not charge is not kept, as the measure memo does: its cell is simply not a stand-in.
+            if (!standAccount.charge(MEMO_ENTRY_BYTES + 2 * (key.css.length + key.text.length))) return;
+        }
         const identity = copyIdentity(key);
         standIns.add({ identity, hash: identityHash(identity), atlas, entry, scale: scaleOf(req),
             originX: geometry.originX, originY: geometry.originY, w: geometry.w, h: geometry.h });
@@ -729,18 +751,26 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
                 host.allocator.gpu.release(lease);
                 throw error;
             }
-            // The run keeps its own batches and pins: the build's objects are reused by the next composition.
+            // The run keeps its own batches, commands and pins: the build's objects are reused by the next composition.
+            if (!sampler) throw new Error('Text sampler missing');
+            const scissor: RectI = { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
             const batches: Batch[] = new Array<Batch>(build.batchCount);
             for (let i = 0; i < build.batchCount; i++) {
                 const b = build.batches[i];
                 const pipeline = pipelines[pipelineIndex(b.mode, blend)];
                 if (!pipeline) throw new Error('Text pipeline missing');
-                batches[i] = { mode: b.mode, texture: b.texture, first: b.first, count: b.count, pipeline };
+                // The uniform slice is the frame's, written at each draw; the placeholder is never submitted.
+                const uniform = { binding: 0, slice: NO_UNIFORM };
+                const command: DrawCommand = { pipeline, bindings: { uniforms: [uniform],
+                    textures: [{ binding: 0, texture: b.texture, sampler }] },
+                    vertices: [{ buffer, offset: b.first * INSTANCE_BYTES, bytes: b.count * INSTANCE_BYTES }],
+                    first: 0, count: 4, instances: b.count, scissor };
+                batches[i] = { mode: b.mode, texture: b.texture, first: b.first, count: b.count, pipeline, uniform, command };
             }
             const pinAtlases = build.pinAtlas.slice(), pinEntries = build.pinEntry.slice();
             for (let i = 0; i < pinEntries.length; i++) pinAtlases[i].pin(pinEntries[i]);
             const run: TextRun = { route: 'text', blend, device: owner, buffer, bufferLease: lease,
-                batches, pinAtlases, pinEntries, viewW, viewH, scissor: { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }, bytes };
+                batches, pinAtlases, pinEntries, viewW, viewH, scissor, bytes };
             live.add(run);
             auditCount(audit, 'route:text');
             return { status: 'ready', value: run };
@@ -752,12 +782,9 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
             const data = uniformData!;
             data[0] = run.viewW; data[1] = run.viewH; data[2] = 0; data[3] = 0;
             const uniforms = host.uniforms(data);
-            if (!sampler) throw new Error('Text sampler missing');
             for (const batch of run.batches) {
-                pass.draw({ pipeline: batch.pipeline, bindings: { uniforms: [{ binding: 0, slice: uniforms }],
-                    textures: [{ binding: 0, texture: batch.texture, sampler }] },
-                    vertices: [{ buffer: run.buffer, offset: batch.first * INSTANCE_BYTES, bytes: batch.count * INSTANCE_BYTES }],
-                    first: 0, count: 4, instances: batch.count, scissor: run.scissor });
+                batch.uniform.slice = uniforms;
+                pass.draw(batch.command);
             }
         },
         encodeOffscreen(passes: OffscreenPasses): void {
@@ -823,7 +850,7 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
             let gpuBytes = (mono?.bytes ?? 0) + (colour?.bytes ?? 0) + (whiteLease?.bytes ?? 0) + (stage?.lease.bytes ?? 0) + (convertLease?.bytes ?? 0);
             for (const run of live) gpuBytes += run.bytes;
             const cpuBytes = (rasterLease?.bytes ?? 0) + (scratchLease?.bytes ?? 0) + (uniformLease?.bytes ?? 0) +
-                (convertScratchLease?.bytes ?? 0) + memoAccount.bytes;
+                (convertScratchLease?.bytes ?? 0) + memoAccount.bytes + standAccount.bytes;
             return { gpuBytes, cpuBytes };
         },
     };

@@ -14,7 +14,8 @@ export interface GpuPaneServicesOptions {
     onFenceAge(ageMs: number): void;
     onFramebufferFailure?(): void;
     onGpuTiming(p95Ms: number, samples: number, disjoint: boolean): void;
-    evict(): void;
+    /** The pane's answer to a device cache's eviction request: the bytes it frees now (0 when none). */
+    evict(bytes: number, pool: 'gpu' | 'cpu'): number;
 }
 
 /** Each cache receives the exact lease objects the arena returns. Closing a cache stops
@@ -27,13 +28,13 @@ export class GpuPaneServices {
 
     constructor(options: GpuPaneServicesOptions) {
         const common = { paneId: options.paneId, owner: options.owner, hiddenAt: null,
-            lastVisibleAt: options.now, lastUsedAt: options.now, class: 'scene-cache' as const,
-            // Leases remain charged as queued/retiring until the arena returns them; no free is inferred.
-            memory: () => ({ live: 0, retiring: 0 }), evict: options.evict };
+            lastVisibleAt: options.now, lastUsedAt: options.now, class: 'scene-cache' as const };
         const opened: MemoryCacheHandle[] = [];
         try {
             const register = (suffix: string, pool: 'gpu' | 'cpu', kind: 'working' | 'program'): MemoryCacheHandle => {
-                const handle = options.governor.register({ ...common, id: `${options.id}:${suffix}`, pool, kind });
+                // Leases remain charged as queued/retiring until the arena returns them; no free is inferred.
+                const handle = options.governor.register({ ...common, id: `${options.id}:${suffix}`, pool, kind,
+                    memory: () => ({ live: 0, retiring: 0 }), evict: bytes => options.evict(bytes, pool) });
                 opened.push(handle);
                 return handle;
             };

@@ -512,14 +512,18 @@ class DeviceFrame implements ControlledFrame {
         const lease = this.temporary({ width: area.width, height: area.height, samples: 1, stencil: false,
             format: scope.target.format, purpose: 'group' });
         const output = this.#backend.target(lease.target);
+        // Only the copied rectangle is read, so an MSAA target resolves that rectangle, not the whole target: a multiply
+        // composite on a large page otherwise resolved every pixel of the target to copy one group's bounds.
+        // By reading: the copy below reads `local` alone, so the resolve of the rest of the target was never used.
+        const local = { x: area.x - scope.originX, y: area.y - scope.originY, width: area.width, height: area.height };
         let source = scope.target;
         if (source.samples === 4) {
             if (!source.color) throw new ArenaError('invalid-resource');
             const resolve: FrameTarget = { ...source, framebuffer: source.resolveFramebuffer, samples: 1 };
-            this.blit(source, { x: 0, y: 0, width: source.width, height: source.height }, resolve, 0, 0);
+            this.blit(source, local, resolve, local.x, local.y);
             source = resolve;
         }
-        this.blit(source, { x: area.x - scope.originX, y: area.y - scope.originY, width: area.width, height: area.height }, output, 0, 0);
+        this.blit(source, local, output, 0, 0);
         return { lease, texture: this.#backend.texture(lease.texture) };
     }
     composite(scope: Scope, clip: RectI, source: FrameTexture, sourceRect: RectI, bounds: RectI,

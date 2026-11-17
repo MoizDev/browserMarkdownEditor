@@ -54,21 +54,20 @@ export function createAnalyticInkBatch(host: LayerHost, report: (error: unknown)
         host.allocator.cpu.whenAvailable?.(wake); host.allocator.gpu.whenAvailable?.(wake);
     };
     let device: GfxDevice | null = null, pipeline: PipelineHandle | null = null, pendingPipeline = false, failed = false, incarnation = 0;
-    let building: Build | null = null, disposed = false, denied = false, cpuBytes = 0;
+    let building: Build | null = null, disposed = false, denied = false;
     let currentToken: FrameToken | null = null, currentCameraEpoch = -1;
     const live = new Map<PreparedAnalyticInkBatch, { viewport: Float32Array; lease: ByteLease; mapLease: ByteLease; nodeIndices: Map<string, number[]> }>();
     const dropBuild = () => {
         const old = building; building = null;
         if (!old) return;
-        if (old.pending) { host.allocator.cpu.release(old.pending.lease); cpuBytes -= old.pending.lease.bytes; }
-        if (old.mapLease) { host.allocator.cpu.release(old.mapLease); cpuBytes -= old.mapLease.bytes; }
+        if (old.pending) host.allocator.cpu.release(old.pending.lease);
+        if (old.mapLease) host.allocator.cpu.release(old.mapLease);
         for (const slab of old.slabs) old.device.destroy(slab.buffer);
     };
     const retire = (batch: PreparedAnalyticInkBatch) => {
         const owned = live.get(batch);
         if (!owned) return;
         live.delete(batch); host.allocator.cpu.release(owned.lease); host.allocator.cpu.release(owned.mapLease);
-        cpuBytes -= owned.lease.bytes + owned.mapLease.bytes;
         for (const slab of batch.slabs) batch.device.destroy(slab.buffer);
     };
     // Read from the slabs' own leases, never from a counter: the device returns a slab's lease when its buffer is destroyed,
@@ -78,6 +77,18 @@ export function createAnalyticInkBatch(host: LayerHost, report: (error: unknown)
         for (const batch of live.keys()) if (isCurrent(host, batch.device)) for (const slab of batch.slabs) bytes += slab.lease.bytes;
         const pending = building;
         if (pending && isCurrent(host, pending.device)) for (const slab of pending.slabs) bytes += slab.lease.bytes;
+        return bytes;
+    };
+    // The CPU leases this route holds: each live batch's index and bookkeeping, and the building batch's in-flight leases.
+    // A lease is reported while it is held, so a release takes it out of the figure at the same moment it is returned.
+    const cpuHeld = (): number => {
+        let bytes = 0;
+        for (const owned of live.values()) bytes += owned.lease.bytes + owned.mapLease.bytes;
+        const pending = building;
+        if (pending) {
+            if (pending.mapLease) bytes += pending.mapLease.bytes;
+            if (pending.pending) bytes += pending.pending.lease.bytes;
+        }
         return bytes;
     };
     const release = () => {
@@ -111,9 +122,9 @@ export function createAnalyticInkBatch(host: LayerHost, report: (error: unknown)
         ready(): boolean { return !disposed && !failed && !!pipeline && !!device && host.device() === device && host.generation === device.generation; },
         failed(): boolean { return failed; },
         needsFrame(): boolean { return !disposed && !failed && !!pipeline && !!building && !denied; },
-        memory(): { gpuBytes: number; cpuBytes: number } { return { gpuBytes: gpuHeld(), cpuBytes }; },
+        memory(): { gpuBytes: number; cpuBytes: number } { return { gpuBytes: gpuHeld(), cpuBytes: cpuHeld() }; },
         cpuWorkingSet(nextPaintCount = 0): { mandatoryBytes: number; prefetchBytes: number } {
-            return { mandatoryBytes: cpuBytes + SLABS[2] + 16 + (building?.mapLease ? 0 : mapBytes(nextPaintCount)), prefetchBytes: 0 };
+            return { mandatoryBytes: cpuHeld() + SLABS[2] + 16 + (building?.mapLease ? 0 : mapBytes(nextPaintCount)), prefetchBytes: 0 };
         },
         prepare(paints: readonly AnalyticInkPaint[], view: ViewState, budget: FrameBudget): PreparedAnalyticInkBatch | null {
             if (disposed) return null;
@@ -134,7 +145,7 @@ export function createAnalyticInkBatch(host: LayerHost, report: (error: unknown)
                 if (!build.mapLease) {
                     const lease = host.allocator.cpu.reserve(mapBytes(paints.length));
                     if (!lease) { denied = true; awaitCapacity(); return null; }
-                    cpuBytes += lease.bytes; build.mapLease = lease; build.nodeIndices = new Map();
+                    build.mapLease = lease; build.nodeIndices = new Map();
                 }
                 if (!build.pending && build.index < paints.length) {
                     if (budget.shouldYield()) return null;
@@ -142,10 +153,9 @@ export function createAnalyticInkBatch(host: LayerHost, report: (error: unknown)
                     const size = SLABS.find(bytes => Math.floor(bytes / STRIDE) >= remaining) ?? SLABS[2];
                     const lease = host.allocator.cpu.reserve(size);
                     if (!lease) { denied = true; awaitCapacity(); return null; }
-                    cpuBytes += lease.bytes;
                     try { build.pending = { data: new Float32Array(size / 4), lease, size,
                         count: Math.min(remaining, Math.floor(size / STRIDE)), index: 0, bounds: null }; }
-                    catch (error) { host.allocator.cpu.release(lease); cpuBytes -= lease.bytes; throw error; }
+                    catch (error) { host.allocator.cpu.release(lease); throw error; }
                 }
                 const slab = build.pending;
                 if (slab) {
@@ -174,18 +184,17 @@ export function createAnalyticInkBatch(host: LayerHost, report: (error: unknown)
                         if (buffer) device.destroy(buffer);
                         if (!attached) host.allocator.gpu.release(gpuLease);
                     }
-                    build.index += slab.count; host.allocator.cpu.release(slab.lease); cpuBytes -= slab.lease.bytes; build.pending = null;
+                    build.index += slab.count; host.allocator.cpu.release(slab.lease); build.pending = null;
                     if (build.index < paints.length) return null;
                 }
                 const lease = host.allocator.cpu.reserve(16);
                 if (!lease) { denied = true; awaitCapacity(); return null; }
-                cpuBytes += lease.bytes;
                 try {
                     const viewport = new Float32Array([Math.round(view.viewport.width * view.viewport.dpr), Math.round(view.viewport.height * view.viewport.dpr), 0, 0]);
                     const batch: PreparedAnalyticInkBatch = Object.freeze({ paints, token: Object.freeze({ ...build.token }), cameraEpoch: build.cameraEpoch,
                         projection: key, device, slabs: Object.freeze(build.slabs) });
                     live.set(batch, { viewport, lease, mapLease: build.mapLease!, nodeIndices: build.nodeIndices! }); building = null; return batch;
-                } catch (error) { host.allocator.cpu.release(lease); cpuBytes -= lease.bytes; throw error; }
+                } catch (error) { host.allocator.cpu.release(lease); throw error; }
             } catch (error) { dropBuild(); failed = true; report(error); return null; }
         },
         draw(pass: GpuPass, batch: PreparedAnalyticInkBatch, view: ViewState, omitNodes?: ReadonlySet<string>): void {

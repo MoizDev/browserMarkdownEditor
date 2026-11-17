@@ -70,6 +70,8 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     const compositorRef: { current: PaneCompositor | null } = { current: null };
     let lastView: ViewState = { camera: { ...camera.camera }, viewport: { ...camera.viewport }, epoch: 0, moving: false };
     let lastQuality: number | null = null;
+    // Audit only: the camera scale of the previous mirrored present, for the present's zooming flag.
+    let lastMirroredScale: number | null = null;
     let sampledCamera = { ...camera.camera };
     let lastInputAt = performance.now();
     let pendingInputAt: number | null = null;
@@ -558,10 +560,14 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                                 }
                                 // A mirrored frame is presented from the 2D mirror without an encode: it is recorded here, as the 2D
                                 // compositor records its own, so the present audit counts every presented frame. The mirror is a 2D picture: canvas2d.
-                                if (mirrored && renderAuditEnabled()) auditPresent({ pane: options.paneId, frame: frame.frameId,
-                                    rawTick: frame.timestamp, backend: 'canvas2d', layersComplete: complete, canvas: null,
-                                    standIns: 0, standInsRaster: 0, holes: 0, zooming: false,
-                                    refusal: null });
+                                if (mirrored && renderAuditEnabled()) {
+                                    const scale = frame.view.camera.z;
+                                    const zooming = lastMirroredScale !== null && scale !== lastMirroredScale;
+                                    lastMirroredScale = scale;
+                                    auditPresent({ pane: options.paneId, frame: frame.frameId, rawTick: frame.timestamp, backend: 'canvas2d',
+                                        layersComplete: complete, canvas: null, standIns: 0, standInsRaster: 0, holes: 0, zooming,
+                                        refusal: null });
+                                }
                                 auditFrame(drawing.backend, performance.now() - encodeStart);
                                 touchedFrame = frame.frameId;
                                 if (qualityScale < 1) auditCount('pane', 'quality-below-1');

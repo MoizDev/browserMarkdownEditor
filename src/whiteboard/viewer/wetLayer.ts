@@ -14,7 +14,7 @@ import { colourCss, resolveSwatch, withOpacity, type PaintPalette } from '../ren
 import { HIGHLIGHT_OVERLAY_ALPHA, HIGHLIGHT_UNDERLAY_ALPHA, inkMaterial, type InkMaterial } from '../render/material';
 import type { PaintSource, PaintInkItem, PaintClip } from '../render/paintStream';
 import type { Admission, CreateInkRoutes, InkRouteFor, ItemRoute, PreparedRun, WithClips } from '../render/gpu/contracts';
-import { awaitCapacity, isBudgetRefusal } from '../render/budgetRefusal';
+import { awaitSizedCapacity, isBudgetRefusal } from '../render/budgetRefusal';
 import { appendPath2d } from '../render/reference/coverage2d';
 
 // Provenance: wet/dry ink handover, bounded ink outline and C4 layer contracts;
@@ -194,7 +194,9 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
     const drawCall: { pass: GpuPass | null; view: ViewState | null; host: LayerHost | null } = { pass: null, view: null, host: null };
     const hostLayers = new Map<LayerHost, Layer>();
     const report = (error: unknown) => {
-        if (isBudgetRefusal(error)) { denied = true; awaitCapacity(owner, invalidate); return; }
+        // A refusal that reaches here has no size of its own, so the wait is sized by the layer's next bounded demand (the
+        // CPU bytes cpuWorkingSet declares). The scrap's texture refusal is sized where it is thrown, below.
+        if (isBudgetRefusal(error)) { denied = true; awaitSizedCapacity(owner, invalidate, { pool: 'cpu', bytes: TEMP_BYTES + PATH_BLOCK }); return; }
         try { options.onError(error); } catch { /* reporting must not escape the scheduler */ }
     };
     const invalidate = () => { if (disposed) return; dirty = true; generation++; denied = false; options.invalidate(); for (const host of hosts) host.invalidate('wet-ink'); };
@@ -256,8 +258,8 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
             while (job.step(1024) === 'pending') { /* bounded per chunk, as coverageOutline is */ }
             commands += job.commandCount;
         }
-        const lease = reserve((commands + 1) * 80);
-        if (!lease) { denied = true; awaitCapacity(owner, invalidate); return null; }
+        const bytes = (commands + 1) * 80, lease = reserve(bytes);
+        if (!lease) { denied = true; awaitSizedCapacity(owner, invalidate, { pool: 'cpu', bytes }); return null; }
         source.leases.push(lease); source.path = path;
         return path;
     };
@@ -278,8 +280,9 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         if (!(x1 > x0 && y1 > y0)) return { status: 'empty' };
         const world: Bounds = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }, scale = view.camera.z * view.viewport.dpr;
         const pw = Math.max(1, Math.ceil(world.w * scale)), ph = Math.max(1, Math.ceil(world.h * scale)), bytes = pw * ph * 4;
+        // pathOf has registered its own sized wait; the stroke is deferred behind it, not waited for twice.
         const path = pathOf(source);
-        if (!path) return { status: 'denied', pool: 'cpu', bytes: 0 };
+        if (!path) return { status: 'deferred' };
         const lease = host.allocator.gpu.reserve(bytes);
         if (!lease) return { status: 'denied', pool: 'gpu', bytes };
         if (!budget.claimUpload(bytes)) { host.allocator.gpu.release(lease); return { status: 'deferred' }; }
@@ -299,6 +302,10 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
             const scrap: WetScrap = { device, texture, world, pw, ph };
             texture = null;
             return { status: 'ready', value: scrap };
+        } catch (error) {
+            // A refused texture is a sized denial of the pool it was for, not an error: the stroke waits for those bytes.
+            if (isBudgetRefusal(error)) return { status: 'denied', pool: 'gpu', bytes };
+            throw error;
         } finally {
             bitmap?.close();
             if (canvas) { canvas.width = 0; canvas.height = 0; }
@@ -366,7 +373,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                     // A replaced shown is disposed only when its successor is admitted: a deferred or denied admission keeps the last tip.
                     case 'empty': slot.viewBound = true; setShown(slot, null, 'empty'); break;
                     case 'deferred': slot.state = 'pending'; break;
-                    case 'denied': slot.state = 'denied'; denied = true; awaitCapacity(host, invalidate); break;
+                    case 'denied': slot.state = 'denied'; denied = true; awaitSizedCapacity(host, invalidate, { pool: admission.pool, bytes: admission.bytes }); break;
                     case 'unsupported': {
                         // The route refused the stroke: it is drawn through the CPU path, and the refusal is reported once.
                         if (!slot.reported) { slot.reported = true; report(new Error(`Wet ink route refused a stroke (${admission.why}); it is drawn through the CPU path`)); }
@@ -378,7 +385,8 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                                 draw: () => { if (drawCall.pass && drawCall.view && drawCall.host) drawScrap(drawCall.pass, drawCall.view, drawCall.host, value); } }, 'ready');
                         } else if (scrap.status === 'empty') { slot.viewBound = true; setShown(slot, null, 'empty'); }
                         else if (scrap.status === 'deferred') slot.state = 'pending';
-                        else { slot.state = 'denied'; denied = true; awaitCapacity(host, invalidate); }
+                        else if (scrap.status === 'denied') { slot.state = 'denied'; denied = true; awaitSizedCapacity(host, invalidate, { pool: scrap.pool, bytes: scrap.bytes }); }
+                        else slot.state = 'pending'; // admitScrap never refuses a stroke as unsupported; a stroke kept pending is never drawn wrong
                         break;
                     }
                 }

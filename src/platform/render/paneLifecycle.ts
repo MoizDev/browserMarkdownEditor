@@ -480,6 +480,10 @@ export class PaneLifecycle<T extends object> {
      * was 'trimming' (large seed, 114 of 114). Their unblocking comes from the capacity waiters and their shrink from the
      * eviction that freed the bytes, so neither needs a frame here. */
     applyBudget(grant: PaneMemoryGrant | null): void {
+        // A CPU grant that moves alone repaints nothing: the governor refuses or evicts past it at the next reservation, and the
+        // pressure trim releases the rest. Repainting on it fed a loop, because the pane's own staged slices move its CPU need, so the
+        // grant flipped between two values and each flip requested a frame (measured in a drag tail: two budget frames, both with
+        // unchanged pixels). The cache grant likewise: the layers trim to it without a repaint.
         const seen = this.budget;
         if (grant === null) {
             if (seen === null) return;
@@ -597,6 +601,7 @@ export class PaneLifecycleHost {
     }
 
     windowVisibility(visible: boolean): void {
+        if (visible) this.governor.holdPressure(performance.now());
         surfaceBroker.setWindowVisible(visible);
         all([...this.panes.values()].map(pane => () => pane.setWindowVisible(visible)));
     }

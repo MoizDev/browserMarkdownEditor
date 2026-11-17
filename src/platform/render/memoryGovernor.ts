@@ -246,6 +246,13 @@ export class MemoryGovernor {
     private lastTrouble: MemoryTrouble | null = null;
     private qualityLimit = 1;
     private belowRecoverySince: number | null = null;
+    private degradedAt = Number.NEGATIVE_INFINITY;
+    // The level that last failed under trouble, the earliest time it may be retried, and the current back-off.
+    private failedQuality: number | null = null;
+    private failedUntil = Number.NEGATIVE_INFINITY;
+    private failureBackoffMs: number = POLICY.qualityFailureBackoffMinMs;
+    private levelSince = Number.NEGATIVE_INFINITY;
+    private pressureHoldUntil = Number.NEGATIVE_INFINITY;
     private now = 0;
     private workerHeapBytes = 0;
     private readonly workerHeaps = new Map<object, number>();
@@ -476,18 +483,25 @@ export class MemoryGovernor {
                 unmet = this.trimFailed(pool, this.target[pool]) || unmet;
             }
         }
-        if (unmet) this.degrade();
+        // Over budget steps down unless a resume holds pressure: the rebuild after a return is charged at once, and stepping on it stacked
+        // the quality down (1.0 -> 0.8 -> 0.64), which the recovery window then held for five seconds.
+        if (unmet && now >= this.pressureHoldUntil) this.degrade();
         this.trimPanesOverGrant();
         const cool = this.cool() && !liveGesture;
         if (!cool) this.belowRecoverySince = null;
         else if (this.belowRecoverySince === null) this.belowRecoverySince = now;
-        else if (now - this.belowRecoverySince >= POLICY.memoryRecoveryDelayMs) {
+        else if (now - this.belowRecoverySince >= POLICY.memoryRecoveryDelayMs && !this.raiseRefused(now)) {
             this.qualityLimit = Math.min(1, this.qualityLimit / POLICY.qualityReductionFactor);
             for (const [id, value] of this.paneCeiling) this.paneCeiling.set(id, Math.min(1, value / POLICY.qualityReductionFactor));
+            this.levelSince = now;
             this.state = this.qualityLimit < 1 ? 'degraded' : 'normal';
             if (this.state === 'normal') this.lastTrouble = null;
             this.belowRecoverySince = now;
             this.replan();
+        }
+        if (this.failedQuality !== null && now - this.levelSince >= POLICY.qualityFailureResetMs) {
+            this.failedQuality = null;
+            this.failureBackoffMs = POLICY.qualityFailureBackoffMinMs;
         }
     }
 
@@ -495,6 +509,7 @@ export class MemoryGovernor {
         this.lastTrouble = reason;
         this.state = 'trimming';
         this.belowRecoverySince = null;
+        this.recordFailedLevel();
         for (const pool of ['gpu', 'cpu'] as const) {
             this.trimPool(pool, Math.floor(this.target[pool] * POLICY.memoryTrimTargetRatio));
         }
@@ -755,6 +770,7 @@ export class MemoryGovernor {
         if (this.refusing[pool]) return;
         this.refusing[pool] = true;
         this.lastTrouble = 'allocation';
+        this.recordFailedLevel();
         this.degrade();
         this.onPressureChange?.();
     }
@@ -884,21 +900,46 @@ export class MemoryGovernor {
         return bytes;
     }
 
-    /** Usage low enough to step quality back up. GPU grants are planned up to the trim target, so a pane using its own
-     * grant sits there; the CPU's 0.6 ratio applied to the GPU never came once it was degraded (measured: a PDF held at
-     * 44 of 64 MB stayed at quality 0.8, so no webgl2 frame was ever sharp). */
     /** What a layer reads through its host: a pure mapping of the state fields, so the read allocates nothing. */
     trouble(): LayerTrouble { return layerTroubleOf(this.state, this.lastTrouble); }
 
+    /** Usage low enough to step quality back up. GPU grants are planned up to the trim target, so a pane using its own
+     * grant sits there; the CPU's 0.6 ratio applied to the GPU never came once it was degraded (measured: a PDF held at
+     * 44 of 64 MB stayed at quality 0.8, so no webgl2 frame was ever sharp). */
     cool(): boolean {
         return this.charged.gpu < this.target.gpu * POLICY.memoryTrimTargetRatio &&
             this.charged.cpu < this.target.cpu * POLICY.memoryRecoveryRatio;
     }
 
+    /** The level being left failed under trouble: a raise back to it waits out the back-off, which doubles on repeat failures of
+     * the same level. Only trouble records a failure, not a budget step: a budget step is not evidence the level cannot work. */
+    private recordFailedLevel(): void {
+        if (this.failedQuality === this.qualityLimit) this.failureBackoffMs = Math.min(this.failureBackoffMs * 2, POLICY.qualityFailureBackoffMaxMs);
+        else { this.failedQuality = this.qualityLimit; this.failureBackoffMs = POLICY.qualityFailureBackoffMinMs; }
+        this.failedUntil = this.now + this.failureBackoffMs;
+    }
+
+    /** True while the next level up is the failed one and its back-off has not passed. */
+    private raiseRefused(now: number): boolean {
+        return this.failedQuality !== null && now < this.failedUntil &&
+            Math.min(1, this.qualityLimit / POLICY.qualityReductionFactor) >= this.failedQuality;
+    }
+
+    /** A visibility resume rebuilds the presented picture at once; that rebuild's charge is not pressure for a short hold. */
+    holdPressure(now: number): void {
+        this.pressureHoldUntil = Math.max(this.pressureHoldUntil, now + POLICY.resumePressureHoldMs);
+    }
+
+    /** Every pressure signal lands here, so one settle window takes one quality step: each pane of a return can report its own
+     * capability failure in the same tick, and a step per report stacked them (measured: two steps, 1.0 -> 0.8 -> 0.64, in one tick). */
     private degrade(): void {
         this.state = 'degraded';
         this.belowRecoverySince = null;
-        this.qualityLimit = Math.max(POLICY.minInteractiveQualityScale, this.qualityLimit * POLICY.qualityReductionFactor);
+        if (this.now - this.degradedAt >= POLICY.qualityStepSettleMs) {
+            this.degradedAt = this.now;
+            this.levelSince = this.now;
+            this.qualityLimit = Math.max(POLICY.minInteractiveQualityScale, this.qualityLimit * POLICY.qualityReductionFactor);
+        }
         this.plan();
     }
 

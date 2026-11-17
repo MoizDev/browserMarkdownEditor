@@ -77,6 +77,14 @@ export const RENDER_CONSTANTS: RenderConstants = Object.freeze({
     minInteractiveQualityScale: 0.5,
     memoryRecoveryRatio: 0.6,
     memoryRecoveryDelayMs: 5000,
+    qualityStepSettleMs: 300,
+    // A real trouble at a level (a device limit, an allocation refusal) re-fires whenever the level is retried at once, a raise/drop
+    // cycle every ~5 s. The back-off spaces the retries 5, 10, 20, 40, 60 s and forgets them once the level holds 30 s. Measured with
+    // forced troubles at full quality (gpu-h13): retries 8.0, 12.1 and 20 s after each failure.
+    qualityFailureBackoffMinMs: 5000,
+    qualityFailureBackoffMaxMs: 60000,
+    qualityFailureResetMs: 30000,
+    resumePressureHoldMs: 1500,
     slowGpuSampleCount: 120,
     stalledFenceMs: 250,
     surfaceReserveBytesPerPixel: 12,

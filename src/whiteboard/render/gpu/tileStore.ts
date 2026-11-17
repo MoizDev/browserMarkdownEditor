@@ -29,6 +29,9 @@ export interface NumericTileStore extends TileStore {
     countComposed(band: PaintBand, scaleIndex: number, x0: number, y0: number, x1: number, y1: number): number;
     /** Removes one entry; see removeTile. */
     remove(key: TileKey): boolean;
+    /** The idle trim: releases free targets down to the reserve once the store has been idle for the idle period. `now` is
+     * performance.now(). Returns the number of targets released. */
+    trimIdle(now: number): number;
 }
 
 /** Scales that may hold entries at once: the packed key's scale field. A scale past this count takes the index of the least
@@ -46,6 +49,10 @@ const POS_STRIDE = 2 ** 26;
  * list holds about one scale's visible positions (PLAN §6, risk 4: about 30 at DPR 2). Past the limit a target is destroyed,
  * because a kept target still holds its bytes against the governor. Gpu measures the limit in wave 3. */
 const FREE_TARGET_LIMIT = 32;
+/** The idle trim: once the store has seen no acquire for FREE_IDLE_MS, the free list is cut down to FREE_TARGET_RESERVE (the
+ * oldest first), so a zoom that dropped its scales hands their bytes back instead of holding them until releaseAll. */
+const FREE_IDLE_MS = 2000;
+const FREE_TARGET_RESERVE = 4;
 
 function checkKey(key: TileKey): void {
     if (!Number.isSafeInteger(key.x) || !Number.isSafeInteger(key.y) || !Number.isSafeInteger(key.slice) ||
@@ -156,6 +163,8 @@ class GpuTileStore implements NumericTileStore {
     private gpuBytes = 0;
     /** The device generation whose targets the store holds; see adopt. */
     private current: GfxDevice | null = null;
+    /** The last acquire's clock reading (performance.now), which the idle trim measures from. */
+    private lastAcquireAt = 0;
     private readonly host: LayerHost;
 
     constructor(host: LayerHost, audit: string) {
@@ -316,6 +325,7 @@ class GpuTileStore implements NumericTileStore {
      * refuses; the caller keeps its stand-in and waits. */
     acquire(key: TileKey, blend: Blend, device: GfxDevice): TileEntry | null {
         checkKey(key);
+        this.lastAcquireAt = performance.now();
         // A position the packed key cannot name is refused here, counted as its own cause, never stored.
         if (!inReach(key)) {
             auditCount(this.audit, 'tile:out-of-reach');
@@ -361,14 +371,36 @@ class GpuTileStore implements NumericTileStore {
         return made;
     }
 
-    /** A target that leaves its entry keeps its lease and waits on the free list; past the limit it is destroyed. */
+    /** A target that leaves its entry keeps its lease and waits on the free list; past the limit it is destroyed. Above the
+     * reserve, the store asks the host for a frame at the idle deadline, so trimIdle runs then rather than never. */
     private keepFree(target: TileTarget): void {
         if (this.free.length < FREE_TARGET_LIMIT) {
             this.free.push(target);
+            if (this.free.length > FREE_TARGET_RESERVE) this.host.wakeAt(this.lastAcquireAt + FREE_IDLE_MS);
             return;
         }
         this.retire(target);
         auditCount(this.audit, 'tile:evict:free-overflow');
+    }
+
+    /** Releases free targets down to the reserve once no acquire has come for FREE_IDLE_MS, oldest first. Not yet idle: asks
+     * the host for a frame at the deadline and releases nothing. Returns the number released. Driven by the composer's
+     * the composer's prepare, once it calls trimIdle (the TileStore contract has no such call yet), and by the frame that the
+     * deadline keepFree schedules. */
+    trimIdle(now: number): number {
+        const excess = this.free.length - FREE_TARGET_RESERVE;
+        if (excess <= 0) return 0;
+        const due = this.lastAcquireAt + FREE_IDLE_MS;
+        if (now < due) {
+            this.host.wakeAt(due);
+            return 0;
+        }
+        const released = this.free.splice(0, excess);
+        for (const target of released) {
+            this.retire(target);
+            auditCount('store', 'free:trim');
+        }
+        return released.length;
     }
 
     /** Drops the count of a target whose device generation is gone. The arena returned its bytes at abandonment. */

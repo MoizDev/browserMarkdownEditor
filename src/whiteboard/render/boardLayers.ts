@@ -831,8 +831,9 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         if (backend !== 'canvas2d' && !gpuCoverage?.complete) return INCOMPLETE;
         if (!ready || !sameToken(ready.token, frame.token)) return INCOMPLETE;
         const latest = options.requestedRevision();
-        const fresh = ready.sceneRevision === requested && ready.sceneRevision === latest;
-        const current = (fresh || (requested === latest && undrawnChangeSince(ready.sceneRevision, latest)))
+        // The picture drawn is current at the latest revision, whatever revision this layer's frame was scheduled for (a preview
+        // band's scheduled frame lags the drag's moves while its picture is already the latest: measured 62 of 62 as stale).
+        const current = (ready.sceneRevision === latest || undrawnChangeSince(ready.sceneRevision, latest))
             && ready.theme === options.requestedTheme() && options.frames.isCurrent(ready);
         return current ? { complete: true, sharp: (gpuCoverage?.sharp ?? true) && (denseCoverage?.sharp ?? true) } : STALE;
     };

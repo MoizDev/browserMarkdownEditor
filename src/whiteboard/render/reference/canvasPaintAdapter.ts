@@ -45,6 +45,19 @@ export function preparedOfFrame(frame: PaintSource, resources: PaintResources2d,
     return { sourceFrame: frame, root: rootOf(frame), windows: windowsOfSource(frame), resources, ...(sharp === undefined ? {} : { sharp }) };
 }
 
+/** The GPU side's hold on a picture's decoded bitmap, on the prepared resources of one paint. Once a GPU texture holds the
+ * pixels the GPU side releases the bitmap (the provider's lease, the largest copy of the picture), and asks for it again when
+ * a draw needs it. Only the GPU side calls it: a canvas2d draw never releases anything, so its output is unchanged. A released
+ * picture cannot be drawn from its bitmap, so the GPU side reacquires it before any CPU draw of that picture. */
+export interface PaintImageHold {
+    /** 'ready': the bitmap is held; 'released': it was given up; 'absent': not held (never requested, or still decoding). */
+    imageState(key: string): 'ready' | 'released' | 'absent';
+    /** Gives up the bitmap of a held picture; returns true when there was one to give up. */
+    releaseImage(key: string): boolean;
+    /** Requests a released or absent picture again; its settlement invalidates the frame. A request already in flight is kept. */
+    reacquireImage(key: string): void;
+}
+
 export interface PreparedRetain {
     readonly prepared: PreparedPaint2d;
     /** A further borrow of the same resources, taken only while this one is open; null once released. */
@@ -68,6 +81,8 @@ type Snapshot = {
     clips: Map<string, PreparedPath2d>;
     geometry: Map<string, { prepared: PreparedPath2d; bytes: number }>;
     images: Map<string, PaintImageLease | null>;
+    /** Pictures whose bitmap the GPU side gave up (imageState 'released'); reacquired by requestImage. */
+    released: Set<string>;
     /** Built once, on first borrow, so every borrow of this snapshot is the same identity. */
     prepared: PreparedPaint2d | null;
     /** Open retainPrepared borrows; a release that arrives meanwhile is applied when the last one ends. */
@@ -134,7 +149,7 @@ export function createCanvasPaintAdapter(
         const windows = windowsOfSource(frame);
         // A full frame's window list duplicates its band arrays, so it is charged; a live frame's list is the frame's own.
         return { frame, scale, windows, window: 0, finished: false, index: 0, clipIndex: 0, paths: new WeakMap(), prepared: null,
-            clips: new Map(), geometry: new Map(), images: new Map(), borrows: 0, closing: false, abort: new AbortController(),
+            clips: new Map(), geometry: new Map(), images: new Map(), released: new Set(), borrows: 0, closing: false, abort: new AbortController(),
             pending: 0, failed: false, failure: undefined, complete: false, disposed: false,
             bytes: frame.liveOnly ? 0 : refBytesOf(windows), job: null };
     }
@@ -212,13 +227,35 @@ export function createCanvasPaintAdapter(
         s.index++;
         s.clipIndex = 0;
     }
+    function imageHold(s: Snapshot): PaintImageHold {
+        return {
+            imageState(key) { return s.images.get(key) ? 'ready' : s.released.has(key) ? 'released' : 'absent'; },
+            releaseImage(key) {
+                const lease = s.images.get(key);
+                if (!lease) return false;
+                s.images.delete(key); s.released.add(key); s.bytes -= lease.cpuBytes;
+                lease.release();
+                return true;
+            },
+            reacquireImage(key) {
+                if (s.disposed || s.abort.signal.aborted || s.images.has(key)) return;
+                s.released.delete(key);
+                requestImage(s, key);
+            },
+        };
+    }
     function preparedOf(s: Snapshot): PreparedPaint2d {
         const windows = filterWindows(s.windows, include);
         if (windows !== s.windows) s.bytes += refBytesOf(windows);
         s.prepared ??= { sourceFrame: s.frame, root: rootOf(s.frame), windows, resources: {
             path: item => { const path = s.paths.get(item); if (!path) throw new Error('Missing prepared path'); return path; },
             clip: key => { const path = s.clips.get(key); if (!path) throw new Error('Missing prepared clip'); return path; },
-            image: key => { const image = s.images.get(key); if (!image) throw new Error('Missing prepared image'); return image.source; },
+            image: key => {
+                const image = s.images.get(key);
+                if (image) return image.source;
+                throw new Error(s.released.has(key) ? 'Released prepared image' : 'Missing prepared image');
+            },
+            ...imageHold(s),
         } };
         return s.prepared;
     }

@@ -9,7 +9,7 @@ import { createWebgl2Frame } from './webgl2Frame';
 import type { ControlledFrame, DrawContext, EncodedDraw, FrameBackend, FrameTarget, FrameTexture, QuadCommand, TargetRequest } from './webgl2Frame';
 import { Webgl2TargetPool } from './webgl2Pool';
 import type { PoolStorage } from './webgl2Pool';
-import { COMPOSITION_SHADER, GRID_RESOLVE_SHADER } from './webgl2Shaders';
+import { COMPOSITION_SHADER, GRID_RESOLVE_SHADER, MODULATE_COMPOSITE_SHADER } from './webgl2Shaders';
 import { Webgl2IndexMirror } from './webgl2Index';
 import { Webgl2Timer } from './webgl2Timer';
 import { Webgl2IsolationPool } from './webgl2Isolation';
@@ -322,6 +322,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     #surfaceRevision = 0;
     #composition: PipelineHandle | null = null;
     #gridComposition: PipelineHandle | null = null;
+    #modulateComposition: PipelineHandle | null = null;
     #white: TextureHandle | null = null;
     readonly #fences = new Map<number, WebGLSync | null>();
     readonly #fenceTimes = new Map<number, number>();
@@ -971,7 +972,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             () => { for (const handle of this.#handles) this.#arena.release(handle); },
             () => this.#handles.clear(), () => this.#programs.clear(), () => this.#programSignatures.clear(),
             () => this.#samplers.clear(), () => this.#attachments.clear(),
-            () => { this.#white = null; this.#composition = null; this.#gridComposition = null; }, () => this.#collect(),
+            () => { this.#white = null; this.#composition = null; this.#gridComposition = null; this.#modulateComposition = null; }, () => this.#collect(),
         ]);
     }
 
@@ -989,7 +990,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 () => { this.#uniformSlots.length = 0; },
                 ...[...this.#indexBuffers].map(buffer => () => this.#dropIndexData(buffer)),
                 () => this.#pipelines.clear(), () => this.#pollCancel?.(),
-                () => { this.#pollCancel = null; this.#white = null; this.#composition = null; this.#gridComposition = null; },
+                () => { this.#pollCancel = null; this.#white = null; this.#composition = null; this.#gridComposition = null; this.#modulateComposition = null; },
                 () => { this.#fences.clear(); this.#fenceTimes.clear(); }, () => this.#handles.clear(), () => this.#programs.clear(),
                 () => this.#programSignatures.clear(), () => this.#samplers.clear(), () => this.#attachments.clear(),
                 () => this.#textureUnits.clear(), () => this.#uniformUnits.clear(),
@@ -1057,6 +1058,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     async #prepareComposition(signal: AbortSignal): Promise<void> {
         this.#composition = await this.#program(COMPOSITION_SHADER, AbortSignal.any([signal, this.#work.signal]));
         this.#gridComposition = await this.#program(GRID_RESOLVE_SHADER, AbortSignal.any([signal, this.#work.signal]));
+        this.#modulateComposition = await this.#program(MODULATE_COMPOSITE_SHADER, AbortSignal.any([signal, this.#work.signal]));
         const sampler = this.createSampler('linear');
         this.destroy(sampler);
         if (__BME_BENCH__) {
@@ -1267,7 +1269,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             endReplay: () => this.#endReplay(),
             bindTarget: framebuffer => this.#bindTarget(framebuffer),
             quad: command => {
-                const handle = command.grid ? this.#gridComposition : this.#composition;
+                const handle = command.variant === 'grid' ? this.#gridComposition : command.variant === 'modulate' ? this.#modulateComposition : this.#composition;
                 if (!handle) throw new ArenaError('invalid-resource');
                 const program = this.#pin(work.encoding, handle, 'pipeline');
                 const samplerHandle = this.#samplers.get('linear');

@@ -210,10 +210,6 @@ function samePaneDemand(a: PaneMemoryDemand, b: PaneMemoryDemand | undefined): b
 
 /** Residency a pane grant may reclaim before it refuses a reservation: never critical, hidden, surface or context. */
 const RECLAIMABLE: readonly MemoryClass[] = ['redundant-level', 'prefetch', 'scene-cache'];
-/** The unpinned GPU bytes a pane may keep beyond its visible set: a revisit reserve of about 16 tiles (514² RGBA ≈ 1.06 MB each),
- * so a pan that returns to nearby positions reuses them. Spare pool bytes are not a reason to keep more: they grew one pane's
- * underlay tiles from 24 MB to 38 MB under no pressure across ten minutes of pan and zoom, with the grant at 41 MB. */
-const GPU_REVISIT_BYTES = 16 * 1024 * 1024;
 
 /** No navigator/DOM/timers: the app passes the coarsened hint once and advances the clock explicitly. */
 export class MemoryGovernor {
@@ -971,8 +967,6 @@ export class MemoryGovernor {
         if (spare > 0 && totalWeight > 0) {
             for (const pane of supported) cache.set(pane.paneId, (cache.get(pane.paneId) ?? 0) + Math.floor(spare * weight(pane) / totalWeight));
         }
-        // The unpinned share is bounded by the revisit reserve, so the leftover pool is not handed to a pane's cache.
-        for (const [id, bytes] of cache) cache.set(id, Math.min(bytes, GPU_REVISIT_BYTES));
         for (const [id, bytes] of pinned) cache.set(id, (cache.get(id) ?? 0) + bytes);
         // The GPU is offered to the five highest-weighted visible panes only; a sixth keeps its 2D picture and its floor.
         const gpuRanked = new Set(byWeight.slice(0, POLICY.maxVisiblePaneContexts).map(pane => pane.paneId));

@@ -1,4 +1,4 @@
-import { auditCount, auditStage, renderAuditEnabled } from './renderAudit';
+import { auditCount, auditDrawnStart, auditDrawnTake, auditPresent, auditStage, renderAuditEnabled } from './renderAudit';
 import type { Rect, ViewState } from '../types';
 import type {
     CompositorAppearance, CompositorCoverage, CompositorLayer, CompositorPage, IsolationReservation, PaneCompositor, PaneSurfaceHost, TexturedQuadOptions,
@@ -34,6 +34,8 @@ function quadDescriptor(shader: ShaderModule): PipelineDesc {
 export interface GpuCompositorOptions {
     readonly owner: Webgl2Owner;
     readonly canvas: HTMLCanvasElement;
+    /** The pane this compositor draws for, reported to the present audit; absent, the audit reports null. */
+    readonly paneId?: string;
     /** Runtime's budgeted, generation-checked broker-grant route, NOT raw owner.resizeSurface. */
     readonly target: SurfaceCommitTarget;
     readonly invalidate: (reason: string) => void;
@@ -160,6 +162,7 @@ export class GpuCompositor implements PaneCompositor {
             },
             paintIsolation: paintCanvasIsolation,
             uniforms: (bytes: ArrayBufferView) => this.uniforms(bytes),
+            uniformsInto: (bytes: ArrayBufferView, into: UniformSlice) => this.uniformsInto(bytes, into),
             drawTexturedQuad: this.drawTexturedQuad.bind(this) as PaneCompositor['resources']['drawTexturedQuad'],
             drawTexturedQuads: this.drawTexturedQuads.bind(this) as PaneCompositor['resources']['drawTexturedQuads'] });
     }
@@ -326,6 +329,7 @@ export class GpuCompositor implements PaneCompositor {
         const timed = renderAuditEnabled();
         const encodeStarted = timed ? performance.now() : 0;
         try {
+            if (timed) auditDrawnStart();
             const coverage = snapshot.layers.map(binding => binding.coverage(frame, this.backend));
             // Only a critical layer's missing content refuses the frame. A non-critical layer presents with its stand-in (what it
             // drew), so one incomplete layer cannot hold back every other layer on a quiet board (PLAN issue 3, the 0-presents class).
@@ -337,7 +341,16 @@ export class GpuCompositor implements PaneCompositor {
                 refuse = true;
                 if (renderAuditEnabled()) auditCount(layer.id, 'incomplete');
             }
-            if (refuse) { auditCount('compositor', 'refuse:coverage'); return this.#encodeRefused(snapshot, frame); }
+            if (refuse) {
+                auditCount('compositor', 'refuse:coverage');
+                const refused = this.#encodeRefused(snapshot, frame);
+                if (timed) {
+                    const tally = auditDrawnTake();
+                    auditPresent({ pane: this.#options.paneId ?? null, frame: frame.frameId, rawTick: frame.timestamp, backend: this.backend,
+                        complete: false, canvas: null, standIns: tally.standIns, holes: tally.holes, refusal: 'coverage' });
+                }
+                return refused;
+            }
             encoder = this.#options.owner.resources.beginFrame();
             this.#encodings.add(encoder);
             const bounds = { x: 0, y: 0, width: snapshot.metrics.backingWidth, height: snapshot.metrics.backingHeight };
@@ -391,6 +404,7 @@ export class GpuCompositor implements PaneCompositor {
                 if (document) pass.endGroup(document);
                 pass.end();
             } finally { this.#active = null; }
+            const tally = timed ? auditDrawnTake() : null;
             const owned = encoder;
             let done = false;
             const epoch = this.#epoch;
@@ -424,6 +438,9 @@ export class GpuCompositor implements PaneCompositor {
                             complete: true, sharp: snapshot.metrics!.qualityScale === 1 && coverage.every(item => item.sharp && !item.staleVersion),
                             staleVersion: coverage.some(item => item.staleVersion),
                             qualityScale: snapshot.metrics!.qualityScale });
+                        if (tally) auditPresent({ pane: this.#options.paneId ?? null, frame: frame.frameId, rawTick: frame.timestamp,
+                            backend: this.backend, complete: coverage.every(item => item.complete) && tally.standIns === 0 && tally.holes === 0,
+                            canvas: this.surface, standIns: tally.standIns, holes: tally.holes, refusal: null });
                         return { drawn: frame.layers.filter(meta => snapshot.layers.some(binding => binding.layer === meta.layer))
                             .map(meta => ({ layer: meta.layer, sceneRevision: meta.sceneRevision })),
                         completed: () => !this.#disposed && epoch === this.#epoch && this.#options.owner.resources.completed(submitted.serial),
@@ -547,6 +564,11 @@ export class GpuCompositor implements PaneCompositor {
     uniforms(bytes: ArrayBufferView): UniformSlice {
         if (!this.#active || !this.#active.passes.size) throw new ArenaError('invalid-input');
         return this.#active.encoder.uniforms(bytes);
+    }
+
+    uniformsInto(bytes: ArrayBufferView, into: UniformSlice): void {
+        if (!this.#active || !this.#active.passes.size) throw new ArenaError('invalid-input');
+        this.#active.encoder.uniformsInto(bytes, into);
     }
 
     drawTexturedQuad(pass: GpuPass, texture: TextureHandle, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;

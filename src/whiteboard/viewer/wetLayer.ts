@@ -277,8 +277,9 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
             if (!attached) host.allocator.gpu.release(lease);
         }
     };
-    // Admits every band of every pending stroke whose run is not current. Only the tip is new work: the route keys its
-    // geometry by chunk, so the stable chunks of a stroke cost no tessellation and no upload here.
+    // Admits every band of every pending stroke whose run is not current. A live stroke is one input ahead of its
+    // tessellation, so the run admitted is the last completed publication of the node (the same match draw2d uses), and
+    // the newest publication is admitted once it completes. Only the tip is new work: the route keys its geometry by chunk.
     const admitRuns = (host: LayerHost, view: ViewState, budget: FrameBudget): void => {
         const routes = inkRoutes ??= gpuRoutes.createInkRoutes(host, 'board-wet');
         const palette = options.palette(), pending = handover?.forFrame(() => false) ?? [], live = new Set<number>(), viewKey = viewKeyOf(view);
@@ -286,18 +287,19 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         for (const [key, slot] of [...runs]) if (!live.has(slot.gesture)) dropSlot(key);
         for (const snapshot of pending) {
             const gesture = snapshot.identity.gestureSequence, source = prepared.get(gesture);
-            if (!source || source.snapshot !== snapshot) { auditCount('wet', 'admit-skip:unprepared'); continue; }
+            if (!source || source.snapshot.identity.nodeId !== snapshot.identity.nodeId) { auditCount('wet', 'admit-skip:unprepared'); continue; }
+            const shown = source.snapshot;
             for (const band of BANDS) {
-                const key = runKey(gesture, band), material = bandMaterial(snapshot, band, palette);
+                const key = runKey(gesture, band), material = bandMaterial(shown, band, palette);
                 if (!material) { dropSlot(key); continue; }
                 const colour = material.color.join(','), current = runs.get(key);
                 if (current && current.serial === source.serial && current.scale === source.scale && current.colour === colour
                     && sameFrameToken(current.token, budget.token) && (current.state === 'ready' || current.state === 'empty')
                     && (!current.viewBound || current.viewKey === viewKey)) { auditCount('wet', 'admit-skip:fresh'); continue; }
                 if (budget.shouldYield()) { auditCount('wet', 'admit-skip:yield'); return; }
-                const item: PaintInkItem = { kind: 'ink', key: `wet/${gesture}/${band}`, nodeId: snapshot.identity.nodeId,
-                    geometryKey: `wet/${gesture}/${source.serial}`, localToWorld: snapshot.presentation.localToWorld,
-                    clips: snapshot.presentation.clips ?? [], coverage: source.coverageChunks, material };
+                const item: PaintInkItem = { kind: 'ink', key: `wet/${gesture}/${band}`, nodeId: shown.identity.nodeId,
+                    geometryKey: `wet/${gesture}/${source.serial}`, localToWorld: shown.presentation.localToWorld,
+                    clips: shown.presentation.clips ?? [], coverage: source.coverageChunks, material };
                 const route = gpuRoutes.inkRouteFor(item) === 'ink-analytic' ? routes.analytic : routes.union;
                 const audited = renderAuditEnabled(), before = audited ? route.memory().gpuBytes : 0;
                 const admission = route.admit([item], view, 'over', budget);
@@ -309,7 +311,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                 slot.viewBound = false; slot.viewKey = viewKey;
                 runs.set(key, slot);
                 // A replaced shown is disposed only when its successor is admitted: a deferred or denied admission keeps the last tip.
-                const replace = (shown: WetShown | null, state: WetRunSlot['state']) => { slot.shown?.dispose(); slot.shown = shown; slot.state = state; };
+                const replace = (next: WetShown | null, state: WetRunSlot['state']) => { slot.shown?.dispose(); slot.shown = next; slot.state = state; };
                 switch (admission.status) {
                     case 'ready': {
                         const run = admission.value, clips = item.clips;
@@ -322,7 +324,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                     case 'unsupported': {
                         // The route refused the stroke: it is drawn through the CPU path, and the refusal is reported once.
                         if (!slot.reported) { slot.reported = true; report(new Error(`Wet ink route refused a stroke (${admission.why}); it is drawn through the CPU path`)); }
-                        const scrap = admitScrap(host, snapshot, source, material, admission.why, view, budget);
+                        const scrap = admitScrap(host, shown, source, material, admission.why, view, budget);
                         if (scrap.status === 'ready') {
                             const value = scrap.value;
                             slot.viewBound = true;
@@ -342,7 +344,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         const palette = options.palette();
         for (const snapshot of handover?.forFrame(() => false) ?? []) {
             const gesture = snapshot.identity.gestureSequence, source = prepared.get(gesture);
-            if (!source || source.snapshot !== snapshot) return true;
+            if (!source || source.snapshot.identity.nodeId !== snapshot.identity.nodeId) return true;
             for (const band of BANDS) {
                 if (!bandMaterial(snapshot, band, palette)) continue;
                 const slot = runs.get(runKey(gesture, band));
@@ -382,7 +384,8 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         try {
             for (const snapshot of handover?.forFrame(identity => visuallyCovered(frame, identity, options.token)) ?? []) {
                 const gesture = snapshot.identity.gestureSequence, source = prepared.get(gesture);
-                if (!source || source.snapshot !== snapshot || offScreen(source.bounds, snapshot.presentation.localToWorld, view)) continue;
+                if (!source || source.snapshot.identity.nodeId !== snapshot.identity.nodeId
+                    || offScreen(source.bounds, source.snapshot.presentation.localToWorld, view)) continue;
                 const shown = runs.get(runKey(gesture, band))?.shown;
                 if (!shown) continue;
                 // Clips are applied here and only here: the route draws the item's geometry, withClips its clips.

@@ -757,14 +757,16 @@ export class FrameScheduler {
                     const revision = this.revisionKey(entry, layers);
                     const tags = { reasonBits: 0, contentRevision: revision.length <= 4096 ? revision : '', cameraEpoch: view.epoch };
                     const previous = entry.presented;
-                    // A repaint: an explicit full damage, a new token (device, document, view lease), a camera or geometry change since the
-                    // last presented picture. Only such a frame must reach the canvas when no layer drew anything.
                     // No pending damage is not a repaint: a frame that marked nothing (a layer's own needsFrame, a deferred mark) has
-                    // no damage record. It is drawn in full when it presents (the markFull below); the skip needs only `repaint`.
-                    const repaint = batch.full || revision.length > 4096 || !previous ||
-                        !sameToken(token, previous.token) || previous.epoch !== view.epoch || previous.geometry !== geometry;
-                    if (repaint || !batch.damage.freeze()) batch.damage.markFull(tags);
+                    // no damage record. It is drawn in full when it presents (the markFull below).
+                    // The skip needs only a real repaint: a new token, a camera or geometry change, or explicit full damage from a
+                    // damage record. An invalidation with no damage record also sets the batch's full flag, but nothing it reports
+                    // requires a present if every layer answers unchanged, so that flag draws in full and does not force a present.
+                    const moved = !previous || !sameToken(token, previous.token) || previous.epoch !== view.epoch || previous.geometry !== geometry;
+                    const explicitFull = batch.damage.freeze()?.full === true;
+                    if (batch.full || revision.length > 4096 || moved || !batch.damage.freeze()) batch.damage.markFull(tags);
                     else batch.damage.mark({ x: 0, y: 0, width: 0, height: 0 }, tags);
+                    const repaint = moved || explicitFull;
                     const damage = batch.damage.freeze()!;
                     const frame = Object.freeze({ frameId, timestamp, intervalMs: this.intervalMs, token, view, layers, reasons, damage });
                     work.push({ entry, frame, batch, geometry, hadInput: entry.inputPriority || reasons.includes('input'), platformPrepared: false, skipped: false, first: null, drawnChange: false, called: 0, repaint, cause });

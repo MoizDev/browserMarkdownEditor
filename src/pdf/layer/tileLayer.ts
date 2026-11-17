@@ -645,24 +645,13 @@ export class PdfTileLayer implements Layer {
         return this.texturePool.acquire(device, width, height);
     }
 
-    /**
-     * Pool pressure takes what the view does not show first: off-plan and off-screen tiles. Releasing every texture
-     * for it meant re-rastering the visible page, since a GPU-resident tile has no bitmap left (measured: a window
-     * resize re-rastered 28 tiles). Returns false when nothing was spare, so the caller releases everything.
-     * `keepPool` is the refused-acquire path: it frees this layer's own entries, but leaves the pool's textures for the
-     * retry to reuse. By reading: clearing the pool there destroyed the exact-size textures a zoom step needs next, so
-     * every refused upload during a zoom forced a fresh createTexture for the tiles that had just been released.
-     */
     /** Partial relief the platform asks for before it releases the whole layer: the pool's free textures first, then this
-     * layer's textures the plan does not show, least recently used first. Only a tile whose pixels are still on the CPU
-     * qualifies, since a texture without its bitmap would turn into a raster when it returns. It acts only for the frame
-     * this layer prepared: for any other frame the plan does not say what is on screen, so nothing is freed. */
-    evictGpu(bytes: number, frameId: number): number {
+     * layer's tile textures the plan does not show, farthest first (evictionRank). Pool pressure takes what the view does not
+     * show: releasing every texture for it meant re-rastering the visible page (measured: a window resize re-rastered 28 tiles).
+     * The frame id is not read: what may go is decided tile by tile (evictableTile), so the trim works between frames too. */
+    evictGpu(bytes: number, _frameId: number): number {
         const input = this.latestDemand;
         if (this.disposed || !input) return 0;
-        // Between frames as well as inside one: the trim runs when the scheduler has moved on, and a layer that did not prepare
-        // that frame (a settled pane) used to answer 0 here, so the pool stayed over target. What may go is decided by the tile,
-        // not by the frame id: nothing on screen, and nothing the last prepared frame drew (see evictableTile).
         let freed = 0;
         const pooled = this.texturePool.memory();
         if (pooled > 0) {
@@ -702,6 +691,9 @@ export class PdfTileLayer implements Layer {
         return this.releaseUnneededGpu(true);
     }
 
+    /** Frees this layer's tile textures the plan does not show, for a refused texture. `keepPool` is the refused-acquire path: it
+     * frees this layer's own entries but leaves the pool's textures for the retry to reuse. By reading: clearing the pool there
+     * destroyed the exact-size textures a zoom step needs next, so every refused upload during a zoom forced a fresh createTexture. */
     private releaseUnneededGpu(keepPool = false): boolean {
         const input = this.latestDemand;
         if (!input) return false;
@@ -826,12 +818,16 @@ export class PdfTileLayer implements Layer {
     }
     revision(): number { return this.contentRevision; }
     needsFrame(): boolean { return this.pendingFrame; }
+    /** Frees everything the layer holds on the GPU, not only its tiles: the frame texture, the bridge textures and the pool's
+     * textures. The platform disposes a layer that leaves the topology without a releaseGpu first (paneLayerSet,
+     * paneLifecycle's disposeSelection), so dispose must do this itself. A lost device owns nothing to destroy. */
     dispose(): void {
         if (this.disposed) return;
         this.disposed = true;
         this.mirrorJob = null;
         this.hide();
         this.failed.clear();
+        this.releaseGpu(this.host.device() ? 'pressure' : 'context-lost');
         this.drawnPages.clear();
         this.drawnStack = null;
     }

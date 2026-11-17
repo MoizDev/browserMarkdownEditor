@@ -100,6 +100,10 @@ export class PdfTileLayer implements Layer {
     private readonly bridgeTextures = new Map<string, PooledTexture>();
     private bridgeReady = new Set<string>();
     private desired = new Set<string>();
+    /** The exact tiles this frame's plan asked for, by key, with the view prepare planned them for. Coverage reads it:
+     * a second plan per coverage call re-did the whole demand walk every frame (by reading: the compositor calls
+     * coverage on every encoded frame). Null while moving or before the first plan. */
+    private framePlan: { readonly view: ViewState; readonly exactKeys: readonly string[] } | null = null;
     private sequence = 0;
     private contentRevision = 0;
     private pendingFrame = false;
@@ -137,6 +141,7 @@ export class PdfTileLayer implements Layer {
 
     prepare(view: ViewState, budget: FrameBudget): void {
         this.pendingFrame = false;
+        this.framePlan = null;
         if (this.disposed || !this.isCurrent()) return;
         const device = this.host.device();
         if (device && this.frameTexture?.device !== device) {
@@ -186,6 +191,11 @@ export class PdfTileLayer implements Layer {
         const zooming = !!device && now - this.scaleChangedAt < ZOOM_SETTLE_MS;
         this.lastMotionScale = planned.motionScale;
         this.desired = new Set(planned.requests.map(request => tileKeyString(request.key)));
+        if (!input.moving) {
+            const exactKeys = planned.requests.filter(request => request.level === 'exact' && intersects(rect(request), input.viewport))
+                .map(request => tileKeyString(request.key));
+            this.framePlan = { view, exactKeys };
+        }
         const exactScale = planned.requests.find(request => request.level === 'exact')?.scale.scale;
         // Built at most once per prepare, and only when an other-scale stand-in asks: removals below touch only entries
         // outside the plan, so the plan's drawable tiles do not change during the loop.
@@ -352,10 +362,11 @@ export class PdfTileLayer implements Layer {
             }
         }
         if (input.moving || usedBridge) return { complete: true, sharp: false };
-        const desired = planPdfTileDemand({ ...input, covered: () => false });
-        for (const request of desired.requests) {
-            if (request.level !== 'exact' || !intersects(rect(request), input.viewport)) continue;
-            const entry = this.entries.get(tileKeyString(request.key));
+        // Sharp only for the view prepare planned this frame: any other view is not proven sharp, and not refused either.
+        const plan = this.framePlan;
+        if (!plan || plan.view !== view) return { complete: true, sharp: false };
+        for (const key of plan.exactKeys) {
+            const entry = this.entries.get(key);
             if (!entry || !drawableOn(entry, device) || (device && entry.texture?.device !== device)) return { complete: true, sharp: false };
         }
         return { complete: true, sharp: true };

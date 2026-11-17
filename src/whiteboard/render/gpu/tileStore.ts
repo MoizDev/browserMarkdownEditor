@@ -186,6 +186,15 @@ class GpuTileStore implements NumericTileStore {
     private readonly evictStaleOff: Slot[] = [];
     private readonly evictCurrentOff: Slot[] = [];
     private readonly evictStaleOn: Slot[] = [];
+    /** Entries that hold a target: the only ones evict can free, so its scan walks these and not every entry (a parked entry
+     * holds no bytes). Kept at every point a slot gains or loses its target. */
+    private readonly held = new Set<Slot>();
+    /** Bumped on every change to the held set or the free list; evict's dry memo is valid only while this has not moved. */
+    private heldRevision = 0;
+    /** The last evict that found no candidate left to free, for this frame, view and held state: a repeat frees nothing. */
+    private evictDry: { frameId: number; revision: number; view: ViewState } | null = null;
+    /** Scratch for dropScalesExcept: the other scales' entries of one band, collected before any is unlinked. */
+    private readonly dropScratch: Slot[] = [];
     /** band → scale → packed position → slots there (one per slice). Queries arrive as world rects at one scale. */
     private readonly byBand = new Map<PaintBand, Map<number, Map<number, Slot[]>>>();
     private readonly allocator: MemoryAllocator;
@@ -252,6 +261,8 @@ class GpuTileStore implements NumericTileStore {
         } else if (slot.target) {
             const target = slot.target;
             slot.target = null;
+            this.held.delete(slot);
+            this.heldRevision++;
             this.keepFree(target);
         }
         slot.composed = true;
@@ -386,6 +397,8 @@ class GpuTileStore implements NumericTileStore {
         }
         slot.blend = blend;
         slot.target = target;
+        this.held.add(slot);
+        this.heldRevision++;
         slot.composed = false;
         slot.dirty = true;
         return slot;
@@ -396,6 +409,7 @@ class GpuTileStore implements NumericTileStore {
         // The free list holds only the current generation's targets (adopt drops the rest), so its top is reusable as it is.
         const kept = this.free.pop();
         if (kept) {
+            this.heldRevision++;
             auditCount(this.audit, 'tile:target-reuse');
             return kept;
         }
@@ -413,6 +427,7 @@ class GpuTileStore implements NumericTileStore {
     private keepFree(target: TileTarget): void {
         if (this.free.length < FREE_TARGET_LIMIT) {
             this.free.push(target);
+            this.heldRevision++;
             this.checkFree('keep');
             if (this.free.length > FREE_TARGET_RESERVE) this.host.wakeAt(this.lastAcquireAt + FREE_IDLE_MS);
             return;
@@ -467,12 +482,14 @@ class GpuTileStore implements NumericTileStore {
     private adopt(device: GfxDevice): void {
         if (device === this.current) return;
         this.current = device;
+        this.heldRevision++;
         let stale = 0;
         for (const slot of this.byNum.values()) {
             const target = slot.target;
             if (!target || target.device === device) continue;
             this.forget(target, 'adopt-slot');
             slot.target = null;
+            this.held.delete(slot);
             slot.composed = false;
             slot.dirty = true;
             stale++;
@@ -502,6 +519,10 @@ class GpuTileStore implements NumericTileStore {
      * that the current scale composes at their centre, so the picture never loses its stand-in. Returns the bytes freed. */
     evict(bytes: number, frameId: number, view: ViewState): number {
         if (!Number.isFinite(bytes) || bytes < 0) throw new RangeError('Invalid eviction size');
+        // A refused position repeats this call every frame: when nothing changed since the last call found no candidate left,
+        // the answer is the same, so it returns here without a scan.
+        const dry = this.evictDry;
+        if (dry && dry.frameId === frameId && dry.revision === this.heldRevision && dry.view === view) return 0;
         let freed = 0;
         while (freed < bytes && this.free.length) {
             const target = this.free.pop()!;
@@ -520,8 +541,8 @@ class GpuTileStore implements NumericTileStore {
         staleOff.length = 0;
         currentOff.length = 0;
         staleOn.length = 0;
-        for (const slot of this.byNum.values()) {
-            if (!slot.target || slot.usedFrame === frameId) continue;
+        for (const slot of this.held) {
+            if (slot.usedFrame === frameId) continue;
             const on = overlapsKey(slot.key, shown);
             if (slot.key.scale !== scale) (on ? staleOn : staleOff).push(slot);
             else if (!on) currentOff.push(slot);
@@ -548,19 +569,30 @@ class GpuTileStore implements NumericTileStore {
             if (freed >= bytes) return freed;
             freed += this.evictSlot(slot, 'covered');
         }
+        // Every tier is spent and the bytes are still short: no candidate is left for this frame, view and held state.
+        this.evictDry = { frameId, revision: this.heldRevision, view };
         return freed;
     }
 
     /** Moves every entry of `band` at other scales off the index. Their targets join the free list, where the new scale
      * reuses them, so the bytes stay charged until reuse or eviction. Returns the number of entries dropped. */
     dropScalesExcept(scale: number, band: PaintBand): number {
-        let dropped = 0;
-        for (const slot of this.slotsIn(band)) {
-            if (slot.key.scale === scale) continue;
+        const scales = this.byBand.get(band);
+        if (!scales) return 0;
+        // Collected before any unlink, which edits the index being walked. The walk visits this band's scales and the entries
+        // of the other ones only, and the scratch array is reused: the usual call (one scale held) allocates nothing.
+        const others = this.dropScratch;
+        others.length = 0;
+        for (const [other, positions] of scales) {
+            if (other === scale) continue;
+            for (const slots of positions.values()) for (const slot of slots) others.push(slot);
+        }
+        const dropped = others.length;
+        for (const slot of others) {
             const target = this.unlink(slot);
             if (target) this.keepFree(target);
-            dropped++;
         }
+        others.length = 0;
         return dropped;
     }
 
@@ -581,6 +613,7 @@ class GpuTileStore implements NumericTileStore {
                 auditCount(this.audit, 'tile:evict:release-all');
             }
         }
+        this.heldRevision++;
         for (const target of this.free.splice(0)) this.retire(target);
         if (this.gpuBytes !== 0) throw new Error('Tile store byte ledger is out of step after release');
     }
@@ -718,6 +751,10 @@ class GpuTileStore implements NumericTileStore {
         if (scales?.size === 0) this.byBand.delete(slot.key.band);
         const target = slot.target;
         slot.target = null;
+        if (target) {
+            this.held.delete(slot);
+            this.heldRevision++;
+        }
         slot.composed = false;
         slot.dirty = true;
         return target;

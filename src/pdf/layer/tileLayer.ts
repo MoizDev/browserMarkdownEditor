@@ -12,7 +12,7 @@ import type { PdfDemandInput, PdfTileRequest } from './tileDemand';
 import { getPdfFontEpoch, pdfMirrorProfilePrefix, pdfVariantRevision } from '../fonts/profiles';
 import { pdfDocKey } from '../worker/protocol';
 import { consumePdfTileArrival, forgetPdfTileArrival } from '../pool/arrivalWindow';
-import { auditCount, auditDrawn } from '../../platform/render/renderAudit';
+import { auditCount, auditDrawn, renderAuditEnabled } from '../../platform/render/renderAudit';
 import { QuadList } from './quadList';
 
 /** The pool returns the requested cell plus its one-pixel apron. Ownership of
@@ -69,6 +69,39 @@ function clipped(box: Readonly<Rect>, viewport: Readonly<Rect>): Rect | null {
 /** Pixels this backend can draw: the device's texture, or the CPU bitmap (which a GPU backend can still upload). */
 /** A zoom gesture's scale changes every few frames; this long without a change, it has settled enough to raster. */
 const ZOOM_SETTLE_MS = 150;
+
+/** A tile or mirror drawn at a scale other than the frame's is a stand-in. The two scales are computed separately, so one zoom can
+ * differ in its last float bits (1.4379084967320261 vs ...255): a relative tolerance, as the supersession check uses, not equality. */
+function scaleDiffers(scale: number, frame: number): boolean { return Math.abs(scale / frame - 1) > 1e-6; }
+
+/** One quad of the frame in device pixels: whether it is a stand-in. Collected only while the render audit is on. */
+interface QuadMark { readonly x: number; readonly y: number; readonly width: number; readonly height: number; readonly stand: boolean }
+/** Device-pixel overlaps under this are rounding slivers of two abutting tiles, not gaps. */
+const SLIVER = 1e-6;
+/** Past this many pieces the uncovered test answers "uncovered": the conservative answer for a page of many odd tiles. */
+const PIECE_LIMIT = 64;
+
+/** True when some part of `area` is outside every rect of `cover`. Each cover rect cuts the pieces it overlaps. */
+function leavesUncovered(area: Readonly<Rect>, cover: readonly Readonly<Rect>[]): boolean {
+    let pieces: Rect[] = [{ x: area.x, y: area.y, width: area.width, height: area.height }];
+    for (const c of cover) {
+        const next: Rect[] = [];
+        for (const p of pieces) {
+            const right = p.x + p.width, bottom = p.y + p.height;
+            const x0 = Math.max(p.x, c.x), y0 = Math.max(p.y, c.y);
+            const x1 = Math.min(right, c.x + c.width), y1 = Math.min(bottom, c.y + c.height);
+            if (x1 - x0 <= SLIVER || y1 - y0 <= SLIVER) { next.push(p); continue; }
+            if (y0 - p.y > SLIVER) next.push({ x: p.x, y: p.y, width: p.width, height: y0 - p.y });
+            if (bottom - y1 > SLIVER) next.push({ x: p.x, y: y1, width: p.width, height: bottom - y1 });
+            if (x0 - p.x > SLIVER) next.push({ x: p.x, y: y0, width: x0 - p.x, height: y1 - y0 });
+            if (right - x1 > SLIVER) next.push({ x: x1, y: y0, width: right - x1, height: y1 - y0 });
+        }
+        pieces = next;
+        if (!pieces.length) return false;
+        if (pieces.length > PIECE_LIMIT) return true;
+    }
+    return pieces.length > 0;
+}
 
 function drawableOn(entry: Entry, device: GfxDevice | null): boolean {
     return device ? entry.slot?.page.device === device || !!entry.bitmap : !!entry.bitmap;
@@ -154,6 +187,8 @@ export class PdfTileLayer implements Layer {
      * paper covers the whole page, so these areas are opaque. Cleared on a source change, on releaseGpu and on dispose. */
     private readonly drawnPages = new Map<number, Readonly<Rect>>();
     private drawnStack: Readonly<PageStack> | null = null;
+    /** The frame's quads, in device pixels, while the render audit is on: the stand-ins the audit counts are the ones no exact tile covers. */
+    private standInMarks: QuadMark[] | null = null;
     /** Published mirror crops by tile version (geometry, mirror revision, tile key). A version still held is reused with no
      * copy: the copy is the whole tile, so it is the same for every view that shows the tile. Cleared on a source change. */
     private readonly mirrorIds = new Map<string, string>();
@@ -409,6 +444,7 @@ export class PdfTileLayer implements Layer {
 
     drawGpu(pass: GpuPass, view: ViewState): void {
         if (this.disposed || !this.isCurrent()) return;
+        this.standInMarks = renderAuditEnabled() ? [] : null;
         const input = this.demand(view);
         const { stack, rasterScale } = input;
         const texture = this.frameTexture;
@@ -432,8 +468,7 @@ export class PdfTileLayer implements Layer {
             const snapshot = this.mirror?.view(view);
             if (!texture || texture.device !== this.host.device() || !snapshot) continue;
             const quad = this.mirror!.store.mirrorQuad(item, snapshot);
-            // The bridge's mirror is a stand-in for the page, never this view's own pixels.
-            auditDrawn('stand-in');
+            this.markQuad(quad.destRect, scaleDiffers(item.pixels.source.width / item.pixels.world.width, rasterScale));
             this.host.drawTexturedQuad(pass, texture.handle, quad.sourceRect, quad.destRect, { opacity: 1, sampling: 'linear',
                 ...(__BME_BENCH__ ? { coverage: 'standin' as const, standInRatio: item.pixels.source.width / item.pixels.world.width / rasterScale } : {}) });
         }
@@ -447,6 +482,27 @@ export class PdfTileLayer implements Layer {
             while (end < tiles.length && tiles[end].request.scale.scale === scale) end++;
             this.drawTileGroup(pass, tiles, start, end, stack, rasterScale, view, device);
             start = end;
+        }
+        this.countStandIns(view);
+    }
+
+    /** Records one drawn quad for the stand-in count. A no-op unless the audit is on. */
+    private markQuad(destination: Readonly<Rect>, stand: boolean): void {
+        this.standInMarks?.push({ x: destination.x, y: destination.y, width: destination.width, height: destination.height, stand });
+    }
+
+    /** Counts the frame's stand-ins that no exact tile covers: one drawn beneath a whole exact tile is invisible, so it is not in the
+     * picture. Every stand-in here is drawn from another scale's raster, so it is counted under that origin. */
+    private countStandIns(view: ViewState): void {
+        const marks = this.standInMarks;
+        this.standInMarks = null;
+        if (!marks) return;
+        const surface = { x: 0, y: 0, width: view.viewport.width * view.viewport.dpr, height: view.viewport.height * view.viewport.dpr };
+        const cover = marks.filter(mark => !mark.stand);
+        for (const mark of marks) {
+            if (!mark.stand) continue;
+            const area = clipped(mark, surface);
+            if (area && leavesUncovered(area, cover)) auditDrawn('stand-in', 1, 'raster');
         }
     }
 
@@ -469,13 +525,13 @@ export class PdfTileLayer implements Layer {
             }
             const { source, destination } = this.quad(entry.request, stack.rects[entry.request.page], view, slot);
             batch.quads.add(source, destination);
-            if (entry.request.scale.scale !== rasterScale) auditDrawn('stand-in');
+            this.markQuad(destination, scaleDiffers(entry.request.scale.scale, rasterScale));
             this.tileAtlas.touch(slot);
         }
         if (!used) return;
         const sample = tiles[start];
         const options = { opacity: 1, sampling: 'linear' as const, ...(__BME_BENCH__ ? {
-            coverage: sample.request.scale.scale === rasterScale ? 'current' as const : 'standin' as const,
+            coverage: scaleDiffers(sample.request.scale.scale, rasterScale) ? 'standin' as const : 'current' as const,
             standInRatio: sample.request.scale.scale / rasterScale,
         } : {}) };
         for (let b = 0; b < used; b++) {
@@ -486,6 +542,7 @@ export class PdfTileLayer implements Layer {
 
     draw2d(ctx: CanvasRenderingContext2D, view: ViewState): void {
         if (this.disposed || !this.isCurrent()) return;
+        this.standInMarks = renderAuditEnabled() ? [] : null;
         const input = this.demand(view);
         const { stack, rasterScale } = input;
         const current = contentFamily(input) === this.contentIdentity;
@@ -500,22 +557,22 @@ export class PdfTileLayer implements Layer {
             const snapshot = this.mirror?.view(view);
             if (!snapshot || !this.bridgeReady.has(item.entry.id)) continue;
             const quad = this.mirror!.store.mirrorQuad(item, snapshot);
-            // The bridge's mirror is a stand-in for the page, never this view's own pixels.
-            auditDrawn('stand-in');
+            this.markQuad(quad.destRect, scaleDiffers(item.pixels.source.width / item.pixels.world.width, rasterScale));
             this.host.drawTexturedQuad(ctx, item.pixels.bitmap, quad.sourceRect, quad.destRect, { opacity: 1, sampling: 'linear',
                 ...(__BME_BENCH__ ? { coverage: 'standin' as const, standInRatio: item.pixels.source.width / item.pixels.world.width / rasterScale } : {}) });
         }
         for (const entry of this.drawable(view, current)) {
             if (!entry.bitmap) continue;
             const { source, destination } = this.quad(entry.request, stack.rects[entry.request.page], view);
-            if (entry.request.scale.scale !== rasterScale) auditDrawn('stand-in');
+            this.markQuad(destination, scaleDiffers(entry.request.scale.scale, rasterScale));
             this.host.drawTexturedQuad(ctx, entry.bitmap, source, destination,
                 { opacity: 1, sampling: 'linear', ...(__BME_BENCH__ ? {
-                    coverage: entry.request.scale.scale === rasterScale ? 'current' as const : 'standin' as const,
+                    coverage: scaleDiffers(entry.request.scale.scale, rasterScale) ? 'standin' as const : 'current' as const,
                     standInRatio: entry.request.scale.scale / rasterScale,
                 } : {}) });
             consumePdfTileArrival(entry.bitmap);
         }
+        this.countStandIns(view);
     }
 
     /** The world rects of the pages painted at least once at the current source and layout, in page order. Empty until a

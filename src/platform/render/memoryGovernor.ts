@@ -122,6 +122,9 @@ interface CacheRecord {
     bytes: number;
     leaseCount: number;
     closed: boolean;
+    /** The last refusal of this cache: the capacity epoch it was refused in, and the size. Until capacity changes, the same
+     * or a larger request is refused without a second round of reclaim and trims. */
+    refusal: { readonly epoch: number; readonly bytes: number } | null;
     readonly handle: MemoryCacheHandle;
 }
 
@@ -213,6 +216,9 @@ export class MemoryGovernor {
     private readonly leases = new WeakMap<ByteLease, LeaseRecord>();
     private readonly cacheHandles = new WeakMap<MemoryCacheHandle, CacheRecord>();
     private readonly charged = { gpu: 0, cpu: 0 };
+    // Bumped whenever a reservation that was refused could now fit: a lease returned, a grant or demand that moved, a cache
+    // that became visible or was transferred. A refusal memo is valid only within the epoch it was taken in.
+    private capacityEpoch = 0;
     private readonly target: { gpu: number; cpu: number } = { gpu: POLICY.gpuGrantMinBytes, cpu: POLICY.cpuGrantMinBytes };
     private readonly ceilings: Readonly<{ gpuBytes: number; cpuRasterBytes: number }>;
     private panes: readonly PaneMemoryDemand[] = [];
@@ -254,7 +260,7 @@ export class MemoryGovernor {
         }
         const cache: CacheRecord = {
             registration: { ...registration, owner: registration.owner ? Object.freeze({ ...registration.owner }) : undefined },
-            activity: { ...registration }, bytes: 0, leaseCount: 0, closed: false,
+            activity: { ...registration }, bytes: 0, leaseCount: 0, closed: false, refusal: null,
             handle: {
                 reserve: bytes => this.reserve(cache, bytes),
                 release: lease => this.release(lease, cache),
@@ -269,6 +275,7 @@ export class MemoryGovernor {
                     activityValid(activity);
                     if (cache.closed) return;
                     cache.activity = { ...activity };
+                    this.capacityEpoch++;
                     this.trimHiddenMirrors();
                 },
                 close: () => {
@@ -313,6 +320,7 @@ export class MemoryGovernor {
         const changed = this.panes.length !== panes.length || panes.some((pane, i) => !samePaneDemand(pane, this.panes[i]));
         this.panes = panes.map(pane => ({ ...pane }));
         if (changed) {
+            this.capacityEpoch++;
             this.target.gpu = Math.min(this.ceilings.gpuBytes, Math.max(POLICY.gpuGrantMinBytes,
                 POLICY.gpuGrantBaseBytes + POLICY.gpuGrantPerVisiblePaneBytes * visible + POLICY.gpuGrantPerVisiblePixelBytes * pixels));
             this.target.cpu = Math.min(this.ceilings.cpuRasterBytes, Math.max(POLICY.cpuGrantMinBytes,
@@ -359,6 +367,7 @@ export class MemoryGovernor {
         destination.bytes += record.bytes;
         destination.leaseCount++;
         record.cache = destination;
+        this.capacityEpoch++;
         if (source.closed && !source.leaseCount) this.caches.delete(source.registration.id);
         return true;
     }
@@ -404,6 +413,7 @@ export class MemoryGovernor {
             destination.bytes += record.bytes;
             destination.leaseCount++;
             record.cache = destination;
+            this.capacityEpoch++;
             if (source.closed && !source.leaseCount) this.caches.delete(source.registration.id);
         }
         return true;
@@ -559,6 +569,9 @@ export class MemoryGovernor {
         // others or degrade the app. Seen: a board's 81 MB direct estimate against the 32 MB CPU target, asked on each
         // return to a 1% overview of ~5,400 items, degraded the governor before the board fell back to dense tiles.
         if (bytes > this.target[pool]) return null;
+        // Refused and nothing has moved since: the same request is refused again without the reclaim and trims that made the
+        // first refusal. Measured earlier as the evict/realloc loop; an owner that retries each frame must not re-run them.
+        if (cache.refusal && cache.refusal.epoch === this.capacityEpoch && bytes >= cache.refusal.bytes) return null;
         const allowed = () => this.fits(cache, bytes);
         if (!allowed()) {
             // Pressure is the pool's, not one pane reaching its own grant: adapters retry a refused grant each frame, and
@@ -580,10 +593,12 @@ export class MemoryGovernor {
                 // pane's back-pressure: degrading the whole app for it held the GPU quality at 0.51-0.8 for good,
                 // so no webgl2 PDF frame was ever sharp and its editing cover never dropped.
                 if (this.charged[pool] + bytes > this.target[pool]) this.refuseReservation(pool);
+                cache.refusal = { epoch: this.capacityEpoch, bytes };
                 return null;
             }
         }
         this.refusing[pool] = false;
+        cache.refusal = null;
         if (!Number.isSafeInteger(this.nextLease)) throw new MemoryAdmissionError('invalid-input');
         const lease = Object.freeze({ id: this.nextLease++, bytes });
         this.leases.set(lease, { cache, bytes, returned: false });
@@ -711,6 +726,7 @@ export class MemoryGovernor {
     /** A sized waiter stays parked until its bytes would be admitted: a closed cache's waiter wakes so its owner sees
      * the closure. Each wake runs once however many of its waiters fired. */
     private notifyCapacity(): void {
+        this.capacityEpoch++;
         if (!this.capacityWaiters.size) return;
         const woken = new Set<() => void>();
         for (const [cache, waiters] of this.capacityWaiters) {
@@ -729,6 +745,7 @@ export class MemoryGovernor {
         if (!record || (expected && record.cache !== expected)) throw new MemoryAdmissionError('invalid-lease');
         if (record.returned) return;
         record.returned = true;
+        this.capacityEpoch++;
         const cache = record.cache;
         cache.bytes -= record.bytes;
         cache.leaseCount--;

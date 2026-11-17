@@ -7,7 +7,7 @@ import type { LayerHost, TexturedQuadSpec } from '../../../platform/render/compo
 import type { GfxDevice, GpuPass, GroupToken, RectI, RgbaP, TextureHandle } from '../../../platform/render/gfx/api';
 import type { FrameBudget, GpuReleaseReason, OffscreenPasses } from '../../../platform/render/types';
 import { tileTargetBytes, tileView } from '../../../platform/render/tileTarget';
-import { auditCount, auditStage, renderAuditEnabled, type AuditStage } from '../../../platform/render/renderAudit';
+import { auditCount, auditDrawn, auditStage, renderAuditEnabled, type AuditStage } from '../../../platform/render/renderAudit';
 import { TILE_EDGE, TILE_GUTTER, TILE_SIZE } from '../imageSampling';
 import type { PaintBand } from '../material';
 import type { PaintClip, PaintInkItem, PaintItem } from '../paintStream';
@@ -275,6 +275,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     let drawCount = 0;
 
     let disposed = false, presenting = false, indexing = false;
+    // This frame's zoom, set in prepare: while zooming, coverage does not hold the frame for a position with nothing (see coverage).
+    let zoomingFrame = false;
     let routesEncodedFrame = -1;
     const omitTracker = new OmitTracker();
     let denied = false, settled = false, preparedSharp = true;
@@ -286,6 +288,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     let device: GfxDevice | null = null;
     let frame = 0, validRevision = 0;
     let omitIds: ReadonlySet<string> | null = null;
+    // Bounds of nodes that left the omit set, until the tiles under them are composed (see prepare, and coverage).
+    let omitHolds: Rect[] = [];
     let lastZoom: number | undefined, zoomScale = 0;
     // The scale the last prepare composed and drew. Coverage describes this scale, not the exact demand: a zoom draws its
     // ladder scale, and coverage asked about the exact one, where nothing is composed, so every frame of a zoom read incomplete.
@@ -360,6 +364,21 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             return position;
         }
         return null;
+    };
+
+    /** True while a position of `rects` under the visible span at `target` has neither a current tile nor a finished one. */
+    const holdsPending = (rects: readonly Rect[], target: number, span: Span): boolean => {
+        for (const rect of rects) {
+            const x0 = Math.max(span.x0, Math.floor(rect.x * target / EDGE)), x1 = Math.min(span.x1, Math.ceil((rect.x + rect.width) * target / EDGE));
+            const y0 = Math.max(span.y0, Math.floor(rect.y * target / EDGE)), y1 = Math.min(span.y1, Math.ceil((rect.y + rect.height) * target / EDGE));
+            for (const band of BANDS) {
+                for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+                    const status = statusAt(band, target, x, y);
+                    if (status !== 'ok' && !(status === 'missing' && finishedAt(band, target, x, y))) return true;
+                }
+            }
+        }
+        return false;
     };
 
     /** The GPU route for an item, or the CPU route with the reason no GPU route takes it. */
@@ -779,6 +798,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         addDraw(band, item.entry, item.slot, clip);
                     }
                     liveBefore(band, Infinity, li, clip);
+                    // What this position shows: its stand-in's entries (drawn above), or nothing at all, a hole the audit counts.
+                    auditDrawn(standScratch.length ? 'stand-in' : 'hole');
                     auditCount(audit, 'tile:standin');
                 }
             }
@@ -837,6 +858,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         store.releaseAll();
         for (const route of routeList) route.release();
         denied = false; waiting = false; settled = false; presenting = false;
+        omitHolds = [];
     };
 
     return {
@@ -868,6 +890,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             // The scale moves only with the camera's zoom: a pan or a drag keeps the tiles' scale and their pixels.
             const zooming = lastZoom !== undefined && view.camera.z !== lastZoom;
             lastZoom = view.camera.z;
+            zoomingFrame = zooming;
             if (!zooming) zoomScale = 0;
             else if (!(zoomScale >= demand && zoomScale <= demand * 1.2 * SQRT2)) zoomScale = ladderScale(demand);
             const exact = exactScale(demand);
@@ -890,6 +913,11 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     for (const id of omitIds ?? []) if (!nextOmit?.has(id)) diff.add(id);
                     for (const id of nextOmit ?? []) if (!omitIds?.has(id)) diff.add(id);
                     for (const rect of parts.boundsOfNodes(diff)) store.markDirty(rect);
+                    // A node that leaves the omit set is drawn live until the tiles under it are composed: its old tiles lack it.
+                    // The hold keeps the frame unpresented meanwhile (coverage), so the surface still shows the node.
+                    const back = new Set<string>();
+                    for (const id of omitIds ?? []) if (!nextOmit?.has(id)) back.add(id);
+                    for (const rect of parts.boundsOfNodes(back)) omitHolds.push({ x: rect.x, y: rect.y, width: rect.width, height: rect.height });
                     omitIds = nextOmit ? new Set(nextOmit) : null;
                     invalidated = true;
                 }
@@ -909,6 +937,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 }
                 finished = kept;
                 if (device) compose(view, budget, device, target, span, zooming, demand);
+                // A hold ends once every visible position under it has its tile again (or none is visible).
+                omitHolds = omitHolds.filter(rect => holdsPending([rect], target, span));
             } else {
                 for (const position of finished) cancel(position);
                 finished = [];
@@ -1003,6 +1033,9 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             // A position with any picture (its tile at the drawn scale, a dirty one, or a stand-in of another scale) is
             // complete; only a position with nothing is not. Sharp needs the drawn scale to be the demanded one, and every
             // position exact and clean there.
+            // While zooming, a position with nothing is a hole the compose pass is filling, and it does not hold the frame: the
+            // compositor refused 58 of 141 zoom frames for holes waiting on upload allowance (the audit's board-underlay:incomplete,
+            // equal to compositor:refuse:coverage). PLAN 3.1: a zoom presents what exists, scaled, every frame.
             let complete = true, sharp = !indexing && preparedSharp && target === exact, stale = indexing;
             for (const band of BANDS) {
                 for (let y = span.y0; y < span.y1; y++) {
@@ -1012,10 +1045,13 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         sharp = false;
                         if (status === 'missing' && finishedAt(band, target, x, y)) continue;
                         if (status === 'dirty') { stale = true; continue; }
-                        if (!standInsOf(band, target, x, y).length) complete = false;
+                        if (!zoomingFrame && !standInsOf(band, target, x, y).length) complete = false;
                     }
                 }
             }
+            // A node that just left the omit set is still drawn live, and its tiles lack it: the frame waits for them, so the
+            // surface keeps the previous frame (which shows the node) instead of this one (which would not).
+            if (complete && omitHolds.length && holdsPending(omitHolds, target, span)) complete = false;
             return { complete, sharp: complete && sharp, ...(stale ? { staleVersion: true } : {}) };
         },
         drawnInkNodeIds(): ReadonlySet<string> { return drawnInk; },

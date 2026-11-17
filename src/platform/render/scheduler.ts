@@ -4,6 +4,7 @@ import { cameraAtAnchor, surfaceToWorld } from './camera';
 import type { CameraAnchor, CameraController, Point } from './camera';
 import { RENDER_CONSTANTS } from './constants';
 import { DamageAccumulator } from './damage';
+import { forgetPaneMotion, recordPaneMotion } from './paneMotion';
 import type { DamageRecord } from './damage';
 import type { SurfaceCommit, SurfaceMetricsCommitter } from './surfaceMetrics';
 import type { FrameBudget, FrameToken, Layer } from './types';
@@ -250,6 +251,7 @@ interface PaneEntry {
 }
 
 const NO_REASONS: readonly string[] = Object.freeze([]);
+
 
 interface DamageBatch { entry: PaneEntry; damage: DamageAccumulator; full: boolean; submitted: boolean }
 interface FrameWork { entry: PaneEntry; frame: ScheduledFrame; batch: DamageBatch; geometry: number; hadInput: boolean; platformPrepared: boolean; platformBudget?: FrameBudget;
@@ -518,6 +520,7 @@ export class FrameScheduler {
     private unregister(entry: PaneEntry): void {
         if (!this.live(entry)) return;
         this.panes.delete(entry.pane.paneId);
+        forgetPaneMotion(entry.pane.paneId);
         entry.reasons.clear();
         entry.wakes.clear();
         this.cancelMotion(entry);
@@ -699,7 +702,9 @@ export class FrameScheduler {
             for (const { entry } of ready) {
                 this.call(entry, () => {
                     this.advanceMotion(entry, timestamp);
-                    entry.pane.camera.setMoving(entry.motion !== null || entry.pane.isInteracting());
+                    const moving = entry.motion !== null || entry.pane.isInteracting();
+                    entry.pane.camera.setMoving(moving);
+                    recordPaneMotion(entry.pane.paneId, moving);
                 });
             }
             const frozen: Array<{ entry: PaneEntry; reasons: readonly string[]; batch: DamageBatch; cause: string; geometry: number; token: FrameToken; view: ViewState }> = [];
@@ -1093,7 +1098,9 @@ export class FrameScheduler {
         this.mark(entry, 'animation');
     }
 
-    private cancelMotion(entry: PaneEntry): void { entry.motion = null; entry.pane.camera.setMoving(false); }
+    private cancelMotion(entry: PaneEntry): void {
+        entry.motion = null; entry.pane.camera.setMoving(false); recordPaneMotion(entry.pane.paneId, false);
+    }
 
     private zoomAnchor(entry: PaneEntry, motion: ZoomMotion): Point {
         return motion.anchor ?? { x: entry.pane.camera.viewport.width / 2, y: entry.pane.camera.viewport.height / 2 };

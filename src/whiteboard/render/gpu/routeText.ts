@@ -6,7 +6,7 @@ import { auditCount } from '../../../platform/render/renderAudit';
 import type { FontKey } from '../../text/fonts';
 import type { PaintItem, PaintTextItem } from '../paintStream';
 import { ATLAS_PAGE, IdentityIndex, ShelfPacker, TextAtlas, type AtlasEntry, type AtlasPage, type Indexed } from '../textAtlas';
-import { MASK_CANVAS_BYTES, MEMO_ENTRY_BYTES, copyIdentity, createCpuAccount, createMaskRaster, fillIdentity, identityHash, needsColourMask,
+import { MEMO_ENTRY_BYTES, copyIdentity, createCpuAccount, createMaskRaster, fillIdentity, identityHash, needsColourMask,
     newIdentity, sliceCell, type CpuAccount, type MaskCell, type MaskGeometry, type MaskIdentity, type MaskRaster, type MaskRequest } from './textMasks';
 import type { Admission, Blend, CreateTextRoute, ItemRoute, PreparedRun } from './contracts';
 
@@ -225,7 +225,6 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
     const standAccount: CpuAccount = createCpuAccount(host.allocator.cpu, MEMO_CHUNK);
     // Refused measurements are counted under the audit surface (h13's text:measure-uncached), so a pool at its limit shows.
     const raster: MaskRaster = createMaskRaster(memoAccount, audit);
-    let rasterLease: ByteLease | null = null;
     let scratch: Float32Array<ArrayBuffer> = new Float32Array(0), scratchLease: ByteLease | null = null;
     let uniformData: Float32Array<ArrayBuffer> | null = null, uniformLease: ByteLease | null = null;
     let device: GfxDevice | null = null;
@@ -273,7 +272,6 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
     /** The canvas and its memo: freed on release and on governor pressure, and created again by the next raster. */
     const releaseRaster = (): void => {
         raster.release();
-        if (rasterLease) { host.allocator.cpu.release(rasterLease); rasterLease = null; }
     };
     /** Every GPU resource of the current device. Runs go first, so their pins drop before the atlases are disposed. */
     const releaseGpu = (): void => {
@@ -360,11 +358,6 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         return null;
     };
 
-    const ensureRasterLease = (): boolean => {
-        if (rasterLease) return true;
-        rasterLease = host.allocator.cpu.reserve(MASK_CANVAS_BYTES);
-        return rasterLease !== null;
-    };
     const ensureUniformData = (): boolean => {
         if (uniformData) return true;
         uniformLease = host.allocator.cpu.reserve(16);
@@ -579,21 +572,28 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
     const rasterColour = (req: MaskRequest, geometry: MaskGeometry, cellIndex: number, colourOf: Rgba, frame: number, budget: FrameBudget, label: string): Stop | null => {
         const at = sliceCell(geometry, cellIndex, cell);
         const bytes = at.w * at.h * 4;
-        if (!budget.claimUpload(bytes)) return { status: 'deferred' };
-        // Rastered before it is placed: an entry the atlas holds must already have its texels, or a later draw would read nothing.
-        const made = raster.rasteriseBitmap(req, geometry, cellIndex, colourOf);
-        let placed: AtlasEntry | 'oversize' | 'denied';
+        // The raster's own bytes: its canvas is sized to this cell and its bitmap is this cell, so the cell's bytes are held from
+        // the rasterise until the bitmap is closed. A refusal waits for these bytes, not for a fixed maximum.
+        const rasterLease = host.allocator.cpu.reserve(bytes);
+        auditCount(audit, `text:raster:bucket:${2 ** Math.ceil(Math.log2(Math.max(1, bytes)))}`);
+        if (!rasterLease) return { status: 'denied', pool: 'cpu', bytes };
         try {
-            placed = colour!.place(fillIdentity(probe, req, cellIndex, colourOf), at.w, at.h, frame);
-            if (placed === 'oversize') return { status: 'unsupported', why: 'oversize' };
-            if (placed === 'denied') return { status: 'denied', pool: 'gpu', bytes };
-            colour!.uploadBitmap(placed, made.bitmap);
-        } finally { made.bitmap.close(); }
-        auditCount(audit, 'text:mask-raster', 1, { px: at.w * at.h });
-        auditCount(audit, 'upload:mask', 1, { bytes });
-        recordStandIn(req, label, colourOf, colour!, placed, geometry.slices, geometry);
-        slot.entry = placed; slot.rgba = true; slot.standIn = false;
-        return null;
+            if (!budget.claimUpload(bytes)) return { status: 'deferred' };
+            // Rastered before it is placed: an entry the atlas holds must already have its texels, or a later draw would read nothing.
+            const made = raster.rasteriseBitmap(req, geometry, cellIndex, colourOf);
+            let placed: AtlasEntry | 'oversize' | 'denied';
+            try {
+                placed = colour!.place(fillIdentity(probe, req, cellIndex, colourOf), at.w, at.h, frame);
+                if (placed === 'oversize') return { status: 'unsupported', why: 'oversize' };
+                if (placed === 'denied') return { status: 'denied', pool: 'gpu', bytes };
+                colour!.uploadBitmap(placed, made.bitmap);
+            } finally { made.bitmap.close(); }
+            auditCount(audit, 'text:mask-raster', 1, { px: at.w * at.h });
+            auditCount(audit, 'upload:mask', 1, { bytes });
+            recordStandIn(req, label, colourOf, colour!, placed, geometry.slices, geometry);
+            slot.entry = placed; slot.rgba = true; slot.standIn = false;
+            return null;
+        } finally { host.allocator.cpu.release(rasterLease); }
     };
 
     /** A mono cell: its bitmap is written into the staging texture, and the conversion puts its alpha into the R8 page at the end
@@ -609,25 +609,31 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         // A full staging texture is the frame's limit: the run waits for the next frame, which starts with the staging reset.
         if (!spot) { host.invalidate('text-stage-full'); return { status: 'deferred' }; }
         if (!ensureConvertCapacity(pendingCount + 1)) return { status: 'denied', pool: 'gpu', bytes };
-        if (!budget.claimUpload(bytes)) return { status: 'deferred' };
-        const staged = stage!;
-        const made = raster.rasteriseBitmap(req, geometry, cellIndex, null);
+        // The raster's own bytes, as in rasterColour: held until the staging write has taken the bitmap.
+        const rasterLease = host.allocator.cpu.reserve(bytes);
+        auditCount(audit, `text:raster:bucket:${2 ** Math.ceil(Math.log2(Math.max(1, bytes)))}`);
+        if (!rasterLease) return { status: 'denied', pool: 'cpu', bytes };
         try {
-            const placed = mono!.place(fillIdentity(probe, req, cellIndex, null), at.w, at.h, frame);
-            if (placed === 'oversize') return { status: 'unsupported', why: 'oversize' };
-            if (placed === 'denied') return { status: 'denied', pool: 'gpu', bytes: at.w * at.h };
-            device!.writeTexture(staged.texture, { x: spot.x, y: spot.y, width: at.w, height: at.h },
-                { source: made.bitmap, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
-            let next = pending[pendingCount];
-            if (next) { next.entry = placed; next.x = spot.x; next.y = spot.y; }
-            else { next = { entry: placed, x: spot.x, y: spot.y }; pending.push(next); }
-            pendingCount++;
-            auditCount(audit, 'text:mask-raster', 1, { px: at.w * at.h });
-            auditCount(audit, 'upload:mask', 1, { bytes });
-            recordStandIn(req, label, null, mono!, placed, geometry.slices, geometry);
-            slot.entry = placed; slot.rgba = false; slot.standIn = false;
-            return null;
-        } finally { made.bitmap.close(); }
+            if (!budget.claimUpload(bytes)) return { status: 'deferred' };
+            const staged = stage!;
+            const made = raster.rasteriseBitmap(req, geometry, cellIndex, null);
+            try {
+                const placed = mono!.place(fillIdentity(probe, req, cellIndex, null), at.w, at.h, frame);
+                if (placed === 'oversize') return { status: 'unsupported', why: 'oversize' };
+                if (placed === 'denied') return { status: 'denied', pool: 'gpu', bytes: at.w * at.h };
+                device!.writeTexture(staged.texture, { x: spot.x, y: spot.y, width: at.w, height: at.h },
+                    { source: made.bitmap, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
+                let next = pending[pendingCount];
+                if (next) { next.entry = placed; next.x = spot.x; next.y = spot.y; }
+                else { next = { entry: placed, x: spot.x, y: spot.y }; pending.push(next); }
+                pendingCount++;
+                auditCount(audit, 'text:mask-raster', 1, { px: at.w * at.h });
+                auditCount(audit, 'upload:mask', 1, { bytes });
+                recordStandIn(req, label, null, mono!, placed, geometry.slices, geometry);
+                slot.entry = placed; slot.rgba = false; slot.standIn = false;
+                return null;
+            } finally { made.bitmap.close(); }
+        } finally { host.allocator.cpu.release(rasterLease); }
     };
 
     /** One cell of a glyph mask: the exact hit, a stand-in during motion, or the raster and its upload. Writes the slot;
@@ -648,7 +654,6 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         // Motion draws what exists: a missing exact cell is a stand-in, not a raster, until the view settles.
         if (moving && geometry.slices === 1 && standInFor(req, label, colourOf, emoji, false)) return null;
         if (budget.shouldYield()) return { status: 'deferred' };
-        if (!ensureRasterLease()) return { status: 'denied', pool: 'cpu', bytes: MASK_CANVAS_BYTES };
         return emoji ? rasterColour(req, geometry, cellIndex, colourOf, frame, budget, label)
             : stageMono(req, label, geometry, cellIndex, frame, budget);
     };
@@ -893,7 +898,7 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         memory(): { gpuBytes: number; cpuBytes: number } {
             let gpuBytes = (mono?.bytes ?? 0) + (colour?.bytes ?? 0) + (whiteLease?.bytes ?? 0) + (stage?.lease.bytes ?? 0) + (convertLease?.bytes ?? 0);
             for (const run of live) gpuBytes += run.bytes;
-            const cpuBytes = (rasterLease?.bytes ?? 0) + (scratchLease?.bytes ?? 0) + (uniformLease?.bytes ?? 0) +
+            const cpuBytes = (scratchLease?.bytes ?? 0) + (uniformLease?.bytes ?? 0) +
                 (convertScratchLease?.bytes ?? 0) + memoAccount.bytes + standAccount.bytes;
             return { gpuBytes, cpuBytes };
         },

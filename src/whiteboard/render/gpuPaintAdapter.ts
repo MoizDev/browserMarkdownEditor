@@ -236,6 +236,9 @@ export interface GpuPaintAdapter {
     /** The ink node ids in the tiles this adapter drew in the current composite: filled in drawGpu, cleared at the next prepare.
      * The wet layer skips these nodes in the same composite, so translucent ink never doubles at hand-over. */
     drawnInkNodeIds(): ReadonlySet<string>;
+    /** The nodes whose live parts this adapter laid for one band in the current composite (cleared at the next prepare). The board
+     * counts a changed node as drawn only when it is here, so a live part the composer deferred or denied is not counted. */
+    drawnLiveNodeIds(band: PaintBand): ReadonlySet<string>;
     dispose(): void;
 }
 
@@ -367,6 +370,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         needsFrame(): boolean { return !disposed && composer.needsFrame(); },
         memoryBlocked(): boolean { return !disposed && composer.memoryBlocked(); },
         drawnInkNodeIds(): ReadonlySet<string> { return disposed ? NO_INK : composer.drawnInkNodeIds(); },
+        drawnLiveNodeIds(band: PaintBand): ReadonlySet<string> { return disposed ? NO_INK : composer.drawnLiveNodeIds(band); },
         gpuMandatoryBytes(viewport: { width: number; height: number }): number {
             return disposed || !presented ? 0 : composer.mandatoryBytes(viewport.width, viewport.height);
         },

@@ -840,7 +840,12 @@ export class FrameScheduler {
                         return;
                     }
                     item.work.batch.submitted = true; item.work.batch.damage.consume();
-                    if (renderAuditEnabled()) auditCount('pane', 'present:' + item.work.cause);
+                    if (renderAuditEnabled()) {
+                        auditCount('pane', 'present:' + item.work.cause);
+                        // Every reason the frame carried, not only the first: the cause names the first match, and a camera
+                        // cause hides the invalidations behind it while the pane is interacting.
+                        for (const reason of item.work.frame.reasons) auditCount('pane', 'present-reason:' + reason);
+                    }
                     item.work.entry.presented = { token: item.work.frame.token, epoch: item.work.frame.view.epoch, geometry: item.work.geometry };
                     const drawn = Object.freeze(submission.drawn.filter(revision => revision.layer.onFramePresented !== undefined)
                         .map(revision => Object.freeze({ layer: revision.layer, sceneRevision: revision.sceneRevision })));

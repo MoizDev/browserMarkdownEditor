@@ -2,7 +2,9 @@ import { RENDER_CONSTANTS as POLICY } from './constants';
 import type { ByteLease } from './gfx/api';
 import { auditCount } from './renderAudit';
 import type { ArenaMemory } from './resourceArena';
-import type { RenderToken } from './types';
+import { layerTroubleOf } from './types';
+import { MIN_SURFACE_QUALITY } from './surfaceMetrics';
+import type { LayerTrouble, RenderToken } from './types';
 
 export type MemoryPool = 'gpu' | 'cpu';
 export type MemoryClass = 'hidden-mirror' | 'obsolete-arrival' | 'offscreen-high' |
@@ -68,6 +70,9 @@ export interface PaneMemoryDemand {
     readonly focused: boolean;
     readonly requestedPixels: number;
     readonly gpuNeedBytes: number;
+    /** The GPU bytes this pane's visible positions at the current scale pin: granted before the surface share and before any
+     * other scale or off-view ring, and never trimmed while the pane is visible. Absent: nothing is pinned. */
+    readonly gpuPinnedBytes?: number;
     readonly cpuNeedBytes: number;
     /** Visible working set; optional excess in cpuNeedBytes is shared only after mandatory demand. */
     readonly cpuMandatoryBytes?: number;
@@ -199,6 +204,7 @@ function stableId(a: string, b: string): number { return a < b ? -1 : a > b ? 1 
 function samePaneDemand(a: PaneMemoryDemand, b: PaneMemoryDemand | undefined): boolean {
     return b !== undefined && a.paneId === b.paneId && a.visible === b.visible && a.focused === b.focused &&
         a.requestedPixels === b.requestedPixels && a.gpuNeedBytes === b.gpuNeedBytes && a.cpuNeedBytes === b.cpuNeedBytes &&
+        a.gpuPinnedBytes === b.gpuPinnedBytes &&
         a.cpuMandatoryBytes === b.cpuMandatoryBytes && a.cpuPinned === b.cpuPinned;
 }
 
@@ -219,6 +225,9 @@ export class MemoryGovernor {
     // Bumped whenever a reservation that was refused could now fit: a lease returned, a grant or demand that moved, a cache
     // that became visible or was transferred. A refusal memo is valid only within the epoch it was taken in.
     private capacityEpoch = 0;
+    // Each pane's quality ceiling. It falls the moment a pane's pixel grant falls short of its need, and rises only in a
+    // recovery step (sustained cool use with no gesture): a pane never steps back up on the next plan that frees bytes.
+    private readonly paneCeiling = new Map<string, number>();
     private readonly target: { gpu: number; cpu: number } = { gpu: POLICY.gpuGrantMinBytes, cpu: POLICY.cpuGrantMinBytes };
     private readonly ceilings: Readonly<{ gpuBytes: number; cpuRasterBytes: number }>;
     private panes: readonly PaneMemoryDemand[] = [];
@@ -314,11 +323,11 @@ export class MemoryGovernor {
             if (pane.visible && pane.requestedPixels > 0) { pixels += pane.requestedPixels; visible++; }
         }
         count(pixels);
-        if (visible > POLICY.maxVisiblePaneContexts) throw new MemoryAdmissionError('invalid-input');
         // The scheduler refreshes every frame (snapshotScene), so demand that did not change re-plans nothing: the grants
         // move only with the demand, with degradation and recovery (which plan themselves) and with context/program charges.
         const changed = this.panes.length !== panes.length || panes.some((pane, i) => !samePaneDemand(pane, this.panes[i]));
         this.panes = panes.map(pane => ({ ...pane }));
+        for (const id of this.paneCeiling.keys()) if (!ids.has(id)) this.paneCeiling.delete(id);
         if (changed) {
             this.capacityEpoch++;
             this.target.gpu = Math.min(this.ceilings.gpuBytes, Math.max(POLICY.gpuGrantMinBytes,
@@ -465,6 +474,7 @@ export class MemoryGovernor {
         else if (this.belowRecoverySince === null) this.belowRecoverySince = now;
         else if (now - this.belowRecoverySince >= POLICY.memoryRecoveryDelayMs) {
             this.qualityLimit = Math.min(1, this.qualityLimit / POLICY.qualityReductionFactor);
+            for (const [id, value] of this.paneCeiling) this.paneCeiling.set(id, Math.min(1, value / POLICY.qualityReductionFactor));
             this.state = this.qualityLimit < 1 ? 'degraded' : 'normal';
             if (this.state === 'normal') this.lastTrouble = null;
             this.belowRecoverySince = now;
@@ -828,6 +838,9 @@ export class MemoryGovernor {
     /** Usage low enough to step quality back up. GPU grants are planned up to the trim target, so a pane using its own
      * grant sits there; the CPU's 0.6 ratio applied to the GPU never came once it was degraded (measured: a PDF held at
      * 44 of 64 MB stayed at quality 0.8, so no webgl2 frame was ever sharp). */
+    /** What a layer reads through its host: a pure mapping of the state fields, so the read allocates nothing. */
+    trouble(): LayerTrouble { return layerTroubleOf(this.state, this.lastTrouble); }
+
     cool(): boolean {
         return this.charged.gpu < this.target.gpu * POLICY.memoryTrimTargetRatio &&
             this.charged.cpu < this.target.cpu * POLICY.memoryRecoveryRatio;
@@ -862,14 +875,40 @@ export class MemoryGovernor {
             supported.push(pane);
             remaining -= minimum;
         }
+        // Surface floors before the share: every visible pane keeps its picture at MIN_SURFACE_QUALITY, so insufficient memory
+        // lowers resolution and never blanks a pane. Arithmetic, 2560×1600 device px: q 1/4 is 640×400 = 256,000 px × 12 B ≈ 3 MB
+        // per pane, so five panes need ≈ 15 MB of the 102 MB low-device trim target. A floor the pool cannot hold is not granted.
+        const byWeight = [...visible].sort((a, b) => weight(b) - weight(a) || stableId(a.paneId, b.paneId));
+        const floorPixels = new Map<string, number>();
+        for (const pane of byWeight) {
+            const px = Math.floor(pane.requestedPixels * MIN_SURFACE_QUALITY * MIN_SURFACE_QUALITY);
+            const bytes = px * POLICY.surfaceReserveBytesPerPixel;
+            if (bytes > remaining) continue;
+            floorPixels.set(pane.paneId, px);
+            remaining -= bytes;
+        }
+        // Pinned first. Arithmetic, DPR 2, a 1280×800 CSS pane (2560×1600 device px): 5×4 = 20 visible positions; a 514² RGBA
+        // tile is 514·514·4 = 1,056,784 B ≈ 1.06 MB, so one band's visible set is ≈ 21 MB. On a low device (128 MB pool) the
+        // trim target is 102.4 MB, the surface share is at most 41 MB, leaving ≈ 61 MB of cache for the pool; five such panes
+        // pin ≈ 105 MB per band, which does not fit. So the pinned sets are shared by focus weight up to what the pool holds,
+        // and a position past its pane's share is refused and composed at a lower level (h1), never trimmed from the screen.
+        const pinned = waterFill(supported.map(pane => ({ id: pane.paneId, weight: weight(pane),
+            need: Math.max(0, Math.min(pane.gpuPinnedBytes ?? 0, pane.gpuNeedBytes - minimum)) })), remaining);
+        remaining -= [...pinned.values()].reduce((sum, value) => sum + value, 0);
+        const ceilingOf = (pane: PaneMemoryDemand) => Math.min(this.qualityLimit, this.paneCeiling.get(pane.paneId) ?? 1);
         const surfaceBytes = Math.min(Math.floor(this.target.gpu * POLICY.memoryTrimTargetRatio * POLICY.surfaceMaxGpuGrantFraction), remaining);
         // Denying GL must not deny a 2D drawing buffer (§6.3:641); both paths share this cap.
         const pixels = waterFill(visible.map(pane => ({ id: pane.paneId, weight: weight(pane),
-            need: Math.floor(pane.requestedPixels * this.qualityLimit * this.qualityLimit) })),
+            need: Math.max(0, Math.floor(pane.requestedPixels * ceilingOf(pane) * ceilingOf(pane)) - (floorPixels.get(pane.paneId) ?? 0)) })),
         Math.floor(surfaceBytes / POLICY.surfaceReserveBytesPerPixel));
+        const pixelGrantOf = (paneId: string): number => (floorPixels.get(paneId) ?? 0) + (pixels.get(paneId) ?? 0);
+        for (const pane of visible) {
+            const q = Math.sqrt(pixelGrantOf(pane.paneId) / pane.requestedPixels);
+            if (q < (this.paneCeiling.get(pane.paneId) ?? 1)) this.paneCeiling.set(pane.paneId, Math.max(MIN_SURFACE_QUALITY, q));
+        }
         const assignedSurface = [...pixels.values()].reduce((sum, value) => sum + value, 0) * POLICY.surfaceReserveBytesPerPixel;
         const cache = waterFill(supported.map(pane => ({ id: pane.paneId, weight: weight(pane),
-            need: Math.max(0, pane.gpuNeedBytes - minimum) })), Math.max(0, remaining - assignedSurface));
+            need: Math.max(0, pane.gpuNeedBytes - minimum - (pinned.get(pane.paneId) ?? 0)) })), Math.max(0, remaining - assignedSurface));
         // Demand is reported from what layers already hold, so a grant of exactly that had no room for the next tile: the
         // committed board layers were refused with the pool half empty and a finished stroke never drew (measured: 1 MB
         // tiles refused at 33 of 64 MB). The plannable remainder is shared by weight; the total stays inside the plan.
@@ -879,6 +918,9 @@ export class MemoryGovernor {
         if (spare > 0 && totalWeight > 0) {
             for (const pane of supported) cache.set(pane.paneId, (cache.get(pane.paneId) ?? 0) + Math.floor(spare * weight(pane) / totalWeight));
         }
+        for (const [id, bytes] of pinned) cache.set(id, (cache.get(id) ?? 0) + bytes);
+        // The GPU is offered to the five highest-weighted visible panes only; a sixth keeps its 2D picture and its floor.
+        const gpuRanked = new Set(byWeight.slice(0, POLICY.maxVisiblePaneContexts).map(pane => pane.paneId));
         const cpu = waterFill(visible.map(pane => ({ id: pane.paneId, weight: weight(pane),
             need: pane.cpuMandatoryBytes ?? pane.cpuNeedBytes })), this.target.cpu);
         const mandatoryAssigned = [...cpu.values()].reduce((sum, value) => sum + value, 0);
@@ -886,10 +928,10 @@ export class MemoryGovernor {
             need: pane.cpuNeedBytes - (pane.cpuMandatoryBytes ?? pane.cpuNeedBytes) })), this.target.cpu - mandatoryAssigned);
         for (const [id, bytes] of optional) cpu.set(id, (cpu.get(id) ?? 0) + bytes);
         this.grants = new Map(this.panes.map(pane => {
-            const pixelGrant = pixels.get(pane.paneId) ?? 0;
+            const pixelGrant = pixelGrantOf(pane.paneId);
             const q = pane.requestedPixels ? Math.sqrt(pixelGrant / pane.requestedPixels) : 0;
             const hasCacheCredit = pixelGrant > 0 && supported.includes(pane);
-            const gpuEligible = hasCacheCredit && !pane.cpuPinned;
+            const gpuEligible = gpuRanked.has(pane.paneId) && hasCacheCredit && !pane.cpuPinned;
             return [pane.paneId, Object.freeze({
                 paneId: pane.paneId, pixelGrant, gpuEligible,
                 // Browser-managed 2D scratch needs the same logical G credit even without WebGL (§10).

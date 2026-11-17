@@ -5,7 +5,7 @@
 import type { Rect, ViewState } from '../../../platform/types';
 import type { LayerHost } from '../../../platform/render/compositor.types';
 import type { GfxDevice, GpuPass } from '../../../platform/render/gfx/api';
-import type { FrameBudget } from '../../../platform/render/types';
+import type { FrameBudget, OffscreenPasses } from '../../../platform/render/types';
 import type { TileTarget } from '../../../platform/render/tileTarget';
 import type { PaintBand } from '../material';
 import type { PaintClip, PaintInkItem, PaintItem } from '../paintStream';
@@ -36,6 +36,10 @@ export interface ItemRoute<I extends PaintItem = PaintItem> {
     admit(items: readonly I[], view: ViewState, blend: Blend, budget: FrameBudget): Admission<PreparedRun>;
     /** Draws only: no allocation, no upload, no readback. */
     draw(pass: GpuPass, run: PreparedRun): void;
+    /** GPU-side preparation that needs its own pass (e.g. converting an uploaded text bitmap into an R8 atlas page),
+     *  so nothing is read back to the CPU. The composer calls it once per frame at the start of its encodeOffscreen,
+     *  before any tile pass, for every route that has it. */
+    encodeOffscreen?(passes: OffscreenPasses): void;
     retire(run: PreparedRun): void;
     /** Every GPU resource; idempotent. */
     release(): void;

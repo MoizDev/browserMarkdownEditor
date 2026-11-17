@@ -181,6 +181,8 @@ export interface PassDesc {
     target: TargetHandle | 'surface';
     viewport: RectI;
     load: { kind: 'clear'; color: RgbaP } | { kind: 'load' };
+    // A clear covers this rectangle only (a shared atlas holds other regions); default is the whole viewport.
+    clearViewport?: RectI;
     store: 'store' | 'discard';
     // Required on stencil-backed targets, forbidden on the displayed surface.
     stencil?: {
@@ -300,6 +302,15 @@ export interface GpuPass {
 // pending frames never overwrite in-flight uniform slices or pooled attachments.
 export interface FrameEncoder {
     uniforms(bytes: ArrayBufferView): UniformSlice;
+    // Outside any pass: a target borrowed for this frame from the slots admitted at prepare (see the pass-level acquireTarget).
+    acquireTarget(desc: {
+        width: number;
+        height: number;
+        samples: Samples;
+        format?: TextureFormat;
+        stencil: boolean;
+        purpose: 'mask' | 'group' | 'scene-cache' | 'capture';
+    }): TargetLease | null;
     beginPass(desc: PassDesc): GpuPass;
     resolve(source: TargetHandle, dest: TextureHandle): void;
     copyTexture(
@@ -318,8 +329,12 @@ export interface Submission { readonly serial: number; readonly stateSwitches: n
 
 // rendering-design.md:203–206, §2.5: already canonical; the caller closes the bitmap
 // explicitly after writeTexture returns. Upload does not repeat colour conversion.
+/** A decoded image a quad or an upload may read: an ImageBitmap, or a VideoFrame read directly (no CPU bitmap copy). The caller
+ * owns a VideoFrame and closes it once the call that read it has returned. */
+export type DrawableImage = ImageBitmap | VideoFrame;
+
 export interface BitmapUpload {
-    source: ImageBitmap;
+    source: DrawableImage;
     premultiplied: true;
     colorSpace: 'srgb';
     origin: 'top-left';

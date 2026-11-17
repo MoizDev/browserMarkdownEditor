@@ -1,4 +1,4 @@
-import { createTileGrid, exactScale, intersectingTiles, makeTileKey, pageAt, renderTokenKey } from '../../platform/render';
+import { createTileGrid, exactScale, intersectingTiles, makeTileKey, pageAt, renderTokenKey, tileKeyString } from '../../platform/render';
 import type { ByteLease, PageStack, Rect, RenderToken, ViewState } from '../../platform/render';
 import type { CaptureRequest, CaptureSnapshot } from '../../platform/render/capture';
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
@@ -99,7 +99,8 @@ export function createPdfCaptureSnapshot(source: PdfCaptureSource, request: Capt
                     combined.throwIfAborted();
                     const reservation = memory.reserve(tile.textureWidth * tile.textureHeight * 4);
                     if (!reservation) return 'incomplete';
-                    const tileRequest: PdfTileRequest = { key: makeTileKey(content, grid, tile), page, tile, scale,
+                    const key = makeTileKey(content, grid, tile);
+                    const tileRequest: PdfTileRequest = { key, text: tileKeyString(key), page, tile, scale,
                         level: 'exact', priority: 'visible-hole', distance: 0 };
                     let bitmap: ImageBitmap | null = null;
                     try {

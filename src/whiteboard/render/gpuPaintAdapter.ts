@@ -17,13 +17,14 @@ import { TILE_SIZE } from './imageSampling';
 import type { Blend, ItemRoute, PreparedRun } from './gpu/contracts';
 import { createTileComposer, type ResourcedRoute, type TileLay, type TileRoutes } from './gpu/tileComposer';
 import { createTileParts } from './gpu/tileParts';
-import { createTileStore, tileId, tileWorld } from './gpu/tileStore';
+import { createTileStore, tileWorld } from './gpu/tileStore';
 import { createPath, withPreparedClips } from './gpu/routePath';
 import { createInkRoutes, inkRouteFor } from './gpu/routeInk';
 import { createImageRoute } from './gpu/routeImage';
 import { createTextRoute } from './gpu/routeText';
 
 const SIZE = TILE_SIZE;
+const NO_INK: ReadonlySet<string> = new Set();
 const TILE_BYTES = SIZE * SIZE * 4;
 /** The quad that lays a composed tile: the whole texture onto its destination, linear, no coverage classification. */
 const QUAD = Object.freeze({ opacity: 1, sampling: 'linear', coverage: 'none' } as const);
@@ -145,12 +146,12 @@ function createCpuRoute(host: LayerHost, surface: string, lay: TileLay): CpuRout
                 ctx.setTransform(s, 0, 0, s, -view.camera.x * s, -view.camera.y * s);
                 const withPaths: PaintResources2d = { ...paint, path: item => pathOf(item, s, paint) };
                 for (const item of items) paintItem2d(ctx, blend === 'modulate' ? multiplied(item) : item, withPaths);
-                auditCount(surface, 'cpu-raster', 1, { px: SIZE * SIZE });
                 bitmap = scratch.transferToImageBitmap();
                 texture = device.createTexture(SIZE, SIZE, 'rgba8', ['sample', 'copy-dst'], lease);
-                auditCount(surface, 'upload:image', 1, { bytes: TILE_BYTES });
                 device.writeTexture(texture, { x: 0, y: 0, width: SIZE, height: SIZE },
                     { source: bitmap, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
+                // Counted once the raster has its texture: the composer counts the fallback with the same pixels.
+                auditCount(surface, 'cpu-raster', 1, { px: SIZE * SIZE });
                 const run: CpuRun = { route: 'cpu', blend, texture, device };
                 live.add(run);
                 return { status: 'ready', value: run };
@@ -208,6 +209,11 @@ export interface GpuPaintAdapter {
     /** The governor's GPU pressure: frees up to `bytes` of idle GPU memory, path coverage sets first, then composed tiles
      * not used this frame. Returns the bytes freed. */
     evictGpu(bytes: number, frameId: number): number;
+    /** The GPU bytes the visible tiles at the current scale need, for a viewport of `width` by `height` (view units). */
+    gpuMandatoryBytes(viewport: { width: number; height: number }): number;
+    /** The ink node ids in the tiles this adapter drew in the current composite: filled in drawGpu, cleared at the next prepare.
+     * The wet layer skips these nodes in the same composite, so translucent ink never doubles at hand-over. */
+    drawnInkNodeIds(): ReadonlySet<string>;
     dispose(): void;
 }
 
@@ -247,8 +253,11 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
     };
     const composer = createTileComposer({
         host, audit: surface, parts: createTileParts(host, surface), store, routes,
-        tileId, tileWorld, inkRouteFor, lay, admitClips: pathRoute.admitClips, withPreparedClips,
+        tileWorld, inkRouteFor, lay, admitClips: pathRoute.admitClips, withPreparedClips,
+        layQuads: (pass, texture, quads) => host.drawTexturedQuads(pass, texture, quads, QUAD),
         ...(options.opaqueWorld ? { opaqueWorld: options.opaqueWorld } : {}),
+        // The compose limit halves while the host reports a slow GPU, read each frame (PLAN 3.1).
+        slowGpu: () => host.trouble() === 'slow-gpu',
     });
 
     return {
@@ -306,6 +315,10 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             presented = null; omitPrepared = null; lastFrame = -1;
         },
         needsFrame(): boolean { return !disposed && composer.needsFrame(); },
+        drawnInkNodeIds(): ReadonlySet<string> { return disposed ? NO_INK : composer.drawnInkNodeIds(); },
+        gpuMandatoryBytes(viewport: { width: number; height: number }): number {
+            return disposed || !presented ? 0 : composer.mandatoryBytes(viewport.width, viewport.height);
+        },
         evictGpu(bytes: number, frameId: number): number {
             if (disposed || !(bytes > 0)) return 0;
             // Route caches first, then composed tiles: each frees only what this frame did not use. The sum is what was freed.

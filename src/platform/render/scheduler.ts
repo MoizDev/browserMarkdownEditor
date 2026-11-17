@@ -897,9 +897,6 @@ export class FrameScheduler {
                 return Math.floor(critical ? remaining : Math.min(remaining, item.entry.optionalBytes));
             };
             const upload = { remainingBytes: availableBytes(), deadline: meter.deadline };
-            // One media grant per prepare call: a layer prepares once per presented frame, so this is one video frame per media
-            // source per presented frame.
-            let mediaGranted = false;
             const budget: FrameBudget = {
                 frameId: item.frame.frameId, token: item.frame.token, cameraEpoch: item.frame.view.epoch, damage: item.frame.damage,
                 prepareDeadline: limit, upload, shouldYield,
@@ -909,8 +906,9 @@ export class FrameScheduler {
                         // A playing video's frame (8 MB at 1080p) can never fit the general allowance (about 1 MiB at 240 Hz), so it
                         // would never reach the GPU. The copy from a VideoFrame is device-side, so the grant ignores the allowance and
                         // the time slice, is not charged to this frame's upload meter, and is counted with its bytes.
-                        if (mediaGranted || !this.valid(item.entry, item.frame.token)) return false;
-                        mediaGranted = true;
+                        // Every media claim is granted: the image route admits at most one upload per video node per presented frame, so
+                        // several playing videos each advance, and a second claim from one node is that route's own bookkeeping.
+                        if (!this.valid(item.entry, item.frame.token)) return false;
                         auditCount('scheduler', 'media:upload-granted', 1, { bytes });
                         return true;
                     }

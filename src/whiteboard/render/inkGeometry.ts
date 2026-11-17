@@ -7,6 +7,8 @@ import { DOT_METRIC_PROVISIONAL, radiusAtSample, realizeStrokePoints, validateIn
 import type { StrokeNode } from '../model/nodes';
 import type { SampleChunk, SampleStoreReader } from '../model/samples';
 import { auditCount } from '../../platform/render/renderAudit';
+import type { ByteLease } from '../../platform/render/gfx/api';
+import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import { prepareInkCoverageInWorker } from '../workers/inkCoverageClient';
 import type { BoardJobIdentity } from '../workers/protocol';
 import { pathFillTriangles, type PathFillTriangles } from './pathFillTriangles';
@@ -209,30 +211,108 @@ export interface InkTriangles {
 const ZERO_BOUNDS: Readonly<{ x0: number; y0: number; x1: number; y1: number }> = Object.freeze({ x0: 0, y0: 0, x1: 0, y1: 0 });
 const ZERO_ORIGIN: Readonly<{ x: number; y: number }> = Object.freeze({ x: 0, y: 0 });
 
-/** Each chunk's triangles, kept on the chunk: a chunk is immutable and the scene keeps it while it is drawn, so a
- * committed stroke is tessellated once per band, and a live stroke re-tessellates only the chunk it is still adding to. */
-const chunkTriangles = new WeakMap<InkCoverage, { band: number; value: InkTriangles | null }>();
-/** One chunk's union triangles at one device-scale band. `null` when the outline exceeds its budget (the caller refuses
- * the stroke, counted by the route); a build that fails for any other reason is not caught. */
-export function inkChunkTriangles(chunk: InkCoverage, band: number, audit: string): InkTriangles | null {
-    const held = chunkTriangles.get(chunk);
-    if (held && held.band === band) { auditCount(audit, 'geom:hit'); return held.value; }
+/** The chunk geometry a route holds, leased: every triangle array this cache keeps is reserved with the governor (the CPU
+ * pool, through the route's allocator) and released when it is evicted. By reading: the old module-level WeakMaps held
+ * this memory outside the governor's books, so a pane could hold more than it was granted and never be told. Entries are
+ * evicted least recently used, but never one the current stroke is using (its sets are being admitted now). */
+export type InkStrokeSetsResult = InkStrokeSets | null | { readonly denied: number };
+export interface InkGeometry {
+    /** The stroke's sets at one band; `null` when a chunk is refused; `{ denied }` when the pool refuses the bytes even after eviction. */
+    strokeSets(item: PaintInkItem, band: number): InkStrokeSetsResult;
+    memory(): { readonly cpuBytes: number };
+    release(): void;
+}
+interface Held {
+    readonly band: number; readonly px: number; readonly py: number;
+    readonly local: InkTriangles | null; readonly placed: InkTriangles | null;
+    leases: ByteLease[]; bytes: number; use: number;
+}
+type Placed = InkTriangles | null | { readonly denied: number };
+
+export function createInkGeometry(memory: MemoryAllocator, audit: string): InkGeometry {
+    // Insertion order is recency: a touch moves the chunk to the end, so the first entry is the least recently used.
+    const held = new Map<InkCoverage, Held>();
+    let bytes = 0, epoch = 0;
+    const free = (entry: Held): void => {
+        for (const lease of entry.leases) memory.release(lease);
+        bytes -= entry.bytes; entry.leases = []; entry.bytes = 0;
+    };
+    const evictOne = (keep: Held): boolean => {
+        for (const [chunk, entry] of held) {
+            if (entry === keep || entry.use === epoch) continue;
+            free(entry); held.delete(chunk); return true;
+        }
+        return false;
+    };
+    /** Reserves the array's bytes for `entry`, evicting others to make room. False when the pool still refuses. */
+    const claim = (entry: Held, triangles: InkTriangles, size: number): boolean => {
+        if (!triangles.triangles.byteLength) return true;
+        let lease = memory.reserve(size);
+        while (!lease && evictOne(entry)) lease = memory.reserve(size);
+        if (!lease) return false;
+        entry.leases.push(lease); entry.bytes += size; bytes += size;
+        return true;
+    };
+    const place = (chunk: InkCoverage, band: number, origin: Readonly<{ x: number; y: number }>): Placed => {
+        const old = held.get(chunk);
+        if (old && old.band === band && old.px === origin.x && old.py === origin.y) {
+            held.delete(chunk); held.set(chunk, old); old.use = epoch; auditCount(audit, 'geom:hit');
+            return old.placed;
+        }
+        // The local build survives a change of origin (a copy, not a re-tessellation); a change of band rebuilds it.
+        const kept = old && old.band === band ? old.local : undefined;
+        if (old) { free(old); held.delete(chunk); }
+        const local = kept !== undefined ? (auditCount(audit, 'geom:hit'), kept) : buildLocal(chunk, band, audit);
+        const entry: Held = { band, px: origin.x, py: origin.y, local, placed: null, leases: [], bytes: 0, use: epoch };
+        if (local && !claim(entry, local, local.triangles.byteLength)) { free(entry); return { denied: local.triangles.byteLength }; }
+        const placed = local && rebase(local, origin);
+        if (placed && placed !== local && !claim(entry, placed, placed.triangles.byteLength)) {
+            free(entry); return { denied: placed.triangles.byteLength };
+        }
+        held.set(chunk, { ...entry, placed });
+        return placed;
+    };
+    return {
+        strokeSets(item: PaintInkItem, band: number): InkStrokeSetsResult {
+            epoch++;
+            const chunks = inkCoverageChunks(item.coverage);
+            if (!chunks.length) return { origin: ZERO_ORIGIN, sets: [] };
+            // The first chunk's corner: fixed while a live stroke appends chunks, so the placed sets stay valid across publications.
+            const origin = { x: chunks[0].boundsLocal.x, y: chunks[0].boundsLocal.y };
+            const sets: InkTriangles[] = [];
+            for (const chunk of chunks) {
+                const placed = place(chunk, band, origin);
+                if (placed && 'denied' in placed) return placed;
+                if (!placed) return null;
+                if (placed.triangles.length) sets.push(placed);
+            }
+            return { origin, sets };
+        },
+        memory: () => ({ cpuBytes: bytes }),
+        release(): void {
+            for (const entry of held.values()) free(entry);
+            held.clear(); bytes = 0;
+        },
+    };
+}
+
+/** One chunk's union triangles at one band, in the chunk's own corner. `null` when the outline exceeds its budget (the caller
+ * refuses the stroke, counted by the route); a build that fails for any other reason is not caught. */
+function buildLocal(chunk: InkCoverage, band: number, audit: string): InkTriangles | null {
     auditCount(audit, 'geom:build');
     const origin = { x: chunk.boundsLocal.x, y: chunk.boundsLocal.y };
-    let value: InkTriangles | null = null;
     try {
         const { arcPx, flattenPx } = inkTolerances(chunk, band);
         // coverageOutline's arc tolerance is INK_CAP_ERROR_DEVICE_PX / deviceScale (its only use of the scale), so this
         // scale sets the arcs to the chunk's arc tolerance and nothing else about the outline changes.
         const commands = coverageOutline(chunk, band * (INK_CAP_ERROR_DEVICE_PX / arcPx), INK_OUTLINE_MAX_COMMANDS);
         const shapes = pathFillTriangles(commands, { tolerance: flattenPx / band, origin: [origin.x, origin.y] });
-        if (shapes) value = foldUnion(shapes, origin);
+        return shapes ? foldUnion(shapes, origin) : null;
     } catch (error) {
         // Only the outline's own ceilings are RangeErrors that mean "refused"; anything else is a fault.
-        if (!(error instanceof RangeError)) throw error;
+        if (error instanceof RangeError) return null;
+        throw error;
     }
-    chunkTriangles.set(chunk, { band, value });
-    return value;
 }
 /** The device-px errors this chunk's outline may have: a fraction of its thinnest device radius, each under its ceiling. */
 function inkTolerances(chunk: InkCoverage, band: number): { arcPx: number; flattenPx: number } {
@@ -253,19 +333,8 @@ function foldUnion(shapes: PathFillTriangles, origin: Readonly<{ x: number; y: n
     }
     return { triangles, origin, bounds: triangles.length ? shapes.bounds : ZERO_BOUNDS, edges: shapes.edges };
 }
-
-/** A chunk's union triangles rebased to a stroke's origin (its first chunk's corner), so every chunk of the stroke shares
- * one affine. The placed array is the identity the kit shares a vertex buffer by: kept per chunk, band and origin, a new
- * publication uploads only the chunks it adds, and a rebase is a copy, never a re-tessellation. */
-const placedTriangles = new WeakMap<InkCoverage, { band: number; x: number; y: number; value: InkTriangles | null }>();
-function placedOn(chunk: InkCoverage, band: number, origin: Readonly<{ x: number; y: number }>, audit: string): InkTriangles | null {
-    const held = placedTriangles.get(chunk);
-    if (held && held.band === band && held.x === origin.x && held.y === origin.y) return held.value;
-    const local = inkChunkTriangles(chunk, band, audit);
-    const value = local && rebase(local, origin);
-    placedTriangles.set(chunk, { band, x: origin.x, y: origin.y, value });
-    return value;
-}
+/** A chunk's triangles rebased to a stroke's origin, so every chunk of the stroke shares one affine. The copy is the identity
+ * the kit shares a vertex buffer by: a publication uploads only the chunks it adds. */
 function rebase(local: InkTriangles, origin: Readonly<{ x: number; y: number }>): InkTriangles {
     const dx = local.origin.x - origin.x, dy = local.origin.y - origin.y;
     if (dx === 0 && dy === 0) return local;
@@ -279,18 +348,5 @@ function rebase(local: InkTriangles, origin: Readonly<{ x: number; y: number }>)
         edges: local.edges };
 }
 
-/** A stroke as its chunks' sets, all relative to `origin`. Only non-empty sets are listed. `null` when any chunk is refused. */
+/** A stroke as its chunks' sets, all relative to `origin`. Only non-empty sets are listed. */
 export interface InkStrokeSets { readonly origin: Readonly<{ x: number; y: number }>; readonly sets: readonly InkTriangles[] }
-export function inkStrokeSets(item: PaintInkItem, band: number, audit: string): InkStrokeSets | null {
-    const chunks = inkCoverageChunks(item.coverage);
-    if (!chunks.length) return { origin: ZERO_ORIGIN, sets: [] };
-    // The first chunk's corner: it is fixed while a live stroke appends chunks, so the placed sets stay valid across publications.
-    const origin = { x: chunks[0].boundsLocal.x, y: chunks[0].boundsLocal.y };
-    const sets: InkTriangles[] = [];
-    for (const chunk of chunks) {
-        const set = placedOn(chunk, band, origin, audit);
-        if (!set) return null;
-        if (set.triangles.length) sets.push(set);
-    }
-    return { origin, sets };
-}

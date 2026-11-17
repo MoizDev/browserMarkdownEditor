@@ -1,4 +1,5 @@
 import type { GfxError } from './gfx/api';
+import { auditCount } from './renderAudit';
 import { currentGpuPaneFactory } from './gpuPaneFactory';
 import type { PreparedGpuPane } from './gpuPaneFactory';
 import { GpuPaneServices } from './gpuPaneServices';
@@ -14,6 +15,18 @@ export interface QualifiedGpuPane {
     readonly backing: SurfaceBacking;
 }
 
+/** A GPU failure is never the document's: it demotes its pane to canvas2d, so the board opens. Logged once per failure with
+ * its stack, because the harness and the console show only a message otherwise. Returns the typed code it fell back with. */
+export function reportGpuFallback(where: string, error: unknown): GfxError {
+    const raw = typeof error === 'object' && error !== null && 'code' in error ? error.code : null;
+    const code: GfxError = typeof raw === 'string' && GFX_CODES.includes(raw as GfxError) ? raw as GfxError : 'invalid-resource';
+    auditCount('pane', `fallback:pane-2d:gpu-error:${typeof raw === 'string' ? raw : 'unknown'}`);
+    console.error(`GPU ${where} failed; this pane continues on canvas2d:`, error instanceof Error ? error.stack ?? error.message : error);
+    return code;
+}
+
+const GFX_CODES: readonly GfxError[] = ['lost', 'out-of-budget', 'allocation', 'unsupported', 'invalid-resource', 'invalid-input', 'aborted'];
+
 export interface GpuPaneCandidateOptions {
     readonly runtime: PlatformRuntime;
     readonly paneId: string;
@@ -21,7 +34,6 @@ export interface GpuPaneCandidateOptions {
     readonly owner: MemorySessionOwner;
     readonly surface: () => SurfaceLease | null;
     invalidate(reason: string): void;
-    onError(error: unknown): void;
     onReady(pane: QualifiedGpuPane): void;
     /** Frees up to `bytes` of this pane's GPU residency and returns the bytes it freed; 0 when it frees none. */
     onEvict(bytes: number): number;
@@ -100,16 +112,8 @@ export class GpuPaneCandidate {
                         { width: 0, height: 0, complete: false, generation: preparation.generation };
                 },
                 invalidate: this.options.invalidate,
-                onError: error => defer(() => {
-                    const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : null;
-                    // Budget and allocation refusals are handled by falling back below; raising them to the pane's owner
-                    // replaced a whole board with 'Could not open canvas: out-of-budget' instead of drawing it in 2D.
-                    try { if (code !== 'out-of-budget' && code !== 'allocation') this.options.onError(error); }
-                    finally {
-                        this.failure(preparation.generation, code === 'allocation' || code === 'out-of-budget' ||
-                            code === 'unsupported' || code === 'lost' ? code : 'invalid-resource');
-                    }
-                }),
+                // Every GPU compositor error demotes this pane; none reaches the owner, so a board never fails to open on one.
+                onError: error => defer(() => this.failure(preparation.generation, reportGpuFallback('compositor', error))),
                 onDeferred: () => {
                     const compositor = generation.bundle?.compositor;
                     if (!compositor || !('retryPending' in compositor) || compositor.retryPending !== true || generation.deferredReported) return;
@@ -131,6 +135,10 @@ export class GpuPaneCandidate {
                 dispose: reason => this.disposeGeneration(generation, reason),
             };
         } catch (error) {
+            // A budget or allocation refusal is normal flow and is not logged; any other setup failure is, with its stack.
+            const refusal = typeof error === 'object' && error !== null && 'code' in error &&
+                (error.code === 'out-of-budget' || error.code === 'allocation');
+            if (!preparation.signal.aborted && !refusal) reportGpuFallback('setup', error);
             if (!preparation.signal.aborted && !generation.failureReported && typeof error === 'object' && error !== null && 'code' in error) {
                 const code = error.code;
                 if (code === 'unsupported' || code === 'allocation' || code === 'out-of-budget' || code === 'lost') {
@@ -158,6 +166,14 @@ export class GpuPaneCandidate {
         generation.grant = grant;
         this.options.runtime.clearCapabilityFailure(this.options.paneId);
         this.options.onReady({ bundle: generation.bundle, grant, backing: generation.backing });
+    }
+
+    /** The pane's GPU work threw outside the compositor's own callbacks (a frame, a layer, a request). The current device
+     * generation falls back to canvas2d; with none current the error is only reported. */
+    fail(error: unknown, where: string): void {
+        const code = reportGpuFallback(where, error);
+        const current = this.current;
+        if (current && !current.disposed) this.failure(current.preparation.generation, code);
     }
 
     presented(generation: number): void {

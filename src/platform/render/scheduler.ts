@@ -81,6 +81,9 @@ export interface ScheduledPane {
     writeOverlays(frame: ScheduledFrame): void;
     /** Read-only benchmark snapshot; never queried in production or development. */
     benchmarkMemory?(): { memory: Readonly<Record<string, number>>; grants: Readonly<Record<string, number>> };
+    /** Offered an error thrown by this pane's work before the scheduler gives up on the pane. Returns true when the pane
+     * handled it (a GPU failure demoted to canvas2d): the frame then goes on without that pane's remaining work. */
+    recover?(error: unknown): boolean;
     /** Stop input/speculative work and synchronously checkpoint through the session, never await a frame. */
     suspend(reason: 'unregistered' | 'window-hidden' | 'frozen' | 'geometry-dormant' | 'stopped'): void;
 }
@@ -274,6 +277,8 @@ let schedulerStarted = false;
 export class FrameScheduler {
     private readonly panes = new Map<string, PaneEntry>();
     private readonly polls = new Set<ScheduledPoll>();
+    /** Panes that recovered from an error in the frame in progress: their remaining work this frame is not valid. */
+    private readonly demoted = new Set<PaneEntry>();
     private readonly sessionDeadlines = new Set<{ deadline: number; callback: () => void }>();
     private acknowledgements: PendingAcknowledgement[] = [];
     private running = false;
@@ -481,6 +486,7 @@ export class FrameScheduler {
         if (__BME_BENCH__) this.measuredPane = entry.pane.paneId;
         try { return callback(); }
         catch (error) {
+            if (this.recovers(entry, error)) return undefined;
             try { this.unregister(entry); }
             finally { this.options.onError(entry.pane.paneId, error); }
             return undefined;
@@ -504,7 +510,18 @@ export class FrameScheduler {
     }
 
     private valid(entry: PaneEntry, token: FrameToken): boolean {
-        return this.running && !this.suspended && this.live(entry) && sameToken(token, entry.pane.currentToken());
+        return this.running && !this.suspended && this.live(entry) && !this.demoted.has(entry) && sameToken(token, entry.pane.currentToken());
+    }
+
+    /** The pane handled its own error (a GPU failure): it stays registered and its work for this frame is skipped. A pane
+     * that cannot handle it, or whose handler throws, is unregistered as before. */
+    private recovers(entry: PaneEntry, error: unknown): boolean {
+        let handled = false;
+        try { handled = entry.pane.recover?.(error) === true; }
+        catch { handled = false; }
+        if (!handled || !this.live(entry)) return false;
+        this.demoted.add(entry);
+        return true;
     }
 
     /** Names what asked for a presented frame, first match wins: input, camera motion, a layer deadline, an invalidation
@@ -541,6 +558,7 @@ export class FrameScheduler {
         this.raf = null;
         if (!this.running || this.suspended) return;
         this.inFrame = true;
+        this.demoted.clear();
         const frameId = ++this.frameId;
         const started = performance.now();
         const encodings: Array<{ work: FrameWork; encoding: ScheduledEncoding; done: boolean }> = [];

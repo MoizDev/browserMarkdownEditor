@@ -160,6 +160,7 @@ export class GpuCompositor implements PaneCompositor {
             },
             paintIsolation: paintCanvasIsolation,
             uniforms: (bytes: ArrayBufferView) => this.uniforms(bytes),
+            uniformsInto: (bytes: ArrayBufferView, into: UniformSlice) => this.uniformsInto(bytes, into),
             drawTexturedQuad: this.drawTexturedQuad.bind(this) as PaneCompositor['resources']['drawTexturedQuad'],
             drawTexturedQuads: this.drawTexturedQuads.bind(this) as PaneCompositor['resources']['drawTexturedQuads'] });
     }
@@ -487,6 +488,11 @@ export class GpuCompositor implements PaneCompositor {
     uniforms(bytes: ArrayBufferView): UniformSlice {
         if (!this.#active || !this.#active.passes.size) throw new ArenaError('invalid-input');
         return this.#active.encoder.uniforms(bytes);
+    }
+
+    uniformsInto(bytes: ArrayBufferView, into: UniformSlice): void {
+        if (!this.#active || !this.#active.passes.size) throw new ArenaError('invalid-input');
+        this.#active.encoder.uniformsInto(bytes, into);
     }
 
     drawTexturedQuad(pass: GpuPass, texture: TextureHandle, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;

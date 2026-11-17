@@ -104,6 +104,7 @@ export function createLayerHost(bindings: LayerHostBindings): LayerHost {
         paintPage: (ctx: CanvasRenderingContext2D, view: ViewState, index: number, paint: () => void) => { auditCount(surface, 'canvas2d'); compositor().paintPage(ctx, view, index, paint); },
         paneTransform: (view, frameId) => bindings.compositor()?.paneTransform(view, frameId) ?? null,
         uniforms: (bytes: ArrayBufferView): UniformSlice => resources().uniforms(bytes),
+        uniformsInto: (bytes: ArrayBufferView, into: UniformSlice): void => resources().uniformsInto(bytes, into),
         drawTexturedQuad,
         drawTexturedQuads,
         trouble: () => bindings.trouble?.() ?? 'none',

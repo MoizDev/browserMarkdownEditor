@@ -114,6 +114,8 @@ export interface LayerHost {
     paneTransform(view: ViewState, frameId: number): Affine | null;
     /** DrawGpu-only packing into the active encoder's fenced ring, never a layer-owned ring. */
     uniforms(bytes: ArrayBufferView): UniformSlice;
+    /** As uniforms, but rewrites a caller-owned record in place: a batch keeps one DrawCommand and rewrites its slice per draw. */
+    uniformsInto(bytes: ArrayBufferView, into: UniformSlice): void;
     /** Read-only governor state for this pane: a layer may shed work under 'slow-gpu' or 'pressure'. Allocates nothing. */
     trouble(): LayerTrouble;
     drawTexturedQuad(pass: GpuPass, texture: TextureHandle, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
@@ -130,6 +132,7 @@ export interface CompositorResources {
     paintIsolation(ctx: CanvasRenderingContext2D, bounds: Readonly<RectI>, options: IsolationPaintOptions, paint: (isolatedCtx: CanvasRenderingContext2D) => void): void;
     /** Throws outside active GPU encoding; never returns a fictitious slice. */
     uniforms(bytes: ArrayBufferView): UniformSlice;
+    uniformsInto(bytes: ArrayBufferView, into: UniformSlice): void;
     drawTexturedQuad(pass: GpuPass, texture: TextureHandle, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
     drawTexturedQuad(ctx: CanvasRenderingContext2D, image: DrawableImage, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
     drawTexturedQuads(pass: GpuPass, texture: TextureHandle, quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void;

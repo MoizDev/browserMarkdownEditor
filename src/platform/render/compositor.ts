@@ -2,13 +2,15 @@ import { auditCount, auditStage, renderAuditEnabled } from './renderAudit';
 import type { Rect, ViewState } from '../types';
 import type {
     CompositorAppearance, CompositorCoverage, CompositorLayer, CompositorPage, IsolationReservation, PaneCompositor, PaneSurfaceHost, TexturedQuadOptions,
+    TexturedQuadSpec,
 } from './compositor.types';
+import { TEXTURED_QUAD_BATCH_SHADER } from './gfx/webgl2Shaders';
 import { paintCanvasIsolation } from './canvas2dContext';
 import { paintPageScope, paintWorldScope, paneCssTransform, projectPage } from './compositorProjection';
 import { TEXTURED_QUAD_SHADER } from './compositorShader';
 import { GpuIsolationPlan } from './gpuIsolationPlan';
 import { IsolationShortfall } from './gfx/webgl2Isolation';
-import type { ClipToken, CoverageOutput, CoverageToken, FrameEncoder, GpuPass, GroupToken, PipelineHandle, RectI, SamplerHandle, TextureHandle, UniformSlice } from './gfx/api';
+import type { ClipToken, CoverageOutput, CoverageToken, FrameEncoder, GpuPass, GroupToken, PipelineDesc, PipelineHandle, RectI, SamplerHandle, ShaderModule, TextureHandle, UniformSlice } from './gfx/api';
 import type { Webgl2Owner } from './gfx/webgl2';
 import type { PageStack } from './pageStack';
 import { ArenaError } from './resourceArena';
@@ -18,6 +20,13 @@ import { allocateSurfaceGeneration } from './surfaceGeneration';
 import type { FrameBudget, FrameToken, GpuReleaseReason } from './types';
 
 const benchmarkDomain = __BME_BENCH__ ? await import('./benchmarkPaintDomain') : null;
+
+/** The textured-quad pipeline, typed as PipelineDesc so its literal stencil state stays `enabled: false`. */
+function quadDescriptor(shader: ShaderModule): PipelineDesc {
+    return { shader, topology: 'triangle-strip', colorFormat: 'rgba8', samples: 1, blend: 'source-over', alphaToCoverage: false,
+        colorWrite: [true, true, true, true], stencil: { enabled: false } };
+}
+
 
 export interface GpuCompositorOptions {
     readonly owner: Webgl2Owner;
@@ -113,6 +122,7 @@ export class GpuCompositor implements PaneCompositor {
     #active: DrawScope | null = null;
     #lastSubmissionSerial = 0;
     #quad: PipelineHandle | null = null;
+    #batchQuad: PipelineHandle | null = null;
     #nearest: SamplerHandle | null = null;
     #linear: SamplerHandle | null = null;
     #compiling: Promise<void> | null = null;
@@ -123,6 +133,9 @@ export class GpuCompositor implements PaneCompositor {
     #report: CompositorCoverage | null = null;
     readonly #encodings = new Set<FrameEncoder>();
     readonly #quadData = new Float32Array(16);
+    /** Batched quads: one instance record (dst x0,y0,x1,y1 and src x,y,w,h) per quad, grown to the largest batch so far, and the batch's uniform block. */
+    #batchData = new Float32Array(64 * 8);
+    readonly #batchUniforms = new Float32Array(16);
 
     constructor(options: GpuCompositorOptions) {
         if (options.target.generation !== options.owner.resources.generation || options.target.limits !== options.owner.limits) {
@@ -140,7 +153,8 @@ export class GpuCompositor implements PaneCompositor {
             },
             paintIsolation: paintCanvasIsolation,
             uniforms: (bytes: ArrayBufferView) => this.uniforms(bytes),
-            drawTexturedQuad: this.drawTexturedQuad.bind(this) as PaneCompositor['resources']['drawTexturedQuad'] });
+            drawTexturedQuad: this.drawTexturedQuad.bind(this) as PaneCompositor['resources']['drawTexturedQuad'],
+            drawTexturedQuads: this.drawTexturedQuads.bind(this) as PaneCompositor['resources']['drawTexturedQuads'] });
     }
 
     get captureIdle(): boolean {
@@ -508,6 +522,64 @@ export class GpuCompositor implements PaneCompositor {
                 sampler: options.sampling === 'nearest' ? this.#nearest : this.#linear }] } });
     }
 
+    /** Several quads of one texture, in one instanced draw. The same options apply to every quad, and each quad is validated
+     * and clipped exactly as drawTexturedQuad does. A canvas target loops its drawImage: each quad is one drawImage, as before. */
+    drawTexturedQuads(pass: GpuPass, texture: TextureHandle, quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void;
+    drawTexturedQuads(ctx: CanvasRenderingContext2D, image: ImageBitmap, quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void;
+    drawTexturedQuads(pass: GpuPass | CanvasRenderingContext2D, texture: TextureHandle | ImageBitmap,
+        quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void {
+        if ('drawImage' in pass) {
+            for (const quad of quads) this.drawTexturedQuad(pass, texture as ImageBitmap, quad.sourceRect, quad.destRect, options);
+            return;
+        }
+        const gpuTexture = texture as TextureHandle;
+        const active = this.#active;
+        const pipeline = this.#batchQuad;
+        if (!active || !active.passes.has(pass) || !pipeline || !this.#linear || !this.#nearest) throw new ArenaError('invalid-input');
+        const opacity = options.opacity ?? 1;
+        if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1 ||
+            options.sampling !== undefined && !['nearest', 'linear'].includes(options.sampling)) throw new ArenaError('invalid-input');
+        const info = this.#options.owner.textureInfo(gpuTexture);
+        if (info.format !== 'rgba8') throw new ArenaError('invalid-input');
+        const width = Math.round(active.view.viewport.width * active.view.viewport.dpr);
+        const height = Math.round(active.view.viewport.height * active.view.viewport.dpr);
+        // Every quad is checked before anything is drawn, so a bad quad refuses the whole batch and draws none of it.
+        const batch = this.#batchData.length >= quads.length * 8 ? this.#batchData : (this.#batchData = new Float32Array(quads.length * 8));
+        let count = 0, left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
+        for (const quad of quads) {
+            const { sourceRect: src, destRect: dst } = quad;
+            if (!validRect(src) || !validRect(dst)) throw new ArenaError('invalid-input');
+            if (src.x < info.usedRect.x || src.y < info.usedRect.y ||
+                src.x + src.width > info.usedRect.x + info.usedRect.width || src.y + src.height > info.usedRect.y + info.usedRect.height) {
+                throw new ArenaError('invalid-input');
+            }
+            if (!src.width || !src.height || !dst.width || !dst.height) continue;
+            const scissor = envelope(dst, width, height);
+            if (!scissor.width || !scissor.height) continue;
+            const at = count * 8;
+            batch[at] = dst.x; batch[at + 1] = dst.y; batch[at + 2] = dst.x + dst.width; batch[at + 3] = dst.y + dst.height;
+            batch[at + 4] = src.x; batch[at + 5] = src.y; batch[at + 6] = src.width; batch[at + 7] = src.height;
+            count++;
+            left = Math.min(left, scissor.x); top = Math.min(top, scissor.y);
+            right = Math.max(right, scissor.x + scissor.width); bottom = Math.max(bottom, scissor.y + scissor.height);
+        }
+        if (!count) return;
+        // The block is the single quad's layout: viewport, then texture size with opacity (the coverage class is bench-only).
+        this.#batchUniforms.set([0, 0, width, height, 0, 0, 0, 0, 0, 0, 0, 0, info.width, info.height, opacity,
+            __BME_BENCH__ ? options.coverage === 'current' ? 3 : options.coverage === 'standin' ? 2 : 0 : 0]);
+        const uniforms = this.uniforms(this.#batchUniforms);
+        const vertices = this.uniforms(batch.subarray(0, count * 8));
+        pass.draw({ pipeline, vertices: [vertices], first: 0, count: 4, instances: count,
+            scissor: { x: left, y: top, width: right - left, height: bottom - top },
+            ...(__BME_BENCH__ && options.coverage && options.coverage !== 'none' ? {
+                coverageClass: options.coverage === 'standin' ? 2 as const : 3 as const,
+                // A batch shares one stand-in ratio; the single path measures it per quad, so this is the declared one.
+                ...(options.coverage === 'standin' ? { standInRatio: options.standInRatio ?? 1 } : {}),
+            } : {}),
+            bindings: { uniforms: [{ binding: 0, slice: uniforms }], textures: [{ binding: 0, texture: gpuTexture,
+                sampler: options.sampling === 'nearest' ? this.#nearest! : this.#linear! }] } });
+    }
+
     releaseGpu(reason: GpuReleaseReason): void {
         if (this.#disposed) return;
         this.#epoch++;
@@ -518,7 +590,7 @@ export class GpuCompositor implements PaneCompositor {
         this.#encodings.clear();
         this.#active = null; this.#prepared = null; this.#isolationPlan = null; this.#isolationReadyFrame = -1;
         this.#shortfalls = []; this.#snapshot = null; this.#report = null; this.#metrics = null;
-        if (reason === 'context-lost') { this.#quad = null; this.#linear = null; this.#nearest = null; this.#compiling = null; }
+        if (reason === 'context-lost') { this.#quad = null; this.#batchQuad = null; this.#linear = null; this.#nearest = null; this.#compiling = null; }
     }
 
     dispose(): void {
@@ -527,8 +599,8 @@ export class GpuCompositor implements PaneCompositor {
         this.#disposed = true;
         this.detach();
         this.#layers = [];
-        for (const handle of [this.#quad, this.#linear, this.#nearest]) if (handle) this.#options.owner.resources.destroy(handle);
-        this.#quad = null; this.#linear = null; this.#nearest = null;
+        for (const handle of [this.#quad, this.#batchQuad, this.#linear, this.#nearest]) if (handle) this.#options.owner.resources.destroy(handle);
+        this.#quad = null; this.#batchQuad = null; this.#linear = null; this.#nearest = null;
     }
 
     /** Each layer's offscreen passes, in layer order, before the surface pass: one pass open at a time, every scope closed. */
@@ -585,23 +657,31 @@ export class GpuCompositor implements PaneCompositor {
             this.surface.width === snapshot.metrics.backingWidth && this.surface.height === snapshot.metrics.backingHeight &&
             snapshot.layers.every(binding => frame.layers.some(meta => meta.layer === binding.layer));
     }
+    /** Compiles the single and the batched quad together: a batch is useless without its single fallback, and one promise
+     * keeps both handles in step. allSettled, so a failure of one still releases the other instead of leaking it. */
     #prepareQuad(): void {
         if (this.#quad || this.#compiling) return;
         const device = this.#options.owner.resources;
         const epoch = this.#epoch;
         this.#nearest ??= device.createSampler('nearest');
         this.#linear ??= device.createSampler('linear');
-        const promise = device.createPipeline({ shader: TEXTURED_QUAD_SHADER, topology: 'triangle-strip', colorFormat: 'rgba8',
-            samples: 1, blend: 'source-over', alphaToCoverage: false, colorWrite: [true, true, true, true], stencil: { enabled: false } });
-        this.#compiling = promise.then(handle => {
-            if (this.#disposed || epoch !== this.#epoch) { device.destroy(handle); return; }
-            this.#quad = handle;
+        this.#compiling = Promise.allSettled([device.createPipeline(quadDescriptor(TEXTURED_QUAD_SHADER)),
+            device.createPipeline(quadDescriptor(TEXTURED_QUAD_BATCH_SHADER))]).then(([single, batch]) => {
+            const handles = [single, batch].map(result => result.status === 'fulfilled' ? result.value : null);
+            if (this.#disposed || epoch !== this.#epoch) { for (const handle of handles) if (handle) device.destroy(handle); return; }
+            const failed = [single, batch].find(result => result.status === 'rejected');
+            if (failed) {
+                for (const handle of handles) if (handle) device.destroy(handle);
+                this.#failure(failed.reason);
+                return;
+            }
+            this.#quad = handles[0];
+            this.#batchQuad = handles[1];
             this.#options.invalidate('gpu-quad-ready');
-        }).catch(error => { if (!this.#disposed && epoch === this.#epoch) this.#failure(error); })
-            .finally(() => {
-                this.#compiling = null;
-                if (!this.#disposed && epoch !== this.#epoch && this.#available) this.#options.invalidate('gpu-quad-retry');
-            });
+        }).finally(() => {
+            this.#compiling = null;
+            if (!this.#disposed && epoch !== this.#epoch && this.#available) this.#options.invalidate('gpu-quad-retry');
+        });
     }
     #failure(error: unknown): void {
         if (error instanceof IsolationShortfall) {

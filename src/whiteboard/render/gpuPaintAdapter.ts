@@ -18,7 +18,7 @@ import type { Blend, ItemRoute, PreparedRun } from './gpu/contracts';
 import { createTileComposer, type ResourcedRoute, type TileLay, type TileRoutes } from './gpu/tileComposer';
 import { createTileParts } from './gpu/tileParts';
 import { createTileStore, tileId, tileWorld } from './gpu/tileStore';
-import { createPathRoute, withClips } from './gpu/routePath';
+import { createPath, withPreparedClips } from './gpu/routePath';
 import { createInkRoutes, inkRouteFor } from './gpu/routeInk';
 import { createImageRoute } from './gpu/routeImage';
 import { createTextRoute } from './gpu/routeText';
@@ -214,8 +214,10 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
     const lay = createLay(host, surface);
     const cpu = createCpuRoute(host, surface, lay);
     const ink = createInkRoutes(host, surface);
+    // One path route and its clip admission share one coverage kit: the composer admits every route's clips through it.
+    const pathRoute = createPath(host, surface);
     const routes: TileRoutes = {
-        path: createPathRoute(host, surface),
+        path: pathRoute.route,
         inkAnalytic: ink.analytic,
         inkUnion: ink.union,
         image: createImageRoute(host, surface),
@@ -224,7 +226,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
     };
     const composer = createTileComposer({
         host, audit: surface, parts: createTileParts(host, surface), store: createTileStore(host, surface), routes,
-        tileId, tileWorld, inkRouteFor, lay, withClips,
+        tileId, tileWorld, inkRouteFor, lay, admitClips: pathRoute.admitClips, withPreparedClips,
         ...(options.opaqueWorld ? { opaqueWorld: options.opaqueWorld } : {}),
     });
 

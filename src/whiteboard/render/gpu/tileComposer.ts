@@ -11,10 +11,11 @@ import { auditCount, auditStage, renderAuditEnabled, type AuditStage } from '../
 import { TILE_EDGE, TILE_GUTTER, TILE_SIZE } from '../imageSampling';
 import type { PaintBand } from '../material';
 import type { PaintClip, PaintInkItem, PaintItem } from '../paintStream';
+import type { AdmitClips, PreparedClips } from './routePath';
 import type { PreparedPaint2d } from '../reference/canvasPaintAdapter';
 import type { PaintResources2d } from '../reference/paint2d';
 import type {
-    Blend, InkRouteFor, ItemRoute, PreparedRun, TileEntry, TileIdFn, TileKey, TileParts, TilePart, TileStore, TileWorldFn, WithClips,
+    Blend, InkRouteFor, ItemRoute, PreparedRun, TileEntry, TileIdFn, TileKey, TileParts, TilePart, TileStore, TileWorldFn,
 } from './contracts';
 
 const EDGE = TILE_EDGE, GUTTER = TILE_GUTTER, SIZE = TILE_SIZE;
@@ -27,25 +28,8 @@ const CROP: Readonly<Rect> = Object.freeze({ x: GUTTER, y: GUTTER, width: EDGE, 
 const GROUP = Object.freeze({ opacity: 1, blend: 'multiply', colourEffect: 'none' } as const);
 const NO_OPAQUE: readonly Rect[] = Object.freeze([]);
 
-/** A rectangle clip under a rotation-free transform: the composer can draw it as a scissor. The same rule as the path route's
- * clipLocalRect (G/routePath.ts); the two must agree, or a clip meets a route that cannot draw it. */
-function isRectClip(clip: PaintClip): boolean {
-    const [a, b, c, d] = clip.localToWorld;
-    if (b !== 0 || c !== 0 || !(a !== 0 && d !== 0) || clip.d.length < 4) return false;
-    const points: [number, number][] = [];
-    for (const command of clip.d) {
-        if (command[0] === 'Z') continue;
-        if (command[0] !== 'M' && command[0] !== 'L') return false;
-        if (command[0] === 'M' && points.length) return false;
-        points.push([command[1] as number, command[2] as number]);
-    }
-    if (points.length === 5 && points[4][0] === points[0][0] && points[4][1] === points[0][1]) points.pop();
-    if (points.length !== 4) return false;
-    const xs = new Set(points.map(point => point[0])), ys = new Set(points.map(point => point[1]));
-    if (xs.size !== 2 || ys.size !== 2) return false;
-    for (let i = 0; i < 4; i++) { const p = points[i], q = points[(i + 1) % 4]; if (p[0] !== q[0] && p[1] !== q[1]) return false; }
-    return true;
-}
+/** Draws `draw` under prepared clips (masks and scissors); the route's own helper, injected. */
+export type WithPreparedClips = (pass: GpuPass, prepared: PreparedClips, draw: () => void) => void;
 /** The kind of a run's items, or 'mixed' when a run holds more than one kind. */
 function kindOf(items: readonly PaintItem[]): string {
     const kind = items[0].kind;
@@ -67,10 +51,16 @@ type Status = 'missing' | 'dirty' | 'ok';
 /** Per composed entry, kept beside the store so a store entry that is evicted and replaced starts with no slot. */
 interface Slot { readonly mode: Mode; readonly count: number }
 /** A consecutive run of one route's items within a slice. A run the CPU route takes (a GPU route refused it, or it has no route
- * yet) carries `why`, and is counted once as a fallback. A run of a route that does not clip itself carries its item's
- * rectangle clips, which the composer draws under `withClips`; a clipped item is a run of its own. */
-interface Run { readonly items: PaintItem[]; route: ItemRoute; clips: readonly PaintClip[] | null; why: string | null; counted: boolean }
-interface Admitted { readonly route: ItemRoute; readonly run: PreparedRun; readonly clips: readonly PaintClip[] | null }
+ * yet, or its clips were refused) carries `why` and `label`, and is counted once as a fallback. A clipped item (on a route that
+ * does not clip itself) is a run of its own: its clips are admitted in prepare, into `prepared`, and drawn around its draw. */
+interface Run {
+    readonly items: PaintItem[]; route: ItemRoute;
+    /** The item's clips still to admit; null once admitted, or for a route that clips itself or the CPU route. */
+    clips: readonly PaintClip[] | null;
+    prepared: PreparedClips | null;
+    why: string | null; label: string | null; counted: boolean;
+}
+interface Admitted { readonly route: ItemRoute; readonly run: PreparedRun; readonly clips: PreparedClips | null }
 /** One slice of a position: what its target draws, in paint order, and how far its admission has got. */
 interface Slice {
     readonly key: TileKey;
@@ -129,8 +119,10 @@ export interface TileComposerOptions {
     readonly tileWorld: TileWorldFn;
     readonly inkRouteFor: InkRouteFor;
     readonly lay: TileLay;
-    /** Applies an item's clips around its draw (rect clips as scissor, others as a mask); the composer owns clipping. */
-    readonly withClips: WithClips;
+    /** Admits an item's clips in prepare (rectangles as scissors, others as masks), and draws under them. The composer owns
+     * clipping for every route but the path route, which clips its own items. */
+    readonly admitClips: AdmitClips;
+    readonly withPreparedClips: WithPreparedClips;
     /** Rects whose surface is opaque. A modulate slice inside one is laid by `modulate`; elsewhere it is isolated. */
     readonly opaqueWorld?: () => readonly Rect[];
     /** True while the governor reports a slow GPU: the compose limit halves. */
@@ -193,7 +185,7 @@ function inSpan(span: Span, x: number, y: number): boolean {
 }
 
 export function createTileComposer(options: TileComposerOptions): TileComposer {
-    const { host, audit, parts, store, routes, tileId, tileWorld, inkRouteFor, lay, withClips } = options;
+    const { host, audit, parts, store, routes, tileId, tileWorld, inkRouteFor, lay, admitClips, withPreparedClips } = options;
     const routeList: ItemRoute[] = [routes.path, routes.inkAnalytic, routes.inkUnion, routes.image, routes.text, routes.cpu]
         .filter((route): route is ItemRoute => route !== undefined);
     let resourcesSeen: PaintResources2d | null = null;
@@ -260,17 +252,13 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         const runs: Run[] = [];
         for (const part of list) {
             const item = part.item;
-            let { route, why } = routeOf(item);
-            // The path route clips its own items and the CPU raster paints them with theirs; any other route's clips are
-            // drawn by the composer, so a non-rectangle clip it cannot draw sends the item to the CPU raster instead.
-            let clips: readonly PaintClip[] | null = null;
-            if (item.clips.length && route !== routes.path && route !== routes.cpu) {
-                if (item.clips.every(isRectClip)) clips = item.clips;
-                else { route = routes.cpu; why = 'clip-nonrect'; }
-            }
+            const { route, why } = routeOf(item);
+            // The path route clips its own items and the CPU raster paints them with theirs; any other route's clips are the
+            // composer's, admitted per item in prepare.
+            const clips = item.clips.length && route !== routes.path && route !== routes.cpu ? item.clips : null;
             const last = runs[runs.length - 1];
             if (last && last.route === route && last.why === why && !last.clips && !clips) last.items.push(item);
-            else runs.push({ items: [item], route, clips, why, counted: false });
+            else runs.push({ items: [item], route, clips, prepared: null, why, label: null, counted: false });
         }
         return runs;
     };
@@ -278,24 +266,39 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     const countFallback = (run: Run): void => {
         if (run.counted || run.why === null) return;
         run.counted = true;
-        auditCount(audit, `fallback:item-cpu:${kindOf(run.items)}:${run.why}`, 1, { px: SIZE * SIZE });
+        auditCount(audit, `fallback:item-cpu:${run.label ?? kindOf(run.items)}:${run.why}`, 1, { px: SIZE * SIZE });
+    };
+    /** Hands a run to the CPU route for good, with its reason; any clips it had admitted are released (the raster paints them). */
+    const toCpu = (run: Run, why: string, label: string | null): void => {
+        run.prepared?.retire();
+        run.prepared = null; run.clips = null;
+        run.route = routes.cpu; run.why = why; run.label = label;
+        countFallback(run);
     };
 
-    /** Admits a slice's runs in order. 'deferred' resumes next frame; a refusal names its pool and bytes. */
+    /** Admits a slice's runs in order: a run's clips first, then its items. 'deferred' resumes next frame, with the clips it has
+     * already admitted; a refusal names its pool and bytes. A run whose clips exclude the view is hidden, which is not a fallback. */
     const admitSlice = (slice: Slice, budget: FrameBudget): 'ok' | 'deferred' | { pool: 'gpu' | 'cpu'; bytes: number } => {
         while (slice.next < slice.runs.length) {
             const run = slice.runs[slice.next];
+            if (run.clips && !run.prepared) {
+                const clipped = admitClips(run.clips, slice.view, budget);
+                if (clipped.status === 'deferred') return 'deferred';
+                if (clipped.status === 'denied') return { pool: clipped.pool, bytes: clipped.bytes };
+                if (clipped.status === 'empty') { run.clips = null; slice.next++; continue; }
+                if (clipped.status === 'unsupported') toCpu(run, clipped.why, 'clip');
+                else { run.prepared = clipped.value; run.clips = null; }
+            }
             countFallback(run);
             let outcome = run.route.admit(run.items, slice.view, slice.blend, budget);
             if (outcome.status === 'unsupported') {
-                // A GPU route that refuses a run hands it to the CPU route for good, with the reason, and its clips (the raster has them).
-                run.route = routes.cpu; run.clips = null; run.why = outcome.why;
-                countFallback(run);
+                // A GPU route that refuses a run hands it to the CPU route for good, with the reason (the raster paints its clips).
+                toCpu(run, outcome.why, null);
                 outcome = run.route.admit(run.items, slice.view, slice.blend, budget);
             }
             switch (outcome.status) {
-                case 'ready': slice.admitted.push({ route: run.route, run: outcome.value, clips: run.clips }); slice.next++; break;
-                case 'empty': slice.next++; break;
+                case 'ready': slice.admitted.push({ route: run.route, run: outcome.value, clips: run.prepared }); run.prepared = null; slice.next++; break;
+                case 'empty': run.prepared?.retire(); run.prepared = null; slice.next++; break;
                 case 'deferred': return 'deferred';
                 case 'denied': return { pool: outcome.pool, bytes: outcome.bytes };
                 case 'unsupported': throw new Error(`CPU route refused a ${run.items[0]?.kind ?? 'paint'} item: ${outcome.why}`);
@@ -354,7 +357,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     /** Releases what a position admitted; its acquired targets stay in the store, still missing their slots. */
     const cancel = (position: Position): void => {
         for (const slice of position.slices) {
-            for (const { route, run } of slice.admitted) route.retire(run);
+            for (const run of slice.runs) { run.prepared?.retire(); run.prepared = null; }
+            for (const { route, run, clips } of slice.admitted) { route.retire(run); clips?.retire(); }
             slice.admitted.length = 0;
         }
     };
@@ -479,10 +483,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     { clear: slice.blend === 'modulate' ? WHITE : CLEAR, stencil: false });
                 for (const { route, run, clips } of slice.admitted) {
                     timedStage(audit, 'draw', () => {
-                        if (!clips) { route.draw(pass, run); return; }
-                        // withClips refuses only a mask the composer was never given, which admission already excluded: a refusal is a fault.
-                        const outcome = withClips(pass, clips, slice.view, () => route.draw(pass, run));
-                        if (outcome.status !== 'ready' && outcome.status !== 'empty') throw new Error(`Clip refused at draw (${outcome.status})`);
+                        if (clips) withPreparedClips(pass, clips, () => route.draw(pass, run));
+                        else route.draw(pass, run);
                     });
                     auditCount(audit, `route:${route.id}`);
                 }
@@ -492,7 +494,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 slots.set(entry, { mode: slice.mode, count: position.slices.length });
                 store.touch(entry, frame);
             }
-            for (const { route, run } of slice.admitted) route.retire(run);
+            for (const { route, run, clips } of slice.admitted) { route.retire(run); clips?.retire(); }
             slice.admitted.length = 0;
         }
     };

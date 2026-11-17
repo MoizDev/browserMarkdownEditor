@@ -158,6 +158,9 @@ export interface Bindings {
 
 // rendering-design.md:152–158, 241–243: scissor is required, clipped to target/clip
 // bounds; an empty intersection draws nothing. Accessed buffer bytes are validated.
+// draw() validates the command and copies every field it records before it returns, so a caller may keep one DrawCommand
+// for a whole batch and rewrite its fields between draws: bindings.uniforms[i].slice (via uniformsInto), bindings.textures[i]
+// .texture, and scissor. Nothing else holds a reference to the command or to its slices.
 export interface DrawCommand {
     pipeline: PipelineHandle;
     bindings: Bindings;
@@ -302,6 +305,9 @@ export interface GpuPass {
 // pending frames never overwrite in-flight uniform slices or pooled attachments.
 export interface FrameEncoder {
     uniforms(bytes: ArrayBufferView): UniformSlice;
+    /** Copies bytes into this frame's ring and rewrites `into`, a caller-owned record, to name them: no allocation. Draw copies every
+     * slice it records, so a caller may rewrite the same record between draws of one DrawCommand. */
+    uniformsInto(bytes: ArrayBufferView, into: UniformSlice): void;
     // Outside any pass: a target borrowed for this frame from the slots admitted at prepare (see the pass-level acquireTarget).
     acquireTarget(desc: {
         width: number;

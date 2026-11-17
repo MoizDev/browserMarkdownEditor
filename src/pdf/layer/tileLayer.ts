@@ -429,7 +429,7 @@ export class PdfTileLayer implements Layer {
      */
     private acquireTexture(device: GfxDevice, width: number, height: number): PooledTexture | null {
         const texture = this.texturePool.acquire(device, width, height);
-        if (texture || !this.releaseUnneededGpu()) return texture;
+        if (texture || !this.releaseUnneededGpu(true)) return texture;
         auditCount('pdf-page', 'self-reclaim');
         return this.texturePool.acquire(device, width, height);
     }
@@ -438,8 +438,11 @@ export class PdfTileLayer implements Layer {
      * Pool pressure takes what the view does not show first: off-plan and off-screen tiles. Releasing every texture
      * for it meant re-rastering the visible page, since a GPU-resident tile has no bitmap left (measured: a window
      * resize re-rastered 28 tiles). Returns false when nothing was spare, so the caller releases everything.
+     * `keepPool` is the refused-acquire path: it frees this layer's own entries, but leaves the pool's textures for the
+     * retry to reuse. By reading: clearing the pool there destroyed the exact-size textures a zoom step needs next, so
+     * every refused upload during a zoom forced a fresh createTexture for the tiles that had just been released.
      */
-    private releaseUnneededGpu(): boolean {
+    private releaseUnneededGpu(keepPool = false): boolean {
         const input = this.latestDemand;
         if (!input) return false;
         let freed = false;
@@ -449,6 +452,7 @@ export class PdfTileLayer implements Layer {
             this.remove(key, entry);
             freed = true;
         }
+        if (keepPool) return freed;
         freed = this.texturePool.memory() > 0 || freed;
         this.texturePool.clear(false);
         return freed;

@@ -9,6 +9,11 @@ export interface PooledTexture {
     readonly bytes: number;
 }
 
+/** Free textures kept for reuse. An interior tile is 514×514 at every scale, so a zoom step's new tiles are the same size
+ * as the ones it releases: the limit should hold one visible set (about 30 tiles at DPR 2, the PLAN §6 figure). At 16,
+ * every zoom step destroyed the overflow and created it again. Under pressure the layer clears the pool anyway. */
+const FREE_TEXTURE_LIMIT = 32;
+
 /** Scratch textures retain their governor lease until reused or destroyed (design §6.1:592). */
 export class PdfTexturePool {
     private readonly free: PooledTexture[] = [];
@@ -42,7 +47,7 @@ export class PdfTexturePool {
     }
 
     release(item: PooledTexture): void {
-        if (this.free.length >= 16) { item.device.destroy(item.handle); return; }
+        if (this.free.length >= FREE_TEXTURE_LIMIT) { item.device.destroy(item.handle); return; }
         this.free.push(item);
         this.freeBytes += item.bytes;
     }

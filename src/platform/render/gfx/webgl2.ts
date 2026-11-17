@@ -812,10 +812,12 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         }
     }
 
-    createRenderTexture(width: number, height: number, lease: ByteLease): { texture: TextureHandle; target: TargetHandle } {
+    createRenderTexture(width: number, height: number, lease: ByteLease, options?: { format?: 'rgba8' | 'r8'; copyDst?: boolean }): { texture: TextureHandle; target: TargetHandle } {
         this.#usable();
-        if (lease.bytes < width * height * 4) throw new ArenaError('out-of-budget');
-        const texture = this.#createTexture(width, height, 'rgba8', ['render', 'sample'], lease);
+        const format = options?.format ?? 'rgba8';
+        if (lease.bytes < width * height * (format === 'r8' ? 1 : 4)) throw new ArenaError('out-of-budget');
+        const uses: TextureUse[] = ['render', 'sample', ...(options?.copyDst ? ['copy-dst' as const] : [])];
+        const texture = this.#createTexture(width, height, format, uses, lease);
         try {
             const target = this.createTarget(texture, { samples: 1, stencil: false }, lease);
             this.#arena.closeLease(lease);

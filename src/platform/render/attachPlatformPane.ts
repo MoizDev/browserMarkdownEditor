@@ -385,6 +385,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                         // event. Refresh before preparation, not after an allocation was refused.
                         runtime.refresh();
                     },
+                    layerId: (layer: Layer) => layerSet.definition(layer)?.id ?? 'unnamed',
                     sceneRevision: (layer: Layer) => layerSet.definition(layer)?.revision(layer) ?? 0,
                     isCritical: (layer: Layer, view: ViewState) => layerSet.definition(layer)?.critical(layer, view) ?? false,
                     prepareFrame: (frame: ScheduledFrame, budget: Parameters<PaneCompositor['prepareFrame']>[1]) => {

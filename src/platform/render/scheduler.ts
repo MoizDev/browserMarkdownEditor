@@ -1,4 +1,4 @@
-import { auditFrame } from './renderAudit';
+import { auditCount, auditFrame, renderAuditEnabled } from './renderAudit';
 import type { Viewport, ViewState } from '../types';
 import { cameraAtAnchor, surfaceToWorld } from './camera';
 import type { CameraAnchor, CameraController, Point } from './camera';
@@ -72,6 +72,8 @@ export interface ScheduledPane {
     sceneRevision(layer: Layer): number;
     /** Immediate critical preparation, not "a worker is pending"; becomes false when that work drains. */
     isCritical(layer: Layer, view: ViewState): boolean;
+    /** The audit's name for a layer in `present:needsFrame:<id>`; without it the layer's position in `layers` names it. */
+    layerId?(layer: Layer): string;
     /** Platform target/ring admission once per frame, before any layer prepares; never draws. */
     prepareFrame(frame: ScheduledFrame, budget: FrameBudget): void;
     finishPrepareFrame?(frame: ScheduledFrame, budget: FrameBudget): void;
@@ -240,7 +242,9 @@ interface PaneEntry {
 }
 
 interface DamageBatch { entry: PaneEntry; damage: DamageAccumulator; full: boolean; submitted: boolean }
-interface FrameWork { entry: PaneEntry; frame: ScheduledFrame; batch: DamageBatch; geometry: number; hadInput: boolean; platformPrepared: boolean; platformBudget?: FrameBudget }
+interface FrameWork { entry: PaneEntry; frame: ScheduledFrame; batch: DamageBatch; geometry: number; hadInput: boolean; platformPrepared: boolean; platformBudget?: FrameBudget;
+    /** The audit's name for what asked for this frame; '' when the render audit is off. */
+    cause: string }
 interface PendingAcknowledgement { entry: PaneEntry; frameId: number; token: FrameToken; submission: ScheduledSubmission }
 interface ScheduledPoll { callback: () => void; earliestFrame: number }
 interface UploadMeter {
@@ -500,6 +504,19 @@ export class FrameScheduler {
         return this.running && !this.suspended && this.live(entry) && sameToken(token, entry.pane.currentToken());
     }
 
+    /** Names what asked for a presented frame, first match wins: input, camera motion, a layer deadline, an invalidation
+     * (the first reason recorded), a layer still needing a frame. `none` is a fault: nothing requested that frame.
+     * Measured on an idle board (notebook and annotated PDF 57 presents in 114 ticks), so the cause is named, not guessed. */
+    private presentCause(entry: PaneEntry, reasons: readonly string[]): string {
+        if (reasons.includes('input')) return 'input';
+        if (entry.motion !== null || entry.pane.isInteracting()) return 'camera';
+        if (reasons.includes('deadline')) return 'wake';
+        if (reasons.length) return `invalidate:${reasons[0]}`;
+        const layer = entry.layers.find(candidate => candidate.needsFrame());
+        if (layer) return `needsFrame:${entry.pane.layerId?.(layer) ?? entry.layers.indexOf(layer)}`;
+        return 'none';
+    }
+
     private needsWork(): boolean {
         if (this.polls.size || this.acknowledgements.length) return true;
         for (const entry of [...this.panes.values()]) {
@@ -630,7 +647,8 @@ export class FrameScheduler {
                     else batch.damage.mark({ x: 0, y: 0, width: 0, height: 0 }, tags);
                     const damage = batch.damage.freeze()!;
                     const frame = Object.freeze({ frameId, timestamp, intervalMs: this.intervalMs, token, view, layers, reasons, damage });
-                    work.push({ entry, frame, batch, geometry, hadInput: entry.inputPriority || reasons.includes('input'), platformPrepared: false });
+                    const cause = renderAuditEnabled() ? this.presentCause(entry, reasons) : '';
+                    work.push({ entry, frame, batch, geometry, hadInput: entry.inputPriority || reasons.includes('input'), platformPrepared: false, cause });
                     entry.inputPriority = false;
                 });
             }
@@ -707,6 +725,7 @@ export class FrameScheduler {
                         return;
                     }
                     item.work.batch.submitted = true; item.work.batch.damage.consume();
+                    if (renderAuditEnabled()) auditCount('pane', 'present:' + item.work.cause);
                     item.work.entry.presented = { token: item.work.frame.token, epoch: item.work.frame.view.epoch, geometry: item.work.geometry };
                     const drawn = Object.freeze(submission.drawn.filter(revision => revision.layer.onFramePresented !== undefined)
                         .map(revision => Object.freeze({ layer: revision.layer, sceneRevision: revision.sceneRevision })));

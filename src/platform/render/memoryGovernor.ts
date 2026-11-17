@@ -44,6 +44,8 @@ export interface MemoryCacheRegistration extends CacheActivity {
     readonly kind: MemoryKind;
     readonly class: MemoryClass;
     readonly paneId?: string;
+    /** A live layer's cache (a stroke in flight). Its CPU reservations reclaim their own idle geometry before the pane's others. */
+    readonly liveInput?: boolean;
     readonly owner?: MemorySessionOwner;
     readonly memory: () => ArenaMemory;
     /** Eviction request for up to `bytes`; returns the bytes it frees, or 0 when it frees nothing (a touched entry). An owner
@@ -777,7 +779,10 @@ export class MemoryGovernor {
             // A GPU layer evicted whole cannot be the one asking: it would release the residency it is growing.
             (pool === 'cpu' || other !== cache) &&
             !['surface', 'program', 'context', 'mirror', 'mirror-retiring', 'live-input', 'canvas-working'].includes(other.registration.kind))
-            .sort((a, b) => RECLAIMABLE.indexOf(a.registration.class) - RECLAIMABLE.indexOf(b.registration.class) ||
+            // A live stroke's CPU request reclaims its own layer's idle geometry first (the route's chunks the stroke no longer
+            // draws): that is what a new stroke needs back, and the pane's other caches are only asked for what it leaves.
+            .sort((a, b) => (pool === 'cpu' && cache.registration.liveInput ? (a === cache ? 0 : 1) - (b === cache ? 0 : 1) : 0) ||
+                RECLAIMABLE.indexOf(a.registration.class) - RECLAIMABLE.indexOf(b.registration.class) ||
                 a.activity.lastVisibleAt - b.activity.lastVisibleAt || a.activity.lastUsedAt - b.activity.lastUsedAt ||
                 stableId(a.registration.id, b.registration.id));
         this.trimming = true;

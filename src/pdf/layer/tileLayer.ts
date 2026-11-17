@@ -12,6 +12,7 @@ import { getPdfFontEpoch, pdfMirrorProfilePrefix, pdfVariantRevision } from '../
 import { pdfDocKey } from '../worker/protocol';
 import { consumePdfTileArrival, forgetPdfTileArrival } from '../pool/arrivalWindow';
 import { auditCount } from '../../platform/render/renderAudit';
+import { QuadList } from './quadList';
 
 /** The pool returns the requested cell plus its one-pixel apron. Ownership of
  * every returned bitmap transfers to this layer, including cancelled replies. */
@@ -140,6 +141,8 @@ export class PdfTileLayer implements Layer {
     /** One outstanding capacity waiter per pool: a refused tile asks the governor to wake the layer when its bytes fit. */
     private awaitingGpu = false;
     private awaitingCpu = false;
+    /** The paper quads of one frame, drawn as one batch: every visible page shares the frame texture. */
+    private readonly paper = new QuadList();
     /** Drawable tile rects by page, for one device. Planning asks `covered` for every visible tile; the uncached version
      * scanned every entry and built a fresh array per tile, so one frame cost tiles × entries (by reading: a zoom step
      * plans hundreds of tiles). Dropped wherever an entry's drawability changes; a new unsettled entry is never drawable. */
@@ -395,15 +398,19 @@ export class PdfTileLayer implements Layer {
         const { stack, rasterScale } = input;
         const texture = this.frameTexture;
         const current = contentFamily(input) === this.contentIdentity;
-        if (texture && texture.device === this.host.device()) for (const index of this.visiblePageIndices(input)) {
-            const page = stack.rects[index];
-            const destination = project(page, page, view);
-            this.host.drawTexturedQuad(pass, texture.handle, { x: 0, y: 0, width: 1, height: 1 },
-                { x: destination.x - 1, y: destination.y - 1, width: destination.width + 2, height: destination.height + 2 },
-                { opacity: 1, sampling: 'nearest' });
-            this.host.drawTexturedQuad(pass, texture.handle, { x: 1, y: 0, width: 1, height: 1 },
-                destination, { opacity: 1, sampling: 'nearest' });
-            if (current) this.notePaper(stack, index);
+        if (texture && texture.device === this.host.device()) {
+            // One batch in the paint order of the per-quad calls it replaces: each page's border, then its paper.
+            const paper = this.paper;
+            paper.reset();
+            for (const index of this.visiblePageIndices(input)) {
+                const page = stack.rects[index];
+                const destination = project(page, page, view);
+                paper.add({ x: 0, y: 0, width: 1, height: 1 },
+                    { x: destination.x - 1, y: destination.y - 1, width: destination.width + 2, height: destination.height + 2 });
+                paper.add({ x: 1, y: 0, width: 1, height: 1 }, destination);
+                if (current) this.notePaper(stack, index);
+            }
+            paper.drawAll(quads => this.host.drawTexturedQuads(pass, texture.handle, quads, { opacity: 1, sampling: 'nearest' }));
         }
         for (const item of this.currentBridge(view)) {
             const texture = this.bridgeTextures.get(item.entry.id);

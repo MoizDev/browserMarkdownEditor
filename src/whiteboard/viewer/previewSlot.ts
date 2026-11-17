@@ -27,11 +27,12 @@ export function createPreviewSlot(id: string, base: PlatformLayerDefinition): Pr
     // inner layer's own revision is what it acknowledges, and a draw version changes the picture without changing it.
     // A key of an earlier epoch is never acknowledged into a replaced preview.
     const keys = new Map<number, { epoch: number; revision: number }>();
-    let lastKey = -1, lastTuple = '';
+    // The three numbers are compared as numbers: the scheduler asks for this key every frame, and a string built per call was
+    // the only allocation in that path (by reading).
+    let lastKey = -1, lastEpoch = NaN, lastInner = NaN, lastDraw = NaN;
     const keyFor = (currentEpoch: number, innerRevision: number, draw: number): number => {
-        const tuple = `${currentEpoch}:${innerRevision}:${draw}`;
-        if (tuple === lastTuple) return lastKey;
-        lastTuple = tuple; lastKey = lastKey + 1;
+        if (currentEpoch === lastEpoch && innerRevision === lastInner && draw === lastDraw) return lastKey;
+        lastEpoch = currentEpoch; lastInner = innerRevision; lastDraw = draw; lastKey = lastKey + 1;
         keys.set(lastKey, { epoch: currentEpoch, revision: innerRevision });
         if (keys.size > 64) for (const old of keys.keys()) { if (keys.size <= 64) break; keys.delete(old); }
         return lastKey;

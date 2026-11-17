@@ -304,12 +304,11 @@ class GpuTileStore implements TileStore {
         return dropped;
     }
 
-    /** Waits for governor capacity. */
+    /** Waits until the governor would admit `bytes`: the sized waiter does not wake on unrelated releases. */
     wait(bytes: number, wake: () => void): void {
         if (!Number.isSafeInteger(bytes) || bytes < 0) throw new RangeError('Invalid wait size');
-        // Wave 3 (h9): the sized form takes `bytes` here, so the waiter wakes only when that much fits.
         if (!this.allocator.whenAvailable) throw new Error('GPU allocator cannot wake a waiter');
-        this.allocator.whenAvailable(wake);
+        this.allocator.whenAvailable(wake, bytes);
     }
 
     /** Gives every target back and forgets every entry, so the store is empty and its bytes read zero when this returns.

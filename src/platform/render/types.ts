@@ -179,7 +179,6 @@ export interface RenderConstants {
     /** Hysteresis from §6.3:643 and §6.4:653; lower q remains allowed if 0.5 cannot fit. */
     readonly qualityReductionFactor: 0.8;
     readonly minInteractiveQualityScale: 0.5;
-    readonly memoryRecoveryRatio: 0.6;
     readonly memoryRecoveryDelayMs: 5000;
     /** Over budget takes one quality step per settle window: the step re-plans the grants, and the charge settles after it. */
     readonly qualityStepSettleMs: 300;

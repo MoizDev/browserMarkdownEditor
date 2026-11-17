@@ -300,6 +300,8 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
             ctx.transform(a, b, c, d, e, f); ctx.translate(ox, oy);
             ctx.fillStyle = colourCss(material.color); ctx.fill(path, 'nonzero');
             auditCount('wet', `fallback:item-cpu:ink:${why}`, 1, { px: pw * ph });
+            // The same raster, under h5's name: cpu-raster equals the sum of every fallback:item-cpu:* of this layer.
+            auditCount('wet', 'cpu-raster', 1, { px: pw * ph });
             bitmap = canvas.transferToImageBitmap();
             texture = device.createTexture(pw, ph, 'rgba8', ['sample', 'copy-dst'], lease); attached = true;
             device.writeTexture(texture, { x: 0, y: 0, width: pw, height: ph }, { source: bitmap, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });

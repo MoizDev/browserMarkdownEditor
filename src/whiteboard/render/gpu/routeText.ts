@@ -8,6 +8,11 @@ import { ATLAS_PAGE, TextAtlas, type AtlasEntry } from '../textAtlas';
 import { MASK_CANVAS_BYTES, MEMO_ENTRY_BYTES, createCpuAccount, createMaskRaster, maskKey, type CpuAccount, type MaskGeometry, type MaskRequest, type MaskRaster } from './textMasks';
 import type { Admission, Blend, CreateTextRoute, ItemRoute, PreparedRun } from './contracts';
 
+/** The text route as the composer sees it. `evictTextures` is the governor's hook (h9): whole atlas pages, coldest first. */
+export interface TextRoute extends ItemRoute<PaintTextItem> {
+    evictTextures(bytes: number, frameId: number): number;
+}
+
 // The board's text route. A text run is drawn from exact-size run masks (textMasks.ts) that live on atlas pages
 // (textAtlas.ts). Solid backgrounds and decorations are analytic-coverage rectangles in the same instance stream, so one
 // run is one buffer and a few instanced draws, in paint order: backgrounds, glyph masks, decorations, per item.
@@ -107,7 +112,7 @@ type Stop = Exclude<Admission<PreparedRun>, { status: 'ready' }>;
 /** The instances of one run under construction. Their floats live in the route's leased scratch, shared by every run. */
 interface Build { count: number; batches: Batch[]; pins: Pin[]; x0: number; y0: number; x1: number; y1: number }
 
-export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string): ItemRoute<PaintTextItem> => {
+export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string): TextRoute => {
     // Every CPU byte the route holds is leased: the canvas, the instance and uniform scratch, and the two memos.
     const measureAccount: CpuAccount = createCpuAccount(host.allocator.cpu, MEMO_CHUNK);
     const colourAccount: CpuAccount = createCpuAccount(host.allocator.cpu, MEMO_CHUNK);
@@ -417,6 +422,11 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         },
         retire(prepared: PreparedRun): void { retireRun(prepared as TextRun); },
         release(): void { releaseGpu(); },
+        evictTextures(bytes: number, frameId: number): number {
+            // Mono pages first: they hold most of the bytes. A page pinned or drawn this frame is never freed.
+            const freed = mono?.evict(bytes, frameId) ?? 0;
+            return freed + (colour?.evict(Math.max(0, bytes - freed), frameId) ?? 0);
+        },
         memory(): { gpuBytes: number; cpuBytes: number } {
             let gpuBytes = (mono?.bytes ?? 0) + (colour?.bytes ?? 0) + (whiteLease?.bytes ?? 0);
             for (const run of live) gpuBytes += run.bytes;

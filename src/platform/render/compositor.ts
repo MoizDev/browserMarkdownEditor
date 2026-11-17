@@ -458,11 +458,7 @@ export class GpuCompositor implements PaneCompositor {
                             standIns: tally.standIns, standInsRaster: tally.standInsRaster, holes: tally.holes, zooming, refusal: null });
                         return { drawn: frame.layers.filter(meta => snapshot.layers.some(binding => binding.layer === meta.layer))
                             .map(meta => ({ layer: meta.layer, sceneRevision: meta.sceneRevision })),
-                        // An earlier epoch's submission is released with its epoch: it is complete for acknowledgement, so the scheduler
-                        // does not hold a frame for it (measured: a pressure release left the ack pending and rAF ran every tick).
-                        // superseded() below is checked first by the scheduler, so an acknowledgement for a released epoch is dropped
-                        // there and this clause is not reached for it; both are kept until the owner decides which one is wanted.
-                        completed: () => !this.#disposed && (epoch !== this.#epoch || this.#options.owner.resources.completed(submitted.serial)),
+                        completed: () => !this.#disposed && epoch === this.#epoch && this.#options.owner.resources.completed(submitted.serial),
                         superseded: () => this.#disposed || epoch !== this.#epoch,
                         ...(__BME_BENCH__ ? { commitObservation: () => this.#options.owner.commitCoverage?.(submitted.serial),
                             cancelObservation: () => this.#options.owner.cancelCoverage?.(submitted.serial) } : {}) };

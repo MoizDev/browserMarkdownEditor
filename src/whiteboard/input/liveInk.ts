@@ -50,6 +50,9 @@ export interface WetInkSnapshot {
 // of wet versus dry is made once per frame, not by independent layer callbacks.
 export class WetInkHandover {
   private readonly pending = new Map<number, WetInkSnapshot>()
+  // The pending list as one array, rebuilt only when a stroke is published, cleared or disposed: the wet layer reads it
+  // several times per frame, and a fresh array per read was per-frame allocation for an unchanged set.
+  private pendingList: readonly WetInkSnapshot[] | null = null
   private listener: (() => void) | null = null
   // The wet layer subscribes so a publication (the pen-up that seals the stroke tail included) asks for a frame.
   onPublish(listener: (() => void) | null): void { this.listener = listener }
@@ -57,25 +60,24 @@ export class WetInkHandover {
     const previous = this.pending.get(snapshot.identity.gestureSequence)
     if (previous?.dry && previous.dry !== snapshot.dry) previous.dry.release?.()
     this.pending.set(snapshot.identity.gestureSequence, snapshot)
+    this.pendingList = null
     this.listener?.()
   }
   clear(identity: InkIdentity): void {
     const existing = this.pending.get(identity.gestureSequence)
     if (existing?.identity.nodeId === identity.nodeId) {
-      this.pending.delete(identity.gestureSequence)
+      this.pending.delete(identity.gestureSequence); this.pendingList = null
       existing.dry?.release?.()
     }
   }
   dispose(): void {
-    const pending = [...this.pending.values()]; this.pending.clear()
+    const pending = [...this.pending.values()]; this.pending.clear(); this.pendingList = null
     for (const entry of pending) entry.dry?.release?.()
   }
-  forFrame(dryAvailable: (identity: DryInkIdentity) => boolean): readonly WetInkSnapshot[] {
-    const visible: WetInkSnapshot[] = []
-    for (const pending of this.pending.values()) {
-      if (!pending.dry || !dryAvailable(pending.dry)) visible.push(pending)
-    }
-    return visible
+  /** Every stroke not yet acknowledged, drawn or not. Visibility is the acknowledgement's alone: a dry frame that merely
+   * lists the node does not end the wet stroke, because the board may not have composed its tiles yet. */
+  pendingSnapshots(): readonly WetInkSnapshot[] {
+    return this.pendingList ??= [...this.pending.values()]
   }
   // The compositor calls this only after the token-matched frame with both dry
   // bands was actually presented; dropped or stale frames retain the fallback.

@@ -1,5 +1,6 @@
 import { RENDER_CONSTANTS as POLICY } from './constants';
 import type { ByteLease } from './gfx/api';
+import { auditCount } from './renderAudit';
 import type { ArenaMemory } from './resourceArena';
 import type { RenderToken } from './types';
 
@@ -43,8 +44,9 @@ export interface MemoryCacheRegistration extends CacheActivity {
     readonly paneId?: string;
     readonly owner?: MemorySessionOwner;
     readonly memory: () => ArenaMemory;
-    /** Synchronous eviction request. Only returned leases free capacity, not this call's return. */
-    readonly evict: (bytes: number) => void;
+    /** Eviction request for up to `bytes`; returns the bytes it frees, or 0 when it frees nothing (a touched entry).
+     * An owner that returns nothing is counted as having freed its ask, up to its cache's size: see evictCache. */
+    readonly evict: (bytes: number) => number | void;
 }
 
 export interface MemoryCacheReadout extends ArenaMemory {
@@ -639,11 +641,23 @@ export class MemoryGovernor {
         try {
             for (const other of candidates) {
                 if (excess <= 0) break;
-                const before = other.bytes;
-                other.registration.evict(excess);
-                excess -= before - other.bytes;
+                const freed = this.evictCache(other, excess, false);
+                if (freed > 0) auditCount('governor', `reclaim:${pool}:${other.registration.id}`, 1, { bytes: freed });
+                excess -= freed;
             }
         } finally { this.trimming = false; }
+    }
+
+    /** Asks one cache for up to `bytes` and returns the bytes it freed. A returned count is believed: an owner that releases
+     * asynchronously cannot show its drop yet. An owner that returns nothing is counted by its synchronous drop, or, in a
+     * trim, by the ask up to its cache's size: a mirror closes entries whose bytes stay charged until retirement, and
+     * counting only the drop asked every candidate (measured earlier: four caches, 45 MB, evicted for a 0.47 MB excess). */
+    private evictCache(cache: CacheRecord, bytes: number, unreportedCountsAsk: boolean): number {
+        const before = cache.bytes;
+        const returned = cache.registration.evict(bytes);
+        const reported = typeof returned === 'number' ? (Number.isFinite(returned) ? Math.max(0, returned) : 0) :
+            unreportedCountsAsk ? Math.min(before, bytes) : 0;
+        return Math.max(before - cache.bytes, reported);
     }
 
     /** One refusal episode degrades the governor once; the retries of that episode only wait for capacity. */
@@ -739,15 +753,14 @@ export class MemoryGovernor {
                 b.bytes - a.bytes || stableId(a.registration.id, b.registration.id));
         this.trimming = true;
         try {
-            // Owners release asynchronously, so charged does not fall inside this loop: count each asked cache as freed, or
-            // one trim asks every candidate (measured: four caches, 45 MB, evicted for a 0.47 MB excess).
+            // Charged falls only when owners release, which is asynchronous: the reported bytes stand in for it inside this loop.
             let excess = this.charged[pool] - target;
             for (const cache of candidates) {
                 if (excess <= 0) break;
-                const before = cache.bytes;
                 // The owner protects its last visible coverage provider and capture/live-input pins.
-                cache.registration.evict(excess);
-                excess -= Math.max(before - cache.bytes, Math.min(before, excess));
+                const freed = this.evictCache(cache, excess, true);
+                if (freed > 0) auditCount('governor', `trim:${pool}:${cache.registration.id}`, 1, { bytes: freed });
+                excess -= freed;
             }
         } finally { this.trimming = false; this.plan(); }
     }

@@ -434,6 +434,9 @@ export class FrameScheduler {
         for (const entry of this.panes.values()) this.mark(entry, 'pressure');
     }
 
+    /** The last frame started: the frame in progress during its own preparation, the frame that just ran afterwards. */
+    currentFrame(): number { return this.frameId; }
+
     idleForCapture(): boolean {
         if (!this.running || this.suspended || this.inFrame) return false;
         for (const entry of this.panes.values()) {

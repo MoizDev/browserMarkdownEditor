@@ -99,12 +99,17 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         return { token: current, sourceRole: '', contentRevision: options.revision(), colourVersion: 0,
             geometryDigest: '', nominalDpr: lastView.viewport.dpr, view: lastView };
     };
+    // The frame this pane was last prepared or presented in. Its caches are never evicted in the frame in progress, nor in
+    // the frame that just ran when a release is deferred to a microtask: an eviction of a pane that is on screen is re-
+    // prepared the next frame and evicted again (measured: 170 'budget' invalidations per 3 s on the large seed).
+    let touchedFrame = -1;
+    const touchedThisFrame = (): boolean => touchedFrame === runtime.scheduler.currentFrame();
     const queueTrim = (): void => {
-        if (trimQueued) return;
+        if (trimQueued || touchedThisFrame()) return;
         trimQueued = true;
         queueMicrotask(() => {
             trimQueued = false;
-            if (disposed || !visible) return;
+            if (disposed || !visible || touchedThisFrame()) return;
             // A visible pane's device working set is trimmed by its owner; releasing every layer for it dropped the plans on
             // screen (a notebook's paper and board) on each eviction, and nothing presented until they were rebuilt.
             lifecycle?.invalidate('budget');
@@ -127,22 +132,33 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         const cacheId = `${options.paneId}:${options.viewLease}:${id}:${++cacheSerial}`;
         const cpu = runtime.governor.register({ ...common, id: `${cacheId}:cpu`, pool: 'cpu', kind: 'working',
             memory: () => ({ live: current()?.memory().cpuBytes ?? 0, retiring: 0 }),
-            // The layer names what it can rebuild; without the hook nothing in this cache is reclaimable.
-            evict: bytes => { const layer = current(); if (layer) layerSet.definition(layer)?.cpuEvict?.(layer, bytes); } });
+            // The layer names what it can rebuild; without the hook nothing in this cache is reclaimable, and the bytes its
+            // drop measures are the bytes freed.
+            evict: bytes => {
+                const layer = current();
+                if (!layer || touchedThisFrame()) return 0;
+                const before = layer.memory().cpuBytes;
+                layerSet.definition(layer)?.cpuEvict?.(layer, bytes);
+                return Math.max(0, before - layer.memory().cpuBytes);
+            } });
         let gpuCache: MemoryCacheHandle;
         try {
             gpuCache = runtime.governor.register({ ...common, id: `${cacheId}:gpu`, pool: 'gpu',
                 kind: definition.liveInput ? 'live-input' : 'working',
                 memory: () => ({ live: current()?.memory().gpuBytes ?? 0, retiring: 0 }),
                 evict: () => {
-                    // Evict this layer's GPU cache, not the pane's: the governor names the cache it wants back.
+                    // Evict this layer's GPU cache, not the pane's: the governor names the cache it wants back. The bytes are
+                    // returned now and released after the frame; a layer with nothing resident, or one in this frame, frees 0.
                     const layer = current();
-                    if (!layer || disposed || !visible) { queueTrim(); return; }
+                    if (!layer || disposed || !visible || touchedThisFrame()) return 0;
+                    const freed = layer.memory().gpuBytes;
+                    if (freed <= 0) return 0;
                     queueMicrotask(() => {
-                        if (disposed || !visible || current() !== layer) return;
+                        if (disposed || !visible || current() !== layer || touchedThisFrame()) return;
                         lifecycle?.releaseLayerGpu(layer, 'pressure');
                         lifecycle?.invalidate('budget');
                     });
+                    return freed;
                 } });
         } catch (error) { cpu.close(); throw error; }
         caches.push({ cpu, gpu: gpuCache, layer: current });
@@ -389,6 +405,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                     sceneRevision: (layer: Layer) => layerSet.definition(layer)?.revision(layer) ?? 0,
                     isCritical: (layer: Layer, view: ViewState) => layerSet.definition(layer)?.critical(layer, view) ?? false,
                     prepareFrame: (frame: ScheduledFrame, budget: Parameters<PaneCompositor['prepareFrame']>[1]) => {
+                        touchedFrame = frame.frameId;
                         const drawing = drawCompositor();
                         drawing?.prepareFrame(frame, budget);
                         const mirror = mirrorView();
@@ -457,6 +474,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                                     }
                                 }
                                 auditFrame(drawing.backend, performance.now() - encodeStart);
+                                touchedFrame = frame.frameId;
                                 if (qualityScale < 1) auditCount('pane', 'quality-below-1');
                                 if (drawing !== compositor) candidate.presented(frame.token.deviceGeneration);
                                 options.onPresentation({ frameId: frame.frameId, token: frame.token, backend: drawing.backend,

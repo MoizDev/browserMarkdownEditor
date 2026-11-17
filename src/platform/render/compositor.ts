@@ -206,10 +206,13 @@ export class GpuCompositor implements PaneCompositor {
                 binding.isolation.opacity > 1 || !['normal', 'multiply'].includes(binding.isolation.blend))) {
                 throw new ArenaError('invalid-input');
             }
-            // Keep callback receiver semantics without reading the caller's mutable binding again.
+            // Keep callback receiver semantics without reading the caller's mutable binding again. `critical` is copied too: the
+            // refusal gate reads it, and a copy without it reads every incomplete layer as critical (measured on the large drawing:
+            // the board's definition answered no, yet each incomplete band refused the frame, because the copy had dropped it).
             return Object.freeze({ id: binding.id, layer: binding.layer, group: binding.group,
                 isolation: binding.isolation ? Object.freeze({ ...binding.isolation }) : undefined,
                 coverage: binding.coverage.bind(binding),
+                ...(binding.critical ? { critical: binding.critical.bind(binding) } : {}),
                 ...(__BME_BENCH__ && binding.benchmarkDomain ? { benchmarkDomain: binding.benchmarkDomain.bind(binding) } : {}) });
         }));
     }

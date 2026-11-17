@@ -25,6 +25,8 @@ import type {
 const EDGE = TILE_EDGE, GUTTER = TILE_GUTTER, SIZE = TILE_SIZE;
 const BANDS: readonly PaintBand[] = ['underlay', 'content'];
 const TARGET_BYTES = tileTargetBytes(SIZE);
+/** The bytes a refused position at rest asks its own store to free: a few targets, not the whole store. */
+const FREE_FOR_REFUSAL = 8 * TARGET_BYTES;
 const CLEAR: RgbaP = [0, 0, 0, 0], WHITE: RgbaP = [1, 1, 1, 1];
 /** The texture's interior. The gutter is composed (so edges are right) and never drawn. */
 const CROP: Readonly<Rect> = Object.freeze({ x: GUTTER, y: GUTTER, width: EDGE, height: EDGE });
@@ -542,6 +544,20 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         }
     };
 
+    /** Frees this composer's own tiles for a refused position at rest, so it is admitted now instead of waiting on capacity that
+     * nothing else releases (gpu, round 5: the paper froze with 31.9 MB held, its waiter armed and never woken). The free list and
+     * the unprotected off-view tiles go first. When that frees nothing, the other scales go too, the stand-ins they were with them;
+     * the exact scale stays. A lowered position still building is cancelled first: its entries are at another scale. Returns
+     * whether any bytes were freed. */
+    const freeOwn = (view: ViewState, target: number): boolean => {
+        if (store.evict(FREE_FOR_REFUSAL, -1, view) > 0) return true;
+        for (const position of building.values()) if (position.lowered) { cancel(position); building.delete(position.key); }
+        for (const band of BANDS) store.dropScalesExcept(target, band);
+        const freed = store.evict(FREE_FOR_REFUSAL, -1, view) > 0;
+        if (freed) auditCount(audit, 'compose:free-own:scales');
+        return freed;
+    };
+
     /** Whether a building or finished position is still wanted at `target` for the visible `ring`: a position at the target
      * scale by its own cell, a lowered one (half the scale) by any of the four target cells it covers. */
     const stillWanted = (position: Position, target: number, ring: Span): boolean => {
@@ -565,7 +581,13 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             // Why a frame composes nothing is the zoom question: each exit is counted (pass and cause).
             if (composed >= limit) { auditCount(audit, `compose:limit:${pass}`); return false; }
             if (budget.shouldYield()) { auditCount(audit, `compose:yield:${pass}`); return false; }
-            const outcome = advance(position, budget, gpu);
+            let outcome = advance(position, budget, gpu);
+            // At rest a refused or denied position frees this composer's own tiles and is admitted in the same frame, instead of
+            // waiting for the governor (see freeOwn). While zooming the stand-ins stay: they are what the zoom shows.
+            if ((outcome === 'refused' || outcome === 'denied') && !zoomingFrame && freeOwn(view, target)) {
+                auditCount(audit, `compose:free-retry:${pass}`);
+                outcome = advance(position, budget, gpu);
+            }
             if (outcome === 'done') {
                 auditCount(audit, `compose:done:${pass}`);
                 building.delete(key);

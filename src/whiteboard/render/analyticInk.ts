@@ -111,9 +111,16 @@ export interface AnalyticInkPaint {
     readonly data: Float32Array;
     readonly bounds: { x: number; y: number; width: number; height: number };
 }
-/** Only a single convex capsule/disc has the required nonoverlap proof. Curves, pressure,
- * clips and multi-primitive unions keep the exact shared reference-coverage default. */
-export function analyticInkPaint(item: PaintInkItem, view: ViewState): AnalyticInkPaint | null {
+export interface AnalyticCapsule {
+    readonly x0: number; readonly y0: number; readonly x1: number; readonly y1: number;
+    readonly radius: number;
+    /** The uniform length scale of localToWorld; the capsule's device radius is radius × stretch × device scale. */
+    readonly stretch: number;
+}
+/** The one shape the analytic shader is exact for: a single convex capsule or disc, which cannot overlap itself and so
+ * needs no union. Curves, pressure, clips, multiply and multi-primitive ink return null. Shared by the route choice
+ * (inkRouteFor) and by the device packing below, so the two can never disagree about what is analytic. */
+export function analyticCapsule(item: PaintInkItem): AnalyticCapsule | null {
     if (item.clips.length || item.material.blend !== 'normal') return null;
     const chunks = inkCoverageChunks(item.coverage);
     if (chunks.length !== 1) return null;
@@ -124,10 +131,20 @@ export function analyticInkPaint(item: PaintInkItem, view: ViewState): AnalyticI
     } else if (!segments.length && discs.length === 3) {
         [x0, y0, radius] = discs; x1 = x0; y1 = y0;
     } else return null;
-    const [a, b, c, d, e, f] = item.localToWorld;
+    const [a, b, c, d] = item.localToWorld;
     const stretch = Math.hypot(a, b), other = Math.hypot(c, d);
     // No tolerance-based admission of a sheared ellipse as a circle.
     if (!(stretch > 0) || stretch !== other || a * c + b * d !== 0) return null;
+    if (!(radius > 0)) return null;
+    return { x0, y0, x1, y1, radius, stretch };
+}
+/** Device packing of an analytic capsule. Only an `analyticCapsule` item can take it; a null here is a precision or
+ * device-scale refusal, which the route reports as unsupported rather than drawing the item another way. */
+export function analyticInkPaint(item: PaintInkItem, view: ViewState): AnalyticInkPaint | null {
+    const capsule = analyticCapsule(item);
+    if (!capsule) return null;
+    const { x0, y0, x1, y1, radius, stretch } = capsule;
+    const [a, b, c, d, e, f] = item.localToWorld;
     const scale = view.camera.z * view.viewport.dpr;
     const point = (x: number, y: number): readonly [number, number] => [
         ((e - view.camera.x) + a * x + c * y) * scale,

@@ -92,3 +92,53 @@ void main() {
         attributes: [],
     },
 };
+
+/** Resolves a grid coverage target (see CoverageTargetOptions) and paints it: each device pixel is the box average of its
+ * grid×grid r8 texels, then one composite. The uniform block is the composition block, reused: sourceRect.xy is the
+ * target's device origin, sourceRect.z its grid, sourceSizeOpacityEffect.xy its texel size, backdropRect the paint
+ * (rgb, alpha), and options.x selects 'modulate' (k = mix(1, rgb, alpha·c), for the fixed-function modulate blend) or
+ * 'normal' (premultiplied source-over). Texels are fetched exactly: no filter, no sampler state, so no half-texel bias. */
+export const GRID_RESOLVE_SHADER: ShaderModule = {
+    id: 'platform-private-grid-resolve', revision: 1,
+    glsl: {
+        vertex: `#version 300 es
+precision highp float;
+${block}
+out vec2 pixel;
+void main() {
+    vec2 corner = vec2(float(gl_VertexID & 1), float((gl_VertexID >> 1) & 1));
+    pixel = destination.xy + corner * destination.zw;
+    vec2 unit = (pixel - viewport.xy) / viewport.zw;
+    gl_Position = vec4(unit.x * 2.0 - 1.0, 1.0 - unit.y * 2.0, 0.0, 1.0);
+}`,
+        fragment: `#version 300 es
+precision highp float;
+${block}
+uniform sampler2D gfxTexture0;
+in vec2 pixel;
+layout(location=0) out vec4 gfxColour;
+void main() {
+    int grid = int(sourceRect.z);
+    ivec2 device = ivec2(floor(pixel)) - ivec2(sourceRect.xy);
+    ivec2 first = device * grid;
+    int rows = int(sourceSizeOpacityEffect.y);
+    float sum = 0.0;
+    for (int j = 0; j < 4; j++) {
+        for (int i = 0; i < 4; i++) {
+            if (i < grid && j < grid) {
+                ivec2 texel = first + ivec2(i, j);
+                sum += texelFetch(gfxTexture0, ivec2(texel.x, rows - 1 - texel.y), 0).r;
+            }
+        }
+    }
+    float a = backdropRect.w * (sum / float(grid * grid));
+    if (options.x > 0.5) gfxColour = vec4(mix(vec3(1.0), backdropRect.rgb, a), 1.0);
+    else gfxColour = vec4(backdropRect.rgb * a, a);
+}`,
+    },
+    layout: {
+        uniforms: [{ binding: 0, byteSize: 128 }],
+        textures: [{ binding: 0, format: 'r8' as const }],
+        attributes: [],
+    },
+};

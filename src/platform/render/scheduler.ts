@@ -888,8 +888,14 @@ export class FrameScheduler {
             // progress slice. A healthy frame keeps the window as it was; the overrun is still reported as overshoot.
             const requesting = meta !== null ? meta.layer.needsFrame() : item.entry.layers.some(layer => layer.needsFrame());
             const exhausted = performance.now() >= deadline;
-            if (exhausted && !requesting) { item.skipped = true; return; }
-            const limit = exhausted ? performance.now() + meter.sliceMs : deadline;
+            // The platform's frame preparation is never skipped on the deadline. A frame that skipped it kept the previous frame
+            // id, so the compositors refused its encode and a pane under load presented nothing, not even its stand-ins. It runs
+            // with an exhausted budget instead (shouldYield true from the start; only media uploads are granted), so the frame
+            // keeps its id and the layers present what they already hold. The deferred work continues on the next frame, through
+            // the layers' own needsFrame (no extra mark here: an idle pane must not gain a frame).
+            const platform = meta === null;
+            if (exhausted && !requesting && !platform) { item.skipped = true; return; }
+            const limit = exhausted && !platform ? performance.now() + meter.sliceMs : deadline;
             const shouldYield = () => !this.valid(item.entry, item.frame.token) || performance.now() >= limit ||
                 (meta !== null && item.entry.pane.isCritical(meta.layer, item.frame.view) !== critical);
             // remainingBytes includes the explicit one-tile progress grant, not a disguised larger cap.
@@ -932,14 +938,14 @@ export class FrameScheduler {
                     return true;
                 },
             };
-            if (!shouldYield()) {
-                if (meta) meta.layer.prepare(item.frame.view, budget);
-                else {
+            if (platform) {
+                if (this.valid(item.entry, item.frame.token)) {
+                    if (exhausted) auditCount('scheduler', 'prepare:exhausted', 1);
                     item.platformBudget = budget;
                     item.entry.pane.prepareFrame(item.frame, budget);
                     item.platformPrepared = true;
                 }
-            }
+            } else if (meta && !shouldYield()) meta.layer.prepare(item.frame.view, budget);
             overshoot = Math.max(0, performance.now() - deadline);
         });
         return overshoot;

@@ -239,7 +239,10 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
                 inkNodeIds.add(item.nodeId); work.used += INK_SET_ENTRY_BYTES;
             }
         };
-        work.feed = feed(add, () => !needsBlock(work));
+        // A feed that refuses its source (a malformed node count) throws before anything is staged: the owner it was given is
+        // released here, or its pin and leases would be held by a request that never lands.
+        try { work.feed = feed(add, () => !needsBlock(work)); }
+        catch (error) { releaseOwned(owner, blocks); throw error; }
         staging = work;
         invalidate();
     };

@@ -329,8 +329,12 @@ export interface Submission { readonly serial: number; readonly stateSwitches: n
 
 // rendering-design.md:203–206, §2.5: already canonical; the caller closes the bitmap
 // explicitly after writeTexture returns. Upload does not repeat colour conversion.
+/** A decoded image a quad or an upload may read: an ImageBitmap, or a VideoFrame read directly (no CPU bitmap copy). The caller
+ * owns a VideoFrame and closes it once the call that read it has returned. */
+export type DrawableImage = ImageBitmap | VideoFrame;
+
 export interface BitmapUpload {
-    source: ImageBitmap;
+    source: DrawableImage;
     premultiplied: true;
     colorSpace: 'srgb';
     origin: 'top-left';

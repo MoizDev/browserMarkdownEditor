@@ -33,8 +33,8 @@ const benchmarkMemory = __BME_BENCH__ ? await import('../benchmarkMemory') : nul
 // One native storage convention (rendering-design.md §2.2/2.5; vr-lead ruling):
 // textures and render targets are GL-native bottom-left. Canonical top-left bitmaps
 // upload into budgeted, fenced staging targets, then Y-reversed framebuffer blits.
-// Byte uploads reverse rows; readback reverses once. No ImageBitmap pixel-store flip
-// is assumed: WebGL explicitly ignores that flag for ImageBitmap sources.
+// Byte uploads reverse rows; readback reverses once. No pixel-store flip is assumed for
+// ImageBitmap or VideoFrame sources: both are staged top-left and reversed by the blit, as bitmaps always were.
 
 /** Cache-bound allocators reserve actual bytes before any native/CPU allocation (design:603).
  * returnLease is the governor's FINAL return, not the layer-facing close adapter.
@@ -681,7 +681,9 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 this.#checkUpload();
                 this.#issue(encoding);
             } else {
-                if (src.source.width !== rect.width || src.source.height !== rect.height) throw new ArenaError('invalid-input');
+                // A VideoFrame has no width or height of its own; its display size is the size WebGL reads it at.
+                const size = 'displayWidth' in src.source ? { width: src.source.displayWidth, height: src.source.displayHeight } : src.source;
+                if (size.width !== rect.width || size.height !== rect.height) throw new ArenaError('invalid-input');
                 staging = this.acquireTarget({ width: rect.width, height: rect.height, format: 'rgba8', samples: 1, stencil: false, purpose: 'group' });
                 if (!staging) throw new ArenaError('out-of-budget');
                 const stageTexture = this.#pin(encoding, staging.texture, 'texture');

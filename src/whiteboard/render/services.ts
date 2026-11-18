@@ -184,7 +184,7 @@ export function createBoardRenderServices(options: {
     // Drops one variant. Replacing or releasing an entry keeps its ladder, which the caller may have just rebuilt for the new signature.
     const dropVariant = (key: string) => {
         const entry = idle.get(key), value = cached.get(key);
-        cached.delete(key); pinned.delete(key);
+        cached.delete(key);
         if (value && entry) {
             const set = variantsOf.get(entry.node);
             set?.delete(key); if (set && set.size === 0) variantsOf.delete(entry.node);
@@ -210,21 +210,24 @@ export function createBoardRenderServices(options: {
         auditCount(AUDIT, 'geometry:band-miss');
         return previous === null ? undefined : variantFor(id, signature, value => value.inkPrecision === previous);
     };
-    // The variant keys a live zoom holds (pinVisible): never evicted, so a band crossing always finds the previous band. Released at rest.
-    const pinned = new Set<string>();
-    const pinVisible = (ids: Iterable<NodeId>, bands: readonly string[]): void => {
-        pinned.clear();
-        for (const id of ids) for (const key of variantsOf.get(id) ?? []) {
-            const value = cached.get(key);
-            if (value?.inkPrecision !== undefined && bands.includes(value.inkPrecision)) pinned.add(key);
-        }
+    // The zoom's pins (pinVisible): the visible nodes and the stroke bands held for them. A variant is pinned when its node and its
+    // band are both pinned, whenever it was stored: a frame's new variants are stored after its pins are set, so a set of variant
+    // keys taken at pin time would miss them. Released at rest.
+    let pinnedNodes = new Set<NodeId>(), pinnedBands = new Set<string>();
+    const isPinned = (key: string): boolean => {
+        const value = cached.get(key), entry = idle.get(key);
+        return !!value && !!entry && value.inkPrecision !== undefined && pinnedBands.has(value.inkPrecision) && pinnedNodes.has(entry.node);
     };
-    const releasePins = (): void => { pinned.clear(); };
+    const pinVisible = (ids: Iterable<NodeId>, bands: readonly string[]): void => {
+        pinnedNodes = new Set(ids); pinnedBands = new Set(bands);
+        auditCount(AUDIT, 'geometry:pin', pinnedNodes.size);
+    };
+    const releasePins = (): void => { pinnedNodes = new Set(); pinnedBands = new Set(); };
     // Least recently used first; a budget eviction also drops the entry's ladder once no precision of its node has a geometry to serve.
     // Null when every idle entry is pinned: the caller stops (a pinned zoom variant is never the budget's to take).
     const evictOldestIdle = (): { readonly bytes: number; readonly charged: number } | null => {
         let gone: string | undefined;
-        for (const key of cached.keys()) if (!pinned.has(key)) { gone = key; break; }
+        for (const key of cached.keys()) if (!isPinned(key)) { gone = key; break; }
         if (gone === undefined) return null;
         const entry = idle.get(gone);
         // A budget eviction of a node a later pass needs again is a rebuild; the count shows whether the idle budget is too small.

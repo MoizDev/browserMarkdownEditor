@@ -222,6 +222,8 @@ export interface BoardLayerPair extends Readonly<[PlatformLayerDefinition, Platf
     invalidate(reason?: string): void;
     /** The ink nodes the board's GPU tiles drew in the last composite: the live stroke's wet layer hands over to them. */
     drawnInkNodeIds(): ReadonlySet<string>;
+    /** The live-only nodes the board's GPU tiles drew in the last composite, both bands: a live overlay hands a node over only after this. */
+    drawnLiveNodeIds(): ReadonlySet<string>;
     /** Whether the board draws on a device (its GPU composer), so the owner may ask for whole-scene frames. */
     onDevice(): boolean;
     /** The owning band's CPU bytes now (the direct charge, the dense plan, the device scratch): the measured cost a request's size is judged by. */
@@ -253,6 +255,7 @@ const NO_INK: ReadonlySet<string> = Object.freeze(new Set<string>());
 /** The GPU adapter's report of the ink its tiles drew (h2 adds it to the adapter). Until then nothing is reported drawn,
  * so the live stroke keeps drawing itself, as it does today. */
 type DrawnInkReporter = { drawnInkNodeIds?(): ReadonlySet<string> };
+type DrawnLiveReporter = { drawnLiveNodeIds?(band: PaintBand): ReadonlySet<string> };
 /** The GPU adapter's mandatory bytes for a viewport (h2 adds it to the adapter). Until then a device reports none beyond its
  * own leases, as before this member existed. */
 type GpuWorkingSetReporter = { gpuMandatoryBytes?(viewport: Readonly<{ width: number; height: number }>): number };
@@ -1032,6 +1035,13 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     const pair = [definition('underlay'), definition('content')] as unknown as BoardLayerPair;
     pair.invalidate = (reason = 'board-content') => { for (const host of hosts.values()) host.invalidate(reason); };
     pair.drawnInkNodeIds = () => (gpu as DrawnInkReporter | null)?.drawnInkNodeIds?.() ?? NO_INK;
+    pair.drawnLiveNodeIds = () => {
+        const reporter = gpu as DrawnLiveReporter | null;
+        if (!reporter?.drawnLiveNodeIds) return NO_INK;
+        const under = reporter.drawnLiveNodeIds('underlay'), content = reporter.drawnLiveNodeIds('content');
+        if (!under.size && !content.size) return NO_INK;
+        return new Set([...under, ...content]);
+    };
     pair.onDevice = () => !!activeHost()?.device();
     pair.cpuMandatoryBytes = cpuMandatory;
     // Typeof-guarded: an allocator that does not report a grant reads as 0 (none known).

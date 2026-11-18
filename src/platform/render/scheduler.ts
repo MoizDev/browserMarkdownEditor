@@ -831,6 +831,7 @@ export class FrameScheduler {
             // of an uncached board must not take every frame (measured on ~3,600 strokes, the board showed "Updating..." for good).
             let presentReserve = 0;
             for (const item of work) presentReserve += item.entry.presentMs;
+            const foregroundStart = performance.now();
             const foregroundMs = Math.max(targetMs * PREPARE_FLOOR_FRACTION, this.intervalMs - presentReserve - elapsedInput - this.maintenanceMs);
             const prepareDeadline = performance.now() + foregroundMs;
             meter.deadline = prepareDeadline;
@@ -874,6 +875,7 @@ export class FrameScheduler {
             }
             // Background runs only in what foreground and the presentation reserve left of this frame's interval, and never longer
             // than the upload window (min(1 ms, 0.12 interval)): the window keeps background work from causing jank.
+            const backgroundStart = performance.now();
             const backgroundEnd = performance.now() + Math.min(meter.sliceMs, Math.max(0, started + this.intervalMs - presentReserve - performance.now()));
             meter.deadline = backgroundEnd;
             const optionalOrder = this.focusFirst(this.rotate(work, this.optionalCursor++));
@@ -906,6 +908,11 @@ export class FrameScheduler {
             // 5: focus/input first, then rotate neighbours; nobody's mandatory draw is budget-skipped.
             // Each pane's encode, submit and overlay time this frame; it feeds the pane's EWMA, the next frame's presentation reserve.
             const presentCost = new Map<PaneEntry, number>();
+            const presentStart = performance.now();
+            if (renderAuditEnabled()) {
+                auditCount('scheduler', 'foreground-us', Math.round((backgroundStart - foregroundStart) * 1000));
+                auditCount('scheduler', 'background-us', Math.round((presentStart - backgroundStart) * 1000));
+            }
             // Audit only, in microseconds: how far past its preparation deadline the presentation started (foreground ran long),
             // and how far the preparation ran past it (the last call's overrun).
             if (renderAuditEnabled()) {
@@ -942,6 +949,8 @@ export class FrameScheduler {
                 });
                 presentCost.set(item.entry, (presentCost.get(item.entry) ?? 0) + performance.now() - encodeStarted);
             }
+            const submitStart = performance.now();
+            if (renderAuditEnabled()) auditCount('scheduler', 'encode-us', Math.round((submitStart - presentStart) * 1000));
             // 6: publish overlays only for the exact snapshot successfully submitted by its compositor.
             for (const item of encodings) {
                 const submitStarted = performance.now();
@@ -989,6 +998,7 @@ export class FrameScheduler {
             for (const item of work) item.entry.presentMs = 0.8 * item.entry.presentMs + 0.2 * (presentCost.get(item.entry) ?? 0);
             // 7: bounded retirement/compile/readback polls. They never draw a hidden pane.
             const maintenanceStart = performance.now();
+            if (renderAuditEnabled()) auditCount('scheduler', 'submit-us', Math.round((maintenanceStart - submitStart) * 1000));
             this.runPolls(started + targetMs);
             this.maintenanceMs = performance.now() - maintenanceStart;
             if (renderAuditEnabled()) {
@@ -1141,6 +1151,7 @@ export class FrameScheduler {
                 this.passedOver(item, meta);
             }
             overshoot = Math.max(0, performance.now() - deadline);
+            if (overshoot > 0 && renderAuditEnabled()) auditCount('scheduler', 'overshoot-us:' + phase, Math.round(overshoot * 1000));
         });
         return overshoot;
     }

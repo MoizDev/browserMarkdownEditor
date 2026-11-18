@@ -163,6 +163,10 @@ export class GpuCompositor implements PaneCompositor {
     #disposed = false;
     #available = true;
     #retryPending = false;
+    /** The binding whose draw is running, and the bindings whose draw a full uniform ring deferred this frame (gpu-h12's 4c118264:
+     * the ring grows to 16 slots / 32 MiB, so this is rare). A null entry is a deferral outside any layer's draw: it refuses. */
+    #drawingBinding: CompositorLayer | null = null;
+    #deferredBindings = new Set<CompositorLayer | null>();
     #report: CompositorCoverage | null = null;
     readonly #encodings = new Set<FrameEncoder>();
     readonly #quadData = new Float32Array(16);
@@ -431,9 +435,11 @@ export class GpuCompositor implements PaneCompositor {
                     drawScope.passes.add(layerTarget);
                     const drawStarted = timed ? performance.now() : 0;
                     let drawn = false;
+                    this.#drawingBinding = binding;
                     try { binding.layer.drawGpu(layerTarget, frame.view); drawn = true; }
                     catch (error) { auditGpuError(null, `layer-draw:${auditId}`, error); throw error; }
                     finally {
+                        this.#drawingBinding = null;
                         drawScope.passes.delete(layerTarget); drawScope.passes.delete(scope.pass);
                         try { if (drawn) scope.finish(); else scope.abandon(); }
                         finally {
@@ -447,6 +453,18 @@ export class GpuCompositor implements PaneCompositor {
             } finally {
                 this.#active = null;
                 if (document) quietly(() => pass.endGroup(document!));
+            }
+            // A deferred draw never reaches the surface as a complete frame: a critical layer that lost a draw refuses the frame
+            // (the previous complete picture stays, and the frame is retried), while a non-critical layer presents what it drew
+            // and the report says the layers are not complete. Either way the next frame is requested.
+            const deferred = this.#deferredBindings.size > 0;
+            if (deferred) this.#options.invalidate('gpu-uniform-ring-deferred');
+            if ([...this.#deferredBindings].some(binding => binding === null || binding.critical?.(frame) !== false)) {
+                auditCount('compositor', 'refuse:uniform-ring');
+                this.#encodings.delete(encoder);
+                this.#options.owner.discardFrame(encoder);
+                this.#failure(new ArenaError('out-of-budget'));
+                return null;
             }
             const tally = timed ? auditDrawnTake() : null;
             const owned = encoder;
@@ -478,7 +496,7 @@ export class GpuCompositor implements PaneCompositor {
                         this.#encodings.delete(owned);
                         this.#retryPending = false;
                         this.#shortfalls = [];
-                        const layersComplete = coverage.every(item => item.complete);
+                        const layersComplete = !deferred && coverage.every(item => item.complete);
                         this.#report = Object.freeze({ frameId: frame.frameId, token: Object.freeze({ ...frame.token }), presented: true,
                             complete: true, sharp: snapshot.metrics!.qualityScale === 1 && coverage.every(item => item.sharp && !item.staleVersion),
                             staleVersion: coverage.some(item => item.staleVersion), layersComplete,
@@ -541,6 +559,8 @@ export class GpuCompositor implements PaneCompositor {
                 return null;
             }
             auditCount('compositor', 'offscreen-on-refuse', offscreen);
+            // A deferred offscreen tile is retried on the next frame: its layer is not complete until it composes.
+            if (this.#deferredBindings.size > 0) this.#options.invalidate('gpu-uniform-ring-deferred');
             const owned = encoder;
             let done = false;
             const epoch = this.#epoch;
@@ -625,6 +645,18 @@ export class GpuCompositor implements PaneCompositor {
         this.#active.encoder.uniformsInto(bytes, into);
     }
 
+    /** A draw's uniform block. A full ring throws out-of-budget with the frame intact: this draw is skipped (counted), the layer
+     * whose draw it was is marked incomplete for this frame, and encode decides what that means for the frame. */
+    #slice(bytes: ArrayBufferView): UniformSlice | null {
+        try { return this.uniforms(bytes); }
+        catch (error) {
+            if (!(error instanceof ArenaError && error.code === 'out-of-budget')) throw error;
+            auditCount('compositor', 'gpu:quad-deferred');
+            this.#deferredBindings.add(this.#drawingBinding);
+            return null;
+        }
+    }
+
     drawTexturedQuad(pass: GpuPass, texture: TextureHandle, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
     drawTexturedQuad(ctx: CanvasRenderingContext2D, image: DrawableImage, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
     drawTexturedQuad(pass: GpuPass | CanvasRenderingContext2D, texture: TextureHandle | DrawableImage,
@@ -667,7 +699,8 @@ export class GpuCompositor implements PaneCompositor {
         this.#quadData.set([0, 0, width, height, destRect.x, destRect.y, destRect.x + destRect.width, destRect.y + destRect.height,
             sample.x, sample.y, sample.width, sample.height, sampled.width, sampled.height, opacity,
             __BME_BENCH__ ? options.coverage === 'current' ? 3 : options.coverage === 'standin' ? 2 : 0 : 0]);
-        const slice = this.uniforms(this.#quadData);
+        const slice = this.#slice(this.#quadData);
+        if (!slice) return;
         pass.draw({ pipeline: this.#quad, vertices: [], first: 0, count: 4, instances: 1, scissor,
             ...(__BME_BENCH__ && options.coverage && options.coverage !== 'none' ? {
                 coverageClass: options.coverage === 'standin' ? 2 as const : 3 as const,
@@ -729,8 +762,10 @@ export class GpuCompositor implements PaneCompositor {
         // The block is the single quad's layout: viewport, then texture size with opacity (the coverage class is bench-only).
         this.#batchUniforms.set([0, 0, width, height, 0, 0, 0, 0, 0, 0, 0, 0, sampledInfo.width, sampledInfo.height, opacity,
             __BME_BENCH__ ? options.coverage === 'current' ? 3 : options.coverage === 'standin' ? 2 : 0 : 0]);
-        const uniforms = this.uniforms(this.#batchUniforms);
-        const vertices = this.uniforms(batch.subarray(0, count * 8));
+        const uniforms = this.#slice(this.#batchUniforms);
+        if (!uniforms) return;
+        const vertices = this.#slice(batch.subarray(0, count * 8));
+        if (!vertices) return;
         pass.draw({ pipeline, vertices: [vertices], first: 0, count: 4, instances: count,
             scissor: { x: left, y: top, width: right - left, height: bottom - top },
             ...(__BME_BENCH__ && options.coverage && options.coverage !== 'none' ? {
@@ -795,9 +830,11 @@ export class GpuCompositor implements PaneCompositor {
 
     #encodeOffscreen(snapshot: Snapshot, frame: ScheduledFrame, encoder: FrameEncoder, drawScope: DrawScope): number {
         let passes = 0;
+        this.#deferredBindings.clear();
         for (const binding of snapshot.layers) {
             const layer = binding.layer;
             if (!layer.encodeOffscreen) continue;
+            this.#drawingBinding = binding;
             const auditId = (binding as { id?: string }).id ?? 'layer';
             let open: { pass: GpuPass; finish(): void; abandon(): void; raw: GpuPass; registered: GpuPass[] } | null = null;
             const close = (abandoned: boolean) => {

@@ -193,7 +193,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         const common = { paneId: options.paneId, owner: options.documentToken, hiddenAt: visible ? null : now,
             lastVisibleAt: now, lastUsedAt: now, class: 'scene-cache' as const };
         const cacheId = `${options.paneId}:${options.viewLease}:${id}:${++cacheSerial}`;
-        const cpu = runtime.governor.register({ ...common, id: `${cacheId}:cpu`, pool: 'cpu', kind: 'working', liveInput: definition.liveInput === true,
+        const cpu = runtime.governor.register({ ...common, id: `${cacheId}:cpu`, pool: 'cpu', kind: 'working', liveInput: definition.liveInput === true, foreground: definition.foregroundCpu === true,
             memory: () => ({ live: current()?.memory().cpuBytes ?? 0, retiring: 0 }),
             // The layer names what it can rebuild; without the hook nothing in this cache is reclaimable, and the bytes its
             // drop measures are the bytes freed.

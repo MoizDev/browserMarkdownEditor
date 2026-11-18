@@ -625,12 +625,14 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         let held = 0;
         for (const lease of leases) held += lease.bytes;
         if (held >= want) { denied = false; return true; }
-        if (memoryGate.closed()) { denied = true; return false; }
+        if (memoryGate.closed()) { auditCount(options.auditSurface ?? 'board', 'direct:gate-closed'); denied = true; return false; }
         while (held < want) {
             const lease = allocatorHost!.allocator.cpu.reserve(DIRECT_CHUNK);
             if (!lease) {
                 memoryGate.refused(); denied = true;
                 auditCount(options.auditSurface ?? 'board', 'direct:charge-refused');
+                // Audit only: how much the build wanted and did not hold when the reserve refused (the bytes it is short by).
+                auditCount(options.auditSurface ?? 'board', 'direct:refused-missing', 1, { bytes: want - held });
                 allocatorHost!.demandChanged?.();
                 awaitCpu(DIRECT_CHUNK);
                 return false;
@@ -950,7 +952,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         return drawn.size ? drawn : NO_INK;
     };
     const definition = (band: PaintBand): PlatformLayerDefinition => ({
-        id: `board-${band}`, group: 'document', ...gpuWorkingSetFor(band),
+        id: `board-${band}`, group: 'document', foregroundCpu: true, ...gpuWorkingSetFor(band),
         create(host) {
             if (disposed || hosts.has(band)) throw new Error('Board layer already attached');
             hosts.set(band, host); ensureAdapter(host);

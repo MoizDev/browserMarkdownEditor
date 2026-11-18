@@ -211,6 +211,8 @@ export interface GpuPaintAdapter {
     /** Indexes the reference's paint, composes what the view needs within the frame's limit. `omit` is the drag's omitted nodes.
      * True when anything visible changed since the previous prepare (the composer's report); true when it could not tell. */
     prepare(view: ViewState, budget: FrameBudget, omit?: ReadonlySet<string>): boolean;
+    /** Indexes a paint to completion within `maxMs`, outside any frame (the same filter the frames apply, so the index matches). */
+    warm(prepared: PreparedPaint2d, maxMs: number): boolean;
     /** The paint the composed tiles were built from, once a paint has been prepared. */
     readyFrame(): PaintSource | null;
     readyPaint(): PreparedPaint2d | null;
@@ -328,6 +330,9 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
     });
 
     return {
+        warm(prepared: PreparedPaint2d, maxMs: number): boolean {
+            return composer.warm(forComposer(prepared), maxMs);
+        },
         prepare(view: ViewState, budget: FrameBudget, omit?: ReadonlySet<string>): boolean {
             // The background call of a two-phase frame: the composer completes the paint its foreground call prepared (no new frame).
             if (budget.phase === 'background') {

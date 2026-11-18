@@ -177,6 +177,14 @@ export type TileLay = (pass: GpuPass, texture: TextureHandle, source: Readonly<R
 /** Lays a batch of 'over' quads of one tile texture in one call (the host's batched quads, one GPU draw). */
 export type TileLayQuads = (pass: GpuPass, texture: TextureHandle, quads: readonly TexturedQuadSpec[]) => void;
 
+/** The geometry service a live zoom pins (services.inkBandKey / pinVisible / releasePins), as the composer uses it. A zoom frame pins
+ * the visible nodes at the band it draws and the band before it; a rest releases the pins. Absent: nothing is pinned. */
+export interface GeometryPins {
+    bandKey(deviceScale: number): string;
+    pinVisible(ids: Iterable<string>, keys: readonly string[]): void;
+    releasePins(): void;
+}
+
 export interface TileComposerOptions {
     readonly host: LayerHost;
     readonly audit: string;
@@ -193,6 +201,8 @@ export interface TileComposerOptions {
     readonly withPreparedClips: WithPreparedClips;
     /** Rects whose surface is opaque. A modulate slice inside one is laid by `modulate`; elsewhere it is isolated. */
     readonly opaqueWorld?: () => readonly Rect[];
+    /** The geometry pins a live zoom holds (see GeometryPins). */
+    readonly pins?: GeometryPins;
     /** True while the governor reports a slow GPU: the compose limit halves. */
     readonly slowGpu?: () => boolean;
     /** An overlay (a drag's preview): a paint of a few plain 'over' parts is drawn live each frame at the view, with no tiles, so
@@ -334,7 +344,7 @@ function subtractRects(rect: Rect, holes: readonly Rect[]): Rect[] {
 }
 
 export function createTileComposer(options: TileComposerOptions): TileComposer {
-    const { host, audit, parts, store, routes, tileWorld, inkRouteFor, lay, layQuads, admitClips, withPreparedClips } = options;
+    const { host, audit, parts, store, routes, tileWorld, inkRouteFor, lay, layQuads, admitClips, withPreparedClips, pins } = options;
     const routeList: ItemRoute[] = [routes.path, routes.inkAnalytic, routes.inkUnion, routes.image, routes.text, routes.cpu]
         .filter((route): route is ItemRoute => route !== undefined);
     let resourcesSeen: PaintResources2d | null = null;
@@ -431,6 +441,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     // The frame each tile entry was last encoded (its content's frame), read against heldNodes.
     const composedAt = new WeakMap<TileEntry, number>();
     let lastZoom: number | undefined;
+    let pinsHeld = false;
     // The scale the last prepare composed and drew. Coverage describes this scale, not the exact demand: a zoom draws its
     // ladder scale, and coverage asked about the exact one, where nothing is composed, so every frame of a zoom read incomplete.
     let drawnTarget = 0;
@@ -1382,8 +1393,20 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 for (const route of routeList) (route as ItemRoute & ResourcedRoute).useResources?.(prepared.resources);
             }
             // The scale moves only with the camera's zoom: a pan or a drag keeps the tiles' scale and their pixels.
+            const previousZoom = lastZoom;
             zooming = lastZoom !== undefined && view.camera.z !== lastZoom;
             lastZoom = view.camera.z;
+            if (pins) {
+                if (zooming) {
+                    // The visible nodes of both bands, at the band this frame draws and the band before the last crossing.
+                    const world: Rect = { x: view.camera.x, y: view.camera.y, width: view.viewport.width / view.camera.z, height: view.viewport.height / view.camera.z };
+                    const ids = new Set<string>();
+                    for (const band of BANDS) for (const part of parts.partsFor(band, world, omitIds ?? undefined)) ids.add(part.nodeId);
+                    const dpr = view.viewport.dpr;
+                    pins.pinVisible(ids, [pins.bandKey(view.camera.z * dpr), pins.bandKey((previousZoom ?? view.camera.z) * dpr)]);
+                    pinsHeld = true;
+                } else if (pinsHeld) { pins.releasePins(); pinsHeld = false; }
+            }
             zoomingFrame = zooming;
             // The text route draws a missing exact mask from its stand-in while the zoom is live; the flag is set before its admits.
             routes.text?.setZoom(zooming);

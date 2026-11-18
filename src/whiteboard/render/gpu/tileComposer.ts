@@ -388,6 +388,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     // A live part deferred this frame asks for the next one. Consecutive deferred frames are counted and the asking stops at the
     // retry limit (a part that never fits its upload budget must not keep the board framing at rest).
     let liveDeferredNow = false, liveDeferredFrames = 0;
+    // A live part dropped this frame (denied, unsupported, or no route) draws nothing for it: the frame is not complete for it.
+    let liveHoleNow = false;
     // A part of a cut is drawn inside its pieces only (pixel-disjoint from the tile pieces beside them); any other part, inside the clip.
     const liveScratch: { order: number; run: PreparedRun; route: ItemRoute; nodeId: string; pieces?: readonly Rect[] }[] = [];
     const standScratch: { order: number; entry: TileEntry; slot: Slot }[] = [];
@@ -395,6 +397,9 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     const quadPool: { sourceRect: Rect; destRect: Rect }[] = [];
     const quadList: TexturedQuadSpec[] = [];
     let drawCount = 0;
+    // The frame whose draw list buildDraws (or buildLiveDraws) built: a list left from an earlier frame is never drawn, since its
+    // textures may have been released or reused since.
+    let drawsFrame = -1;
 
     let disposed = false, presenting = false, indexing = false;
     // This frame's zoom, set in prepare: while zooming, coverage does not hold the frame for a position with nothing (see coverage).
@@ -974,7 +979,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         let admitted: LiveAdmission | null = null;
         const route = isLivePart(item) ? routes.image : routeOf(item).route;
         // The CPU route rasters a tile-sized scratch at the camera origin: it cannot draw a live part over the surface.
-        if (!route || route === routes.cpu) auditCount(audit, route ? 'live:dropped:cpu-route' : 'live:dropped:route-absent');
+        if (!route || route === routes.cpu) { liveHoleNow = true; auditCount(audit, route ? 'live:dropped:cpu-route' : 'live:dropped:route-absent'); }
         else {
             let outcome = route.admit([item], view, blend, budget);
             // Admission is resumable: a deferral while the frame still has time is resumed now, not left for the next frame.
@@ -983,14 +988,14 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 outcome = route.admit([item], view, blend, budget);
             }
             if (outcome.status === 'ready') { admitted = { route, run: outcome.value }; liveRuns.push(admitted); }
-            else if (outcome.status === 'unsupported') auditCount(audit, `live:dropped:${outcome.why}`);
+            else if (outcome.status === 'unsupported') { liveHoleNow = true; auditCount(audit, `live:dropped:${outcome.why}`); }
             else if (outcome.status === 'deferred') {
                 // A deferral is a frame wait: nothing else invalidates the board for it, so the next frame asks again (bounded, below).
                 // Split by route: the admission reports no reason, so the route is the cause the counters can name.
                 liveDeferredNow = true; liveDeferredBy.set(item, budget.phase); auditCount(audit, 'live:dropped:deferred'); auditCount(audit, `live:dropped:deferred:${route.id}`); auditCount(audit, `live:dropped:deferred:${budget.phase}`);
             } else if (outcome.status === 'denied') {
                 // A denial waits on the governor like a tile's: the wake is the capacity change, not a timer, so a steady pool costs nothing.
-                refuseAdmission(outcome.pool, outcome.bytes); auditCount(audit, 'live:dropped:denied');
+                liveHoleNow = true; refuseAdmission(outcome.pool, outcome.bytes); auditCount(audit, 'live:dropped:denied');
             }
         }
         liveAdmitted.set(item, admitted);
@@ -1190,6 +1195,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
 
     const buildDraws = (view: ViewState, target: number, zooming: boolean, budget: FrameBudget): void => {
         drawCount = 0;
+        drawsFrame = frame;
         coveredPositions.clear();
         if (liveNow) { buildLiveDraws(view, target, budget); return; }
         const span = spanAt(view, target);
@@ -1343,6 +1349,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     };
 
     const releaseAll = (): void => {
+        if (pinsHeld) { pins?.releasePins(); pinsHeld = false; }
         for (const position of building.values()) cancel(position);
         building.clear();
         inexactPending.clear();
@@ -1393,7 +1400,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 building.clear(); scaleIndexes.clear();
             }
             denied = false; settled = false;
-            liveDeferredFrames = liveDeferredNow ? liveDeferredFrames + 1 : 0; liveDeferredNow = false;
+            liveDeferredFrames = liveDeferredNow ? liveDeferredFrames + 1 : 0; liveDeferredNow = false; liveHoleNow = false;
             const demand = view.camera.z * view.viewport.dpr;
             device = host.device();
             if (!prepared || !device || !(demand > 0) || !Number.isFinite(demand)) {
@@ -1584,6 +1591,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         },
         drawGpu(pass: GpuPass, view: ViewState, band: PaintBand): void {
             if (!drawCount) return;
+            if (drawsFrame !== frame) { auditCount(audit, 'draw:stale-list'); return; }
             const cam = view.camera, scale = cam.z * view.viewport.dpr;
             const surfaceW = Math.round(view.viewport.width * view.viewport.dpr), surfaceH = Math.round(view.viewport.height * view.viewport.dpr);
             // Scratch rectangles, rewritten per draw: the pass reads them before this loop moves on.
@@ -1652,7 +1660,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             if (!presenting) return { complete: false, sharp: false };
             const exact = exactScale(view.camera.z * view.viewport.dpr);
             // A live part this frame could not admit is a hole: the picture is not complete (the next frame asks again).
-            if (liveNow && !indexing) return { complete: !liveDeferredNow, sharp: preparedSharp && drawnTarget === exact };
+            if (liveNow && !indexing) return { complete: !liveDeferredNow && !liveHoleNow, sharp: preparedSharp && drawnTarget === exact };
             const target = drawnTarget;
             const span = spanAt(view, target);
             // A position with any picture (its tile at the drawn scale, a dirty one, or a stand-in of another scale) is
@@ -1719,7 +1727,10 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             return !disposed && waiting && blockedOnGpu && !indexing && finished.length === 0;
         },
         needsFrame(): boolean {
-            if (disposed || denied || !presenting) return false;
+            if (disposed || !presenting) return false;
+            // A pinned zoom is released by the frame that finds the zoom over: that frame is asked for, so the pins do not outlive the zoom.
+            if (pinsHeld) return true;
+            if (denied) return false;
             if (liveDeferredNow) {
                 if (liveDeferredFrames < GPU_RETRY_LIMIT) return true;
                 auditCount(audit, 'live:deferred:stopped');

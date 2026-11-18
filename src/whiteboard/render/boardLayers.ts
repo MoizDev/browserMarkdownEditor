@@ -870,7 +870,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         const changed = options.changedNodesSince?.(from, to) ?? (now && now.sceneRevision === to ? now.changedNodesSince?.(from) : null);
         if (!changed) return false;
         const omitted = now ? options.omitNodes?.(now) ?? null : null;
-        // A node the device's live draw laid in the last composite of this band is drawn live, so it is current wherever the board shows it.
+        // The live parts the next prepare plans are drawn live in this frame: coverage runs after prepare in the same frame (d14a4dfa),
+        // so the plan is this frame's own, and the draw-time set would be one composite late.
         const laid = canvas ? null : gpu?.plannedLiveNodeIds(band) ?? null;
         for (const id of changed) if (!omitted?.has(id) && !options.liveDraws?.(id, band, view, canvas) && !laid?.has(id)) return false;
         return true;

@@ -428,6 +428,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             if (freed < bytes) freed += imageRoute.evictTextures(bytes - freed, frameId);
             if (freed < bytes) freed += textRoute.evictTextures?.(bytes - freed, frameId) ?? 0;
             if (freed < bytes && lastView) freed += store.evict(bytes - freed, frameId, lastView);
+            if (freed > 0) composer.noteEvicted();
             return freed;
         },
         protectFrame(frameId: number, view: ViewState): void {

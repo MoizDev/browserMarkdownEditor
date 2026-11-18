@@ -315,7 +315,7 @@ export function createBoardRenderServices(options: {
         }
         return result;
     };
-    const inkPrecision = (context?: Pick<SceneResolveContext, 'deviceScale' | 'sensitive' | 'allowInkLod'>) => {
+    const inkPrecision = (context?: Partial<Pick<SceneResolveContext, 'deviceScale' | 'sensitive' | 'allowInkLod'>>) => {
         const raw = context?.deviceScale ?? options.deviceScale ?? 3;
         const effective = raw * (context?.sensitive ? 2.5 : 1);
         const scale = chooseTileScale(effective).scale;
@@ -752,7 +752,7 @@ export function createBoardRenderServices(options: {
     return {
         text, bounds, changeGeometry, retainRenderer, variantForBand, pinVisible, releasePins,
         /** The stroke band key the producers and pinVisible use, for a device scale and the flags the paint request carries. */
-        inkBandKey(context?: Pick<SceneResolveContext, 'deviceScale' | 'sensitive' | 'allowInkLod'>): string { return inkPrecision(context).key; },
+        inkBandKey(context?: Partial<Pick<SceneResolveContext, 'deviceScale' | 'sensitive' | 'allowInkLod'>>): string { return inkPrecision(context).key; },
         /** Actual source admission belongs to the App owner. This captures publication identity
          * for NEW work over the same canonical model/cache; existing sources are never retagged. */
         capturePaintBinding(token: RenderToken) {

@@ -1018,6 +1018,39 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         return true;
     };
 
+    /** Admits, before this frame's tile composes, the live parts of the visible changed and held nodes: their uploads then take the
+     * frame's allowance first. Admissions are cached per item, so buildDraws reads them back and counts nothing twice. */
+    const admitVisibleFirst = (view: ViewState, target: number, span: Span, budget: FrameBudget): void => {
+        if (pendingRegions.length) {
+            for (const band of BANDS) {
+                for (let y = span.y0; y < span.y1; y++) {
+                    for (let x = span.x0; x < span.x1; x++) {
+                        if (statusAt(band, target, x, y) !== 'dirty') continue;
+                        const regions = pendingRegionsIn(band, target, x, y);
+                        const position = regions.length ? clipOnSurface(view, target, x, y) : null;
+                        if (!position) continue;
+                        const cut = cutPieces(view, regions, position);
+                        if (cut.length) appendRegionLive(band, target, x, y, view, budget, cut);
+                    }
+                }
+            }
+            liveScratch.length = 0;
+        }
+        if (heldNodes.size) {
+            const cam = view.camera;
+            const viewWorld: Rect = { x: cam.x, y: cam.y, width: view.viewport.width / cam.z, height: view.viewport.height / cam.z };
+            for (const id of heldNodes.keys()) {
+                for (const rect of parts.boundsOfNodes(new Set([id]))) {
+                    for (const band of BANDS) {
+                        for (const part of parts.partsFor(band, rect, omitIds ?? undefined)) {
+                            if (part.nodeId !== id || isLivePart(part.item) || !overlapsRect(part.world, viewWorld)) continue;
+                            admitLive(part.item, part.blend, view, budget);
+                        }
+                    }
+                }
+            }
+        }
+    };
     /** The live parts of a position, in paint order, admitted for this frame into `liveScratch`. Video parts only when `wanted`; the
      * parts of a held node (its tiles lack it) when `held`. */
     const collectLive = (band: PaintBand, target: number, x: number, y: number, view: ViewState, budget: FrameBudget,
@@ -1362,6 +1395,9 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 }
                 // The free list's idle trim: released once the store has been idle, and re-armed on the layer's wake while it is not due.
                 store.trimIdle(performance.now());
+                // What is on screen now is laid first: the live parts of changed and held nodes take the frame's upload allowance before
+                // any tile compose, which is invisible while their live cover shows the node.
+                if (!paintLiveOnly && device) admitVisibleFirst(view, target, span, budget);
                 if (paintLiveOnly) {
                     // Drawn live at the view, so nothing is composed: any position in progress or finished is let go.
                     for (const position of building.values()) cancel(position);

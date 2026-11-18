@@ -38,6 +38,9 @@ export interface BoardPreview {
     presented(revision: number, token: import('../../platform/render/types').RenderToken, frame?: PaintSource): void;
     showTextPaint(node: Node, paint: TextPaint, faces: FaceTable, localToWorld: Affine): void;
     clear(): void;
+    /** Makes the overlay's layers now, at editing activation: their kits compile their pipelines at creation, so the first drag
+     * does not wait for them. Empty layers answer complete (nothing is requested until a hand-off), so this costs no frame. */
+    warm(): void;
     dispose(): void;
 }
 
@@ -381,7 +384,12 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
                 const overlayRequest = { sheetId: sheet, theme: view.theme, sensitiveNodes: new Set(ids) };
                 // A few nodes are built synchronously, so the hand-off follows the pointer-down with no worker round trip: the first
                 // frame's prepare finds the overlay built. A larger overlay keeps the async build (it yields between its items).
-                const source = ids.length <= SYNC_OVERLAY_NODES ? binding.prepareOverlayNow(doc, overlayRequest, ids, job.signal)
+                // Ink and media are not built synchronously: one stroke of thousands of points would hold the input task for frames.
+                const syncable = ids.length <= SYNC_OVERLAY_NODES && ids.every(id => {
+                    const kind = nodes.get(id)?.kind;
+                    return kind !== 'stroke' && kind !== 'picture' && kind !== 'clip';
+                });
+                const source = syncable ? binding.prepareOverlayNow(doc, overlayRequest, ids, job.signal)
                     : await binding.prepareOverlay(doc, overlayRequest, ids, job.signal);
                 check();
                 let textItem: PaintTextItem | null = null, textIndex = -1;
@@ -571,6 +579,7 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
             catch (error) { clear(); report(error); }
         },
         clear,
+        warm() { if (disposed) return; try { ensureLayers(); } catch (error) { report(error); } },
         dispose() { if (!disposed) { clearNow(); disposed = true; unbind(); } },
     };
 }

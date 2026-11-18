@@ -223,6 +223,8 @@ export interface PreparedPathCoverage {
     readonly modulate: boolean;
     /** 4 for a 'grid4' composite (its output is then 'paint' with straight colour); 1 otherwise. */
     readonly grid: CompositeGrid;
+    /** True when this admission took a reference on its device's composite scratch, and retire releases exactly that reference. */
+    readonly scratch: boolean;
 }
 
 const KEEP_FACE = { fail: 'keep', depthFail: 'keep', pass: 'keep' } as const;
@@ -362,6 +364,8 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
     // `shared` has refs 0 exactly when it is in `idle`.
     const idle = new Map<Float64Array, VertexSet>();
     let idleBytes = 0, frame = 0;
+    /** A composite scratch's growth was refused while an admission still held the scratch: the next frame's start reclaims it. */
+    let scratchGrowth = false;
     /** A chain's CPU copy and its lease go with the chain: when its buffer is gone (or its upload was dropped). */
     const releaseChain = (chain: Chain): void => {
         if (chain.released) return;
@@ -400,9 +404,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         const bytes = live.get(prepared);
         if (bytes === undefined) return;
         live.delete(prepared); gpuBytes -= bytes;
-        if (prepared.output.kind !== 'mask') {
-            releaseScratch(prepared.device, prepared.grid);
-        }
+        if (prepared.scratch) releaseScratch(prepared.device, prepared.grid);
         if (prepared.clip) prepared.device.destroy(prepared.clip);
         if (prepared.target) { prepared.device.destroy(prepared.target.target); prepared.device.destroy(prepared.target.texture); }
         for (const part of prepared.parts) releaseShared(part.set);
@@ -427,7 +429,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         if (shared.charge.lease !== shared.targetLease) shared.charge.gpu.release(shared.charge.lease);
     };
     /** Destroys a device's scratch of one grid and returns the bytes its target held. Callers ensure no admission is in flight. */
-    const destroyScratch = (owner: GfxDevice, grid: CompositeGrid, reason: 'release' | 'evict'): number => {
+    const destroyScratch = (owner: GfxDevice, grid: CompositeGrid, reason: 'release' | 'evict' | 'growth'): number => {
         const table = scratchTables[String(grid) as '1' | '4'];
         const shared = table.targets.get(owner);
         if (!shared) return 0;
@@ -512,8 +514,9 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         for (let rows = Math.floor(exact / 2); rows >= minRows; rows = Math.floor(rows / 2)) sizes.push(rows);
         // The pool counts the old scratch's lease until it is returned, so a growth that reserves first is refused for bytes the kit
         // itself holds. When no admission holds the old scratch (its draws read it at draw time, and none is pending), its lease goes
-        // back first. An admission still holding it keeps it: the growth reserves first, and its refusal is a short wait until those
-        // admissions retire.
+        // back first. An admission still holding it keeps it, and a refused growth then waits for the pool: retiring that admission only
+        // drops its reference, so the scratch is reclaimed at the next frame's start (beginFrame, once nothing holds it), which returns its
+        // lease and wakes the wait. Without that reclaim the wait had no source of capacity.
         let reclaimed = false;
         if (current && current.refs === 0) { table.targets.delete(owner); destroyScratchTarget(owner, current); reclaimed = true; }
         let lease: ByteLease | null = null;
@@ -524,7 +527,12 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
             if (lease) break;
             if (attempt + 1 < sizes.length) auditCount(audit, 'kit:scratch-height-fallback', 1, { bytes });
         }
-        if (!lease) { auditCount(audit, 'kit:scratch-refused', 1, { bytes }); return bytes; }
+        if (!lease) {
+            // The wait is for the smallest band the kit accepts (the last attempt); `asked` is the request's own rounded height.
+            auditCount(audit, 'kit:scratch-refused', 1, { bytes, asked: coverageTargetBytes(w, sizes[0], samples, grid) });
+            if (current && current.refs > 0) scratchGrowth = true;
+            return bytes;
+        }
         let target: CoverageTarget;
         try { target = owner.createCoverageTarget(w, h, samples, lease, grid === 4 ? { grid: 4 } : undefined); }
         catch (error) { host.allocator.gpu.release(lease); throw error; }
@@ -992,8 +1000,9 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         if (disposed || failed || unsupported) return unsupportedBecause(disposed ? 'disposed' : failed ? 'failed' : 'device-unsupported');
         warm();
         // A generation change under this kit (the device's context was lost and restored since the frame began): the kit rebinds in this
-        // frame, releasing the old device's state and binding the current one, instead of deferring the admission a frame. Anything the
-        // old generation held is stale by the draw's own check, so the release does not change what a later frame can draw.
+        // frame, releasing the old device's state and binding the current one, instead of deferring the admission a frame. The release
+        // also retires every live admission, including the earlier ones of this frame whose draws are still pending: those draws throw
+        // 'Stale path coverage' (renderCoverage's generation check), as they did on the mismatch before this change. Later frames are unaffected.
         if (device && (device.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration)) {
             auditCount(audit, 'path-coverage:rebound:generation');
             release(); warm();
@@ -1093,7 +1102,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
             viewport: Object.freeze({ width: viewport.width, height: viewport.height }),
             affine: Object.freeze([...affine]) as unknown as Affine,
             colour: Object.freeze([...colour]) as unknown as readonly [number, number, number, number], gpuBytes: targetBytes,
-            supersample: grid === 1 && request.supersample === true, modulate });
+            supersample: grid === 1 && request.supersample === true, modulate, scratch: composite });
         live.set(prepared, targetBytes); gpuBytes += targetBytes;
         if (composite) {
             if (grid === 4) auditCount(audit, 'kit:supersample-4');
@@ -1113,6 +1122,12 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
             if (next === frame) { frame = next; return; }
             auditCount(audit, 'kit:frame');
             frame = next;
+            if (scratchGrowth && device) {
+                // The frame's start: nothing of the last frame is pending, so a scratch nothing holds goes now. Its lease returns to the pool,
+                // which wakes a refused growth's wait; a scratch still held keeps the flag for the next frame.
+                for (const grid of [1, 4] as const) { const held = scratchOf(device, grid); if (held && held.refs === 0) destroyScratch(device, grid, 'growth'); }
+                scratchGrowth = [1, 4].some(grid => (scratchOf(device!, grid as CompositeGrid)?.refs ?? 0) > 0);
+            }
             // Pipelines compile from the frame's start, not from its first admission (an async creation: a device bound at a release or a
             // context loss waits for them, so the start is the earliest that wait can end).
             if (!disposed && !failed && !unsupported) warm();

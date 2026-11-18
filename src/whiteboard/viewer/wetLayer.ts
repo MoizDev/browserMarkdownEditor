@@ -29,6 +29,8 @@ const CHUNK = 256, FINAL_SPANS = 16, PATH_BLOCK = 256 * 1024;
 const TEMP_BYTES = CHUNK * (8 * 8 + 1 + 2 * 8) + Math.ceil(CHUNK_PRIMITIVES * (6 + 3 + 4) * 8 * 3 / 2);
 /** The tip's upload grant past a frame's yield: one kit upload piece (64 KiB), so a chunk's append always fits. */
 const TIP_UPLOAD_BYTES = 64 * 1024;
+/** The most a deferred run waits for on the upload meter: one kit upload piece (the path kit writes 64 KiB pieces). */
+const WAIT_UPLOAD_BYTES = 64 * 1024;
 type Bounds = { x: number; y: number; w: number; h: number };
 type Prepared = { readonly snapshot: WetInkSnapshot; path: Path2D | null; readonly origin: readonly [number, number]; readonly leases: ByteLease[];
     readonly scale: number; readonly bounds: Bounds | null; readonly coverageChunks: readonly InkCoverage[]; readonly serial: number };
@@ -461,7 +463,9 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                     }
                     // A replaced shown is disposed only when its successor is admitted: a deferred or denied admission keeps the last tip.
                     case 'empty': slot.viewBound = true; setShown(slot, null, 'empty'); break;
-                    case 'deferred': slot.state = 'pending'; slot.waitBytes = Math.max(1, meterUsed); break;
+                    // The wait is one upload piece at most: the meter refills per frame, so a run waiting for its whole last attempt's bytes
+                    // could wait for more than any frame offers (a stale tip). One piece always fits a frame that offers any allowance.
+                    case 'deferred': slot.state = 'pending'; slot.waitBytes = Math.min(WAIT_UPLOAD_BYTES, Math.max(1, meterUsed)); break;
                     case 'denied': slot.state = 'denied'; denied = true; awaitSizedCapacity(host, invalidate, { pool: admission.pool, bytes: admission.bytes }); break;
                     case 'unsupported': {
                         // The route refused the stroke: it is drawn through the CPU path, and the refusal is reported once.
@@ -643,6 +647,9 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         return parts.join('|');
     };
     const drawnKey: Partial<Record<WetBand, string>> = {};
+    // Whether the band's last draw drew nothing (no shown run). An empty band stays unchanged whatever the view does: its fingerprint folds
+    // the camera in, so without this a camera move answered changed for a band with no ink (measured: every zoom frame).
+    const drawnEmpty: Partial<Record<WetBand, boolean>> = {};
     let frameAnswer = false;
     const prepareShared = (view: ViewState, budget: FrameBudget): boolean => {
         if (disposed || !owner || !options.current()) return false;
@@ -694,9 +701,18 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         return false;
     };
     const prepareBand = (band: WetBand) => (view: ViewState, budget: FrameBudget): boolean | undefined => {
-        if (!prepareShared(view, budget)) return undefined;
+        const shared = prepareShared(view, budget);
+        if (!bandHasInk(band) && drawnEmpty[band] === true) return false;
+        const same = drawnKey[band] !== undefined && drawnKey[band] === fingerprintOf(view);
+        // The answer's branch, as audit counters: a redundant present names the gate that made it changed.
+        if (renderAuditEnabled()) auditCount('wet', `answer:${band}:${same ? 'same' : 'fingerprint'}:${!shared ? 'gate' : 'shared'}:${drawnKey[band] === undefined ? 'undrawn' : 'drawn'}`);
+        // The picture is the one this band last drew whatever the shared state: a stroke whose tip is still in progress (its work has not
+        // published) draws nothing new, so it answers unchanged. Measured: on a large drawing every other frame of a stroke answered changed
+        // over an identical picture, because the tip yielded and the gate read that as a change.
+        if (same) return false;
+        if (!shared) return undefined;
         if (drawnKey[band] === undefined) return bandHasInk(band) ? undefined : false;
-        return drawnKey[band] === fingerprintOf(view) ? false : undefined;
+        return undefined;
     };
     const make = (band: WetBand): PlatformLayerDefinition => ({
         id: `board-wet-${band}`, group: 'document', liveInput: true,
@@ -719,10 +735,10 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
             const layer: Layer & { prepareFirst(): boolean } = {
                 prepareFirst: () => !!owner?.device() && runsPending(),
                 prepare: prepareBand(band),
-                drawGpu(pass, view) { drawRouted(pass, view, band); drawnKey[band] = fingerprintOf(view); },
+                drawGpu(pass, view) { drawRouted(pass, view, band); drawnKey[band] = fingerprintOf(view); drawnEmpty[band] = !bandHasInk(band); },
                 draw2d(ctx, view) {
                     if (disposed || !options.current()) return;
-                    drawnKey[band] = fingerprintOf(view);
+                    drawnKey[band] = fingerprintOf(view); drawnEmpty[band] = !bandHasInk(band);
                     // The CPU reference path: counted, so a device session that draws here is visible in the audit.
                     if (renderAuditEnabled()) auditCount('wet', 'draw:canvas2d');
                     const boardDrawn = options.boardDrawnInk();

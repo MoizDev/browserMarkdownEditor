@@ -24,6 +24,7 @@ import { FULL_REGION_CHANGES, type RegionChanges } from '../scene/boundsVersions
 type OffscreenEncoder = { encodeOffscreen?(passes: OffscreenPasses, view: ViewState, band: PaintBand): void };
 /** The adapter's GPU eviction (h2); typeof-guarded until impl/gpu's `Layer.evictGpu` lands on this branch. */
 type GpuEvicting = { evictGpu?(bytes: number, frameId: number): number };
+type GpuProtecting = { protectFrame?(frameId: number, view: ViewState): void };
 export type NotebookHost = Extract<HostBlock, { kind: 'notebook' }>;
 export interface NotebookPaperSnapshot {
     /** Changes whenever paper properties or page geometry change. */
@@ -318,6 +319,10 @@ class NotebookPaperLayer implements Layer {
         const adapter = this.gpu as GpuEvicting;
         if (this.disposed || typeof adapter.evictGpu !== 'function') return 0;
         return adapter.evictGpu(Math.max(bytes, this.gpu.memory().gpuBytes), frameId);
+    }
+    protectFrame(frameId: number, view: ViewState): void {
+        const adapter = this.gpu as GpuProtecting;
+        if (!this.disposed && typeof adapter.protectFrame === 'function') adapter.protectFrame(frameId, view);
     }
     encodeOffscreen(passes: OffscreenPasses, view: ViewState): void {
         const encoder = this.gpu as OffscreenEncoder;

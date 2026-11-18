@@ -643,14 +643,16 @@ export class FrameScheduler {
         return true;
     }
 
-    /** Names what asked for a presented frame, first match wins: input, camera motion, a layer deadline, an invalidation
-     * (the first reason recorded), a layer still needing a frame. `none` is a fault: nothing requested that frame.
+    /** Names what asked for a presented frame, first match wins: input, a layer deadline, an invalidation (the first reason
+     * recorded), camera motion, a layer still needing a frame. `none` is a fault: nothing requested that frame.
      * Measured on an idle board (notebook and annotated PDF 57 presents in 114 ticks), so the cause is named, not guessed. */
     private presentCause(entry: PaneEntry, reasons: readonly string[]): string {
+        // The specific reasons come first: a pen stroke or a pan is an interaction on every frame, and naming it 'camera' hid what the
+        // frame drew (measured: 115 wet-ink frames were named camera). Camera is the cause only when nothing specific asked for the frame.
         if (reasons.includes('input')) return 'input';
-        if (entry.motion !== null || entry.pane.isInteracting()) return 'camera';
         if (reasons.includes('deadline')) return 'wake';
         if (reasons.length) return `invalidate:${reasons[0]}`;
+        if (entry.motion !== null || entry.pane.isInteracting()) return 'camera';
         const layer = entry.layers.find(candidate => candidate.needsFrame());
         if (layer) return `needsFrame:${entry.pane.layerId?.(layer) ?? entry.layers.indexOf(layer)}`;
         return 'none';
@@ -693,6 +695,8 @@ export class FrameScheduler {
         this.demoted.clear();
         const frameId = ++this.frameId;
         const started = performance.now();
+        // gh14 audit: the pre-stage split (input and scene snapshot), read only for over-interval frames.
+        let inputMs = 0, snapshotMs = 0;
         const encodings: Array<{ work: FrameWork; encoding: ScheduledEncoding; done: boolean }> = [];
         const batches: DamageBatch[] = [];
         let prepareOvershootMs = 0;
@@ -779,7 +783,9 @@ export class FrameScheduler {
                 });
             }
             // All geometry precedes all input; all cameras advance/freeze before any scene snapshot.
+            const inputStart = performance.now();
             for (const { entry } of ready) this.call(entry, () => entry.pane.consumeInput(timestamp));
+            inputMs = performance.now() - inputStart;
             for (const { entry } of ready) {
                 this.call(entry, () => {
                     this.advanceMotion(entry, timestamp);
@@ -804,7 +810,9 @@ export class FrameScheduler {
             for (const { entry, reasons, batch, cause, geometry, token, view } of frozen) {
                 this.call(entry, () => {
                     // 3: freeze authoritative scene/live input before retiring any previously wet revision.
+                    const snapshotStart = performance.now();
                     entry.pane.snapshotScene(view);
+                    snapshotMs += performance.now() - snapshotStart;
                     const layers = Object.freeze(entry.layers.map(layer => Object.freeze({
                         layer, sceneRevision: entry.pane.sceneRevision(layer), critical: entry.pane.isCritical(layer, view),
                     })));
@@ -1016,6 +1024,8 @@ export class FrameScheduler {
                     auditCount('scheduler', 'frame-over-interval');
                     const us = (from: number, to: number) => Math.round((to - from) * 1000);
                     auditCount('scheduler', 'over-pre-us', us(started, foregroundStart));
+                    auditCount('scheduler', 'over-pre-input-us', Math.round(inputMs * 1000));
+                    auditCount('scheduler', 'over-pre-snapshot-us', Math.round(snapshotMs * 1000));
                     auditCount('scheduler', 'over-foreground-us', us(foregroundStart, backgroundStart));
                     auditCount('scheduler', 'over-background-us', us(backgroundStart, presentStart));
                     auditCount('scheduler', 'over-encode-us', us(presentStart, submitStart));

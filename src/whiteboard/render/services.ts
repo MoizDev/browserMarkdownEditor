@@ -322,13 +322,27 @@ export function createBoardRenderServices(options: {
         const lod = !!context?.allowInkLod && context.deviceScale !== undefined && !context.sensitive;
         return { scale, lod, key: `${scale}:${lod ? 'lod' : 'fine'}` };
     };
+    // Wanted bands building in the background during a zoom: one build per node and band at a time.
+    const warming = new Set<string>();
+    const warmBand = (borrowed: Readonly<Node>, doc: BoardDoc, signal: AbortSignal,
+        context: Pick<SceneResolveContext, 'deviceScale' | 'sensitive' | 'allowInkLod' | 'previousInkBand'>, key: string): void => {
+        if (warming.has(key)) return;
+        warming.add(key);
+        prepare(borrowed, doc, signal, { ...context, previousInkBand: undefined }).catch(() => undefined).finally(() => warming.delete(key));
+    };
     const prepare = async (borrowed: Readonly<Node>, doc: BoardDoc, signal: AbortSignal,
-        context?: Pick<SceneResolveContext, 'deviceScale' | 'sensitive' | 'allowInkLod'>): Promise<Prepared> => {
+        context?: Pick<SceneResolveContext, 'deviceScale' | 'sensitive' | 'allowInkLod' | 'previousInkBand'>): Promise<Prepared> => {
         check(signal);
         const node = createNode(borrowed), before = signature(node, doc);
         const precision = node.kind === 'stroke' ? inkPrecision(context) : undefined;
         const old = variantFor(node.id, before, value => value.inkPrecision === precision?.key);
         if (old) { cached.delete(old.key); cached.set(old.key, old); auditCount(AUDIT, 'geometry:hit'); return old; }
+        // A band crossing during a live zoom: the stroke draws its previous band's geometry (a band miss) while the wanted band builds
+        // in the background, so the zoom frame does not wait for the build. Only the async producer takes this (the live paint path).
+        if (precision && context?.previousInkBand !== undefined) {
+            const held = variantForBand(node.id, before, precision.key, context.previousInkBand);
+            if (held) { warmBand(borrowed, doc, signal, context, `${node.id}:${precision.key}`); return held; }
+        }
         auditCount(AUDIT, 'geometry:build');
         const key = `${options.token.session}:${node.id}:geometry:${++serial}`;
         let result: Omit<Prepared, 'signature'>;

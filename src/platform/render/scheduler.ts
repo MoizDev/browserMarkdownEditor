@@ -210,10 +210,6 @@ const initialIntervalMs = 16.67;
 const frameGapMs = 250;
 /** Share of the frame target preparation always gets, however long the last presentation took. */
 const PREPARE_FLOOR_FRACTION = 0.25;
-/** Share of the frame interval a pane with nothing presented may prepare with (see `prepareUrgent`). The rest is left for
- * input and the other panes. The 4 ms frame target is for a board that already shows content; a board showing
- * "Loading drawing…" has nothing on screen to protect. */
-const URGENT_PREPARE_INTERVAL_SHARE = 0.8;
 const progressTileBytes = (RENDER_CONSTANTS.tileInteriorPixels + 2 * RENDER_CONSTANTS.tileGutterTexels) ** 2 * RENDER_CONSTANTS.decodedRgbaBytesPerPixel;
 /** The progress grant admits one real tile per frame, and a layer's gutter may be wider than the platform's one-texel
  * minimum: the board's tiles are 516² (2-texel gutters), 8,240 bytes over the 514² tile, so on the GPU backend every
@@ -245,6 +241,9 @@ interface PaneEntry {
     renderable: boolean;
     dormantNotified: boolean;
     optionalBytes: number;
+    /** Measured cost of this pane's encode, submit and overlays per frame (EWMA, ms). The frame's preparation budget is the
+     * display interval less these, so foreground work never takes the time the pane needs to present. */
+    presentMs: number;
     motion: Motion | null;
     binding: FrameToken | null;
     damage: DamageAccumulator;
@@ -347,7 +346,6 @@ export class FrameScheduler {
     private criticalCursor = 0;
     private optionalCursor = 0;
     private encodeCursor = 0;
-    private presentationMs = 0;
     private maintenanceMs = 0;
     private meter: UploadMeter | null = null;
     private declare measuredPane: string | null;
@@ -393,7 +391,7 @@ export class FrameScheduler {
         if (this.panes.has(pane.paneId)) throw new Error('A visible pane is already registered');
         const entry: PaneEntry = {
             pane, layers: Object.freeze([...pane.layers]), reasons: new Set(['show']), wakes: new Map(), focused: pane.focused,
-            inputPriority: false, renderable: false, dormantNotified: false, optionalBytes: 0, motion: null, binding: null,
+            inputPriority: false, renderable: false, dormantNotified: false, optionalBytes: 0, presentMs: 0, motion: null, binding: null,
             damage: new DamageAccumulator(), fullDamage: true, presented: null,
             lastFrame: -1, revisionValues: [], revisionKey: '[]',
         };
@@ -824,21 +822,18 @@ export class FrameScheduler {
                 });
             }
             this.deliverAcknowledgements(frameId);
-            // 4: reserve 30% input/DOM + 35% encode/submit; actual mandatory overruns cut optional first.
+            // 4: the frame's preparation budget, from the interval and the visible panes' measured presentation cost.
             const elapsedInput = performance.now() - started;
-            // Prior encode/submit/overlay cost is mandatory; overrunning it cannot buy optional work.
-            const presentationReserve = Math.max(targetMs * 0.35 + Math.max(0, targetMs * 0.30 - elapsedInput), this.presentationMs);
-            // Prepare always keeps a floor. Presentation of an uncached board is what prepared tiles make cheap, so a
-            // slice derived from the last presentation alone fell to zero and stayed there: measured on ~3,600 strokes,
-            // presentation took the whole 4 ms target, prepare never ran and the board showed "Updating..." for good.
-            // A pane building its first picture has nothing presented to encode, so that share is its preparation's: a
-            // dense first picture was paced at about 1 ms of preparation per frame and took seconds to appear.
-            const urgent = work.some(item => this.call(item.entry, () => item.entry.layers.some(layer => layer.prepareUrgent?.() === true)) === true);
-            const prepareMs = urgent ? Math.max(targetMs * PREPARE_FLOOR_FRACTION, this.intervalMs * URGENT_PREPARE_INTERVAL_SHARE - elapsedInput - this.maintenanceMs)
-                : Math.max(targetMs * PREPARE_FLOOR_FRACTION, Math.min(targetMs * 0.35,
-                    targetMs - elapsedInput - presentationReserve - this.maintenanceMs));
-            const prepareDeadline = performance.now() + prepareMs;
-            meter.deadline = performance.now() + meter.sliceMs;
+            // The frame's preparation budget is the display interval less what the visible panes cost to encode, submit and present
+            // (their measured EWMA) and less the time already spent this frame. Foreground work decides whether this frame is
+            // complete, so it gets that whole budget; the upload window caps only background work (below). A pane that has not
+            // presented yet has no measured cost, so its first frame has the whole interval. Prepare keeps its floor: presentation
+            // of an uncached board must not take every frame (measured on ~3,600 strokes, the board showed "Updating..." for good).
+            let presentReserve = 0;
+            for (const item of work) presentReserve += item.entry.presentMs;
+            const foregroundMs = Math.max(targetMs * PREPARE_FLOOR_FRACTION, this.intervalMs - presentReserve - elapsedInput - this.maintenanceMs);
+            const prepareDeadline = performance.now() + foregroundMs;
+            meter.deadline = prepareDeadline;
             const criticalOrder = this.rotate(work, this.criticalCursor++);
             const criticalPending = () => work.some(item => this.call(item.entry,
                 () => item.frame.layers.some(meta => item.entry.pane.isCritical(meta.layer, item.frame.view))) === true);
@@ -873,13 +868,17 @@ export class FrameScheduler {
                     }
                 }
             }
+            // Background runs only in what foreground and the presentation reserve left of this frame's interval, and never longer
+            // than the upload window (min(1 ms, 0.12 interval)): the window keeps background work from causing jank.
+            const backgroundEnd = performance.now() + Math.min(meter.sliceMs, Math.max(0, started + this.intervalMs - presentReserve - performance.now()));
+            meter.deadline = backgroundEnd;
             const optionalOrder = this.focusFirst(this.rotate(work, this.optionalCursor++));
-            const optionalMs = Math.max(0, prepareDeadline - performance.now()) / Math.max(1, work.length);
+            const optionalMs = Math.max(0, backgroundEnd - performance.now()) / Math.max(1, work.length);
             for (const item of optionalOrder) {
                 if (!item.platformPrepared) continue;
                 item.entry.optionalBytes = Math.min(Math.max(meter.allowance, progressUploadBytes),
                     item.entry.optionalBytes + meter.allowance / Math.max(1, work.length));
-                const deadline = Math.min(prepareDeadline, performance.now() + optionalMs);
+                const deadline = Math.min(backgroundEnd, performance.now() + optionalMs);
                 for (let i = 0; i < item.frame.layers.length; i++) {
                     const meta = item.frame.layers[i];
                     if (meta.layer.twoPhase === true) {
@@ -905,8 +904,10 @@ export class FrameScheduler {
                 }
             }
             // 5: focus/input first, then rotate neighbours; nobody's mandatory draw is budget-skipped.
-            const presentationStarted = performance.now();
+            // Each pane's encode, submit and overlay time this frame; it feeds the pane's EWMA, the next frame's presentation reserve.
+            const presentCost = new Map<PaneEntry, number>();
             for (const item of this.focusFirst(this.rotate(work, this.encodeCursor++))) {
+                const encodeStarted = performance.now();
                 this.call(item.entry, () => {
                     if (!item.platformPrepared || !this.valid(item.entry, item.frame.token)) return;
                     // A frame whose layers all report unchanged shows the picture it would draw: the presented-frame observers run for
@@ -932,9 +933,11 @@ export class FrameScheduler {
                         this.mark(item.entry, 'presentation-deferred', true);
                     }
                 });
+                presentCost.set(item.entry, (presentCost.get(item.entry) ?? 0) + performance.now() - encodeStarted);
             }
             // 6: publish overlays only for the exact snapshot successfully submitted by its compositor.
             for (const item of encodings) {
+                const submitStarted = performance.now();
                 this.call(item.work.entry, () => {
                     if (!this.valid(item.work.entry, item.work.frame.token)) return;
                     const submission = item.encoding.submit();
@@ -971,9 +974,12 @@ export class FrameScheduler {
                             uploadedBytes: uploads?.bytes ?? 0, uploadCalls: uploads?.calls ?? 0, uploadMs: uploads?.ms ?? 0 });
                     }
                 });
+                presentCost.set(item.work.entry, (presentCost.get(item.work.entry) ?? 0) + performance.now() - submitStarted);
                 if (!item.done) { this.discard(item.work.entry, item.encoding); item.done = true; }
             }
-            if (work.length) this.presentationMs = performance.now() - presentationStarted;
+            // The EWMA of each visible pane's presentation cost (encode, submit, overlays). A pane with no presentation this frame
+            // decays toward zero, so a pane that stopped drawing stops reserving its share.
+            for (const item of work) item.entry.presentMs = 0.8 * item.entry.presentMs + 0.2 * (presentCost.get(item.entry) ?? 0);
             // 7: bounded retirement/compile/readback polls. They never draw a hidden pane.
             const maintenanceStart = performance.now();
             this.runPolls(started + targetMs);

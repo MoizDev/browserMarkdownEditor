@@ -245,6 +245,7 @@ type OffscreenEncoder = { encodeOffscreen?(passes: OffscreenPasses, view: ViewSt
  * until impl/gpu merges: an absent method frees nothing. */
 type GpuEvicting = { evictGpu?(bytes: number, frameId: number): number };
 type LayerEvicting = { evictGpu?(bytes: number, frameId: number): number };
+type GpuProtecting = { protectFrame?(frameId: number, view: ViewState): void };
 /** The adapter's CPU reclaim (h2, `evictCpu` on impl/lane/gpu-h2): typeof-guarded until it merges, so an absent method frees nothing. */
 type CpuEvicting = { evictCpu?(bytes: number): number };
 /** The grain of a device's direct-frame charge (see chargeDirect): densePlan's DIRECT_CHUNK, the dense direct phase's own grain. */
@@ -321,6 +322,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     let presentedLive: ReadonlySet<string> | undefined, presentedDrawVersion = -1;
     // The layer's answer for the frame it prepared: true only when every input to the draw matches the presented frame.
     let prepareUnchanged = false;
+    // The source whose reference paths the device route built last: a camera-only frame of it builds nothing.
+    let directBuiltFor: PaintSource | null = null;
     // Two-phase prepare (Layer.twoPhase): the foreground call of frame `foregroundFrame` leaves the frame it prepared in `pendingFrame`
     // for the background call of the same frame, which completes it and sets the answer.
     let foregroundFrame = -1;
@@ -586,7 +589,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 readyFrame: () => current().readyFrame(), borrowPrepared: () => current().borrowPrepared(),
                 retainPrepared: () => current().retainPrepared(),
                 draw2d: (ctx, view, band, omit) => current().draw2d(ctx, view, band, omit),
-                release: reason => { direct!.release(reason); dense?.release(reason); },
+                release: reason => { directBuiltFor = null; direct!.release(reason); dense?.release(reason); },
                 needsFrame: () => current().needsFrame(), memory: () => current().memory(),
                 dispose: () => { direct!.dispose(); dense?.dispose(); },
             };
@@ -711,10 +714,19 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     return;
                 }
                 known.add(frame);
-                // Not gated on the direct CPU charge: a refused charge waits on its own sized wake (chargeDirect), and the GPU composer
-                // still prepares at the new camera. Measured: a full CPU pool refused the charge on every zoom frame after the first
-                // ~6, so the composer never prepared again (85 of 94 device prepares). The build is charged after it, as held bytes.
-                adapter.prepare(view, budget);
+                // The reference's CPU paths are the composer's input, so they are built once per source. While a refused charge's
+                // back-off runs, a source that has no paths yet waits for the wake (one attempt per wake); a camera-only frame reuses
+                // the paths built for its source, and the GPU composer prepares at the new camera either way (a refused charge never
+                // stopped it: 85 of 94 device prepares were refused before this, measured). The build is charged after it, as held bytes.
+                // While a refused charge's back-off runs, a new source is not built: the paths built for the previous source stay bound
+                // and the composer still prepares, at the new camera, from them, so the previous band keeps drawing under the live
+                // camera until the new one is built (the wake). Without this the composer did not prepare, and the draw-list guard
+                // drew nothing for the frame.
+                if (directBuiltFor !== frame && !memoryGate.closed()) {
+                    adapter.prepare(view, budget);
+                    directBuiltFor = frame;
+                }
+                if (directBuiltFor !== frame) prepareUnchanged = false;
                 const composerChanged = prepareGpu(view, budget, frame);
                 if (budget.phase === 'foreground') { pendingFrame = frame; foregroundFrame = budget.frameId; return; }
                 // A refused charge leaves the build unheld: the frame then answers changed, never unchanged.
@@ -939,6 +951,11 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     if (hosts.get(band) !== allocatorHost) return 0;
                     const adapter = gpu as GpuEvicting | null;
                     return typeof adapter?.evictGpu === 'function' ? adapter.evictGpu(bytes, frameId) : 0;
+                },
+                protectFrame(frameId, view) {
+                    if (hosts.get(band) !== allocatorHost) return;
+                    const adapter = gpu as GpuProtecting | null;
+                    if (typeof adapter?.protectFrame === 'function') adapter.protectFrame(frameId, view);
                 },
                 encodeOffscreen(passes, view) {
                     const encoder = gpu as OffscreenEncoder | null;

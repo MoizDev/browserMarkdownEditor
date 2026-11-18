@@ -144,9 +144,6 @@ export class GpuCompositor implements PaneCompositor {
     #retryPending = false;
     #report: CompositorCoverage | null = null;
     readonly #encodings = new Set<FrameEncoder>();
-    #canvasGate: ((layersComplete: boolean) => boolean) | null = null;
-    /** The metrics are a pending raise: frames draw into the device's offscreen target at this size while the canvas keeps its old one. */
-    #pendingDraw = false;
     readonly #quadData = new Float32Array(16);
     /** Batched quads: one instance record (dst x0,y0,x1,y1 and src x,y,w,h) per quad, grown to the largest batch so far, and the batch's uniform block. */
     #batchData = new Float32Array(BATCH_FLOOR_FLOATS);
@@ -244,14 +241,9 @@ export class GpuCompositor implements PaneCompositor {
             inverted: appearance.inverted });
     }
 
-    setCanvasGate(gate: ((layersComplete: boolean) => boolean) | null): void {
-        this.#canvasGate = gate;
-    }
-
-    setMetrics(metrics: ReadySurfaceMetrics, offscreen = false): void {
+    setMetrics(metrics: ReadySurfaceMetrics): void {
         this.#check();
-        // A pending size is drawn into the device's offscreen target, which the pane opened at this size; the canvas keeps its old one.
-        if (metrics.limits !== this.target.limits || (!offscreen && (metrics.backingWidth !== this.surface.width || metrics.backingHeight !== this.surface.height))) {
+        if (metrics.limits !== this.target.limits || metrics.backingWidth !== this.surface.width || metrics.backingHeight !== this.surface.height) {
             throw new ArenaError('invalid-input');
         }
         if (!this.#metrics || this.#metrics.backingWidth !== metrics.backingWidth || this.#metrics.backingHeight !== metrics.backingHeight) {
@@ -259,7 +251,6 @@ export class GpuCompositor implements PaneCompositor {
             this.#report = null;
         }
         this.#metrics = metrics;
-        this.#pendingDraw = offscreen;
         this.#available = true;
     }
 
@@ -367,9 +358,12 @@ export class GpuCompositor implements PaneCompositor {
             if (refuse) {
                 auditCount('compositor', 'refuse:coverage');
                 const refused = this.#encodeRefused(snapshot, frame);
-                // A refused build draws no surface pass: the canvas keeps its last complete picture. It is not a present (the audit
-                // counts it here, with the critical layers that refused it in their own counters).
-                if (timed) { auditDrawnTake(); auditCount('compositor', 'refused-build'); }
+                if (timed) {
+                    const tally = auditDrawnTake();
+                    auditPresent({ pane: this.#options.paneId ?? null, frame: frame.frameId, rawTick: frame.timestamp, backend: this.backend,
+                        layersComplete: false, canvas: null, standIns: tally.standIns, standInsRaster: tally.standInsRaster, holes: tally.holes,
+                        zooming, refusal: 'coverage' });
+                }
                 return refused;
             }
             encoder = this.#options.owner.resources.beginFrame();
@@ -460,10 +454,7 @@ export class GpuCompositor implements PaneCompositor {
                             complete: true, sharp: snapshot.metrics!.qualityScale === 1 && coverage.every(item => item.sharp && !item.staleVersion),
                             staleVersion: coverage.some(item => item.staleVersion), layersComplete,
                             qualityScale: snapshot.metrics!.qualityScale });
-                        // The gate may commit a pending size (canvas resize + blit, same task): only a frame that then reaches the canvas is a present.
-                        const onCanvas = this.#canvasGate ? this.#canvasGate(layersComplete) : true;
-                        if (!onCanvas) auditCount('compositor', 'offscreen-build');
-                        else if (tally) auditPresent({ pane: this.#options.paneId ?? null, frame: frame.frameId, rawTick: frame.timestamp,
+                        if (tally) auditPresent({ pane: this.#options.paneId ?? null, frame: frame.frameId, rawTick: frame.timestamp,
                             backend: this.backend, layersComplete, canvas: this.surface,
                             standIns: tally.standIns, standInsRaster: tally.standInsRaster, holes: tally.holes, zooming, refusal: null });
                         return { drawn: frame.layers.filter(meta => snapshot.layers.some(binding => binding.layer === meta.layer))
@@ -824,9 +815,7 @@ export class GpuCompositor implements PaneCompositor {
     #drawable(snapshot: Snapshot, frame: ScheduledFrame): boolean {
         return !this.#disposed && this.#snapshot === snapshot && !!snapshot.metrics &&
             frame.token.deviceGeneration === this.target.generation &&
-            // A pending raise draws at its new size into the offscreen target (the pane opened it at that size); the canvas keeps its
-            // old size until the complete frame commits. Requiring the canvas to match here refused every pending frame, so a raise never completed.
-            (this.#pendingDraw || this.surface.width === snapshot.metrics.backingWidth && this.surface.height === snapshot.metrics.backingHeight) &&
+            this.surface.width === snapshot.metrics.backingWidth && this.surface.height === snapshot.metrics.backingHeight &&
             snapshot.layers.every(binding => frame.layers.some(meta => meta.layer === binding.layer));
     }
     /** Compiles the single and the batched quad together: a batch is useless without its single fallback, and one promise

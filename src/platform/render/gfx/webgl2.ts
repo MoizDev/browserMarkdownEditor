@@ -12,6 +12,7 @@ import type { PoolStorage } from './webgl2Pool';
 import { COMPOSITION_SHADER, GRID16_RESOLVE_SHADER, GRID_RESOLVE_SHADER, MODULATE_COMPOSITE_SHADER } from './webgl2Shaders';
 import { Webgl2IndexMirror } from './webgl2Index';
 import { Webgl2Timer } from './webgl2Timer';
+import { auditCount } from '../renderAudit';
 import { Webgl2IsolationPool } from './webgl2Isolation';
 import type { GpuIsolationAdmission, IsolationReservation } from './webgl2Isolation.types';
 import { ArenaError, ResourceArena } from '../resourceArena';
@@ -828,9 +829,9 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     createCoverageAtlas(slotsAcross: number, slotsDown: number, lease: ByteLease): CoverageTarget {
         this.#usable();
         if (!Number.isSafeInteger(slotsAcross) || !Number.isSafeInteger(slotsDown) || slotsAcross <= 0 || slotsDown <= 0) throw new ArenaError('invalid-input');
-        // No grid-16 program (not yet compiled, or refused): the caller takes its grid-4 route. The lease is the caller's to release
-        // on a throw, as for createCoverageTarget.
-        if (!this.#grid16Composition) throw new ArenaError('invalid-resource');
+        // No grid-16 program (not yet compiled, or refused): the refusal is counted here, and the caller takes its grid-4 route. The
+        // lease is the caller's to release on a throw, as for createCoverageTarget.
+        if (!this.#grid16Composition) { auditCount('gpu', 'fallback:grid16-unavailable'); throw new ArenaError('invalid-resource'); }
         const width = slotsAcross * COVERAGE_ATLAS_TILE, height = slotsDown * COVERAGE_ATLAS_TILE;
         if (lease.bytes < coverageTargetBytes(width, height, 1, 16)) throw new ArenaError('out-of-budget');
         const texture = this.#createTexture(width * 16, height * 16, 'r8', ['render', 'sample'], lease);
@@ -956,12 +957,13 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     }
 
     /** Opens the new-size target for a raise. The displayed canvas is not touched: its old picture stays on screen until
-     * commitSurface presents this frame. Opening the same size again keeps the open target. False when the size is zero or
-     * the browser refuses the target; the caller then keeps the displayed picture. */
+     * commitSurface presents this frame. Opening the same size again keeps the open target. A zero size supersedes an open
+     * target (it is dropped). False when the size is zero or the browser refuses the target; the caller then keeps the
+     * displayed picture. */
     openOffscreen(width: number, height: number): boolean {
         const gl = this.#usable();
         this.#checkSurfaceSize(width, height);
-        if (width === 0 || height === 0) return false;
+        if (width === 0 || height === 0) { this.#dropOffscreen(); return false; }
         const open = this.#offscreen;
         if (open && open.width === width && open.height === height) return true;
         this.#dropOffscreen();
@@ -1005,16 +1007,28 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         if (this.#disposed) throw new ArenaError('aborted');
         const canvas = this.#canvas!;
         this.#forgetState();
+        // The source is checked before the canvas is touched: resizing the canvas clears the displayed picture, so a target the
+        // blit cannot read must not reach that point. The displayed picture stays, and the result is incomplete.
+        gl.bindFramebuffer(gl.READ_FRAMEBUFFER, offscreen.framebuffer);
+        const readable = gl.checkFramebufferStatus(gl.READ_FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE && gl.getError() === gl.NO_ERROR;
+        if (!readable) {
+            auditCount('gpu', 'commit-unreadable');
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            this.#dropOffscreen();
+            this.#reset();
+            return { width: gl.drawingBufferWidth, height: gl.drawingBufferHeight, complete: false, generation: this.generation };
+        }
         if (canvas.width !== offscreen.width) canvas.width = offscreen.width;
         if (canvas.height !== offscreen.height) canvas.height = offscreen.height;
-        gl.bindFramebuffer(gl.READ_FRAMEBUFFER, offscreen.framebuffer);
         gl.readBuffer(gl.COLOR_ATTACHMENT0);
         gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
         gl.drawBuffers([gl.BACK]);
         gl.disable(gl.SCISSOR_TEST);
         gl.blitFramebuffer(0, 0, offscreen.width, offscreen.height, 0, 0, offscreen.width, offscreen.height, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+        // The blit's own error is the result. The default framebuffer's status is always complete, so it says nothing about this copy.
+        const complete = gl.getError() === gl.NO_ERROR;
+        if (!complete) auditCount('gpu', 'commit-blit-failed');
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-        const complete = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
         this.#dropOffscreen();
         this.#reset();
         return { width: gl.drawingBufferWidth, height: gl.drawingBufferHeight, complete, generation: this.generation };
@@ -1193,6 +1207,8 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         try { this.#grid16Composition = await this.#program(GRID16_RESOLVE_SHADER, both); }
         catch (error) {
             if (both.aborted) throw error;
+            // Counted once, here: every atlas request after it is refused and counted under fallback:grid16-unavailable.
+            auditCount('gpu', 'grid16-compile-failed');
             this.#grid16Composition = null;
         }
         this.#modulateComposition = await this.#program(MODULATE_COMPOSITE_SHADER, AbortSignal.any([signal, this.#work.signal]));

@@ -48,6 +48,9 @@ export interface Webgl2Services {
     program: MemoryAllocator;
     gpuStaging: MemoryAllocator;
     cpuStaging: MemoryAllocator;
+    /** The uniform ring's CPU mirror: foreground memory, since the frame that writes it needs it now (admitted while the pool fits).
+     * Absent, the ring takes cpuStaging. */
+    uniformCpu?: MemoryAllocator;
     returnLease(lease: ByteLease): void;
     schedulePoll(callback: () => void): () => void;
     /** Unrecoverable device fault: stop view GPU work and permanently abandon the broker
@@ -335,7 +338,8 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     readonly #maxElementIndex: number;
     readonly #handles = new Set<Handle>();
     readonly #ownedLeases = new Map<ByteLease, MemoryAllocator>();
-    readonly #cpuLeases = new Map<ByteLease, number>();
+    // Each CPU lease returns to the allocator it was reserved from (the ring's foreground allocator is not cpuStaging).
+    readonly #cpuLeases = new Map<ByteLease, { bytes: number; allocator: MemoryAllocator }>();
     #cpuBytes = 0;
     readonly #programs = new Map<string, Promise<PipelineHandle>>();
     readonly #programSignatures = new Map<string, string>();
@@ -1661,7 +1665,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 throw new ArenaError('out-of-budget');
             }
             if (this.#uniformSlots.length >= UNIFORM_RING_SLOTS) auditCount('gpu', 'uniform-ring-grow-slots');
-            const cpu = this.#reserve(this.#services.cpuStaging, size, false);
+            const cpu = this.#reserve(this.#services.uniformCpu ?? this.#services.cpuStaging, size, false);
             let handle: BufferHandle | null = null;
             try {
                 const data = new Uint8Array(size);
@@ -1992,15 +1996,15 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             throw new ArenaError('out-of-budget');
         }
         if (owned) this.#ownedLeases.set(lease, allocator);
-        else { this.#cpuLeases.set(lease, bytes); this.#cpuBytes += bytes; }
+        else { this.#cpuLeases.set(lease, { bytes, allocator }); this.#cpuBytes += bytes; }
         return lease;
     }
     #returnCpu(lease: ByteLease): void {
-        const bytes = this.#cpuLeases.get(lease);
-        if (bytes === undefined) return;
+        const entry = this.#cpuLeases.get(lease);
+        if (!entry) return;
         this.#cpuLeases.delete(lease);
-        this.#cpuBytes -= bytes;
-        this.#services.cpuStaging.release(lease);
+        this.#cpuBytes -= entry.bytes;
+        entry.allocator.release(lease);
     }
     #allocate<K extends ArenaResourceKind>(kind: K, descriptor: Descriptors[K], bytes: number, lease: ByteLease, dependencies: readonly Handle[] = []): import('../resourceArena').ArenaHandleMap[K] {
         try {

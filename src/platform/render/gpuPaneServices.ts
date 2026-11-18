@@ -31,9 +31,9 @@ export class GpuPaneServices {
             lastVisibleAt: options.now, lastUsedAt: options.now, class: 'scene-cache' as const };
         const opened: MemoryCacheHandle[] = [];
         try {
-            const register = (suffix: string, pool: 'gpu' | 'cpu', kind: 'working' | 'program'): MemoryCacheHandle => {
+            const register = (suffix: string, pool: 'gpu' | 'cpu', kind: 'working' | 'program', foreground = false): MemoryCacheHandle => {
                 // Leases remain charged as queued/retiring until the arena returns them; no free is inferred.
-                const handle = options.governor.register({ ...common, id: `${options.id}:${suffix}`, pool, kind,
+                const handle = options.governor.register({ ...common, id: `${options.id}:${suffix}`, pool, kind, ...(foreground ? { foreground } : {}),
                     memory: () => ({ live: 0, retiring: 0 }), evict: bytes => options.evict(bytes, pool) });
                 opened.push(handle);
                 return handle;
@@ -42,9 +42,11 @@ export class GpuPaneServices {
             const program = register('program', 'gpu', 'program');
             const gpuStaging = register('gpu-staging', 'gpu', 'working');
             const cpuStaging = register('cpu-staging', 'cpu', 'working');
+            // The ring's CPU mirror is what the frame writes now: foreground, so it is admitted while the pool fits (1c081cd4).
+            const uniformCpu = register('uniform-cpu', 'cpu', 'working', true);
             this.services = {
                 ...(__BME_BENCH__ ? { measurementPaneId: options.paneId } : {}),
-                working, program, gpuStaging, cpuStaging,
+                working, program, gpuStaging, cpuStaging, uniformCpu,
                 returnLease: lease => options.governor.releaseLease(lease),
                 schedulePoll: callback => options.scheduler.schedulePoll(callback),
                 onFailure: options.onFailure,

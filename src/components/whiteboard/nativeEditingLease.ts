@@ -82,7 +82,7 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
     const input = createBoardInputHost({ ...options, mode: 'edit',
         presented(revision, renderToken: RenderToken, frame?: PaintFrame, context?: ViewerPaintPresentation) {
             options.presented?.(revision, renderToken, frame, context);
-            tools?.presented(revision, renderToken, frame);
+            tools?.presented(revision, renderToken, frame, context?.omittedNodeIds ?? null);
         },
         a11y: {
             toolState(snapshot) { accessible?.a11y.toolState(snapshot); },

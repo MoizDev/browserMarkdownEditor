@@ -758,10 +758,6 @@ export class MemoryGovernor {
         const { pool, kind, paneId } = cache.registration;
         // Existing leases are grandfathered only for accounting, never for new admission.
         if (this.charged[pool] > this.target[pool] || this.charged[pool] + bytes > this.target[pool]) return false;
-        // A foreground CPU request (what the frame shows) is admitted while the pool fits, whatever its pane's share: the share sized
-        // around unowned derived geometry, so the pane was refused with the pool 27-29 MB of 32 MiB (measured: 4.8 MB short over 7
-        // refusals in the draw phase). Background work below stays inside the grant.
-        if (cache.registration.foreground && pool === 'cpu') return true;
         // The broker's one app-wide allocator owns all reservations, including lost ones (§3.3:360).
         if (kind === 'context') {
             const held = this.kindBytes('context');
@@ -771,6 +767,11 @@ export class MemoryGovernor {
         const grant = paneId === undefined ? undefined : this.grants.get(paneId);
         if (pool === 'gpu' && (cache.activity.hiddenAt !== null || !pane?.visible || !pane.requestedPixels ||
             (pane.cpuPinned && kind !== 'surface' && kind !== 'canvas-working' && kind !== 'surface-scratch'))) return false;
+        // A foreground request (what the frame shows) is admitted while the pool fits, whatever its pane's share: the share sized
+        // around unowned derived geometry, so the pane was refused with the pool 27-29 MB of 32 MiB (measured: 4.8 MB short over 7
+        // refusals in the draw phase). Background work below stays inside the grant. A GPU request passes the demand guard above first:
+        // a hidden, invisible, zero-pixel or CPU-pinned pane's GPU work is not what its frame shows (review: gpu-h9).
+        if (cache.registration.foreground && (pool === 'cpu' || pool === 'gpu')) return true;
         if (kind === 'mirror' && cache.activity.hiddenAt !== null &&
             this.hiddenMirrorBytes() + bytes > this.hiddenMirrorLimit()) return false;
         if (paneId === undefined || kind === 'program') return true;

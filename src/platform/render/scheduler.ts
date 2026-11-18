@@ -1136,16 +1136,17 @@ export class FrameScheduler {
             } else if (meta && !shouldYield()) {
                 // prepare returns false only when a completed prepare left nothing it draws next different (types.ts). A layer
                 // that returns nothing leaves the frame's picture open: it is presented.
-                const moved = renderAuditEnabled() && cameraMoved(meta.layer, item.frame.view);
-                const answered = meta.layer.prepare(item.frame.view, budget) === false;
-                if (renderAuditEnabled()) {
-                    // The frame's last call records the camera: a foreground call must compare with the previous frame's, not its own.
-                    if (phase !== 'foreground') lastPreparedCamera.set(meta.layer, { x: item.frame.view.camera.x, y: item.frame.view.camera.y, z: item.frame.view.camera.z });
-                    if (moved) {
-                        const named = phase + ':' + (item.entry.pane.layerId?.(meta.layer) ?? 'unnamed');
-                        auditCount('scheduler', 'camera-prepare:' + named);
-                        if (answered) auditCount('scheduler', 'camera-unchanged:' + named);
-                    }
+                // A camera move is a change for every layer: it is what every layer draws from. A layer that answers unchanged on a
+                // move is reported changed here, so no skip or passed-over decision rests on a stale answer. The move is compared
+                // with the previous frame's last call; a foreground call does not record it (the background call that follows does).
+                const moved = cameraMoved(meta.layer, item.frame.view);
+                const unchangedAnswer = meta.layer.prepare(item.frame.view, budget) === false;
+                const answered = unchangedAnswer && !moved;
+                if (phase !== 'foreground') lastPreparedCamera.set(meta.layer, { x: item.frame.view.camera.x, y: item.frame.view.camera.y, z: item.frame.view.camera.z });
+                if (renderAuditEnabled() && moved) {
+                    const named = phase + ':' + (item.entry.pane.layerId?.(meta.layer) ?? 'unnamed');
+                    auditCount('scheduler', 'camera-prepare:' + named);
+                    if (unchangedAnswer) auditCount('scheduler', 'camera-unchanged:' + named);
                 }
                 if (phase === 'foreground') {
                     // Not the frame's answer: the background call settles the layer. A changed answer here still marks the frame.

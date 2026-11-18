@@ -210,7 +210,7 @@ export function createNativeViewLease(options: {
     const invalidatePane = () => { drawn = snapshotNow(); platformPane?.invalidate('native-view'); };
     const drawsChanged = (): boolean => {
         const next = snapshotNow();
-        if (!next || !drawn) return true;
+        if (!next || !drawn) { if (renderAuditEnabled()) auditCount('native', `draws-changed:${!next ? 'no-snapshot' : 'no-drawn'}`); return true; }
         // gh14 audit: each field that the pane draws from, counted when it is the reason a publish repaints (draws-changed:<field>).
         const fields: Array<[string, boolean]> = [
             ['state', drawn.state !== next.state], ['scene-revision', drawn.sceneRevision !== next.sceneRevision],
@@ -230,11 +230,11 @@ export function createNativeViewLease(options: {
     };
     // Direct callers (navigation, camera, the lease's own refreshes) always repaint; only the viewer's state publishes are filtered.
     const invalidate = (change?: string) => { if (change !== 'paint') invalidatePane(); publish(change); };
-    const viewerChanged = (change?: string) => { if (change !== 'paint' && drawsChanged()) invalidatePane(); publish(change); };
+    const viewerChanged = (change?: string) => { if (change !== 'paint' && drawsChanged()) { if (renderAuditEnabled()) auditCount('native', 'hint:viewer'); invalidatePane(); } publish(change); };
     // gh14 audit: each caller of the unconditional invalidate is named (hint:<source>), so a native-view present is traced to its caller.
     const hintFrom = (source: string) => () => { if (renderAuditEnabled()) auditCount('native', `hint:${source}`); invalidate(); };
     const cameraPorts: CameraPorts = { currentPath: () => current() ? host.identity(identity.documentId)?.path : undefined,
-        invalidate, onError: options.onError };
+        invalidate: hintFrom('camera'), onError: options.onError };
     const cameraClaim = options.cameraHandoff ? claimCamera(options.cameraHandoff, runtime, limits, insets, cameraPorts) : null;
     const cameraOwner = cameraClaim?.owner ?? createBoardViewCamera({ runtime, ...cameraPorts,
         limits, insets, initialViewport: { width: 0, height: 0, dpr: window.devicePixelRatio || 1 } });
@@ -381,7 +381,7 @@ export function createNativeViewLease(options: {
             editable: () => inputPermitted && parameters.mode === 'edit' && edit.canMutate() && !board.isReadOnly && host.canWrite(identity), visible: () => parameters.visible, focused: () => parameters.focused,
             interaction: { invalidate: hintFrom('interaction'), cameraChanged: () => { markUserNavigation(); cameraOwner.changed(); } },
             platform: () => { if (!platformPane) throw new Error('The board platform is not attached'); return platformPane; },
-            ui: edit.ui, commands: edit.commands }, invalidate, onError: options.onError }) : null;
+            ui: edit.ui, commands: edit.commands }, invalidate: hintFrom('edit'), onError: options.onError }) : null;
         } catch (error) { viewer.dispose(); animation.dispose(); video.dispose(); images.dispose(); if (!cameraClaim) cameraOwner.dispose(); throw error; } })();
     const stopEditingReady = editing && edit ? editing.subscribeAttachment(edit.onAttachment) : undefined;
     if (editing && edit) edit.onAttachment(editing.isAttached());

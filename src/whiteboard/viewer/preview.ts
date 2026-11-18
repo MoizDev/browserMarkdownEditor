@@ -35,7 +35,8 @@ export interface BoardPreview {
     armCommit(): void;
     finishCommit(): void;
     cancelCommit(): void;
-    presented(revision: number, token: import('../../platform/render/types').RenderToken, frame?: PaintSource): void;
+    /** `omitted`: the nodes the presented base frame omitted (its context's omittedNodeIds); absent means none is known omitted. */
+    presented(revision: number, token: import('../../platform/render/types').RenderToken, frame?: PaintSource, omitted?: ReadonlySet<string> | null): void;
     showTextPaint(node: Node, paint: TextPaint, faces: FaceTable, localToWorld: Affine): void;
     clear(): void;
     /** Makes the overlay's layers now, at editing activation: their kits compile their pipelines at creation, so the first drag
@@ -108,6 +109,10 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
     // The overlay's own nodes, refilled at each request: its layers index and draw these items only, never the pinned page.
     const overlayNodes = new Set<string>();
     let commitRevision: number | null = null, commitRelease: (() => void) | null = null;
+    // The nodes the overlay handed back to the base at the commit (after the apply, before the base has drawn them). The overlay keeps
+    // drawing them and the base covers them, but does not omit them: the base draws them at the commit revision, and only then does
+    // presented() clear the overlay. Omitting them would be the old deadlock (the base waits on the overlay, the overlay on the base).
+    let handedBack: ReadonlySet<string> = new Set<string>();
     const frameIds = new WeakMap<PaintSource, ReadonlySet<string>>(), frameGenerations = new WeakMap<PaintSource, number>();
     const waiters = new Set<{ generation: number; resolve(): void; reject(error: unknown): void; signal: AbortSignal; abort(): void }>();
     const idleWaiters = new Set<{ resolve(): void; reject(error: unknown): void; signal: AbortSignal; abort(): void }>();
@@ -171,7 +176,7 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
     const clearNow = () => {
         deferred = null; queued = null; inFlight = false; inFlightSeq = -1; translation = null; metaBySeq.clear();
         generation++; if (!resuming) settle(interrupted()); controller?.abort(); controller = null; controllerHandedOff = false; pendingRelease?.(); pendingRelease = null;
-        const releaseCommit = commitRelease; commitRelease = null; commitRevision = null;
+        const releaseCommit = commitRelease; commitRelease = null; commitRevision = null; handedBack = new Set<string>();
         const oldFrames = frames; frames = null; pair = null; requestedIds = null;
         try { oldFrames?.dispose(); } catch (error) { report(error); }
         for (const lease of [...held]) release(lease);
@@ -180,7 +185,8 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
         try { engine.setPreviewLayers(null); } finally { try { releaseCommit?.(); } finally { settleIdle(); } }
     };
     const clear = () => {
-        if (commitRevision !== null && options.current() && engine.getView().visible && runtime.session.doc.rev <= commitRevision) return;
+        // A commit awaiting the base's presentation keeps its overlay: presented() clears it once the base has drawn the committed nodes.
+        if (commitRevision !== null && options.current() && engine.getView().visible) return;
         clearNow();
     };
     const unbind = engine.bindPreviewClear(clear);
@@ -248,9 +254,15 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
             if (frame && ids && assembler.isCurrent(frame)) {
                 if (frameGenerations.get(frame) === generation) settle();
                 // The base omits a node only from the frame after the overlay drew it: the overlay declares just the nodes it drew.
-                const drawn = layers.drawnLiveNodeIds(), declared = new Set<string>();
-                for (const id of ids) if (drawn.has(id)) declared.add(id);
-                return declared.size ? { frame, nodeIds: declared } : null;
+                // The overlay's drawn nodes: the base omits them and covers them while the overlay draws them. A node handed back
+                // (handedBack) is covered but not omitted: the base draws it, and the overlay clears only after that (presented()).
+                const drawn = layers.drawnLiveNodeIds(), declared = new Set<string>(), covering = new Set<string>();
+                for (const id of ids) if (drawn.has(id)) { covering.add(id); if (!handedBack.has(id)) declared.add(id); }
+                // After the commit the overlay is frozen (no request can replace it), so the handed-back nodes it drew are its drawn
+                // content at the commit revision: the base may count them as covered where its picture does not contain them.
+                const handed = commitRevision !== null ? [...handedBack].filter(id => drawn.has(id)) : [];
+                return covering.size ? { frame, nodeIds: declared, coverIds: covering,
+                    ...(handed.length ? { drawn: { sceneRevision: commitRevision!, nodes: new Set(handed) } } : {}) } : null;
             }
             return null;
         });
@@ -559,14 +571,23 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
             commitRelease = runtime.session.beginGesture();
             commitRevision = runtime.session.doc.rev + 1;
         },
-        finishCommit() { if (commitRevision !== null && runtime.session.doc.rev !== commitRevision) clearNow(); },
+        finishCommit() {
+            if (commitRevision === null) return;
+            // Nothing applied: there is nothing to hand over.
+            if (runtime.session.doc.rev < commitRevision) { clearNow(); return; }
+            // Applied (at or past the commit revision): the overlay's nodes are handed back to the base now, and the overlay clears
+            // only when the base presents them (presented()). Clearing on the revision alone showed the base's older picture (release stand-ins).
+            handedBack = new Set(overlayNodes);
+        },
         cancelCommit() {
-            // An apply can succeed before a later release reports an error; retain its visible preview.
-            if (commitRevision !== null && runtime.session.doc.rev === commitRevision) return;
+            // An apply can succeed before a later release reports an error; retain its visible preview until the base presents it.
+            if (commitRevision !== null && runtime.session.doc.rev >= commitRevision) return;
             clearNow();
         },
-        presented(revision, token, frame) {
+        presented(revision, token, frame, omitted) {
             if (commitRevision === null || revision < commitRevision || !frame || frame.sceneRevision !== revision || !pin) return;
+            // A frame that omits a handed-back node does not draw it: the overlay keeps the node until a frame draws it.
+            if (omitted && [...handedBack].some(id => omitted.has(id))) return;
             const expected = pin.token, actual = frame.token;
             if (token.vaultEpoch !== expected.vaultEpoch || token.documentId !== expected.documentId
                 || token.bytesGeneration !== expected.bytesGeneration || token.session !== expected.session

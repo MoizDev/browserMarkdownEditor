@@ -233,6 +233,7 @@ type OffscreenEncoder = { encodeOffscreen?(passes: OffscreenPasses, view: ViewSt
  * until impl/gpu merges: an absent method frees nothing. */
 type GpuEvicting = { evictGpu?(bytes: number, frameId: number): number };
 type LayerEvicting = { evictGpu?(bytes: number, frameId: number): number };
+type GpuProtecting = { protectFrame?(frameId: number, view: ViewState): void };
 /** The adapter's CPU reclaim (h2, `evictCpu` on impl/lane/gpu-h2): typeof-guarded until it merges, so an absent method frees nothing. */
 type CpuEvicting = { evictCpu?(bytes: number): number };
 /** The grain of a device's direct-frame charge (see chargeDirect): densePlan's DIRECT_CHUNK, the dense direct phase's own grain. */
@@ -889,6 +890,11 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     if (hosts.get(band) !== allocatorHost) return 0;
                     const adapter = gpu as GpuEvicting | null;
                     return typeof adapter?.evictGpu === 'function' ? adapter.evictGpu(bytes, frameId) : 0;
+                },
+                protectFrame(frameId, view) {
+                    if (hosts.get(band) !== allocatorHost) return;
+                    const adapter = gpu as GpuProtecting | null;
+                    if (typeof adapter?.protectFrame === 'function') adapter.protectFrame(frameId, view);
                 },
                 encodeOffscreen(passes, view) {
                     const encoder = gpu as OffscreenEncoder | null;

@@ -111,10 +111,6 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     // invalidations per 3 s on the large seed). A pane presented after the choice is released after the task, see below.
     let touchedFrame = -1;
     const touchedThisFrame = (): boolean => touchedFrame === runtime.scheduler.currentFrame();
-    // The layers this pane's frame draws. While the frame is in progress its foreground work is what the frame will draw, and not
-    // every item of it is stamped as used yet: the preview overlay's drawn tiles were evicted in the frame that was about to draw
-    // them (gpu-h7's first-shape run, a hole). Such a layer gives no partial relief during its own frame; the others still do.
-    let frameLayers: ReadonlySet<Layer> = new Set();
     // Layers whose GPU release is already scheduled. Several caches of one pane can ask in the same trim; the second must not
     // count residency the first has already promised to free.
     const releasing = new Set<Layer>();
@@ -136,7 +132,6 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             if (freed >= bytes) break;
             if (releasing.has(layer)) continue;
             if (layer.memory().gpuBytes <= 0) continue;
-            if (touched && frameLayers.has(layer)) continue;
             // A layer that can give back part of its residency does so first, synchronously, and the whole layer is released
             // only when that falls short of the ask. Without the hook the layer is released whole, as before.
             const want = bytes - freed;
@@ -248,6 +243,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     // FRESH_VIEW_COVER_MS, so a stuck build releases to today's behaviour, counted as fresh-cover:expired.
     const freshLayers = new Set<unknown>();
     let freshSince = 0;
+    let freshTimer: ReturnType<typeof setTimeout> | null = null;
     const compositorLayers = (): readonly CompositorLayer[] => layerSet.compositorLayers.map(binding => ({
         ...binding,
         critical: (frame: ScheduledFrame) => layerSet.definition(binding.layer)?.critical(binding.layer, frame.view) ?? true,
@@ -522,7 +518,8 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                     isCritical: (layer: Layer, view: ViewState) => layerSet.definition(layer)?.critical(layer, view) ?? false,
                     prepareFrame: (frame: ScheduledFrame, budget: Parameters<PaneCompositor['prepareFrame']>[1]) => {
                         touchedFrame = frame.frameId;
-                        frameLayers = new Set(frame.layers.map(meta => meta.layer));
+                        // What this frame shows is stamped before any layer prepares, so the frame's own partial relief leaves it.
+                        for (const meta of frame.layers) meta.layer.protectFrame?.(frame.frameId, frame.view);
                         const drawing = drawCompositor();
                         drawing?.prepareFrame(frame, budget);
                         const mirror = mirrorView();
@@ -714,6 +711,16 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             freshLayers.clear();
             for (const binding of layerSet.compositorLayers) freshLayers.add(binding.layer);
             freshSince = performance.now();
+            // The cover is also released by a timer: a refused frame may request no other frame, and the coverage check is what
+            // would otherwise expire it (review3, gpu-h2). The timer only expires and refreshes; it never presents.
+            if (freshTimer !== null) clearTimeout(freshTimer);
+            freshTimer = setTimeout(() => {
+                freshTimer = null;
+                if (disposed || freshLayers.size === 0) return;
+                freshLayers.clear();
+                auditCount('pane', 'fresh-cover:expired');
+                runtime.refresh();
+            }, FRESH_VIEW_COVER_MS);
         },
         setLayers(definitions: readonly PlatformLayerDefinition[]) {
             if (disposed) return;
@@ -764,6 +771,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             if (disposed) return;
             setVisible(false);
             disposed = true;
+            if (freshTimer !== null) { clearTimeout(freshTimer); freshTimer = null; }
             lastReport = null; options.onPresentation(null);
             candidate.dispose();
             observer.dispose();

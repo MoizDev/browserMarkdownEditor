@@ -71,6 +71,13 @@ export function createPreviewSlot(id: string, base: PlatformLayerDefinition): Pr
         encodeOffscreen(...args: Parameters<NonNullable<Layer['encodeOffscreen']>>) { this.sync()?.encodeOffscreen?.(...args); }
         draw2d(...args: Parameters<Layer['draw2d']>) { this.sync()?.draw2d(...args); }
         releaseGpu(reason: Parameters<Layer['releaseGpu']>[0]) { this.inner?.releaseGpu(reason); }
+        // The scheduler reads the flag on the object it prepares, which is this slot: without it the preview's overlay never gets the
+        // foreground pass and its admissions are refused on the single window (measured: board-preview:live:dropped:deferred:single 10).
+        // No sync here: a sync would consume the epoch swap that prepare reports. On a swap frame the slot is single, its new inner
+        // not existing yet, and two-phase from the next frame.
+        get twoPhase(): true | undefined {
+            return this.innerEpoch === epoch && this.inner?.twoPhase === true ? true : undefined;
+        }
         // Present only when the inner layer partially evicts: the platform releases a layer without this hook whole, and a slot
         // that always had one would never be released whole, even when its inner layer has no partial release to offer.
         get evictGpu(): Layer['evictGpu'] {

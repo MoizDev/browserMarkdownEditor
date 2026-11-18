@@ -970,7 +970,14 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
     const admitSets = (request: PathCoverageSetsRequest, budget: FrameBudget): PathCoverageAdmission => {
         if (!renderAuditEnabled()) return admitSetsUntimed(request, budget);
         const started = performance.now();
-        try { return admitSetsUntimed(request, budget); } finally { auditStage(audit, 'admit', performance.now() - started); }
+        let result: PathCoverageAdmission;
+        try { result = admitSetsUntimed(request, budget); } finally { auditStage(audit, 'admit', performance.now() - started); }
+        // Debug log (audit only): one entry per admission, with the time it began, its outcome, the upload allowance left and whether
+        // the frame had yielded. A measurement reads it from globalThis.__bmeKitLog and joins it to presents by time.
+        const log = ((globalThis as { __bmeKitLog?: unknown[] }).__bmeKitLog ??= []) as unknown[];
+        if (log.length < 20000) log.push({ at: started, ms: performance.now() - started, status: result.status, left: budget.upload.remainingBytes,
+            budgetMs: budget.prepareDeadline - performance.now(), yield: budget.shouldYield(), phase: budget.phase, audit });
+        return result;
     };
     /** Admission happens here, in prepare: targets, vertex buffers and any clip handle are created before any draw. Failure is
      * permanent for this device incarnation and returns 'unsupported'. A set uploaded by an admission that is then refused
@@ -984,14 +991,20 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         // Failure is permanent for this device incarnation: the caller's exact route takes the item.
         if (disposed || failed || unsupported) return unsupportedBecause(disposed ? 'disposed' : failed ? 'failed' : 'device-unsupported');
         warm();
-        // A generation change is the device moving under this kit: its release follows, so the admission waits a frame. It is checked
-        // before readiness, so a kit whose pipelines are built waits here too instead of taking the CPU route as 'not-ready'.
+        // A generation change under this kit (the device's context was lost and restored since the frame began): the kit rebinds in this
+        // frame, releasing the old device's state and binding the current one, instead of deferring the admission a frame. Anything the
+        // old generation held is stale by the draw's own check, so the release does not change what a later frame can draw.
         if (device && (device.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration)) {
-            return { status: 'deferred' };
+            auditCount(audit, 'path-coverage:rebound:generation');
+            release(); warm();
         }
-        // Pipelines still compiling are a wait, not a fallback; ready invalidates the frame.
-        // Compiling pipelines and a device not yet bound are frame waits: nothing is refused for memory, so nothing is named.
-        if (!isReady()) return pending || !device ? { status: 'deferred' } : unsupportedBecause('not-ready');
+        // The three frame waits, each counted by its reason: pipelines still compiling (an async creation, so the first admission of a new
+        // device waits for it), no device yet bound. Nothing is refused for memory here, so nothing is named as a fallback.
+        if (!isReady()) {
+            if (!device) { auditCount(audit, 'path-coverage:deferred:no-device'); return { status: 'deferred' }; }
+            if (pending) { auditCount(audit, 'path-coverage:deferred:compiling'); return { status: 'deferred' }; }
+            return unsupportedBecause('not-ready');
+        }
         const owner = device!, { sets, rule, affine, viewport, output } = request;
         // Empty sets draw nothing. The rest are one set: several sets, or one shifted set, are packed into a copy with the shifts
         // baked in (see packSets), so the admission draws one winding per band, not one per set.
@@ -1089,11 +1102,21 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         }
         return { status: 'ready', value: prepared };
     };
+    // The kit starts its pipelines when it is created: a device already bound starts their compile now, and beginFrame starts it again
+    // for a device bound later. Pipeline creation is async, so by the time a person draws, the compile has long finished.
+    warm();
     return {
         warm,
         ready: isReady,
         /** Marks the frame the calls that follow belong to. An idle set used in this frame is never reclaimed. */
-        beginFrame(next: number): void { if (next !== frame) auditCount(audit, 'kit:frame'); frame = next; },
+        beginFrame(next: number): void {
+            if (next === frame) { frame = next; return; }
+            auditCount(audit, 'kit:frame');
+            frame = next;
+            // Pipelines compile from the frame's start, not from its first admission (an async creation: a device bound at a release or a
+            // context loss waits for them, so the start is the earliest that wait can end).
+            if (!disposed && !failed && !unsupported) warm();
+        },
         /** Whether the kit still holds this triangle array (a shared set or an upload in progress). */
         holds(key: Float64Array): boolean { return shared.has(key) || uploading.has(key); },
         /** The owner has let go of a triangle array (its outline was dropped): the packs built from it are released with it. A pack

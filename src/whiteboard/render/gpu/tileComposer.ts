@@ -9,6 +9,7 @@ import type { FrameBudget, GpuReleaseReason, OffscreenPasses } from '../../../pl
 import { tileTargetBytes, tileView } from '../../../platform/render/tileTarget';
 import { auditCount, auditDrawn, auditStage, renderAuditEnabled, type AuditStage } from '../../../platform/render/renderAudit';
 import { TILE_EDGE, TILE_GUTTER, TILE_SIZE } from '../imageSampling';
+import { isBudgetRefusal } from '../budgetRefusal';
 import type { PaintBand } from '../material';
 import type { PaintClip, PaintInkItem, PaintItem } from '../paintStream';
 import type { AdmitClips, PreparedClips } from './routePath';
@@ -1344,17 +1345,28 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 const pass = passes.begin(target.target, { x: 0, y: 0, width: target.size, height: target.size },
                     { clear: slice.blend === 'modulate' ? WHITE : CLEAR, stencil: false });
                 const audited = renderAuditEnabled();
-                for (const { route, run, clips } of slice.admitted) {
-                    // Drawn through the shared `drawEncoded` with the run in `encodeDraw`: no closure is built per run.
-                    const t0 = audited ? performance.now() : 0;
-                    encodeDraw.pass = pass; encodeDraw.route = route; encodeDraw.run = run;
-                    if (clips) withPreparedClips(pass, clips, drawEncoded);
-                    else drawEncoded();
-                    if (audited) auditStage(audit, 'draw', performance.now() - t0);
-                    auditCount(audit, `route:${route.id}`);
+                let refused = false;
+                try {
+                    for (const { route, run, clips } of slice.admitted) {
+                        // Drawn through the shared `drawEncoded` with the run in `encodeDraw`: no closure is built per run.
+                        const t0 = audited ? performance.now() : 0;
+                        encodeDraw.pass = pass; encodeDraw.route = route; encodeDraw.run = run;
+                        if (clips) withPreparedClips(pass, clips, drawEncoded);
+                        else drawEncoded();
+                        if (audited) auditStage(audit, 'draw', performance.now() - t0);
+                        auditCount(audit, `route:${route.id}`);
+                    }
+                } catch (error) {
+                    // A route's draw refused by the budget (its uniform ring, its vertex upload): this slice's tile is not composed. It is
+                    // removed (its position reads missing, so the frame is incomplete there), and the frame asks for the next one.
+                    if (!isBudgetRefusal(error)) throw error;
+                    refused = true;
+                    auditCount(audit, 'encode:refused');
+                } finally {
+                    encodeDraw.pass = null; encodeDraw.route = null; encodeDraw.run = null;
                 }
-                encodeDraw.pass = null; encodeDraw.route = null; encodeDraw.run = null;
                 pass.end();
+                if (refused) { store.remove(slice.key); wantFrame = true; continue; }
                 auditCount(audit, 'tile:compose', 1, { px: target.size * target.size });
                 entry.dirty = false; entry.composed = true; entry.revision = validRevision;
                 slots.set(entry, { mode: slice.mode, count: position.slices.length, inkNodes: slice.inkNodes,
@@ -1634,7 +1646,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         scissor.x = draw.cx; scissor.y = draw.cy; scissor.width = draw.cw; scissor.height = draw.ch;
                         const clip = pass.pushClip(scissor);
                         drawnLive[draw.band].add(draw.node);
-                        draw.liveRoute?.draw(pass, draw.live);
+                        try { draw.liveRoute?.draw(pass, draw.live); }
+                        catch (error) { if (!isBudgetRefusal(error)) throw error; auditCount(audit, 'draw:refused'); wantFrame = true; }
                         pass.popClip(clip);
                     }
                     i++;

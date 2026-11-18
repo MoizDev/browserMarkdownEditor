@@ -270,8 +270,6 @@ const firstPreparing = (layer: Layer): boolean => (layer as Layer & PreparingFir
 interface FrameWork { entry: PaneEntry; frame: ScheduledFrame; batch: DamageBatch; geometry: number; hadInput: boolean; platformPrepared: boolean; platformBudget?: FrameBudget;
     /** A layer's preparation was passed over for lack of time while it did not ask for a frame. */
     skipped: boolean;
-    /** Per layer (index-aligned with frame.layers): prepared first this frame as live work, or null when none is live. */
-    first: boolean[] | null;
     /** A layer's prepare reported (or may have) drawn something different, or the frame was granted an upload. */
     drawnChange: boolean;
     /** Layers settled this frame: prepared to completion (whatever it answered), or passed over while settled (see passedOver). */
@@ -819,7 +817,7 @@ export class FrameScheduler {
                     const repaint = moved || explicitFull;
                     const damage = batch.damage.freeze()!;
                     const frame = Object.freeze({ frameId, timestamp, intervalMs: this.intervalMs, token, view, layers, reasons, damage });
-                    work.push({ entry, frame, batch, geometry, hadInput: entry.inputPriority || reasons.includes('input'), platformPrepared: false, skipped: false, first: null, drawnChange: false, settled: 0, foreground: new Map(), repaint, cause });
+                    work.push({ entry, frame, batch, geometry, hadInput: entry.inputPriority || reasons.includes('input'), platformPrepared: false, skipped: false, drawnChange: false, settled: 0, foreground: new Map(), repaint, cause });
                     entry.inputPriority = false;
                 });
             }
@@ -847,11 +845,10 @@ export class FrameScheduler {
                 if (!item.platformPrepared) continue;
                 // Live work first, critical or not: a layer with ink in flight takes the pane's time and upload allowance before
                 // paper, board tiles or any other layer. Measured on notebook draw: a paper layer still building was admitted 570
-                // times while the wet layer was refused every frame (its cover incomplete, 121 compositor refusals). Its flags are
-                // kept for the optional pass, so each layer is prepared once per frame.
+                // times while the wet layer was refused every frame (its cover incomplete, 121 compositor refusals). A flagged layer is
+                // prepared here and skipped below, so each single-phase layer is prepared once per frame.
                 const layers = item.frame.layers;
                 const flags = this.call(item.entry, () => layers.some(meta => firstPreparing(meta.layer)) ? layers.map(meta => firstPreparing(meta.layer)) : null) ?? null;
-                item.first = flags;
                 if (flags) {
                     for (let i = 0; i < layers.length; i++) {
                         if (!flags[i]) continue;
@@ -861,13 +858,18 @@ export class FrameScheduler {
                             meter, criticalPending, twoPhase ? 'foreground' : 'single'));
                     }
                 }
+                // Every single-phase layer is foreground: it is what the frame shows, so it takes the foreground budget, not the 1 ms
+                // background window. The critical class (its full byte allowance) goes first, the rest after it.
                 for (let i = 0; i < layers.length; i++) {
                     if (flags?.[i]) continue;
-                    if (layers[i].layer.twoPhase === true) {
-                        prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, layers[i], prepareDeadline, true, meter, criticalPending, 'foreground'));
-                    } else if (layers[i].critical) {
-                        prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, layers[i], prepareDeadline, true, meter, criticalPending, 'single'));
-                    }
+                    const twoPhase = layers[i].layer.twoPhase === true;
+                    if (!twoPhase && !layers[i].critical) continue;
+                    prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, layers[i], prepareDeadline, true, meter, criticalPending,
+                        twoPhase ? 'foreground' : 'single'));
+                }
+                for (let i = 0; i < layers.length; i++) {
+                    if (flags?.[i] || layers[i].critical || layers[i].layer.twoPhase === true) continue;
+                    prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, layers[i], prepareDeadline, false, meter, criticalPending, 'single'));
                 }
             }
             // Background runs only in what foreground and the presentation reserve left of this frame's interval, and never longer
@@ -881,15 +883,11 @@ export class FrameScheduler {
                 item.entry.optionalBytes = Math.min(Math.max(meter.allowance, progressUploadBytes),
                     item.entry.optionalBytes + meter.allowance / Math.max(1, work.length));
                 const deadline = Math.min(backgroundEnd, performance.now() + optionalMs);
-                for (let i = 0; i < item.frame.layers.length; i++) {
-                    const meta = item.frame.layers[i];
-                    if (meta.layer.twoPhase === true) {
-                        // Background only after this frame's foreground call ran: a layer the foreground pass passed over is not composed.
-                        if (item.foreground.has(meta.layer)) prepareOvershootMs = Math.max(prepareOvershootMs,
-                            this.prepare(item, meta, deadline, false, meter, criticalPending, 'background'));
-                    } else if (!meta.critical && !item.first?.[i]) {
-                        prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, meta, deadline, false, meter, criticalPending, 'single'));
-                    }
+                // Only two-phase layers have background work here, and only after their foreground call ran this frame: a layer the
+                // foreground pass passed over is not composed.
+                for (const meta of item.frame.layers) {
+                    if (meta.layer.twoPhase !== true || !item.foreground.has(meta.layer)) continue;
+                    prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, meta, deadline, false, meter, criticalPending, 'background'));
                 }
             }
             // A layer passed over for time, not asking for a frame, has nothing else to wake it. After a restore that

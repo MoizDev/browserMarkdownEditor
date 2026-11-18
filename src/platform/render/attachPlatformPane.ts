@@ -159,6 +159,10 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     // invalidations per 3 s on the large seed). A pane presented after the choice is released after the task, see below.
     let touchedFrame = -1;
     const touchedThisFrame = (): boolean => touchedFrame === runtime.scheduler.currentFrame();
+    // The layers this pane's frame draws. While the frame is in progress its foreground work is what the frame will draw, and not
+    // every item of it is stamped as used yet: the preview overlay's drawn tiles were evicted in the frame that was about to draw
+    // them (gpu-h7's first-shape run, a hole). Such a layer gives no partial relief during its own frame; the others still do.
+    let frameLayers: ReadonlySet<Layer> = new Set();
     // Layers whose GPU release is already scheduled. Several caches of one pane can ask in the same trim; the second must not
     // count residency the first has already promised to free.
     const releasing = new Set<Layer>();
@@ -180,6 +184,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             if (freed >= bytes) break;
             if (releasing.has(layer)) continue;
             if (layer.memory().gpuBytes <= 0) continue;
+            if (touched && frameLayers.has(layer)) continue;
             // A layer that can give back part of its residency does so first, synchronously, and the whole layer is released
             // only when that falls short of the ask. Without the hook the layer is released whole, as before.
             const want = bytes - freed;
@@ -564,6 +569,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                     isCritical: (layer: Layer, view: ViewState) => layerSet.definition(layer)?.critical(layer, view) ?? false,
                     prepareFrame: (frame: ScheduledFrame, budget: Parameters<PaneCompositor['prepareFrame']>[1]) => {
                         touchedFrame = frame.frameId;
+                        frameLayers = new Set(frame.layers.map(meta => meta.layer));
                         const drawing = drawCompositor();
                         drawing?.prepareFrame(frame, budget);
                         const mirror = mirrorView();

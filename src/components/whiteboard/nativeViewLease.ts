@@ -619,7 +619,7 @@ export function createNativeViewLease(options: {
                 if (!next) { recordViewport(); navigation.cancelViewWork('platform-detach'); }
                 platformPane = next;
                 updateInput();
-                if (next) next.invalidate('native-attachment');
+                if (next) { next.beginFreshView(); next.invalidate('native-attachment'); }
             },
             attachInput(interaction, overlay) {
                 detachSurface(); surface = interaction;

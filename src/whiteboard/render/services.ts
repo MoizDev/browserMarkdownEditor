@@ -202,6 +202,14 @@ export function createBoardRenderServices(options: {
         }
         return undefined;
     };
+    // The geometry a visible item draws at its wanted band, else at the band before the last crossing. A missing wanted band is
+    // counted (geometry:band-miss) whether or not the previous band serves it; both missing leaves the caller a counted stand-in.
+    const variantForBand = (id: NodeId, signature: readonly unknown[], wanted: string, previous: string | null): Prepared | undefined => {
+        const exact = variantFor(id, signature, value => value.inkPrecision === wanted);
+        if (exact) return exact;
+        auditCount(AUDIT, 'geometry:band-miss');
+        return previous === null ? undefined : variantFor(id, signature, value => value.inkPrecision === previous);
+    };
     // Least recently used first; a budget eviction also drops the entry's ladder once no precision of its node has a geometry to serve.
     const evictOldestIdle = (): { readonly bytes: number; readonly charged: number } => {
         const gone = cached.keys().next().value!, entry = idle.get(gone);
@@ -712,7 +720,7 @@ export function createBoardRenderServices(options: {
         } finally { envelopeDepth--; }
     };
     return {
-        text, bounds, changeGeometry, retainRenderer,
+        text, bounds, changeGeometry, retainRenderer, variantForBand,
         /** Actual source admission belongs to the App owner. This captures publication identity
          * for NEW work over the same canonical model/cache; existing sources are never retagged. */
         capturePaintBinding(token: RenderToken) {

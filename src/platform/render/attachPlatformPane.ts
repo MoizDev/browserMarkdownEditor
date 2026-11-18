@@ -11,9 +11,12 @@ import { CaptureError } from './captureError';
 import type { GpuCompositor } from './compositor';
 import { registerWebgl2PaneFactory } from './compositorFactory';
 import { GPU_RETRY_QUIET_MS, GpuPaneCandidate } from './gpuPaneCandidate';
+
+/** How long a fresh view keeps its previous picture while its layers first draw complete and sharp. A bound, not a target. */
+const FRESH_VIEW_COVER_MS = 3000;
 import type { QualifiedGpuPane } from './gpuPaneCandidate';
 import type { CameraConstraint } from './camera';
-import type { CompositorLayer, Compositor2DOptions, CreatedCompositor2D, PaneCompositor } from './compositor.types';
+import type { CompositorBackend, CompositorLayer, Compositor2DOptions, CreatedCompositor2D, PaneCompositor } from './compositor.types';
 import { RENDER_CONSTANTS } from './constants';
 import { createLayerHost } from './layerHost';
 import type { MemoryCacheHandle } from './memoryGovernor';
@@ -283,9 +286,21 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     });
     // The compositor's view of the layers. Its critical() is the definition's, judged on each frame's view: a layer whose
     // content a stand-in covers is non-critical and presents with it (PLAN issue 3). Rebuilt only when the layer set changes.
+    // A fresh view's layers (attached by beginFreshView, never a layer added mid-life) report incomplete until each first draws
+    // complete and sharp: the frame is refused and the picture on screen stays the previous one (the cover). Bounded by
+    // FRESH_VIEW_COVER_MS, so a stuck build releases to today's behaviour, counted as fresh-cover:expired.
+    const freshLayers = new Set<unknown>();
+    let freshSince = 0;
     const compositorLayers = (): readonly CompositorLayer[] => layerSet.compositorLayers.map(binding => ({
         ...binding,
         critical: (frame: ScheduledFrame) => layerSet.definition(binding.layer)?.critical(binding.layer, frame.view) ?? true,
+        coverage: (frame: ScheduledFrame, backend: CompositorBackend) => {
+            const coverage = binding.coverage(frame, backend);
+            if (!freshLayers.has(binding.layer)) return coverage;
+            if (coverage.complete && coverage.sharp) { freshLayers.delete(binding.layer); return coverage; }
+            if (performance.now() - freshSince > FRESH_VIEW_COVER_MS) { freshLayers.delete(binding.layer); auditCount('pane', 'fresh-cover:expired'); return coverage; }
+            return { ...coverage, complete: false };
+        },
     }));
     try { layerSet.replace(options.layers); }
     catch (error) {
@@ -736,6 +751,12 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         setVisible,
         setFocused(value) { if (!disposed && focused !== value) { focused = value; lifecycle?.setFocused(value); runtime.refresh(); } },
         observeSize() { if (!disposed) { observer.start(); observer.refresh(); } },
+        beginFreshView() {
+            if (disposed) return;
+            freshLayers.clear();
+            for (const binding of layerSet.compositorLayers) freshLayers.add(binding.layer);
+            freshSince = performance.now();
+        },
         setLayers(definitions: readonly PlatformLayerDefinition[]) {
             if (disposed) return;
             const previousCount = caches.length;

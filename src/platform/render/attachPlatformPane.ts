@@ -11,9 +11,12 @@ import { CaptureError } from './captureError';
 import type { GpuCompositor } from './compositor';
 import { registerWebgl2PaneFactory } from './compositorFactory';
 import { GPU_RETRY_QUIET_MS, GpuPaneCandidate } from './gpuPaneCandidate';
+
+/** How long a fresh view keeps its previous picture while its layers first draw complete and sharp. A bound, not a target. */
+const FRESH_VIEW_COVER_MS = 3000;
 import type { QualifiedGpuPane } from './gpuPaneCandidate';
 import type { CameraConstraint } from './camera';
-import type { CompositorLayer, Compositor2DOptions, CreatedCompositor2D, PaneCompositor } from './compositor.types';
+import type { CompositorBackend, CompositorLayer, Compositor2DOptions, CreatedCompositor2D, PaneCompositor } from './compositor.types';
 import { RENDER_CONSTANTS } from './constants';
 import { createLayerHost } from './layerHost';
 import type { MemoryCacheHandle } from './memoryGovernor';
@@ -235,9 +238,22 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     });
     // The compositor's view of the layers. Its critical() is the definition's, judged on each frame's view: a layer whose
     // content a stand-in covers is non-critical and presents with it (PLAN issue 3). Rebuilt only when the layer set changes.
+    // A fresh view's layers (attached by beginFreshView, never a layer added mid-life) report incomplete until each first draws
+    // complete and sharp: the frame is refused and the picture on screen stays the previous one (the cover). Bounded by
+    // FRESH_VIEW_COVER_MS, so a stuck build releases to today's behaviour, counted as fresh-cover:expired.
+    const freshLayers = new Set<unknown>();
+    let freshSince = 0;
+    let freshTimer: ReturnType<typeof setTimeout> | null = null;
     const compositorLayers = (): readonly CompositorLayer[] => layerSet.compositorLayers.map(binding => ({
         ...binding,
         critical: (frame: ScheduledFrame) => layerSet.definition(binding.layer)?.critical(binding.layer, frame.view) ?? true,
+        coverage: (frame: ScheduledFrame, backend: CompositorBackend) => {
+            const coverage = binding.coverage(frame, backend);
+            if (!freshLayers.has(binding.layer)) return coverage;
+            if (coverage.complete && coverage.sharp) { freshLayers.delete(binding.layer); return coverage; }
+            if (performance.now() - freshSince > FRESH_VIEW_COVER_MS) { freshLayers.delete(binding.layer); auditCount('pane', 'fresh-cover:expired'); return coverage; }
+            return { ...coverage, complete: false };
+        },
     }));
     try { layerSet.replace(options.layers); }
     catch (error) {
@@ -449,6 +465,10 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                         const result = activeMetrics().commit(frameId, size.generation, planned, drawing.target);
                         if (result?.kind === 'ready') drawing.setMetrics(result.metrics);
                         if (result?.kind !== 'failed') return result;
+                        // A governor refusal is pressure the governor has already answered with its own quality step. The pane keeps
+                        // its complete picture and waits for capacity; it is neither a framebuffer fault nor a reason to fall back to
+                        // 2D, whose working canvases need more of the same pool (the fallback refused too, and the loop cycled 1.0 <-> 0.8).
+                        if (result.reason === 'refused') return result;
                         const failedGeneration = gpu?.grant.generation;
                         runtime.trouble('framebuffer');
                         if (drawing === compositor || !lifecycle) return result;
@@ -498,6 +518,8 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                     isCritical: (layer: Layer, view: ViewState) => layerSet.definition(layer)?.critical(layer, view) ?? false,
                     prepareFrame: (frame: ScheduledFrame, budget: Parameters<PaneCompositor['prepareFrame']>[1]) => {
                         touchedFrame = frame.frameId;
+                        // What this frame shows is stamped before any layer prepares, so the frame's own partial relief leaves it.
+                        for (const meta of frame.layers) meta.layer.protectFrame?.(frame.frameId, frame.view);
                         const drawing = drawCompositor();
                         drawing?.prepareFrame(frame, budget);
                         const mirror = mirrorView();
@@ -506,7 +528,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                     finishPrepareFrame: (frame: ScheduledFrame, budget: Parameters<PaneCompositor['prepareFrame']>[1]) => {
                         drawCompositor()?.finishPrepareFrame?.(frame, budget);
                     },
-                    encode: (frame: ScheduledFrame) => {
+                    encode: (frame: ScheduledFrame, changed: boolean) => {
                         lastFrameInterval = frame.intervalMs;
                         const drawing = drawCompositor();
                         if (!drawing) return null;
@@ -516,7 +538,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                             auditCount('pane', 'cpu-raster', 1, { px: drawing.surface.width * drawing.surface.height });
                         }
                         const encodeStart = performance.now();
-                        const encoding = drawing.encode(frame);
+                        const encoding = drawing.encode(frame, changed);
                         if (!encoding && !(drawing === compositor && options.session.mirrors)) return null;
                         const revision = options.revision();
                         const sourceCamera = sampledCamera;
@@ -684,6 +706,22 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         setVisible,
         setFocused(value) { if (!disposed && focused !== value) { focused = value; lifecycle?.setFocused(value); runtime.refresh(); } },
         observeSize() { if (!disposed) { observer.start(); observer.refresh(); } },
+        beginFreshView() {
+            if (disposed) return;
+            freshLayers.clear();
+            for (const binding of layerSet.compositorLayers) freshLayers.add(binding.layer);
+            freshSince = performance.now();
+            // The cover is also released by a timer: a refused frame may request no other frame, and the coverage check is what
+            // would otherwise expire it (review3, gpu-h2). The timer only expires and refreshes; it never presents.
+            if (freshTimer !== null) clearTimeout(freshTimer);
+            freshTimer = setTimeout(() => {
+                freshTimer = null;
+                if (disposed || freshLayers.size === 0) return;
+                freshLayers.clear();
+                auditCount('pane', 'fresh-cover:expired');
+                runtime.refresh();
+            }, FRESH_VIEW_COVER_MS);
+        },
         setLayers(definitions: readonly PlatformLayerDefinition[]) {
             if (disposed) return;
             const previousCount = caches.length;
@@ -733,6 +771,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             if (disposed) return;
             setVisible(false);
             disposed = true;
+            if (freshTimer !== null) { clearTimeout(freshTimer); freshTimer = null; }
             lastReport = null; options.onPresentation(null);
             candidate.dispose();
             observer.dispose();

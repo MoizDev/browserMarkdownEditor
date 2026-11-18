@@ -1,5 +1,6 @@
 import type { PlatformLayerDefinition } from '../../platform/render/attachPlatformPane.types';
 import type { Layer } from '../../platform/render/types';
+import type { ViewState } from '../../platform/types';
 
 /**
  * A permanent place in the pane's layer topology for the live creation preview.
@@ -71,12 +72,20 @@ export function createPreviewSlot(id: string, base: PlatformLayerDefinition): Pr
         encodeOffscreen(...args: Parameters<NonNullable<Layer['encodeOffscreen']>>) { this.sync()?.encodeOffscreen?.(...args); }
         draw2d(...args: Parameters<Layer['draw2d']>) { this.sync()?.draw2d(...args); }
         releaseGpu(reason: Parameters<Layer['releaseGpu']>[0]) { this.inner?.releaseGpu(reason); }
+        // The scheduler reads the flag on the object it prepares, which is this slot: without it the preview's overlay never gets the
+        // foreground pass and its admissions are refused on the single window (measured: board-preview:live:dropped:deferred:single 10).
+        // No sync here: a sync would consume the epoch swap that prepare reports. On a swap frame the slot is single, its new inner
+        // not existing yet, and two-phase from the next frame.
+        get twoPhase(): true | undefined {
+            return this.innerEpoch === epoch && this.inner?.twoPhase === true ? true : undefined;
+        }
         // Present only when the inner layer partially evicts: the platform releases a layer without this hook whole, and a slot
         // that always had one would never be released whole, even when its inner layer has no partial release to offer.
         get evictGpu(): Layer['evictGpu'] {
             const inner = this.inner;
             return inner?.evictGpu ? (bytes, frameId) => inner.evictGpu!(bytes, frameId) : undefined;
         }
+        protectFrame(frameId: number, view: ViewState) { this.inner?.protectFrame?.(frameId, view); }
         memory() { return this.inner?.memory() ?? { gpuBytes: 0, cpuBytes: 0 }; }
         needsFrame() { return this.innerEpoch !== epoch || (this.inner?.needsFrame() ?? false); }
         // The revision the slot reports carries its epoch; the inner layer acknowledges the revision it reported itself.

@@ -244,6 +244,11 @@ class GpuTileStore implements NumericTileStore {
         entry.usedFrame = frameId;
     }
 
+    touchVisible(view: ViewState, frameId: number): void {
+        const shown = viewWorld(view);
+        for (const slot of this.held) if (overlapsKey(slot.key, shown)) slot.usedFrame = frameId;
+    }
+
     /** An empty position: it keeps no target, and a target it gives up goes to the free list. A position the store cannot
      * name is returned detached: it holds nothing, so the next call finds nothing and asks again. */
     putEmpty(key: TileKey): TileEntry {

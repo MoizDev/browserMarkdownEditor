@@ -640,9 +640,28 @@ export class PdfTileLayer implements Layer {
      */
     private acquireTexture(device: GfxDevice, width: number, height: number): PooledTexture | null {
         const texture = this.texturePool.acquire(device, width, height);
-        if (texture || !this.releaseUnneededGpu(true)) return texture;
+        if (texture || (!this.releaseUnneededGpu(true) && !this.releaseStandinLastResort())) return texture;
         auditCount('pdf-page', 'self-reclaim');
         return this.texturePool.acquire(device, width, height);
+    }
+
+    /** The last resort for a refused exact tile: one on-view stand-in at another scale, the farthest from the view first. Taken only
+     * here, on a refused acquire the layer cannot satisfy otherwise, never by the trouble's trim, and counted. Without it a pool full
+     * of on-view stand-ins refused the exact tile for good on a still view (review3, gpu-h14). Not the last prepared frame's tiles. */
+    private releaseStandinLastResort(): boolean {
+        const input = this.latestDemand;
+        if (!input) return false;
+        let victim: { key: string; entry: Entry } | null = null, rank = -Infinity;
+        for (const [key, entry] of this.entries) {
+            if (!entry.texture || !intersects(rect(entry.request), input.viewport) || !scaleDiffers(entry.request.scale.scale, input.rasterScale) ||
+                entry.drawnFrame === this.preparedFrame) continue;
+            const value = this.evictionRank(entry, input);
+            if (value > rank) { rank = value; victim = { key, entry }; }
+        }
+        if (!victim) return false;
+        auditCount('pdf-page', 'standin-last-resort');
+        this.remove(victim.key, victim.entry);
+        return true;
     }
 
     /** Partial relief the platform asks for before it releases the whole layer: the pool's free textures first, then this
@@ -689,7 +708,7 @@ export class PdfTileLayer implements Layer {
             auditCount('pdf-page', 'tile-reclaim');
             return true;
         }
-        return this.releaseUnneededGpu(true);
+        return this.releaseUnneededGpu(true) || this.releaseStandinLastResort();
     }
 
     /** Frees this layer's tile textures the plan does not show, for a refused texture. `keepPool` is the refused-acquire path: it
@@ -700,7 +719,12 @@ export class PdfTileLayer implements Layer {
         if (!input) return false;
         let freed = false;
         for (const [key, entry] of this.entries) {
-            if (!entry.texture || this.desired.has(key) && intersects(rect(entry.request), input.viewport)) continue;
+            // Visible need first: a texture on the view is what the next frame draws, at any scale. An other-scale one on the
+            // view is the stand-in that covers a quality raise until the plan's tiles land; dropping it at the trouble's trim
+            // left the raise a blank picture (measured: 102 pressure-evicts in the forced slow-gpu window, holes at the raise).
+            // This runs for a refused acquire too (keepPool), so the on-view stand-ins stay here; a refused exact tile that
+            // still cannot fit takes one through releaseStandinLastResort, counted.
+            if (!entry.texture || intersects(rect(entry.request), input.viewport)) continue;
             auditCount('pdf-page', 'pressure-evict');
             this.remove(key, entry);
             freed = true;

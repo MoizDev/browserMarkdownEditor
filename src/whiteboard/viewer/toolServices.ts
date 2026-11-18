@@ -114,6 +114,8 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
     const region = createBoardRegionQuery({ runtime, geometry: runtime.render, camera: options.view,
         fontEpoch: () => runtime.render.text.fonts.epoch, current: t => current() && options.current(t), onError: ui.error });
     const preview = createBoardPreview({ runtime, engine, render: runtime.render, images: options.images, current, onError: ui.error });
+    // Editing activation: the overlay's kits compile now, not at the first drag's request.
+    preview.warm();
     const select = createBoardSelectServices({ runtime, render: runtime.render, camera: options.view, cameraController: camera,
         surface: options.surface, inputToken, cameraChanged: options.interaction.cameraChanged, sampleToSurface: options.sampleToSurface, point, region, preview,
         overlay: options.overlay, token, current: t => current() && options.current(t), canMutateView: () => options.editable() && !runtime.session.isReadOnly,
@@ -298,7 +300,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
     return { services, writeOverlays, finishComposition: text.finishComposition, captureText: text.captureText,
         // A committed preview holds a gesture until its revision is presented; without this the hold never
         // ended and every later drag on the board was refused (seen: resize/rotate dead after one move).
-        presented: (revision: number, token: RenderToken, frame?: PaintSource) => preview.presented(revision, token, frame),
+        presented: (revision: number, token: RenderToken, frame?: PaintSource, omitted?: ReadonlySet<string> | null) => preview.presented(revision, token, frame, omitted),
         restoreText: text.restoreText, beforeHistoryReplay: text.beforeHistoryReplay, cancelPending, dispose,
         sensitiveNodeIds: () => sensitive.ids(),
         actualsubcontrollers: { ink, point, region, preview, select, text, attachments } };

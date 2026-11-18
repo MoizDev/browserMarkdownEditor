@@ -7,6 +7,7 @@ import type { LayerHost } from '../../platform/render/compositor.types';
 import type { ByteLease, GfxDevice, GpuPass, RectI, TextureHandle } from '../../platform/render/gfx/api';
 import type { FrameBudget, FrameToken, GpuReleaseReason, OffscreenPasses } from '../../platform/render/types';
 import { auditCount, auditStage, renderAuditEnabled, type AuditStage } from '../../platform/render/renderAudit';
+import { filterWindows } from './paintWindows';
 import type { PaintBand } from './material';
 import type { PaintItem, PaintSource } from './paintStream';
 import type { CanvasPaintAdapter, PreparedPaint2d } from './reference/canvasPaintAdapter';
@@ -15,7 +16,7 @@ import { InkCoverageUnionPath2dJob, Path2dJob, type PathOrigin2d } from './refer
 import { isBudgetRefusal } from './budgetRefusal';
 import { TILE_SIZE } from './imageSampling';
 import type { Blend, ItemRoute, PreparedRun } from './gpu/contracts';
-import { createTileComposer, type ResourcedRoute, type TileLay, type TileRoutes } from './gpu/tileComposer';
+import { createTileComposer, type GeometryPins, type ResourcedRoute, type TileLay, type TileRoutes } from './gpu/tileComposer';
 import { createTileParts } from './gpu/tileParts';
 import { createTileStore, tileWorld } from './gpu/tileStore';
 import { createPath, withPreparedClips } from './gpu/routePath';
@@ -210,6 +211,14 @@ export interface GpuPaintAdapter {
     /** Indexes the reference's paint, composes what the view needs within the frame's limit. `omit` is the drag's omitted nodes.
      * True when anything visible changed since the previous prepare (the composer's report); true when it could not tell. */
     prepare(view: ViewState, budget: FrameBudget, omit?: ReadonlySet<string>): boolean;
+    /** The content of the paint this adapter last prepared, as one number: equal values draw the same picture. It is the same
+     * whether or not that paint was presented, and moves on every change that can alter the composite (an edit, an eviction, a
+     * live part drawn, a resource change, an index in progress). The board compares it with the value it presented. */
+    contentKey(): number;
+    /** True when the last draw list cannot be drawn for this view: the layer is incomplete, and critical until it prepares again. */
+    listInvalid(view: ViewState): boolean;
+    /** Indexes a paint to completion within `maxMs`, outside any frame (the same filter the frames apply, so the index matches). */
+    warm(prepared: PreparedPaint2d, maxMs: number): boolean;
     /** The paint the composed tiles were built from, once a paint has been prepared. */
     readyFrame(): PaintSource | null;
     readyPaint(): PreparedPaint2d | null;
@@ -228,6 +237,8 @@ export interface GpuPaintAdapter {
     /** The governor's GPU pressure: frees up to `bytes` of idle GPU memory, path coverage sets first, then composed tiles
      * not used this frame. Returns the bytes freed. */
     evictGpu(bytes: number, frameId: number): number;
+    /** Stamps what the view shows as used in `frameId`, before the frame's prepare: its partial relief leaves it (see Layer.protectFrame). */
+    protectFrame(frameId: number, view: ViewState): void;
     /** The governor's CPU pressure: frees up to `bytes` of idle CPU memory (the path route's outline geometry, unused this
      * frame). Returns the bytes freed. The board's cpuEvict hook forwards to it. */
     evictCpu(bytes: number): number;
@@ -236,6 +247,11 @@ export interface GpuPaintAdapter {
     /** The ink node ids in the tiles this adapter drew in the current composite: filled in drawGpu, cleared at the next prepare.
      * The wet layer skips these nodes in the same composite, so translucent ink never doubles at hand-over. */
     drawnInkNodeIds(): ReadonlySet<string>;
+    /** The nodes whose live parts this adapter laid for one band in the current composite (cleared at the next prepare). The board
+     * counts a changed node as drawn only when it is here, so a live part the composer deferred or denied is not counted. */
+    drawnLiveNodeIds(band: PaintBand): ReadonlySet<string>;
+    /** The nodes whose live parts this prepare planned for one band, valid once prepare returns (cleared at the next prepare). */
+    plannedLiveNodeIds(band: PaintBand): ReadonlySet<string>;
     dispose(): void;
 }
 
@@ -249,11 +265,28 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         readonly opaqueWorld?: () => readonly Rect[];
         /** An overlay: its few plain parts are drawn live each frame, with no tile grant (see the composer's liveOverlay). */
         readonly liveOverlay?: boolean;
+        /** The geometry service's pins a live zoom holds (see GeometryPins in tileComposer.ts); absent holds none. */
+        readonly pins?: GeometryPins;
+        /** A live-only overlay's nodes (its gesture's): the composer indexes and draws only these items of the paint it is handed. */
+        readonly liveNodes?: ReadonlySet<string>;
     } = {}): GpuPaintAdapter {
     const surface = options.audit ?? 'board';
     if (options.streaming) auditCount(surface, 'option:streaming-ignored');
     let disposed = false;
     let lastFrame = -1;
+    // The paint the composer is handed: an overlay's own nodes only, so its index never walks the rest of the paint it was built from.
+    // One filtered copy per source paint, reused by the foreground and background calls of its frame.
+    let filtered: { source: PreparedPaint2d; out: PreparedPaint2d } | null = null;
+    const forComposer = (prepared: PreparedPaint2d): PreparedPaint2d => {
+        const include = options.liveNodes;
+        if (!include) return prepared;
+        if (filtered?.source === prepared) return filtered.out;
+        const out: PreparedPaint2d = { ...prepared, windows: filterWindows(prepared.windows, item => include.has(item.nodeId)) };
+        filtered = { source: prepared, out };
+        return out;
+    };
+    // The paint a two-phase frame's foreground call prepared, for its background call (which the composer's prepare completes).
+    let pendingPrepared: PreparedPaint2d | null = null;
     let presented: PreparedPaint2d | null = null;
     // The device and generation the composer's leases were granted on, set when it last prepared. Once either changes the
     // arena has returned those leases, so the composer's bytes are no longer reserved to this layer and are not reported.
@@ -299,18 +332,38 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         layQuads: (pass, texture, quads) => host.drawTexturedQuads(pass, texture, quads, QUAD),
         ...(options.opaqueWorld ? { opaqueWorld: options.opaqueWorld } : {}),
         ...(options.liveOverlay ? { liveOverlay: true } : {}),
+        ...(options.pins ? { pins: options.pins } : {}),
         // The compose limit halves while the host reports a slow GPU, read each frame (PLAN 3.1).
         slowGpu: () => host.trouble() === 'slow-gpu',
     });
 
     return {
+        warm(prepared: PreparedPaint2d, maxMs: number): boolean {
+            return composer.warm(forComposer(prepared), maxMs);
+        },
         prepare(view: ViewState, budget: FrameBudget, omit?: ReadonlySet<string>): boolean {
+            // The background call of a two-phase frame: the composer completes the paint its foreground call prepared (no new frame).
+            if (budget.phase === 'background') {
+                const pending = pendingPrepared;
+                pendingPrepared = null;
+                if (disposed || !pending || lastFrame !== budget.frameId) return true;
+                try {
+                    return timed(surface, 'prepare', () => composer.prepare(view, budget, forComposer(pending), omit));
+                } catch (error) {
+                    if (isBudgetRefusal(error)) return true;
+                    host.reportGpuError(error);
+                    return true;
+                }
+            }
+            // Only this frame's background call reads the paint its foreground call left: a foreground call drops any earlier one.
+            pendingPrepared = null;
             if (disposed || lastFrame === budget.frameId) return true;
             lastFrame = budget.frameId;
             pathRoute.beginFrame(budget.frameId);
             const prepared = reference.borrowPrepared(), device = host.device();
             if (!prepared || !device || !documentMatches(prepared.root, budget.token) || !documentMatches(prepared.sourceFrame, budget.token) ||
                 device.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration) {
+                if (renderAuditEnabled()) auditCount(surface, !prepared ? 'prepare:hidden:no-paint' : !device ? 'prepare:hidden:no-device' : 'prepare:hidden:document');
                 composer.release('hidden');
                 presented = null; omitPrepared = null; ledger = null;
                 return true;
@@ -321,7 +374,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             armWake('store', null);
             let changed = true;
             try {
-                changed = timed(surface, 'prepare', () => composer.prepare(view, budget, prepared, omit));
+                changed = timed(surface, 'prepare', () => composer.prepare(view, budget, forComposer(prepared), omit));
             } catch (error) {
                 if (isBudgetRefusal(error)) return true;
                 // Reported, not rethrown: a throw here aborted the board's frame on every prepare while the content stayed in view.
@@ -331,6 +384,8 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             }
             presented = prepared;
             lastView = view;
+            // A two-phase frame's foreground call answers false: its background call (later this frame) gives the answer.
+            if (budget.phase === 'foreground') { pendingPrepared = prepared; return false; }
             return changed;
         },
         readyFrame(): PaintSource | null { return disposed ? null : presented?.sourceFrame ?? null; },
@@ -367,6 +422,10 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         needsFrame(): boolean { return !disposed && composer.needsFrame(); },
         memoryBlocked(): boolean { return !disposed && composer.memoryBlocked(); },
         drawnInkNodeIds(): ReadonlySet<string> { return disposed ? NO_INK : composer.drawnInkNodeIds(); },
+        drawnLiveNodeIds(band: PaintBand): ReadonlySet<string> { return disposed ? NO_INK : composer.drawnLiveNodeIds(band); },
+        plannedLiveNodeIds(band: PaintBand): ReadonlySet<string> { return disposed ? NO_INK : composer.plannedLiveNodeIds(band); },
+        contentKey(): number { return disposed ? -1 : composer.contentKey(); },
+        listInvalid(view: ViewState): boolean { return !disposed && composer.listInvalid(view); },
         gpuMandatoryBytes(viewport: { width: number; height: number }): number {
             return disposed || !presented ? 0 : composer.mandatoryBytes(viewport.width, viewport.height);
         },
@@ -378,7 +437,11 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             if (freed < bytes) freed += imageRoute.evictTextures(bytes - freed, frameId);
             if (freed < bytes) freed += textRoute.evictTextures?.(bytes - freed, frameId) ?? 0;
             if (freed < bytes && lastView) freed += store.evict(bytes - freed, frameId, lastView);
+            if (freed > 0) composer.noteEvicted();
             return freed;
+        },
+        protectFrame(frameId: number, view: ViewState): void {
+            if (!disposed) store.touchVisible(view, frameId);
         },
         evictCpu(bytes: number): number {
             return disposed || !(bytes > 0) ? 0 : pathRoute.evictCpu(bytes);

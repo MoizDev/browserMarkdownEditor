@@ -72,7 +72,10 @@ interface MirrorJob {
     timer: ReturnType<typeof setTimeout> | null;
 }
 interface ColourJob {
+    /** The scene key the job was started for. */
     readonly key: string;
+    /** The paint key at the job's start: the picture it shows once composited. */
+    readonly paint: string;
     readonly snapshot: Snapshot;
     readonly frame: ScheduledFrame;
     readonly back: Buffer2D;
@@ -118,6 +121,8 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
     private backing: SurfaceBacking | null = null;
     private displayReserved = 0;
     private working: MemoryCacheHandle | null = null;
+    /** Bytes of the one armed capacity waiter (see awaitCapacity), or null. */
+    private capacityWait: number | null = null;
     private cpu: MemoryCacheHandle | null = null;
     private readonly gpuLeases = new Set<ByteLease>();
     private readonly cpuLeases = new Set<ByteLease>();
@@ -164,6 +169,8 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
     private lastScale: number | null = null;
     private report: CompositorCoverage | null = null;
     private presentedKey = '';
+    /** Frames whose layers reported a change (see encode): each one repaints, whatever the scene key says. */
+    private drawn = 0;
     private missing = false;
     private busy = 0;
     private cropsPending = 0;
@@ -239,6 +246,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         this.appearance = Object.freeze({ background: Object.freeze([...appearance.background]) as CompositorAppearance['background'], inverted: appearance.inverted });
         this.changed();
     }
+
     setMetrics(metrics: ReadySurfaceMetrics): void {
         this.check();
         const back = this.buffers.get('back');
@@ -418,15 +426,22 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         } finally { target.native.restore(); }
     }
 
-    encode(frame: ScheduledFrame): ScheduledEncoding | null {
+    encode(frame: ScheduledFrame, changed: boolean): ScheduledEncoding | null {
         this.check();
+        if (changed) this.drawn++;
         this.lastFrame = frame;
         const snapshot = this.scene;
         const budget = this.budget;
         const back = this.buffers.get('back');
+        // A back buffer sized for a raise that has not committed (its resize was refused after the buffer was replaced) is not this
+        // snapshot's picture: nothing is encoded until a commit brings the metrics and the buffer to one size.
         if (this.encodedSources.size || !snapshot?.metrics || snapshot.view !== frame.view || !back || !budget || budget.frameId !== frame.frameId ||
+            back.canvas.width !== snapshot.metrics.backingWidth || back.canvas.height !== snapshot.metrics.backingHeight ||
             !sameToken(this.options.currentToken(), frame.token) || !this.healthy()) return null;
         const key = this.key(snapshot, frame);
+        // The paint key adds the count of changed frames. The scene key alone is blind to a layer that draws a newer picture under the
+        // same scene revision (an adapter promotes it in prepare): the frame was encoded, and the same key skipped the repaint.
+        const paint = `${key}#${this.drawn}`;
         this.activeKey = key;
         this.beginSources(key);
         const availability = snapshot.layers.map(binding => binding.coverage(frame, this.backend));
@@ -440,10 +455,19 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         if (renderAuditEnabled()) auditDrawnStart();
         this.busy++;
         try {
-            if (this.job && this.job.key !== key) this.cancelJob();
-            if (this.presentedKey !== key) {
+            // The job follows the scene key. Keyed by the paint key, a layer that reports change on every frame while it is pending
+            // restarted the colour job each frame, so the inverted picture never finished. A composited job is replaced once the
+            // paint key has moved on: the picture it shows is then the older paint key, and only a fresh job repaints the rest.
+            if (this.job && (this.job.key !== key || this.job.stage === 'composited' && this.job.paint !== paint)) this.cancelJob();
+            // What the presented picture reflects: the paint key of the job that drew it, which can be older than this frame's.
+            let shown = paint;
+            if (this.presentedKey !== paint) {
                 if (snapshot.appearance.inverted && snapshot.layers.some(layer => layer.group === 'document')) {
-                    if (!this.paintInverted(snapshot, frame, back, key)) return null;
+                    if (!this.paintInverted(snapshot, frame, back, key, paint)) return null;
+                    shown = this.job!.paint;
+                    // A job that finished at an older paint key shows a picture this frame's paint would repaint: ask for the next
+                    // frame now, since nothing else may request one while the scene is idle.
+                    if (shown !== paint) this.options.invalidate('2d-paint-superseded');
                 } else {
                     opaque(back.native, snapshot.appearance);
                     if (__BME_BENCH__ && benchmarkDomain) benchmarkCanvas?.managers.get(this)?.begin(back.native, benchmarkDomain.benchmarkPaintDomain(snapshot, frame));
@@ -466,11 +490,12 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
                     if (done) throw new Error('Canvas encoding already consumed');
                     try {
                     if (this.disposed || this.scene !== snapshot || !sameToken(this.options.currentToken(), frame.token) || !this.healthy()) return null;
-                    if (this.presentedKey !== key && !this.publish(back, snapshot.metrics!)) return null;
-                    this.presentedKey = key;
+                    if (this.presentedKey !== shown && !this.publish(back, snapshot.metrics!)) return null;
+                    this.presentedKey = shown;
                     this.retained = encodedSources; this.retainedCrops = encodedCrops;
                     this.report = Object.freeze({ frameId: frame.frameId, token: frame.token, presented: true,
-                        complete: true, sharp: snapshot.metrics!.qualityScale === 1 && availability.every(item => item.sharp && !item.staleVersion),
+                        complete: true, layersComplete: availability.every(item => item.complete),
+                        sharp: snapshot.metrics!.qualityScale === 1 && availability.every(item => item.sharp && !item.staleVersion),
                         staleVersion: availability.some(item => item.staleVersion), qualityScale: snapshot.metrics!.qualityScale });
                     if (tally) auditPresent({ pane: this.options.paneId, frame: frame.frameId, rawTick: frame.timestamp, backend: 'canvas2d',
                         layersComplete: availability.every(item => item.complete), canvas: this.surface, standIns: tally.standIns,
@@ -495,7 +520,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
 
     coverage(frame: ScheduledFrame): CompositorCoverage {
         if (this.healthy() && this.report?.frameId === frame.frameId && sameToken(this.report.token, frame.token)) return this.report;
-        return { frameId: frame.frameId, token: frame.token, presented: false, complete: false, sharp: false,
+        return { frameId: frame.frameId, token: frame.token, presented: false, complete: false, layersComplete: false, sharp: false,
             qualityScale: this.scene?.metrics?.qualityScale ?? 0 };
     }
     page(view: ViewState, index: number) { return projectPage(this.scene ? this.scene.layout : this.layout, view, index); }
@@ -679,10 +704,20 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
     private releaseCpuLease(lease: ByteLease | null): void {
         if (lease && this.cpuLeases.delete(lease)) { this.cpuBytes -= lease.bytes; this.cpu!.release(lease); }
     }
+    /** A refused raise leaves the pane on its last picture with no retry of its own: a layer that needs no frame never wakes it.
+     * One sized waiter on the working pool wakes it when the bytes fit (the same shape as embedPresentation's), so the retry
+     * waits for real capacity instead of polling. */
+    private awaitCapacity(bytes: number): void {
+        const pool = this.working;
+        if (this.capacityWait !== null || !pool?.whenAvailable || this.disposed) return;
+        this.capacityWait = bytes;
+        pool.whenAvailable(() => { this.capacityWait = null; if (!this.disposed) this.options.invalidate('2d-raise-capacity'); }, bytes);
+    }
     private resize(width: number, height: number) {
         this.check();
         const token = this.options.currentToken();
         const result = (complete: boolean) => ({ width, height, generation: token?.deviceGeneration ?? 0, complete });
+        const refused = () => ({ ...result(false), refused: true });
         if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 0 || height < 0 ||
             width > POLICY.maxSurfaceAxisPixels || height > POLICY.maxSurfaceAxisPixels || width * height > POLICY.maxSurfacePixels) throw new RangeError('Invalid CPU backing');
         if (this.encodedSources.size) return result(false);
@@ -690,15 +725,17 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         try {
             if (!this.init()) return result(false);
             if (!this.host && !this.surface.width && !this.surface.height && !this.displayReserved) this.backing!.stage();
-            const bytes = width * height * POLICY.surfaceReserveBytesPerPixel;
-            if (bytes > this.displayReserved) {
-                if (!this.backing!.reserve(bytes - this.displayReserved)) return result(false);
-                this.displayReserved = bytes;
-            }
+            // The back buffer first: its refusal then charges nothing for the display, and a display reserve taken below
+            // belongs to a back buffer that exists (a reserve held with no canvas for it stayed charged until the next publish).
             const old = this.buffers.get('back');
             if (old && (old.canvas.width !== width || old.canvas.height !== height)) this.dropWork();
-            if (!this.allocate('back', width, height, false)) return result(false);
+            if (!this.allocate('back', width, height, false)) { this.awaitCapacity(width * height * POLICY.surfaceReserveBytesPerPixel); return refused(); }
             if (old !== this.buffers.get('back')) { this.cancelJob(); this.generation = allocateSurfaceGeneration(); }
+            const bytes = width * height * POLICY.surfaceReserveBytesPerPixel;
+            if (bytes > this.displayReserved) {
+                if (!this.backing!.reserve(bytes - this.displayReserved)) { this.awaitCapacity(bytes - this.displayReserved); return refused(); }
+                this.displayReserved = bytes;
+            }
             return result(true);
         } finally { this.busy--; }
     }
@@ -772,7 +809,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             });
         }
     }
-    private paintInverted(snapshot: Snapshot, frame: ScheduledFrame, back: Buffer2D, key: string): boolean {
+    private paintInverted(snapshot: Snapshot, frame: ScheduledFrame, back: Buffer2D, key: string, paint: string): boolean {
         if (!this.job) {
             // A band never exceeds the scheduler's one-tile progress admission, even at width8192.
             const rows = Math.max(1, Math.min(256, snapshot.metrics!.backingHeight, Math.floor(maxImagePixels / back.canvas.width)));
@@ -780,7 +817,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             if (!band) { this.options.invalidate('2d-document-buffer'); return false; }
             opaque(back.native, snapshot.appearance);
             if (__BME_BENCH__ && benchmarkDomain) benchmarkCanvas?.managers.get(this)?.begin(back.native, benchmarkDomain.benchmarkPaintDomain(snapshot, frame));
-            this.job = { key, snapshot, frame, back, band, y: 0, stage: 'render', colour: null, admission: null, timer: null };
+            this.job = { key, paint, snapshot, frame, back, band, y: 0, stage: 'render', colour: null, admission: null, timer: null };
         }
         const job = this.job;
         if (job.stage === 'colour') return false;

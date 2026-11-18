@@ -1,4 +1,4 @@
-import { auditCount } from './renderAudit';
+import { auditCount, auditStage, renderAuditEnabled } from './renderAudit';
 import type { Affine, Rgba } from '../types';
 import type { LayerHost } from './compositor.types';
 import type { MemoryAllocator } from './memoryGovernor';
@@ -27,6 +27,10 @@ const PATH_COVERAGE_MAX_TARGET_BYTES = 8 * 2 ** 20;
  * request that pushed a notebook's load over the GPU pool (paper, board and wet layers each hold a kit), degrading it;
  * at 2 MiB a 516-texel tile draws in about four bands. */
 const PATH_COVERAGE_SCRATCH_BYTES = 2 * 2 ** 20;
+/** The smallest band a refused scratch shrinks to: a band below it draws too many passes per item to be worth its target. Between this
+ * and the cap the scratch is halved on each refusal, so a pool that cannot grant the request's own band grants a smaller one (go-gpu:
+ * a 1.68 MiB request refused three times while the pool had less than that free). */
+const PATH_COVERAGE_MIN_SCRATCH_BAND_BYTES = 256 * 1024;
 /** One vertex upload piece; a frame's allowance takes as many as it covers. 64 KiB, not larger: the scheduler's progress grant
  * admits an oversize claim only while less than 64 KiB has been admitted this frame, once per frame (scheduler.ts,
  * claimUpload). A 256 KiB piece therefore passes only in a frame that is almost empty, and a busy frame refused it every time
@@ -219,6 +223,8 @@ export interface PreparedPathCoverage {
     readonly modulate: boolean;
     /** 4 for a 'grid4' composite (its output is then 'paint' with straight colour); 1 otherwise. */
     readonly grid: CompositeGrid;
+    /** True when this admission took a reference on its device's composite scratch, and retire releases exactly that reference. */
+    readonly scratch: boolean;
 }
 
 const KEEP_FACE = { fail: 'keep', depthFail: 'keep', pass: 'keep' } as const;
@@ -358,6 +364,8 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
     // `shared` has refs 0 exactly when it is in `idle`.
     const idle = new Map<Float64Array, VertexSet>();
     let idleBytes = 0, frame = 0;
+    /** A composite scratch's growth was refused while an admission still held the scratch: the next frame's start reclaims it. */
+    let scratchGrowth = false;
     /** A chain's CPU copy and its lease go with the chain: when its buffer is gone (or its upload was dropped). */
     const releaseChain = (chain: Chain): void => {
         if (chain.released) return;
@@ -371,13 +379,14 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         if (!uploading.has(entry.key)) freed(entry.key);
     };
     const unidle = (entry: VertexSet) => { if (idle.delete(entry.key)) idleBytes -= entry.bytes; };
-    /** Destroys idle sets, oldest first, until `bytes` are freed, skipping any used in the current frame. Returns the bytes freed;
-     * the governor's evict(bytes) and the idle bound both come here, so a set in use this frame is never reclaimed. */
+    /** Destroys idle sets, oldest first, until `bytes` are freed, skipping any stamped in the current or the previous frame: those are
+     * what is on screen, and partial eviction must not take them. Returns the bytes freed; the governor's evict(bytes) and the idle
+     * bound both come here. */
     const reclaimIdle = (bytes: number): number => {
         let freed = 0;
         for (const entry of idle.values()) {
             if (freed >= bytes) break;
-            if (entry.usedFrame >= frame) continue;
+            if (entry.usedFrame >= frame - 1) continue;
             idle.delete(entry.key); idleBytes -= entry.bytes; freed += entry.bytes; destroySet(entry);
         }
         return freed;
@@ -395,9 +404,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         const bytes = live.get(prepared);
         if (bytes === undefined) return;
         live.delete(prepared); gpuBytes -= bytes;
-        if (prepared.output.kind !== 'mask') {
-            releaseScratch(prepared.device, prepared.grid);
-        }
+        if (prepared.scratch) releaseScratch(prepared.device, prepared.grid);
         if (prepared.clip) prepared.device.destroy(prepared.clip);
         if (prepared.target) { prepared.device.destroy(prepared.target.target); prepared.device.destroy(prepared.target.texture); }
         for (const part of prepared.parts) releaseShared(part.set);
@@ -422,7 +429,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         if (shared.charge.lease !== shared.targetLease) shared.charge.gpu.release(shared.charge.lease);
     };
     /** Destroys a device's scratch of one grid and returns the bytes its target held. Callers ensure no admission is in flight. */
-    const destroyScratch = (owner: GfxDevice, grid: CompositeGrid, reason: 'release' | 'evict'): number => {
+    const destroyScratch = (owner: GfxDevice, grid: CompositeGrid, reason: 'release' | 'evict' | 'growth'): number => {
         const table = scratchTables[String(grid) as '1' | '4'];
         const shared = table.targets.get(owner);
         if (!shared) return 0;
@@ -463,41 +470,69 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         // The last kit on the device: no admission can be in flight (each kit retired its own before leaving), so both grids go.
         destroyScratch(owner, 1, 'release'); destroyScratch(owner, 4, 'release');
     };
-    /** Ensures the device's scratch of this grid holds a band of the given width; false when its lease is refused (a wait). It
-     * only grows, and to the widest band the device has asked for, at the full height the cap allows: a grown scratch replaced
-     * the one every kit drew from, and a band re-sized per request was a new target for each kit's width change. A grid scratch
-     * is 4× the texels per device pixel, so its band is sized by the grid's bytes (coverageTargetBytes with the grid). */
-    /** True when the scratch holds the band; the refused GPU bytes when its grant refuses the growth; 'unsupported' past the caps. */
-    const ensureScratch = (owner: GfxDevice, width: number, grid: CompositeGrid): true | number | 'unsupported' => {
+    /** Ensures the device's scratch of this grid holds a band of the given size: true; the refused GPU bytes when its lease is refused
+     * (a wait); 'unsupported' past the caps. The scratch is sized to the request, not to the full band: a one-rectangle preview asked
+     * for the full 2 MiB band, and was refused while the page's tiles held the pool (measured: 24 refusals in one PDF annotate run).
+     * Its width is the widest band the device has asked for, so every kit draws from one target. Its height is the request's own,
+     * rounded up to a power of two (a growing drag re-creates the scratch once per doubling) and capped at the full band. Draws loop
+     * over bands of the target's height, so a shorter scratch means more bands, not a wrong one. A refused rounded height retries at
+     * the request's exact height before it waits. An idle scratch is released by the governor's evict, or by the last kit leaving. A
+     * grid scratch is 4× the texels per device pixel, so its band is sized by the grid's bytes (coverageTargetBytes with the grid). */
+    const ensureScratch = (owner: GfxDevice, width: number, height: number, grid: CompositeGrid): true | number | 'unsupported' => {
         const table = scratchTables[String(grid) as '1' | '4'];
-        const rowBytes = coverageTargetBytes(width, 1, grid === 4 ? 1 : PATH_COVERAGE_SAMPLES, grid);
+        const samples = grid === 4 ? 1 : PATH_COVERAGE_SAMPLES;
+        const rowBytes = coverageTargetBytes(width, 1, samples, grid);
         if (rowBytes > PATH_COVERAGE_SCRATCH_BYTES) return 'unsupported';
         // A grid texture is (grid·width) texels wide, and the device's largest texture side bounds both axes of it.
         const cap = owner.limits.maxRenderTargetSize;
         if (width * grid > cap) return 'unsupported';
+        // The tallest band a scratch of width w may take: the scratch cap's bytes, and the device's side (grid texels per row). Draws loop
+        // over bands of this height, so a band taller than the largest texture side is never asked for (measured: a notebook asked 2×20164
+        // against a 16384 cap, and createCoverageTarget refused it).
+        const fullBand = (w: number): number =>
+            Math.min(Math.floor(PATH_COVERAGE_SCRATCH_BYTES / coverageTargetBytes(w, 1, samples, grid)), Math.floor(cap / grid));
         const current = table.targets.get(owner);
-        // Draws loop over bands of the target's height, so the height is only ever bounded by the device: a band taller than
-        // the largest texture side is refused by createCoverageTarget (measured: a notebook asked 2×20164 against a 16384 cap).
-        if (current && current.target.width >= width) { rehome(owner, grid); return true; }
-        const needed = Math.max(width, current?.target.width ?? 0, table.widths.get(owner) ?? 0);
-        // Growth rounds up to a power of two while the rounded band still fits the scratch cap and the device: a scratch grown to
+        // A current scratch at least as wide is kept (its width is the device's widest), and grows only in height when the request is taller.
+        const kept = current && current.target.width >= width ? current.target.width : 0;
+        // Growth rounds the width up to a power of two while the rounded band still fits the scratch cap and the device: a scratch grown to
         // each new widest request was re-created once per admission that was wider than any before (21 in one draw phase, with
         // no drop). Rounded, the scratch grows at most once per doubling; otherwise the exact request is used.
+        const needed = Math.max(width, table.widths.get(owner) ?? 0);
         const rounded = 2 ** Math.ceil(Math.log2(needed));
-        const fitsRounded = rounded * grid <= cap && coverageTargetBytes(rounded, 1, grid === 4 ? 1 : PATH_COVERAGE_SAMPLES, grid) <= PATH_COVERAGE_SCRATCH_BYTES;
-        const w = fitsRounded ? rounded : needed;
+        const fitsRounded = rounded * grid <= cap && coverageTargetBytes(rounded, 1, samples, grid) <= PATH_COVERAGE_SCRATCH_BYTES;
+        const w = kept || (fitsRounded ? rounded : needed);
         if (w * grid > cap) return 'unsupported';
-        const samples = grid === 4 ? 1 : PATH_COVERAGE_SAMPLES;
-        const h = Math.min(Math.floor(PATH_COVERAGE_SCRATCH_BYTES / coverageTargetBytes(w, 1, samples, grid)), Math.floor(cap / grid));
-        const bytes = coverageTargetBytes(w, h, samples, grid);
+        const band = fullBand(w);
+        const exact = Math.min(height, band);
+        if (current && kept && current.target.height >= exact) { rehome(owner, grid); return true; }
+        // The request's height, rounded to a power of two within the band, as the width is. A refused rounded height retries at the exact one.
+        const roundedHeight = Math.min(band, 2 ** Math.ceil(Math.log2(exact)));
+        // The attempts, largest first: the rounded height, the exact height, then halvings of the exact height down to the smallest band.
+        // Bounded by the halvings of one band (about log2 of its rows), and each refusal is counted.
+        const sizes: number[] = roundedHeight > exact ? [roundedHeight, exact] : [exact];
+        const minRows = Math.max(1, Math.floor(PATH_COVERAGE_MIN_SCRATCH_BAND_BYTES / coverageTargetBytes(w, 1, samples, grid)));
+        for (let rows = Math.floor(exact / 2); rows >= minRows; rows = Math.floor(rows / 2)) sizes.push(rows);
         // The pool counts the old scratch's lease until it is returned, so a growth that reserves first is refused for bytes the kit
         // itself holds. When no admission holds the old scratch (its draws read it at draw time, and none is pending), its lease goes
-        // back first. An admission still holding it keeps it: the growth reserves first, and its refusal is a short wait until those
-        // admissions retire.
+        // back first. An admission still holding it keeps it, and a refused growth then waits for the pool: retiring that admission only
+        // drops its reference, so the scratch is reclaimed at the next frame's start (beginFrame, once nothing holds it), which returns its
+        // lease and wakes the wait. Without that reclaim the wait had no source of capacity.
         let reclaimed = false;
         if (current && current.refs === 0) { table.targets.delete(owner); destroyScratchTarget(owner, current); reclaimed = true; }
-        const lease = host.allocator.gpu.reserve(bytes);
-        if (!lease) return bytes;
+        let lease: ByteLease | null = null;
+        let h = exact, bytes = 0;
+        for (let attempt = 0; attempt < sizes.length; attempt++) {
+            h = sizes[attempt]; bytes = coverageTargetBytes(w, h, samples, grid);
+            lease = host.allocator.gpu.reserve(bytes);
+            if (lease) break;
+            if (attempt + 1 < sizes.length) auditCount(audit, 'kit:scratch-height-fallback', 1, { bytes });
+        }
+        if (!lease) {
+            // The wait is for the smallest band the kit accepts (the last attempt); `asked` is the request's own rounded height.
+            auditCount(audit, 'kit:scratch-refused', 1, { bytes, asked: coverageTargetBytes(w, sizes[0], samples, grid) });
+            if (current && current.refs > 0) scratchGrowth = true;
+            return bytes;
+        }
         let target: CoverageTarget;
         try { target = owner.createCoverageTarget(w, h, samples, lease, grid === 4 ? { grid: 4 } : undefined); }
         catch (error) { host.allocator.gpu.release(lease); throw error; }
@@ -505,7 +540,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         table.widths.set(owner, w);
         table.targets.set(owner, { device: owner, target, bytes, refs: current?.refs ?? 0, usedFrame: frame,
             charge: { holder: kitToken, gpu: host.allocator.gpu, lease }, targetLease: lease });
-        auditCount(audit, grid === 4 ? 'kit:grid4-scratch-new' : 'kit:scratch-new');
+        auditCount(audit, grid === 4 ? 'kit:grid4-scratch-new' : 'kit:scratch-new', 1, { bytes });
         return true;
     };
     const release = () => {
@@ -658,10 +693,12 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
     const paintOutput: { kind: 'paint'; blend: 'normal' | 'modulate'; rgb: [number, number, number]; alpha: number } =
         { kind: 'paint', blend: 'normal', rgb: [0, 0, 0], alpha: 0 };
     const bandRect: RectI = { x: 0, y: 0, width: 0, height: 0 };
-    const render = (pass: GpuPass, prepared: PreparedPathCoverage, paint?: Rgba): void => {
+    const renderCoverage = (pass: GpuPass, prepared: PreparedPathCoverage, paint?: Rgba): void => {
         if (disposed || !live.has(prepared) || !pipelines || prepared.device !== device || host.device() !== device ||
             host.generation !== prepared.device.generation) throw new Error('Stale path coverage');
         const { affine, viewport, output } = prepared;
+        // Drawn in this frame: stamped like an admission, so partial eviction keeps what is on screen (the sets are the draw's own).
+        for (const part of prepared.parts) part.set.usedFrame = frame;
         if (paint && output.kind === 'mask') throw new Error('A paint colour applies to a composite, not a mask');
         // A grid composite draws its own one-sample r8 set and covers with coverage 1 in each texel; its colour is the 'paint' output's
         // straight rgb and alpha, at draw. An MSAA composite covers in its premultiplied colour, given at draw or the admitted one.
@@ -712,6 +749,12 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
                 }
             } finally { pass.endCoverage(token, drawOutput); }
         }
+    };
+    /** One coverage draw's encode time (CPU), named 'draw'; the timed path is taken only while the render audit is on. */
+    const render = (pass: GpuPass, prepared: PreparedPathCoverage, paint?: Rgba): void => {
+        if (!renderAuditEnabled()) { renderCoverage(pass, prepared, paint); return; }
+        const started = performance.now();
+        try { renderCoverage(pass, prepared, paint); } finally { auditStage(audit, 'draw', performance.now() - started); }
     };
     /** The winding and cover uniforms, written into the kit's one scratch and copied by the frame's ring at once. */
     const windingSlice = (viewport: Readonly<{ width: number; height: number }>, affine: Affine, dx: number, dy: number) => {
@@ -772,6 +815,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
                 piece % 4 !== 0 || offset + piece > up.bytes) {
                 throw new RangeError(`Invalid path vertex upload: offset ${offset}, bytes ${piece}, buffer ${up.bytes}`);
             }
+            const writeStarted = renderAuditEnabled() ? performance.now() : 0;
             try { up.device.writeBuffer(up.buffer, offset, up.data.subarray(offset / 4, (offset + piece) / 4)); }
             catch (error) {
                 if (!(error instanceof ArenaError) || error.code !== 'invalid-input') throw error;
@@ -780,6 +824,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
                 auditCount(audit, 'fallback:path-coverage:upload-refused', 1, { bytes: piece });
                 return 'unsupported';
             }
+            if (writeStarted) auditStage(audit, 'upload', performance.now() - writeStarted);
             auditCount(audit, 'upload:vertex', 1, { bytes: piece });
             up.written += piece;
         }
@@ -893,7 +938,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         VertexSet | Denial | 'deferred' | 'unsupported' => {
         const vertexBytes = vertexCount * 8;
         const found = shared.get(set.positive);
-        if (found && found.device === owner && found.negative === set.negative && found.used === vertexBytes) return found;
+        if (found && found.device === owner && found.negative === set.negative && found.used === vertexBytes) { auditCount(audit, 'kit:set-hit', 1, { bytes: vertexBytes }); return found; }
         if (found) {
             // The same positive array with another negative or size (or a stale device) holds a buffer this set cannot draw. A held set
             // cannot be replaced while a draw reads it: that is a fallback, counted. An idle one is replaced by a fresh upload; the array
@@ -905,6 +950,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         if (up && (up.device !== owner || up.negative !== set.negative || up.bytes !== vertexBytes)) { dropUpload(set.positive); up = undefined; }
         if (up) up.usedFrame = frame;
         if (!up) {
+            auditCount(audit, 'kit:set-new', 1, { bytes: vertexBytes });
             const staging = host.allocator.cpu.reserve(vertexBytes);
             if (!staging) return { status: 'denied', pool: 'cpu', bytes: vertexBytes };
             // Positive triangles first, then negative: the draw ranges follow this order.
@@ -928,6 +974,19 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         const state = writeUpload(up, budget);
         return state === 'done' ? finishUpload(up) : state;
     };
+    /** Admission, timed as 'admit' (its uploads are timed as 'upload' within it) while the render audit is on. */
+    const admitSets = (request: PathCoverageSetsRequest, budget: FrameBudget): PathCoverageAdmission => {
+        if (!renderAuditEnabled()) return admitSetsUntimed(request, budget);
+        const started = performance.now();
+        let result: PathCoverageAdmission;
+        try { result = admitSetsUntimed(request, budget); } finally { auditStage(audit, 'admit', performance.now() - started); }
+        // Debug log (audit only): one entry per admission, with the time it began, its outcome, the upload allowance left and whether
+        // the frame had yielded. A measurement reads it from globalThis.__bmeKitLog and joins it to presents by time.
+        const log = ((globalThis as { __bmeKitLog?: unknown[] }).__bmeKitLog ??= []) as unknown[];
+        if (log.length < 20000) log.push({ at: started, ms: performance.now() - started, status: result.status, left: budget.upload.remainingBytes,
+            budgetMs: budget.prepareDeadline - performance.now(), yield: budget.shouldYield(), phase: budget.phase, audit });
+        return result;
+    };
     /** Admission happens here, in prepare: targets, vertex buffers and any clip handle are created before any draw. Failure is
      * permanent for this device incarnation and returns 'unsupported'. A set uploaded by an admission that is then refused
      * keeps its buffer at zero refs, so the retry uploads nothing; release() frees it. */
@@ -936,18 +995,25 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         auditCount(audit, `fallback:path-coverage:${reason}`);
         return { status: 'unsupported' };
     };
-    const admitSets = (request: PathCoverageSetsRequest, budget: FrameBudget): PathCoverageAdmission => {
+    const admitSetsUntimed = (request: PathCoverageSetsRequest, budget: FrameBudget): PathCoverageAdmission => {
         // Failure is permanent for this device incarnation: the caller's exact route takes the item.
         if (disposed || failed || unsupported) return unsupportedBecause(disposed ? 'disposed' : failed ? 'failed' : 'device-unsupported');
         warm();
-        // A generation change is the device moving under this kit: its release follows, so the admission waits a frame. It is checked
-        // before readiness, so a kit whose pipelines are built waits here too instead of taking the CPU route as 'not-ready'.
+        // A generation change under this kit (the device's context was lost and restored since the frame began): the kit rebinds in this
+        // frame, releasing the old device's state and binding the current one, instead of deferring the admission a frame. The release
+        // also retires every live admission, including the earlier ones of this frame whose draws are still pending: those draws throw
+        // 'Stale path coverage' (renderCoverage's generation check), as they did on the mismatch before this change. Later frames are unaffected.
         if (device && (device.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration)) {
-            return { status: 'deferred' };
+            auditCount(audit, 'path-coverage:rebound:generation');
+            release(); warm();
         }
-        // Pipelines still compiling are a wait, not a fallback; ready invalidates the frame.
-        // Compiling pipelines and a device not yet bound are frame waits: nothing is refused for memory, so nothing is named.
-        if (!isReady()) return pending || !device ? { status: 'deferred' } : unsupportedBecause('not-ready');
+        // The three frame waits, each counted by its reason: pipelines still compiling (an async creation, so the first admission of a new
+        // device waits for it), no device yet bound. Nothing is refused for memory here, so nothing is named as a fallback.
+        if (!isReady()) {
+            if (!device) { auditCount(audit, 'path-coverage:deferred:no-device'); return { status: 'deferred' }; }
+            if (pending) { auditCount(audit, 'path-coverage:deferred:compiling'); return { status: 'deferred' }; }
+            return unsupportedBecause('not-ready');
+        }
         const owner = device!, { sets, rule, affine, viewport, output } = request;
         // Empty sets draw nothing. The rest are one set: several sets, or one shifted set, are packed into a copy with the shifts
         // baked in (see packSets), so the admission draws one winding per band, not one per set.
@@ -994,7 +1060,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         const parts: VertexSet[] = [entry];
         // The scratch is ensured after the buffers, and before any reference is taken: a refusal leaves nothing held.
         if (composite) {
-            const fits = ensureScratch(owner, bounds.width, grid);
+            const fits = ensureScratch(owner, bounds.width, bounds.height, grid);
             if (fits !== true) {
                 if (fits === 'unsupported') { auditCount(audit, 'fallback:raster-route'); return { status: 'unsupported' }; }
                 return { status: 'denied', pool: 'gpu', bytes: fits };
@@ -1036,7 +1102,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
             viewport: Object.freeze({ width: viewport.width, height: viewport.height }),
             affine: Object.freeze([...affine]) as unknown as Affine,
             colour: Object.freeze([...colour]) as unknown as readonly [number, number, number, number], gpuBytes: targetBytes,
-            supersample: grid === 1 && request.supersample === true, modulate });
+            supersample: grid === 1 && request.supersample === true, modulate, scratch: composite });
         live.set(prepared, targetBytes); gpuBytes += targetBytes;
         if (composite) {
             if (grid === 4) auditCount(audit, 'kit:supersample-4');
@@ -1045,11 +1111,27 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         }
         return { status: 'ready', value: prepared };
     };
+    // The kit starts its pipelines when it is created: a device already bound starts their compile now, and beginFrame starts it again
+    // for a device bound later. Pipeline creation is async, so by the time a person draws, the compile has long finished.
+    warm();
     return {
         warm,
         ready: isReady,
         /** Marks the frame the calls that follow belong to. An idle set used in this frame is never reclaimed. */
-        beginFrame(next: number): void { frame = next; },
+        beginFrame(next: number): void {
+            if (next === frame) { frame = next; return; }
+            auditCount(audit, 'kit:frame');
+            frame = next;
+            if (scratchGrowth && device) {
+                // The frame's start: nothing of the last frame is pending, so a scratch nothing holds goes now. Its lease returns to the pool,
+                // which wakes a refused growth's wait; a scratch still held keeps the flag for the next frame.
+                for (const grid of [1, 4] as const) { const held = scratchOf(device, grid); if (held && held.refs === 0) destroyScratch(device, grid, 'growth'); }
+                scratchGrowth = [1, 4].some(grid => (scratchOf(device!, grid as CompositeGrid)?.refs ?? 0) > 0);
+            }
+            // Pipelines compile from the frame's start, not from its first admission (an async creation: a device bound at a release or a
+            // context loss waits for them, so the start is the earliest that wait can end).
+            if (!disposed && !failed && !unsupported) warm();
+        },
         /** Whether the kit still holds this triangle array (a shared set or an upload in progress). */
         holds(key: Float64Array): boolean { return shared.has(key) || uploading.has(key); },
         /** The owner has let go of a triangle array (its outline was dropped): the packs built from it are released with it. A pack
@@ -1068,18 +1150,18 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
             let freed = reclaimIdle(bytes);
             for (const [key, up] of [...uploading]) {
                 if (freed >= bytes) break;
-                if (up.usedFrame >= frame) continue;
+                if (up.usedFrame >= frame - 1) continue;
                 freed += up.capacity; dropUpload(key);
             }
             // A pack no buffer holds (its admission was refused before the upload) is host CPU memory nothing uses: it goes first.
             for (const pack of [...packs.values()]) {
                 if (freed >= bytes) break;
-                if (pack.usedFrame >= frame || shared.has(pack.shape.positive) || uploading.has(pack.shape.positive)) continue;
+                if (pack.usedFrame >= frame - 1 || shared.has(pack.shape.positive) || uploading.has(pack.shape.positive)) continue;
                 freed += pack.bytes; freePack(pack);
             }
             if (device && freed < bytes) for (const grid of [1, 4] as const) {
                 const shared = scratchOf(device, grid);
-                if (shared && shared.refs === 0 && shared.usedFrame < frame) freed += destroyScratch(device, grid, 'evict');
+                if (shared && shared.refs === 0 && shared.usedFrame < frame - 1) freed += destroyScratch(device, grid, 'evict');
             }
             return freed;
         },

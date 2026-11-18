@@ -1,4 +1,5 @@
 import type { PlatformLayerDefinition, PlatformPresentation } from '../../platform/render/attachPlatformPane.types';
+import type { ViewState } from '../../platform/types';
 import type { EmbedPresentationPort } from '../../platform/render/embedPresentation.types';
 import type { CompositorAppearance } from '../../platform/render/compositor.types';
 import type { PageStack } from '../../platform/render/pageStack';
@@ -62,6 +63,8 @@ export interface ViewerInteractionPorts {
     beforeHistoryReplay?(step: HistoryStepInfo, direction: 'undo' | 'redo'): boolean;
     presented?(revision: number, token: RenderToken, frame?: PaintSource, context?: ViewerPaintPresentation): void;
     liveNodeIds?(): ReadonlySet<string>;
+    /** Whether the live layer paints this node in the frame at `view` (see BoardWetRenderer.drawsLive). */
+    liveDraws?(nodeId: string, band: 'underlay' | 'content', view: ViewState, canvas: boolean): boolean;
     /** The theme palette changed. Interaction-owned paint (the wet ink source) caches pigments
      * from the palette and is only refreshed when its own layer is prepared, so the view must
      * tell it: the main layers' invalidation alone leaves a dark pigment on screen. */
@@ -92,7 +95,9 @@ export interface ViewerEngine {
     boardDrawnInk(): ReadonlySet<string>;
     setInteractionLayers(layers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null): void;
     setPreviewLayers(layers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null,
-        coverage?: () => Readonly<{ frame: PaintSource; nodeIds: ReadonlySet<string> }> | null): void;
+        coverage?: () => Readonly<{ frame: PaintSource; nodeIds: ReadonlySet<string>; coverIds?: ReadonlySet<string>;
+            /** The handed-back nodes the overlay drew, at the commit revision (frozen after the commit): gpu-h13's rule for live ink. */
+            drawn?: Readonly<{ sceneRevision: number; nodes: ReadonlySet<string> }> }> | null): void;
     bindPreviewClear(clear: () => void): () => void;
     /** Detach the platform pane first: lifecycle disposes its layers. Releases only this view's
      * jobs/borrowed leases/listeners, NEVER the App-owned BoardSession or its undo/save state.

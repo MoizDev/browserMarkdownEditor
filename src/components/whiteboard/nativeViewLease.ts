@@ -11,6 +11,7 @@ import type { CaptureRequest, CaptureSnapshot } from '../../platform/render/capt
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
 import { recordPdfNavigation } from '../../utils/pdfViewState';
+import { auditCount, renderAuditEnabled } from '../../platform/render/renderAudit';
 import { getBoardRuntime, type BoardRuntime } from '../../whiteboard/host/runtime';
 import { createBoardViewCamera } from '../../whiteboard/host/viewCamera';
 import { resetZoomTarget, zoomStepTarget } from '../../whiteboard/host/zoomSteps';
@@ -210,10 +211,22 @@ export function createNativeViewLease(options: {
     const drawsChanged = (): boolean => {
         const next = snapshotNow();
         if (!next || !drawn) return true;
-        return drawn.state !== next.state || drawn.sceneRevision !== next.sceneRevision || drawn.layout !== next.layout ||
-            drawn.palette !== next.palette || drawn.appearance.background !== next.appearance.background ||
-            drawn.appearance.inverted !== next.appearance.inverted || drawn.layers !== next.layers ||
-            drawn.backendPreference !== next.backendPreference || paintKey(drawn.state, drawn.paint) !== paintKey(next.state, next.paint);
+        // gh14 audit: each field that the pane draws from, counted when it is the reason a publish repaints (draws-changed:<field>).
+        const fields: Array<[string, boolean]> = [
+            ['state', drawn.state !== next.state], ['scene-revision', drawn.sceneRevision !== next.sceneRevision],
+            ['layout', drawn.layout !== next.layout], ['palette', drawn.palette !== next.palette],
+            ['background', drawn.appearance.background !== next.appearance.background], ['inverted', drawn.appearance.inverted !== next.appearance.inverted],
+            ['layers', drawn.layers !== next.layers], ['backend', drawn.backendPreference !== next.backendPreference],
+            ['paint-key', paintKey(drawn.state, drawn.paint) !== paintKey(next.state, next.paint)],
+        ];
+        let changed = false;
+        for (const [name, differs] of fields) {
+            if (!differs) continue;
+            changed = true;
+            if (renderAuditEnabled()) auditCount('native', `draws-changed:${name}`);
+        }
+        if (!changed && renderAuditEnabled()) auditCount('native', 'draws-unchanged');
+        return changed;
     };
     // Direct callers (navigation, camera, the lease's own refreshes) always repaint; only the viewer's state publishes are filtered.
     const invalidate = (change?: string) => { if (change !== 'paint') invalidatePane(); publish(change); };
@@ -619,7 +632,7 @@ export function createNativeViewLease(options: {
                 if (!next) { recordViewport(); navigation.cancelViewWork('platform-detach'); }
                 platformPane = next;
                 updateInput();
-                if (next) next.invalidate('native-attachment');
+                if (next) { next.beginFreshView(); next.invalidate('native-attachment'); }
             },
             attachInput(interaction, overlay) {
                 detachSurface(); surface = interaction;

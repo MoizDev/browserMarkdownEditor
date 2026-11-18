@@ -86,7 +86,7 @@ export interface QuadCommand {
     readonly blend: 'source-over' | 'replace' | 'mask-max' | 'add' | 'modulate';
     /** Which composition program lays the quad: the default colour composite, the grid coverage resolve (`source` is then the
      * r8 grid texture), or the modulate composite (`k = rgb + (1 − a)` over white, laid by fixed-function modulate). */
-    readonly variant?: 'grid' | 'modulate' | 'area';
+    readonly variant?: 'grid' | 'grid16' | 'modulate' | 'area';
 }
 export interface FrameBackend {
     readonly signal: AbortSignal;
@@ -683,6 +683,33 @@ class DeviceFrame implements ControlledFrame {
         };
         this.recordQuad(this.#backend.quad(command), command);
     }
+    /** Resolves one overlap-atlas slot (`slot`, atlas device px) into `plane` at `at` (plane device px, the same size). Its own
+     * pass: the plane is cleared over `at` and written once, with no backdrop, blend or scope composite. */
+    resolveAtlas(source: FrameTexture, slot: RectI, plane: FrameTarget, at: RectI): void {
+        if (plane.handle === 'surface' || plane.format !== 'r8' || plane.samples !== 1 || source.texture === plane.color?.texture ||
+            at.width !== slot.width || at.height !== slot.height || at.x < 0 || at.y < 0 || at.x + at.width > plane.width || at.y + at.height > plane.height ||
+            !source.width || !source.height) throw new ArenaError('invalid-input');
+        const viewport = { x: 0, y: 0, width: plane.width, height: plane.height };
+        const scope: Scope = { target: plane, viewport, originX: 0, originY: 0, scale: 1, bounds: at, capture: false, empty: false, coverage: false };
+        this.start(plane, { target: plane.handle, viewport, load: { kind: 'clear', color: [0, 0, 0, 0] }, clearViewport: at, store: 'store' });
+        // `end` records the plane's retention, so it runs even when the quad cannot be recorded: a throw must not leave the retention
+        // of a plane whose clear already ran.
+        try {
+            const data = blockScratch;
+            setVec4(data, 0, viewport.x, viewport.y, viewport.width, viewport.height);
+            setVec4(data, 4, at.x, at.y, at.width, at.height);
+            setVec4(data, 8, slot.x, slot.y, 16, 0);
+            setVec4(data, 12, source.width, source.height, 1, 0);
+            const packed = this.uniforms(data);
+            const command: QuadCommand = {
+                context: scope, source, backdrop: this.#backend.white(), mask: this.#backend.white(),
+                uniforms: { buffer: this.#backend.buffer(packed.buffer), slice: packed }, scissor: at, blend: 'replace', variant: 'grid16',
+            };
+            this.recordQuad(this.#backend.quad(command), command);
+        } finally {
+            this.end(plane, { target: plane.handle, viewport, load: { kind: 'load' }, store: 'store' });
+        }
+    }
 }
 
 // Logical scopes expand to sequential backend passes; masks never borrow scene stencil
@@ -875,26 +902,34 @@ class DevicePass implements GpuPass {
             const native = this.#backend.target(target.target), texture = this.#backend.texture(target.texture);
             const parent = this.#scope;
             const grid = target.grid;
+            // An atlas (grid 16) is not part of the device: its slots sit at their own atlas position, not the pane's, so the
+            // scope takes the atlas as its root, unclipped by the pane. A grid 1|4 target keeps its device-relative mapping.
+            const atlas = grid === 16;
             if (!native.stencil || native.samples !== target.samples || native.format !== (grid === 1 ? 'rgba8' : 'r8') ||
                 native.width !== target.width * grid || native.height !== target.height * grid || !texture.uses.includes('sample') ||
                 texture.texture === parent.target.color?.texture || [bounds.x, bounds.y, bounds.width, bounds.height].some(value => !Number.isSafeInteger(value)) ||
-                bounds.width <= 0 || bounds.height <= 0 || bounds.width > target.width || bounds.height > target.height) throw new ArenaError('invalid-input');
+                bounds.width <= 0 || bounds.height <= 0 || bounds.width > target.width || bounds.height > target.height ||
+                (atlas && (bounds.x < 0 || bounds.y < 0 || bounds.x + bounds.width > target.width || bounds.y + bounds.height > target.height))) throw new ArenaError('invalid-input');
             const token = Object.freeze({ id: this.#frame.token() });
             const previous = this.#clip;
             // The scope covers the target's own rectangle; coverage outside the admitted area is never drawn.
-            const area = intersect(intersect(bounds, previous), parent.bounds);
-            const empty = parent.empty || !area.width || !area.height;
+            const area = atlas ? bounds : intersect(intersect(bounds, previous), parent.bounds);
+            const empty = atlas ? false : parent.empty || !area.width || !area.height;
             const options = { opacity: 1, blend: 'normal', colourEffect: 'none' } as const;
             if (!empty) {
-                this.#frame.start(native, { target: target.target, viewport: parent.viewport,
+                // An atlas clears its slot only: the other slots hold their coverage until each is resolved.
+                this.#frame.start(native, { target: target.target, viewport: atlas ? { x: 0, y: 0, width: target.width, height: target.height } : parent.viewport,
                     load: { kind: 'clear', color: [0, 0, 0, 0] }, store: 'store',
+                    ...(atlas ? { clearViewport: { x: bounds.x * 16, y: bounds.y * 16, width: bounds.width * 16, height: bounds.height * 16 } } : {}),
                     stencil: { load: { kind: 'clear', value: 0 }, store: 'discard' } });
             }
-            const child: Scope = { ...parent, target: native, bounds, originX: bounds.x, originY: bounds.y, scale: grid, empty, coverage: parent.coverage };
+            const child: Scope = atlas
+                ? { ...parent, target: native, viewport: { x: 0, y: 0, width: target.width, height: target.height }, bounds, originX: 0, originY: 0, scale: grid, empty, coverage: parent.coverage }
+                : { ...parent, target: native, bounds, originX: bounds.x, originY: bounds.y, scale: grid, empty, coverage: parent.coverage };
             const isolation: Isolation = { parent, child, lease: null, mask: null, options };
             this.#groups.push({ kind: 'coverage', token, previous, clipDepth: this.#clips.length, isolation });
             this.#scope = child;
-            this.#clip = intersect(previous, child.bounds);
+            this.#clip = atlas ? bounds : intersect(previous, child.bounds);
             return token;
         });
     }
@@ -904,10 +939,12 @@ class DevicePass implements GpuPass {
             const entry = this.#groups.at(-1);
             if (!entry || entry.kind !== 'coverage' || entry.token !== token || entry.clipDepth !== this.#clips.length) throw new ArenaError('invalid-input');
             // A grid target resolves only through 'paint'; device-resolution targets never take it.
-            const grid = entry.isolation.child.scale > 1;
-            const valid = output.kind === 'paint' ? grid
-                : output.kind === 'composite' ? !grid && ['normal', 'multiply', 'modulate'].includes(output.blend)
-                : output.kind === 'mask' && !grid;
+            // A coverage plane resolves only an atlas slot (grid 16); a 'paint' composite is grid 4 alone.
+            const scale = entry.isolation.child.scale;
+            const valid = output.kind === 'paint' ? scale === 4
+                : output.kind === 'coverage' ? scale === 16
+                : output.kind === 'composite' ? scale === 1 && ['normal', 'multiply', 'modulate'].includes(output.blend)
+                : output.kind === 'mask' && scale === 1;
             if (!valid) throw new ArenaError('invalid-input');
             this.#groups.pop();
             this.#closeCoverage(entry.isolation, entry.previous, output);
@@ -984,6 +1021,12 @@ class DevicePass implements GpuPass {
             const resolve: FrameTarget = { ...child.target, framebuffer: child.target.resolveFramebuffer, samples: 1 };
             // Only the borrowed rectangle: a shared scratch target is larger than one band of one path.
             this.#frame.blit(child.target, { x: 0, y: 0, width: child.bounds.width, height: child.bounds.height }, resolve, 0, 0);
+        }
+        if (output.kind === 'coverage') {
+            const source = child.target.color;
+            if (!source) throw new ArenaError('invalid-resource');
+            this.#frame.resolveAtlas(source, child.bounds, this.#backend.target(output.target), output.at);
+            return;
         }
         if (output.kind === 'mask') return;
         if (output.kind === 'paint') {

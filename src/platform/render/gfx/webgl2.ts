@@ -1,4 +1,4 @@
-import { coverageTargetBytes } from './api';
+import { COVERAGE_ATLAS_TILE, coverageTargetBytes } from './api';
 import type {
     BitmapUpload, BufferHandle, BufferUse, ByteLease, ClipHandle, CoverageTarget, CoverageTargetOptions, GfxDevice, GfxError,
     FrameEncoder, GfxLimits, Handle, PipelineDesc, PipelineHandle, PixelUpload, RectI, SamplerHandle,
@@ -9,9 +9,10 @@ import { createWebgl2Frame } from './webgl2Frame';
 import type { ControlledFrame, DrawContext, EncodedDraw, FrameBackend, FrameTarget, FrameTexture, QuadCommand, QuadPin, TargetRequest } from './webgl2Frame';
 import { Webgl2TargetPool } from './webgl2Pool';
 import type { PoolStorage } from './webgl2Pool';
-import { AREA_RESOLVE_SHADER, COMPOSITION_SHADER, GRID_RESOLVE_SHADER, MODULATE_COMPOSITE_SHADER } from './webgl2Shaders';
+import { AREA_RESOLVE_SHADER, COMPOSITION_SHADER, GRID16_RESOLVE_SHADER, GRID_RESOLVE_SHADER, MODULATE_COMPOSITE_SHADER } from './webgl2Shaders';
 import { Webgl2IndexMirror } from './webgl2Index';
 import { Webgl2Timer } from './webgl2Timer';
+import { auditCount } from '../renderAudit';
 import { Webgl2IsolationPool } from './webgl2Isolation';
 import type { GpuIsolationAdmission, IsolationReservation } from './webgl2Isolation.types';
 import { ArenaError, ResourceArena } from '../resourceArena';
@@ -64,6 +65,13 @@ export interface Webgl2Services {
     onFramebufferFailure?(): void;
     /** Called only when a failed encode schedules the next bounded ring capacity. */
     recordUniformGrowth?(previousBytes: number, nextBytes: number): void;
+}
+
+interface OffscreenSurface {
+    readonly framebuffer: WebGLFramebuffer;
+    readonly texture: WebGLTexture;
+    readonly width: number;
+    readonly height: number;
 }
 
 /** Platform-internal owner only; layers never receive an arena or raw GL (design:88). */
@@ -181,13 +189,17 @@ interface UniformSlot {
     serial: number;
     owner: FrameWork | null;
     valid: boolean;
+    /** Bytes the owning frame has written into this slot (the upload covers exactly these). */
+    used: number;
 }
 interface FrameWork {
     encoding: ArenaEncoding;
     controller: ControlledFrame | null;
     signal: AbortSignal;
+    /** The slot the frame writes into now. */
     slot: UniformSlot | null;
-    offset: number;
+    /** Every slot the frame owns, in order; each is uploaded and released with the frame. */
+    slots: UniformSlot[];
     passes: boolean;
     surface: boolean;
     surfaceRevision: number;
@@ -236,6 +248,21 @@ function byteSize(...factors: number[]): number {
     if (!Number.isSafeInteger(bytes) || bytes < 0) throw new ArenaError('invalid-input', { site: 'byteSize', factors: [...factors], bytes });
     count(bytes);
     return bytes;
+}
+
+// The uniform ring. Three slots is the nominal ring (rendering-design.md:280). A frame that outgrows its slot takes another, up to
+// UNIFORM_RING_OVERFLOW_SLOTS in all; the ring's size follows the largest frame encoded so far (ringSizeFor), 1 MiB to 8 MiB.
+const UNIFORM_RING_SLOTS = 3;
+const UNIFORM_RING_OVERFLOW_SLOTS = 6;
+const UNIFORM_RING_MIN = 1 << 20;
+const UNIFORM_RING_MAX = 8 << 20;
+function ringSizeFor(bytes: number): number {
+    let size = UNIFORM_RING_MIN;
+    while (size < bytes && size < UNIFORM_RING_MAX) size *= 2;
+    return size;
+}
+function alignUp(value: number, alignment: number): number {
+    return Math.ceil(value / alignment) * alignment;
 }
 
 /** Levels of a full chain: halve each axis down to 1 texel. */
@@ -330,10 +357,16 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     readonly #textureUnits = new Set<number>();
     readonly #uniformUnits = new Set<number>();
     readonly #uniformGrowths: { previous: number; next: number }[] = [];
-    #uniformBytes = 1 << 20;
+    /** The size of each ring slot for frames not yet encoded. Only grows, to the largest frame so far (noteFrameBytes). */
+    #uniformBytes = UNIFORM_RING_MIN;
+    /** The largest frame's uniform bytes so far: the ring is sized from it, so growth is a one-off, not a recurring stall. */
+    #uniformPeak = 0;
     #surfaceRevision = 0;
+    /** The new-size target a raise draws into while the displayed canvas keeps its old picture (openOffscreen). */
+    #offscreen: OffscreenSurface | null = null;
     #composition: PipelineHandle | null = null;
     #gridComposition: PipelineHandle | null = null;
+    #grid16Composition: PipelineHandle | null = null;
     #modulateComposition: PipelineHandle | null = null;
     #areaComposition: PipelineHandle | null = null;
     #white: TextureHandle | null = null;
@@ -556,8 +589,8 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         this.#usable();
         if (!this.#white) throw new ArenaError('out-of-budget');
         const encoding = this.#arena.beginEncoding();
-        const work: FrameWork = { encoding, controller: null, signal: this.#work.signal, slot: null, quadPins: new Map(),
-            offset: 0, passes: false, surface: false, surfaceRevision: this.#surfaceRevision, issued: null, finished: false };
+        const work: FrameWork = { encoding, controller: null, signal: this.#work.signal, slot: null, slots: [], quadPins: new Map(),
+            passes: false, surface: false, surfaceRevision: this.#surfaceRevision, issued: null, finished: false };
         this.#frames.set(encoding, work);
         this.#isolation.begin(encoding);
         const frame = createWebgl2Frame(this.#frameBackend(work));
@@ -824,6 +857,28 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         }
     }
 
+    /** The overlap atlas (grid 16): `slotsAcross`×`slotsDown` slots of one tile each, one r8 texel per 1/16 device px and a stencil
+     * at the same texel size. The lease is charged exactly coverageTargetBytes(…, 1, 16). A slot is drawn through beginCoverage.
+     * A throw leaves the lease open for the caller to release (as createCoverageTarget does). */
+    createCoverageAtlas(slotsAcross: number, slotsDown: number, lease: ByteLease): CoverageTarget {
+        this.#usable();
+        if (!Number.isSafeInteger(slotsAcross) || !Number.isSafeInteger(slotsDown) || slotsAcross <= 0 || slotsDown <= 0) throw new ArenaError('invalid-input');
+        // No grid-16 program (not yet compiled, or refused): the refusal is counted here, and the caller takes its grid-4 route. The
+        // lease is the caller's to release on a throw, as for createCoverageTarget.
+        if (!this.#grid16Composition) { auditCount('gpu', 'fallback:grid16-unavailable'); throw new ArenaError('invalid-resource'); }
+        const width = slotsAcross * COVERAGE_ATLAS_TILE, height = slotsDown * COVERAGE_ATLAS_TILE;
+        if (lease.bytes < coverageTargetBytes(width, height, 1, 16)) throw new ArenaError('out-of-budget');
+        const texture = this.#createTexture(width * 16, height * 16, 'r8', ['render', 'sample'], lease);
+        try {
+            const target = this.createTarget(texture, { samples: 1, stencil: true }, lease);
+            this.#arena.closeLease(lease);
+            return { target, texture, width, height, samples: 1, grid: 16 };
+        } catch (error) {
+            this.destroy(texture);
+            throw error;
+        }
+    }
+
     createRenderTexture(width: number, height: number, lease: ByteLease, options?: { format?: TextureFormat; copyDst?: boolean }): { texture: TextureHandle; target: TargetHandle } {
         this.#usable();
         const format = options?.format ?? 'rgba8';
@@ -930,13 +985,113 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         return { live: this.#cpuBytes, retiring: 0 };
     }
 
-    resizeSurface(width: number, height: number): SurfaceResizeResult {
-        const gl = this.#healthy();
-        if (this.#disposed) throw new ArenaError('aborted');
+    #checkSurfaceSize(width: number, height: number): void {
         count(width); count(height);
         if (width > Math.min(this.limits.maxRenderTargetSize, this.limits.maxViewport[0], RENDER_CONSTANTS.maxSurfaceAxisPixels) ||
             height > Math.min(this.limits.maxRenderTargetSize, this.limits.maxViewport[1], RENDER_CONSTANTS.maxSurfaceAxisPixels) ||
             byteSize(width, height) > RENDER_CONSTANTS.maxSurfacePixels) throw new ArenaError('invalid-input');
+    }
+
+    /** Opens the new-size target for a raise. The displayed canvas is not touched: its old picture stays on screen until
+     * commitSurface presents this frame. Opening the same size again keeps the open target. A zero size supersedes an open
+     * target (it is dropped). False when the size is zero or the browser refuses the target; the caller then keeps the
+     * displayed picture. */
+    openOffscreen(width: number, height: number): boolean {
+        const gl = this.#usable();
+        this.#checkSurfaceSize(width, height);
+        if (width === 0 || height === 0) { this.#dropOffscreen(); return false; }
+        const open = this.#offscreen;
+        if (open && open.width === width && open.height === height) return true;
+        this.#dropOffscreen();
+        const texture = gl.createTexture();
+        const framebuffer = gl.createFramebuffer();
+        if (!texture || !framebuffer) {
+            if (texture) gl.deleteTexture(texture);
+            if (framebuffer) gl.deleteFramebuffer(framebuffer);
+            return false;
+        }
+        try {
+            gl.bindTexture(gl.TEXTURE_2D, texture);
+            gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, width, height);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+            gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+            gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+            const complete = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+            const clean = gl.getError() === gl.NO_ERROR;
+            this.#forgetState();
+            this.#reset();
+            if (!complete || !clean) throw new ArenaError('allocation');
+        } catch {
+            gl.deleteFramebuffer(framebuffer);
+            gl.deleteTexture(texture);
+            if (!this.#lost && !gl.isContextLost()) this.#reset();
+            return false;
+        }
+        this.#offscreen = { framebuffer, texture, width, height };
+        this.#surfaceRevision++;
+        return true;
+    }
+
+    /** Presents the open target: the canvas takes the target's size (which clears the displayed picture), the target is
+     * blitted to the default framebuffer, and the target is released. The caller calls this only for a frame that is complete,
+     * in the same task as that frame's draw, so no task ever shows the cleared canvas. Null when nothing is open. */
+    commitSurface(): SurfaceResizeResult | null {
+        const offscreen = this.#offscreen;
+        if (!offscreen) return null;
+        const gl = this.#healthy();
+        if (this.#disposed) throw new ArenaError('aborted');
+        const canvas = this.#canvas!;
+        this.#forgetState();
+        // The source is checked before the canvas is touched: resizing the canvas clears the displayed picture, so a target the
+        // blit cannot read must not reach that point. The displayed picture stays, and the result is incomplete.
+        gl.bindFramebuffer(gl.READ_FRAMEBUFFER, offscreen.framebuffer);
+        const readable = gl.checkFramebufferStatus(gl.READ_FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE && gl.getError() === gl.NO_ERROR;
+        if (!readable) {
+            auditCount('gpu', 'commit-unreadable');
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            this.#dropOffscreen();
+            this.#reset();
+            return { width: gl.drawingBufferWidth, height: gl.drawingBufferHeight, complete: false, generation: this.generation };
+        }
+        if (canvas.width !== offscreen.width) canvas.width = offscreen.width;
+        if (canvas.height !== offscreen.height) canvas.height = offscreen.height;
+        gl.readBuffer(gl.COLOR_ATTACHMENT0);
+        gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+        gl.drawBuffers([gl.BACK]);
+        gl.disable(gl.SCISSOR_TEST);
+        gl.blitFramebuffer(0, 0, offscreen.width, offscreen.height, 0, 0, offscreen.width, offscreen.height, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+        // The blit's own error is the result. The default framebuffer's status is always complete, so it says nothing about this copy.
+        const complete = gl.getError() === gl.NO_ERROR;
+        if (!complete) auditCount('gpu', 'commit-blit-failed');
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        this.#dropOffscreen();
+        this.#reset();
+        return { width: gl.drawingBufferWidth, height: gl.drawingBufferHeight, complete, generation: this.generation };
+    }
+
+    /** Abandon of an open raise (hidden, context lost, refused): the displayed picture is untouched. Idempotent. */
+    closeOffscreen(): void { this.#dropOffscreen(); }
+
+    #dropOffscreen(): void {
+        const offscreen = this.#offscreen;
+        if (!offscreen) return;
+        this.#offscreen = null;
+        this.#surfaceRevision++;
+        const gl = this.#gl;
+        if (!gl || this.#lost || gl.isContextLost()) return;
+        this.#forgetState();
+        gl.deleteFramebuffer(offscreen.framebuffer);
+        gl.deleteTexture(offscreen.texture);
+        this.#reset();
+    }
+
+    resizeSurface(width: number, height: number): SurfaceResizeResult {
+        const gl = this.#healthy();
+        if (this.#disposed) throw new ArenaError('aborted');
+        this.#checkSurfaceSize(width, height);
+        // An immediate resize supersedes any open raise: its target was sized for a request that is no longer current.
+        this.#dropOffscreen();
         const canvas = this.#canvas!;
         if (canvas.width !== width || canvas.height !== height) {
             if (canvas.width !== width) canvas.width = width;
@@ -965,7 +1120,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         try {
             this.#cleanup([
                 ...[...this.#frames.values()].map(frame => () => frame.controller?.cancel()),
-                () => this.#timer.clear(false), () => this.#isolation.clear(), () => this.#dropUniformSlots(), () => this.#dropVaos(), () => this.#pool.clear(),
+                () => this.#dropOffscreen(), () => this.#timer.clear(false), () => this.#isolation.clear(), () => this.#dropUniformSlots(), () => this.#dropVaos(), () => this.#pool.clear(),
                 () => this.#arena.releaseAll(reason),
                 () => {
                     for (const handle of this.#handles) {
@@ -991,12 +1146,12 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         this.#work.abort();
         this.#cleanup([
             ...[...this.#frames.values()].map(frame => () => frame.controller?.cancel()),
-            () => this.#timer.clear(false), () => this.#isolation.clear(), () => this.#dropUniformSlots(), () => this.#dropVaos(), () => this.#pool.clear(),
+            () => this.#dropOffscreen(), () => this.#timer.clear(false), () => this.#isolation.clear(), () => this.#dropUniformSlots(), () => this.#dropVaos(), () => this.#pool.clear(),
             () => this.#arena.releaseAll('hidden'),
             () => { for (const handle of this.#handles) this.#arena.release(handle); },
             () => this.#handles.clear(), () => this.#programs.clear(), () => this.#programSignatures.clear(),
             () => this.#samplers.clear(), () => this.#attachments.clear(),
-            () => { this.#white = null; this.#composition = null; this.#gridComposition = null; this.#modulateComposition = null; this.#areaComposition = null; }, () => this.#collect(),
+            () => { this.#white = null; this.#composition = null; this.#gridComposition = null; this.#grid16Composition = null; this.#modulateComposition = null; this.#areaComposition = null; }, () => this.#collect(),
         ]);
     }
 
@@ -1009,12 +1164,12 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         try {
             this.#cleanup([
                 ...[...this.#frames.values()].map(frame => () => frame.controller?.cancel()),
-                () => this.#timer.clear(true), () => this.#isolation.abandon(), () => this.#pool.abandon(),
+                () => this.#dropOffscreen(), () => this.#timer.clear(true), () => this.#isolation.abandon(), () => this.#pool.abandon(),
                 ...this.#uniformSlots.map(slot => () => this.#returnCpu(slot.lease)),
                 () => { this.#uniformSlots.length = 0; },
                 ...[...this.#indexBuffers].map(buffer => () => this.#dropIndexData(buffer)),
                 () => this.#pipelines.clear(), () => this.#pollCancel?.(),
-                () => { this.#pollCancel = null; this.#white = null; this.#composition = null; this.#gridComposition = null; this.#modulateComposition = null; this.#areaComposition = null; },
+                () => { this.#pollCancel = null; this.#white = null; this.#composition = null; this.#gridComposition = null; this.#grid16Composition = null; this.#modulateComposition = null; this.#areaComposition = null; },
                 () => { this.#fences.clear(); this.#fenceTimes.clear(); }, () => this.#handles.clear(), () => this.#programs.clear(),
                 () => this.#programSignatures.clear(), () => this.#samplers.clear(), () => this.#attachments.clear(),
                 () => this.#textureUnits.clear(), () => this.#uniformUnits.clear(),
@@ -1082,6 +1237,16 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     async #prepareComposition(signal: AbortSignal): Promise<void> {
         this.#composition = await this.#program(COMPOSITION_SHADER, AbortSignal.any([signal, this.#work.signal]));
         this.#gridComposition = await this.#program(GRID_RESOLVE_SHADER, AbortSignal.any([signal, this.#work.signal]));
+        // The grid-16 resolve is optional: a compile or link failure there must not take the grid 1 and 4 composition down with it.
+        // Without it no atlas is admitted (createCoverageAtlas refuses), so the caller falls back to grid 4 and counts it.
+        const both = AbortSignal.any([signal, this.#work.signal]);
+        try { this.#grid16Composition = await this.#program(GRID16_RESOLVE_SHADER, both); }
+        catch (error) {
+            if (both.aborted) throw error;
+            // Counted once, here: every atlas request after it is refused and counted under fallback:grid16-unavailable.
+            auditCount('gpu', 'grid16-compile-failed');
+            this.#grid16Composition = null;
+        }
         // The area resolve is optional: only the union ink route calls it. A compile failure there must not take the grid 1 and 4
         // composition down with it, so the area route is refused (counted by its caller) and the rest of the device stays up.
         const area = AbortSignal.any([signal, this.#work.signal]);
@@ -1248,6 +1413,13 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                         color: this.#frameTexture(work.encoding, root.texture, native.colorTexture),
                         usedRect: { x: 0, y: 0, width: root.width, height: root.height }, retained: { colorStored: false, stencilStored: false } };
                 }
+                // A raise draws its new size here while the displayed canvas keeps the old picture (commitSurface presents it).
+                const offscreen = this.#offscreen;
+                if (offscreen) {
+                    return { handle, framebuffer: offscreen.framebuffer, resolveFramebuffer: offscreen.framebuffer, ...(__BME_BENCH__ ? { coverage: null } : {}),
+                        width: offscreen.width, height: offscreen.height, format: 'rgba8', samples: 1, stencil: false, capture: false, color: null,
+                        usedRect: { x: 0, y: 0, width: offscreen.width, height: offscreen.height }, retained: { colorStored: false, stencilStored: false } };
+                }
                 return { handle, framebuffer: null, resolveFramebuffer: null, ...(__BME_BENCH__ ? { coverage: null } : {}), width: gl.drawingBufferWidth, height: gl.drawingBufferHeight,
                     format: 'rgba8', samples: 1, stencil: false, capture: false, color: null,
                     usedRect: { x: 0, y: 0, width: gl.drawingBufferWidth, height: gl.drawingBufferHeight }, retained: { colorStored: false, stencilStored: false } };
@@ -1302,7 +1474,8 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             endReplay: () => this.#endReplay(),
             bindTarget: framebuffer => this.#bindTarget(framebuffer),
             quad: command => {
-                const handle = command.variant === 'grid' ? this.#gridComposition : command.variant === 'area' ? this.#areaComposition
+                const handle = command.variant === 'grid' ? this.#gridComposition : command.variant === 'grid16' ? this.#grid16Composition
+                    : command.variant === 'area' ? this.#areaComposition
                     : command.variant === 'modulate' ? this.#modulateComposition : this.#composition;
                 if (!handle) throw new ArenaError('invalid-resource');
                 const cached = work.quadPins.get(handle);
@@ -1345,7 +1518,8 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 finally {
                     try { if (work.surface && !work.signal.aborted) this.#timer.end(); }
                     finally {
-                        if (work.slot) { work.slot.owner = null; work.slot.serial = serial ?? work.issued ?? 0; work.slot = null; }
+                        for (const slot of work.slots) { slot.owner = null; slot.serial = serial ?? work.issued ?? 0; }
+                        work.slots.length = 0; work.slot = null;
                         this.#frames.delete(work.encoding);
                     }
                 }
@@ -1413,81 +1587,107 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     }
 
     #frameUniforms(work: FrameWork, bytes: ArrayBufferView): UniformSlice {
-        const slot = this.#writeUniforms(work, bytes);
-        // The write leaves work.offset just past the bytes it copied, so their offset is that minus their length.
-        return { buffer: slot.handle, offset: work.offset - bytes.byteLength, bytes: bytes.byteLength };
+        const { slot, offset } = this.#writeUniforms(work, bytes);
+        return { buffer: slot.handle, offset, bytes: bytes.byteLength };
     }
 
     /** Rewrites a caller-owned record to name the bytes, with no allocation. Fields change only after the write succeeds. */
     #frameUniformsInto(work: FrameWork, bytes: ArrayBufferView, into: UniformSlice): void {
-        const slot = this.#writeUniforms(work, bytes);
+        const { slot, offset } = this.#writeUniforms(work, bytes);
         into.buffer = slot.handle;
-        into.offset = work.offset - bytes.byteLength;
+        into.offset = offset;
         into.bytes = bytes.byteLength;
     }
 
-    #writeUniforms(work: FrameWork, bytes: ArrayBufferView): UniformSlot {
+    /** Copies one record into the frame's ring. A frame that outgrows its slot takes another slot before the write, so a write
+     * never fails for size: a frame's uniform bytes are not bounded by the ring's current slot size. What still refuses is the
+     * memory governor (reserve) and the bounded ring (UNIFORM_RING_OVERFLOW_SLOTS), both counted. */
+    #writeUniforms(work: FrameWork, bytes: ArrayBufferView): { slot: UniformSlot; offset: number } {
         count(bytes.byteLength, true);
-        if (!work.slot) work.slot = this.#uniformSlot(work);
-        const offset = Math.ceil(work.offset / this.limits.uniformAlignment) * this.limits.uniformAlignment;
-        if (offset > work.slot.data.byteLength - bytes.byteLength) {
-            const next = Math.min(8 << 20, this.#uniformBytes * 2);
-            if (next !== this.#uniformBytes) {
-                const growth = { previous: this.#uniformBytes, next };
-                this.#uniformGrowths.push(growth);
-                this.#uniformBytes = next;
-                this.#services.recordUniformGrowth?.(growth.previous, growth.next);
-            }
-            throw new ArenaError('out-of-budget');
+        if (!work.slot) work.slot = this.#uniformSlot(work, bytes.byteLength, false);
+        let offset = alignUp(work.slot.used, this.limits.uniformAlignment);
+        if (offset + bytes.byteLength > work.slot.data.byteLength) {
+            work.slot = this.#uniformSlot(work, bytes.byteLength, true);
+            offset = 0;
         }
         work.slot.data.set(new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength), offset);
-        work.offset = offset + bytes.byteLength;
+        work.slot.used = offset + bytes.byteLength;
         this.#pin(work.encoding, work.slot.handle, 'buffer');
-        return work.slot;
+        return { slot: work.slot, offset };
     }
 
-    #uniformSlot(work: FrameWork): UniformSlot {
-        // Three nonblocking slots (rendering-design.md:281). The ruled 1→8 MiB growth
-        // changes a future encode, never the current frame's budget or in-flight bytes.
-        // A growth retires old buffers; it never resizes storage that a prior submission uses.
+    /** A slot for this frame with room for `minBytes`. A free slot that fits is reused; otherwise a new one is allocated, at most
+     * UNIFORM_RING_SLOTS across the ring for a frame's first slot and UNIFORM_RING_OVERFLOW_SLOTS for an overflow. Slots still in
+     * flight are never reused or resized (fenced by serial); a growth of the ring only changes the slots created after it. */
+    #uniformSlot(work: FrameWork, minBytes: number, overflow: boolean): UniformSlot {
+        // A free slot smaller than the ring is retired (an old size); an oversized one is kept, since it fits a large frame.
         for (let i = this.#uniformSlots.length - 1; i >= 0; i--) {
             const slot = this.#uniformSlots[i];
-            if (!slot.owner && (!slot.valid || slot.data.byteLength !== this.#uniformBytes)) {
+            if (!slot.owner && (!slot.valid || slot.data.byteLength < this.#uniformBytes)) {
                 this.destroy(slot.handle);
                 this.#returnCpu(slot.lease);
                 this.#uniformSlots.splice(i, 1);
             }
         }
-        let slot = this.#uniformSlots.find(candidate => candidate.valid && !candidate.owner && this.#complete(candidate.serial));
+        let slot = this.#uniformSlots.find(candidate => candidate.valid && !candidate.owner && candidate.data.byteLength >= minBytes &&
+            this.#complete(candidate.serial));
         if (!slot) {
-            if (this.#uniformSlots.length >= 3) throw new ArenaError('out-of-budget');
-            const cpu = this.#reserve(this.#services.cpuStaging, this.#uniformBytes, false);
+            const size = Math.max(this.#uniformBytes, alignUp(minBytes, this.limits.uniformAlignment));
+            if (this.#uniformSlots.length >= (overflow ? UNIFORM_RING_OVERFLOW_SLOTS : UNIFORM_RING_SLOTS)) {
+                auditCount('gpu', 'uniform-ring-busy');
+                throw new ArenaError('out-of-budget');
+            }
+            if (overflow) auditCount('gpu', 'uniform-overflow');
+            const cpu = this.#reserve(this.#services.cpuStaging, size, false);
             let handle: BufferHandle | null = null;
             try {
-                const data = new Uint8Array(this.#uniformBytes);
+                const data = new Uint8Array(size);
                 // 'vertex' too: a batched textured-quad draw binds its instance records as a vertex slice from this same ring
                 // (compositor.ts drawTexturedQuads). The device refuses a vertex slice whose buffer lacks the use, which demoted
                 // the pane mid-draw (seen in the final run's audit: pane:fallback:pane-2d:gpu-error:invalid-input).
-                handle = this.#owned('buffer', { bytes: this.#uniformBytes, uses: ['uniform', 'vertex', 'copy-dst'] }, this.#uniformBytes, this.#services.working);
-                slot = { handle, native: this.#arena.validate(handle, 'buffer'), data, lease: cpu, serial: 0, owner: null, valid: true };
+                handle = this.#owned('buffer', { bytes: size, uses: ['uniform', 'vertex', 'copy-dst'] }, size, this.#services.working);
+                slot = { handle, native: this.#arena.validate(handle, 'buffer'), data, lease: cpu, serial: 0, owner: null, valid: true, used: 0 };
                 this.#uniformSlots.push(slot);
             } catch (error) { if (handle) this.destroy(handle); this.#returnCpu(cpu); throw error; }
         }
         slot.owner = work;
+        slot.used = 0;
+        work.slots.push(slot);
         return slot;
     }
 
     #uploadUniforms(work: FrameWork): void {
-        if (!work.slot || !work.offset) return;
+        if (!work.slots.some(slot => slot.used > 0)) return;
         const gl = this.#usable();
         const started = performance.now();
+        let bytes = 0;
         try {
-            gl.bindBuffer(gl.COPY_WRITE_BUFFER, work.slot.native.buffer);
-            gl.bufferSubData(gl.COPY_WRITE_BUFFER, 0, work.slot.data.subarray(0, work.offset));
+            for (const slot of work.slots) {
+                if (!slot.used) continue;
+                gl.bindBuffer(gl.COPY_WRITE_BUFFER, slot.native.buffer);
+                gl.bufferSubData(gl.COPY_WRITE_BUFFER, 0, slot.data.subarray(0, slot.used));
+                bytes += slot.used;
+            }
             this.#checkUpload();
         } finally {
-            (this.#services.recordUniformUpload ?? this.#services.recordUpload)?.(work.offset, performance.now() - started);
+            (this.#services.recordUniformUpload ?? this.#services.recordUpload)?.(bytes, performance.now() - started);
             this.#reset();
+        }
+        this.#noteFrameBytes(bytes);
+    }
+
+    /** Sizes the ring from the largest frame so far (with headroom), so the next frames of a similar size never overflow. Growth is
+     * counted and reported like the ruled growth; it never resizes a slot a submission still uses (uniformSlot retires old sizes). */
+    #noteFrameBytes(bytes: number): void {
+        if (bytes <= this.#uniformPeak) return;
+        this.#uniformPeak = bytes;
+        const next = ringSizeFor(Math.ceil(bytes * 1.25));
+        if (next > this.#uniformBytes) {
+            const growth = { previous: this.#uniformBytes, next };
+            this.#uniformGrowths.push(growth);
+            this.#uniformBytes = next;
+            auditCount('gpu', 'uniform-ring-grow');
+            this.#services.recordUniformGrowth?.(growth.previous, growth.next);
         }
     }
 

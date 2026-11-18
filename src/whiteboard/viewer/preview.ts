@@ -35,9 +35,13 @@ export interface BoardPreview {
     armCommit(): void;
     finishCommit(): void;
     cancelCommit(): void;
-    presented(revision: number, token: import('../../platform/render/types').RenderToken, frame?: PaintSource): void;
+    /** `omitted`: the nodes the presented base frame omitted (its context's omittedNodeIds); absent means none is known omitted. */
+    presented(revision: number, token: import('../../platform/render/types').RenderToken, frame?: PaintSource, omitted?: ReadonlySet<string> | null): void;
     showTextPaint(node: Node, paint: TextPaint, faces: FaceTable, localToWorld: Affine): void;
     clear(): void;
+    /** Makes the overlay's layers now, at editing activation: their kits compile their pipelines at creation, so the first drag
+     * does not wait for them. Empty layers answer complete (nothing is requested until a hand-off), so this costs no frame. */
+    warm(): void;
     dispose(): void;
 }
 
@@ -89,6 +93,9 @@ function operationNodes(doc: BoardDoc, ops: readonly Op[]): { changes: Map<NodeI
     return { changes, ...(paper ? { paper } : {}) };
 }
 
+/** The largest overlay built synchronously at the hand-off (a gesture's few items); a larger one keeps the yielding build. */
+const SYNC_OVERLAY_NODES = 16;
+
 export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
     const { runtime, engine, render } = options;
     if (engine.session !== runtime.session) throw new Error('Preview needs the existing board session');
@@ -99,7 +106,13 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
     let controllerHandedOff = false;
     let frames: ReturnType<typeof createPaintFrameAssembler> | null = null;
     let requestedIds: ReadonlySet<string> | null = null, requestedGeneration = -1, handedOffGeneration = -1;
+    // The overlay's own nodes, refilled at each request: its layers index and draw these items only, never the pinned page.
+    const overlayNodes = new Set<string>();
     let commitRevision: number | null = null, commitRelease: (() => void) | null = null;
+    // The nodes the overlay handed back to the base at the commit (after the apply, before the base has drawn them). The overlay keeps
+    // drawing them and the base covers them, but does not omit them: the base draws them at the commit revision, and only then does
+    // presented() clear the overlay. Omitting them would be the old deadlock (the base waits on the overlay, the overlay on the base).
+    let handedBack: ReadonlySet<string> = new Set<string>();
     const frameIds = new WeakMap<PaintSource, ReadonlySet<string>>(), frameGenerations = new WeakMap<PaintSource, number>();
     const waiters = new Set<{ generation: number; resolve(): void; reject(error: unknown): void; signal: AbortSignal; abort(): void }>();
     const idleWaiters = new Set<{ resolve(): void; reject(error: unknown): void; signal: AbortSignal; abort(): void }>();
@@ -163,7 +176,7 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
     const clearNow = () => {
         deferred = null; queued = null; inFlight = false; inFlightSeq = -1; translation = null; metaBySeq.clear();
         generation++; if (!resuming) settle(interrupted()); controller?.abort(); controller = null; controllerHandedOff = false; pendingRelease?.(); pendingRelease = null;
-        const releaseCommit = commitRelease; commitRelease = null; commitRevision = null;
+        const releaseCommit = commitRelease; commitRelease = null; commitRevision = null; handedBack = new Set<string>();
         const oldFrames = frames; frames = null; pair = null; requestedIds = null;
         try { oldFrames?.dispose(); } catch (error) { report(error); }
         for (const lease of [...held]) release(lease);
@@ -172,7 +185,8 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
         try { engine.setPreviewLayers(null); } finally { try { releaseCommit?.(); } finally { settleIdle(); } }
     };
     const clear = () => {
-        if (commitRevision !== null && options.current() && engine.getView().visible && runtime.session.doc.rev <= commitRevision) return;
+        // A commit awaiting the base's presentation keeps its overlay: presented() clears it once the base has drawn the committed nodes.
+        if (commitRevision !== null && options.current() && engine.getView().visible) return;
         clearNow();
     };
     const unbind = engine.bindPreviewClear(clear);
@@ -199,6 +213,60 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
         // the commit was rejected as "Board preview was superseded" and the tool fell back to Select, with no shape.
         resuming = true;
         try { start(...next); } catch (error) { settle(error ?? interrupted()); clear(); report(error); } finally { resuming = false; }
+    };
+    // The overlay's layers are made when a request starts, not when its build finishes. Measured (gpu-h9, first shape on a PDF):
+    // the layers were created 47 ms after the first frame that needed them, so that frame drew a hole and the stand-ins after it.
+    // They hold no picture until a request is handed to them, so making them early changes nothing else.
+    const ensureLayers = (): { frames: ReturnType<typeof createPaintFrameAssembler>; pair: BoardLayerPair } => {
+        if (frames && pair) return { frames, pair };
+        // A frame is tagged with the request it was staged for, both when it is published and when a prepare reads it.
+        const tag = (frame: PaintSource) => {
+            if (!frameIds.has(frame) && requestedIds) { frameIds.set(frame, requestedIds); frameGenerations.set(frame, requestedGeneration); }
+        };
+        const inner = createPaintFrameAssembler(() => pair?.invalidate('preview-ready'), report, {
+            isActive: () => !!engine.getView().visible && (typeof globalThis.document === 'undefined' || !globalThis.document.hidden),
+            onPublished: tag,
+        });
+        const assembler: typeof inner = { ...inner, prepare(budget) {
+            inner.prepare(budget);
+            const frame = inner.readFrame();
+            if (frame) tag(frame);
+        } };
+        // The layers draw the pinned revision of the request they hold: one pin lives as long as its layers do.
+        const layers = createBoardLayers({ frames: assembler, images: options.images, onError: report, requestedRevision: () => pin?.revision ?? -1,
+            requestedTheme: () => engine.getView().theme, optional: true, onPresented: presentedOverlay, auditSurface: 'board-preview',
+            // Built is enough to take the next request: the built frame is drawn by the next compositor frame, and
+            // a request made after a draw is one frame late (measured: the ink trailed the pointer by three frames).
+            onPrepared: () => queueMicrotask(presentedOverlay),
+            drawOffset, drawVersion: () => offsetVersion,
+            onOffsetUnsupported: () => queueMicrotask(rebuildTranslation),
+            // The overlay's few nodes are drawn live at the view: a refused tile store cannot stall the drag's preview.
+            liveOverlay: true, liveNodes: overlayNodes,
+            // An overlay is requested only once it has drawn a node of the hand-off: until then the base draws that node itself and
+            // the overlay declares nothing, so a refused admission costs latency and never a hole (gpu's rule).
+            requested: () => requestedIds !== null && layers.drawnLiveNodeIds().size > 0 });
+        frames = assembler; pair = layers;
+        engine.setPreviewLayers({ underlay: { ...layers[0], id: 'board-preview-underlay' },
+            content: { ...layers[1], id: 'board-preview-content' } }, () => {
+            // Keyed on the layers' wrapper the lookup missed on every drag of an ink node (measured: 84 of 84 calls).
+            const frame = assemblerFrameOf(layers.readyFrame());
+            const ids = frame && frameIds.get(frame);
+            if (frame && ids && assembler.isCurrent(frame)) {
+                if (frameGenerations.get(frame) === generation) settle();
+                // The base omits a node only from the frame after the overlay drew it: the overlay declares just the nodes it drew.
+                // The overlay's drawn nodes: the base omits them and covers them while the overlay draws them. A node handed back
+                // (handedBack) is covered but not omitted: the base draws it, and the overlay clears only after that (presented()).
+                const drawn = layers.drawnLiveNodeIds(), declared = new Set<string>(), covering = new Set<string>();
+                for (const id of ids) if (drawn.has(id)) { covering.add(id); if (!handedBack.has(id)) declared.add(id); }
+                // After the commit the overlay is frozen (no request can replace it), so the handed-back nodes it drew are its drawn
+                // content at the commit revision: the base may count them as covered where its picture does not contain them.
+                const handed = commitRevision !== null ? [...handedBack].filter(id => drawn.has(id)) : [];
+                return covering.size ? { frame, nodeIds: declared, coverIds: covering,
+                    ...(handed.length ? { drawn: { sceneRevision: commitRevision!, nodes: new Set(handed) } } : {}) } : null;
+            }
+            return null;
+        });
+        return { frames: assembler, pair: layers };
     };
     const start = (changes: Map<NodeId, Node>, textOverlay?: Readonly<{ node: NodeId; paint: TextPaint; faces: FaceTable; localToWorld: Affine }>,
         paper?: Readonly<import('../../utils/paper').NotebookPaper>, meta: TranslationMeta | null = null) => {
@@ -227,6 +295,8 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
         if (meta) metaBySeq.set(seq, meta);
         if (!resuming) settle(interrupted()); if (!controllerHandedOff) controller?.abort(); pendingRelease?.(); pendingRelease = null;
         controller = job; controllerHandedOff = false; inFlight = true; inFlightSeq = seq;
+        // Made now, before the build: a build that ends in a frame must find its layers already in the pane.
+        const overlay = ensureLayers();
         const leases: { release(): void }[] = [];
         try {
             for (const node of changes.values()) { const lease = render.retainNode(node); held.add(lease); leases.push(lease); }
@@ -323,7 +393,16 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
                     }
                     [ids, scratch] = [scratch, ids];
                 }
-                const source = await binding.prepareOverlay(doc, { sheetId: sheet, theme: view.theme, sensitiveNodes: new Set(ids) }, ids, job.signal);
+                const overlayRequest = { sheetId: sheet, theme: view.theme, sensitiveNodes: new Set(ids) };
+                // A few nodes are built synchronously, so the hand-off follows the pointer-down with no worker round trip: the first
+                // frame's prepare finds the overlay built. A larger overlay keeps the async build (it yields between its items).
+                // Ink and media are not built synchronously: one stroke of thousands of points would hold the input task for frames.
+                const syncable = ids.length <= SYNC_OVERLAY_NODES && ids.every(id => {
+                    const kind = nodes.get(id)?.kind;
+                    return kind !== 'stroke' && kind !== 'picture' && kind !== 'clip';
+                });
+                const source = syncable ? binding.prepareOverlayNow(doc, overlayRequest, ids, job.signal)
+                    : await binding.prepareOverlay(doc, overlayRequest, ids, job.signal);
                 check();
                 let textItem: PaintTextItem | null = null, textIndex = -1;
                 if (textOverlay) {
@@ -354,44 +433,9 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
                         return textItem && index === textIndex ? { ...item, content: [...item.content.filter(part => part.kind !== 'text'), textItem] } : item;
                     },
                     isCurrent: () => { try { valid(); return source.isCurrent(); } catch { return false; } } };
-                if (!frames || !pair) {
-                    // A frame is tagged with the request it was staged for, both when it is published and when a prepare reads it.
-                    const tag = (frame: PaintSource) => {
-                        if (!frameIds.has(frame) && requestedIds) { frameIds.set(frame, requestedIds); frameGenerations.set(frame, requestedGeneration); }
-                    };
-                    const inner = createPaintFrameAssembler(() => pair?.invalidate('preview-ready'), report, {
-                        isActive: () => !!engine.getView().visible && (typeof globalThis.document === 'undefined' || !globalThis.document.hidden),
-                        onPublished: tag,
-                    });
-                    const assembler: typeof inner = { ...inner, prepare(budget) {
-                        inner.prepare(budget);
-                        const frame = inner.readFrame();
-                        if (frame) tag(frame);
-                    } };
-                    const layers = createBoardLayers({ frames: assembler, images: options.images, onError: report, requestedRevision: () => pinned.revision,
-                        requestedTheme: () => engine.getView().theme, optional: true, onPresented: presentedOverlay, auditSurface: 'board-preview',
-                        // Built is enough to take the next request: the built frame is drawn by the next compositor frame, and
-                        // a request made after a draw is one frame late (measured: the ink trailed the pointer by three frames).
-                        onPrepared: () => queueMicrotask(presentedOverlay),
-                        drawOffset, drawVersion: () => offsetVersion,
-                        onOffsetUnsupported: () => queueMicrotask(rebuildTranslation),
-                        // The overlay's few nodes are drawn live at the view: a refused tile store cannot stall the drag's preview.
-                        liveOverlay: true });
-                    frames = assembler; pair = layers;
-                    engine.setPreviewLayers({ underlay: { ...layers[0], id: 'board-preview-underlay' },
-                        content: { ...layers[1], id: 'board-preview-content' } }, () => {
-                        // Keyed on the layers' wrapper the lookup missed on every drag of an ink node (measured: 84 of 84 calls).
-                        const frame = assemblerFrameOf(layers.readyFrame());
-                        const ids = frame && frameIds.get(frame);
-                        if (frame && ids && assembler.isCurrent(frame)) {
-                            if (frameGenerations.get(frame) === generation) settle();
-                            return { frame, nodeIds: ids };
-                        }
-                        return null;
-                    });
-                }
                 requestedIds = candidates; requestedGeneration = seq;
-                frames.request({ source: guarded, release: releaseLeases }); handedOff = true;
+                overlayNodes.clear(); for (const id of candidates) overlayNodes.add(id);
+                overlay.frames.request({ source: guarded, release: releaseLeases }); handedOff = true;
                 // Ready means this generation's source is handed to its layer. Drawing it is the platform's
                 // later step, and the commit must not wait on a compositor cycle that a gesture may not trigger.
                 if (controller === job) controllerHandedOff = true;
@@ -527,14 +571,23 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
             commitRelease = runtime.session.beginGesture();
             commitRevision = runtime.session.doc.rev + 1;
         },
-        finishCommit() { if (commitRevision !== null && runtime.session.doc.rev !== commitRevision) clearNow(); },
+        finishCommit() {
+            if (commitRevision === null) return;
+            // Nothing applied: there is nothing to hand over.
+            if (runtime.session.doc.rev < commitRevision) { clearNow(); return; }
+            // Applied (at or past the commit revision): the overlay's nodes are handed back to the base now, and the overlay clears
+            // only when the base presents them (presented()). Clearing on the revision alone showed the base's older picture (release stand-ins).
+            handedBack = new Set(overlayNodes);
+        },
         cancelCommit() {
-            // An apply can succeed before a later release reports an error; retain its visible preview.
-            if (commitRevision !== null && runtime.session.doc.rev === commitRevision) return;
+            // An apply can succeed before a later release reports an error; retain its visible preview until the base presents it.
+            if (commitRevision !== null && runtime.session.doc.rev >= commitRevision) return;
             clearNow();
         },
-        presented(revision, token, frame) {
+        presented(revision, token, frame, omitted) {
             if (commitRevision === null || revision < commitRevision || !frame || frame.sceneRevision !== revision || !pin) return;
+            // A frame that omits a handed-back node does not draw it: the overlay keeps the node until a frame draws it.
+            if (omitted && [...handedBack].some(id => omitted.has(id))) return;
             const expected = pin.token, actual = frame.token;
             if (token.vaultEpoch !== expected.vaultEpoch || token.documentId !== expected.documentId
                 || token.bytesGeneration !== expected.bytesGeneration || token.session !== expected.session
@@ -547,6 +600,7 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
             catch (error) { clear(); report(error); }
         },
         clear,
+        warm() { if (disposed) return; try { ensureLayers(); } catch (error) { report(error); } },
         dispose() { if (!disposed) { clearNow(); disposed = true; unbind(); } },
     };
 }

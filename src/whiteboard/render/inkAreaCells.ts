@@ -117,3 +117,99 @@ export function createAreaCellBuilder(width: number, height: number): AreaCellBu
         },
     };
 }
+
+/** Whether the signed-area sum of these closed contours is exact: every point's winding number is 0 or ±1, so the clamp of the
+ * sum is the nonzero coverage. The sum double-counts wherever two boundaries overlap, so the contours must not cross or touch,
+ * and a contour nested in another must take the opposite sign (an annulus: the hole subtracts). Same-sign nesting and crossing
+ * are the cases the overlap atlas exists for; they are refused here, and the caller falls back.
+ *
+ * Quadratic in the edges of contours whose boxes overlap, which is cheap for a shape's outline (a handful of edges). Stroke
+ * outlines are not checked here: their boundaries come from the union outline. Degenerate contours (under three points, zero
+ * or non-finite area) are refused. */
+export function areaNestingExact(contours: readonly ArrayLike<number>[]): boolean {
+    const m = contours.length;
+    const minX = new Float64Array(m), minY = new Float64Array(m), maxX = new Float64Array(m), maxY = new Float64Array(m);
+    const sign = new Int8Array(m);
+    for (let i = 0; i < m; i++) {
+        const c = contours[i];
+        const n = c.length >> 1;
+        if (n < 3) return false;
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, twice = 0;
+        for (let k = 0; k < n; k++) {
+            const x = c[2 * k], y = c[2 * k + 1];
+            const j = (k + 1) % n;
+            twice += x * c[2 * j + 1] - c[2 * j] * y;
+            if (x < x0) x0 = x; if (x > x1) x1 = x;
+            if (y < y0) y0 = y; if (y > y1) y1 = y;
+        }
+        if (!Number.isFinite(twice) || twice === 0) return false;
+        minX[i] = x0; minY[i] = y0; maxX[i] = x1; maxY[i] = y1;
+        sign[i] = twice > 0 ? 1 : -1;
+    }
+    // Crossing or touching: any pair of edges that meet, between contours whose boxes overlap.
+    for (let i = 0; i < m; i++) {
+        for (let j = i + 1; j < m; j++) {
+            if (maxX[i] < minX[j] || maxX[j] < minX[i] || maxY[i] < minY[j] || maxY[j] < minY[i]) continue;
+            const a = contours[i], b = contours[j];
+            const na = a.length >> 1, nb = b.length >> 1;
+            for (let p = 0; p < na; p++) {
+                const pq = (p + 1) % na;
+                for (let q = 0; q < nb; q++) {
+                    const qr = (q + 1) % nb;
+                    if (segmentsMeet(a[2 * p], a[2 * p + 1], a[2 * pq], a[2 * pq + 1], b[2 * q], b[2 * q + 1], b[2 * qr], b[2 * qr + 1])) return false;
+                }
+            }
+        }
+    }
+    // Nesting depth: the contours that contain a contour's first point (no edges meet, so that point decides the whole contour).
+    const depth = new Int32Array(m);
+    for (let i = 0; i < m; i++) {
+        const px = contours[i][0], py = contours[i][1];
+        for (let j = 0; j < m; j++) {
+            if (j === i) continue;
+            if (px < minX[j] || px > maxX[j] || py < minY[j] || py > maxY[j]) continue;
+            if (insidePolygon(px, py, contours[j])) depth[i]++;
+        }
+    }
+    // Each nested contour takes the opposite sign to its immediate parent, the container one level up. Containers of one point
+    // form a chain, so the parent is unique; the alternating signs keep every point's winding in {0, ±1}.
+    for (let i = 0; i < m; i++) {
+        if (depth[i] === 0) continue;
+        const px = contours[i][0], py = contours[i][1];
+        let parent = -1;
+        for (let j = 0; j < m; j++) {
+            if (j === i || depth[j] !== depth[i] - 1) continue;
+            if (px < minX[j] || px > maxX[j] || py < minY[j] || py > maxY[j]) continue;
+            if (insidePolygon(px, py, contours[j])) { parent = j; break; }
+        }
+        if (parent < 0 || sign[parent] === sign[i]) return false;
+    }
+    return true;
+}
+
+/** Whether the closed segments (ax, ay)–(bx, by) and (cx, cy)–(dx, dy) share a point, touching included. */
+function segmentsMeet(ax: number, ay: number, bx: number, by: number, cx: number, cy: number, dx: number, dy: number): boolean {
+    const side = (px: number, py: number, qx: number, qy: number, rx: number, ry: number): number =>
+        Math.sign((qx - px) * (ry - py) - (qy - py) * (rx - px));
+    const within = (px: number, py: number, qx: number, qy: number, rx: number, ry: number): boolean =>
+        Math.min(px, qx) <= rx && rx <= Math.max(px, qx) && Math.min(py, qy) <= ry && ry <= Math.max(py, qy);
+    const d1 = side(cx, cy, dx, dy, ax, ay), d2 = side(cx, cy, dx, dy, bx, by);
+    const d3 = side(ax, ay, bx, by, cx, cy), d4 = side(ax, ay, bx, by, dx, dy);
+    if (d1 * d2 < 0 && d3 * d4 < 0) return true;
+    if (d1 === 0 && within(cx, cy, dx, dy, ax, ay)) return true;
+    if (d2 === 0 && within(cx, cy, dx, dy, bx, by)) return true;
+    if (d3 === 0 && within(ax, ay, bx, by, cx, cy)) return true;
+    if (d4 === 0 && within(ax, ay, bx, by, dx, dy)) return true;
+    return false;
+}
+
+/** Even-odd crossing test of (px, py) against a closed contour; the caller has ruled out points on its edges. */
+function insidePolygon(px: number, py: number, c: ArrayLike<number>): boolean {
+    const n = c.length >> 1;
+    let inside = false;
+    for (let i = 0, j = n - 1; i < n; j = i++) {
+        const xi = c[2 * i], yi = c[2 * i + 1], xj = c[2 * j], yj = c[2 * j + 1];
+        if ((yi > py) !== (yj > py) && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) inside = !inside;
+    }
+    return inside;
+}

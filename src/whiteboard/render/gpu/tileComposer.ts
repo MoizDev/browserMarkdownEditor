@@ -931,6 +931,13 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
 
     // The run an encode draws, set by the encode loop: one object for the composer's life, so no closure is built per run.
     const encodeDraw: { pass: GpuPass | null; route: ItemRoute | null; run: PreparedRun | null } = { pass: null, route: null, run: null };
+    /** A route whose draw the kit refused this frame, in encode or composite: the layer is incomplete (markIncomplete; the compositor
+     * decides after the surface pass: critical refuses the frame, the rest present with layersComplete false) and the next frame is asked. */
+    const reportRouteRefusals = (): void => {
+        for (const route of routeList) if ((route as RouteWithRefusal).drawRefusedThisFrame?.()) {
+            auditCount(audit, `route:${route.id}:refused-frame`); wantFrame = true; host.markIncomplete(`route:${route.id}:refused`);
+        }
+    };
     const drawEncoded = (): void => {
         const { pass, route, run } = encodeDraw;
         if (!pass || !route || !run) throw new Error('Encode draw without a run');
@@ -1626,11 +1633,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 if (zoomSpan) dropSuperseded(position.band, position.scale, position.x, position.y);
             }
             finished.length = kept;
-            // A route whose draw the kit refused this frame: the layer is incomplete now (markIncomplete, decided by the compositor after
-            // the surface pass: critical refuses the frame, the rest present with layersComplete false), and the next frame is requested.
-            for (const route of routeList) if ((route as RouteWithRefusal).drawRefusedThisFrame?.()) {
-                auditCount(audit, `route:${route.id}:refused-frame`); wantFrame = true; host.markIncomplete(`route:${route.id}:refused`);
-            }
+            reportRouteRefusals();
         },
         drawGpu(pass: GpuPass, view: ViewState, band: PaintBand): void {
             if (!drawCount) return;
@@ -1656,7 +1659,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         catch (error) {
                             // A budget refusal is counted and the frame asks again; any other error is reported and thrown.
                             if (!isBudgetRefusal(error)) { auditGpuError(audit, 'live-clip', error); throw error; }
-                            auditCount(audit, 'draw:refused'); wantFrame = true;
+                            auditCount(audit, 'draw:refused'); wantFrame = true; host.markIncomplete('live-draw-refused');
                         }
                         finally { pass.popClip(clip); }
                     }
@@ -1708,6 +1711,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 }
                 i++;
             }
+            reportRouteRefusals();
         },
         coverage(view: ViewState): { complete: boolean; sharp: boolean; staleVersion?: boolean } {
             if (!presenting) return { complete: false, sharp: false };

@@ -83,10 +83,10 @@ function quietly(action: () => void): void {
 }
 
 function layerPass(pass: GpuPass): { pass: GpuPass; finish(): void; abandon(): void } {
-    const scopes: Array<{ kind: 'clip'; token: ClipToken } | { kind: 'group'; token: GroupToken } | { kind: 'coverage'; token: CoverageToken }> = [];
+    const scopes: Array<{ kind: 'clip'; token: ClipToken } | { kind: 'group'; token: GroupToken } | { kind: 'coverage' | 'area'; token: CoverageToken }> = [];
     let active = true;
     const check = () => { if (!active) throw new ArenaError('aborted'); };
-    const pop = (kind: 'clip' | 'group' | 'coverage', token: ClipToken | GroupToken | CoverageToken) => {
+    const pop = (kind: 'clip' | 'group' | 'coverage' | 'area', token: ClipToken | GroupToken | CoverageToken) => {
         check();
         const top = scopes.at(-1);
         if (!top || top.kind !== kind || top.token !== token) throw new ArenaError('invalid-input');
@@ -107,6 +107,10 @@ function layerPass(pass: GpuPass): { pass: GpuPass; finish(): void; abandon(): v
                 check(); const token = pass.beginCoverage(target, bounds); scopes.push({ kind: 'coverage', token }); return token;
             },
             endCoverage: (token, output) => { pop('coverage', token); pass.endCoverage(token, output); },
+            beginArea: (target, bounds) => {
+                check(); const token = pass.beginArea(target, bounds); scopes.push({ kind: 'area', token }); return token;
+            },
+            endArea: (token, output) => { pop('area', token); pass.endArea(token, output); },
             composite: (source, bounds, options) => { check(); pass.composite(source, bounds, options); },
             end: () => { check(); throw new ArenaError('invalid-input'); },
         },

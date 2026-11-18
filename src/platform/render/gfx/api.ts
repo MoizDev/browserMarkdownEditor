@@ -14,7 +14,9 @@ export type Backend = 'webgl2' | 'webgpu';
 export type BufferUse = 'vertex' | 'index' | 'uniform' | 'copy-src' | 'copy-dst';
 
 // rendering-design.md:97, 239–241: r8 is one-byte coverage, never colour storage.
-export type TextureFormat = 'rgba8' | 'r8';
+// 'r32f' (EXT_color_buffer_float + EXT_float_blend): one float per texel, the exact-area accumulator of union ink. Only
+// area targets and their span/resolve pipelines use it; uploads and sampling of it are not offered.
+export type TextureFormat = 'rgba8' | 'r8' | 'r32f';
 
 // rendering-design.md:98: writable attachments cannot simultaneously be sampled.
 export type TextureUse = 'sample' | 'render' | 'copy-src' | 'copy-dst';
@@ -140,7 +142,8 @@ export interface PipelineDesc {
     topology: 'triangles' | 'triangle-strip';
     colorFormat: TextureFormat;
     samples: Samples;
-    blend: 'replace' | 'source-over' | 'mask-max' | 'add' | 'modulate';
+    /** 'min' and 'max' (float targets only, EXT_float_blend): per-texel minimum or maximum of the written value. */
+    blend: 'replace' | 'source-over' | 'mask-max' | 'add' | 'modulate' | 'min' | 'max';
     alphaToCoverage: boolean;
     colorWrite: readonly [boolean, boolean, boolean, boolean];
     stencil: StencilState;
@@ -220,6 +223,15 @@ export interface CoverageTarget {
     readonly grid: 1 | 4 | 16;
 }
 export interface CoverageToken { readonly id: number }
+/** An r32f area target: one float per device px, no stencil, borrowed per scope like a coverage target. */
+export interface AreaTarget {
+    readonly target: TargetHandle;
+    readonly texture: TextureHandle;
+    readonly width: number;
+    readonly height: number;
+}
+/** The paint output of an area scope: the same meaning as a grid target's 'paint' (see CoverageOutput). */
+export type AreaOutput = { readonly kind: 'area'; readonly blend: 'normal' | 'modulate'; readonly rgb: readonly [number, number, number]; readonly alpha: number };
 // 'modulate' lays the resolved slice on the surface by fixed-function dst·src (see PipelineDesc.blend), not by backdrop copy.
 // 'paint' (grid targets only) resolves the coverage c first and then composites once: 'normal' is source-over of rgb with
 // alpha·c; 'modulate' is one dst·k step with k = mix(1, rgb, alpha·c), so overlapping subsamples never compound.
@@ -303,6 +315,11 @@ export interface GpuPass {
     // 'composite' blends the resolved coverage into the current colour target with the clip active
     // at begin; 'mask' leaves it untouched as an R-channel clip mask for createClip (rendering §5.1).
     endCoverage(token: CoverageToken, output: CoverageOutput): void;
+    // Exact-area coverage (union ink). The target is an r32f texture without stencil. beginArea clears the target under
+    // `bounds` (its origin is the target origin); span draws then add into it (add, min or max pipelines). endArea
+    // composites min(1, |acc|) with the paint output, exactly as endCoverage composites a grid target.
+    beginArea(target: AreaTarget, bounds: RectI): CoverageToken;
+    endArea(token: CoverageToken, output: AreaOutput): void;
     end(): void;
 }
 
@@ -366,6 +383,9 @@ export interface GfxDevice {
     readonly backend: Backend;
     readonly generation: number;
     readonly limits: GfxLimits;
+    /** True when float (r32f) area targets and their min/max/add blends exist here (EXT_color_buffer_float with
+     * EXT_float_blend). False means the exact-area union route is not offered and the route takes grid4, counted. */
+    readonly areaTargets: boolean;
     createBuffer(bytes: number, uses: readonly BufferUse[], lease: ByteLease): BufferHandle;
     writeBuffer(dst: BufferHandle, offset: number, src: ArrayBufferView): void;
     // `mips` allocates the full chain down to 1×1, charged to the lease in full (about a third more than level 0).
@@ -389,7 +409,7 @@ export interface GfxDevice {
     createCoverageAtlas(slotsAcross: number, slotsDown: number, lease: ByteLease): CoverageTarget;
     /** A sampleable rgba8 texture with its own single-sample, stencil-less render target, charged through one lease
      * (width × height × 4): a layer's offscreen tile, composed on the GPU and then sampled by the layer. */
-    createRenderTexture(width: number, height: number, lease: ByteLease, options?: { format?: 'rgba8' | 'r8'; copyDst?: boolean }): { texture: TextureHandle; target: TargetHandle };
+    createRenderTexture(width: number, height: number, lease: ByteLease, options?: { format?: TextureFormat; copyDst?: boolean }): { texture: TextureHandle; target: TargetHandle };
     createPipeline(desc: PipelineDesc): Promise<PipelineHandle>;
     createTarget(
         color: TextureHandle,

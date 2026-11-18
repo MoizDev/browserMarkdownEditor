@@ -659,8 +659,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         try {
             const composerChanged = prepareGpu(view, budget, frame);
             if (onDeviceRoute) {
-                chargeDirect(frame);
-                prepareUnchanged = !composerChanged && unchangedSincePresented(view, budget, frame);
+                const charged = chargeDirect(frame);
+                prepareUnchanged = charged && !composerChanged && unchangedSincePresented(view, budget, frame);
             } else prepareUnchanged = false;
             prune(frame, adapter.readyFrame());
             options.onPrepared?.();
@@ -711,14 +711,16 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     return;
                 }
                 known.add(frame);
-                // Charged before the build (the grant may already refuse) and after it (what this step built is held).
-                if (!chargeDirect(frame)) return;
+                // Not gated on the direct CPU charge: a refused charge waits on its own sized wake (chargeDirect), and the GPU composer
+                // still prepares at the new camera. Measured: a full CPU pool refused the charge on every zoom frame after the first
+                // ~6, so the composer never prepared again (85 of 94 device prepares). The build is charged after it, as held bytes.
                 adapter.prepare(view, budget);
                 const composerChanged = prepareGpu(view, budget, frame);
                 if (budget.phase === 'foreground') { pendingFrame = frame; foregroundFrame = budget.frameId; return; }
-                chargeDirect(frame);
+                // A refused charge leaves the build unheld: the frame then answers changed, never unchanged.
+                const charged = chargeDirect(frame);
                 prune(frame, adapter.readyFrame());
-                prepareUnchanged = !composerChanged && unchangedSincePresented(view, budget, frame);
+                prepareUnchanged = charged && !composerChanged && unchangedSincePresented(view, budget, frame);
                 options.onPrepared?.();
                 return;
             }

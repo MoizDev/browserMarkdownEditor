@@ -665,18 +665,23 @@ class DeviceFrame implements ControlledFrame {
         const viewport = { x: 0, y: 0, width: plane.width, height: plane.height };
         const scope: Scope = { target: plane, viewport, originX: 0, originY: 0, scale: 1, bounds: at, capture: false, empty: false, coverage: false };
         this.start(plane, { target: plane.handle, viewport, load: { kind: 'clear', color: [0, 0, 0, 0] }, clearViewport: at, store: 'store' });
-        const data = blockScratch;
-        setVec4(data, 0, viewport.x, viewport.y, viewport.width, viewport.height);
-        setVec4(data, 4, at.x, at.y, at.width, at.height);
-        setVec4(data, 8, slot.x, slot.y, 16, 0);
-        setVec4(data, 12, source.width, source.height, 1, 0);
-        const packed = this.uniforms(data);
-        const command: QuadCommand = {
-            context: scope, source, backdrop: this.#backend.white(), mask: this.#backend.white(),
-            uniforms: { buffer: this.#backend.buffer(packed.buffer), slice: packed }, scissor: at, blend: 'replace', variant: 'grid16',
-        };
-        this.recordQuad(this.#backend.quad(command), command);
-        this.end(plane, { target: plane.handle, viewport, load: { kind: 'load' }, store: 'store' });
+        // `end` records the plane's retention, so it runs even when the quad cannot be recorded: a throw must not leave the retention
+        // of a plane whose clear already ran.
+        try {
+            const data = blockScratch;
+            setVec4(data, 0, viewport.x, viewport.y, viewport.width, viewport.height);
+            setVec4(data, 4, at.x, at.y, at.width, at.height);
+            setVec4(data, 8, slot.x, slot.y, 16, 0);
+            setVec4(data, 12, source.width, source.height, 1, 0);
+            const packed = this.uniforms(data);
+            const command: QuadCommand = {
+                context: scope, source, backdrop: this.#backend.white(), mask: this.#backend.white(),
+                uniforms: { buffer: this.#backend.buffer(packed.buffer), slice: packed }, scissor: at, blend: 'replace', variant: 'grid16',
+            };
+            this.recordQuad(this.#backend.quad(command), command);
+        } finally {
+            this.end(plane, { target: plane.handle, viewport, load: { kind: 'load' }, store: 'store' });
+        }
     }
 }
 

@@ -89,6 +89,10 @@ export interface Layer {
      * first, and returns the bytes actually freed. It never releases anything drawn or referenced in `frameId`, so the
      * frame being encoded stays whole; a layer that cannot free anything outside that frame returns 0. */
     evictGpu?(bytes: number, frameId: number): number;
+    /** Optional, GPU only. Called once per frame, before any layer prepares, with the frame's view: stamps what this frame shows
+     * (its pictures and stand-ins) as used in `frameId`, so the frame's own partial relief leaves it. Without it, what the frame
+     * draws from entries composed in earlier frames is not stamped until its draw, and a trim in the prepare could take it. */
+    protectFrame?(frameId: number, view: ViewState): void;
     /** Cheap byte accounting, called every frame (C4.3:521–522). */
     memory(): { gpuBytes: number; cpuBytes: number };
     /** Awaiting a worker alone is not executable work and must return false (design:661). */

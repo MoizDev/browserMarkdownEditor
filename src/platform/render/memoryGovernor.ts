@@ -483,7 +483,6 @@ export class MemoryGovernor {
     advance(now: number, liveGesture: boolean): void {
         if (!Number.isFinite(now) || now < this.now) throw new MemoryAdmissionError('invalid-input');
         this.now = now;
-        this.now = now;
         for (const cache of this.caches.values()) this.reconcileUnaccounted(cache);
         this.trimHiddenMirrors();
         // Quality drops only when the trims cannot bring a pool back to target: a trim that frees what it is asked for
@@ -687,13 +686,18 @@ export class MemoryGovernor {
         // working canvases beside its 33 MB display, so the GPU scratch of the same pane was refused and quality stepped down).
         const paneOf = cache.registration.paneId;
         if (kind === 'surface-scratch' && paneOf !== undefined) {
-            this.trimming = true;
-            try {
-                for (const other of [...this.caches.values()]) {
-                    if (other.registration.paneId !== paneOf || other.registration.kind !== 'canvas-working' || other.bytes === 0) continue;
-                    this.evictCache(other, other.bytes);
-                }
-            } finally { this.trimming = false; }
+            // The 2D working canvases are only worth giving up when that makes the scratch fit: a scratch still refused after their
+            // eviction left them rebuilt by the next 2D frame for nothing (review3, gpu-h2). The pool is the only check that they
+            // can change: the scratch's own limit counts no canvas.
+            const working = [...this.caches.values()].filter(other => other.registration.paneId === paneOf &&
+                other.registration.kind === 'canvas-working' && other.bytes > 0);
+            const freed = working.reduce((sum, other) => sum + other.bytes, 0);
+            if (freed > 0 && this.charged[pool] > this.target[pool] - bytes && this.charged[pool] - freed + bytes <= this.target[pool]) {
+                this.trimming = true;
+                try {
+                    for (const other of working) this.evictCache(other, other.bytes);
+                } finally { this.trimming = false; }
+            }
         }
         if (!allowed()) {
             // Pressure is the pool's, not one pane reaching its own grant: adapters retry a refused grant each frame, and

@@ -82,7 +82,7 @@ export const createInkRoutes: CreateInkRoutes = (host: LayerHost, audit: string)
                 // Timed under the audit (gpu-h4's split of a zoom frame): the tessellation and placement of the item's chunks, in hundredths of a ms.
                 const timed = renderAuditEnabled() ? performance.now() : 0;
                 const stroke = geometry.strokeSets(item, inkToleranceBand(deviceScale));
-                if (timed) { auditCount(audit, 'refuse:ink-strokesets-calls'); auditCount(audit, 'refuse:ink-strokesets-hundredths-ms', Math.round((performance.now() - timed) * 100)); }
+                if (timed) { auditCount(audit, 'ink:strokesets-calls'); auditCount(audit, 'ink:strokesets-hundredths-ms', Math.round((performance.now() - timed) * 100)); }
                 if (stroke && 'denied' in stroke) { retireAll(); return { status: 'denied', pool: 'cpu', bytes: stroke.denied }; }
                 if (!stroke) { retireAll(); return { status: 'unsupported', why: 'outline-refused' }; }
                 const result: PathCoverageAdmission = kit.admitSets({

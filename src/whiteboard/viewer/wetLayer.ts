@@ -29,6 +29,8 @@ const CHUNK = 256, FINAL_SPANS = 16, PATH_BLOCK = 256 * 1024;
 const TEMP_BYTES = CHUNK * (8 * 8 + 1 + 2 * 8) + Math.ceil(CHUNK_PRIMITIVES * (6 + 3 + 4) * 8 * 3 / 2);
 /** The tip's upload grant past a frame's yield: one kit upload piece (64 KiB), so a chunk's append always fits. */
 const TIP_UPLOAD_BYTES = 64 * 1024;
+/** The most a deferred run waits for on the upload meter: one kit upload piece (the path kit writes 64 KiB pieces). */
+const WAIT_UPLOAD_BYTES = 64 * 1024;
 type Bounds = { x: number; y: number; w: number; h: number };
 type Prepared = { readonly snapshot: WetInkSnapshot; path: Path2D | null; readonly origin: readonly [number, number]; readonly leases: ByteLease[];
     readonly scale: number; readonly bounds: Bounds | null; readonly coverageChunks: readonly InkCoverage[]; readonly serial: number };
@@ -461,7 +463,9 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                     }
                     // A replaced shown is disposed only when its successor is admitted: a deferred or denied admission keeps the last tip.
                     case 'empty': slot.viewBound = true; setShown(slot, null, 'empty'); break;
-                    case 'deferred': slot.state = 'pending'; slot.waitBytes = Math.max(1, meterUsed); break;
+                    // The wait is one upload piece at most: the meter refills per frame, so a run waiting for its whole last attempt's bytes
+                    // could wait for more than any frame offers (a stale tip). One piece always fits a frame that offers any allowance.
+                    case 'deferred': slot.state = 'pending'; slot.waitBytes = Math.min(WAIT_UPLOAD_BYTES, Math.max(1, meterUsed)); break;
                     case 'denied': slot.state = 'denied'; denied = true; awaitSizedCapacity(host, invalidate, { pool: admission.pool, bytes: admission.bytes }); break;
                     case 'unsupported': {
                         // The route refused the stroke: it is drawn through the CPU path, and the refusal is reported once.

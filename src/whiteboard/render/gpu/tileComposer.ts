@@ -826,7 +826,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             // Why a frame composes nothing is the zoom question: each exit is counted (pass and cause).
             // The count limit is for background recomposes: a foreground compose (a visible tile with no valid cover) is bounded by the budget.
             if (only !== 'foreground' && frameComposed >= limit) { auditCount(audit, `compose:limit:${pass}`); return false; }
-            if (budget.shouldYield()) { auditCount(audit, `compose:yield:${pass}:${only}`); return false; }
+            if (budget.shouldYield()) { auditCount(audit, `compose:yield:${pass}`); return false; }
             let outcome = advance(position, budget, gpu);
             // At rest a refused or denied position frees this composer's own tiles and is admitted in the same frame, instead of
             // waiting for the governor (see freeOwn). While zooming the stand-ins stay: they are what the zoom shows.
@@ -1427,7 +1427,6 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             const demand = view.camera.z * view.viewport.dpr;
             device = host.device();
             if (!prepared || !device || !(demand > 0) || !Number.isFinite(demand)) {
-                if (renderAuditEnabled()) auditCount(audit, `prepare:unpainted:${!prepared ? 'no-paint' : !device ? 'no-device' : 'no-demand'}`);
                 for (const position of finished) cancel(position);
                 finished = [];
                 drawCount = 0; presenting = false; drawSignature = 0; contentVersion++; return true;
@@ -1442,7 +1441,6 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             }
             // The scale moves only with the camera's zoom: a pan or a drag keeps the tiles' scale and their pixels.
             zooming = lastZoom !== undefined && view.camera.z !== lastZoom;
-            if (renderAuditEnabled()) auditCount(audit, zooming ? 'prepare:zoom-seen' : 'prepare:zoom-not-seen');
             lastZoom = view.camera.z;
             if (pins) {
                 if (zooming) {

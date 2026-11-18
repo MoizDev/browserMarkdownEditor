@@ -269,6 +269,8 @@ function exactScale(demand: number): number {
 const LIVE_OVERLAY_MAX_PARTS = 256;
 /** The most visible parts a zoom draws live, at the view, instead of from tiles (zoom-direct): a zoom of a few hundred plain parts. */
 const ZOOM_DIRECT_MAX_PARTS = 512;
+/** The most tiles a rest margin composes beyond the visible span, each side (one viewport, bounded). */
+const RING_MAX_TILES = 8;
 /** A live part: a video picture, whose image key carries the video prefix. It is never composed into a tile: it is drawn each
  * frame through the image route, between the slices its paint order falls between. */
 function isLivePart(item: PaintItem): boolean {
@@ -640,6 +642,14 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     };
     /** Whether a zoom can draw its visible parts live: few enough, and each a plain 'over' part on a GPU route (the same rule as a live-only
      * paint, counted over the visible parts only). Otherwise the zoom draws from its tiles, as before. */
+    /** Whether a visible position of any band has no exact tile at `target` (the content a pan would show as a stand-in). */
+    const anyVisibleMissing = (view: ViewState, target: number): boolean => {
+        const span = spanAt(view, target);
+        for (const band of BANDS) for (let y = span.y0; y < span.y1; y++) for (let x = span.x0; x < span.x1; x++) {
+            if (statusAt(band, target, x, y) !== 'ok') return true;
+        }
+        return false;
+    };
     const zoomDirectOk = (view: ViewState, target: number): boolean => {
         const cam = view.camera;
         const world: Rect = { x: cam.x, y: cam.y, width: view.viewport.width / cam.z, height: view.viewport.height / cam.z };
@@ -902,7 +912,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         for (const pass of (only === 'background' ? DIRTY_FIRST : MISSING_FIRST)) {
             // While zooming only the visible positions are composed: the ring is the next view's, and the zoom's compose is its cost.
             if (pass === 'ring' && (zoomingFrame || only === 'foreground')) continue;
-            const margin = pass === 'ring' ? 1 : 0;
+            // At rest the ring is a viewport each side (bounded): a pan reveals composed tiles, not stand-ins (gpu's ruling).
+            const margin = pass === 'ring' ? (zoomingFrame ? 1 : Math.min(RING_MAX_TILES, Math.max(1, span.x1 - span.x0, span.y1 - span.y0))) : 0;
             for (const band of BANDS) {
                 for (let y = span.y0 - margin; y < span.y1 + margin; y++) {
                     for (let x = span.x0 - margin; x < span.x1 + margin; x++) {
@@ -1484,7 +1495,11 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             drawnCamX = view.camera.x; drawnCamY = view.camera.y; drawnCamZ = view.camera.z;
 
             indexing = !parts.sync(prepared, budget);
-            liveNow = paintLiveOnly || (!indexing && zooming && zoomDirectOk(view, target));
+            // A pan with a visible position that has no exact tile draws its parts live, as a zoom does (gpu's ruling): the stand-in
+            // it would show is replaced by its geometry. A pan whose tiles are all there composes as before.
+            const panning = !zooming && view.moving === true && !indexing && anyVisibleMissing(view, target);
+            liveNow = paintLiveOnly || (!indexing && (zooming || panning) && zoomDirectOk(view, target));
+            if (panning && liveNow) auditCount(audit, 'pan:direct:frame');
             if (liveNow && !paintLiveOnly) auditCount(audit, 'zoom:direct:frame');
             // A live-drawn frame draws in the background call, so its admissions are made here, in the foreground call: its live parts
             // are what the frame shows, and foreground is the budget they must not be starved from.

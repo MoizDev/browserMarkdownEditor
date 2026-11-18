@@ -1,9 +1,10 @@
 import type {
-    BufferHandle, BufferSlice, ClipHandle, ClipToken, CoverageOutput, CoverageTarget, CoverageToken, DrawCommand, FrameEncoder, GpuPass,
+    AreaOutput, AreaTarget, BufferHandle, BufferSlice, ClipHandle, ClipToken, CoverageOutput, CoverageTarget, CoverageToken, DrawCommand, FrameEncoder, GpuPass,
     GroupToken, PassDesc, PipelineDesc, PipelineHandle, RectI, RgbaP, SamplerHandle,
     Samples, Submission, TargetHandle, TargetLease, TextureFormat, TextureHandle, UniformSlice,
 } from './api';
 import { ArenaError } from '../resourceArena';
+import { auditCount } from '../renderAudit';
 
 // Module-private implementation seam. Only webgl2.ts constructs this capability object;
 // a layer receives FrameEncoder/GpuPass and never the GL context or these native records.
@@ -86,7 +87,7 @@ export interface QuadCommand {
     readonly blend: 'source-over' | 'replace' | 'mask-max' | 'add' | 'modulate';
     /** Which composition program lays the quad: the default colour composite, the grid coverage resolve (`source` is then the
      * r8 grid texture), or the modulate composite (`k = rgb + (1 − a)` over white, laid by fixed-function modulate). */
-    readonly variant?: 'grid' | 'grid16' | 'modulate';
+    readonly variant?: 'grid' | 'grid16' | 'modulate' | 'area';
 }
 export interface FrameBackend {
     readonly signal: AbortSignal;
@@ -165,6 +166,8 @@ interface Isolation {
     readonly lease: TargetLease | null;
     readonly mask: Mask | null;
     readonly options: { opacity: number; blend: 'normal' | 'multiply' | 'modulate'; colourEffect: 'none' | 'page-invert' };
+    /** An area scope: the band's rectangle in device px, which its composite is placed by (its child scope is target-local). */
+    readonly device?: RectI;
 }
 interface ClipEntry {
     readonly token: ClipToken;
@@ -173,7 +176,7 @@ interface ClipEntry {
     readonly isolation: Isolation | null;
 }
 interface GroupEntry {
-    readonly kind: 'group' | 'coverage';
+    readonly kind: 'group' | 'coverage' | 'area';
     readonly token: GroupToken | CoverageToken;
     readonly previous: RectI;
     readonly clipDepth: number;
@@ -278,11 +281,33 @@ class DeviceFrame implements ControlledFrame {
             throw this.#backend.failure(failure);
         }
     }
+    /** A uniform write is the one refusal a frame survives. Out-of-budget from the ring (or the governor) leaves the frame intact and
+     * throws to the caller, which defers that one draw; any other failure cancels the frame, as guard does. */
+    #writeRing<T>(operation: () => T): T {
+        try { this.check(); return operation(); }
+        catch (error) {
+            if (error instanceof ArenaError && error.code === 'out-of-budget' && !this.#closed && !this.#backend.signal.aborted) {
+                auditCount('gpu', 'uniform-deferred');
+                throw error;
+            }
+            let failure = error;
+            try { this.cancel(); } catch (cleanup) { failure = cleanup; }
+            throw this.#backend.failure(failure);
+        }
+    }
     uniforms(bytes: ArrayBufferView): UniformSlice {
-        return this.guard(() => this.#backend.uniforms(bytes));
+        return this.#writeRing(() => this.#backend.uniforms(bytes));
     }
     uniformsInto(bytes: ArrayBufferView, into: UniformSlice): void {
-        this.guard(() => this.#backend.uniformsInto(bytes, into));
+        this.#writeRing(() => this.#backend.uniformsInto(bytes, into));
+    }
+    /** One quad's uniforms, or null when the ring refused them: that quad alone is deferred and the rest of the frame stands. */
+    #quadUniforms(bytes: ArrayBufferView): UniformSlice | null {
+        try { return this.uniforms(bytes); }
+        catch (error) {
+            if (error instanceof ArenaError && error.code === 'out-of-budget') { auditCount('gpu', 'quad-deferred'); return null; }
+            throw error;
+        }
     }
     acquireTarget(desc: TargetRequest): TargetLease | null {
         return this.guard(() => this.#backend.acquireTarget(desc));
@@ -618,7 +643,8 @@ class DeviceFrame implements ControlledFrame {
         }
         setVec4(data, 28, options.blend === 'multiply' ? 1 : 0, mask ? 1 : 0, scope.coverage ? 1 : 0,
             __BME_BENCH__ ? (source.coverage ? 1 : 0) + (backdrop?.texture.coverage ? 2 : 0) : 0);
-        const packed = this.uniforms(data);
+        const packed = this.#quadUniforms(data);
+        if (!packed) { if (backdrop) this.releaseTemporary(backdrop.lease); return; }
         const command: QuadCommand = {
             context: scope, source, backdrop: backdrop?.texture ?? this.#backend.white(), mask: mask?.texture ?? this.#backend.white(),
             uniforms: { buffer: this.#backend.buffer(packed.buffer), slice: packed }, scissor: area,
@@ -627,6 +653,31 @@ class DeviceFrame implements ControlledFrame {
         };
         this.recordQuad(this.#backend.quad(command), command);
         if (backdrop) this.releaseTemporary(backdrop.lease);
+    }
+    /** Composites an area target: each device px is min(1, |acc|) of its accumulator texel, painted with the paint output. */
+    compositeArea(scope: Scope, clip: RectI, source: FrameTexture, bounds: RectI,
+        output: { blend: 'normal' | 'modulate'; rgb: readonly [number, number, number]; alpha: number }): void {
+        if (scope.scale !== 1 || !output.rgb.every(value => Number.isFinite(value) && value >= 0 && value <= 1) ||
+            !Number.isFinite(output.alpha) || output.alpha < 0 || output.alpha > 1) throw new ArenaError('invalid-input');
+        const area = intersect(intersect(bounds, clip), scope.bounds);
+        if (scope.empty || !area.width || !area.height || output.alpha === 0) return;
+        if (source.texture === scope.target.color?.texture || source.width < bounds.width || source.height < bounds.height) {
+            throw new ArenaError('invalid-resource');
+        }
+        const data = blockScratch;
+        setVec4(data, 0, scope.viewport.x, scope.viewport.y, scope.viewport.width, scope.viewport.height);
+        setVec4(data, 4, area.x, area.y, area.width, area.height);
+        setVec4(data, 8, bounds.x, bounds.y, 1, 0);
+        setVec4(data, 12, source.width, source.height, 1, 0);
+        setVec4(data, 16, output.rgb[0], output.rgb[1], output.rgb[2], output.alpha);
+        setVec4(data, 28, output.blend === 'modulate' ? 1 : 0, 0, 0, 0);
+        const packed = this.uniforms(data);
+        const command: QuadCommand = {
+            context: scope, source, backdrop: this.#backend.white(), mask: this.#backend.white(),
+            uniforms: { buffer: this.#backend.buffer(packed.buffer), slice: packed }, scissor: area,
+            blend: output.blend === 'modulate' ? 'modulate' : 'source-over', variant: 'area',
+        };
+        this.recordQuad(this.#backend.quad(command), command);
     }
     /** Resolves a grid coverage target and paints it in one composite. The texel block of device pixel p is
      * (p − bounds.origin)·grid, so the scope's destination and the target's origin line up exactly. */
@@ -648,7 +699,8 @@ class DeviceFrame implements ControlledFrame {
         setVec4(data, 12, source.width, source.height, 1, 0);
         setVec4(data, 16, output.rgb[0], output.rgb[1], output.rgb[2], output.alpha);
         setVec4(data, 28, output.blend === 'modulate' ? 1 : 0, 0, 0, 0);
-        const packed = this.uniforms(data);
+        const packed = this.#quadUniforms(data);
+        if (!packed) return;
         const command: QuadCommand = {
             context: scope, source, backdrop: this.#backend.white(), mask: this.#backend.white(),
             uniforms: { buffer: this.#backend.buffer(packed.buffer), slice: packed }, scissor: area,
@@ -665,18 +717,25 @@ class DeviceFrame implements ControlledFrame {
         const viewport = { x: 0, y: 0, width: plane.width, height: plane.height };
         const scope: Scope = { target: plane, viewport, originX: 0, originY: 0, scale: 1, bounds: at, capture: false, empty: false, coverage: false };
         this.start(plane, { target: plane.handle, viewport, load: { kind: 'clear', color: [0, 0, 0, 0] }, clearViewport: at, store: 'store' });
-        const data = blockScratch;
-        setVec4(data, 0, viewport.x, viewport.y, viewport.width, viewport.height);
-        setVec4(data, 4, at.x, at.y, at.width, at.height);
-        setVec4(data, 8, slot.x, slot.y, 16, 0);
-        setVec4(data, 12, source.width, source.height, 1, 0);
-        const packed = this.uniforms(data);
-        const command: QuadCommand = {
-            context: scope, source, backdrop: this.#backend.white(), mask: this.#backend.white(),
-            uniforms: { buffer: this.#backend.buffer(packed.buffer), slice: packed }, scissor: at, blend: 'replace', variant: 'grid16',
-        };
-        this.recordQuad(this.#backend.quad(command), command);
-        this.end(plane, { target: plane.handle, viewport, load: { kind: 'load' }, store: 'store' });
+        // `end` records the plane's retention, so it runs even when the quad cannot be recorded: a throw must not leave the retention
+        // of a plane whose clear already ran.
+        try {
+            const data = blockScratch;
+            setVec4(data, 0, viewport.x, viewport.y, viewport.width, viewport.height);
+            setVec4(data, 4, at.x, at.y, at.width, at.height);
+            setVec4(data, 8, slot.x, slot.y, 16, 0);
+            setVec4(data, 12, source.width, source.height, 1, 0);
+            // A refused slot is left empty (counted as gpu:quad-deferred): its coverage reads as none, so the caller must count it.
+            const packed = this.#quadUniforms(data);
+            if (!packed) return;
+            const command: QuadCommand = {
+                context: scope, source, backdrop: this.#backend.white(), mask: this.#backend.white(),
+                uniforms: { buffer: this.#backend.buffer(packed.buffer), slice: packed }, scissor: at, blend: 'replace', variant: 'grid16',
+            };
+            this.recordQuad(this.#backend.quad(command), command);
+        } finally {
+            this.end(plane, { target: plane.handle, viewport, load: { kind: 'load' }, store: 'store' });
+        }
     }
 }
 
@@ -918,6 +977,65 @@ class DevicePass implements GpuPass {
             this.#closeCoverage(entry.isolation, entry.previous, output);
             this.#clip = entry.previous;
         });
+    }
+    beginArea(target: AreaTarget, bounds: RectI): CoverageToken {
+        this.#frame.markBarrier();
+        return this.#guard(() => {
+            // One borrowed target is one open scope at a time: a nested borrow would overwrite what the enclosing scope is
+            // still accumulating, the same rule as coverage.
+            if (this.#groups.some(entry => entry.kind !== 'group')) throw new ArenaError('invalid-input');
+            const native = this.#backend.target(target.target), texture = this.#backend.texture(target.texture);
+            const parent = this.#scope;
+            // The area accumulates in its own texel space: the GL viewport is the target itself, so band-local px map to its texels.
+            // (Starting it on the device viewport put every row outside a band-sized target.)
+            const local: RectI = { x: 0, y: 0, width: target.width, height: target.height };
+            // An area target is one r32f texel per device px with no stencil and no MSAA; anything else is refused.
+            if (native.stencil || native.samples !== 1 || native.format !== 'r32f' || native.width !== target.width ||
+                native.height !== target.height || !texture.uses.includes('sample') || texture.texture === parent.target.color?.texture ||
+                [bounds.x, bounds.y, bounds.width, bounds.height].some(value => !Number.isSafeInteger(value)) ||
+                bounds.width <= 0 || bounds.height <= 0 || bounds.width > target.width || bounds.height > target.height) throw new ArenaError('invalid-input');
+            const token = Object.freeze({ id: this.#frame.token() });
+            const previous = this.#clip;
+            const area = intersect(intersect(bounds, previous), parent.bounds);
+            const empty = parent.empty || !area.width || !area.height;
+            const options = { opacity: 1, blend: 'normal', colourEffect: 'none' } as const;
+            if (!empty) {
+                // Loaded, not cleared: the scratch is shared, and a whole-target clear costs the target for every stroke. The area's first
+                // draw clears its own band to zero (the kit's clear pass), so no span sees a previous area's value.
+                this.#frame.start(native, { target: target.target, viewport: local,
+                    load: { kind: 'load' }, store: 'store' });
+            }
+            // Inside the area the scope is the target itself: its bounds and clip are target-local, so a draw's scissor (target px) is
+            // intersected with the rectangle it is in. Its device rectangle is kept for the composite alone (see #closeArea). Measured:
+            // with device-space bounds every span and clear was intersected with the band's device position and clipped away.
+            const child: Scope = { ...parent, target: native, viewport: local, bounds: local, originX: 0, originY: 0, scale: 1, empty, coverage: parent.coverage };
+            const isolation: Isolation = { parent, child, lease: null, mask: null, options, device: bounds };
+            this.#groups.push({ kind: 'area', token, previous, clipDepth: this.#clips.length, isolation });
+            this.#scope = child;
+            this.#clip = local;
+            return token;
+        });
+    }
+    endArea(token: CoverageToken, output: AreaOutput): void {
+        this.#frame.markBarrier();
+        this.#guard(() => {
+            const entry = this.#groups.at(-1);
+            if (!entry || entry.kind !== 'area' || entry.token !== token || entry.clipDepth !== this.#clips.length) throw new ArenaError('invalid-input');
+            if (output.kind !== 'area' || !['normal', 'modulate'].includes(output.blend)) throw new ArenaError('invalid-input');
+            this.#groups.pop();
+            this.#closeArea(entry.isolation, entry.previous, output);
+            this.#clip = entry.previous;
+        });
+    }
+    #closeArea(isolation: Isolation, clip: RectI, output: AreaOutput): void {
+        if (this.#scope !== isolation.child) throw new ArenaError('invalid-input');
+        this.#scope = isolation.parent;
+        const child = isolation.child;
+        if (child.empty) return;
+        this.#frame.end(child.target, { target: child.target.handle, viewport: child.viewport, load: { kind: 'load' }, store: 'store' });
+        const texture = child.target.color;
+        if (!texture) throw new ArenaError('invalid-resource');
+        this.#frame.compositeArea(this.#scope, clip, texture, isolation.device ?? child.bounds, output);
     }
     #closeCoverage(isolation: Isolation, clip: RectI, output: CoverageOutput): void {
         if (this.#scope !== isolation.child) throw new ArenaError('invalid-input');

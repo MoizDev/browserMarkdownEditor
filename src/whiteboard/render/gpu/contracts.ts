@@ -97,6 +97,8 @@ export interface TileStore {
     /** Never an entry touched in `frameId`. Order: free list, other scales off view, same scale off view (farthest
      *  first), other scales on view that a composed tile covers. Returns the bytes actually freed. */
     evict(bytes: number, frameId: number, view: ViewState): number;
+    /** Stamps every held entry the view shows, at any scale, as used in `frameId` (see Layer.protectFrame). */
+    touchVisible(view: ViewState, frameId: number): void;
     dropScalesExcept(scale: number, band: PaintBand): number;
     wait(bytes: number, wake: () => void): void;
     releaseAll(): void;

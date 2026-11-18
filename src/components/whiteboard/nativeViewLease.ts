@@ -11,6 +11,7 @@ import type { CaptureRequest, CaptureSnapshot } from '../../platform/render/capt
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
 import { recordPdfNavigation } from '../../utils/pdfViewState';
+import { auditCount, renderAuditEnabled } from '../../platform/render/renderAudit';
 import { getBoardRuntime, type BoardRuntime } from '../../whiteboard/host/runtime';
 import { createBoardViewCamera } from '../../whiteboard/host/viewCamera';
 import { resetZoomTarget, zoomStepTarget } from '../../whiteboard/host/zoomSteps';
@@ -209,17 +210,31 @@ export function createNativeViewLease(options: {
     const invalidatePane = () => { drawn = snapshotNow(); platformPane?.invalidate('native-view'); };
     const drawsChanged = (): boolean => {
         const next = snapshotNow();
-        if (!next || !drawn) return true;
-        return drawn.state !== next.state || drawn.sceneRevision !== next.sceneRevision || drawn.layout !== next.layout ||
-            drawn.palette !== next.palette || drawn.appearance.background !== next.appearance.background ||
-            drawn.appearance.inverted !== next.appearance.inverted || drawn.layers !== next.layers ||
-            drawn.backendPreference !== next.backendPreference || paintKey(drawn.state, drawn.paint) !== paintKey(next.state, next.paint);
+        if (!next || !drawn) { if (renderAuditEnabled()) auditCount('native', `draws-changed:${!next ? 'no-snapshot' : 'no-drawn'}`); return true; }
+        // gh14 audit: each field that the pane draws from, counted when it is the reason a publish repaints (draws-changed:<field>).
+        const fields: Array<[string, boolean]> = [
+            ['state', drawn.state !== next.state], ['scene-revision', drawn.sceneRevision !== next.sceneRevision],
+            ['layout', drawn.layout !== next.layout], ['palette', drawn.palette !== next.palette],
+            ['background', drawn.appearance.background !== next.appearance.background], ['inverted', drawn.appearance.inverted !== next.appearance.inverted],
+            ['layers', drawn.layers !== next.layers], ['backend', drawn.backendPreference !== next.backendPreference],
+            ['paint-key', paintKey(drawn.state, drawn.paint) !== paintKey(next.state, next.paint)],
+        ];
+        let changed = false;
+        for (const [name, differs] of fields) {
+            if (!differs) continue;
+            changed = true;
+            if (renderAuditEnabled()) auditCount('native', `draws-changed:${name}`);
+        }
+        if (!changed && renderAuditEnabled()) auditCount('native', 'draws-unchanged');
+        return changed;
     };
     // Direct callers (navigation, camera, the lease's own refreshes) always repaint; only the viewer's state publishes are filtered.
     const invalidate = (change?: string) => { if (change !== 'paint') invalidatePane(); publish(change); };
-    const viewerChanged = (change?: string) => { if (change !== 'paint' && drawsChanged()) invalidatePane(); publish(change); };
+    const viewerChanged = (change?: string) => { if (change !== 'paint' && drawsChanged()) { if (renderAuditEnabled()) auditCount('native', 'hint:viewer'); invalidatePane(); } publish(change); };
+    // gh14 audit: each caller of the unconditional invalidate is named (hint:<source>), so a native-view present is traced to its caller.
+    const hintFrom = (source: string) => () => { if (renderAuditEnabled()) auditCount('native', `hint:${source}`); invalidate(); };
     const cameraPorts: CameraPorts = { currentPath: () => current() ? host.identity(identity.documentId)?.path : undefined,
-        invalidate, onError: options.onError };
+        invalidate: hintFrom('camera'), onError: options.onError };
     const cameraClaim = options.cameraHandoff ? claimCamera(options.cameraHandoff, runtime, limits, insets, cameraPorts) : null;
     const cameraOwner = cameraClaim?.owner ?? createBoardViewCamera({ runtime, ...cameraPorts,
         limits, insets, initialViewport: { width: 0, height: 0, dpr: window.devicePixelRatio || 1 } });
@@ -253,7 +268,7 @@ export function createNativeViewLease(options: {
             const found = await host.readMedia(identity, { hash: id.slice(7), preferredName: runtime.media.currentFile(id) ?? entry.file }, signal);
             if (!found) throw new Error(`Missing board media: ${id}`);
             return found.blob;
-        }, invalidate: () => invalidate(), onError: options.onError });
+        }, invalidate: hintFrom('media'), onError: options.onError });
     // This view's own playback: it stops when the view hides and when the view is torn down, and it closes its presented frames
     // before the source it came from is released.
     const video = new BoardVideoPlayback({ memory: images.memory, frames: images.frames,
@@ -264,7 +279,7 @@ export function createNativeViewLease(options: {
             return entry && bytes && entry.mime.startsWith('video/') ? { entry, blob: new Blob([bytes], { type: entry.mime }) } : null;
         },
         current: () => current() && parameters.visible,
-        invalidate: () => invalidate(),
+        invalidate: hintFrom('video'),
         error: (_id, message) => options.onNotice(message) });
     // Animated pictures: the picture's own playing choice (its default follows the reduced-motion preference), and one clock
     // that decodes only the frame it is on. Their frames are presented through the same registry as a video's.
@@ -284,7 +299,7 @@ export function createNativeViewLease(options: {
                 ? { entry, blob: new Blob([bytes], { type: entry.mime }) } : null;
         },
         current: () => current() && parameters.visible,
-        invalidate: () => invalidate(),
+        invalidate: hintFrom('animation'),
         // The viewer exists once attachView returns; a deadline set before that has no layer to wake yet, and the first paint re-arms it.
         wakeAt: deadline => { if (viewer) viewer.wakeAt(deadline); },
         error: (_id, message) => options.onNotice(message) });
@@ -364,9 +379,9 @@ export function createNativeViewLease(options: {
             viewport: refreshViewport, current: candidate => current() && candidate.documentId === token.documentId &&
                 candidate.session === token.session && candidate.vaultEpoch === token.vaultEpoch && candidate.bytesGeneration === token.bytesGeneration,
             editable: () => inputPermitted && parameters.mode === 'edit' && edit.canMutate() && !board.isReadOnly && host.canWrite(identity), visible: () => parameters.visible, focused: () => parameters.focused,
-            interaction: { invalidate, cameraChanged: () => { markUserNavigation(); cameraOwner.changed(); } },
+            interaction: { invalidate: hintFrom('interaction'), cameraChanged: () => { markUserNavigation(); cameraOwner.changed(); } },
             platform: () => { if (!platformPane) throw new Error('The board platform is not attached'); return platformPane; },
-            ui: edit.ui, commands: edit.commands }, invalidate, onError: options.onError }) : null;
+            ui: edit.ui, commands: edit.commands }, invalidate: hintFrom('edit'), onError: options.onError }) : null;
         } catch (error) { viewer.dispose(); animation.dispose(); video.dispose(); images.dispose(); if (!cameraClaim) cameraOwner.dispose(); throw error; } })();
     const stopEditingReady = editing && edit ? editing.subscribeAttachment(edit.onAttachment) : undefined;
     if (editing && edit) edit.onAttachment(editing.isAttached());
@@ -555,7 +570,7 @@ export function createNativeViewLease(options: {
             try { lease.dispose(); return handoff; }
             catch (error) { handoff.dispose(); throw error; }
         },
-        refreshAuthority() { if (!disposed) { updateInput(); viewer.setView(viewParameters()); invalidate(); } },
+        refreshAuthority() { if (!disposed) { updateInput(); viewer.setView(viewParameters()); hintFrom('authority')(); } },
         captureRegion: (rect, maxSide, signal) => captureRegion(rect, maxSide, { signal, theme: 'light', inverted: false, layers: captureLayers() }),
         captureBlob: (rect, maxSide, signal) => captureBlob(rect, maxSide, { signal, theme: 'light', inverted: false, layers: captureLayers() }),
         replaceBackdrop(next) {

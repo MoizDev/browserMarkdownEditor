@@ -46,6 +46,8 @@ export interface MemoryCacheRegistration extends CacheActivity {
     readonly paneId?: string;
     /** A live layer's cache (a stroke in flight). Its CPU reservations reclaim their own idle geometry before the pane's others. */
     readonly liveInput?: boolean;
+    /** A layer's CPU reservations for what its frame shows: admitted while the pool fits, whatever the pane's CPU share. */
+    readonly foreground?: boolean;
     readonly owner?: MemorySessionOwner;
     readonly memory: () => ArenaMemory;
     /** Eviction request for up to `bytes`; returns the bytes it frees, or 0 when it frees nothing (a touched entry). An owner
@@ -483,7 +485,6 @@ export class MemoryGovernor {
     advance(now: number, liveGesture: boolean): void {
         if (!Number.isFinite(now) || now < this.now) throw new MemoryAdmissionError('invalid-input');
         this.now = now;
-        this.now = now;
         for (const cache of this.caches.values()) this.reconcileUnaccounted(cache);
         this.trimHiddenMirrors();
         // Quality drops only when the trims cannot bring a pool back to target: a trim that frees what it is asked for
@@ -676,7 +677,8 @@ export class MemoryGovernor {
         if (bytes > this.target[pool]) return null;
         // Refused and nothing has moved since: the same request is refused again without the reclaim and trims that made the
         // first refusal. Measured earlier as the evict/realloc loop; an owner that retries each frame must not re-run them.
-        if (cache.refusal && cache.refusal.epoch === this.capacityEpoch && bytes >= cache.refusal.bytes) return null;
+        // A foreground request is not memoised: its refusal wakes on the pool's release, and a memo would park it past one.
+        if (!cache.registration.foreground && cache.refusal && cache.refusal.epoch === this.capacityEpoch && bytes >= cache.refusal.bytes) return null;
         const allowed = () => this.fits(cache, bytes);
         // A pane with no demand yet holds a zero grant, so its first allocation is refused without being over anything.
         // That is not pressure: nothing is trimmed and no quality is stepped. The refused work waits, and the replan that
@@ -687,13 +689,18 @@ export class MemoryGovernor {
         // working canvases beside its 33 MB display, so the GPU scratch of the same pane was refused and quality stepped down).
         const paneOf = cache.registration.paneId;
         if (kind === 'surface-scratch' && paneOf !== undefined) {
-            this.trimming = true;
-            try {
-                for (const other of [...this.caches.values()]) {
-                    if (other.registration.paneId !== paneOf || other.registration.kind !== 'canvas-working' || other.bytes === 0) continue;
-                    this.evictCache(other, other.bytes);
-                }
-            } finally { this.trimming = false; }
+            // The 2D working canvases are only worth giving up when that makes the scratch fit: a scratch still refused after their
+            // eviction left them rebuilt by the next 2D frame for nothing (review3, gpu-h2). The pool is the only check that they
+            // can change: the scratch's own limit counts no canvas.
+            const working = [...this.caches.values()].filter(other => other.registration.paneId === paneOf &&
+                other.registration.kind === 'canvas-working' && other.bytes > 0);
+            const freed = working.reduce((sum, other) => sum + other.bytes, 0);
+            if (freed > 0 && this.charged[pool] > this.target[pool] - bytes && this.charged[pool] - freed + bytes <= this.target[pool]) {
+                this.trimming = true;
+                try {
+                    for (const other of working) this.evictCache(other, other.bytes);
+                } finally { this.trimming = false; }
+            }
         }
         if (!allowed()) {
             // Pressure is the pool's, not one pane reaching its own grant: adapters retry a refused grant each frame, and
@@ -751,6 +758,10 @@ export class MemoryGovernor {
         const { pool, kind, paneId } = cache.registration;
         // Existing leases are grandfathered only for accounting, never for new admission.
         if (this.charged[pool] > this.target[pool] || this.charged[pool] + bytes > this.target[pool]) return false;
+        // A foreground CPU request (what the frame shows) is admitted while the pool fits, whatever its pane's share: the share sized
+        // around unowned derived geometry, so the pane was refused with the pool 27-29 MB of 32 MiB (measured: 4.8 MB short over 7
+        // refusals in the draw phase). Background work below stays inside the grant.
+        if (cache.registration.foreground && pool === 'cpu') return true;
         // The broker's one app-wide allocator owns all reservations, including lost ones (§3.3:360).
         if (kind === 'context') {
             const held = this.kindBytes('context');

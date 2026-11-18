@@ -7,7 +7,7 @@ import type { LayerHost, TexturedQuadSpec } from '../../../platform/render/compo
 import type { GfxDevice, GpuPass, GroupToken, RectI, RgbaP, TextureHandle } from '../../../platform/render/gfx/api';
 import type { FrameBudget, GpuReleaseReason, OffscreenPasses } from '../../../platform/render/types';
 import { tileTargetBytes, tileView } from '../../../platform/render/tileTarget';
-import { auditCount, auditDrawn, auditStage, renderAuditEnabled, type AuditStage } from '../../../platform/render/renderAudit';
+import { auditCount, auditDrawn, auditGpuError, auditStage, renderAuditEnabled, type AuditStage } from '../../../platform/render/renderAudit';
 import { TILE_EDGE, TILE_GUTTER, TILE_SIZE } from '../imageSampling';
 import { isBudgetRefusal } from '../budgetRefusal';
 import type { PaintBand } from '../material';
@@ -827,7 +827,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             // Why a frame composes nothing is the zoom question: each exit is counted (pass and cause).
             // The count limit is for background recomposes: a foreground compose (a visible tile with no valid cover) is bounded by the budget.
             if (only !== 'foreground' && frameComposed >= limit) { auditCount(audit, `compose:limit:${pass}`); return false; }
-            if (budget.shouldYield()) { auditCount(audit, `compose:yield:${pass}:${only}`); return false; }
+            if (budget.shouldYield()) { auditCount(audit, `compose:yield:${pass}`); return false; }
             let outcome = advance(position, budget, gpu);
             // At rest a refused or denied position frees this composer's own tiles and is admitted in the same frame, instead of
             // waiting for the governor (see freeOwn). While zooming the stand-ins stay: they are what the zoom shows.
@@ -1439,7 +1439,6 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             const demand = view.camera.z * view.viewport.dpr;
             device = host.device();
             if (!prepared || !device || !(demand > 0) || !Number.isFinite(demand)) {
-                if (renderAuditEnabled()) auditCount(audit, `prepare:unpainted:${!prepared ? 'no-paint' : !device ? 'no-device' : 'no-demand'}`);
                 for (const position of finished) cancel(position);
                 finished = [];
                 drawCount = 0; presenting = false; drawSignature = 0; contentVersion++; return true;
@@ -1454,7 +1453,6 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             }
             // The scale moves only with the camera's zoom: a pan or a drag keeps the tiles' scale and their pixels.
             zooming = lastZoom !== undefined && view.camera.z !== lastZoom;
-            if (renderAuditEnabled()) auditCount(audit, zooming ? 'prepare:zoom-seen' : 'prepare:zoom-not-seen');
             lastZoom = view.camera.z;
             if (pins) {
                 if (zooming) {
@@ -1646,9 +1644,14 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         scissor.x = draw.cx; scissor.y = draw.cy; scissor.width = draw.cw; scissor.height = draw.ch;
                         const clip = pass.pushClip(scissor);
                         drawnLive[draw.band].add(draw.node);
+                        // The pop is in finally: a throw inside the draw must not leave the scope open (the encoder then refuses the frame).
                         try { draw.liveRoute?.draw(pass, draw.live); }
-                        catch (error) { if (!isBudgetRefusal(error)) throw error; auditCount(audit, 'draw:refused'); wantFrame = true; }
-                        pass.popClip(clip);
+                        catch (error) {
+                            // A budget refusal is counted and the frame asks again; any other error is reported and thrown.
+                            if (!isBudgetRefusal(error)) { auditGpuError(audit, 'live-clip', error); throw error; }
+                            auditCount(audit, 'draw:refused'); wantFrame = true;
+                        }
+                        finally { pass.popClip(clip); }
                     }
                     i++;
                     continue;
@@ -1682,16 +1685,20 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     clip = pass.pushClip(scissor);
                 }
                 let group: GroupToken | null = null;
-                if (draw.mode === 'isolated') {
-                    // A group's bounds are on the surface too: a negative origin is refused like a negative scissor.
-                    bounds.x = Math.max(0, Math.floor(dest.x)); bounds.y = Math.max(0, Math.floor(dest.y));
-                    bounds.width = Math.min(surfaceW, Math.ceil(dest.x + dest.width)) - bounds.x;
-                    bounds.height = Math.min(surfaceH, Math.ceil(dest.y + dest.height)) - bounds.y;
-                    group = pass.beginGroup(bounds, GROUP);
+                // The group and the clip are closed in finally: a throw in between must not leave either open (the encoder refuses that).
+                try {
+                    if (draw.mode === 'isolated') {
+                        // A group's bounds are on the surface too: a negative origin is refused like a negative scissor.
+                        bounds.x = Math.max(0, Math.floor(dest.x)); bounds.y = Math.max(0, Math.floor(dest.y));
+                        bounds.width = Math.min(surfaceW, Math.ceil(dest.x + dest.width)) - bounds.x;
+                        bounds.height = Math.min(surfaceH, Math.ceil(dest.y + dest.height)) - bounds.y;
+                        group = pass.beginGroup(bounds, GROUP);
+                    }
+                    lay(pass, texture, CROP, dest, draw.mode === 'modulate' ? 'modulate' : 'over');
+                } finally {
+                    if (group) pass.endGroup(group);
+                    if (clip) pass.popClip(clip);
                 }
-                lay(pass, texture, CROP, dest, draw.mode === 'modulate' ? 'modulate' : 'over');
-                if (group) pass.endGroup(group);
-                if (clip) pass.popClip(clip);
                 i++;
             }
         },

@@ -28,9 +28,10 @@ export interface StrokeTriangles {
 const MAX_POINTS = 65_536, MAX_TRIANGLES_DEFAULT = 262_144;
 const MIN_CIRCLE_SEGMENTS = 8, MAX_CIRCLE_SEGMENTS = 128;
 
-interface Polyline { points: Vec2[]; closed: boolean }
+export interface Polyline { points: Vec2[]; closed: boolean }
 
-function flattenPolylines(commands: readonly PathCommand[], tolerance: number): Polyline[] | null {
+/** The subpaths of a command list, flattened: the stroke route's outline (the area route's contours) and its triangles share them. */
+export function flattenPolylines(commands: readonly PathCommand[], tolerance: number): Polyline[] | null {
     if (!(tolerance > 0) || !Number.isFinite(tolerance)) throw new RangeError('Invalid stroke flattening tolerance');
     const lines: Polyline[] = [];
     let current: Polyline | null = null, closedStart: Vec2 | null = null, count = 0;

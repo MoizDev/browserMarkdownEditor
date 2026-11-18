@@ -77,6 +77,9 @@ const idOfObject = (object: object | null): number => {
     return id;
 };
 const hashMix = (hash: number, value: number): number => Math.imul(hash ^ value, 16777619);
+/** The compose passes in order: the foreground takes visible missing positions first, the background dirty ones first. */
+const DIRTY_FIRST = ['dirty', 'missing', 'ring'] as const;
+const MISSING_FIRST = ['missing', 'dirty', 'ring'] as const;
 const hashText = (text: string): number => { let hash = 2166136261; for (let i = 0; i < text.length; i++) hash = hashMix(hash, text.charCodeAt(i)); return hash; };
 /** A position's status at a scale: `missing` has no complete picture; `dirty` shows a picture a change has overtaken. */
 type Status = 'missing' | 'dirty' | 'ok';
@@ -246,6 +249,12 @@ export interface TileComposer {
     memoryBlocked(): boolean;
     memory(): { gpuBytes: number; cpuBytes: number };
     release(reason: GpuReleaseReason): void;
+    /** The adapter evicted something a draw list may hold (a tile, a texture or a coverage set): no list built before is drawn again. */
+    noteEvicted(): void;
+    /** A value that moves with what the composite draws (see contentVersion): equal keys mean the same picture. */
+    contentKey(): number;
+    /** True when the draw list cannot be drawn for this view (an eviction or a camera change since it was built, and no prepare since). */
+    listInvalid(view: ViewState): boolean;
     dispose(): void;
 }
 
@@ -396,9 +405,16 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     const quadPool: { sourceRect: Rect; destRect: Rect }[] = [];
     const quadList: TexturedQuadSpec[] = [];
     let drawCount = 0;
-    // The frame whose draw list buildDraws (or buildLiveDraws) built: a list left from an earlier frame is never drawn, since its
-    // textures may have been released or reused since.
-    let drawsFrame = -1;
+    // A draw list is drawable while nothing it draws can have been evicted since it was built and the camera is the one it was
+    // built for. evictEpoch moves at every prepare and at every eviction the adapter makes; a list from an earlier frame that a
+    // later prepare did not touch (a live-only or not-yet-current frame skips the prepare) still draws, the same picture.
+    let drawsEpoch = -1, evictEpoch = 0, drawsFrame = -1;
+    const drawsCam = { x: NaN, y: NaN, z: NaN, w: NaN, h: NaN, dpr: NaN };
+    // Set when a draw list is not usable for the view asked: the next frame must prepare, and the layer is critical until it does.
+    let wantFrame = false;
+    const listUsable = (view: ViewState): boolean => drawsFrame === frame || (drawsEpoch === evictEpoch && drawsCam.x === view.camera.x &&
+        drawsCam.y === view.camera.y && drawsCam.z === view.camera.z && drawsCam.w === view.viewport.width &&
+        drawsCam.h === view.viewport.height && drawsCam.dpr === view.viewport.dpr);
 
     let disposed = false, presenting = false, indexing = false;
     // This frame's zoom, set in prepare: while zooming, coverage does not hold the frame for a position with nothing (see coverage).
@@ -410,7 +426,10 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     // The kinds of edit this prepare made (one bit each), so a 'changed' answer names its reason as audit counters.
     let editBits = 0;
     const EDIT_SUPERSEDED = 1, EDIT_EMPTY = 2, EDIT_CANCEL = 4, EDIT_FREE = 8, EDIT_DONE = 16, EDIT_SCALES = 32, EDIT_INVALID = 64;
-    const editEvent = (bit: number): void => { visibleEdits++; editBits |= bit; };
+    // The content version moves on every change that can alter what the composite draws: an edit, an eviction the adapter made, a
+    // live part drawn (its pixels change), a resource change, an index in progress. contentKey() reads it with the draw signature.
+    let contentVersion = 0;
+    const editEvent = (bit: number): void => { visibleEdits++; editBits |= bit; contentVersion++; };
     let drawSignature = 0;
     // The visible span at the compose scale while zooming, null otherwise: the positions a superseded entry must be exact under to be dropped.
     let zoomSpan: Span | null = null;
@@ -807,7 +826,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             // Why a frame composes nothing is the zoom question: each exit is counted (pass and cause).
             // The count limit is for background recomposes: a foreground compose (a visible tile with no valid cover) is bounded by the budget.
             if (only !== 'foreground' && frameComposed >= limit) { auditCount(audit, `compose:limit:${pass}`); return false; }
-            if (budget.shouldYield()) { auditCount(audit, `compose:yield:${pass}`); return false; }
+            if (budget.shouldYield()) { auditCount(audit, `compose:yield:${pass}:${only}`); return false; }
             let outcome = advance(position, budget, gpu);
             // At rest a refused or denied position frees this composer's own tiles and is admitted in the same frame, instead of
             // waiting for the governor (see freeOwn). While zooming the stand-ins stay: they are what the zoom shows.
@@ -875,7 +894,9 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 }
             }
         }
-        for (const pass of ['dirty', 'missing', 'ring'] as const) {
+        // A visible position with no stand-in is foreground work: the foreground (and a single-phase compose) takes the missing pass
+        // before the dirty one, so a budget that runs out on dirty positions cannot leave it missing (gpu's ruling).
+        for (const pass of (only === 'background' ? DIRTY_FIRST : MISSING_FIRST)) {
             // While zooming only the visible positions are composed: the ring is the next view's, and the zoom's compose is its cost.
             if (pass === 'ring' && (zoomingFrame || only === 'foreground')) continue;
             const margin = pass === 'ring' ? 1 : 0;
@@ -1194,7 +1215,9 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
 
     const buildDraws = (view: ViewState, target: number, zooming: boolean, budget: FrameBudget): void => {
         drawCount = 0;
-        drawsFrame = frame;
+        drawsEpoch = evictEpoch; drawsFrame = frame;
+        drawsCam.x = view.camera.x; drawsCam.y = view.camera.y; drawsCam.z = view.camera.z;
+        drawsCam.w = view.viewport.width; drawsCam.h = view.viewport.height; drawsCam.dpr = view.viewport.dpr;
         coveredPositions.clear();
         if (liveNow) { buildLiveDraws(view, target, budget); return; }
         const span = spanAt(view, target);
@@ -1375,6 +1398,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         },
         prepare(view: ViewState, budget: FrameBudget, prepared: PreparedPaint2d | null, omit?: ReadonlySet<string>): boolean {
             if (disposed) return true;
+            evictEpoch++; wantFrame = false;
             // Two-phase (budget.phase): the foreground call runs this frame's intake and the foreground composes, then answers false (the
             // frame's answer is the background call's). The background call of the same frame finishes it. The scheduler never makes a
             // background call without its foreground; one that finds none answers true.
@@ -1403,19 +1427,22 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             const demand = view.camera.z * view.viewport.dpr;
             device = host.device();
             if (!prepared || !device || !(demand > 0) || !Number.isFinite(demand)) {
+                if (renderAuditEnabled()) auditCount(audit, `prepare:unpainted:${!prepared ? 'no-paint' : !device ? 'no-device' : 'no-demand'}`);
                 for (const position of finished) cancel(position);
                 finished = [];
-                drawCount = 0; presenting = false; drawSignature = 0; return true;
+                drawCount = 0; presenting = false; drawSignature = 0; contentVersion++; return true;
             }
             presenting = true;
             preparedSharp = prepared.sharp !== false;
             if (prepared !== paintScanned) { paintScanned = prepared; paintHasLive = windowsHaveLive(prepared); paintLiveOnly = liveOnlyPaint(prepared); }
             if (prepared.resources !== resourcesSeen) {
                 resourcesSeen = prepared.resources;
+                contentVersion++;
                 for (const route of routeList) (route as ItemRoute & ResourcedRoute).useResources?.(prepared.resources);
             }
             // The scale moves only with the camera's zoom: a pan or a drag keeps the tiles' scale and their pixels.
             zooming = lastZoom !== undefined && view.camera.z !== lastZoom;
+            if (renderAuditEnabled()) auditCount(audit, zooming ? 'prepare:zoom-seen' : 'prepare:zoom-not-seen');
             lastZoom = view.camera.z;
             if (pins) {
                 if (zooming) {
@@ -1552,9 +1579,11 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 signature = hashMix(signature, draw.clipOn ? Math.round(draw.cx) * 4 + Math.round(draw.cy) * 8 + Math.round(draw.cw) * 16 + Math.round(draw.ch) * 32 : 0);
                 signature = hashMix(signature, idOfObject(draw.texture));
                 signature = hashMix(signature, draw.live ? 1 + idOfObject(draw.liveRoute) : 0);
+                if (draw.live) contentVersion++;
                 if (draw.ink.length) signature = hashMix(signature, hashText(draw.ink.join('\u0001')));
             }
             const sigChanged = signature !== drawSignature;
+            if (indexing) contentVersion++;
             const changed = indexing || visibleEdits !== editsBefore || sigChanged;
             drawSignature = signature;
             // Why it answered changed, as audit counters (gh14): a prepare names every condition that held.
@@ -1588,7 +1617,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         },
         drawGpu(pass: GpuPass, view: ViewState, band: PaintBand): void {
             if (!drawCount) return;
-            if (drawsFrame !== frame) { auditCount(audit, 'draw:stale-list'); return; }
+            if (!listUsable(view)) { auditCount(audit, 'draw:stale-list'); wantFrame = true; return; }
             const cam = view.camera, scale = cam.z * view.viewport.dpr;
             const surfaceW = Math.round(view.viewport.width * view.viewport.dpr), surfaceH = Math.round(view.viewport.height * view.viewport.dpr);
             // Scratch rectangles, rewritten per draw: the pass reads them before this loop moves on.
@@ -1655,6 +1684,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         },
         coverage(view: ViewState): { complete: boolean; sharp: boolean; staleVersion?: boolean } {
             if (!presenting) return { complete: false, sharp: false };
+            // A draw list that cannot be drawn for this view is a hole: the frame is incomplete (the board is critical while it is).
+            if (drawCount && !listUsable(view)) { wantFrame = true; return { complete: false, sharp: false }; }
             const exact = exactScale(view.camera.z * view.viewport.dpr);
             // A live part this frame could not admit is a hole: the picture is not complete (the next frame asks again).
             if (liveNow && !indexing) return { complete: !liveDeferredNow && !liveHoleNow, sharp: preparedSharp && drawnTarget === exact };
@@ -1675,9 +1706,11 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         // Composed this frame: drawn fresh (buildDraws' pending path), so the frame is sharp here. The compositor reads
                         // coverage before the encode, and the entry it still finds is the old one; the draw is not.
                         if (status === 'missing' && finishedAt(band, target, x, y)) continue;
+                        // A dirty position whose changed pixels this frame's live parts lay is current: complete and sharp (gpu-h11's
+                        // trace: 112 of 113 draw and 29 of 32 drag incomplete presents were covered dirty positions counted as stand-ins).
+                        if (status === 'dirty' && coveredPositions.has(positionKey(band, target, x, y))) continue;
                         sharp = false;
-                        // A dirty position whose changed pixels this frame's live parts lay is current, not stale.
-                        if (status === 'dirty') { if (!coveredPositions.has(positionKey(band, target, x, y))) stale = true; continue; }
+                        if (status === 'dirty') { stale = true; continue; }
                         if (!zoomingFrame && !standInsOf(band, target, x, y).length) complete = false;
                     }
                 }
@@ -1725,6 +1758,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         },
         needsFrame(): boolean {
             if (disposed || !presenting) return false;
+            if (wantFrame) return true;
             // A pinned zoom is released by the frame that finds the zoom over: that frame is asked for, so the pins do not outlive the zoom.
             if (pinsHeld) return true;
             if (denied) return false;
@@ -1742,6 +1776,9 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             return { gpuBytes, cpuBytes };
         },
         release(_reason: GpuReleaseReason): void { releaseAll(); },
+        noteEvicted(): void { evictEpoch++; contentVersion++; },
+        contentKey(): number { return hashMix(drawSignature, contentVersion); },
+        listInvalid(view: ViewState): boolean { return drawCount > 0 && !listUsable(view); },
         dispose(): void {
             if (disposed) return;
             releaseAll();

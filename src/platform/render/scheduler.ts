@@ -1146,7 +1146,8 @@ export class FrameScheduler {
                 const moved = renderAuditEnabled() && cameraMoved(meta.layer, item.frame.view);
                 const answered = meta.layer.prepare(item.frame.view, budget) === false;
                 if (renderAuditEnabled()) {
-                    lastPreparedCamera.set(meta.layer, { x: item.frame.view.camera.x, y: item.frame.view.camera.y, z: item.frame.view.camera.z });
+                    // The frame's last call records the camera: a foreground call must compare with the previous frame's, not its own.
+                    if (phase !== 'foreground') lastPreparedCamera.set(meta.layer, { x: item.frame.view.camera.x, y: item.frame.view.camera.y, z: item.frame.view.camera.z });
                     if (moved) {
                         auditCount('scheduler', 'camera-prepare:' + phase);
                         if (answered) auditCount('scheduler', 'camera-unchanged:' + phase);

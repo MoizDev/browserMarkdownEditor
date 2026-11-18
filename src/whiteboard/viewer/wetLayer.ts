@@ -16,6 +16,7 @@ import { HIGHLIGHT_OVERLAY_ALPHA, HIGHLIGHT_UNDERLAY_ALPHA, inkMaterial, type In
 import type { PaintSource, PaintInkItem, PaintClip } from '../render/paintStream';
 import type { Admission, CreateInkRoutes, InkRouteFor, ItemRoute, PreparedRun, WithClips } from '../render/gpu/contracts';
 import { awaitSizedCapacity, isBudgetRefusal } from '../render/budgetRefusal';
+import { ArenaError } from '../../platform/render/resourceArena';
 import { appendPath2d, path2d } from '../render/reference/coverage2d';
 
 // Provenance: wet/dry ink handover, bounded ink outline and C4 layer contracts;
@@ -163,6 +164,8 @@ function isPending(pending: readonly WetInkSnapshot[], gesture: number): boolean
 /** A coverage verdict. The fixed ones are constants, so a frame that asks for coverage allocates nothing. */
 interface Verdict { readonly complete: boolean; readonly sharp: boolean; readonly why: string }
 const VERDICT_SHARP: Verdict = { complete: true, sharp: true, why: '' }, VERDICT_STALE: Verdict = { complete: true, sharp: false, why: '' };
+// The verdict of the frame after a uniform write the ring refused (4c118264): the draw that was skipped is not in the picture.
+const VERDICT_RING_DEFERRED: Verdict = { complete: false, sharp: false, why: 'uniform-deferred' };
 // A stroke's tip is one bounded chunk. It is tessellated within this allowance even past the frame's budget, so a newest
 // publication never waits behind the frame's general work (measured: 234 frames left unprepared behind the budget).
 const TIP_ALLOWANCE_MS = 3;
@@ -229,6 +232,13 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
     const runs = new Map<number, WetRunSlot>();
     // Read only while drawRouted runs: one reused record, so a draw allocates nothing.
     const drawCall: { pass: GpuPass | null; view: ViewState | null; host: LayerHost | null } = { pass: null, view: null, host: null };
+    // A uniform write the ring refused (out-of-budget) skips that one draw or admission and the frame stands. Coverage is read before
+    // the layers draw, so this frame's verdict cannot see the skip: the next frame's coverage reports it incomplete and asks for a frame.
+    let ringDeferred = false;
+    const ringRefused = (error: unknown): boolean => {
+        if (!(error instanceof ArenaError) || error.code !== 'out-of-budget') return false;
+        ringDeferred = true; auditCount('wet', 'uniform-deferred'); return true;
+    };
     const hostLayers = new Map<LayerHost, Layer>();
     const report = (error: unknown) => {
         // A refusal that reaches here has no size of its own, so the wait is sized by the layer's next bounded demand (the
@@ -448,7 +458,9 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                 const route = gpuRoutes.inkRouteFor(item) === 'ink-analytic' ? routes.analytic : routes.union;
                 const before = audited ? route.memory().gpuBytes : 0;
                 const meterBefore = budget.upload.remainingBytes;
-                const admission = route.admit([item], view, 'over', tip);
+                let admission: Admission<PreparedRun>;
+                try { admission = route.admit([item], view, 'over', tip); }
+                catch (error) { if (!ringRefused(error)) throw error; admission = { status: 'deferred' }; }
                 const meterUsed = meterBefore - budget.upload.remainingBytes;
                 if (audited) {
                     auditCount('wet', `admit:${admission.status}`, 1, { [route.id]: 1 });
@@ -509,6 +521,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
     // layer's refusal refused the whole frame). No band refuses the frame: one with nothing shown is not sharp (VERDICT_UNSHOWN).
     // `sharp` says the shown runs are the current publication's, for this token and view; a deferred or denied tip is not sharp.
     const routedCoverage = (token: FrameToken, view: ViewState): Verdict => {
+        if (ringDeferred) { ringDeferred = false; return VERDICT_RING_DEFERRED; }
         const viewKey = viewKeyOf(view), drawn = options.boardDrawnInk();
         let sharp = true;
         for (const snapshot of handover?.pendingSnapshots() ?? []) {
@@ -541,7 +554,9 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                 const shown = runs.get(runKey(gesture, band))?.shown;
                 if (!shown) continue;
                 // Clips are applied here and only here: the route draws the item's geometry, withClips its clips.
-                const admitted = gpuRoutes.withClips(pass, shown.clips, view, shown.draw);
+                let admitted: Admission<void>;
+                try { admitted = gpuRoutes.withClips(pass, shown.clips, view, shown.draw); }
+                catch (error) { if (!ringRefused(error)) throw error; continue; }
                 if (admitted.status === 'ready') drawn++;
                 else auditCount('wet', `clip:${admitted.status}`);
             }
@@ -782,7 +797,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                     const memory = reporting ? routesMemory() : undefined;
                     return { gpuBytes: memory?.gpuBytes ?? 0, cpuBytes: reporting ? reserved + (memory?.cpuBytes ?? 0) : 0 };
                 },
-                needsFrame() { return !ended && !disposed && !denied && (dirty || !!work || (!!owner?.device() && runsPending())); },
+                needsFrame() { return !ended && !disposed && !denied && (ringDeferred || dirty || !!work || (!!owner?.device() && runsPending())); },
                 dispose() { if (ended) return; ended = true; if (owner === host) { clear(); owner = null; } hosts.delete(host); hostLayers.delete(host); owner ??= hosts.values().next().value ?? null; },
             };
             hostLayers.set(host, layer);

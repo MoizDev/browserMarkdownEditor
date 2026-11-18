@@ -1368,7 +1368,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     encodeDraw.pass = null; encodeDraw.route = null; encodeDraw.run = null;
                 }
                 pass.end();
-                if (refused) { store.remove(slice.key); wantFrame = true; continue; }
+                if (refused) { store.remove(slice.key); wantFrame = true; host.markIncomplete('encode-refused'); continue; }
                 auditCount(audit, 'tile:compose', 1, { px: target.size * target.size });
                 entry.dirty = false; entry.composed = true; entry.revision = validRevision;
                 slots.set(entry, { mode: slice.mode, count: position.slices.length, inkNodes: slice.inkNodes,
@@ -1626,9 +1626,11 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 if (zoomSpan) dropSuperseded(position.band, position.scale, position.x, position.y);
             }
             finished.length = kept;
-            // A route whose draw the kit refused this frame: counted, and the next frame is requested. The frame's own coverage was
-            // read before this encode (compositor order), so the refusal shows in the next frame's answer, not this one.
-            for (const route of routeList) if ((route as RouteWithRefusal).drawRefusedThisFrame?.()) { auditCount(audit, `route:${route.id}:refused-frame`); wantFrame = true; }
+            // A route whose draw the kit refused this frame: the layer is incomplete now (markIncomplete, decided by the compositor after
+            // the surface pass: critical refuses the frame, the rest present with layersComplete false), and the next frame is requested.
+            for (const route of routeList) if ((route as RouteWithRefusal).drawRefusedThisFrame?.()) {
+                auditCount(audit, `route:${route.id}:refused-frame`); wantFrame = true; host.markIncomplete(`route:${route.id}:refused`);
+            }
         },
         drawGpu(pass: GpuPass, view: ViewState, band: PaintBand): void {
             if (!drawCount) return;

@@ -246,6 +246,8 @@ export interface TileComposer {
     memoryBlocked(): boolean;
     memory(): { gpuBytes: number; cpuBytes: number };
     release(reason: GpuReleaseReason): void;
+    /** The adapter evicted something a draw list may hold (a tile, a texture or a coverage set): no list built before is drawn again. */
+    noteEvicted(): void;
     dispose(): void;
 }
 
@@ -396,9 +398,11 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     const quadPool: { sourceRect: Rect; destRect: Rect }[] = [];
     const quadList: TexturedQuadSpec[] = [];
     let drawCount = 0;
-    // The frame whose draw list buildDraws (or buildLiveDraws) built: a list left from an earlier frame is never drawn, since its
-    // textures may have been released or reused since.
-    let drawsFrame = -1;
+    // A draw list is drawable while nothing it draws can have been evicted since it was built and the camera is the one it was
+    // built for. evictEpoch moves at every prepare and at every eviction the adapter makes; a list from an earlier frame that a
+    // later prepare did not touch (a live-only or not-yet-current frame skips the prepare) still draws, the same picture.
+    let drawsEpoch = -1, evictEpoch = 0;
+    const drawsCam = { x: NaN, y: NaN, z: NaN, w: NaN, h: NaN, dpr: NaN };
 
     let disposed = false, presenting = false, indexing = false;
     // This frame's zoom, set in prepare: while zooming, coverage does not hold the frame for a position with nothing (see coverage).
@@ -1194,7 +1198,9 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
 
     const buildDraws = (view: ViewState, target: number, zooming: boolean, budget: FrameBudget): void => {
         drawCount = 0;
-        drawsFrame = frame;
+        drawsEpoch = evictEpoch;
+        drawsCam.x = view.camera.x; drawsCam.y = view.camera.y; drawsCam.z = view.camera.z;
+        drawsCam.w = view.viewport.width; drawsCam.h = view.viewport.height; drawsCam.dpr = view.viewport.dpr;
         coveredPositions.clear();
         if (liveNow) { buildLiveDraws(view, target, budget); return; }
         const span = spanAt(view, target);
@@ -1375,6 +1381,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         },
         prepare(view: ViewState, budget: FrameBudget, prepared: PreparedPaint2d | null, omit?: ReadonlySet<string>): boolean {
             if (disposed) return true;
+            evictEpoch++;
             // Two-phase (budget.phase): the foreground call runs this frame's intake and the foreground composes, then answers false (the
             // frame's answer is the background call's). The background call of the same frame finishes it. The scheduler never makes a
             // background call without its foreground; one that finds none answers true.
@@ -1588,7 +1595,10 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         },
         drawGpu(pass: GpuPass, view: ViewState, band: PaintBand): void {
             if (!drawCount) return;
-            if (drawsFrame !== frame) { auditCount(audit, 'draw:stale-list'); return; }
+            if (drawsEpoch !== evictEpoch || drawsCam.x !== view.camera.x || drawsCam.y !== view.camera.y || drawsCam.z !== view.camera.z ||
+                drawsCam.w !== view.viewport.width || drawsCam.h !== view.viewport.height || drawsCam.dpr !== view.viewport.dpr) {
+                auditCount(audit, 'draw:stale-list'); return;
+            }
             const cam = view.camera, scale = cam.z * view.viewport.dpr;
             const surfaceW = Math.round(view.viewport.width * view.viewport.dpr), surfaceH = Math.round(view.viewport.height * view.viewport.dpr);
             // Scratch rectangles, rewritten per draw: the pass reads them before this loop moves on.
@@ -1744,6 +1754,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             return { gpuBytes, cpuBytes };
         },
         release(_reason: GpuReleaseReason): void { releaseAll(); },
+        noteEvicted(): void { evictEpoch++; },
         dispose(): void {
             if (disposed) return;
             releaseAll();

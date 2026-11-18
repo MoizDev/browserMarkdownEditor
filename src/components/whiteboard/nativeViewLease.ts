@@ -231,6 +231,8 @@ export function createNativeViewLease(options: {
     // Direct callers (navigation, camera, the lease's own refreshes) always repaint; only the viewer's state publishes are filtered.
     const invalidate = (change?: string) => { if (change !== 'paint') invalidatePane(); publish(change); };
     const viewerChanged = (change?: string) => { if (change !== 'paint' && drawsChanged()) invalidatePane(); publish(change); };
+    // gh14 audit: each caller of the unconditional invalidate is named (hint:<source>), so a native-view present is traced to its caller.
+    const hintFrom = (source: string) => () => { if (renderAuditEnabled()) auditCount('native', `hint:${source}`); invalidate(); };
     const cameraPorts: CameraPorts = { currentPath: () => current() ? host.identity(identity.documentId)?.path : undefined,
         invalidate, onError: options.onError };
     const cameraClaim = options.cameraHandoff ? claimCamera(options.cameraHandoff, runtime, limits, insets, cameraPorts) : null;
@@ -266,7 +268,7 @@ export function createNativeViewLease(options: {
             const found = await host.readMedia(identity, { hash: id.slice(7), preferredName: runtime.media.currentFile(id) ?? entry.file }, signal);
             if (!found) throw new Error(`Missing board media: ${id}`);
             return found.blob;
-        }, invalidate: () => invalidate(), onError: options.onError });
+        }, invalidate: hintFrom('media'), onError: options.onError });
     // This view's own playback: it stops when the view hides and when the view is torn down, and it closes its presented frames
     // before the source it came from is released.
     const video = new BoardVideoPlayback({ memory: images.memory, frames: images.frames,
@@ -277,7 +279,7 @@ export function createNativeViewLease(options: {
             return entry && bytes && entry.mime.startsWith('video/') ? { entry, blob: new Blob([bytes], { type: entry.mime }) } : null;
         },
         current: () => current() && parameters.visible,
-        invalidate: () => invalidate(),
+        invalidate: hintFrom('video'),
         error: (_id, message) => options.onNotice(message) });
     // Animated pictures: the picture's own playing choice (its default follows the reduced-motion preference), and one clock
     // that decodes only the frame it is on. Their frames are presented through the same registry as a video's.
@@ -297,7 +299,7 @@ export function createNativeViewLease(options: {
                 ? { entry, blob: new Blob([bytes], { type: entry.mime }) } : null;
         },
         current: () => current() && parameters.visible,
-        invalidate: () => invalidate(),
+        invalidate: hintFrom('animation'),
         // The viewer exists once attachView returns; a deadline set before that has no layer to wake yet, and the first paint re-arms it.
         wakeAt: deadline => { if (viewer) viewer.wakeAt(deadline); },
         error: (_id, message) => options.onNotice(message) });
@@ -377,7 +379,7 @@ export function createNativeViewLease(options: {
             viewport: refreshViewport, current: candidate => current() && candidate.documentId === token.documentId &&
                 candidate.session === token.session && candidate.vaultEpoch === token.vaultEpoch && candidate.bytesGeneration === token.bytesGeneration,
             editable: () => inputPermitted && parameters.mode === 'edit' && edit.canMutate() && !board.isReadOnly && host.canWrite(identity), visible: () => parameters.visible, focused: () => parameters.focused,
-            interaction: { invalidate, cameraChanged: () => { markUserNavigation(); cameraOwner.changed(); } },
+            interaction: { invalidate: hintFrom('interaction'), cameraChanged: () => { markUserNavigation(); cameraOwner.changed(); } },
             platform: () => { if (!platformPane) throw new Error('The board platform is not attached'); return platformPane; },
             ui: edit.ui, commands: edit.commands }, invalidate, onError: options.onError }) : null;
         } catch (error) { viewer.dispose(); animation.dispose(); video.dispose(); images.dispose(); if (!cameraClaim) cameraOwner.dispose(); throw error; } })();
@@ -568,7 +570,7 @@ export function createNativeViewLease(options: {
             try { lease.dispose(); return handoff; }
             catch (error) { handoff.dispose(); throw error; }
         },
-        refreshAuthority() { if (!disposed) { updateInput(); viewer.setView(viewParameters()); invalidate(); } },
+        refreshAuthority() { if (!disposed) { updateInput(); viewer.setView(viewParameters()); hintFrom('authority')(); } },
         captureRegion: (rect, maxSide, signal) => captureRegion(rect, maxSide, { signal, theme: 'light', inverted: false, layers: captureLayers() }),
         captureBlob: (rect, maxSide, signal) => captureBlob(rect, maxSide, { signal, theme: 'light', inverted: false, layers: captureLayers() }),
         replaceBackdrop(next) {

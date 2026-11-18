@@ -293,7 +293,7 @@ export const attachView: AttachView = options => {
         if (disposed || !view.visible || !runtime.scene?.ready) return;
         const onDevice = layers.onDevice();
         const viewNow = lastView;
-        // The live camera's ink band: the tile ladder's band top, the same ladder services.inkBandKey keys the strokes by. The band
+        // The live camera's ink band: the tile ladder's band top, the same ladder the services key the strokes by. The band
         // moves only at a crossing, so the request's identity does too.
         const band = onDevice && viewNow ? chooseTileScale(viewNow.camera.z * viewNow.viewport.dpr).scale : null;
         const moving = !!viewNow?.moving;
@@ -331,9 +331,8 @@ export const attachView: AttachView = options => {
         // On a device the request's device scale is its band's top, so its strokes and tiles change only at a crossing; canvas2d keeps the exact scale.
         const deviceScale = current ? band ?? current.camera.z * current.viewport.dpr : undefined;
         // A crossing while the camera moves carries the band the view held before it: its strokes draw that band until the wanted one builds.
-        const previousInkBand = band !== null && liveBand !== null && band !== liveBand && moving
-            ? runtime.render.inkBandKey({ deviceScale: liveBand }) : undefined;
-        liveBand = band; carrying = previousInkBand !== undefined;
+        const previousDeviceScale = band !== null && liveBand !== null && band !== liveBand && moving ? liveBand : undefined;
+        liveBand = band; carrying = previousDeviceScale !== undefined;
         // The viewport is consumed as a bounded ordered stream: no whole-sheet node array is ever built.
         const open = pin.paintStream;
         if (!open) { pin.release(); report(new Error('Board scene has no bounded paint stream')); return; }
@@ -353,11 +352,11 @@ export const attachView: AttachView = options => {
         // then share one realisation per stroke, and a stage switch re-keys nothing. Canvas2d keeps its request.
         const identity = { sheetId: selectedSheet, theme: view.theme, sensitiveNodes,
             ...(deviceScale ? { deviceScale, allowInkLod: true } : {}), ...(onDevice ? { scenePrecision: true } : {}),
-            ...(previousInkBand !== undefined ? { previousInkBand } : {}) };
+            ...(previousDeviceScale !== undefined ? { previousDeviceScale } : {}) };
         // The whole-scene stage: asked once per key on a device, after the view frame it follows is up. No world, so the pin
         // does not cull by the camera, so the scene's items do not change with the zoom; only its strokes' band does (at a crossing).
         const sceneShape = { sheetId: selectedSheet, theme: view.theme, sensitiveNodes,
-            ...(deviceScale !== undefined ? { deviceScale } : {}), ...(previousInkBand !== undefined ? { previousInkBand } : {}) };
+            ...(deviceScale !== undefined ? { deviceScale } : {}), ...(previousDeviceScale !== undefined ? { previousDeviceScale } : {}) };
         const shape = scene ? sceneShape : dense ? { ...identity, only: liveSet! } : { ...identity, ...(world ? { world } : {}) };
         auditCount('board', scene ? 'request:scene' : 'request:view');
         if (onDevice) { if (scene) sceneAsked = key; else viewAsked = key; }

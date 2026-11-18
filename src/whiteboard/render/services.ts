@@ -337,17 +337,17 @@ export function createBoardRenderServices(options: {
     // A warm build has its own controller: a band crossing aborts the request's paint, and a build tied to it would restart from zero
     // at every crossing. A failure other than the abort is counted, and that node and band is not retried (the previous band serves).
     const warmBand = (borrowed: Readonly<Node>, doc: BoardDoc,
-        context: Pick<SceneResolveContext, 'deviceScale' | 'sensitive' | 'allowInkLod' | 'previousInkBand'>, key: string): void => {
+        context: Pick<SceneResolveContext, 'deviceScale' | 'sensitive' | 'allowInkLod' | 'previousDeviceScale'>, key: string): void => {
         if (disposed || warming.has(key) || warmFailed.has(key)) return;
         warming.add(key);
         const controller = new AbortController();
         warmControllers.add(controller);
-        prepare(borrowed, doc, controller.signal, { ...context, previousInkBand: undefined })
+        prepare(borrowed, doc, controller.signal, { ...context, previousDeviceScale: undefined })
             .catch(() => { if (!controller.signal.aborted) { warmFailed.add(key); auditCount(AUDIT, 'geometry:warm-failed'); } })
             .finally(() => { warming.delete(key); warmControllers.delete(controller); });
     };
     const prepare = async (borrowed: Readonly<Node>, doc: BoardDoc, signal: AbortSignal,
-        context?: Pick<SceneResolveContext, 'deviceScale' | 'sensitive' | 'allowInkLod' | 'previousInkBand'>): Promise<Prepared> => {
+        context?: Pick<SceneResolveContext, 'deviceScale' | 'sensitive' | 'allowInkLod' | 'previousDeviceScale'>): Promise<Prepared> => {
         check(signal);
         const node = createNode(borrowed), before = signature(node, doc);
         const precision = node.kind === 'stroke' ? inkPrecision(context) : undefined;
@@ -355,8 +355,10 @@ export function createBoardRenderServices(options: {
         if (old) { cached.delete(old.key); cached.set(old.key, old); auditCount(AUDIT, 'geometry:hit'); return old; }
         // A band crossing during a live zoom: the stroke draws its previous band's geometry (a band miss) while the wanted band builds
         // in the background, so the zoom frame does not wait for the build. Only the async producer takes this (the live paint path).
-        if (precision && context?.previousInkBand !== undefined) {
-            const held = variantForBand(node.id, before, precision.key, context.previousInkBand);
+        if (precision && context?.previousDeviceScale !== undefined) {
+            // The previous band of this stroke: sensitivity applies to it as to the wanted band, so a selected stroke's previous band is its own.
+            const previousKey = inkPrecision({ ...context, deviceScale: context.previousDeviceScale }).key;
+            const held = variantForBand(node.id, before, precision.key, previousKey);
             if (held) { warmBand(borrowed, doc, context, `${node.id}:${precision.key}`); return held; }
         }
         auditCount(AUDIT, 'geometry:build');
@@ -768,7 +770,6 @@ export function createBoardRenderServices(options: {
     return {
         text, bounds, changeGeometry, retainRenderer, variantForBand, pinVisible, releasePins,
         /** The stroke band key the producers and pinVisible use, for a device scale and the flags the paint request carries. */
-        inkBandKey(context?: Partial<Pick<SceneResolveContext, 'deviceScale' | 'sensitive' | 'allowInkLod'>>): string { return inkPrecision(context).key; },
         /** Actual source admission belongs to the App owner. This captures publication identity
          * for NEW work over the same canonical model/cache; existing sources are never retagged. */
         capturePaintBinding(token: RenderToken) {

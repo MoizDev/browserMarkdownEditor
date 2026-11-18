@@ -217,6 +217,9 @@ export interface TileComposer {
      * store slot freed for it, an invalidation, an index still settling, or a different draw list. False only when the frame draws
      * exactly what the previous one drew. The caller must still treat a frame it did not present as changed. */
     prepare(view: ViewState, budget: FrameBudget, prepared: PreparedPaint2d | null, omit?: ReadonlySet<string>): boolean;
+    /** Indexes `prepared` to completion within `maxMs`, outside any frame (the overlay's pointer-down build). True once the index
+     * holds it; false when the deadline came first, and the next call (or the frame's prepare) continues the same build. */
+    warm(prepared: PreparedPaint2d, maxMs: number): boolean;
     /** Encodes the composed targets of one band; the frame's surface pass then draws them with `drawGpu`. */
     encodeOffscreen(passes: OffscreenPasses, view: ViewState, band: PaintBand): void;
     /** Lays the frame's tiles of one band. Draws only: no allocation, no upload, no readback. */
@@ -1351,6 +1354,15 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     };
 
     return {
+        warm(prepared: PreparedPaint2d, maxMs: number): boolean {
+            if (disposed) return false;
+            const deadline = performance.now() + maxMs;
+            // sync reads only shouldYield from its budget (contracts.ts types the whole FrameBudget; widening it is the contract owner's).
+            const budget = { shouldYield: () => performance.now() >= deadline } as Pick<FrameBudget, 'shouldYield'> as FrameBudget;
+            let done = false;
+            while (!done && performance.now() < deadline) done = parts.sync(prepared, budget);
+            return done;
+        },
         prepare(view: ViewState, budget: FrameBudget, prepared: PreparedPaint2d | null, omit?: ReadonlySet<string>): boolean {
             if (disposed) return true;
             // Two-phase (budget.phase): the foreground call runs this frame's intake and the foreground composes, then answers false (the

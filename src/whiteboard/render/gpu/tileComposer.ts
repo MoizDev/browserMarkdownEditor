@@ -78,6 +78,8 @@ const idOfObject = (object: object | null): number => {
     return id;
 };
 const hashMix = (hash: number, value: number): number => Math.imul(hash ^ value, 16777619);
+/** A route that can report its kit's draw refusal for the frame (the path route, gpu-h4's kit). Not on ItemRoute: contracts.ts is not edited. */
+type RouteWithRefusal = { drawRefusedThisFrame?(): boolean };
 /** The compose passes in order: the foreground takes visible missing positions first, the background dirty ones first. */
 const DIRTY_FIRST = ['dirty', 'missing', 'ring'] as const;
 const MISSING_FIRST = ['missing', 'dirty', 'ring'] as const;
@@ -1624,6 +1626,9 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 if (zoomSpan) dropSuperseded(position.band, position.scale, position.x, position.y);
             }
             finished.length = kept;
+            // A route whose draw the kit refused this frame: counted, and the next frame is requested. The frame's own coverage was
+            // read before this encode (compositor order), so the refusal shows in the next frame's answer, not this one.
+            for (const route of routeList) if ((route as RouteWithRefusal).drawRefusedThisFrame?.()) { auditCount(audit, `route:${route.id}:refused-frame`); wantFrame = true; }
         },
         drawGpu(pass: GpuPass, view: ViewState, band: PaintBand): void {
             if (!drawCount) return;

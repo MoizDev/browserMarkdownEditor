@@ -184,6 +184,12 @@ function clipLocalRect(clip: PaintClip): LocalRect | null {
     localRects.set(clip, found);
     return found;
 }
+/** Whether every clip is an axis-aligned rectangle, which the path route draws as a scissor: such a path item's clips need no
+ * composer admission, live or at tile (the zoom-direct gate asks this before it draws a clipped page live). */
+export function everyClipIsRectangle(clips: readonly PaintClip[]): boolean {
+    for (const clip of clips) if (clipLocalRect(clip) === null) return false;
+    return true;
+}
 function rectangleOf(clip: PaintClip): LocalRect | null {
     const [a, b, c, d] = clip.localToWorld;
     if (b !== 0 || c !== 0 || !(a !== 0 && d !== 0) || clip.d.length < 4) return null;

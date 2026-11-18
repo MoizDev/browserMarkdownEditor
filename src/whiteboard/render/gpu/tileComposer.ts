@@ -423,7 +423,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
 
     let disposed = false, presenting = false, indexing = false;
     // This frame's zoom, set in prepare: while zooming, coverage does not hold the frame for a position with nothing (see coverage).
-    let zoomingFrame = false;
+    let zoomingFrame = false, panned = false;
     // Visible edits: counted wherever the composer changes what it draws or holds for drawing (a position composed, cancelled or
     // dropped, a store slot freed for it, an invalidation). prepare reports whether any happened since its last call, together with
     // a signature of the draw list it laid, so a frame that draws what the last one drew is reported unchanged.
@@ -1492,16 +1492,18 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             // Compose targets the exact scale every frame, visible positions first (exact-first zoom, gpu).
             target = exact;
             zoomSpan = zooming ? spanAt(view, target) : null;
+            // Panned: the camera moved since the last prepare at this zoom (the view's moving flag is not set by a pan's frames).
+            panned = !zooming && (view.camera.x !== drawnCamX || view.camera.y !== drawnCamY);
             drawnCamX = view.camera.x; drawnCamY = view.camera.y; drawnCamZ = view.camera.z;
 
             indexing = !parts.sync(prepared, budget);
             // A pan with a visible position that has no exact tile draws its parts live, as a zoom does (gpu's ruling): the stand-in
             // it would show is replaced by its geometry. A pan whose tiles are all there composes as before.
-            const panning = !zooming && view.moving === true && !indexing && anyVisibleMissing(view, target);
+            const panning = panned && !indexing && anyVisibleMissing(view, target);
             liveNow = paintLiveOnly || (!indexing && (zooming || panning) && zoomDirectOk(view, target));
             if (panning && liveNow) auditCount(audit, 'pan:direct:frame');
             // Why a moving view does not draw live (counters only): the index (indexing) gates the live draw, then the missing check.
-            if (view.moving === true && !zooming) auditCount(audit, indexing ? 'pan:skip:indexing' : !panning ? 'pan:skip:complete' : liveNow ? 'pan:live' : 'pan:skip:parts');
+            if (panned) auditCount(audit, indexing ? 'pan:skip:indexing' : !panning ? 'pan:skip:complete' : liveNow ? 'pan:live' : 'pan:skip:parts');
             if (liveNow && !paintLiveOnly) auditCount(audit, 'zoom:direct:frame');
             // A live-drawn frame draws in the background call, so its admissions are made here, in the foreground call: its live parts
             // are what the frame shows, and foreground is the budget they must not be starved from.

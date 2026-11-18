@@ -1664,7 +1664,17 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 auditCount('gpu', 'uniform-ring-busy');
                 throw new ArenaError('out-of-budget');
             }
-            if (this.#uniformSlots.length >= UNIFORM_RING_SLOTS) auditCount('gpu', 'uniform-ring-grow-slots');
+            if (this.#uniformSlots.length >= UNIFORM_RING_SLOTS) {
+                // Why no slot was reusable: held by a frame that has not finished (a leak if it never does), or free but its GPU
+                // work still in flight. Counted per creation, so the sums say which one keeps the ring growing.
+                let held = 0, pending = 0;
+                for (const candidate of this.#uniformSlots) {
+                    if (candidate.owners > 0) held++;
+                    else if (!this.#complete(candidate.serial)) pending++;
+                }
+                auditCount('gpu', 'uniform-ring-grow-slots');
+                auditCount('gpu', 'uniform-create-slots', 1, { held, pending, total: this.#uniformSlots.length });
+            }
             // Attribution: which reservation refused a new slot is counted (the CPU mirror or the GPU buffer), with its size, so a
             // refusal names its pool in the log instead of only raising out-of-budget.
             let cpu: ByteLease;

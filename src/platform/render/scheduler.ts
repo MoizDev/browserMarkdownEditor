@@ -1005,7 +1005,17 @@ export class FrameScheduler {
                 // The whole frame against its interval: a frame past it is late for its display.
                 const total = performance.now() - started;
                 auditCount('scheduler', 'frame-us', Math.round(total * 1000));
-                if (total > this.intervalMs) auditCount('scheduler', 'frame-over-interval');
+                if (total > this.intervalMs) {
+                    // The stage split of over-interval frames only, so the overrun is attributed to the stage that ran long in it.
+                    auditCount('scheduler', 'frame-over-interval');
+                    const us = (from: number, to: number) => Math.round((to - from) * 1000);
+                    auditCount('scheduler', 'over-pre-us', us(started, foregroundStart));
+                    auditCount('scheduler', 'over-foreground-us', us(foregroundStart, backgroundStart));
+                    auditCount('scheduler', 'over-background-us', us(backgroundStart, presentStart));
+                    auditCount('scheduler', 'over-encode-us', us(presentStart, submitStart));
+                    auditCount('scheduler', 'over-submit-us', us(submitStart, maintenanceStart));
+                    auditCount('scheduler', 'over-poll-us', us(maintenanceStart, performance.now()));
+                }
             }
             this.frameFailures = 0;
         } catch (error) {

@@ -27,6 +27,10 @@ const PATH_COVERAGE_MAX_TARGET_BYTES = 8 * 2 ** 20;
  * request that pushed a notebook's load over the GPU pool (paper, board and wet layers each hold a kit), degrading it;
  * at 2 MiB a 516-texel tile draws in about four bands. */
 const PATH_COVERAGE_SCRATCH_BYTES = 2 * 2 ** 20;
+/** The smallest band a refused scratch shrinks to: a band below it draws too many passes per item to be worth its target. Between this
+ * and the cap the scratch is halved on each refusal, so a pool that cannot grant the request's own band grants a smaller one (go-gpu:
+ * a 1.68 MiB request refused three times while the pool had less than that free). */
+const PATH_COVERAGE_MIN_SCRATCH_BAND_BYTES = 256 * 1024;
 /** One vertex upload piece; a frame's allowance takes as many as it covers. 64 KiB, not larger: the scheduler's progress grant
  * admits an oversize claim only while less than 64 KiB has been admitted this frame, once per frame (scheduler.ts,
  * claimUpload). A 256 KiB piece therefore passes only in a frame that is almost empty, and a busy frame refused it every time
@@ -501,7 +505,11 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         if (current && kept && current.target.height >= exact) { rehome(owner, grid); return true; }
         // The request's height, rounded to a power of two within the band, as the width is. A refused rounded height retries at the exact one.
         const roundedHeight = Math.min(band, 2 ** Math.ceil(Math.log2(exact)));
-        const sizes = roundedHeight > exact ? [roundedHeight, exact] : [exact];
+        // The attempts, largest first: the rounded height, the exact height, then halvings of the exact height down to the smallest band.
+        // Bounded by the halvings of one band (about log2 of its rows), and each refusal is counted.
+        const sizes: number[] = roundedHeight > exact ? [roundedHeight, exact] : [exact];
+        const minRows = Math.max(1, Math.floor(PATH_COVERAGE_MIN_SCRATCH_BAND_BYTES / coverageTargetBytes(w, 1, samples, grid)));
+        for (let rows = Math.floor(exact / 2); rows >= minRows; rows = Math.floor(rows / 2)) sizes.push(rows);
         // The pool counts the old scratch's lease until it is returned, so a growth that reserves first is refused for bytes the kit
         // itself holds. When no admission holds the old scratch (its draws read it at draw time, and none is pending), its lease goes
         // back first. An admission still holding it keeps it: the growth reserves first, and its refusal is a short wait until those
@@ -510,11 +518,11 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         if (current && current.refs === 0) { table.targets.delete(owner); destroyScratchTarget(owner, current); reclaimed = true; }
         let lease: ByteLease | null = null;
         let h = exact, bytes = 0;
-        for (const size of sizes) {
-            h = size; bytes = coverageTargetBytes(w, size, samples, grid);
+        for (let attempt = 0; attempt < sizes.length; attempt++) {
+            h = sizes[attempt]; bytes = coverageTargetBytes(w, h, samples, grid);
             lease = host.allocator.gpu.reserve(bytes);
             if (lease) break;
-            if (size !== exact) auditCount(audit, 'kit:scratch-height-fallback', 1, { bytes });
+            if (attempt + 1 < sizes.length) auditCount(audit, 'kit:scratch-height-fallback', 1, { bytes });
         }
         if (!lease) { auditCount(audit, 'kit:scratch-refused', 1, { bytes }); return bytes; }
         let target: CoverageTarget;

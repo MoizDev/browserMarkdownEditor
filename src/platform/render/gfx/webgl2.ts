@@ -66,6 +66,13 @@ export interface Webgl2Services {
     recordUniformGrowth?(previousBytes: number, nextBytes: number): void;
 }
 
+interface OffscreenSurface {
+    readonly framebuffer: WebGLFramebuffer;
+    readonly texture: WebGLTexture;
+    readonly width: number;
+    readonly height: number;
+}
+
 /** Platform-internal owner only; layers never receive an arena or raw GL (design:88). */
 export interface Webgl2Owner extends BrokerGpuOwner, GpuIsolationAdmission {
     readonly resources: GfxDevice;
@@ -324,6 +331,8 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     readonly #uniformGrowths: { previous: number; next: number }[] = [];
     #uniformBytes = 1 << 20;
     #surfaceRevision = 0;
+    /** The new-size target a raise draws into while the displayed canvas keeps its old picture (openOffscreen). */
+    #offscreen: OffscreenSurface | null = null;
     #composition: PipelineHandle | null = null;
     #gridComposition: PipelineHandle | null = null;
     #modulateComposition: PipelineHandle | null = null;
@@ -913,13 +922,100 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         return { live: this.#cpuBytes, retiring: 0 };
     }
 
-    resizeSurface(width: number, height: number): SurfaceResizeResult {
-        const gl = this.#healthy();
-        if (this.#disposed) throw new ArenaError('aborted');
+    #checkSurfaceSize(width: number, height: number): void {
         count(width); count(height);
         if (width > Math.min(this.limits.maxRenderTargetSize, this.limits.maxViewport[0], RENDER_CONSTANTS.maxSurfaceAxisPixels) ||
             height > Math.min(this.limits.maxRenderTargetSize, this.limits.maxViewport[1], RENDER_CONSTANTS.maxSurfaceAxisPixels) ||
             byteSize(width, height) > RENDER_CONSTANTS.maxSurfacePixels) throw new ArenaError('invalid-input');
+    }
+
+    /** Opens the new-size target for a raise. The displayed canvas is not touched: its old picture stays on screen until
+     * commitSurface presents this frame. Opening the same size again keeps the open target. False when the size is zero or
+     * the browser refuses the target; the caller then keeps the displayed picture. */
+    openOffscreen(width: number, height: number): boolean {
+        const gl = this.#usable();
+        this.#checkSurfaceSize(width, height);
+        if (width === 0 || height === 0) return false;
+        const open = this.#offscreen;
+        if (open && open.width === width && open.height === height) return true;
+        this.#dropOffscreen();
+        const texture = gl.createTexture();
+        const framebuffer = gl.createFramebuffer();
+        if (!texture || !framebuffer) {
+            if (texture) gl.deleteTexture(texture);
+            if (framebuffer) gl.deleteFramebuffer(framebuffer);
+            return false;
+        }
+        try {
+            gl.bindTexture(gl.TEXTURE_2D, texture);
+            gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, width, height);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+            gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+            gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+            const complete = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+            const clean = gl.getError() === gl.NO_ERROR;
+            this.#forgetState();
+            this.#reset();
+            if (!complete || !clean) throw new ArenaError('allocation');
+        } catch {
+            gl.deleteFramebuffer(framebuffer);
+            gl.deleteTexture(texture);
+            if (!this.#lost && !gl.isContextLost()) this.#reset();
+            return false;
+        }
+        this.#offscreen = { framebuffer, texture, width, height };
+        this.#surfaceRevision++;
+        return true;
+    }
+
+    /** Presents the open target: the canvas takes the target's size (which clears the displayed picture), the target is
+     * blitted to the default framebuffer, and the target is released. The caller calls this only for a frame that is complete,
+     * in the same task as that frame's draw, so no task ever shows the cleared canvas. Null when nothing is open. */
+    commitSurface(): SurfaceResizeResult | null {
+        const offscreen = this.#offscreen;
+        if (!offscreen) return null;
+        const gl = this.#healthy();
+        if (this.#disposed) throw new ArenaError('aborted');
+        const canvas = this.#canvas!;
+        this.#forgetState();
+        if (canvas.width !== offscreen.width) canvas.width = offscreen.width;
+        if (canvas.height !== offscreen.height) canvas.height = offscreen.height;
+        gl.bindFramebuffer(gl.READ_FRAMEBUFFER, offscreen.framebuffer);
+        gl.readBuffer(gl.COLOR_ATTACHMENT0);
+        gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+        gl.drawBuffers([gl.BACK]);
+        gl.disable(gl.SCISSOR_TEST);
+        gl.blitFramebuffer(0, 0, offscreen.width, offscreen.height, 0, 0, offscreen.width, offscreen.height, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        const complete = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+        this.#dropOffscreen();
+        this.#reset();
+        return { width: gl.drawingBufferWidth, height: gl.drawingBufferHeight, complete, generation: this.generation };
+    }
+
+    /** Abandon of an open raise (hidden, context lost, refused): the displayed picture is untouched. Idempotent. */
+    closeOffscreen(): void { this.#dropOffscreen(); }
+
+    #dropOffscreen(): void {
+        const offscreen = this.#offscreen;
+        if (!offscreen) return;
+        this.#offscreen = null;
+        this.#surfaceRevision++;
+        const gl = this.#gl;
+        if (!gl || this.#lost || gl.isContextLost()) return;
+        this.#forgetState();
+        gl.deleteFramebuffer(offscreen.framebuffer);
+        gl.deleteTexture(offscreen.texture);
+        this.#reset();
+    }
+
+    resizeSurface(width: number, height: number): SurfaceResizeResult {
+        const gl = this.#healthy();
+        if (this.#disposed) throw new ArenaError('aborted');
+        this.#checkSurfaceSize(width, height);
+        // An immediate resize supersedes any open raise: its target was sized for a request that is no longer current.
+        this.#dropOffscreen();
         const canvas = this.#canvas!;
         if (canvas.width !== width || canvas.height !== height) {
             if (canvas.width !== width) canvas.width = width;
@@ -948,7 +1044,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         try {
             this.#cleanup([
                 ...[...this.#frames.values()].map(frame => () => frame.controller?.cancel()),
-                () => this.#timer.clear(false), () => this.#isolation.clear(), () => this.#dropUniformSlots(), () => this.#dropVaos(), () => this.#pool.clear(),
+                () => this.#dropOffscreen(), () => this.#timer.clear(false), () => this.#isolation.clear(), () => this.#dropUniformSlots(), () => this.#dropVaos(), () => this.#pool.clear(),
                 () => this.#arena.releaseAll(reason),
                 () => {
                     for (const handle of this.#handles) {
@@ -974,7 +1070,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         this.#work.abort();
         this.#cleanup([
             ...[...this.#frames.values()].map(frame => () => frame.controller?.cancel()),
-            () => this.#timer.clear(false), () => this.#isolation.clear(), () => this.#dropUniformSlots(), () => this.#dropVaos(), () => this.#pool.clear(),
+            () => this.#dropOffscreen(), () => this.#timer.clear(false), () => this.#isolation.clear(), () => this.#dropUniformSlots(), () => this.#dropVaos(), () => this.#pool.clear(),
             () => this.#arena.releaseAll('hidden'),
             () => { for (const handle of this.#handles) this.#arena.release(handle); },
             () => this.#handles.clear(), () => this.#programs.clear(), () => this.#programSignatures.clear(),
@@ -992,7 +1088,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         try {
             this.#cleanup([
                 ...[...this.#frames.values()].map(frame => () => frame.controller?.cancel()),
-                () => this.#timer.clear(true), () => this.#isolation.abandon(), () => this.#pool.abandon(),
+                () => this.#dropOffscreen(), () => this.#timer.clear(true), () => this.#isolation.abandon(), () => this.#pool.abandon(),
                 ...this.#uniformSlots.map(slot => () => this.#returnCpu(slot.lease)),
                 () => { this.#uniformSlots.length = 0; },
                 ...[...this.#indexBuffers].map(buffer => () => this.#dropIndexData(buffer)),
@@ -1222,6 +1318,13 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                         width: root.width, height: root.height, format: 'rgba8', samples: 1, stencil: false, capture: false,
                         color: this.#frameTexture(work.encoding, root.texture, native.colorTexture),
                         usedRect: { x: 0, y: 0, width: root.width, height: root.height }, retained: { colorStored: false, stencilStored: false } };
+                }
+                // A raise draws its new size here while the displayed canvas keeps the old picture (commitSurface presents it).
+                const offscreen = this.#offscreen;
+                if (offscreen) {
+                    return { handle, framebuffer: offscreen.framebuffer, resolveFramebuffer: offscreen.framebuffer, ...(__BME_BENCH__ ? { coverage: null } : {}),
+                        width: offscreen.width, height: offscreen.height, format: 'rgba8', samples: 1, stencil: false, capture: false, color: null,
+                        usedRect: { x: 0, y: 0, width: offscreen.width, height: offscreen.height }, retained: { colorStored: false, stencilStored: false } };
                 }
                 return { handle, framebuffer: null, resolveFramebuffer: null, ...(__BME_BENCH__ ? { coverage: null } : {}), width: gl.drawingBufferWidth, height: gl.drawingBufferHeight,
                     format: 'rgba8', samples: 1, stencil: false, capture: false, color: null,

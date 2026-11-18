@@ -45,6 +45,10 @@ export interface BrokerGpuOwner {
     readonly limits: Readonly<GfxLimits>;
     /** Backend owns canvas resize and the one drawing-buffer/framebuffer check after a commit. */
     readonly resizeSurface: ResizeSurface;
+    /** A raise builds at the new size off the displayed canvas: open, then present it when its frame is complete. */
+    openOffscreen(width: number, height: number): boolean;
+    commitSurface(): SurfaceResizeResult | null;
+    closeOffscreen(): void;
     /** Release working handles through the arena; hidden keeps only device-owned programs. */
     releaseGpu(reason: GpuReleaseReason): void;
     /** Dispose/abandon the remaining programs and arena; safe after releaseGpu and loss. */
@@ -63,6 +67,9 @@ export interface GpuGrant {
     readonly limits: Readonly<GfxLimits>;
     /** Called only by surfaceMetrics in the shared frame, with the current governor grant. */
     readonly resizeSurface: ResizeSurface;
+    readonly openOffscreen: (width: number, height: number) => boolean;
+    readonly commitSurface: () => SurfaceResizeResult | null;
+    readonly closeOffscreen: () => void;
     readonly generation: number;
     readonly reused: boolean;
 }

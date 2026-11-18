@@ -146,6 +146,9 @@ export class GpuPaneCandidate {
             return {
                 limits: owner.limits,
                 resizeSurface: (width, height) => owner.resizeSurface(width, height),
+                openOffscreen: (width, height) => owner.openOffscreen(width, height),
+                commitSurface: () => owner.commitSurface(),
+                closeOffscreen: () => owner.closeOffscreen(),
                 releaseGpu: reason => this.release(generation, reason),
                 dispose: reason => this.disposeGeneration(generation, reason),
             };

@@ -31,6 +31,9 @@ export interface PlatformLayerDefinition {
     /** A live gesture's layer (wet ink): its GPU cache is bounded by the pool, not by the pane's cache grant, because it
      * retires only once the pane's committed layers have presented, with memory from that same grant. */
     readonly liveInput?: boolean;
+    /** A layer whose CPU reservations are what its frame shows (the board's direct build): admitted while the pool fits, whatever
+     * the pane's CPU share. Background work keeps its grant. */
+    readonly foregroundCpu?: boolean;
     critical(layer: Layer, view: ViewState): boolean;
     /** Optional raster document denominator; compiled out with its benchmark-only provider. */
     benchmarkDomain?(layer: Layer, frame: ScheduledFrame): readonly Readonly<Rect>[];

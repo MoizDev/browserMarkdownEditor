@@ -870,7 +870,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         const changed = options.changedNodesSince?.(from, to) ?? (now && now.sceneRevision === to ? now.changedNodesSince?.(from) : null);
         if (!changed) return false;
         const omitted = now ? options.omitNodes?.(now) ?? null : null;
-        // A node the device's live draw laid in the last composite of this band is drawn live, so it is current wherever the board shows it.
+        // A node the composer plans to lay live for this band (the prepare that runs before coverage in this frame, d14a4dfa) is drawn
+        // live, so it is current wherever the board shows it. A frame whose composite is not presented reports no coverage at all.
         const laid = canvas ? null : gpu?.plannedLiveNodeIds(band) ?? null;
         for (const id of changed) if (!omitted?.has(id) && !options.liveDraws?.(id, band, view, canvas) && !laid?.has(id)) return false;
         return true;
@@ -1039,7 +1040,9 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         const reporter = gpu as DrawnLiveReporter | null;
         if (!reporter?.drawnLiveNodeIds) return NO_INK;
         const under = reporter.drawnLiveNodeIds('underlay'), content = reporter.drawnLiveNodeIds('content');
-        if (!under.size && !content.size) return NO_INK;
+        // One band empty (the usual case): its set is returned, with no allocation per read (a preview's coverage reads it every frame).
+        if (!under.size) return content.size ? content : NO_INK;
+        if (!content.size) return under;
         return new Set([...under, ...content]);
     };
     pair.onDevice = () => !!activeHost()?.device();

@@ -1,4 +1,4 @@
-import { auditCount } from './renderAudit';
+import { auditCount, auditStage, renderAuditEnabled } from './renderAudit';
 import type { Affine, Rgba } from '../types';
 import type { LayerHost } from './compositor.types';
 import type { MemoryAllocator } from './memoryGovernor';
@@ -677,7 +677,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
     const paintOutput: { kind: 'paint'; blend: 'normal' | 'modulate'; rgb: [number, number, number]; alpha: number } =
         { kind: 'paint', blend: 'normal', rgb: [0, 0, 0], alpha: 0 };
     const bandRect: RectI = { x: 0, y: 0, width: 0, height: 0 };
-    const render = (pass: GpuPass, prepared: PreparedPathCoverage, paint?: Rgba): void => {
+    const renderCoverage = (pass: GpuPass, prepared: PreparedPathCoverage, paint?: Rgba): void => {
         if (disposed || !live.has(prepared) || !pipelines || prepared.device !== device || host.device() !== device ||
             host.generation !== prepared.device.generation) throw new Error('Stale path coverage');
         const { affine, viewport, output } = prepared;
@@ -733,6 +733,12 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
                 }
             } finally { pass.endCoverage(token, drawOutput); }
         }
+    };
+    /** One coverage draw's encode time (CPU), named 'draw'; the timed path is taken only while the render audit is on. */
+    const render = (pass: GpuPass, prepared: PreparedPathCoverage, paint?: Rgba): void => {
+        if (!renderAuditEnabled()) { renderCoverage(pass, prepared, paint); return; }
+        const started = performance.now();
+        try { renderCoverage(pass, prepared, paint); } finally { auditStage(audit, 'draw', performance.now() - started); }
     };
     /** The winding and cover uniforms, written into the kit's one scratch and copied by the frame's ring at once. */
     const windingSlice = (viewport: Readonly<{ width: number; height: number }>, affine: Affine, dx: number, dy: number) => {
@@ -793,6 +799,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
                 piece % 4 !== 0 || offset + piece > up.bytes) {
                 throw new RangeError(`Invalid path vertex upload: offset ${offset}, bytes ${piece}, buffer ${up.bytes}`);
             }
+            const writeStarted = renderAuditEnabled() ? performance.now() : 0;
             try { up.device.writeBuffer(up.buffer, offset, up.data.subarray(offset / 4, (offset + piece) / 4)); }
             catch (error) {
                 if (!(error instanceof ArenaError) || error.code !== 'invalid-input') throw error;
@@ -801,6 +808,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
                 auditCount(audit, 'fallback:path-coverage:upload-refused', 1, { bytes: piece });
                 return 'unsupported';
             }
+            if (writeStarted) auditStage(audit, 'upload', performance.now() - writeStarted);
             auditCount(audit, 'upload:vertex', 1, { bytes: piece });
             up.written += piece;
         }
@@ -914,7 +922,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         VertexSet | Denial | 'deferred' | 'unsupported' => {
         const vertexBytes = vertexCount * 8;
         const found = shared.get(set.positive);
-        if (found && found.device === owner && found.negative === set.negative && found.used === vertexBytes) return found;
+        if (found && found.device === owner && found.negative === set.negative && found.used === vertexBytes) { auditCount(audit, 'kit:set-hit', 1, { bytes: vertexBytes }); return found; }
         if (found) {
             // The same positive array with another negative or size (or a stale device) holds a buffer this set cannot draw. A held set
             // cannot be replaced while a draw reads it: that is a fallback, counted. An idle one is replaced by a fresh upload; the array
@@ -926,6 +934,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         if (up && (up.device !== owner || up.negative !== set.negative || up.bytes !== vertexBytes)) { dropUpload(set.positive); up = undefined; }
         if (up) up.usedFrame = frame;
         if (!up) {
+            auditCount(audit, 'kit:set-new', 1, { bytes: vertexBytes });
             const staging = host.allocator.cpu.reserve(vertexBytes);
             if (!staging) return { status: 'denied', pool: 'cpu', bytes: vertexBytes };
             // Positive triangles first, then negative: the draw ranges follow this order.
@@ -949,6 +958,12 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         const state = writeUpload(up, budget);
         return state === 'done' ? finishUpload(up) : state;
     };
+    /** Admission, timed as 'admit' (its uploads are timed as 'upload' within it) while the render audit is on. */
+    const admitSets = (request: PathCoverageSetsRequest, budget: FrameBudget): PathCoverageAdmission => {
+        if (!renderAuditEnabled()) return admitSetsUntimed(request, budget);
+        const started = performance.now();
+        try { return admitSetsUntimed(request, budget); } finally { auditStage(audit, 'admit', performance.now() - started); }
+    };
     /** Admission happens here, in prepare: targets, vertex buffers and any clip handle are created before any draw. Failure is
      * permanent for this device incarnation and returns 'unsupported'. A set uploaded by an admission that is then refused
      * keeps its buffer at zero refs, so the retry uploads nothing; release() frees it. */
@@ -957,7 +972,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         auditCount(audit, `fallback:path-coverage:${reason}`);
         return { status: 'unsupported' };
     };
-    const admitSets = (request: PathCoverageSetsRequest, budget: FrameBudget): PathCoverageAdmission => {
+    const admitSetsUntimed = (request: PathCoverageSetsRequest, budget: FrameBudget): PathCoverageAdmission => {
         // Failure is permanent for this device incarnation: the caller's exact route takes the item.
         if (disposed || failed || unsupported) return unsupportedBecause(disposed ? 'disposed' : failed ? 'failed' : 'device-unsupported');
         warm();
@@ -1070,7 +1085,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         warm,
         ready: isReady,
         /** Marks the frame the calls that follow belong to. An idle set used in this frame is never reclaimed. */
-        beginFrame(next: number): void { frame = next; },
+        beginFrame(next: number): void { if (next !== frame) auditCount(audit, 'kit:frame'); frame = next; },
         /** Whether the kit still holds this triangle array (a shared set or an upload in progress). */
         holds(key: Float64Array): boolean { return shared.has(key) || uploading.has(key); },
         /** The owner has let go of a triangle array (its outline was dropped): the packs built from it are released with it. A pack

@@ -22,6 +22,7 @@ export interface SceneResolveContext {
     readonly deviceScale: number | undefined;
     readonly sensitive: boolean;
     readonly allowInkLod: boolean;
+    readonly previousInkBand?: string;
 }
 interface ScenePaintFilters {
     readonly orderedIds?: PaintNodeOrder;
@@ -93,7 +94,7 @@ function* scenePaintSource(doc: BoardDoc, token: RenderToken, request: ScenePain
             parent = { world, clips, childClips, opacity: (parent?.opacity ?? 1) * item.opacity, page, theme: scope.theme,
                 // A scene-precision request resolves its strokes as the whole-scene stage does: no device scale, no level of detail.
                 deviceScale: scope.scenePrecision ? undefined : scope.deviceScale, sensitive: scope.sensitiveNodes.has(item.id),
-                allowInkLod: !scope.scenePrecision && !!scope.allowInkLod };
+                allowInkLod: !scope.scenePrecision && !!scope.allowInkLod, previousInkBand: scope.previousInkBand };
             contexts.set(item.id, parent);
             if (streaming && contexts.size > 256) contexts.delete(contexts.keys().next().value!);
         }

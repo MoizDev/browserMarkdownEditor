@@ -42,6 +42,9 @@ export interface ScenePaintRequest {
     /** Strokes realise at the whole-scene stage's precision (the board's default scale, no level of detail), whatever the device
      * scale of the request: a view stage and the scene stage then key one stroke the same, so a stage switch re-keys nothing. */
     readonly scenePrecision?: boolean;
+    /** A band crossing during a live zoom: the stroke band the view held before it. A stroke whose wanted band is not built draws
+     * this band's geometry (counted as a band miss) while the wanted band builds in the background. Absent at rest. */
+    readonly previousInkBand?: string;
     /** Only these nodes are resolved and emitted; a live-only frame carries no other geometry. */
     readonly only?: ReadonlySet<NodeId>;
 }

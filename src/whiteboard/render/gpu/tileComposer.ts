@@ -1499,7 +1499,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             indexing = !parts.sync(prepared, budget);
             // A pan with a visible position that has no exact tile draws its parts live, as a zoom does (gpu's ruling): the stand-in
             // it would show is replaced by its geometry. A pan whose tiles are all there composes as before.
-            const panning = panned && !indexing && anyVisibleMissing(view, target);
+            // A drag's omitted nodes are the preview's; its frames keep the path they had (the pan path is for the base's camera moves).
+            const panning = panned && !omitIds?.size && !indexing && anyVisibleMissing(view, target);
             liveNow = paintLiveOnly || (!indexing && (zooming || panning) && zoomDirectOk(view, target));
             if (panning && liveNow) auditCount(audit, 'pan:direct:frame');
             // Why a moving view does not draw live (counters only): the index (indexing) gates the live draw, then the missing check.

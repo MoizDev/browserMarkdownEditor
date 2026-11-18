@@ -7,6 +7,7 @@ import type { LayerHost } from '../../platform/render/compositor.types';
 import type { ByteLease, GfxDevice, GpuPass, RectI, TextureHandle } from '../../platform/render/gfx/api';
 import type { FrameBudget, FrameToken, GpuReleaseReason, OffscreenPasses } from '../../platform/render/types';
 import { auditCount, auditStage, renderAuditEnabled, type AuditStage } from '../../platform/render/renderAudit';
+import { filterWindows } from './paintWindows';
 import type { PaintBand } from './material';
 import type { PaintItem, PaintSource } from './paintStream';
 import type { CanvasPaintAdapter, PreparedPaint2d } from './reference/canvasPaintAdapter';
@@ -254,11 +255,24 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         readonly opaqueWorld?: () => readonly Rect[];
         /** An overlay: its few plain parts are drawn live each frame, with no tile grant (see the composer's liveOverlay). */
         readonly liveOverlay?: boolean;
+        /** A live-only overlay's nodes (its gesture's): the composer indexes and draws only these items of the paint it is handed. */
+        readonly liveNodes?: ReadonlySet<string>;
     } = {}): GpuPaintAdapter {
     const surface = options.audit ?? 'board';
     if (options.streaming) auditCount(surface, 'option:streaming-ignored');
     let disposed = false;
     let lastFrame = -1;
+    // The paint the composer is handed: an overlay's own nodes only, so its index never walks the rest of the paint it was built from.
+    // One filtered copy per source paint, reused by the foreground and background calls of its frame.
+    let filtered: { source: PreparedPaint2d; out: PreparedPaint2d } | null = null;
+    const forComposer = (prepared: PreparedPaint2d): PreparedPaint2d => {
+        const include = options.liveNodes;
+        if (!include) return prepared;
+        if (filtered?.source === prepared) return filtered.out;
+        const out: PreparedPaint2d = { ...prepared, windows: filterWindows(prepared.windows, item => include.has(item.nodeId)) };
+        filtered = { source: prepared, out };
+        return out;
+    };
     // The paint a two-phase frame's foreground call prepared, for its background call (which the composer's prepare completes).
     let pendingPrepared: PreparedPaint2d | null = null;
     let presented: PreparedPaint2d | null = null;
@@ -318,7 +332,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                 pendingPrepared = null;
                 if (disposed || !pending || lastFrame !== budget.frameId) return true;
                 try {
-                    return timed(surface, 'prepare', () => composer.prepare(view, budget, pending, omit));
+                    return timed(surface, 'prepare', () => composer.prepare(view, budget, forComposer(pending), omit));
                 } catch (error) {
                     if (isBudgetRefusal(error)) return true;
                     host.reportGpuError(error);
@@ -341,7 +355,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             armWake('store', null);
             let changed = true;
             try {
-                changed = timed(surface, 'prepare', () => composer.prepare(view, budget, prepared, omit));
+                changed = timed(surface, 'prepare', () => composer.prepare(view, budget, forComposer(prepared), omit));
             } catch (error) {
                 if (isBudgetRefusal(error)) return true;
                 // Reported, not rethrown: a throw here aborted the board's frame on every prepare while the content stayed in view.

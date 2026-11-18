@@ -72,6 +72,8 @@ export interface BoardLayersOptions {
     /** The world rects under which the surface beneath board content is opaque (PLAN §3.3). Absent or empty: no claim,
      * so a multiply keeps today's isolation composite. Supplied per host by `opaqueWorldOf`. */
     readonly opaqueWorld?: () => readonly Rect[];
+    /** A live-only overlay's own nodes: its composer indexes and draws only these items of the paint it is handed (see the GPU adapter). */
+    readonly liveNodes?: ReadonlySet<string>;
     /** An overlay (a drag's preview): its few plain parts are drawn live with no tiles, so no tile grant can stall it. */
     readonly liveOverlay?: boolean;
 }
@@ -267,7 +269,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     // The composer's adapter options (PLAN §3.3). Built as a value, not a literal: the adapter's option type gains
     // `opaqueWorld` in wave 2, and until then today's adapter ignores it.
     const gpuOptions = () => ({ audit: options.auditSurface ?? 'board', ...(options.liveOverlay ? { liveOverlay: true } : {}),
-        ...(typeof options.opaqueWorld === 'function' ? { opaqueWorld: options.opaqueWorld } : {}) });
+        ...(typeof options.opaqueWorld === 'function' ? { opaqueWorld: options.opaqueWorld } : {}),
+        ...(options.liveNodes ? { liveNodes: options.liveNodes } : {}) });
     // The drag's omitted set is applied where the tiles are built: prepare takes it, and each prepare reads the current
     // omitNodes(frame). The draw never took it (the composer's draw has no omission), so it is not passed there.
     // A live-only overlay admits its parts at the view they are drawn at (its live runs are baked at prepare, and only tiles take

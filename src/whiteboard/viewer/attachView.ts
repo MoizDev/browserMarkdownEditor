@@ -90,7 +90,7 @@ export const attachView: AttachView = options => {
     };
     let interactionLayers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null = null;
     let previewLayers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null = null;
-    let previewCoverage: (() => Readonly<{ frame: PaintSource; nodeIds: ReadonlySet<string> }> | null) | null = null;
+    let previewCoverage: (() => Readonly<{ frame: PaintSource; nodeIds: ReadonlySet<string>; drawn?: Readonly<{ sceneRevision: number; nodes: ReadonlySet<string> }> }> | null) | null = null;
     let clearPreview: (() => void) | null = null;
     /** 'paint': the paint progress moved (see onPaintProgress); anything else is a change to the view's state. */
     const listeners = new Set<(change?: ViewChange) => void>();
@@ -170,6 +170,8 @@ export const attachView: AttachView = options => {
         // The live zoom's geometry pins (the composer holds the visible strokes at the band it draws and the band before it).
         geometryPins: {
             pinVisible: ids => runtime.render.pinVisible(ids as Iterable<NodeId>), releasePins: () => runtime.render.releasePins() },
+        // The overlay reports the handed-back nodes it drew at the commit revision (the stale rule, gpu-h13 19c8722e).
+        overlayDrawn: () => previewCoverage?.()?.drawn ?? null,
         liveNodeIds, liveDraws: (nodeId, band, view, canvas) => interaction?.liveDraws?.(nodeId, band, view, canvas) ?? false, candidates: () => lastCandidates,
         onDensityMode(mode) { if (densityMode !== mode && !disposed) { densityMode = mode; requestPaint(); } },
         requestFrame: () => { if (!disposed) requestPaint(); },

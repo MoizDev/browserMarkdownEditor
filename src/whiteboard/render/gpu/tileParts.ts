@@ -104,6 +104,8 @@ interface Build {
     readonly target: Index;
     /** A rebuild from nothing: theme or raster variant moved, or there is no index. */
     readonly full: boolean;
+    /** Why the build is full: no index yet, the theme, or the raster variant (fonts, palette); null when not full. */
+    readonly cause: 'no-index' | 'theme' | 'variant' | null;
     /** The item whose bounds are being derived, one budgeted unit per step (see advanceDerive); null between items. */
     deriving: Derivation | null;
     /** Whether an index was published before this build started: only then has anything been drawn from one. */
@@ -342,7 +344,8 @@ export const createTileParts: CreateTileParts = (_host, audit) => {
 
     const startBuild = (prepared: PreparedPaint2d): Build => {
         const root = prepared.root, revision = root.sceneRevision;
-        const full = !index || index.theme !== root.theme || index.variant !== root.rasterVariant;
+        const cause = !index ? 'no-index' : index.theme !== root.theme ? 'theme' : index.variant !== root.rasterVariant ? 'variant' : null;
+        const full = cause !== null;
         let regions: readonly Rect[] = NO_RECTS;
         // A span without region history (no regionChangesSince on the source, or one the scene cannot bound) is not a rebuild:
         // the items are diffed against the index, so only the parts that actually changed are reported.
@@ -363,7 +366,7 @@ export const createTileParts: CreateTileParts = (_host, audit) => {
         spare = [];
         if (unknown) auditCount(audit, 'index:unknown-span');
         return { original: originalOf(prepared.sourceFrame), revision, theme: root.theme, variant: root.rasterVariant, windows: prepared.windows,
-            old: full ? null : index, target, full, deriving: null, prior: index !== null, unknown, regions, regionBox, pass: ++passes, next, added: [],
+            old: full ? null : index, target, full, cause, deriving: null, prior: index !== null, unknown, regions, regionBox, pass: ++passes, next, added: [],
             window: 0, item: 0, seq: 0, replaced: 0, epochs: 0, rederived: 0 };
     };
 
@@ -419,6 +422,7 @@ export const createTileParts: CreateTileParts = (_host, audit) => {
         for (const entry of build.next) if (entry.placed !== entry.seq) place(entry);
         if (build.full) {
             auditCount(audit, 'index:rebuild-all');
+            auditCount(audit, `index:full:${build.cause ?? 'none'}`);
             auditCount(audit, 'parts:indexed', target.grid.count);
         } else {
             // Entries that entered or left the paint, not counting the replaced ones: those are counted by their cause.

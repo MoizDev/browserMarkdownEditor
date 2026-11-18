@@ -77,6 +77,9 @@ const idOfObject = (object: object | null): number => {
     return id;
 };
 const hashMix = (hash: number, value: number): number => Math.imul(hash ^ value, 16777619);
+/** The compose passes in order: the foreground takes visible missing positions first, the background dirty ones first. */
+const DIRTY_FIRST = ['dirty', 'missing', 'ring'] as const;
+const MISSING_FIRST = ['missing', 'dirty', 'ring'] as const;
 const hashText = (text: string): number => { let hash = 2166136261; for (let i = 0; i < text.length; i++) hash = hashMix(hash, text.charCodeAt(i)); return hash; };
 /** A position's status at a scale: `missing` has no complete picture; `dirty` shows a picture a change has overtaken. */
 type Status = 'missing' | 'dirty' | 'ok';
@@ -891,7 +894,9 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 }
             }
         }
-        for (const pass of ['dirty', 'missing', 'ring'] as const) {
+        // A visible position with no stand-in is foreground work: the foreground (and a single-phase compose) takes the missing pass
+        // before the dirty one, so a budget that runs out on dirty positions cannot leave it missing (gpu's ruling).
+        for (const pass of (only === 'background' ? DIRTY_FIRST : MISSING_FIRST)) {
             // While zooming only the visible positions are composed: the ring is the next view's, and the zoom's compose is its cost.
             if (pass === 'ring' && (zoomingFrame || only === 'foreground')) continue;
             const margin = pass === 'ring' ? 1 : 0;

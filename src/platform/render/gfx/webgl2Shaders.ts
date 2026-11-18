@@ -275,3 +275,31 @@ void main() {
         ],
     },
 };
+
+/** Resolves an area target (union ink's exact-area accumulator): each device px is min(1, |acc|) of its one r32f texel,
+ * composited through the paint output. The uniform block and the quad vertex stage are the grid resolve's, unchanged. */
+export const AREA_RESOLVE_SHADER: ShaderModule = {
+    id: 'platform-private-area-resolve', revision: 1,
+    glsl: {
+        vertex: GRID_RESOLVE_SHADER.glsl.vertex,
+        fragment: `#version 300 es
+precision highp float;
+${block}
+uniform sampler2D gfxTexture0;
+in vec2 pixel;
+layout(location=0) out vec4 gfxColour;
+void main() {
+    ivec2 device = ivec2(floor(pixel)) - ivec2(sourceRect.xy);
+    int rows = int(sourceSizeOpacityEffect.y);
+    float acc = texelFetch(gfxTexture0, ivec2(device.x, rows - 1 - device.y), 0).r;
+    float a = backdropRect.w * min(1.0, abs(acc));
+    if (options.x > 0.5) gfxColour = vec4(mix(vec3(1.0), backdropRect.rgb, a), 1.0);
+    else gfxColour = vec4(backdropRect.rgb * a, a);
+}`,
+    },
+    layout: {
+        uniforms: [{ binding: 0, byteSize: 128 }],
+        textures: [{ binding: 0, format: 'r32f' as const }],
+        attributes: [],
+    },
+};

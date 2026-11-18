@@ -48,6 +48,9 @@ export interface BoardLayersOptions {
     /** Whether the live layer paints this changed node in the frame at `view`: a changed node counts as covered by the picture
      * only then (or when it is omitted, a drag's preview). Membership in liveNodeIds alone is not coverage. */
     readonly liveDraws?: (nodeId: string, band: PaintBand, view: ViewState, canvas: boolean) => boolean;
+    /** The overlay's report of the nodes it drew at a scene revision (after a commit it is frozen, so this is its last composite).
+     * A stale base picture covers a changed node only where this report has it at the latest revision (gpu's ruling). */
+    readonly overlayDrawn?: () => { readonly sceneRevision: number; readonly nodes: ReadonlySet<string> } | null;
     readonly beforePrepare?: (view: ViewState, budget: FrameBudget) => void;
     readonly onPresented?: (revision: number, token: RenderToken, frame: PaintSource, context?: ViewerPaintPresentation) => void;
     /** Called after every prepare that reached the adapter, before a compositor frame draws what it built; a caller checks what is built. */
@@ -878,7 +881,16 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     // it is one the band does not draw: the omitted nodes (a drag's moving node, drawn by the preview) and the live ones (drawn
     // by their live layer). A drag moves only those, so its base picture stays current (measured: stale:revision on 186 of 186
     // drag-sat frames). Unknown history (null, or a structural change) is stale.
-    const undrawnChangeSince = (from: number, to: number, band: PaintBand, view: ViewState, canvas: boolean): boolean => {
+    // The node ids a presented base picture holds (its items' nodes and its ink ids), built once per picture.
+    const heldNodesOf = new WeakMap<object, ReadonlySet<string>>();
+    const nodesHeldBy = (base: PaintSource): ReadonlySet<string> => {
+        const known = heldNodesOf.get(base); if (known) return known;
+        const held = new Set<string>(base.inkNodeIds);
+        const lists = base as { underlay?: readonly { nodeId?: string }[]; content?: readonly { nodeId?: string }[] };
+        for (const list of [lists.underlay, lists.content]) if (list) for (const item of list) if (item.nodeId) held.add(item.nodeId);
+        heldNodesOf.set(base, held); return held;
+    };
+    const undrawnChangeSince = (from: number, to: number, band: PaintBand, view: ViewState, canvas: boolean, base: PaintSource): boolean => {
         // The live scene history first (it names the revisions a frame lags behind); the pinned frame's own history when the
         // live one is not retained for this span.
         const now = options.frames.readFrame();
@@ -888,7 +900,17 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         // A node the composer plans to lay live for this band (the prepare that runs before coverage in this frame, d14a4dfa) is drawn
         // live, so it is current wherever the board shows it. A frame whose composite is not presented reports no coverage at all.
         const laid = canvas ? null : gpu?.plannedLiveNodeIds(band) ?? null;
-        for (const id of changed) if (!omitted?.has(id) && !options.liveDraws?.(id, band, view, canvas) && !laid?.has(id)) return false;
+        // A changed node is current in a stale picture only when the picture does not show it (omitted, or created after the picture)
+        // and a live layer drew it at the latest revision (the wet layer this frame, or the overlay's report). A node the picture
+        // holds with an old copy (a move) stays stale: covering it would show the old copy as current.
+        const overlay = options.overlayDrawn?.() ?? null;
+        const held = nodesHeldBy(base);
+        for (const id of changed) {
+            const live = options.liveDraws?.(id, band, view, canvas) || !!laid?.has(id) ||
+                (overlay !== null && overlay.sceneRevision >= to && overlay.nodes.has(id));
+            if (!live) return false;
+            if (!omitted?.has(id) && held.has(id)) return false;
+        }
         return true;
     };
     const coverageOf = (band: PaintBand, frame: ScheduledFrame, backend: CompositorBackend): LayerCoverage => {
@@ -901,7 +923,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         const latest = options.requestedRevision();
         // The picture drawn is current at the latest revision, whatever revision this layer's frame was scheduled for (a preview
         // band's scheduled frame lags the drag's moves while its picture is already the latest: measured 62 of 62 as stale).
-        const current = (ready.sceneRevision === latest || undrawnChangeSince(ready.sceneRevision, latest, band, frame.view, backend === 'canvas2d'))
+        const current = (ready.sceneRevision === latest || undrawnChangeSince(ready.sceneRevision, latest, band, frame.view, backend === 'canvas2d', ready))
             && ready.theme === options.requestedTheme() && options.frames.isCurrent(ready);
         return current ? { complete: true, sharp: (gpuCoverage?.sharp ?? true) && (denseCoverage?.sharp ?? true) } : STALE;
     };
@@ -1041,7 +1063,9 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         // never complete still presents its stand-ins (measured: 129 refusals, 0 presents, all from incomplete coverage).
         // A layer waiting on a refused GPU admission defers instead: holding every frame for memory the governor has not freed
         // froze the pane (a board whose ink tile could not be admitted refused every frame, and nothing requested another).
-        critical() { return presented === null && !adapter?.readyFrame() && !gpu?.readyFrame() && !gpu?.memoryBlocked(); },
+        // A draw list that cannot be drawn for this frame's view is critical too: the compositor then refuses the frame and keeps the
+        // previous complete picture, instead of presenting the board with its draws skipped.
+        critical(_layer, view) { return (presented === null && !adapter?.readyFrame() && !gpu?.readyFrame() && !gpu?.memoryBlocked()) || !!gpu?.listInvalid(view); },
         coverage(layer, frame, backend) {
             // An optional layer with no request has nothing to draw: the platform reads it complete, and so does the audit.
             if (options.optional && options.requested && !options.requested()) return { complete: true, sharp: true };

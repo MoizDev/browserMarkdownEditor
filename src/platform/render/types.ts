@@ -24,11 +24,17 @@ export type FrameToken = RenderToken & {
 /** Shared-frame admission, using the performance.now clock (rendering-design.md §7.1:664–673).
  * The upload deadline bounds admitted work, not an already-running GPU upload; record overshoot.
  */
+/** Which pass of the frame a prepare call runs in (see Layer.twoPhase). 'single' is every layer that does not split: a critical
+ * one runs in the foreground pass, any other in the background pass, as before. */
+export type BudgetPhase = 'foreground' | 'background' | 'single';
+
 export interface FrameBudget {
     frameId: number;
     token: FrameToken;
     cameraEpoch: number;
     readonly damage?: DamageRecord;
+    /** Always set by the scheduler. A two-phase layer is prepared once per phase per frame, foreground first across every pane. */
+    readonly phase: BudgetPhase;
     prepareDeadline: number;
     upload: { remainingBytes: number; deadline: number };
     shouldYield(): boolean;
@@ -56,6 +62,12 @@ export interface Layer {
      * each, which removes a framebuffer switch per tile. Only clear passes without stencil use the atlas; anything else draws
      * its own target and is counted as a fallback. */
     readonly atlas?: boolean;
+    /** Opt-in (default off): preparation is split into two calls per frame, budget.phase 'foreground' then 'background'. The
+     * scheduler runs every pane's foreground call before any background call, both sharing the frame's one upload window.
+     * Foreground does this frame's begin-of-frame work (keyed by frameId, since both calls see the same frame) and the work
+     * the frame's completeness needs; background does the rest. A foreground answer of changed marks the frame changed; the
+     * frame's answer is the background call's. The scheduler skips the background call when the foreground call did not run. */
+    readonly twoPhase?: true;
     /** Schedule work without blocking; preparation is split into resumable units (design:677–679).
      * Returns `false` only when a prepare ran to completion for this view and nothing the layer draws next can differ from what
      * it last presented, so a continuation frame may skip encode and present. A layer the budget or deadline skipped this frame

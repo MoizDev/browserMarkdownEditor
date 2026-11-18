@@ -186,11 +186,15 @@ interface UniformSlot {
     native: NativeBuffer;
     data: Uint8Array<ArrayBuffer>;
     lease: ByteLease;
+    /** The newest serial among the frames that wrote into this slot: the slot is reusable once it completes. */
     serial: number;
-    owner: FrameWork | null;
+    /** Frames that hold the slot (written into it and not yet finished). Several frames share one slot while it has room. */
+    owners: number;
     valid: boolean;
-    /** Bytes the owning frame has written into this slot (the upload covers exactly these). */
+    /** Bytes written so far (an append cursor; a reused slot starts again at 0 only when no frame holds it). */
     used: number;
+    /** Bytes already uploaded: each upload sends only [uploaded, used), so no byte is sent twice or overwritten. */
+    uploaded: number;
 }
 interface FrameWork {
     encoding: ArenaEncoding;
@@ -198,8 +202,10 @@ interface FrameWork {
     signal: AbortSignal;
     /** The slot the frame writes into now. */
     slot: UniformSlot | null;
-    /** Every slot the frame owns, in order; each is uploaded and released with the frame. */
+    /** Every slot the frame holds, in order; each is released with the frame. */
     slots: UniformSlot[];
+    /** The frame's own uniform bytes, the size the ring is later sized from. */
+    written: number;
     passes: boolean;
     surface: boolean;
     surfaceRevision: number;
@@ -250,10 +256,11 @@ function byteSize(...factors: number[]): number {
     return bytes;
 }
 
-// The uniform ring. Three slots is the nominal ring (rendering-design.md:280). A frame that outgrows its slot takes another, up to
-// UNIFORM_RING_OVERFLOW_SLOTS in all; the ring's size follows the largest frame encoded so far (ringSizeFor), 1 MiB to 8 MiB.
+// The uniform ring. Three slots is the nominal ring (rendering-design.md:280): frames in flight share them, each writing past the
+// bytes before it. The ring grows to UNIFORM_RING_MAX_SLOTS only when every slot is full or still in flight, and each slot's size
+// follows the largest frame encoded so far (ringSizeFor), 1 MiB to 8 MiB.
 const UNIFORM_RING_SLOTS = 3;
-const UNIFORM_RING_OVERFLOW_SLOTS = 6;
+const UNIFORM_RING_MAX_SLOTS = 6;
 const UNIFORM_RING_MIN = 1 << 20;
 const UNIFORM_RING_MAX = 8 << 20;
 function ringSizeFor(bytes: number): number {
@@ -589,7 +596,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         this.#usable();
         if (!this.#white) throw new ArenaError('out-of-budget');
         const encoding = this.#arena.beginEncoding();
-        const work: FrameWork = { encoding, controller: null, signal: this.#work.signal, slot: null, slots: [], quadPins: new Map(),
+        const work: FrameWork = { encoding, controller: null, signal: this.#work.signal, slot: null, slots: [], written: 0, quadPins: new Map(),
             passes: false, surface: false, surfaceRevision: this.#surfaceRevision, issued: null, finished: false };
         this.#frames.set(encoding, work);
         this.#isolation.begin(encoding);
@@ -1518,7 +1525,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 finally {
                     try { if (work.surface && !work.signal.aborted) this.#timer.end(); }
                     finally {
-                        for (const slot of work.slots) { slot.owner = null; slot.serial = serial ?? work.issued ?? 0; }
+                        for (const slot of work.slots) { slot.owners--; slot.serial = Math.max(slot.serial, serial ?? work.issued ?? 0); }
                         work.slots.length = 0; work.slot = null;
                         this.#frames.delete(work.encoding);
                     }
@@ -1599,45 +1606,57 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         into.bytes = bytes.byteLength;
     }
 
-    /** Copies one record into the frame's ring. A frame that outgrows its slot takes another slot before the write, so a write
-     * never fails for size: a frame's uniform bytes are not bounded by the ring's current slot size. What still refuses is the
-     * memory governor (reserve) and the bounded ring (UNIFORM_RING_OVERFLOW_SLOTS), both counted. */
+    /** Copies one record into the ring. Frames in flight share a slot while it has room (each writes past the bytes before it, so
+     * no upload overwrites another's), and a frame that finds no room takes another slot. A write therefore never fails for size.
+     * What still refuses is the memory governor (reserve) and the bounded ring (UNIFORM_RING_MAX_SLOTS), both counted. */
     #writeUniforms(work: FrameWork, bytes: ArrayBufferView): { slot: UniformSlot; offset: number } {
         count(bytes.byteLength, true);
-        if (!work.slot) work.slot = this.#uniformSlot(work, bytes.byteLength, false);
-        let offset = alignUp(work.slot.used, this.limits.uniformAlignment);
-        if (offset + bytes.byteLength > work.slot.data.byteLength) {
-            work.slot = this.#uniformSlot(work, bytes.byteLength, true);
-            offset = 0;
+        const alignment = this.limits.uniformAlignment;
+        if (!work.slot) work.slot = this.#uniformSlot(work, bytes.byteLength);
+        else if (alignUp(work.slot.used, alignment) + bytes.byteLength > work.slot.data.byteLength) {
+            work.slot = this.#uniformSlot(work, bytes.byteLength);
+            auditCount('gpu', 'uniform-overflow');
         }
-        work.slot.data.set(new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength), offset);
-        work.slot.used = offset + bytes.byteLength;
-        this.#pin(work.encoding, work.slot.handle, 'buffer');
-        return { slot: work.slot, offset };
+        const slot = work.slot;
+        const offset = alignUp(slot.used, alignment);
+        slot.data.set(new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength), offset);
+        slot.used = offset + bytes.byteLength;
+        work.written += bytes.byteLength;
+        this.#pin(work.encoding, slot.handle, 'buffer');
+        return { slot, offset };
     }
 
-    /** A slot for this frame with room for `minBytes`. A free slot that fits is reused; otherwise a new one is allocated, at most
-     * UNIFORM_RING_SLOTS across the ring for a frame's first slot and UNIFORM_RING_OVERFLOW_SLOTS for an overflow. Slots still in
-     * flight are never reused or resized (fenced by serial); a growth of the ring only changes the slots created after it. */
-    #uniformSlot(work: FrameWork, minBytes: number, overflow: boolean): UniformSlot {
-        // A free slot smaller than the ring is retired (an old size); an oversized one is kept, since it fits a large frame.
+    /** A slot this frame can write `minBytes` into: a slot other frames hold that has room past their bytes, or a free slot whose
+     * frames have all completed (reset to empty), or a new one. The ring grows past UNIFORM_RING_SLOTS only when every slot is
+     * full or still in flight (counted); a growth of the ring's size only changes the slots created after it. */
+    #uniformSlot(work: FrameWork, minBytes: number): UniformSlot {
+        const alignment = this.limits.uniformAlignment;
+        // A free slot of an old size is retired once its GPU work has completed; in-flight storage is never destroyed.
         for (let i = this.#uniformSlots.length - 1; i >= 0; i--) {
             const slot = this.#uniformSlots[i];
-            if (!slot.owner && (!slot.valid || slot.data.byteLength < this.#uniformBytes)) {
+            if (slot.owners === 0 && (!slot.valid || slot.data.byteLength < this.#uniformBytes) && this.#complete(slot.serial)) {
                 this.destroy(slot.handle);
                 this.#returnCpu(slot.lease);
                 this.#uniformSlots.splice(i, 1);
             }
         }
-        let slot = this.#uniformSlots.find(candidate => candidate.valid && !candidate.owner && candidate.data.byteLength >= minBytes &&
-            this.#complete(candidate.serial));
+        let slot: UniformSlot | undefined;
+        for (const candidate of this.#uniformSlots) {
+            if (!candidate.valid) continue;
+            if (candidate.owners === 0 && !this.#complete(candidate.serial)) continue;
+            // A slot held by other frames is written past their bytes; a free one starts again at 0.
+            const start = candidate.owners > 0 ? alignUp(candidate.used, alignment) : 0;
+            if (start + minBytes > candidate.data.byteLength) continue;
+            slot = candidate;
+            break;
+        }
         if (!slot) {
-            const size = Math.max(this.#uniformBytes, alignUp(minBytes, this.limits.uniformAlignment));
-            if (this.#uniformSlots.length >= (overflow ? UNIFORM_RING_OVERFLOW_SLOTS : UNIFORM_RING_SLOTS)) {
+            const size = Math.max(this.#uniformBytes, alignUp(minBytes, alignment));
+            if (this.#uniformSlots.length >= UNIFORM_RING_MAX_SLOTS) {
                 auditCount('gpu', 'uniform-ring-busy');
                 throw new ArenaError('out-of-budget');
             }
-            if (overflow) auditCount('gpu', 'uniform-overflow');
+            if (this.#uniformSlots.length >= UNIFORM_RING_SLOTS) auditCount('gpu', 'uniform-ring-grow-slots');
             const cpu = this.#reserve(this.#services.cpuStaging, size, false);
             let handle: BufferHandle | null = null;
             try {
@@ -1646,34 +1665,35 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 // (compositor.ts drawTexturedQuads). The device refuses a vertex slice whose buffer lacks the use, which demoted
                 // the pane mid-draw (seen in the final run's audit: pane:fallback:pane-2d:gpu-error:invalid-input).
                 handle = this.#owned('buffer', { bytes: size, uses: ['uniform', 'vertex', 'copy-dst'] }, size, this.#services.working);
-                slot = { handle, native: this.#arena.validate(handle, 'buffer'), data, lease: cpu, serial: 0, owner: null, valid: true, used: 0 };
+                slot = { handle, native: this.#arena.validate(handle, 'buffer'), data, lease: cpu, serial: 0, owners: 0, valid: true, used: 0, uploaded: 0 };
                 this.#uniformSlots.push(slot);
             } catch (error) { if (handle) this.destroy(handle); this.#returnCpu(cpu); throw error; }
         }
-        slot.owner = work;
-        slot.used = 0;
-        work.slots.push(slot);
+        if (slot.owners === 0) { slot.used = 0; slot.uploaded = 0; }
+        if (!work.slots.includes(slot)) { slot.owners++; work.slots.push(slot); }
         return slot;
     }
 
+    /** Uploads the bytes each slot has gained since its last upload (all frames' bytes, each sent once), at submit. */
     #uploadUniforms(work: FrameWork): void {
-        if (!work.slots.some(slot => slot.used > 0)) return;
+        this.#noteFrameBytes(work.written);
+        if (!work.slots.some(slot => slot.uploaded < slot.used)) return;
         const gl = this.#usable();
         const started = performance.now();
         let bytes = 0;
         try {
             for (const slot of work.slots) {
-                if (!slot.used) continue;
+                if (slot.uploaded >= slot.used) continue;
                 gl.bindBuffer(gl.COPY_WRITE_BUFFER, slot.native.buffer);
-                gl.bufferSubData(gl.COPY_WRITE_BUFFER, 0, slot.data.subarray(0, slot.used));
-                bytes += slot.used;
+                gl.bufferSubData(gl.COPY_WRITE_BUFFER, slot.uploaded, slot.data.subarray(slot.uploaded, slot.used));
+                bytes += slot.used - slot.uploaded;
+                slot.uploaded = slot.used;
             }
             this.#checkUpload();
         } finally {
             (this.#services.recordUniformUpload ?? this.#services.recordUpload)?.(bytes, performance.now() - started);
             this.#reset();
         }
-        this.#noteFrameBytes(bytes);
     }
 
     /** Sizes the ring from the largest frame so far (with headroom), so the next frames of a similar size never overflow. Growth is

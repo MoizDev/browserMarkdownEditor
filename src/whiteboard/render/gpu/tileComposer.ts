@@ -7,7 +7,7 @@ import type { LayerHost, TexturedQuadSpec } from '../../../platform/render/compo
 import type { GfxDevice, GpuPass, GroupToken, RectI, RgbaP, TextureHandle } from '../../../platform/render/gfx/api';
 import type { FrameBudget, GpuReleaseReason, OffscreenPasses } from '../../../platform/render/types';
 import { tileTargetBytes, tileView } from '../../../platform/render/tileTarget';
-import { auditCount, auditDrawn, auditStage, renderAuditEnabled, type AuditStage } from '../../../platform/render/renderAudit';
+import { auditCount, auditDrawn, auditGpuError, auditStage, renderAuditEnabled, type AuditStage } from '../../../platform/render/renderAudit';
 import { TILE_EDGE, TILE_GUTTER, TILE_SIZE } from '../imageSampling';
 import type { PaintBand } from '../material';
 import type { PaintClip, PaintInkItem, PaintItem } from '../paintStream';
@@ -1627,8 +1627,10 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         scissor.x = draw.cx; scissor.y = draw.cy; scissor.width = draw.cw; scissor.height = draw.ch;
                         const clip = pass.pushClip(scissor);
                         drawnLive[draw.band].add(draw.node);
-                        draw.liveRoute?.draw(pass, draw.live);
-                        pass.popClip(clip);
+                        // The pop is in finally: a throw inside the draw must not leave the scope open (the encoder then refuses the frame).
+                        try { draw.liveRoute?.draw(pass, draw.live); }
+                        catch (error) { auditGpuError(audit, 'live-clip', error); throw error; }
+                        finally { pass.popClip(clip); }
                     }
                     i++;
                     continue;
@@ -1662,16 +1664,20 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     clip = pass.pushClip(scissor);
                 }
                 let group: GroupToken | null = null;
-                if (draw.mode === 'isolated') {
-                    // A group's bounds are on the surface too: a negative origin is refused like a negative scissor.
-                    bounds.x = Math.max(0, Math.floor(dest.x)); bounds.y = Math.max(0, Math.floor(dest.y));
-                    bounds.width = Math.min(surfaceW, Math.ceil(dest.x + dest.width)) - bounds.x;
-                    bounds.height = Math.min(surfaceH, Math.ceil(dest.y + dest.height)) - bounds.y;
-                    group = pass.beginGroup(bounds, GROUP);
+                // The group and the clip are closed in finally: a throw in between must not leave either open (the encoder refuses that).
+                try {
+                    if (draw.mode === 'isolated') {
+                        // A group's bounds are on the surface too: a negative origin is refused like a negative scissor.
+                        bounds.x = Math.max(0, Math.floor(dest.x)); bounds.y = Math.max(0, Math.floor(dest.y));
+                        bounds.width = Math.min(surfaceW, Math.ceil(dest.x + dest.width)) - bounds.x;
+                        bounds.height = Math.min(surfaceH, Math.ceil(dest.y + dest.height)) - bounds.y;
+                        group = pass.beginGroup(bounds, GROUP);
+                    }
+                    lay(pass, texture, CROP, dest, draw.mode === 'modulate' ? 'modulate' : 'over');
+                } finally {
+                    if (group) pass.endGroup(group);
+                    if (clip) pass.popClip(clip);
                 }
-                lay(pass, texture, CROP, dest, draw.mode === 'modulate' ? 'modulate' : 'over');
-                if (group) pass.endGroup(group);
-                if (clip) pass.popClip(clip);
                 i++;
             }
         },

@@ -229,7 +229,9 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
             drawOffset, drawVersion: () => offsetVersion,
             onOffsetUnsupported: () => queueMicrotask(rebuildTranslation),
             // The overlay's few nodes are drawn live at the view: a refused tile store cannot stall the drag's preview.
-            liveOverlay: true, liveNodes: overlayNodes });
+            liveOverlay: true, liveNodes: overlayNodes,
+            // Nothing is requested until a build is handed to the layers: that layer has nothing to draw, so it is complete.
+            requested: () => requestedIds !== null });
         frames = assembler; pair = layers;
         engine.setPreviewLayers({ underlay: { ...layers[0], id: 'board-preview-underlay' },
             content: { ...layers[1], id: 'board-preview-content' } }, () => {

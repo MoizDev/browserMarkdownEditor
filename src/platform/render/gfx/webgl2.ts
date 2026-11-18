@@ -254,7 +254,10 @@ function byteSize(...factors: number[]): number {
 // bytes before it. The ring grows to UNIFORM_RING_MAX_SLOTS only when every slot is full or still in flight, and each slot's size
 // follows the largest frame encoded so far (ringSizeFor), 1 MiB to 8 MiB.
 const UNIFORM_RING_SLOTS = 3;
-const UNIFORM_RING_MAX_SLOTS = 6;
+// The bounds on growth: a count and the ring's total bytes (CPU mirror and GPU buffer each). Past them a write is refused,
+// counted as gpu:uniform-ring-busy, and the frame defers that one draw (webgl2Frame.ts); it never cancels the frame.
+const UNIFORM_RING_MAX_SLOTS = 16;
+const UNIFORM_RING_MAX_BYTES = 32 << 20;
 const UNIFORM_RING_MIN = 1 << 20;
 const UNIFORM_RING_MAX = 8 << 20;
 function ringSizeFor(bytes: number): number {
@@ -1627,7 +1630,8 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         }
         if (!slot) {
             const size = Math.max(this.#uniformBytes, alignUp(minBytes, alignment));
-            if (this.#uniformSlots.length >= UNIFORM_RING_MAX_SLOTS) {
+            const ringBytes = this.#uniformSlots.reduce((sum, candidate) => sum + candidate.data.byteLength, 0);
+            if (this.#uniformSlots.length >= UNIFORM_RING_MAX_SLOTS || ringBytes + size > UNIFORM_RING_MAX_BYTES) {
                 auditCount('gpu', 'uniform-ring-busy');
                 throw new ArenaError('out-of-budget');
             }

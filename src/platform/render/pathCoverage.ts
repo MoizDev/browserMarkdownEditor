@@ -1157,9 +1157,11 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         },
         /** The governor's reclaim for this kit's idle triangle buffers: destroys the oldest unused ones until `bytes` are freed,
          * and returns the bytes actually freed (their leases return to the device's allocator as they retire). */
-        evict(bytes: number): number {
+        evict(bytes: number, gestureLive = false): number {
             // Cheapest to lose first: idle sets (re-uploaded on use), then uploads a frame did not finish (they start over: their
             // admission is retried), then an idle scratch (re-created on the next composite). Each respects the current frame.
+            // `gestureLive` is the governor's liveGesture (a pane is interacting): while it holds, no scratch is a victim, because a
+            // gesture re-creates the scratch it just lost at once (the zoom churn). At rest a scratch goes once idle for the window.
             let freed = reclaimIdle(bytes);
             for (const [key, up] of [...uploading]) {
                 if (freed >= bytes) break;
@@ -1177,6 +1179,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
                 if (!shared || shared.refs > 0) continue;
                 // A scratch an admission used in the last few frames is frame-critical: an evict re-creates it at once (the zoom churn: 30
                 // grid4 scratches in one zoom, each freed for paper tiles and then needed again), so it goes only once idle for the window.
+                if (gestureLive) { auditCount(audit, 'kit:scratch-kept:gesture', 1, { bytes: shared.bytes }); continue; }
                 if (shared.usedFrame > frame - PATH_COVERAGE_SCRATCH_IDLE_FRAMES) { auditCount(audit, 'kit:scratch-kept', 1, { bytes: shared.bytes }); continue; }
                 freed += destroyScratch(device, grid, 'evict');
             }

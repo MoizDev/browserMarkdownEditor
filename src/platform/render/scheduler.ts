@@ -7,7 +7,7 @@ import { DamageAccumulator } from './damage';
 import { forgetPaneMotion, recordPaneMotion } from './paneMotion';
 import type { DamageRecord } from './damage';
 import type { SurfaceCommit, SurfaceMetricsCommitter } from './surfaceMetrics';
-import type { FrameBudget, FrameToken, Layer } from './types';
+import type { BudgetPhase, FrameBudget, FrameToken, Layer } from './types';
 const benchmarkPerf = __BME_BENCH__ ? await import('./renderPerf') : null;
 
 /** Accumulated CSS camera-pan positions, not raw finger positions (design §7.3:706–713). */
@@ -277,6 +277,9 @@ interface FrameWork { entry: PaneEntry; frame: ScheduledFrame; batch: DamageBatc
     drawnChange: boolean;
     /** Layers settled this frame: prepared to completion (whatever it answered), or passed over while settled (see passedOver). */
     settled: number;
+    /** Two-phase layers whose foreground call ran this frame, mapped to whether that call answered unchanged. Their background
+     * call runs only for these, and the frame's answer is the background call's (plus a foreground 'changed' marks the frame). */
+    foreground: Map<Layer, boolean>;
     /** A full repaint is due (see the damage decision in the work pass): this frame must reach the canvas. */
     repaint: boolean;
     /** The audit's name for what asked for this frame; '' when the render audit is off. */
@@ -818,7 +821,7 @@ export class FrameScheduler {
                     const repaint = moved || explicitFull;
                     const damage = batch.damage.freeze()!;
                     const frame = Object.freeze({ frameId, timestamp, intervalMs: this.intervalMs, token, view, layers, reasons, damage });
-                    work.push({ entry, frame, batch, geometry, hadInput: entry.inputPriority || reasons.includes('input'), platformPrepared: false, skipped: false, first: null, drawnChange: false, settled: 0, repaint, cause });
+                    work.push({ entry, frame, batch, geometry, hadInput: entry.inputPriority || reasons.includes('input'), platformPrepared: false, skipped: false, first: null, drawnChange: false, settled: 0, foreground: new Map(), repaint, cause });
                     entry.inputPriority = false;
                 });
             }
@@ -856,11 +859,20 @@ export class FrameScheduler {
                 item.first = flags;
                 if (flags) {
                     for (let i = 0; i < layers.length; i++) {
-                        if (flags[i]) prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, layers[i], prepareDeadline, layers[i].critical, meter, criticalPending));
+                        if (!flags[i]) continue;
+                        // A two-phase layer's foreground call is always the critical class: its background call comes later.
+                        const twoPhase = layers[i].layer.twoPhase === true;
+                        prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, layers[i], prepareDeadline, twoPhase || layers[i].critical,
+                            meter, criticalPending, twoPhase ? 'foreground' : 'single'));
                     }
                 }
                 for (let i = 0; i < layers.length; i++) {
-                    if (layers[i].critical && !flags?.[i]) prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, layers[i], prepareDeadline, true, meter, criticalPending));
+                    if (flags?.[i]) continue;
+                    if (layers[i].layer.twoPhase === true) {
+                        prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, layers[i], prepareDeadline, true, meter, criticalPending, 'foreground'));
+                    } else if (layers[i].critical) {
+                        prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, layers[i], prepareDeadline, true, meter, criticalPending, 'single'));
+                    }
                 }
             }
             const optionalOrder = this.focusFirst(this.rotate(work, this.optionalCursor++));
@@ -872,7 +884,13 @@ export class FrameScheduler {
                 const deadline = Math.min(prepareDeadline, performance.now() + optionalMs);
                 for (let i = 0; i < item.frame.layers.length; i++) {
                     const meta = item.frame.layers[i];
-                    if (!meta.critical && !item.first?.[i]) prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, meta, deadline, false, meter, criticalPending));
+                    if (meta.layer.twoPhase === true) {
+                        // Background only after this frame's foreground call ran: a layer the foreground pass passed over is not composed.
+                        if (item.foreground.has(meta.layer)) prepareOvershootMs = Math.max(prepareOvershootMs,
+                            this.prepare(item, meta, deadline, false, meter, criticalPending, 'background'));
+                    } else if (!meta.critical && !item.first?.[i]) {
+                        prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, meta, deadline, false, meter, criticalPending, 'single'));
+                    }
                 }
             }
             // A layer passed over for time, not asking for a frame, has nothing else to wake it. After a restore that
@@ -1007,7 +1025,7 @@ export class FrameScheduler {
     };
 
     private prepare(item: FrameWork, meta: ScheduledLayerSnapshot | null, deadline: number, critical: boolean,
-        meter: UploadMeter, criticalPending: () => boolean): number {
+        meter: UploadMeter, criticalPending: () => boolean, phase: BudgetPhase = 'single'): number {
         let overshoot = 0;
         this.call(item.entry, () => {
             // A layer that reports needsFrame() must be prepared in THIS frame, or its pump keeps running with nothing
@@ -1028,8 +1046,9 @@ export class FrameScheduler {
                 return;
             }
             const limit = exhausted && !platform ? performance.now() + meter.sliceMs : deadline;
+            // A two-phase layer's pass is its phase, not the pane's critical class: its foreground call is critical by construction.
             const shouldYield = () => !this.valid(item.entry, item.frame.token) || performance.now() >= limit ||
-                (meta !== null && item.entry.pane.isCritical(meta.layer, item.frame.view) !== critical);
+                (meta !== null && phase === 'single' && item.entry.pane.isCritical(meta.layer, item.frame.view) !== critical);
             // remainingBytes includes the explicit one-tile progress grant, not a disguised larger cap.
             // The nominal cap stays in the frame meter and any use beyond it is reported as an overrun.
             const availableBytes = () => {
@@ -1041,7 +1060,7 @@ export class FrameScheduler {
             };
             const upload = { remainingBytes: availableBytes(), deadline: meter.deadline };
             const budget: FrameBudget = {
-                frameId: item.frame.frameId, token: item.frame.token, cameraEpoch: item.frame.view.epoch, damage: item.frame.damage,
+                frameId: item.frame.frameId, token: item.frame.token, cameraEpoch: item.frame.view.epoch, damage: item.frame.damage, phase,
                 prepareDeadline: limit, upload, shouldYield,
                 claimUpload: (bytes: number, kind?: 'media') => {
                     if (!Number.isSafeInteger(bytes) || bytes < 0) throw new RangeError('Upload claim must be nonnegative safe bytes');
@@ -1082,12 +1101,23 @@ export class FrameScheduler {
             } else if (meta && !shouldYield()) {
                 // prepare returns false only when a completed prepare left nothing it draws next different (types.ts). A layer
                 // that returns nothing leaves the frame's picture open: it is presented.
-                const unchanged = meta.layer.prepare(item.frame.view, budget) === false;
-                this.layerAnswers.set(meta.layer, { revision: meta.sceneRevision, unchanged });
-                item.settled++;
-                if (!unchanged) {
-                    item.drawnChange = true;
-                    if (renderAuditEnabled()) auditCount('pane', 'prepare-changed:' + (item.entry.pane.layerId?.(meta.layer) ?? 'unnamed'));
+                const answered = meta.layer.prepare(item.frame.view, budget) === false;
+                if (phase === 'foreground') {
+                    // Not the frame's answer: the background call settles the layer. A changed answer here still marks the frame.
+                    item.foreground.set(meta.layer, answered);
+                    if (!answered) {
+                        item.drawnChange = true;
+                        if (renderAuditEnabled()) auditCount('pane', 'prepare-changed:' + (item.entry.pane.layerId?.(meta.layer) ?? 'unnamed'));
+                    }
+                } else {
+                    // A two-phase layer is unchanged only when both calls answered unchanged (the background call is always after foreground).
+                    const unchanged = answered && (phase === 'single' || item.foreground.get(meta.layer) === true);
+                    this.layerAnswers.set(meta.layer, { revision: meta.sceneRevision, unchanged });
+                    item.settled++;
+                    if (!unchanged) {
+                        item.drawnChange = true;
+                        if (renderAuditEnabled()) auditCount('pane', 'prepare-changed:' + (item.entry.pane.layerId?.(meta.layer) ?? 'unnamed'));
+                    }
                 }
             } else if (meta) {
                 this.passedOver(item, meta);

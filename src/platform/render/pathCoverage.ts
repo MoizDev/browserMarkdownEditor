@@ -371,13 +371,14 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         if (!uploading.has(entry.key)) freed(entry.key);
     };
     const unidle = (entry: VertexSet) => { if (idle.delete(entry.key)) idleBytes -= entry.bytes; };
-    /** Destroys idle sets, oldest first, until `bytes` are freed, skipping any used in the current frame. Returns the bytes freed;
-     * the governor's evict(bytes) and the idle bound both come here, so a set in use this frame is never reclaimed. */
+    /** Destroys idle sets, oldest first, until `bytes` are freed, skipping any stamped in the current or the previous frame: those are
+     * what is on screen, and partial eviction must not take them. Returns the bytes freed; the governor's evict(bytes) and the idle
+     * bound both come here. */
     const reclaimIdle = (bytes: number): number => {
         let freed = 0;
         for (const entry of idle.values()) {
             if (freed >= bytes) break;
-            if (entry.usedFrame >= frame) continue;
+            if (entry.usedFrame >= frame - 1) continue;
             idle.delete(entry.key); idleBytes -= entry.bytes; freed += entry.bytes; destroySet(entry);
         }
         return freed;
@@ -680,6 +681,8 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         if (disposed || !live.has(prepared) || !pipelines || prepared.device !== device || host.device() !== device ||
             host.generation !== prepared.device.generation) throw new Error('Stale path coverage');
         const { affine, viewport, output } = prepared;
+        // Drawn in this frame: stamped like an admission, so partial eviction keeps what is on screen (the sets are the draw's own).
+        for (const part of prepared.parts) part.set.usedFrame = frame;
         if (paint && output.kind === 'mask') throw new Error('A paint colour applies to a composite, not a mask');
         // A grid composite draws its own one-sample r8 set and covers with coverage 1 in each texel; its colour is the 'paint' output's
         // straight rgb and alpha, at draw. An MSAA composite covers in its premultiplied colour, given at draw or the admitted one.
@@ -1086,18 +1089,18 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
             let freed = reclaimIdle(bytes);
             for (const [key, up] of [...uploading]) {
                 if (freed >= bytes) break;
-                if (up.usedFrame >= frame) continue;
+                if (up.usedFrame >= frame - 1) continue;
                 freed += up.capacity; dropUpload(key);
             }
             // A pack no buffer holds (its admission was refused before the upload) is host CPU memory nothing uses: it goes first.
             for (const pack of [...packs.values()]) {
                 if (freed >= bytes) break;
-                if (pack.usedFrame >= frame || shared.has(pack.shape.positive) || uploading.has(pack.shape.positive)) continue;
+                if (pack.usedFrame >= frame - 1 || shared.has(pack.shape.positive) || uploading.has(pack.shape.positive)) continue;
                 freed += pack.bytes; freePack(pack);
             }
             if (device && freed < bytes) for (const grid of [1, 4] as const) {
                 const shared = scratchOf(device, grid);
-                if (shared && shared.refs === 0 && shared.usedFrame < frame) freed += destroyScratch(device, grid, 'evict');
+                if (shared && shared.refs === 0 && shared.usedFrame < frame - 1) freed += destroyScratch(device, grid, 'evict');
             }
             return freed;
         },

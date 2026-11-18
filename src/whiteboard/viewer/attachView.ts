@@ -166,8 +166,8 @@ export const attachView: AttachView = options => {
         changedNodesSince: (from, to) => runtime.scene?.changedNodesSince(from, to) ?? null,
         opaqueWorld,
         // The live zoom's geometry pins (the composer holds the visible strokes at the band it draws and the band before it).
-        geometryPins: { bandKey: deviceScale => runtime.render.inkBandKey({ deviceScale }),
-            pinVisible: (ids, keys) => runtime.render.pinVisible(ids as Iterable<NodeId>, keys), releasePins: () => runtime.render.releasePins() },
+        geometryPins: {
+            pinVisible: ids => runtime.render.pinVisible(ids as Iterable<NodeId>), releasePins: () => runtime.render.releasePins() },
         liveNodeIds, liveDraws: (nodeId, band, view, canvas) => interaction?.liveDraws?.(nodeId, band, view, canvas) ?? false, candidates: () => lastCandidates,
         onDensityMode(mode) { if (densityMode !== mode && !disposed) { densityMode = mode; requestPaint(); } },
         requestFrame: () => { if (!disposed) requestPaint(); },

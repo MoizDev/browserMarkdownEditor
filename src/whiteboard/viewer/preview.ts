@@ -381,7 +381,12 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
                 const overlayRequest = { sheetId: sheet, theme: view.theme, sensitiveNodes: new Set(ids) };
                 // A few nodes are built synchronously, so the hand-off follows the pointer-down with no worker round trip: the first
                 // frame's prepare finds the overlay built. A larger overlay keeps the async build (it yields between its items).
-                const source = ids.length <= SYNC_OVERLAY_NODES ? binding.prepareOverlayNow(doc, overlayRequest, ids, job.signal)
+                // Ink and media are not built synchronously: one stroke of thousands of points would hold the input task for frames.
+                const syncable = ids.length <= SYNC_OVERLAY_NODES && ids.every(id => {
+                    const kind = nodes.get(id)?.kind;
+                    return kind !== 'stroke' && kind !== 'picture' && kind !== 'clip';
+                });
+                const source = syncable ? binding.prepareOverlayNow(doc, overlayRequest, ids, job.signal)
                     : await binding.prepareOverlay(doc, overlayRequest, ids, job.signal);
                 check();
                 let textItem: PaintTextItem | null = null, textIndex = -1;

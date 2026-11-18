@@ -39,6 +39,15 @@ function sameRectOrNull(a: Rect | null, b: Rect | null): boolean {
     if (a === null || b === null) return a === b;
     return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
 }
+/** The view an overlay was drawn for: the camera positions every slot's transform, and the epoch and viewport gate what is shown. */
+type DrawnView = { epoch: number; x: number; y: number; z: number; width: number; height: number; dpr: number };
+function drawnViewOf(view: ViewState): DrawnView {
+    return { epoch: view.epoch, x: view.camera.x, y: view.camera.y, z: view.camera.z, width: view.viewport.width, height: view.viewport.height, dpr: view.viewport.dpr };
+}
+function sameDrawnView(view: ViewState, drawn: DrawnView | null): boolean {
+    return !!drawn && view.epoch === drawn.epoch && view.camera.x === drawn.x && view.camera.y === drawn.y && view.camera.z === drawn.z &&
+        view.viewport.width === drawn.width && view.viewport.height === drawn.height && view.viewport.dpr === drawn.dpr;
+}
 function sameNumbers(a: readonly number[], b: readonly number[]): boolean {
     return a === b || a.length === b.length && a.every((value, i) => value === b[i]);
 }
@@ -97,6 +106,9 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
     // count it wrote the overlay at (`drawnAt`); a completed prepare with nothing since answers unchanged (types.ts, Layer.prepare).
     // The overlay is DOM, so "presented" here is "drawn": the DOM is the picture, and a skipped frame leaves it as it was.
     let mutations = 0, drawnAt = -1;
+    // A camera move changes what the overlay shows without any counted mutation: the slots' transforms follow the camera, and
+    // a stale epoch hides them. Measured on zoom-sat: 91 of 91 zoom input ticks answered unchanged, so the answer compares the view too.
+    let drawnView: DrawnView | null = null;
     const touch = () => { mutations++; };
     let inlineRevision: number | null = null, inlineCache: ReadonlySet<string> = EMPTY_INLINE;
     const slots = new Map<string, Slot>(), requests = new Set<Request>(), retiring = new Set<Promise<void>>();
@@ -193,13 +205,14 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
         request.resolve(slot.lease);
         return slot;
     };
-    /** The Layer answer: `false` only for a whole prepare (no budget cut) that left the overlay exactly as the last draw wrote it. */
+    /** The Layer answer: `false` only for a whole prepare (no budget cut) that left the overlay exactly as the last draw wrote it,
+     * for the same view (camera and viewport included) that draw was made for. */
     const prepare = (view: ViewState, budget: FrameBudget): boolean => {
         prepared = null;
         let whole = true;
         // A budget cut anywhere in this prepare means the work is unproven, so the answer is changed.
         const yielded = (): boolean => { if (budget.shouldYield()) { whole = false; return true; } return false; };
-        const answer = (): boolean => !(whole && mutations === drawnAt);
+        const answer = (): boolean => !(whole && mutations === drawnAt && sameDrawnView(view, drawnView));
         if (!host || !validFrame(view, budget.token)) {
             for (const slot of slots.values()) hide(slot);
             // Requests wait for a packet that names their node; present() wakes only for that packet.
@@ -292,7 +305,7 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
             slot.root.style.visibility = 'visible'; notify(slot, interaction ? 'interaction' : 'inline', true);
         }
     };
-    const draw = (view: ViewState) => { paintOverlay(view); drawnAt = mutations; };
+    const draw = (view: ViewState) => { paintOverlay(view); drawnAt = mutations; drawnView = drawnViewOf(view); };
     const definition: EmbedPresentationPort['layer'] = {
         id: 'embed-presentation', group: 'chrome',
         create(value) {

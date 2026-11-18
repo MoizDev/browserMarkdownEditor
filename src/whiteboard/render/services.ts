@@ -210,19 +210,26 @@ export function createBoardRenderServices(options: {
         auditCount(AUDIT, 'geometry:band-miss');
         return previous === null ? undefined : variantFor(id, signature, value => value.inkPrecision === previous);
     };
-    // The zoom's pins (pinVisible): the visible nodes and the stroke bands held for them. A variant is pinned when its node and its
-    // band are both pinned, whenever it was stored: a frame's new variants are stored after its pins are set, so a set of variant
-    // keys taken at pin time would miss them. Released at rest.
-    let pinnedNodes = new Set<NodeId>(), pinnedBands = new Set<string>();
-    const isPinned = (key: string): boolean => {
-        const value = cached.get(key), entry = idle.get(key);
-        return !!value && !!entry && value.inkPrecision !== undefined && pinnedBands.has(value.inkPrecision) && pinnedNodes.has(entry.node);
+    // The zoom's pins (pinVisible): the visible nodes. Every variant of a pinned node is kept, whatever its band: a sensitive stroke is
+    // keyed at another scale, and a band crossing holds the previous band. Matched at eviction, so a variant stored after the pins
+    // were set (in the same frame) is pinned too. A pin lapses PIN_TTL_MS after the zoom's last pin, so a zoom that ends with no
+    // further prepare (the settled board asks for none) still lets the governor reclaim its geometry. Released at rest too.
+    const PIN_TTL_MS = 1000;
+    let pinnedNodes = new Set<NodeId>(), pinnedAt = -Infinity;
+    const pinsLive = (): boolean => {
+        if (performance.now() - pinnedAt <= PIN_TTL_MS) return true;
+        if (pinnedNodes.size) pinnedNodes = new Set();
+        return false;
     };
-    const pinVisible = (ids: Iterable<NodeId>, bands: readonly string[]): void => {
-        pinnedNodes = new Set(ids); pinnedBands = new Set(bands);
+    const isPinned = (key: string): boolean => {
+        const entry = idle.get(key);
+        return !!entry && pinsLive() && pinnedNodes.has(entry.node);
+    };
+    const pinVisible = (ids: Iterable<NodeId>): void => {
+        pinnedNodes = new Set(ids); pinnedAt = performance.now();
         auditCount(AUDIT, 'geometry:pin', pinnedNodes.size);
     };
-    const releasePins = (): void => { pinnedNodes = new Set(); pinnedBands = new Set(); };
+    const releasePins = (): void => { pinnedNodes = new Set(); pinnedAt = -Infinity; };
     // Least recently used first; a budget eviction also drops the entry's ladder once no precision of its node has a geometry to serve.
     // Null when every idle entry is pinned: the caller stops (a pinned zoom variant is never the budget's to take).
     const evictOldestIdle = (): { readonly bytes: number; readonly charged: number } | null => {
@@ -300,7 +307,7 @@ export function createBoardRenderServices(options: {
     };
     const releaseHolder = () => {
         if (--holders !== 0) return;
-        disposed = true; text.dispose(); for (const key of [...cached.keys()]) dropVariant(key); textIds.clear(); listeners.clear(); sessionRasters.dispose();
+        disposed = true; for (const controller of warmControllers) controller.abort(); text.dispose(); for (const key of [...cached.keys()]) dropVariant(key); textIds.clear(); listeners.clear(); sessionRasters.dispose();
         for (const id of [...inkLadders.keys()]) dropInkLadder(id);
         sessionResolved?.dispose();
         derived?.close();
@@ -326,15 +333,21 @@ export function createBoardRenderServices(options: {
         return { scale, lod, key: `${scale}:${lod ? 'lod' : 'fine'}` };
     };
     // Wanted bands building in the background during a zoom: one build per node and band at a time.
-    const warming = new Set<string>();
-    const warmBand = (borrowed: Readonly<Node>, doc: BoardDoc, signal: AbortSignal,
-        context: Pick<SceneResolveContext, 'deviceScale' | 'sensitive' | 'allowInkLod' | 'previousInkBand'>, key: string): void => {
-        if (warming.has(key)) return;
+    const warming = new Set<string>(), warmFailed = new Set<string>(), warmControllers = new Set<AbortController>();
+    // A warm build has its own controller: a band crossing aborts the request's paint, and a build tied to it would restart from zero
+    // at every crossing. A failure other than the abort is counted, and that node and band is not retried (the previous band serves).
+    const warmBand = (borrowed: Readonly<Node>, doc: BoardDoc,
+        context: Pick<SceneResolveContext, 'deviceScale' | 'sensitive' | 'allowInkLod' | 'previousDeviceScale'>, key: string): void => {
+        if (disposed || warming.has(key) || warmFailed.has(key)) return;
         warming.add(key);
-        prepare(borrowed, doc, signal, { ...context, previousInkBand: undefined }).catch(() => undefined).finally(() => warming.delete(key));
+        const controller = new AbortController();
+        warmControllers.add(controller);
+        prepare(borrowed, doc, controller.signal, { ...context, previousDeviceScale: undefined })
+            .catch(() => { if (!controller.signal.aborted) { warmFailed.add(key); auditCount(AUDIT, 'geometry:warm-failed'); } })
+            .finally(() => { warming.delete(key); warmControllers.delete(controller); });
     };
     const prepare = async (borrowed: Readonly<Node>, doc: BoardDoc, signal: AbortSignal,
-        context?: Pick<SceneResolveContext, 'deviceScale' | 'sensitive' | 'allowInkLod' | 'previousInkBand'>): Promise<Prepared> => {
+        context?: Pick<SceneResolveContext, 'deviceScale' | 'sensitive' | 'allowInkLod' | 'previousDeviceScale'>): Promise<Prepared> => {
         check(signal);
         const node = createNode(borrowed), before = signature(node, doc);
         const precision = node.kind === 'stroke' ? inkPrecision(context) : undefined;
@@ -342,9 +355,11 @@ export function createBoardRenderServices(options: {
         if (old) { cached.delete(old.key); cached.set(old.key, old); auditCount(AUDIT, 'geometry:hit'); return old; }
         // A band crossing during a live zoom: the stroke draws its previous band's geometry (a band miss) while the wanted band builds
         // in the background, so the zoom frame does not wait for the build. Only the async producer takes this (the live paint path).
-        if (precision && context?.previousInkBand !== undefined) {
-            const held = variantForBand(node.id, before, precision.key, context.previousInkBand);
-            if (held) { warmBand(borrowed, doc, signal, context, `${node.id}:${precision.key}`); return held; }
+        if (precision && context?.previousDeviceScale !== undefined) {
+            // The previous band of this stroke: sensitivity applies to it as to the wanted band, so a selected stroke's previous band is its own.
+            const previousKey = inkPrecision({ ...context, deviceScale: context.previousDeviceScale }).key;
+            const held = variantForBand(node.id, before, precision.key, previousKey);
+            if (held) { warmBand(borrowed, doc, context, `${node.id}:${precision.key}`); return held; }
         }
         auditCount(AUDIT, 'geometry:build');
         const key = `${options.token.session}:${node.id}:geometry:${++serial}`;
@@ -755,7 +770,6 @@ export function createBoardRenderServices(options: {
     return {
         text, bounds, changeGeometry, retainRenderer, variantForBand, pinVisible, releasePins,
         /** The stroke band key the producers and pinVisible use, for a device scale and the flags the paint request carries. */
-        inkBandKey(context?: Partial<Pick<SceneResolveContext, 'deviceScale' | 'sensitive' | 'allowInkLod'>>): string { return inkPrecision(context).key; },
         /** Actual source admission belongs to the App owner. This captures publication identity
          * for NEW work over the same canonical model/cache; existing sources are never retagged. */
         capturePaintBinding(token: RenderToken) {

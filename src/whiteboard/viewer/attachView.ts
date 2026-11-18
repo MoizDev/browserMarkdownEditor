@@ -168,8 +168,8 @@ export const attachView: AttachView = options => {
         changedNodesSince: (from, to) => runtime.scene?.changedNodesSince(from, to) ?? null,
         opaqueWorld,
         // The live zoom's geometry pins (the composer holds the visible strokes at the band it draws and the band before it).
-        geometryPins: { bandKey: deviceScale => runtime.render.inkBandKey({ deviceScale }),
-            pinVisible: (ids, keys) => runtime.render.pinVisible(ids as Iterable<NodeId>, keys), releasePins: () => runtime.render.releasePins() },
+        geometryPins: {
+            pinVisible: ids => runtime.render.pinVisible(ids as Iterable<NodeId>), releasePins: () => runtime.render.releasePins() },
         liveNodeIds, liveDraws: (nodeId, band, view, canvas) => interaction?.liveDraws?.(nodeId, band, view, canvas) ?? false, candidates: () => lastCandidates,
         onDensityMode(mode) { if (densityMode !== mode && !disposed) { densityMode = mode; requestPaint(); } },
         requestFrame: () => { if (!disposed) requestPaint(); },
@@ -296,7 +296,7 @@ export const attachView: AttachView = options => {
         if (disposed || !view.visible || !runtime.scene?.ready) return;
         const onDevice = layers.onDevice();
         const viewNow = lastView;
-        // The live camera's ink band: the tile ladder's band top, the same ladder services.inkBandKey keys the strokes by. The band
+        // The live camera's ink band: the tile ladder's band top, the same ladder the services key the strokes by. The band
         // moves only at a crossing, so the request's identity does too.
         const band = onDevice && viewNow ? chooseTileScale(viewNow.camera.z * viewNow.viewport.dpr).scale : null;
         const moving = !!viewNow?.moving;
@@ -337,7 +337,7 @@ export const attachView: AttachView = options => {
         // draws once it has built (the geometry's band-miss path holds the carried band until then), so a later request in the move keeps it.
         if (band !== null && liveBand !== null && band !== liveBand && moving) carriedBand = liveBand;
         liveBand = band;
-        const previousInkBand = moving && carriedBand !== null ? runtime.render.inkBandKey({ deviceScale: carriedBand }) : undefined;
+        const previousDeviceScale = moving && carriedBand !== null ? carriedBand : undefined;
         // The viewport is consumed as a bounded ordered stream: no whole-sheet node array is ever built.
         const open = pin.paintStream;
         if (!open) { pin.release(); report(new Error('Board scene has no bounded paint stream')); return; }
@@ -357,11 +357,11 @@ export const attachView: AttachView = options => {
         // then share one realisation per stroke, and a stage switch re-keys nothing. Canvas2d keeps its request.
         const identity = { sheetId: selectedSheet, theme: view.theme, sensitiveNodes,
             ...(deviceScale ? { deviceScale, allowInkLod: true } : {}), ...(onDevice ? { scenePrecision: true } : {}),
-            ...(previousInkBand !== undefined ? { previousInkBand } : {}) };
+            ...(previousDeviceScale !== undefined ? { previousDeviceScale } : {}) };
         // The whole-scene stage: asked once per key on a device, after the view frame it follows is up. No world, so the pin
         // does not cull by the camera, so the scene's items do not change with the zoom; only its strokes' band does (at a crossing).
         const sceneShape = { sheetId: selectedSheet, theme: view.theme, sensitiveNodes,
-            ...(deviceScale !== undefined ? { deviceScale } : {}), ...(previousInkBand !== undefined ? { previousInkBand } : {}) };
+            ...(deviceScale !== undefined ? { deviceScale } : {}), ...(previousDeviceScale !== undefined ? { previousDeviceScale } : {}) };
         const shape = scene ? sceneShape : dense ? { ...identity, only: liveSet! } : { ...identity, ...(world ? { world } : {}) };
         auditCount('board', scene ? 'request:scene' : 'request:view');
         if (onDevice) { if (scene) sceneAsked = key; else viewAsked = key; }

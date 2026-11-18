@@ -196,6 +196,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             paintIsolation: paintCanvasIsolation,
             uniforms: () => { throw new Error('Uniforms require an active GPU draw scope'); },
             uniformsInto: () => { throw new Error('Uniforms require an active GPU draw scope'); },
+            markIncomplete: () => undefined,
             drawTexturedQuad: this.quad.bind(this) as PaneCompositor['resources']['drawTexturedQuad'],
             drawTexturedQuads: this.quads.bind(this) as PaneCompositor['resources']['drawTexturedQuads'] });
     }

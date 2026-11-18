@@ -197,6 +197,7 @@ export class GpuCompositor implements PaneCompositor {
             paintIsolation: paintCanvasIsolation,
             uniforms: (bytes: ArrayBufferView) => this.uniforms(bytes),
             uniformsInto: (bytes: ArrayBufferView, into: UniformSlice) => this.uniformsInto(bytes, into),
+            markIncomplete: (reason: string) => this.#markIncomplete(reason),
             drawTexturedQuad: this.drawTexturedQuad.bind(this) as PaneCompositor['resources']['drawTexturedQuad'],
             drawTexturedQuads: this.drawTexturedQuads.bind(this) as PaneCompositor['resources']['drawTexturedQuads'] });
     }
@@ -643,6 +644,13 @@ export class GpuCompositor implements PaneCompositor {
     uniformsInto(bytes: ArrayBufferView, into: UniformSlice): void {
         if (!this.#active || !this.#active.passes.size) throw new ArenaError('invalid-input');
         this.#active.encoder.uniformsInto(bytes, into);
+    }
+
+    /** A layer's own refusal during encode (LayerHost.markIncomplete). Recorded against the binding being encoded; encode decides
+     * after the surface pass (a critical layer refuses the frame, a non-critical one presents with layersComplete false). */
+    #markIncomplete(reason: string): void {
+        auditCount('compositor', `layer-incomplete:${reason}`);
+        this.#deferredBindings.add(this.#drawingBinding);
     }
 
     /** A draw's uniform block. A full ring throws out-of-budget with the frame intact: this draw is skipped (counted), the layer

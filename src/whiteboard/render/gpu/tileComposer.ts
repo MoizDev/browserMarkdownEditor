@@ -381,6 +381,10 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     // position being drawn, in paint order.
     const liveRuns: LiveAdmission[] = [];
     const liveAdmitted = new Map<PaintItem, LiveAdmission | null>();
+    // The phase whose admission of an item was deferred. A deferral in the foreground call is not the frame's answer: the background
+    // call of the same frame retries it once, with its own window, instead of reading the refused null (measured: a path part
+    // deferred in the foreground showed as an uncovered position in the background call, with nothing retried).
+    const liveDeferredBy = new Map<PaintItem, string>();
     // A live part deferred this frame asks for the next one. Consecutive deferred frames are counted and the asking stops at the
     // retry limit (a part that never fits its upload budget must not keep the board framing at rest).
     let liveDeferredNow = false, liveDeferredFrames = 0;
@@ -958,7 +962,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     const retireLive = (): void => {
         for (const live of liveRuns) live.route.retire(live.run);
         liveRuns.length = 0;
-        liveAdmitted.clear();
+        liveAdmitted.clear(); liveDeferredBy.clear();
     };
 
     /** A live part's run for this frame, admitted once however many positions show it. Video parts take the image route; any other
@@ -966,7 +970,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
      * (live:dropped:<why>), never skipped silently. */
     const admitLive = (item: PaintItem, blend: Blend, view: ViewState, budget: FrameBudget): LiveAdmission | null => {
         const known = liveAdmitted.get(item);
-        if (known !== undefined) return known;
+        if (known !== undefined && (known !== null || budget.phase !== 'background' || liveDeferredBy.get(item) !== 'foreground')) return known;
         let admitted: LiveAdmission | null = null;
         const route = isLivePart(item) ? routes.image : routeOf(item).route;
         // The CPU route rasters a tile-sized scratch at the camera origin: it cannot draw a live part over the surface.
@@ -983,7 +987,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             else if (outcome.status === 'deferred') {
                 // A deferral is a frame wait: nothing else invalidates the board for it, so the next frame asks again (bounded, below).
                 // Split by route: the admission reports no reason, so the route is the cause the counters can name.
-                liveDeferredNow = true; auditCount(audit, 'live:dropped:deferred'); auditCount(audit, `live:dropped:deferred:${route.id}`); auditCount(audit, `live:dropped:deferred:${budget.phase}`);
+                liveDeferredNow = true; liveDeferredBy.set(item, budget.phase); auditCount(audit, 'live:dropped:deferred'); auditCount(audit, `live:dropped:deferred:${route.id}`); auditCount(audit, `live:dropped:deferred:${budget.phase}`);
             } else if (outcome.status === 'denied') {
                 // A denial waits on the governor like a tile's: the wake is the capacity change, not a timer, so a steady pool costs nothing.
                 refuseAdmission(outcome.pool, outcome.bytes); auditCount(audit, 'live:dropped:denied');

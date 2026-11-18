@@ -77,6 +77,8 @@ interface SharedScratch { readonly device: GfxDevice; readonly target: CoverageT
     usedFrame: number;
     charge: ScratchCharge;
     readonly targetLease: ByteLease }
+/** A scratch an admission used within this many frames is kept by the governor's evict (see evict): idle for this long, it may go. */
+const PATH_COVERAGE_SCRATCH_IDLE_FRAMES = 3;
 /** How a composite draws: 1 is the device-resolution MSAA colour target (paths); 4 is the grid target (ink): one r8 texel per
  * subsample, a 4×4 box resolve in the composite. Each has its own scratch, because the formats differ. */
 type CompositeGrid = 1 | 4;
@@ -1172,7 +1174,11 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
             }
             if (device && freed < bytes) for (const grid of [1, 4] as const) {
                 const shared = scratchOf(device, grid);
-                if (shared && shared.refs === 0 && shared.usedFrame < frame - 1) freed += destroyScratch(device, grid, 'evict');
+                if (!shared || shared.refs > 0) continue;
+                // A scratch an admission used in the last few frames is frame-critical: an evict re-creates it at once (the zoom churn: 30
+                // grid4 scratches in one zoom, each freed for paper tiles and then needed again), so it goes only once idle for the window.
+                if (shared.usedFrame > frame - PATH_COVERAGE_SCRATCH_IDLE_FRAMES) { auditCount(audit, 'kit:scratch-kept', 1, { bytes: shared.bytes }); continue; }
+                freed += destroyScratch(device, grid, 'evict');
             }
             return freed;
         },

@@ -95,9 +95,7 @@ export interface ViewerEngine {
     boardDrawnInk(): ReadonlySet<string>;
     setInteractionLayers(layers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null): void;
     setPreviewLayers(layers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null,
-        coverage?: () => Readonly<{ frame: PaintSource; nodeIds: ReadonlySet<string>; coverIds?: ReadonlySet<string>;
-            /** The handed-back nodes the overlay drew, at the commit revision (frozen after the commit): gpu-h13's rule for live ink. */
-            drawn?: Readonly<{ sceneRevision: number; nodes: ReadonlySet<string> }> }> | null): void;
+        coverage?: () => Readonly<{ frame: PaintSource; nodeIds: ReadonlySet<string> }> | null): void;
     bindPreviewClear(clear: () => void): () => void;
     /** Detach the platform pane first: lifecycle disposes its layers. Releases only this view's
      * jobs/borrowed leases/listeners, NEVER the App-owned BoardSession or its undo/save state.

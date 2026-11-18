@@ -463,41 +463,59 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         // The last kit on the device: no admission can be in flight (each kit retired its own before leaving), so both grids go.
         destroyScratch(owner, 1, 'release'); destroyScratch(owner, 4, 'release');
     };
-    /** Ensures the device's scratch of this grid holds a band of the given width; false when its lease is refused (a wait). It
-     * only grows, and to the widest band the device has asked for, at the full height the cap allows: a grown scratch replaced
-     * the one every kit drew from, and a band re-sized per request was a new target for each kit's width change. A grid scratch
-     * is 4× the texels per device pixel, so its band is sized by the grid's bytes (coverageTargetBytes with the grid). */
-    /** True when the scratch holds the band; the refused GPU bytes when its grant refuses the growth; 'unsupported' past the caps. */
-    const ensureScratch = (owner: GfxDevice, width: number, grid: CompositeGrid): true | number | 'unsupported' => {
+    /** Ensures the device's scratch of this grid holds a band of the given size: true; the refused GPU bytes when its lease is refused
+     * (a wait); 'unsupported' past the caps. The scratch is sized to the request, not to the full band: a one-rectangle preview asked
+     * for the full 2 MiB band, and was refused while the page's tiles held the pool (measured: 24 refusals in one PDF annotate run).
+     * Its width is the widest band the device has asked for, so every kit draws from one target. Its height is the request's own,
+     * rounded up to a power of two (a growing drag re-creates the scratch once per doubling) and capped at the full band. Draws loop
+     * over bands of the target's height, so a shorter scratch means more bands, not a wrong one. A refused rounded height retries at
+     * the request's exact height before it waits. An idle scratch is released by the governor's evict, or by the last kit leaving. A
+     * grid scratch is 4× the texels per device pixel, so its band is sized by the grid's bytes (coverageTargetBytes with the grid). */
+    const ensureScratch = (owner: GfxDevice, width: number, height: number, grid: CompositeGrid): true | number | 'unsupported' => {
         const table = scratchTables[String(grid) as '1' | '4'];
-        const rowBytes = coverageTargetBytes(width, 1, grid === 4 ? 1 : PATH_COVERAGE_SAMPLES, grid);
+        const samples = grid === 4 ? 1 : PATH_COVERAGE_SAMPLES;
+        const rowBytes = coverageTargetBytes(width, 1, samples, grid);
         if (rowBytes > PATH_COVERAGE_SCRATCH_BYTES) return 'unsupported';
         // A grid texture is (grid·width) texels wide, and the device's largest texture side bounds both axes of it.
         const cap = owner.limits.maxRenderTargetSize;
         if (width * grid > cap) return 'unsupported';
+        // The tallest band a scratch of width w may take: the scratch cap's bytes, and the device's side (grid texels per row). Draws loop
+        // over bands of this height, so a band taller than the largest texture side is never asked for (measured: a notebook asked 2×20164
+        // against a 16384 cap, and createCoverageTarget refused it).
+        const fullBand = (w: number): number =>
+            Math.min(Math.floor(PATH_COVERAGE_SCRATCH_BYTES / coverageTargetBytes(w, 1, samples, grid)), Math.floor(cap / grid));
         const current = table.targets.get(owner);
-        // Draws loop over bands of the target's height, so the height is only ever bounded by the device: a band taller than
-        // the largest texture side is refused by createCoverageTarget (measured: a notebook asked 2×20164 against a 16384 cap).
-        if (current && current.target.width >= width) { rehome(owner, grid); return true; }
-        const needed = Math.max(width, current?.target.width ?? 0, table.widths.get(owner) ?? 0);
-        // Growth rounds up to a power of two while the rounded band still fits the scratch cap and the device: a scratch grown to
+        // A current scratch at least as wide is kept (its width is the device's widest), and grows only in height when the request is taller.
+        const kept = current && current.target.width >= width ? current.target.width : 0;
+        // Growth rounds the width up to a power of two while the rounded band still fits the scratch cap and the device: a scratch grown to
         // each new widest request was re-created once per admission that was wider than any before (21 in one draw phase, with
         // no drop). Rounded, the scratch grows at most once per doubling; otherwise the exact request is used.
+        const needed = Math.max(width, table.widths.get(owner) ?? 0);
         const rounded = 2 ** Math.ceil(Math.log2(needed));
-        const fitsRounded = rounded * grid <= cap && coverageTargetBytes(rounded, 1, grid === 4 ? 1 : PATH_COVERAGE_SAMPLES, grid) <= PATH_COVERAGE_SCRATCH_BYTES;
-        const w = fitsRounded ? rounded : needed;
+        const fitsRounded = rounded * grid <= cap && coverageTargetBytes(rounded, 1, samples, grid) <= PATH_COVERAGE_SCRATCH_BYTES;
+        const w = kept || (fitsRounded ? rounded : needed);
         if (w * grid > cap) return 'unsupported';
-        const samples = grid === 4 ? 1 : PATH_COVERAGE_SAMPLES;
-        const h = Math.min(Math.floor(PATH_COVERAGE_SCRATCH_BYTES / coverageTargetBytes(w, 1, samples, grid)), Math.floor(cap / grid));
-        const bytes = coverageTargetBytes(w, h, samples, grid);
+        const band = fullBand(w);
+        const exact = Math.min(height, band);
+        if (current && kept && current.target.height >= exact) { rehome(owner, grid); return true; }
+        // The request's height, rounded to a power of two within the band, as the width is. A refused rounded height retries at the exact one.
+        const roundedHeight = Math.min(band, 2 ** Math.ceil(Math.log2(exact)));
+        const sizes = roundedHeight > exact ? [roundedHeight, exact] : [exact];
         // The pool counts the old scratch's lease until it is returned, so a growth that reserves first is refused for bytes the kit
         // itself holds. When no admission holds the old scratch (its draws read it at draw time, and none is pending), its lease goes
         // back first. An admission still holding it keeps it: the growth reserves first, and its refusal is a short wait until those
         // admissions retire.
         let reclaimed = false;
         if (current && current.refs === 0) { table.targets.delete(owner); destroyScratchTarget(owner, current); reclaimed = true; }
-        const lease = host.allocator.gpu.reserve(bytes);
-        if (!lease) return bytes;
+        let lease: ByteLease | null = null;
+        let h = exact, bytes = 0;
+        for (const size of sizes) {
+            h = size; bytes = coverageTargetBytes(w, size, samples, grid);
+            lease = host.allocator.gpu.reserve(bytes);
+            if (lease) break;
+            if (size !== exact) auditCount(audit, 'kit:scratch-height-fallback', 1, { bytes });
+        }
+        if (!lease) { auditCount(audit, 'kit:scratch-refused', 1, { bytes }); return bytes; }
         let target: CoverageTarget;
         try { target = owner.createCoverageTarget(w, h, samples, lease, grid === 4 ? { grid: 4 } : undefined); }
         catch (error) { host.allocator.gpu.release(lease); throw error; }
@@ -505,7 +523,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         table.widths.set(owner, w);
         table.targets.set(owner, { device: owner, target, bytes, refs: current?.refs ?? 0, usedFrame: frame,
             charge: { holder: kitToken, gpu: host.allocator.gpu, lease }, targetLease: lease });
-        auditCount(audit, grid === 4 ? 'kit:grid4-scratch-new' : 'kit:scratch-new');
+        auditCount(audit, grid === 4 ? 'kit:grid4-scratch-new' : 'kit:scratch-new', 1, { bytes });
         return true;
     };
     const release = () => {
@@ -994,7 +1012,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         const parts: VertexSet[] = [entry];
         // The scratch is ensured after the buffers, and before any reference is taken: a refusal leaves nothing held.
         if (composite) {
-            const fits = ensureScratch(owner, bounds.width, grid);
+            const fits = ensureScratch(owner, bounds.width, bounds.height, grid);
             if (fits !== true) {
                 if (fits === 'unsupported') { auditCount(audit, 'fallback:raster-route'); return { status: 'unsupported' }; }
                 return { status: 'denied', pool: 'gpu', bytes: fits };

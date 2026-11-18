@@ -1039,7 +1039,9 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         // never complete still presents its stand-ins (measured: 129 refusals, 0 presents, all from incomplete coverage).
         // A layer waiting on a refused GPU admission defers instead: holding every frame for memory the governor has not freed
         // froze the pane (a board whose ink tile could not be admitted refused every frame, and nothing requested another).
-        critical() { return presented === null && !adapter?.readyFrame() && !gpu?.readyFrame() && !gpu?.memoryBlocked(); },
+        // A draw list that cannot be drawn for this frame's view is critical too: the compositor then refuses the frame and keeps the
+        // previous complete picture, instead of presenting the board with its draws skipped.
+        critical(_layer, view) { return (presented === null && !adapter?.readyFrame() && !gpu?.readyFrame() && !gpu?.memoryBlocked()) || !!gpu?.listInvalid(view); },
         coverage(layer, frame, backend) {
             // An optional layer with no request has nothing to draw: the platform reads it complete, and so does the audit.
             if (options.optional && options.requested && !options.requested()) return { complete: true, sharp: true };

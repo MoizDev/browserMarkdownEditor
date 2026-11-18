@@ -310,6 +310,10 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     let presentedLive: ReadonlySet<string> | undefined, presentedDrawVersion = -1;
     // The layer's answer for the frame it prepared: true only when every input to the draw matches the presented frame.
     let prepareUnchanged = false;
+    // Two-phase prepare (Layer.twoPhase): the foreground call of frame `foregroundFrame` leaves the frame it prepared in `pendingFrame`
+    // for the background call of the same frame, which completes it and sets the answer.
+    let foregroundFrame = -1;
+    let pendingFrame: PaintSource | null = null;
     // The view the layer was last asked to paint. A picture drawn for an earlier view (a zoom, before its replacement
     // is staged) is still current by revision, so progress compares views too; otherwise a fitted board reads
     // "settled" over a picture of the previous zoom.
@@ -634,8 +638,28 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         if ((options.drawVersion?.() ?? 0) !== presentedDrawVersion || liveFor(frame) !== presentedLive) return false;
         return true;
     };
-    // Returns nothing on every path it does not prove unchanged; the layer's answer is read from prepareUnchanged.
+    // The background call of a two-phase frame: the composer's background part, then what the foreground call left (the charge, the prune,
+    // the answer). A background call with no foreground of its frame answers changed.
+    const finishBackground = (view: ViewState, budget: FrameBudget): void => {
+        const frame = pendingFrame;
+        pendingFrame = null;
+        if (!frame || foregroundFrame !== budget.frameId || !adapter || disposed) { prepareUnchanged = false; return; }
+        foregroundFrame = -1;
+        try {
+            const composerChanged = prepareGpu(view, budget, frame);
+            if (onDeviceRoute) {
+                chargeDirect(frame);
+                prepareUnchanged = !composerChanged && unchangedSincePresented(view, budget, frame);
+            } else prepareUnchanged = false;
+            prune(frame, adapter.readyFrame());
+            options.onPrepared?.();
+        } catch (error) { prepareUnchanged = false; report(error); }
+        finally { refreshProgress(); }
+    };
+    // Returns nothing on every path it does not prove unchanged; the layer's answer is read from prepareUnchanged. The foreground call
+    // (budget.phase 'foreground') stops after the composer's foreground part and leaves the frame for the background call.
     const prepareFrame = (view: ViewState, budget: FrameBudget): void => {
+        if (budget.phase === 'background') { finishBackground(view, budget); return; }
         if (!adapter || disposed) { prepareUnchanged = false; return; }
         if (lastPrepareFrame === budget.frameId) return;
         prepareUnchanged = false;
@@ -680,6 +704,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 if (!chargeDirect(frame)) return;
                 adapter.prepare(view, budget);
                 const composerChanged = prepareGpu(view, budget, frame);
+                if (budget.phase === 'foreground') { pendingFrame = frame; foregroundFrame = budget.frameId; return; }
                 chargeDirect(frame);
                 prune(frame, adapter.readyFrame());
                 prepareUnchanged = !composerChanged && unchangedSincePresented(view, budget, frame);
@@ -776,6 +801,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             denied = false;
             adapter.prepare(view, budget);
             prepareGpu(view, budget, frame);
+            if (budget.phase === 'foreground') { pendingFrame = frame; foregroundFrame = budget.frameId; return; }
             prune(frame, adapter.readyFrame());
             options.onPrepared?.();
         } catch (error) { report(error); }
@@ -870,8 +896,13 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             hosts.set(band, host); ensureAdapter(host);
             let ended = false;
             const layer: Layer & LayerEvicting = {
-                // false only when the composer and the draw inputs all match the presented frame (see unchangedSincePresented).
-                prepare: (view: ViewState, budget: FrameBudget): boolean | void => { prepareFrame(view, budget); return prepareUnchanged ? false : true; },
+                // false only when the composer and the draw inputs all match the presented frame (see unchangedSincePresented). The
+                // foreground call answers false: the frame's answer is the background call's.
+                twoPhase: true,
+                prepare: (view: ViewState, budget: FrameBudget): boolean | void => {
+                    prepareFrame(view, budget);
+                    return budget.phase === 'foreground' || prepareUnchanged ? false : true;
+                },
                 drawGpu(pass, view) {
                     const frame = gpu?.readyFrame();
                     if (!frame || !drawable(frame)) return;

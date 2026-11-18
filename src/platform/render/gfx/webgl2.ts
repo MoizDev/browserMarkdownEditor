@@ -187,8 +187,8 @@ interface RawRead { bytes: Uint8Array<ArrayBuffer>; lease: ByteLease; }
 interface UniformSlot {
     handle: BufferHandle;
     native: NativeBuffer;
-    data: Uint8Array<ArrayBuffer>;
-    lease: ByteLease;
+    /** The slot's GPU size in bytes. Its bytes are staged in the device's one scratch while it is the active slot (see below). */
+    size: number;
     /** The newest serial among the frames that wrote into this slot: the slot is reusable once it completes. */
     serial: number;
     /** Frames that hold the slot (written into it and not yet finished). Several frames share one slot while it has room. */
@@ -196,8 +196,8 @@ interface UniformSlot {
     valid: boolean;
     /** Bytes written so far (an append cursor; a reused slot starts again at 0 only when no frame holds it). */
     used: number;
-    /** Bytes already uploaded: each upload sends only [uploaded, used), so no byte is sent twice or overwritten. */
-    uploaded: number;
+    /** The first byte of the slot that the scratch holds: [base, used) is pending upload, everything below is already on the GPU. */
+    base: number;
 }
 interface FrameWork {
     encoding: ArenaEncoding;
@@ -375,6 +375,9 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     #uniformBytes = UNIFORM_RING_MIN;
     /** The largest frame's uniform bytes so far: the ring is sized from it, so growth is a one-off, not a recurring stall. */
     #uniformPeak = 0;
+    /** The resident CPU scratch the active slot stages into, and the slot it stages for (see #stage). */
+    #uniformScratch: { data: Uint8Array<ArrayBuffer>; lease: ByteLease } | null = null;
+    #uniformActive: UniformSlot | null = null;
     #surfaceRevision = 0;
     /** The new-size target a raise draws into while the displayed canvas keeps its old picture (openOffscreen). */
     #offscreen: OffscreenSurface | null = null;
@@ -1179,8 +1182,8 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             this.#cleanup([
                 ...[...this.#frames.values()].map(frame => () => frame.controller?.cancel()),
                 () => this.#dropOffscreen(), () => this.#timer.clear(true), () => this.#isolation.abandon(), () => this.#pool.abandon(),
-                ...this.#uniformSlots.map(slot => () => this.#returnCpu(slot.lease)),
-                () => { this.#uniformSlots.length = 0; },
+                () => this.#returnScratch(),
+                () => { this.#uniformSlots.length = 0; this.#uniformActive = null; },
                 ...[...this.#indexBuffers].map(buffer => () => this.#dropIndexData(buffer)),
                 () => this.#pipelines.clear(), () => this.#pollCancel?.(),
                 () => { this.#pollCancel = null; this.#white = null; this.#composition = null; this.#gridComposition = null; this.#grid16Composition = null; this.#modulateComposition = null; this.#areaComposition = null; },
@@ -1613,24 +1616,86 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         into.bytes = bytes.byteLength;
     }
 
-    /** Copies one record into the ring. Frames in flight share a slot while it has room (each writes past the bytes before it, so
-     * no upload overwrites another's), and a frame that finds no room takes another slot. A write therefore never fails for size.
+    /** Copies one record into the ring. Frames in flight share a slot while it has room (each writes past the bytes before it), and
+     * a frame that finds no room takes another slot. A write never fails for size. Its bytes are staged in the device's one resident
+     * scratch while their slot is the active one, and uploaded when the slot is left or when a frame that wrote them submits.
      * What still refuses is the memory governor (reserve) and the bounded ring (UNIFORM_RING_MAX_SLOTS), both counted. */
     #writeUniforms(work: FrameWork, bytes: ArrayBufferView): { slot: UniformSlot; offset: number } {
         count(bytes.byteLength, true);
         const alignment = this.limits.uniformAlignment;
         if (!work.slot) work.slot = this.#uniformSlot(work, bytes.byteLength);
-        else if (alignUp(work.slot.used, alignment) + bytes.byteLength > work.slot.data.byteLength) {
+        else if (alignUp(work.slot.used, alignment) + bytes.byteLength > work.slot.size) {
             work.slot = this.#uniformSlot(work, bytes.byteLength);
             auditCount('gpu', 'uniform-overflow');
         }
         const slot = work.slot;
-        const offset = alignUp(slot.used, alignment);
-        slot.data.set(new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength), offset);
+        const scratch = this.#scratchFor(bytes.byteLength);
+        this.#stage(slot);
+        let offset = alignUp(slot.used, alignment);
+        if (offset - slot.base + bytes.byteLength > scratch.length) {
+            // The scratch is full: upload what it holds, then stage the write from the slot's next byte.
+            this.#flush(slot);
+            offset = alignUp(slot.used, alignment);
+        }
+        scratch.set(new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength), offset - slot.base);
         slot.used = offset + bytes.byteLength;
         work.written += bytes.byteLength;
         this.#pin(work.encoding, slot.handle, 'buffer');
         return { slot, offset };
+    }
+
+    /** The resident scratch, pre-sized to the ring's slot size and kept while the device lives. It grows only with the ring's size
+     * (counted), and a growth first uploads the active slot's pending bytes, so no staged byte is lost. */
+    #scratchFor(minBytes: number): Uint8Array<ArrayBuffer> {
+        const wanted = Math.max(this.#uniformBytes, alignUp(minBytes, this.limits.uniformAlignment));
+        if (this.#uniformScratch && this.#uniformScratch.data.length >= wanted) return this.#uniformScratch.data;
+        if (this.#uniformActive) this.#flush(this.#uniformActive);
+        this.#returnScratch();
+        const cpu = this.#reserveScratch(wanted);
+        this.#uniformScratch = { data: new Uint8Array(wanted), lease: cpu };
+        return this.#uniformScratch.data;
+    }
+
+    #reserveScratch(size: number): ByteLease {
+        try { return this.#reserve(this.#services.uniformCpu ?? this.#services.cpuStaging, size, false); }
+        catch (error) { if (error instanceof ArenaError && error.code === 'out-of-budget') auditCount('gpu', 'uniform-cpu-refused', 1, { bytes: size }); throw error; }
+    }
+
+    #returnScratch(): void {
+        if (!this.#uniformScratch) return;
+        this.#returnCpu(this.#uniformScratch.lease);
+        this.#uniformScratch = null;
+    }
+
+    /** Makes `slot` the one the scratch stages: the previous active slot is uploaded first, so the scratch never holds two slots. */
+    #stage(slot: UniformSlot): void {
+        if (this.#uniformActive === slot) return;
+        if (this.#uniformActive) this.#flush(this.#uniformActive);
+        this.#uniformActive = slot;
+        slot.base = alignUp(slot.used, this.limits.uniformAlignment);
+    }
+
+    /** Uploads a slot's pending bytes [base, used) from the scratch, and moves its base past them: everything before the base is
+     * on the GPU and is never sent again. */
+    #flush(slot: UniformSlot): void {
+        if (slot.used > slot.base) {
+            const scratch = this.#uniformScratch!.data;
+            const gl = this.#usable();
+            const started = performance.now();
+            const bytes = slot.used - slot.base;
+            try {
+                gl.bindBuffer(gl.COPY_WRITE_BUFFER, slot.native.buffer);
+                gl.bufferSubData(gl.COPY_WRITE_BUFFER, slot.base, scratch.subarray(0, bytes));
+                this.#checkUpload();
+            } finally {
+                // A flush can run while a frame is still being encoded, so it touches only the copy binding it used: #reset would
+                // unbind the uniform and texture units the next draw of this frame is about to read.
+                gl.bindBuffer(gl.COPY_WRITE_BUFFER, null);
+                this.#forgetState();
+                (this.#services.recordUniformUpload ?? this.#services.recordUpload)?.(bytes, performance.now() - started);
+            }
+        }
+        slot.base = alignUp(slot.used, this.limits.uniformAlignment);
     }
 
     /** A slot this frame can write `minBytes` into: a slot other frames hold that has room past their bytes, or a free slot whose
@@ -1641,9 +1706,9 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         // A free slot of an old size is retired once its GPU work has completed; in-flight storage is never destroyed.
         for (let i = this.#uniformSlots.length - 1; i >= 0; i--) {
             const slot = this.#uniformSlots[i];
-            if (slot.owners === 0 && (!slot.valid || slot.data.byteLength < this.#uniformBytes) && this.#complete(slot.serial)) {
+            if (slot.owners === 0 && (!slot.valid || slot.size < this.#uniformBytes) && this.#complete(slot.serial)) {
                 this.destroy(slot.handle);
-                this.#returnCpu(slot.lease);
+                if (this.#uniformActive === slot) this.#uniformActive = null;
                 this.#uniformSlots.splice(i, 1);
             }
         }
@@ -1653,13 +1718,13 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             if (candidate.owners === 0 && !this.#complete(candidate.serial)) continue;
             // A slot held by other frames is written past their bytes; a free one starts again at 0.
             const start = candidate.owners > 0 ? alignUp(candidate.used, alignment) : 0;
-            if (start + minBytes > candidate.data.byteLength) continue;
+            if (start + minBytes > candidate.size) continue;
             slot = candidate;
             break;
         }
         if (!slot) {
             const size = Math.max(this.#uniformBytes, alignUp(minBytes, alignment));
-            const ringBytes = this.#uniformSlots.reduce((sum, candidate) => sum + candidate.data.byteLength, 0);
+            const ringBytes = this.#uniformSlots.reduce((sum, candidate) => sum + candidate.size, 0);
             if (this.#uniformSlots.length >= UNIFORM_RING_MAX_SLOTS || ringBytes + size > UNIFORM_RING_MAX_BYTES) {
                 auditCount('gpu', 'uniform-ring-busy');
                 throw new ArenaError('out-of-budget');
@@ -1675,48 +1740,26 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 auditCount('gpu', 'uniform-ring-grow-slots');
                 auditCount('gpu', 'uniform-create-slots', 1, { held, pending, total: this.#uniformSlots.length });
             }
-            // Attribution: which reservation refused a new slot is counted (the CPU mirror or the GPU buffer), with its size, so a
-            // refusal names its pool in the log instead of only raising out-of-budget.
-            let cpu: ByteLease;
-            try { cpu = this.#reserve(this.#services.uniformCpu ?? this.#services.cpuStaging, size, false); }
-            catch (error) { if (error instanceof ArenaError && error.code === 'out-of-budget') auditCount('gpu', 'uniform-cpu-refused', 1, { bytes: size }); throw error; }
             let handle: BufferHandle | null = null;
             try {
-                const data = new Uint8Array(size);
                 // 'vertex' too: a batched textured-quad draw binds its instance records as a vertex slice from this same ring
                 // (compositor.ts drawTexturedQuads). The device refuses a vertex slice whose buffer lacks the use, which demoted
                 // the pane mid-draw (seen in the final run's audit: pane:fallback:pane-2d:gpu-error:invalid-input).
                 try { handle = this.#owned('buffer', { bytes: size, uses: ['uniform', 'vertex', 'copy-dst'] }, size, this.#services.working); }
                 catch (error) { if (error instanceof ArenaError && error.code === 'out-of-budget') auditCount('gpu', 'uniform-gpu-refused', 1, { bytes: size }); throw error; }
-                slot = { handle, native: this.#arena.validate(handle, 'buffer'), data, lease: cpu, serial: 0, owners: 0, valid: true, used: 0, uploaded: 0 };
+                slot = { handle, native: this.#arena.validate(handle, 'buffer'), size, serial: 0, owners: 0, valid: true, used: 0, base: 0 };
                 this.#uniformSlots.push(slot);
-            } catch (error) { if (handle) this.destroy(handle); this.#returnCpu(cpu); throw error; }
+            } catch (error) { if (handle) this.destroy(handle); throw error; }
         }
-        if (slot.owners === 0) { slot.used = 0; slot.uploaded = 0; }
+        if (slot.owners === 0) { slot.used = 0; slot.base = 0; }
         if (!work.slots.includes(slot)) { slot.owners++; work.slots.push(slot); }
         return slot;
     }
 
-    /** Uploads the bytes each slot has gained since its last upload (all frames' bytes, each sent once), at submit. */
+    /** Uploads the bytes the frame's slots still hold in the scratch (a slot the frame has left was uploaded when it was left). */
     #uploadUniforms(work: FrameWork): void {
         this.#noteFrameBytes(work.written);
-        if (!work.slots.some(slot => slot.uploaded < slot.used)) return;
-        const gl = this.#usable();
-        const started = performance.now();
-        let bytes = 0;
-        try {
-            for (const slot of work.slots) {
-                if (slot.uploaded >= slot.used) continue;
-                gl.bindBuffer(gl.COPY_WRITE_BUFFER, slot.native.buffer);
-                gl.bufferSubData(gl.COPY_WRITE_BUFFER, slot.uploaded, slot.data.subarray(slot.uploaded, slot.used));
-                bytes += slot.used - slot.uploaded;
-                slot.uploaded = slot.used;
-            }
-            this.#checkUpload();
-        } finally {
-            (this.#services.recordUniformUpload ?? this.#services.recordUpload)?.(bytes, performance.now() - started);
-            this.#reset();
-        }
+        for (const slot of work.slots) if (slot.used > slot.base) this.#flush(slot);
     }
 
     /** Sizes the ring from the largest frame so far (with headroom), so the next frames of a similar size never overflow. Growth is
@@ -1735,8 +1778,10 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     }
 
     #dropUniformSlots(): void {
-        for (const slot of this.#uniformSlots) { this.destroy(slot.handle); this.#returnCpu(slot.lease); }
+        for (const slot of this.#uniformSlots) this.destroy(slot.handle);
         this.#uniformSlots.length = 0;
+        this.#uniformActive = null;
+        this.#returnScratch();
     }
 
     #maxIndex(buffer: NativeBuffer, offset: number, length: number, format: 'uint16' | 'uint32'): number {

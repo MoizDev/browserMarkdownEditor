@@ -11,9 +11,12 @@ import { CaptureError } from './captureError';
 import type { GpuCompositor } from './compositor';
 import { registerWebgl2PaneFactory } from './compositorFactory';
 import { GPU_RETRY_QUIET_MS, GpuPaneCandidate } from './gpuPaneCandidate';
+
+/** How long a fresh view keeps its previous picture while its layers first draw complete and sharp. A bound, not a target. */
+const FRESH_VIEW_COVER_MS = 3000;
 import type { QualifiedGpuPane } from './gpuPaneCandidate';
 import type { CameraConstraint } from './camera';
-import type { CompositorLayer, Compositor2DOptions, CreatedCompositor2D, PaneCompositor } from './compositor.types';
+import type { CompositorBackend, CompositorLayer, Compositor2DOptions, CreatedCompositor2D, PaneCompositor } from './compositor.types';
 import { RENDER_CONSTANTS } from './constants';
 import { createLayerHost } from './layerHost';
 import type { MemoryCacheHandle } from './memoryGovernor';
@@ -86,6 +89,54 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     let gpuRequested = false;
     const drawCompositor = (): PaneCompositor | null => gpu && cpuPresented ? gpu.bundle.compositor : compositorRef.current;
     const activeMetrics = (): SurfaceMetricsCommitter => gpu && cpuPresented ? gpuMetrics : cpuMetrics;
+    // A displayed GPU canvas keeps its picture while its new size is built offscreen. The size is reserved on the backing and opened on
+    // the device; the complete frame's submit commits it (canvas resize + blit in one task). Dropped on any abandon.
+    let pendingSurface: { width: number; height: number; grant: QualifiedGpuPane['grant']; backing: QualifiedGpuPane['backing'] } | null = null;
+    const releasePendingSurface = (): void => {
+        const pending = pendingSurface;
+        if (!pending) return;
+        pendingSurface = null;
+        pending.grant.closeOffscreen();
+        pending.backing.releasePending();
+    };
+
+    // The target a displayed GPU canvas's size change is committed against: the reserve and the device's offscreen target, never the canvas.
+    const offscreenTarget = (drawing: PaneCompositor, owner: QualifiedGpuPane): PaneCompositor['target'] => {
+        const generation = (): number => owner.grant.generation;
+        return Object.freeze({
+            get generation() { return drawing.target.generation; },
+            limits: drawing.target.limits,
+            resizeSurface: (width: number, height: number) => {
+                const pending = pendingSurface;
+                if (pending && pending.width === width && pending.height === height && pending.grant === owner.grant) {
+                    return { width, height, complete: true, generation: generation() };
+                }
+                releasePendingSurface();
+                const bytes = width * height * RENDER_CONSTANTS.surfaceReserveBytesPerPixel;
+                if (!owner.backing.reservePending(bytes)) return { width: 0, height: 0, complete: false, refused: true, generation: generation() };
+                if (!owner.grant.openOffscreen(width, height)) {
+                    owner.backing.releasePending();
+                    return { width: 0, height: 0, complete: false, generation: generation() };
+                }
+                pendingSurface = { width, height, grant: owner.grant, backing: owner.backing };
+                return { width, height, complete: true, generation: generation() };
+            },
+        });
+    };
+    // The compositor asks after each frame's submit: a complete frame commits a pending size (the canvas takes the offscreen size and
+    // shows it in this same task), and reaches the canvas. An incomplete frame, or a pending size with no open target, does not.
+    const canvasGate = (layersComplete: boolean): boolean => {
+        const pending = pendingSurface;
+        if (!pending) return true;
+        if (!layersComplete) return false;
+        pendingSurface = null;
+        const actual = pending.grant.commitSurface();
+        pending.backing.releasePending();
+        if (!actual) { auditCount('pane', 'commit-surface:none'); return false; }
+        if (!actual.complete) auditCount('pane', 'commit-surface:incomplete');
+        else if (actual.width !== pending.width || actual.height !== pending.height) auditCount('pane', 'commit-surface:size-mismatch');
+        return true;
+    };
 
     const token = (): FrameToken | null => {
         const current = options.currentToken();
@@ -108,6 +159,10 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     // invalidations per 3 s on the large seed). A pane presented after the choice is released after the task, see below.
     let touchedFrame = -1;
     const touchedThisFrame = (): boolean => touchedFrame === runtime.scheduler.currentFrame();
+    // The layers this pane's frame draws. While the frame is in progress its foreground work is what the frame will draw, and not
+    // every item of it is stamped as used yet: the preview overlay's drawn tiles were evicted in the frame that was about to draw
+    // them (gpu-h7's first-shape run, a hole). Such a layer gives no partial relief during its own frame; the others still do.
+    let frameLayers: ReadonlySet<Layer> = new Set();
     // Layers whose GPU release is already scheduled. Several caches of one pane can ask in the same trim; the second must not
     // count residency the first has already promised to free.
     const releasing = new Set<Layer>();
@@ -129,6 +184,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             if (freed >= bytes) break;
             if (releasing.has(layer)) continue;
             if (layer.memory().gpuBytes <= 0) continue;
+            if (touched && frameLayers.has(layer)) continue;
             // A layer that can give back part of its residency does so first, synchronously, and the whole layer is released
             // only when that falls short of the ask. Without the hook the layer is released whole, as before.
             const want = bytes - freed;
@@ -235,9 +291,21 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     });
     // The compositor's view of the layers. Its critical() is the definition's, judged on each frame's view: a layer whose
     // content a stand-in covers is non-critical and presents with it (PLAN issue 3). Rebuilt only when the layer set changes.
+    // A fresh view's layers (attached by beginFreshView, never a layer added mid-life) report incomplete until each first draws
+    // complete and sharp: the frame is refused and the picture on screen stays the previous one (the cover). Bounded by
+    // FRESH_VIEW_COVER_MS, so a stuck build releases to today's behaviour, counted as fresh-cover:expired.
+    const freshLayers = new Set<unknown>();
+    let freshSince = 0;
     const compositorLayers = (): readonly CompositorLayer[] => layerSet.compositorLayers.map(binding => ({
         ...binding,
         critical: (frame: ScheduledFrame) => layerSet.definition(binding.layer)?.critical(binding.layer, frame.view) ?? true,
+        coverage: (frame: ScheduledFrame, backend: CompositorBackend) => {
+            const coverage = binding.coverage(frame, backend);
+            if (!freshLayers.has(binding.layer)) return coverage;
+            if (coverage.complete && coverage.sharp) { freshLayers.delete(binding.layer); return coverage; }
+            if (performance.now() - freshSince > FRESH_VIEW_COVER_MS) { freshLayers.delete(binding.layer); auditCount('pane', 'fresh-cover:expired'); return coverage; }
+            return { ...coverage, complete: false };
+        },
     }));
     try { layerSet.replace(options.layers); }
     catch (error) {
@@ -361,6 +429,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             if (!windowVisible) { lastReport = null; options.onPresentation(null); return; }
             const state = lifecycle?.surface.snapshot().state;
             if (state !== 'gpu-visible' && state !== 'rebuilding') {
+                releasePendingSurface();
                 gpu = null;
                 cpuPresented = false;
                 gpuRequested = false;
@@ -384,6 +453,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         onReady: ready => {
             if (disposed || !visible) return;
             gpu = ready;
+            gpu.bundle.compositor.setCanvasGate(canvasGate);
             gpu.bundle.compositor.setLayers(compositorLayers());
             gpu.bundle.compositor.setLayout(layout);
             gpu.bundle.compositor.setAppearance(options.readAppearance());
@@ -411,6 +481,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                     onCapabilityFailure: () => runtime.observeCapabilityFailure(options.paneId),
                     onCpuFallback: reason => {
                         auditCount('pane', `fallback:pane-2d:${reason}`);
+                        releasePendingSurface();
                         gpu = null;
                         cpuPresented = false;
                         surfaceHost.clearStaged();
@@ -432,22 +503,18 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                         const size = observer.readForFrame(frameId);
                         const grant = runtime.governor.grant(options.paneId);
                         if (!size || !grant) return null;
-                        let drawing = drawCompositor();
+                        const drawing = drawCompositor();
                         if (!drawing) return null;
-                        let planned = computeSurfaceMetrics(size.physical, size.nominalDpr, drawing.target.limits, grant.pixelGrant);
-                        if (drawing !== compositor && surfaceHost.current === drawing && planned.kind === 'ready' &&
-                            (drawing.surface.width !== planned.backingWidth || drawing.surface.height !== planned.backingHeight)) {
-                            // Resizing a displayed GL canvas destroys its last complete pixels before
-                            // layers can prepare the new viewport. Build the normal CPU bridge detached,
-                            // then resize/rebuild this SAME kept GPU behind that complete picture.
-                            cpuPresented = false;
-                            // The bridge is board content rastered on the CPU while the device exists: counted with its pixels.
-                            auditCount('pane', 'fallback:2d-bridge', 1, { px: size.physical.width * size.physical.height });
-                            drawing = compositor;
-                            planned = computeSurfaceMetrics(size.physical, size.nominalDpr, drawing.target.limits, grant.pixelGrant);
-                        }
-                        const result = activeMetrics().commit(frameId, size.generation, planned, drawing.target);
-                        if (result?.kind === 'ready') drawing.setMetrics(result.metrics);
+                        const planned = computeSurfaceMetrics(size.physical, size.nominalDpr, drawing.target.limits, grant.pixelGrant);
+                        // A displayed GPU canvas of another size is never resized in place (that clears its picture before any new frame
+                        // exists): the new size is built offscreen, and its target is what the metrics commit validates.
+                        const displayedRaise = drawing !== compositor && surfaceHost.current === drawing && planned.kind === 'ready' &&
+                            (drawing.surface.width !== planned.backingWidth || drawing.surface.height !== planned.backingHeight);
+                        // Any commit that is not a displayed raise resizes the canvas itself, which supersedes an open target (the device's rule).
+                        if (!displayedRaise) releasePendingSurface();
+                        const target = displayedRaise && gpu ? offscreenTarget(drawing, gpu) : drawing.target;
+                        const result = activeMetrics().commit(frameId, size.generation, planned, target);
+                        if (result?.kind === 'ready') drawing.setMetrics(result.metrics, displayedRaise);
                         if (result?.kind !== 'failed') return result;
                         // A governor refusal is pressure the governor has already answered with its own quality step. The pane keeps
                         // its complete picture and waits for capacity; it is neither a framebuffer fault nor a reason to fall back to
@@ -502,6 +569,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                     isCritical: (layer: Layer, view: ViewState) => layerSet.definition(layer)?.critical(layer, view) ?? false,
                     prepareFrame: (frame: ScheduledFrame, budget: Parameters<PaneCompositor['prepareFrame']>[1]) => {
                         touchedFrame = frame.frameId;
+                        frameLayers = new Set(frame.layers.map(meta => meta.layer));
                         const drawing = drawCompositor();
                         drawing?.prepareFrame(frame, budget);
                         const mirror = mirrorView();
@@ -667,6 +735,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             cpuPresented = false; gpuRequested = false; lastReport = null; options.onPresentation(null);
             lifecycle?.hidePane();
             surfaceHost.clearStaged();
+            releasePendingSurface();
             gpu = null;
         }
         const now = performance.now();
@@ -688,6 +757,12 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         setVisible,
         setFocused(value) { if (!disposed && focused !== value) { focused = value; lifecycle?.setFocused(value); runtime.refresh(); } },
         observeSize() { if (!disposed) { observer.start(); observer.refresh(); } },
+        beginFreshView() {
+            if (disposed) return;
+            freshLayers.clear();
+            for (const binding of layerSet.compositorLayers) freshLayers.add(binding.layer);
+            freshSince = performance.now();
+        },
         setLayers(definitions: readonly PlatformLayerDefinition[]) {
             if (disposed) return;
             const previousCount = caches.length;
@@ -737,6 +812,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             if (disposed) return;
             setVisible(false);
             disposed = true;
+            releasePendingSurface();
             lastReport = null; options.onPresentation(null);
             candidate.dispose();
             observer.dispose();

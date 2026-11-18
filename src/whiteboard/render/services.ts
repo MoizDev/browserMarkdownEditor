@@ -184,7 +184,7 @@ export function createBoardRenderServices(options: {
     // Drops one variant. Replacing or releasing an entry keeps its ladder, which the caller may have just rebuilt for the new signature.
     const dropVariant = (key: string) => {
         const entry = idle.get(key), value = cached.get(key);
-        cached.delete(key);
+        cached.delete(key); pinned.delete(key);
         if (value && entry) {
             const set = variantsOf.get(entry.node);
             set?.delete(key); if (set && set.size === 0) variantsOf.delete(entry.node);
@@ -202,9 +202,31 @@ export function createBoardRenderServices(options: {
         }
         return undefined;
     };
+    // The geometry a visible item draws at its wanted band, else at the band before the last crossing. A missing wanted band is
+    // counted (geometry:band-miss) whether or not the previous band serves it; both missing leaves the caller a counted stand-in.
+    const variantForBand = (id: NodeId, signature: readonly unknown[], wanted: string, previous: string | null): Prepared | undefined => {
+        const exact = variantFor(id, signature, value => value.inkPrecision === wanted);
+        if (exact) return exact;
+        auditCount(AUDIT, 'geometry:band-miss');
+        return previous === null ? undefined : variantFor(id, signature, value => value.inkPrecision === previous);
+    };
+    // The variant keys a live zoom holds (pinVisible): never evicted, so a band crossing always finds the previous band. Released at rest.
+    const pinned = new Set<string>();
+    const pinVisible = (ids: Iterable<NodeId>, bands: readonly string[]): void => {
+        pinned.clear();
+        for (const id of ids) for (const key of variantsOf.get(id) ?? []) {
+            const value = cached.get(key);
+            if (value?.inkPrecision !== undefined && bands.includes(value.inkPrecision)) pinned.add(key);
+        }
+    };
+    const releasePins = (): void => { pinned.clear(); };
     // Least recently used first; a budget eviction also drops the entry's ladder once no precision of its node has a geometry to serve.
-    const evictOldestIdle = (): { readonly bytes: number; readonly charged: number } => {
-        const gone = cached.keys().next().value!, entry = idle.get(gone);
+    // Null when every idle entry is pinned: the caller stops (a pinned zoom variant is never the budget's to take).
+    const evictOldestIdle = (): { readonly bytes: number; readonly charged: number } | null => {
+        let gone: string | undefined;
+        for (const key of cached.keys()) if (!pinned.has(key)) { gone = key; break; }
+        if (gone === undefined) return null;
+        const entry = idle.get(gone);
         // A budget eviction of a node a later pass needs again is a rebuild; the count shows whether the idle budget is too small.
         auditCount(AUDIT, 'geometry:evict');
         dropVariant(gone);
@@ -214,7 +236,7 @@ export function createBoardRenderServices(options: {
     // The governor's request: idle geometry first (rebuildable from the document), then stroke ladders.
     const evictDerived = (bytes: number) => {
         let freed = 0;
-        while (freed < bytes && cached.size) freed += evictOldestIdle().charged;
+        while (freed < bytes) { const evicted = evictOldestIdle(); if (!evicted) break; freed += evicted.charged; }
         if (freed < bytes) evictInkLadders(bytes - freed);
     };
     const derived = options.derivedMemory?.(evictDerived);
@@ -244,7 +266,9 @@ export function createBoardRenderServices(options: {
         const ladder = inkLadders.get(id), charged = preparedBytes(prepared);
         const bytes = charged + (ladder && sameGeometrySignature(ladder.signature, prepared.signature) ? ladder.ladder.bytes : 0);
         if (bytes > IDLE_GEOMETRY_BYTES) return;
-        while (idleBytes + bytes > IDLE_GEOMETRY_BYTES && cached.size) evictOldestIdle();
+        while (idleBytes + bytes > IDLE_GEOMETRY_BYTES) {
+            if (!evictOldestIdle()) { auditCount(AUDIT, 'geometry:pinned-full'); return; }
+        }
         let admitted = admit(charged);
         if (!admitted && cached.size) { evictDerived(charged); admitted = admit(charged); }
         if (!admitted) return;
@@ -712,7 +736,7 @@ export function createBoardRenderServices(options: {
         } finally { envelopeDepth--; }
     };
     return {
-        text, bounds, changeGeometry, retainRenderer,
+        text, bounds, changeGeometry, retainRenderer, variantForBand, pinVisible, releasePins,
         /** Actual source admission belongs to the App owner. This captures publication identity
          * for NEW work over the same canonical model/cache; existing sources are never retagged. */
         capturePaintBinding(token: RenderToken) {

@@ -241,6 +241,8 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         this.appearance = Object.freeze({ background: Object.freeze([...appearance.background]) as CompositorAppearance['background'], inverted: appearance.inverted });
         this.changed();
     }
+    setCanvasGate(): void { /* A 2D frame always reaches its canvas. */ }
+
     setMetrics(metrics: ReadySurfaceMetrics): void {
         this.check();
         const back = this.buffers.get('back');
@@ -476,7 +478,8 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
                     this.presentedKey = paint;
                     this.retained = encodedSources; this.retainedCrops = encodedCrops;
                     this.report = Object.freeze({ frameId: frame.frameId, token: frame.token, presented: true,
-                        complete: true, sharp: snapshot.metrics!.qualityScale === 1 && availability.every(item => item.sharp && !item.staleVersion),
+                        complete: true, layersComplete: availability.every(item => item.complete),
+                        sharp: snapshot.metrics!.qualityScale === 1 && availability.every(item => item.sharp && !item.staleVersion),
                         staleVersion: availability.some(item => item.staleVersion), qualityScale: snapshot.metrics!.qualityScale });
                     if (tally) auditPresent({ pane: this.options.paneId, frame: frame.frameId, rawTick: frame.timestamp, backend: 'canvas2d',
                         layersComplete: availability.every(item => item.complete), canvas: this.surface, standIns: tally.standIns,
@@ -501,7 +504,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
 
     coverage(frame: ScheduledFrame): CompositorCoverage {
         if (this.healthy() && this.report?.frameId === frame.frameId && sameToken(this.report.token, frame.token)) return this.report;
-        return { frameId: frame.frameId, token: frame.token, presented: false, complete: false, sharp: false,
+        return { frameId: frame.frameId, token: frame.token, presented: false, complete: false, layersComplete: false, sharp: false,
             qualityScale: this.scene?.metrics?.qualityScale ?? 0 };
     }
     page(view: ViewState, index: number) { return projectPage(this.scene ? this.scene.layout : this.layout, view, index); }

@@ -99,6 +99,8 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
     let controllerHandedOff = false;
     let frames: ReturnType<typeof createPaintFrameAssembler> | null = null;
     let requestedIds: ReadonlySet<string> | null = null, requestedGeneration = -1, handedOffGeneration = -1;
+    // The overlay's own nodes, refilled at each request: its layers index and draw these items only, never the pinned page.
+    const overlayNodes = new Set<string>();
     let commitRevision: number | null = null, commitRelease: (() => void) | null = null;
     const frameIds = new WeakMap<PaintSource, ReadonlySet<string>>(), frameGenerations = new WeakMap<PaintSource, number>();
     const waiters = new Set<{ generation: number; resolve(): void; reject(error: unknown): void; signal: AbortSignal; abort(): void }>();
@@ -200,6 +202,50 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
         resuming = true;
         try { start(...next); } catch (error) { settle(error ?? interrupted()); clear(); report(error); } finally { resuming = false; }
     };
+    // The overlay's layers are made when a request starts, not when its build finishes. Measured (gpu-h9, first shape on a PDF):
+    // the layers were created 47 ms after the first frame that needed them, so that frame drew a hole and the stand-ins after it.
+    // They hold no picture until a request is handed to them, so making them early changes nothing else.
+    const ensureLayers = (): { frames: ReturnType<typeof createPaintFrameAssembler>; pair: BoardLayerPair } => {
+        if (frames && pair) return { frames, pair };
+        // A frame is tagged with the request it was staged for, both when it is published and when a prepare reads it.
+        const tag = (frame: PaintSource) => {
+            if (!frameIds.has(frame) && requestedIds) { frameIds.set(frame, requestedIds); frameGenerations.set(frame, requestedGeneration); }
+        };
+        const inner = createPaintFrameAssembler(() => pair?.invalidate('preview-ready'), report, {
+            isActive: () => !!engine.getView().visible && (typeof globalThis.document === 'undefined' || !globalThis.document.hidden),
+            onPublished: tag,
+        });
+        const assembler: typeof inner = { ...inner, prepare(budget) {
+            inner.prepare(budget);
+            const frame = inner.readFrame();
+            if (frame) tag(frame);
+        } };
+        // The layers draw the pinned revision of the request they hold: one pin lives as long as its layers do.
+        const layers = createBoardLayers({ frames: assembler, images: options.images, onError: report, requestedRevision: () => pin?.revision ?? -1,
+            requestedTheme: () => engine.getView().theme, optional: true, onPresented: presentedOverlay, auditSurface: 'board-preview',
+            // Built is enough to take the next request: the built frame is drawn by the next compositor frame, and
+            // a request made after a draw is one frame late (measured: the ink trailed the pointer by three frames).
+            onPrepared: () => queueMicrotask(presentedOverlay),
+            drawOffset, drawVersion: () => offsetVersion,
+            onOffsetUnsupported: () => queueMicrotask(rebuildTranslation),
+            // The overlay's few nodes are drawn live at the view: a refused tile store cannot stall the drag's preview.
+            liveOverlay: true, liveNodes: overlayNodes,
+            // Nothing is requested until a build is handed to the layers: that layer has nothing to draw, so it is complete.
+            requested: () => requestedIds !== null });
+        frames = assembler; pair = layers;
+        engine.setPreviewLayers({ underlay: { ...layers[0], id: 'board-preview-underlay' },
+            content: { ...layers[1], id: 'board-preview-content' } }, () => {
+            // Keyed on the layers' wrapper the lookup missed on every drag of an ink node (measured: 84 of 84 calls).
+            const frame = assemblerFrameOf(layers.readyFrame());
+            const ids = frame && frameIds.get(frame);
+            if (frame && ids && assembler.isCurrent(frame)) {
+                if (frameGenerations.get(frame) === generation) settle();
+                return { frame, nodeIds: ids };
+            }
+            return null;
+        });
+        return { frames: assembler, pair: layers };
+    };
     const start = (changes: Map<NodeId, Node>, textOverlay?: Readonly<{ node: NodeId; paint: TextPaint; faces: FaceTable; localToWorld: Affine }>,
         paper?: Readonly<import('../../utils/paper').NotebookPaper>, meta: TranslationMeta | null = null) => {
         if (disposed) throw new Error('Preview is disposed');
@@ -227,6 +273,8 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
         if (meta) metaBySeq.set(seq, meta);
         if (!resuming) settle(interrupted()); if (!controllerHandedOff) controller?.abort(); pendingRelease?.(); pendingRelease = null;
         controller = job; controllerHandedOff = false; inFlight = true; inFlightSeq = seq;
+        // Made now, before the build: a build that ends in a frame must find its layers already in the pane.
+        const overlay = ensureLayers();
         const leases: { release(): void }[] = [];
         try {
             for (const node of changes.values()) { const lease = render.retainNode(node); held.add(lease); leases.push(lease); }
@@ -354,44 +402,9 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
                         return textItem && index === textIndex ? { ...item, content: [...item.content.filter(part => part.kind !== 'text'), textItem] } : item;
                     },
                     isCurrent: () => { try { valid(); return source.isCurrent(); } catch { return false; } } };
-                if (!frames || !pair) {
-                    // A frame is tagged with the request it was staged for, both when it is published and when a prepare reads it.
-                    const tag = (frame: PaintSource) => {
-                        if (!frameIds.has(frame) && requestedIds) { frameIds.set(frame, requestedIds); frameGenerations.set(frame, requestedGeneration); }
-                    };
-                    const inner = createPaintFrameAssembler(() => pair?.invalidate('preview-ready'), report, {
-                        isActive: () => !!engine.getView().visible && (typeof globalThis.document === 'undefined' || !globalThis.document.hidden),
-                        onPublished: tag,
-                    });
-                    const assembler: typeof inner = { ...inner, prepare(budget) {
-                        inner.prepare(budget);
-                        const frame = inner.readFrame();
-                        if (frame) tag(frame);
-                    } };
-                    const layers = createBoardLayers({ frames: assembler, images: options.images, onError: report, requestedRevision: () => pinned.revision,
-                        requestedTheme: () => engine.getView().theme, optional: true, onPresented: presentedOverlay, auditSurface: 'board-preview',
-                        // Built is enough to take the next request: the built frame is drawn by the next compositor frame, and
-                        // a request made after a draw is one frame late (measured: the ink trailed the pointer by three frames).
-                        onPrepared: () => queueMicrotask(presentedOverlay),
-                        drawOffset, drawVersion: () => offsetVersion,
-                        onOffsetUnsupported: () => queueMicrotask(rebuildTranslation),
-                        // The overlay's few nodes are drawn live at the view: a refused tile store cannot stall the drag's preview.
-                        liveOverlay: true });
-                    frames = assembler; pair = layers;
-                    engine.setPreviewLayers({ underlay: { ...layers[0], id: 'board-preview-underlay' },
-                        content: { ...layers[1], id: 'board-preview-content' } }, () => {
-                        // Keyed on the layers' wrapper the lookup missed on every drag of an ink node (measured: 84 of 84 calls).
-                        const frame = assemblerFrameOf(layers.readyFrame());
-                        const ids = frame && frameIds.get(frame);
-                        if (frame && ids && assembler.isCurrent(frame)) {
-                            if (frameGenerations.get(frame) === generation) settle();
-                            return { frame, nodeIds: ids };
-                        }
-                        return null;
-                    });
-                }
                 requestedIds = candidates; requestedGeneration = seq;
-                frames.request({ source: guarded, release: releaseLeases }); handedOff = true;
+                overlayNodes.clear(); for (const id of candidates) overlayNodes.add(id);
+                overlay.frames.request({ source: guarded, release: releaseLeases }); handedOff = true;
                 // Ready means this generation's source is handed to its layer. Drawing it is the platform's
                 // later step, and the commit must not wait on a compositor cycle that a gesture may not trigger.
                 if (controller === job) controllerHandedOff = true;

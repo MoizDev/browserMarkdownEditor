@@ -700,7 +700,10 @@ export class PdfTileLayer implements Layer {
         if (!input) return false;
         let freed = false;
         for (const [key, entry] of this.entries) {
-            if (!entry.texture || this.desired.has(key) && intersects(rect(entry.request), input.viewport)) continue;
+            // Visible need first: a texture on the view is what the next frame draws, at any scale. An other-scale one on the
+            // view is the stand-in that covers a quality raise until the plan's tiles land; dropping it at the trouble's trim
+            // left the raise a blank picture (measured: 102 pressure-evicts in the forced slow-gpu window, holes at the raise).
+            if (!entry.texture || intersects(rect(entry.request), input.viewport)) continue;
             auditCount('pdf-page', 'pressure-evict');
             this.remove(key, entry);
             freed = true;

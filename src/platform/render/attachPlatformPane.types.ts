@@ -97,6 +97,8 @@ export interface PlatformPane {
     setFocused(focused: boolean): void;
     observeSize(): void;
     setLayers(layers: readonly PlatformLayerDefinition[]): void;
+    /** A view attached: its layers keep the picture on screen until each first draws complete and sharp. Layers added later do not hold. */
+    beginFreshView(): void;
     invalidate(reason: string, damage?: DamageRecord): void;
     startFling(samples: readonly TouchPanSample[]): void;
     animateZoom(targetZ: number, anchor?: Point): void;

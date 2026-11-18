@@ -250,6 +250,8 @@ export interface TileComposer {
     noteEvicted(): void;
     /** A value that moves with what the composite draws (see contentVersion): equal keys mean the same picture. */
     contentKey(): number;
+    /** True when the draw list cannot be drawn for this view (an eviction or a camera change since it was built, and no prepare since). */
+    listInvalid(view: ViewState): boolean;
     dispose(): void;
 }
 
@@ -403,8 +405,13 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     // A draw list is drawable while nothing it draws can have been evicted since it was built and the camera is the one it was
     // built for. evictEpoch moves at every prepare and at every eviction the adapter makes; a list from an earlier frame that a
     // later prepare did not touch (a live-only or not-yet-current frame skips the prepare) still draws, the same picture.
-    let drawsEpoch = -1, evictEpoch = 0;
+    let drawsEpoch = -1, evictEpoch = 0, drawsFrame = -1;
     const drawsCam = { x: NaN, y: NaN, z: NaN, w: NaN, h: NaN, dpr: NaN };
+    // Set when a draw list is not usable for the view asked: the next frame must prepare, and the layer is critical until it does.
+    let wantFrame = false;
+    const listUsable = (view: ViewState): boolean => drawsFrame === frame || (drawsEpoch === evictEpoch && drawsCam.x === view.camera.x &&
+        drawsCam.y === view.camera.y && drawsCam.z === view.camera.z && drawsCam.w === view.viewport.width &&
+        drawsCam.h === view.viewport.height && drawsCam.dpr === view.viewport.dpr);
 
     let disposed = false, presenting = false, indexing = false;
     // This frame's zoom, set in prepare: while zooming, coverage does not hold the frame for a position with nothing (see coverage).
@@ -1203,7 +1210,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
 
     const buildDraws = (view: ViewState, target: number, zooming: boolean, budget: FrameBudget): void => {
         drawCount = 0;
-        drawsEpoch = evictEpoch;
+        drawsEpoch = evictEpoch; drawsFrame = frame;
         drawsCam.x = view.camera.x; drawsCam.y = view.camera.y; drawsCam.z = view.camera.z;
         drawsCam.w = view.viewport.width; drawsCam.h = view.viewport.height; drawsCam.dpr = view.viewport.dpr;
         coveredPositions.clear();
@@ -1386,7 +1393,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         },
         prepare(view: ViewState, budget: FrameBudget, prepared: PreparedPaint2d | null, omit?: ReadonlySet<string>): boolean {
             if (disposed) return true;
-            evictEpoch++;
+            evictEpoch++; wantFrame = false;
             // Two-phase (budget.phase): the foreground call runs this frame's intake and the foreground composes, then answers false (the
             // frame's answer is the background call's). The background call of the same frame finishes it. The scheduler never makes a
             // background call without its foreground; one that finds none answers true.
@@ -1603,10 +1610,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         },
         drawGpu(pass: GpuPass, view: ViewState, band: PaintBand): void {
             if (!drawCount) return;
-            if (drawsEpoch !== evictEpoch || drawsCam.x !== view.camera.x || drawsCam.y !== view.camera.y || drawsCam.z !== view.camera.z ||
-                drawsCam.w !== view.viewport.width || drawsCam.h !== view.viewport.height || drawsCam.dpr !== view.viewport.dpr) {
-                auditCount(audit, 'draw:stale-list'); return;
-            }
+            if (!listUsable(view)) { auditCount(audit, 'draw:stale-list'); wantFrame = true; return; }
             const cam = view.camera, scale = cam.z * view.viewport.dpr;
             const surfaceW = Math.round(view.viewport.width * view.viewport.dpr), surfaceH = Math.round(view.viewport.height * view.viewport.dpr);
             // Scratch rectangles, rewritten per draw: the pass reads them before this loop moves on.
@@ -1673,6 +1677,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         },
         coverage(view: ViewState): { complete: boolean; sharp: boolean; staleVersion?: boolean } {
             if (!presenting) return { complete: false, sharp: false };
+            // A draw list that cannot be drawn for this view is a hole: the frame is incomplete (the board is critical while it is).
+            if (drawCount && !listUsable(view)) { wantFrame = true; return { complete: false, sharp: false }; }
             const exact = exactScale(view.camera.z * view.viewport.dpr);
             // A live part this frame could not admit is a hole: the picture is not complete (the next frame asks again).
             if (liveNow && !indexing) return { complete: !liveDeferredNow && !liveHoleNow, sharp: preparedSharp && drawnTarget === exact };
@@ -1745,6 +1751,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         },
         needsFrame(): boolean {
             if (disposed || !presenting) return false;
+            if (wantFrame) return true;
             // A pinned zoom is released by the frame that finds the zoom over: that frame is asked for, so the pins do not outlive the zoom.
             if (pinsHeld) return true;
             if (denied) return false;
@@ -1764,6 +1771,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         release(_reason: GpuReleaseReason): void { releaseAll(); },
         noteEvicted(): void { evictEpoch++; contentVersion++; },
         contentKey(): number { return hashMix(drawSignature, contentVersion); },
+        listInvalid(view: ViewState): boolean { return drawCount > 0 && !listUsable(view); },
         dispose(): void {
             if (disposed) return;
             releaseAll();

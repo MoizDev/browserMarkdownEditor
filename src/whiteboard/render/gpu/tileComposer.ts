@@ -1675,9 +1675,11 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         // Composed this frame: drawn fresh (buildDraws' pending path), so the frame is sharp here. The compositor reads
                         // coverage before the encode, and the entry it still finds is the old one; the draw is not.
                         if (status === 'missing' && finishedAt(band, target, x, y)) continue;
+                        // A dirty position whose changed pixels this frame's live parts lay is current: complete and sharp (gpu-h11's
+                        // trace: 112 of 113 draw and 29 of 32 drag incomplete presents were covered dirty positions counted as stand-ins).
+                        if (status === 'dirty' && coveredPositions.has(positionKey(band, target, x, y))) continue;
                         sharp = false;
-                        // A dirty position whose changed pixels this frame's live parts lay is current, not stale.
-                        if (status === 'dirty') { if (!coveredPositions.has(positionKey(band, target, x, y))) stale = true; continue; }
+                        if (status === 'dirty') { stale = true; continue; }
                         if (!zoomingFrame && !standInsOf(band, target, x, y).length) complete = false;
                     }
                 }

@@ -1212,6 +1212,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         // A dirty position under a pending change: its live parts replace the stale pixels there, cut out of its
                         // tiles, or the position draws as it did (stale, flagged by coverage). All or nothing per position.
                         const regions = status === 'dirty' ? pendingRegionsIn(band, target, x, y) : NO_REGIONS;
+                        // A dirty position no pending region reaches is stale with no cover: named apart from an uncovered region.
+                        if (status === 'dirty' && !regions.length) auditCount(audit, 'live:region:none');
                         const position = regions.length ? clipAt(x, y) : null;
                         const cut = position ? cutPieces(view, regions, position) : NO_PIECES;
                         const covered = cut.length > 0 && appendRegionLive(band, target, x, y, view, budget, cut);

@@ -366,6 +366,8 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
     let idleBytes = 0, frame = 0;
     /** A composite scratch's growth was refused while an admission still held the scratch: the next frame's start reclaims it. */
     let scratchGrowth = false;
+    /** The frame whose draw was refused by the uniform ring (-1: none). */
+    let drawRefusedFrame = -1;
     /** A chain's CPU copy and its lease go with the chain: when its buffer is gone (or its upload was dropped). */
     const releaseChain = (chain: Chain): void => {
         if (chain.released) return;
@@ -752,9 +754,16 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
     };
     /** One coverage draw's encode time (CPU), named 'draw'; the timed path is taken only while the render audit is on. */
     const render = (pass: GpuPass, prepared: PreparedPathCoverage, paint?: Rgba): void => {
-        if (!renderAuditEnabled()) { renderCoverage(pass, prepared, paint); return; }
-        const started = performance.now();
-        try { renderCoverage(pass, prepared, paint); } finally { auditStage(audit, 'draw', performance.now() - started); }
+        const started = renderAuditEnabled() ? performance.now() : null;
+        try { renderCoverage(pass, prepared, paint); }
+        catch (error) {
+            // A uniform-ring refusal costs this draw only: the rest of the frame still draws. The frame's coverage is then incomplete
+            // (drawRefusedThisFrame), so a critical layer refuses it and the previous complete picture stays; the next frame is requested.
+            if (!(error instanceof ArenaError) || error.code !== 'out-of-budget') throw error;
+            drawRefusedFrame = frame;
+            auditCount(audit, 'kit:draw-refused');
+            host.invalidate('path-coverage-refused');
+        } finally { if (started !== null) auditStage(audit, 'draw', performance.now() - started); }
     };
     /** The winding and cover uniforms, written into the kit's one scratch and copied by the frame's ring at once. */
     const windingSlice = (viewport: Readonly<{ width: number; height: number }>, affine: Affine, dx: number, dy: number) => {
@@ -1117,6 +1126,8 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
     return {
         warm,
         ready: isReady,
+        /** True when a draw of the current frame was refused by the uniform ring: the frame's coverage is incomplete. */
+        drawRefusedThisFrame: (): boolean => drawRefusedFrame === frame,
         /** Marks the frame the calls that follow belong to. An idle set used in this frame is never reclaimed. */
         beginFrame(next: number): void {
             if (next === frame) { frame = next; return; }

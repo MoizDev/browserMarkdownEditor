@@ -279,6 +279,12 @@ interface FrameWork { entry: PaneEntry; frame: ScheduledFrame; batch: DamageBatc
     repaint: boolean;
     /** The audit's name for what asked for this frame; '' when the render audit is off. */
     cause: string }
+/** Audit only: the camera each layer last prepared with, so a prepare that skips a camera change is visible in the counters. */
+const lastPreparedCamera = new WeakMap<Layer, { x: number; y: number; z: number }>();
+const cameraMoved = (layer: Layer, view: ViewState): boolean => {
+    const last = lastPreparedCamera.get(layer);
+    return !last || last.x !== view.camera.x || last.y !== view.camera.y || last.z !== view.camera.z;
+};
 interface PendingAcknowledgement { entry: PaneEntry; frameId: number; token: FrameToken; submission: ScheduledSubmission }
 /** A poll is the owner's persistent work; a throwing poll is kept (the owner's cancel handle stays valid) and backs off in time. */
 interface ScheduledPoll { callback: () => void; earliestFrame: number; failures: number; retryAt: number }
@@ -1074,6 +1080,7 @@ export class FrameScheduler {
             // the layers' own needsFrame (no extra mark here: an idle pane must not gain a frame).
             const platform = meta === null;
             if (exhausted && !requesting && !platform) {
+                if (renderAuditEnabled() && meta && cameraMoved(meta.layer, item.frame.view)) auditCount('scheduler', 'camera-skipped:' + phase);
                 item.skipped = true;
                 // Which pass ran out of window: foreground ran out of its budget, background out of what foreground left.
                 if (renderAuditEnabled()) auditCount('scheduler', 'skip:' + phase);
@@ -1136,7 +1143,15 @@ export class FrameScheduler {
             } else if (meta && !shouldYield()) {
                 // prepare returns false only when a completed prepare left nothing it draws next different (types.ts). A layer
                 // that returns nothing leaves the frame's picture open: it is presented.
+                const moved = renderAuditEnabled() && cameraMoved(meta.layer, item.frame.view);
                 const answered = meta.layer.prepare(item.frame.view, budget) === false;
+                if (renderAuditEnabled()) {
+                    lastPreparedCamera.set(meta.layer, { x: item.frame.view.camera.x, y: item.frame.view.camera.y, z: item.frame.view.camera.z });
+                    if (moved) {
+                        auditCount('scheduler', 'camera-prepare:' + phase);
+                        if (answered) auditCount('scheduler', 'camera-unchanged:' + phase);
+                    }
+                }
                 if (phase === 'foreground') {
                     // Not the frame's answer: the background call settles the layer. A changed answer here still marks the frame.
                     item.foreground.set(meta.layer, answered);
@@ -1155,6 +1170,7 @@ export class FrameScheduler {
                     }
                 }
             } else if (meta) {
+                if (renderAuditEnabled() && cameraMoved(meta.layer, item.frame.view)) auditCount('scheduler', 'camera-yielded:' + phase);
                 this.passedOver(item, meta);
             }
             overshoot = Math.max(0, performance.now() - deadline);

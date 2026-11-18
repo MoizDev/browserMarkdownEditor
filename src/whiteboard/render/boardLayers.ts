@@ -627,6 +627,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             const lease = allocatorHost!.allocator.cpu.reserve(DIRECT_CHUNK);
             if (!lease) {
                 memoryGate.refused(); denied = true;
+                auditCount(options.auditSurface ?? 'board', 'direct:charge-refused');
                 allocatorHost!.demandChanged?.();
                 awaitCpu(DIRECT_CHUNK);
                 return false;
@@ -725,7 +726,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 if (directBuiltFor !== frame && !memoryGate.closed()) {
                     adapter.prepare(view, budget);
                     directBuiltFor = frame;
-                }
+                } else if (directBuiltFor !== frame) auditCount(options.auditSurface ?? 'board', 'direct:build-held');
                 if (directBuiltFor !== frame) prepareUnchanged = false;
                 const composerChanged = prepareGpu(view, budget, frame);
                 if (budget.phase === 'foreground') { pendingFrame = frame; foregroundFrame = budget.frameId; return; }

@@ -211,6 +211,10 @@ export interface GpuPaintAdapter {
     /** Indexes the reference's paint, composes what the view needs within the frame's limit. `omit` is the drag's omitted nodes.
      * True when anything visible changed since the previous prepare (the composer's report); true when it could not tell. */
     prepare(view: ViewState, budget: FrameBudget, omit?: ReadonlySet<string>): boolean;
+    /** The content of the paint this adapter last prepared, as one number: equal values draw the same picture. It is the same
+     * whether or not that paint was presented, and moves on every change that can alter the composite (an edit, an eviction, a
+     * live part drawn, a resource change, an index in progress). The board compares it with the value it presented. */
+    contentKey(): number;
     /** Indexes a paint to completion within `maxMs`, outside any frame (the same filter the frames apply, so the index matches). */
     warm(prepared: PreparedPaint2d, maxMs: number): boolean;
     /** The paint the composed tiles were built from, once a paint has been prepared. */
@@ -415,6 +419,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         drawnInkNodeIds(): ReadonlySet<string> { return disposed ? NO_INK : composer.drawnInkNodeIds(); },
         drawnLiveNodeIds(band: PaintBand): ReadonlySet<string> { return disposed ? NO_INK : composer.drawnLiveNodeIds(band); },
         plannedLiveNodeIds(band: PaintBand): ReadonlySet<string> { return disposed ? NO_INK : composer.plannedLiveNodeIds(band); },
+        contentKey(): number { return disposed ? -1 : composer.contentKey(); },
         gpuMandatoryBytes(viewport: { width: number; height: number }): number {
             return disposed || !presented ? 0 : composer.mandatoryBytes(viewport.width, viewport.height);
         },

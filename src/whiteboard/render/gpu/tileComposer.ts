@@ -248,6 +248,8 @@ export interface TileComposer {
     release(reason: GpuReleaseReason): void;
     /** The adapter evicted something a draw list may hold (a tile, a texture or a coverage set): no list built before is drawn again. */
     noteEvicted(): void;
+    /** A value that moves with what the composite draws (see contentVersion): equal keys mean the same picture. */
+    contentKey(): number;
     dispose(): void;
 }
 
@@ -414,7 +416,10 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     // The kinds of edit this prepare made (one bit each), so a 'changed' answer names its reason as audit counters.
     let editBits = 0;
     const EDIT_SUPERSEDED = 1, EDIT_EMPTY = 2, EDIT_CANCEL = 4, EDIT_FREE = 8, EDIT_DONE = 16, EDIT_SCALES = 32, EDIT_INVALID = 64;
-    const editEvent = (bit: number): void => { visibleEdits++; editBits |= bit; };
+    // The content version moves on every change that can alter what the composite draws: an edit, an eviction the adapter made, a
+    // live part drawn (its pixels change), a resource change, an index in progress. contentKey() reads it with the draw signature.
+    let contentVersion = 0;
+    const editEvent = (bit: number): void => { visibleEdits++; editBits |= bit; contentVersion++; };
     let drawSignature = 0;
     // The visible span at the compose scale while zooming, null otherwise: the positions a superseded entry must be exact under to be dropped.
     let zoomSpan: Span | null = null;
@@ -1412,13 +1417,14 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             if (!prepared || !device || !(demand > 0) || !Number.isFinite(demand)) {
                 for (const position of finished) cancel(position);
                 finished = [];
-                drawCount = 0; presenting = false; drawSignature = 0; return true;
+                drawCount = 0; presenting = false; drawSignature = 0; contentVersion++; return true;
             }
             presenting = true;
             preparedSharp = prepared.sharp !== false;
             if (prepared !== paintScanned) { paintScanned = prepared; paintHasLive = windowsHaveLive(prepared); paintLiveOnly = liveOnlyPaint(prepared); }
             if (prepared.resources !== resourcesSeen) {
                 resourcesSeen = prepared.resources;
+                contentVersion++;
                 for (const route of routeList) (route as ItemRoute & ResourcedRoute).useResources?.(prepared.resources);
             }
             // The scale moves only with the camera's zoom: a pan or a drag keeps the tiles' scale and their pixels.
@@ -1559,9 +1565,11 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 signature = hashMix(signature, draw.clipOn ? Math.round(draw.cx) * 4 + Math.round(draw.cy) * 8 + Math.round(draw.cw) * 16 + Math.round(draw.ch) * 32 : 0);
                 signature = hashMix(signature, idOfObject(draw.texture));
                 signature = hashMix(signature, draw.live ? 1 + idOfObject(draw.liveRoute) : 0);
+                if (draw.live) contentVersion++;
                 if (draw.ink.length) signature = hashMix(signature, hashText(draw.ink.join('\u0001')));
             }
             const sigChanged = signature !== drawSignature;
+            if (indexing) contentVersion++;
             const changed = indexing || visibleEdits !== editsBefore || sigChanged;
             drawSignature = signature;
             // Why it answered changed, as audit counters (gh14): a prepare names every condition that held.
@@ -1754,7 +1762,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             return { gpuBytes, cpuBytes };
         },
         release(_reason: GpuReleaseReason): void { releaseAll(); },
-        noteEvicted(): void { evictEpoch++; },
+        noteEvicted(): void { evictEpoch++; contentVersion++; },
+        contentKey(): number { return hashMix(drawSignature, contentVersion); },
         dispose(): void {
             if (disposed) return;
             releaseAll();

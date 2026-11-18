@@ -717,11 +717,15 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 // back-off runs, a source that has no paths yet waits for the wake (one attempt per wake); a camera-only frame reuses
                 // the paths built for its source, and the GPU composer prepares at the new camera either way (a refused charge never
                 // stopped it: 85 of 94 device prepares were refused before this, measured). The build is charged after it, as held bytes.
-                if (directBuiltFor !== frame) {
-                    if (memoryGate.closed()) { prepareUnchanged = false; return; }
+                // While a refused charge's back-off runs, a new source is not built: the paths built for the previous source stay bound
+                // and the composer still prepares, at the new camera, from them, so the previous band keeps drawing under the live
+                // camera until the new one is built (the wake). Without this the composer did not prepare, and the draw-list guard
+                // drew nothing for the frame.
+                if (directBuiltFor !== frame && !memoryGate.closed()) {
                     adapter.prepare(view, budget);
                     directBuiltFor = frame;
                 }
+                if (directBuiltFor !== frame) prepareUnchanged = false;
                 const composerChanged = prepareGpu(view, budget, frame);
                 if (budget.phase === 'foreground') { pendingFrame = frame; foregroundFrame = budget.frameId; return; }
                 // A refused charge leaves the build unheld: the frame then answers changed, never unchanged.

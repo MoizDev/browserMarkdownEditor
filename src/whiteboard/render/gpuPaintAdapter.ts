@@ -347,6 +347,8 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                     return true;
                 }
             }
+            // Only this frame's background call reads the paint its foreground call left: a foreground call drops any earlier one.
+            pendingPrepared = null;
             if (disposed || lastFrame === budget.frameId) return true;
             lastFrame = budget.frameId;
             pathRoute.beginFrame(budget.frameId);

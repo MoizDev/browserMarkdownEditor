@@ -321,6 +321,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     let presentedLive: ReadonlySet<string> | undefined, presentedDrawVersion = -1;
     // The layer's answer for the frame it prepared: true only when every input to the draw matches the presented frame.
     let prepareUnchanged = false;
+    // The source whose reference paths the device route built last: a camera-only frame of it builds nothing.
+    let directBuiltFor: PaintSource | null = null;
     // Two-phase prepare (Layer.twoPhase): the foreground call of frame `foregroundFrame` leaves the frame it prepared in `pendingFrame`
     // for the background call of the same frame, which completes it and sets the answer.
     let foregroundFrame = -1;
@@ -586,7 +588,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 readyFrame: () => current().readyFrame(), borrowPrepared: () => current().borrowPrepared(),
                 retainPrepared: () => current().retainPrepared(),
                 draw2d: (ctx, view, band, omit) => current().draw2d(ctx, view, band, omit),
-                release: reason => { direct!.release(reason); dense?.release(reason); },
+                release: reason => { directBuiltFor = null; direct!.release(reason); dense?.release(reason); },
                 needsFrame: () => current().needsFrame(), memory: () => current().memory(),
                 dispose: () => { direct!.dispose(); dense?.dispose(); },
             };
@@ -711,10 +713,19 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     return;
                 }
                 known.add(frame);
-                // Not gated on the direct CPU charge: a refused charge waits on its own sized wake (chargeDirect), and the GPU composer
-                // still prepares at the new camera. Measured: a full CPU pool refused the charge on every zoom frame after the first
-                // ~6, so the composer never prepared again (85 of 94 device prepares). The build is charged after it, as held bytes.
-                adapter.prepare(view, budget);
+                // The reference's CPU paths are the composer's input, so they are built once per source. While a refused charge's
+                // back-off runs, a source that has no paths yet waits for the wake (one attempt per wake); a camera-only frame reuses
+                // the paths built for its source, and the GPU composer prepares at the new camera either way (a refused charge never
+                // stopped it: 85 of 94 device prepares were refused before this, measured). The build is charged after it, as held bytes.
+                // While a refused charge's back-off runs, a new source is not built: the paths built for the previous source stay bound
+                // and the composer still prepares, at the new camera, from them, so the previous band keeps drawing under the live
+                // camera until the new one is built (the wake). Without this the composer did not prepare, and the draw-list guard
+                // drew nothing for the frame.
+                if (directBuiltFor !== frame && !memoryGate.closed()) {
+                    adapter.prepare(view, budget);
+                    directBuiltFor = frame;
+                }
+                if (directBuiltFor !== frame) prepareUnchanged = false;
                 const composerChanged = prepareGpu(view, budget, frame);
                 if (budget.phase === 'foreground') { pendingFrame = frame; foregroundFrame = budget.frameId; return; }
                 // A refused charge leaves the build unheld: the frame then answers changed, never unchanged.
@@ -870,7 +881,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         const changed = options.changedNodesSince?.(from, to) ?? (now && now.sceneRevision === to ? now.changedNodesSince?.(from) : null);
         if (!changed) return false;
         const omitted = now ? options.omitNodes?.(now) ?? null : null;
-        // A node the device's live draw laid in the last composite of this band is drawn live, so it is current wherever the board shows it.
+        // The live parts the next prepare plans are drawn live in this frame: coverage runs after prepare in the same frame (d14a4dfa),
+        // so the plan is this frame's own, and the draw-time set would be one composite late.
         const laid = canvas ? null : gpu?.plannedLiveNodeIds(band) ?? null;
         for (const id of changed) if (!omitted?.has(id) && !options.liveDraws?.(id, band, view, canvas) && !laid?.has(id)) return false;
         return true;

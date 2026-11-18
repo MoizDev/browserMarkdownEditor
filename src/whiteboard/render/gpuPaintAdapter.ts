@@ -363,6 +363,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             const prepared = reference.borrowPrepared(), device = host.device();
             if (!prepared || !device || !documentMatches(prepared.root, budget.token) || !documentMatches(prepared.sourceFrame, budget.token) ||
                 device.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration) {
+                if (renderAuditEnabled()) auditCount(surface, !prepared ? 'prepare:hidden:no-paint' : !device ? 'prepare:hidden:no-device' : 'prepare:hidden:document');
                 composer.release('hidden');
                 presented = null; omitPrepared = null; ledger = null;
                 return true;

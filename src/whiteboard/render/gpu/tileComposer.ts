@@ -77,6 +77,9 @@ const idOfObject = (object: object | null): number => {
     return id;
 };
 const hashMix = (hash: number, value: number): number => Math.imul(hash ^ value, 16777619);
+/** The compose passes in order: the foreground takes dirty positions first, the background visible missing ones first. */
+const DIRTY_FIRST = ['dirty', 'missing', 'ring'] as const;
+const MISSING_FIRST = ['missing', 'dirty', 'ring'] as const;
 const hashText = (text: string): number => { let hash = 2166136261; for (let i = 0; i < text.length; i++) hash = hashMix(hash, text.charCodeAt(i)); return hash; };
 /** A position's status at a scale: `missing` has no complete picture; `dirty` shows a picture a change has overtaken. */
 type Status = 'missing' | 'dirty' | 'ok';
@@ -823,7 +826,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             // Why a frame composes nothing is the zoom question: each exit is counted (pass and cause).
             // The count limit is for background recomposes: a foreground compose (a visible tile with no valid cover) is bounded by the budget.
             if (only !== 'foreground' && frameComposed >= limit) { auditCount(audit, `compose:limit:${pass}`); return false; }
-            if (budget.shouldYield()) { auditCount(audit, `compose:yield:${pass}`); return false; }
+            if (budget.shouldYield()) { auditCount(audit, `compose:yield:${pass}:${only}`); return false; }
             let outcome = advance(position, budget, gpu);
             // At rest a refused or denied position frees this composer's own tiles and is admitted in the same frame, instead of
             // waiting for the governor (see freeOwn). While zooming the stand-ins stay: they are what the zoom shows.
@@ -891,7 +894,9 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 }
             }
         }
-        for (const pass of ['dirty', 'missing', 'ring'] as const) {
+        // The background finishes the visible missing positions first: a visible position with no stand-in is foreground work, and a
+        // budget that runs out on the dirty pass must not leave it missing at rest (gpu-h13's trace: the one incomplete rest present).
+        for (const pass of (only === 'background' ? MISSING_FIRST : DIRTY_FIRST)) {
             // While zooming only the visible positions are composed: the ring is the next view's, and the zoom's compose is its cost.
             if (pass === 'ring' && (zoomingFrame || only === 'foreground')) continue;
             const margin = pass === 'ring' ? 1 : 0;
@@ -1422,6 +1427,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             const demand = view.camera.z * view.viewport.dpr;
             device = host.device();
             if (!prepared || !device || !(demand > 0) || !Number.isFinite(demand)) {
+                if (renderAuditEnabled()) auditCount(audit, `prepare:unpainted:${!prepared ? 'no-paint' : !device ? 'no-device' : 'no-demand'}`);
                 for (const position of finished) cancel(position);
                 finished = [];
                 drawCount = 0; presenting = false; drawSignature = 0; contentVersion++; return true;
@@ -1436,6 +1442,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             }
             // The scale moves only with the camera's zoom: a pan or a drag keeps the tiles' scale and their pixels.
             zooming = lastZoom !== undefined && view.camera.z !== lastZoom;
+            if (renderAuditEnabled()) auditCount(audit, zooming ? 'prepare:zoom-seen' : 'prepare:zoom-not-seen');
             lastZoom = view.camera.z;
             if (pins) {
                 if (zooming) {

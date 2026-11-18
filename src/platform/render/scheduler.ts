@@ -1048,6 +1048,8 @@ export class FrameScheduler {
             const platform = meta === null;
             if (exhausted && !requesting && !platform) {
                 item.skipped = true;
+                // Which pass ran out of window: foreground ran out of its budget, background out of what foreground left.
+                if (renderAuditEnabled()) auditCount('scheduler', 'skip:' + phase);
                 if (meta) this.passedOver(item, meta);
                 return;
             }

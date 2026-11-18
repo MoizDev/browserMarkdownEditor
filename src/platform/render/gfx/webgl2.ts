@@ -1665,14 +1665,19 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 throw new ArenaError('out-of-budget');
             }
             if (this.#uniformSlots.length >= UNIFORM_RING_SLOTS) auditCount('gpu', 'uniform-ring-grow-slots');
-            const cpu = this.#reserve(this.#services.uniformCpu ?? this.#services.cpuStaging, size, false);
+            // Attribution: which reservation refused a new slot is counted (the CPU mirror or the GPU buffer), with its size, so a
+            // refusal names its pool in the log instead of only raising out-of-budget.
+            let cpu: ByteLease;
+            try { cpu = this.#reserve(this.#services.uniformCpu ?? this.#services.cpuStaging, size, false); }
+            catch (error) { if (error instanceof ArenaError && error.code === 'out-of-budget') auditCount('gpu', 'uniform-cpu-refused', 1, { bytes: size }); throw error; }
             let handle: BufferHandle | null = null;
             try {
                 const data = new Uint8Array(size);
                 // 'vertex' too: a batched textured-quad draw binds its instance records as a vertex slice from this same ring
                 // (compositor.ts drawTexturedQuads). The device refuses a vertex slice whose buffer lacks the use, which demoted
                 // the pane mid-draw (seen in the final run's audit: pane:fallback:pane-2d:gpu-error:invalid-input).
-                handle = this.#owned('buffer', { bytes: size, uses: ['uniform', 'vertex', 'copy-dst'] }, size, this.#services.working);
+                try { handle = this.#owned('buffer', { bytes: size, uses: ['uniform', 'vertex', 'copy-dst'] }, size, this.#services.working); }
+                catch (error) { if (error instanceof ArenaError && error.code === 'out-of-budget') auditCount('gpu', 'uniform-gpu-refused', 1, { bytes: size }); throw error; }
                 slot = { handle, native: this.#arena.validate(handle, 'buffer'), data, lease: cpu, serial: 0, owners: 0, valid: true, used: 0, uploaded: 0 };
                 this.#uniformSlots.push(slot);
             } catch (error) { if (handle) this.destroy(handle); this.#returnCpu(cpu); throw error; }

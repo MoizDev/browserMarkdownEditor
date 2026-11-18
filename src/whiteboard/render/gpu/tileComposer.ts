@@ -7,7 +7,7 @@ import type { LayerHost, TexturedQuadSpec } from '../../../platform/render/compo
 import type { GfxDevice, GpuPass, GroupToken, RectI, RgbaP, TextureHandle } from '../../../platform/render/gfx/api';
 import type { FrameBudget, GpuReleaseReason, OffscreenPasses } from '../../../platform/render/types';
 import { tileTargetBytes, tileView } from '../../../platform/render/tileTarget';
-import { auditCount, auditDrawn, auditStage, renderAuditEnabled, type AuditStage } from '../../../platform/render/renderAudit';
+import { auditCount, auditDrawn, auditGpuError, auditStage, renderAuditEnabled, type AuditStage } from '../../../platform/render/renderAudit';
 import { TILE_EDGE, TILE_GUTTER, TILE_SIZE } from '../imageSampling';
 import type { PaintBand } from '../material';
 import type { PaintClip, PaintInkItem, PaintItem } from '../paintStream';
@@ -77,6 +77,9 @@ const idOfObject = (object: object | null): number => {
     return id;
 };
 const hashMix = (hash: number, value: number): number => Math.imul(hash ^ value, 16777619);
+/** The compose passes in order: the foreground takes visible missing positions first, the background dirty ones first. */
+const DIRTY_FIRST = ['dirty', 'missing', 'ring'] as const;
+const MISSING_FIRST = ['missing', 'dirty', 'ring'] as const;
 const hashText = (text: string): number => { let hash = 2166136261; for (let i = 0; i < text.length; i++) hash = hashMix(hash, text.charCodeAt(i)); return hash; };
 /** A position's status at a scale: `missing` has no complete picture; `dirty` shows a picture a change has overtaken. */
 type Status = 'missing' | 'dirty' | 'ok';
@@ -250,6 +253,8 @@ export interface TileComposer {
     noteEvicted(): void;
     /** A value that moves with what the composite draws (see contentVersion): equal keys mean the same picture. */
     contentKey(): number;
+    /** True when the draw list cannot be drawn for this view (an eviction or a camera change since it was built, and no prepare since). */
+    listInvalid(view: ViewState): boolean;
     dispose(): void;
 }
 
@@ -403,8 +408,13 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     // A draw list is drawable while nothing it draws can have been evicted since it was built and the camera is the one it was
     // built for. evictEpoch moves at every prepare and at every eviction the adapter makes; a list from an earlier frame that a
     // later prepare did not touch (a live-only or not-yet-current frame skips the prepare) still draws, the same picture.
-    let drawsEpoch = -1, evictEpoch = 0;
+    let drawsEpoch = -1, evictEpoch = 0, drawsFrame = -1;
     const drawsCam = { x: NaN, y: NaN, z: NaN, w: NaN, h: NaN, dpr: NaN };
+    // Set when a draw list is not usable for the view asked: the next frame must prepare, and the layer is critical until it does.
+    let wantFrame = false;
+    const listUsable = (view: ViewState): boolean => drawsFrame === frame || (drawsEpoch === evictEpoch && drawsCam.x === view.camera.x &&
+        drawsCam.y === view.camera.y && drawsCam.z === view.camera.z && drawsCam.w === view.viewport.width &&
+        drawsCam.h === view.viewport.height && drawsCam.dpr === view.viewport.dpr);
 
     let disposed = false, presenting = false, indexing = false;
     // This frame's zoom, set in prepare: while zooming, coverage does not hold the frame for a position with nothing (see coverage).
@@ -816,7 +826,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             // Why a frame composes nothing is the zoom question: each exit is counted (pass and cause).
             // The count limit is for background recomposes: a foreground compose (a visible tile with no valid cover) is bounded by the budget.
             if (only !== 'foreground' && frameComposed >= limit) { auditCount(audit, `compose:limit:${pass}`); return false; }
-            if (budget.shouldYield()) { auditCount(audit, `compose:yield:${pass}`); return false; }
+            if (budget.shouldYield()) { auditCount(audit, `compose:yield:${pass}:${only}`); return false; }
             let outcome = advance(position, budget, gpu);
             // At rest a refused or denied position frees this composer's own tiles and is admitted in the same frame, instead of
             // waiting for the governor (see freeOwn). While zooming the stand-ins stay: they are what the zoom shows.
@@ -884,7 +894,9 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 }
             }
         }
-        for (const pass of ['dirty', 'missing', 'ring'] as const) {
+        // A visible position with no stand-in is foreground work: the foreground (and a single-phase compose) takes the missing pass
+        // before the dirty one, so a budget that runs out on dirty positions cannot leave it missing (gpu's ruling).
+        for (const pass of (only === 'background' ? DIRTY_FIRST : MISSING_FIRST)) {
             // While zooming only the visible positions are composed: the ring is the next view's, and the zoom's compose is its cost.
             if (pass === 'ring' && (zoomingFrame || only === 'foreground')) continue;
             const margin = pass === 'ring' ? 1 : 0;
@@ -1203,7 +1215,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
 
     const buildDraws = (view: ViewState, target: number, zooming: boolean, budget: FrameBudget): void => {
         drawCount = 0;
-        drawsEpoch = evictEpoch;
+        drawsEpoch = evictEpoch; drawsFrame = frame;
         drawsCam.x = view.camera.x; drawsCam.y = view.camera.y; drawsCam.z = view.camera.z;
         drawsCam.w = view.viewport.width; drawsCam.h = view.viewport.height; drawsCam.dpr = view.viewport.dpr;
         coveredPositions.clear();
@@ -1386,7 +1398,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         },
         prepare(view: ViewState, budget: FrameBudget, prepared: PreparedPaint2d | null, omit?: ReadonlySet<string>): boolean {
             if (disposed) return true;
-            evictEpoch++;
+            evictEpoch++; wantFrame = false;
             // Two-phase (budget.phase): the foreground call runs this frame's intake and the foreground composes, then answers false (the
             // frame's answer is the background call's). The background call of the same frame finishes it. The scheduler never makes a
             // background call without its foreground; one that finds none answers true.
@@ -1415,6 +1427,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             const demand = view.camera.z * view.viewport.dpr;
             device = host.device();
             if (!prepared || !device || !(demand > 0) || !Number.isFinite(demand)) {
+                if (renderAuditEnabled()) auditCount(audit, `prepare:unpainted:${!prepared ? 'no-paint' : !device ? 'no-device' : 'no-demand'}`);
                 for (const position of finished) cancel(position);
                 finished = [];
                 drawCount = 0; presenting = false; drawSignature = 0; contentVersion++; return true;
@@ -1429,6 +1442,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             }
             // The scale moves only with the camera's zoom: a pan or a drag keeps the tiles' scale and their pixels.
             zooming = lastZoom !== undefined && view.camera.z !== lastZoom;
+            if (renderAuditEnabled()) auditCount(audit, zooming ? 'prepare:zoom-seen' : 'prepare:zoom-not-seen');
             lastZoom = view.camera.z;
             if (pins) {
                 if (zooming) {
@@ -1603,10 +1617,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         },
         drawGpu(pass: GpuPass, view: ViewState, band: PaintBand): void {
             if (!drawCount) return;
-            if (drawsEpoch !== evictEpoch || drawsCam.x !== view.camera.x || drawsCam.y !== view.camera.y || drawsCam.z !== view.camera.z ||
-                drawsCam.w !== view.viewport.width || drawsCam.h !== view.viewport.height || drawsCam.dpr !== view.viewport.dpr) {
-                auditCount(audit, 'draw:stale-list'); return;
-            }
+            if (!listUsable(view)) { auditCount(audit, 'draw:stale-list'); wantFrame = true; return; }
             const cam = view.camera, scale = cam.z * view.viewport.dpr;
             const surfaceW = Math.round(view.viewport.width * view.viewport.dpr), surfaceH = Math.round(view.viewport.height * view.viewport.dpr);
             // Scratch rectangles, rewritten per draw: the pass reads them before this loop moves on.
@@ -1623,8 +1634,10 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         scissor.x = draw.cx; scissor.y = draw.cy; scissor.width = draw.cw; scissor.height = draw.ch;
                         const clip = pass.pushClip(scissor);
                         drawnLive[draw.band].add(draw.node);
-                        draw.liveRoute?.draw(pass, draw.live);
-                        pass.popClip(clip);
+                        // The pop is in finally: a throw inside the draw must not leave the scope open (the encoder then refuses the frame).
+                        try { draw.liveRoute?.draw(pass, draw.live); }
+                        catch (error) { auditGpuError(audit, 'live-clip', error); throw error; }
+                        finally { pass.popClip(clip); }
                     }
                     i++;
                     continue;
@@ -1658,21 +1671,27 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     clip = pass.pushClip(scissor);
                 }
                 let group: GroupToken | null = null;
-                if (draw.mode === 'isolated') {
-                    // A group's bounds are on the surface too: a negative origin is refused like a negative scissor.
-                    bounds.x = Math.max(0, Math.floor(dest.x)); bounds.y = Math.max(0, Math.floor(dest.y));
-                    bounds.width = Math.min(surfaceW, Math.ceil(dest.x + dest.width)) - bounds.x;
-                    bounds.height = Math.min(surfaceH, Math.ceil(dest.y + dest.height)) - bounds.y;
-                    group = pass.beginGroup(bounds, GROUP);
+                // The group and the clip are closed in finally: a throw in between must not leave either open (the encoder refuses that).
+                try {
+                    if (draw.mode === 'isolated') {
+                        // A group's bounds are on the surface too: a negative origin is refused like a negative scissor.
+                        bounds.x = Math.max(0, Math.floor(dest.x)); bounds.y = Math.max(0, Math.floor(dest.y));
+                        bounds.width = Math.min(surfaceW, Math.ceil(dest.x + dest.width)) - bounds.x;
+                        bounds.height = Math.min(surfaceH, Math.ceil(dest.y + dest.height)) - bounds.y;
+                        group = pass.beginGroup(bounds, GROUP);
+                    }
+                    lay(pass, texture, CROP, dest, draw.mode === 'modulate' ? 'modulate' : 'over');
+                } finally {
+                    if (group) pass.endGroup(group);
+                    if (clip) pass.popClip(clip);
                 }
-                lay(pass, texture, CROP, dest, draw.mode === 'modulate' ? 'modulate' : 'over');
-                if (group) pass.endGroup(group);
-                if (clip) pass.popClip(clip);
                 i++;
             }
         },
         coverage(view: ViewState): { complete: boolean; sharp: boolean; staleVersion?: boolean } {
             if (!presenting) return { complete: false, sharp: false };
+            // A draw list that cannot be drawn for this view is a hole: the frame is incomplete (the board is critical while it is).
+            if (drawCount && !listUsable(view)) { wantFrame = true; return { complete: false, sharp: false }; }
             const exact = exactScale(view.camera.z * view.viewport.dpr);
             // A live part this frame could not admit is a hole: the picture is not complete (the next frame asks again).
             if (liveNow && !indexing) return { complete: !liveDeferredNow && !liveHoleNow, sharp: preparedSharp && drawnTarget === exact };
@@ -1745,6 +1764,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         },
         needsFrame(): boolean {
             if (disposed || !presenting) return false;
+            if (wantFrame) return true;
             // A pinned zoom is released by the frame that finds the zoom over: that frame is asked for, so the pins do not outlive the zoom.
             if (pinsHeld) return true;
             if (denied) return false;
@@ -1764,6 +1784,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         release(_reason: GpuReleaseReason): void { releaseAll(); },
         noteEvicted(): void { evictEpoch++; contentVersion++; },
         contentKey(): number { return hashMix(drawSignature, contentVersion); },
+        listInvalid(view: ViewState): boolean { return drawCount > 0 && !listUsable(view); },
         dispose(): void {
             if (disposed) return;
             releaseAll();

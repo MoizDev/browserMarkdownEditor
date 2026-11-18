@@ -1,5 +1,6 @@
 import type { PlatformLayerDefinition } from '../../platform/render/attachPlatformPane.types';
 import type { Layer } from '../../platform/render/types';
+import type { ViewState } from '../../platform/types';
 
 /**
  * A permanent place in the pane's layer topology for the live creation preview.
@@ -84,6 +85,7 @@ export function createPreviewSlot(id: string, base: PlatformLayerDefinition): Pr
             const inner = this.inner;
             return inner?.evictGpu ? (bytes, frameId) => inner.evictGpu!(bytes, frameId) : undefined;
         }
+        protectFrame(frameId: number, view: ViewState) { this.inner?.protectFrame?.(frameId, view); }
         memory() { return this.inner?.memory() ?? { gpuBytes: 0, cpuBytes: 0 }; }
         needsFrame() { return this.innerEpoch !== epoch || (this.inner?.needsFrame() ?? false); }
         // The revision the slot reports carries its epoch; the inner layer acknowledges the revision it reported itself.

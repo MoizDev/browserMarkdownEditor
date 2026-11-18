@@ -215,6 +215,8 @@ export interface GpuPaintAdapter {
      * whether or not that paint was presented, and moves on every change that can alter the composite (an edit, an eviction, a
      * live part drawn, a resource change, an index in progress). The board compares it with the value it presented. */
     contentKey(): number;
+    /** True when the last draw list cannot be drawn for this view: the layer is incomplete, and critical until it prepares again. */
+    listInvalid(view: ViewState): boolean;
     /** Indexes a paint to completion within `maxMs`, outside any frame (the same filter the frames apply, so the index matches). */
     warm(prepared: PreparedPaint2d, maxMs: number): boolean;
     /** The paint the composed tiles were built from, once a paint has been prepared. */
@@ -235,6 +237,8 @@ export interface GpuPaintAdapter {
     /** The governor's GPU pressure: frees up to `bytes` of idle GPU memory, path coverage sets first, then composed tiles
      * not used this frame. Returns the bytes freed. */
     evictGpu(bytes: number, frameId: number): number;
+    /** Stamps what the view shows as used in `frameId`, before the frame's prepare: its partial relief leaves it (see Layer.protectFrame). */
+    protectFrame(frameId: number, view: ViewState): void;
     /** The governor's CPU pressure: frees up to `bytes` of idle CPU memory (the path route's outline geometry, unused this
      * frame). Returns the bytes freed. The board's cpuEvict hook forwards to it. */
     evictCpu(bytes: number): number;
@@ -359,6 +363,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             const prepared = reference.borrowPrepared(), device = host.device();
             if (!prepared || !device || !documentMatches(prepared.root, budget.token) || !documentMatches(prepared.sourceFrame, budget.token) ||
                 device.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration) {
+                if (renderAuditEnabled()) auditCount(surface, !prepared ? 'prepare:hidden:no-paint' : !device ? 'prepare:hidden:no-device' : 'prepare:hidden:document');
                 composer.release('hidden');
                 presented = null; omitPrepared = null; ledger = null;
                 return true;
@@ -420,6 +425,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         drawnLiveNodeIds(band: PaintBand): ReadonlySet<string> { return disposed ? NO_INK : composer.drawnLiveNodeIds(band); },
         plannedLiveNodeIds(band: PaintBand): ReadonlySet<string> { return disposed ? NO_INK : composer.plannedLiveNodeIds(band); },
         contentKey(): number { return disposed ? -1 : composer.contentKey(); },
+        listInvalid(view: ViewState): boolean { return !disposed && composer.listInvalid(view); },
         gpuMandatoryBytes(viewport: { width: number; height: number }): number {
             return disposed || !presented ? 0 : composer.mandatoryBytes(viewport.width, viewport.height);
         },
@@ -433,6 +439,9 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             if (freed < bytes && lastView) freed += store.evict(bytes - freed, frameId, lastView);
             if (freed > 0) composer.noteEvicted();
             return freed;
+        },
+        protectFrame(frameId: number, view: ViewState): void {
+            if (!disposed) store.touchVisible(view, frameId);
         },
         evictCpu(bytes: number): number {
             return disposed || !(bytes > 0) ? 0 : pathRoute.evictCpu(bytes);

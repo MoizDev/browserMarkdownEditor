@@ -133,8 +133,10 @@ export function auditDrawnTake(): DrawnTally {
 export function auditPresent(input: PresentInput): void {
     if (!enabled) return;
     const exact = input.standIns === 0 && input.standInsRaster === 0 && input.holes === 0;
+    // The gate's rule (gpu): no hole and no geometry stand-in; a raster stand-in is complete only while a zoom is live.
+    const complete = input.layersComplete && input.holes === 0 && input.standIns === 0 && (input.standInsRaster === 0 || input.zooming);
     const record: PresentRecord = { pane: input.pane, frame: input.frame, rawTick: input.rawTick, backend: input.backend,
-        complete: input.layersComplete && exact, standIns: input.standIns, standInsRaster: input.standInsRaster, holes: input.holes,
+        complete, standIns: input.standIns, standInsRaster: input.standInsRaster, holes: input.holes,
         zooming: input.zooming, exact, refusal: input.refusal };
     presentRing[presentTotal % PRESENT_CAPACITY] = record;
     presentTotal++;

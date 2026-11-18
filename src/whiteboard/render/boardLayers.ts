@@ -573,6 +573,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         if (!dense) dense = createDensePaintAdapter(denseResources!, allocatorHost!, report, memoryGate);
         return dense;
     };
+    let gpuBoundHost: LayerHost | null = null;
     const ensureAdapter = (host: LayerHost): CanvasPaintAdapter => {
         if (!adapter) {
             allocatorHost = host;
@@ -596,7 +597,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 needsFrame: () => current().needsFrame(), memory: () => current().memory(),
                 dispose: () => { direct!.dispose(); dense?.dispose(); },
             };
-            gpu = createGpuPaintAdapter(adapter, host, report, gpuOptions());
+            gpu = createGpuPaintAdapter(adapter, host, report, gpuOptions()); gpuBoundHost = host;
         }
         return adapter;
     };
@@ -955,6 +956,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         id: `board-${band}`, group: 'document', foregroundCpu: true, ...gpuWorkingSetFor(band),
         create(host) {
             if (disposed || hosts.has(band)) throw new Error('Board layer already attached');
+            // Trace (counters only): a band re-attached after the GPU adapter was bound to an earlier host keeps that host.
+            auditCount(options.auditSurface ?? 'board', `host:attach:${band}:${gpu ? (gpuBoundHost === host ? 'same' : 'rebound-needed') : 'first'}`);
             hosts.set(band, host); ensureAdapter(host);
             let ended = false;
             const layer: Layer & LayerEvicting = {
@@ -1039,6 +1042,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 dispose() {
                     if (ended) return;
                     ended = true;
+                    auditCount(options.auditSurface ?? 'board', `host:detach:${band}`);
                     armMemoryRetry(false);
                     if (allocatorHost === host) { clearResources('pressure'); allocatorHost = null; }
                     hosts.delete(band);

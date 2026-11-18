@@ -38,6 +38,9 @@ export interface BoardPreview {
     presented(revision: number, token: import('../../platform/render/types').RenderToken, frame?: PaintSource): void;
     showTextPaint(node: Node, paint: TextPaint, faces: FaceTable, localToWorld: Affine): void;
     clear(): void;
+    /** Makes the overlay's layers now, at editing activation: their kits compile their pipelines at creation, so the first drag
+     * does not wait for them. Empty layers answer complete (nothing is requested until a hand-off), so this costs no frame. */
+    warm(): void;
     dispose(): void;
 }
 
@@ -576,6 +579,7 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
             catch (error) { clear(); report(error); }
         },
         clear,
+        warm() { if (disposed) return; try { ensureLayers(); } catch (error) { report(error); } },
         dispose() { if (!disposed) { clearNow(); disposed = true; unbind(); } },
     };
 }

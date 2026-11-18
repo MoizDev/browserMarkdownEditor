@@ -177,11 +177,10 @@ export type TileLay = (pass: GpuPass, texture: TextureHandle, source: Readonly<R
 /** Lays a batch of 'over' quads of one tile texture in one call (the host's batched quads, one GPU draw). */
 export type TileLayQuads = (pass: GpuPass, texture: TextureHandle, quads: readonly TexturedQuadSpec[]) => void;
 
-/** The geometry service a live zoom pins (services.inkBandKey / pinVisible / releasePins), as the composer uses it. A zoom frame pins
- * the visible nodes at the band it draws and the band before it; a rest releases the pins. Absent: nothing is pinned. */
+/** The geometry service a live zoom pins (services.pinVisible / releasePins), as the composer uses it. A zoom frame pins the visible
+ * nodes (every band of them is kept); a rest releases the pins, and they also lapse by time. Absent: nothing is pinned. */
 export interface GeometryPins {
-    bandKey(deviceScale: number): string;
-    pinVisible(ids: Iterable<string>, keys: readonly string[]): void;
+    pinVisible(ids: Iterable<string>): void;
     releasePins(): void;
 }
 
@@ -1416,7 +1415,6 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 for (const route of routeList) (route as ItemRoute & ResourcedRoute).useResources?.(prepared.resources);
             }
             // The scale moves only with the camera's zoom: a pan or a drag keeps the tiles' scale and their pixels.
-            const previousZoom = lastZoom;
             zooming = lastZoom !== undefined && view.camera.z !== lastZoom;
             lastZoom = view.camera.z;
             if (pins) {
@@ -1425,8 +1423,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     const world: Rect = { x: view.camera.x, y: view.camera.y, width: view.viewport.width / view.camera.z, height: view.viewport.height / view.camera.z };
                     const ids = new Set<string>();
                     for (const band of BANDS) for (const part of parts.partsFor(band, world, omitIds ?? undefined)) ids.add(part.nodeId);
-                    const dpr = view.viewport.dpr;
-                    pins.pinVisible(ids, [pins.bandKey(view.camera.z * dpr), pins.bandKey((previousZoom ?? view.camera.z) * dpr)]);
+                    pins.pinVisible(ids);
                     pinsHeld = true;
                 } else if (pinsHeld) { pins.releasePins(); pinsHeld = false; }
             }

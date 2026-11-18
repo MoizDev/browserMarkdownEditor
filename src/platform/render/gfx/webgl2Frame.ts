@@ -4,6 +4,7 @@ import type {
     Samples, Submission, TargetHandle, TargetLease, TextureFormat, TextureHandle, UniformSlice,
 } from './api';
 import { ArenaError } from '../resourceArena';
+import { auditCount } from '../renderAudit';
 
 // Module-private implementation seam. Only webgl2.ts constructs this capability object;
 // a layer receives FrameEncoder/GpuPass and never the GL context or these native records.
@@ -280,11 +281,33 @@ class DeviceFrame implements ControlledFrame {
             throw this.#backend.failure(failure);
         }
     }
+    /** A uniform write is the one refusal a frame survives. Out-of-budget from the ring (or the governor) leaves the frame intact and
+     * throws to the caller, which defers that one draw; any other failure cancels the frame, as guard does. */
+    #writeRing<T>(operation: () => T): T {
+        try { this.check(); return operation(); }
+        catch (error) {
+            if (error instanceof ArenaError && error.code === 'out-of-budget' && !this.#closed && !this.#backend.signal.aborted) {
+                auditCount('gpu', 'uniform-deferred');
+                throw error;
+            }
+            let failure = error;
+            try { this.cancel(); } catch (cleanup) { failure = cleanup; }
+            throw this.#backend.failure(failure);
+        }
+    }
     uniforms(bytes: ArrayBufferView): UniformSlice {
-        return this.guard(() => this.#backend.uniforms(bytes));
+        return this.#writeRing(() => this.#backend.uniforms(bytes));
     }
     uniformsInto(bytes: ArrayBufferView, into: UniformSlice): void {
-        this.guard(() => this.#backend.uniformsInto(bytes, into));
+        this.#writeRing(() => this.#backend.uniformsInto(bytes, into));
+    }
+    /** One quad's uniforms, or null when the ring refused them: that quad alone is deferred and the rest of the frame stands. */
+    #quadUniforms(bytes: ArrayBufferView): UniformSlice | null {
+        try { return this.uniforms(bytes); }
+        catch (error) {
+            if (error instanceof ArenaError && error.code === 'out-of-budget') { auditCount('gpu', 'quad-deferred'); return null; }
+            throw error;
+        }
     }
     acquireTarget(desc: TargetRequest): TargetLease | null {
         return this.guard(() => this.#backend.acquireTarget(desc));
@@ -620,7 +643,8 @@ class DeviceFrame implements ControlledFrame {
         }
         setVec4(data, 28, options.blend === 'multiply' ? 1 : 0, mask ? 1 : 0, scope.coverage ? 1 : 0,
             __BME_BENCH__ ? (source.coverage ? 1 : 0) + (backdrop?.texture.coverage ? 2 : 0) : 0);
-        const packed = this.uniforms(data);
+        const packed = this.#quadUniforms(data);
+        if (!packed) { if (backdrop) this.releaseTemporary(backdrop.lease); return; }
         const command: QuadCommand = {
             context: scope, source, backdrop: backdrop?.texture ?? this.#backend.white(), mask: mask?.texture ?? this.#backend.white(),
             uniforms: { buffer: this.#backend.buffer(packed.buffer), slice: packed }, scissor: area,
@@ -675,7 +699,8 @@ class DeviceFrame implements ControlledFrame {
         setVec4(data, 12, source.width, source.height, 1, 0);
         setVec4(data, 16, output.rgb[0], output.rgb[1], output.rgb[2], output.alpha);
         setVec4(data, 28, output.blend === 'modulate' ? 1 : 0, 0, 0, 0);
-        const packed = this.uniforms(data);
+        const packed = this.#quadUniforms(data);
+        if (!packed) return;
         const command: QuadCommand = {
             context: scope, source, backdrop: this.#backend.white(), mask: this.#backend.white(),
             uniforms: { buffer: this.#backend.buffer(packed.buffer), slice: packed }, scissor: area,
@@ -700,7 +725,9 @@ class DeviceFrame implements ControlledFrame {
             setVec4(data, 4, at.x, at.y, at.width, at.height);
             setVec4(data, 8, slot.x, slot.y, 16, 0);
             setVec4(data, 12, source.width, source.height, 1, 0);
-            const packed = this.uniforms(data);
+            // A refused slot is left empty (counted as gpu:quad-deferred): its coverage reads as none, so the caller must count it.
+            const packed = this.#quadUniforms(data);
+            if (!packed) return;
             const command: QuadCommand = {
                 context: scope, source, backdrop: this.#backend.white(), mask: this.#backend.white(),
                 uniforms: { buffer: this.#backend.buffer(packed.buffer), slice: packed }, scissor: at, blend: 'replace', variant: 'grid16',

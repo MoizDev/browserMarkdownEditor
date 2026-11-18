@@ -556,6 +556,9 @@ export class PaneLifecycle<T extends object> {
     private wrapOwner(owner: BrokerGpuOwner): BrokerGpuOwner {
         return {
             limits: owner.limits, resizeSurface: (width, height) => owner.resizeSurface(width, height),
+            openOffscreen: (width, height) => owner.openOffscreen(width, height),
+            commitSurface: () => owner.commitSurface(),
+            closeOffscreen: () => owner.closeOffscreen(),
             releaseGpu: reason => this.withGpuRelease(reason, () => {
                 const release = () => this.releaseSelection(this.layers, reason);
                 // A lost device must be abandoned before layers release old handles (§9.2:771).

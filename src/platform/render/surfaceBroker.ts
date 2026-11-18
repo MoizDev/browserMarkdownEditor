@@ -456,6 +456,18 @@ class SurfaceBroker {
                 }
                 return owner.resizeSurface(width, height);
             },
+            // The same lifetime checks as resizeSurface: a raise opened or presented after the grant went stale does nothing.
+            openOffscreen: (width, height) => {
+                if (!this.matches(entry, stamp) || entry.reservation !== reservation ||
+                    entry.generation !== generation || reservation.lost || !drawable(entry) || !this.windowVisible) return false;
+                return owner.openOffscreen(width, height);
+            },
+            commitSurface: () => {
+                if (!this.matches(entry, stamp) || entry.reservation !== reservation ||
+                    entry.generation !== generation || reservation.lost || !drawable(entry) || !this.windowVisible) return null;
+                return owner.commitSurface();
+            },
+            closeOffscreen: () => { owner.closeOffscreen(); },
         };
     }
 

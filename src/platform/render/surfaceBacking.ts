@@ -23,6 +23,8 @@ export class SurfaceBacking implements MemoryAllocator {
     private readonly leases = new Set<ByteLease>();
     private displayed: boolean;
     private closed = false;
+    /** A size built offscreen while the displayed canvas keeps its own picture: its bytes are charged before the device allocates. */
+    private pendingLease: ByteLease | null = null;
 
     constructor(private readonly options: SurfaceBackingOptions) {
         if (options.canvas.width || options.canvas.height) throw new Error('A backing must start at zero size');
@@ -35,7 +37,7 @@ export class SurfaceBacking implements MemoryAllocator {
         });
         try {
             this.scratch = options.governor.register({
-                ...common, id: `${options.id}:candidate`, pool: 'gpu', kind: 'canvas-working', class: 'critical',
+                ...common, id: `${options.id}:candidate`, pool: 'gpu', kind: 'surface-scratch', class: 'critical',
                 memory: () => ({ live: this.displayed ? 0 : bytes(), retiring: 0 }), evict: () => {},
             });
         } catch (error) { this.display.close(); throw error; }
@@ -116,9 +118,31 @@ export class SurfaceBacking implements MemoryAllocator {
         this.scratch.updateActivity(activity);
     }
 
+    /** Reserve the offscreen target's bytes for a new size while the displayed canvas keeps its picture and its own lease. False when the
+     * governor refuses, and the resize is then refused as it is today. The display accounts for the canvas itself once it changes size. */
+    reservePending(bytes: number): boolean {
+        if (this.closed) return false;
+        if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes % POLICY.surfaceReserveBytesPerPixel !== 0) throw new RangeError('Invalid surface reservation');
+        if (this.pendingLease) throw new Error('A pending size is already reserved');
+        const lease = this.scratch.reserve(bytes);
+        if (!lease) return false;
+        this.pendingLease = lease;
+        return true;
+    }
+
+    /** Ends the offscreen reservation: after the device presented that target (the canvas now holds that size), or when the pending
+     * size is dropped (hidden, context lost, a failed resize, a newer size). Idempotent. */
+    releasePending(): void {
+        const lease = this.pendingLease;
+        if (!lease) return;
+        this.pendingLease = null;
+        this.options.governor.releaseLease(lease);
+    }
+
     /** Compositor/backend teardown must really zero its canvas before its accounting disappears. */
     close(): void {
         if (this.closed) return;
+        this.releasePending();
         if (this.options.canvas.width || this.options.canvas.height || this.leases.size) throw new Error('Release the backing before closing its budget');
         this.closed = true;
         this.display.close();

@@ -36,6 +36,10 @@ export interface SurfaceResizeResult {
     readonly height: number;
     readonly complete: boolean;
     readonly generation: number;
+    /** The memory governor refused the new backing's bytes. That is pressure already signalled to the governor, not a
+     * framebuffer fault: a refusal must not degrade the pane a second time. Measured at DPR 2: the 2D back buffer of a
+     * fallback pane at quality 1.0 was refused and reported as 'incomplete' (the WebGL2 status was complete on all 274 resizes). */
+    readonly refused?: boolean;
 }
 
 export type ResizeSurface = (width: number, height: number) => SurfaceResizeResult;
@@ -45,6 +49,10 @@ export interface BrokerGpuOwner {
     readonly limits: Readonly<GfxLimits>;
     /** Backend owns canvas resize and the one drawing-buffer/framebuffer check after a commit. */
     readonly resizeSurface: ResizeSurface;
+    /** A raise builds at the new size off the displayed canvas: open, then present it when its frame is complete. */
+    openOffscreen(width: number, height: number): boolean;
+    commitSurface(): SurfaceResizeResult | null;
+    closeOffscreen(): void;
     /** Release working handles through the arena; hidden keeps only device-owned programs. */
     releaseGpu(reason: GpuReleaseReason): void;
     /** Dispose/abandon the remaining programs and arena; safe after releaseGpu and loss. */
@@ -63,6 +71,9 @@ export interface GpuGrant {
     readonly limits: Readonly<GfxLimits>;
     /** Called only by surfaceMetrics in the shared frame, with the current governor grant. */
     readonly resizeSurface: ResizeSurface;
+    readonly openOffscreen: (width: number, height: number) => boolean;
+    readonly commitSurface: () => SurfaceResizeResult | null;
+    readonly closeOffscreen: () => void;
     readonly generation: number;
     readonly reused: boolean;
 }
@@ -131,7 +142,9 @@ export interface SurfaceLease {
     markPresented(stamp: SurfaceStamp, generation: number): boolean;
     /** An unrecoverable qualified-backend fault abandons this reservation and returns to CPU. */
     failGpu(stamp: SurfaceStamp, generation: number, reason: GpuFailureReason, latch: boolean): void;
-    /** One fresh attempt after an outright failure/timeout, only on explicit user action or later show. */
+    /** One fresh attempt after an outright failure, on explicit user action or a later show. A restore timeout is retried by the
+     * broker itself on a back-off while the pane is visible (5 s, doubling, to 60 s), so it is not permanent: a context lost
+     * with no restore used to leave the pane on 2D for the whole session, until it was hidden and shown. */
     retry(): void;
     snapshot(): SurfaceSnapshot;
     dispose(): void;

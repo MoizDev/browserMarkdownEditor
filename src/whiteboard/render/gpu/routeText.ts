@@ -4,9 +4,10 @@ import type { BufferHandle, ByteLease, DrawCommand, GfxDevice, GpuPass, Pipeline
 import type { FrameBudget, OffscreenPasses } from '../../../platform/render/types';
 import { auditCount } from '../../../platform/render/renderAudit';
 import type { FontKey } from '../../text/fonts';
+import { RENDER_CONSTANTS } from '../../../platform/render/constants';
 import type { PaintItem, PaintTextItem } from '../paintStream';
 import { ATLAS_PAGE, IdentityIndex, ShelfPacker, TextAtlas, type AtlasEntry, type AtlasPage, type Indexed } from '../textAtlas';
-import { MASK_CANVAS_BYTES, MEMO_ENTRY_BYTES, copyIdentity, createCpuAccount, createMaskRaster, fillIdentity, identityHash, needsColourMask,
+import { MEMO_ENTRY_BYTES, copyIdentity, createCpuAccount, createMaskRaster, fillIdentity, identityHash, needsColourMask,
     newIdentity, sliceCell, type CpuAccount, type MaskCell, type MaskGeometry, type MaskIdentity, type MaskRaster, type MaskRequest } from './textMasks';
 import type { Admission, Blend, CreateTextRoute, ItemRoute, PreparedRun } from './contracts';
 
@@ -31,6 +32,12 @@ export interface TextRoute extends ItemRoute<PaintTextItem> {
 
 /** Per instance: device rect (x, y, w, h), page uv rect (u0, v0, u1, v1; u0 = -1 marks a solid rect), premultiplied colour. */
 const INSTANCE_BYTES = 48;
+/** A refusal of `bytes` from `pool`. A request above the pool's grant floor can never be granted: the governor's capacity wake only
+ * comes when the floor is free, so a denial would wait forever. Such a cell is unsupported, and the composer draws its fallback. */
+function refused(pool: 'gpu' | 'cpu', bytes: number): Stop {
+    const floor = pool === 'gpu' ? RENDER_CONSTANTS.gpuGrantMinBytes : RENDER_CONSTANTS.cpuGrantMinBytes;
+    return bytes > floor ? { status: 'unsupported', why: 'oversize' } : { status: 'denied', pool, bytes };
+}
 /** A batch's uniform before its first draw writes the frame's slice into it. It is never submitted. */
 const NO_UNIFORM: UniformSlice = { buffer: null as unknown as BufferHandle, offset: 0, bytes: 0 };
 const SOLID_UV = -1;
@@ -225,7 +232,6 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
     const standAccount: CpuAccount = createCpuAccount(host.allocator.cpu, MEMO_CHUNK);
     // Refused measurements are counted under the audit surface (h13's text:measure-uncached), so a pool at its limit shows.
     const raster: MaskRaster = createMaskRaster(memoAccount, audit);
-    let rasterLease: ByteLease | null = null;
     let scratch: Float32Array<ArrayBuffer> = new Float32Array(0), scratchLease: ByteLease | null = null;
     let uniformData: Float32Array<ArrayBuffer> | null = null, uniformLease: ByteLease | null = null;
     let device: GfxDevice | null = null;
@@ -267,13 +273,12 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
     const retireRun = (run: TextRun): void => {
         if (!live.delete(run)) return;
         for (let i = 0; i < run.pinEntries.length; i++) run.pinAtlases[i].unpin(run.pinEntries[i]);
+        // The buffer was created on its lease, which the device owns: destroying it returns the lease when it retires.
         run.device.destroy(run.buffer);
-        host.allocator.gpu.release(run.bufferLease);
     };
     /** The canvas and its memo: freed on release and on governor pressure, and created again by the next raster. */
     const releaseRaster = (): void => {
         raster.release();
-        if (rasterLease) { host.allocator.cpu.release(rasterLease); rasterLease = null; }
     };
     /** Every GPU resource of the current device. Runs go first, so their pins drop before the atlases are disposed. */
     const releaseGpu = (): void => {
@@ -289,9 +294,9 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
             if (stage) owner.destroy(stage.texture);
         }
         mono?.dispose(); colour?.dispose();
-        if (whiteLease) host.allocator.gpu.release(whiteLease);
-        if (stage) host.allocator.gpu.release(stage.lease);
-        if (convertLease) host.allocator.gpu.release(convertLease);
+        // The white texture, the staging texture and the conversion buffer were created on their leases: the device owns those
+        // leases and returns them when the resources retire (or at loss, on abandon). Releasing them here too returned them
+        // before the GPU had retired the resource.
         // The CPU scratch goes with the device: each is leased again on demand by the next admit.
         if (scratchLease) host.allocator.cpu.release(scratchLease);
         if (uniformLease) host.allocator.cpu.release(uniformLease);
@@ -315,14 +320,16 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         if (pipelinesPending || failed) return false;
         const serial = incarnation;
         pipelinesPending = true;
+        // Each pipeline is created as it is listed. A synchronous throw part-way leaves the earlier ones unawaited, so they are
+        // destroyed once they settle: nothing else owns them.
+        const created: Promise<PipelineHandle>[] = [];
         try {
-            Promise.all([
-                ...VARIANTS.map(variant => owner.createPipeline({ shader: shaderFor(variant), topology: 'triangle-strip',
-                    colorFormat: 'rgba8', samples: 1, blend: variant.endsWith('modulate') ? 'modulate' : 'source-over',
-                    alphaToCoverage: false, colorWrite: [true, true, true, true], stencil: { enabled: false } })),
-                owner.createPipeline({ shader: convertShader(), topology: 'triangle-strip', colorFormat: 'r8', samples: 1,
-                    blend: 'replace', alphaToCoverage: false, colorWrite: [true, true, true, true], stencil: { enabled: false } }),
-            ]).then(made => {
+            for (const variant of VARIANTS) created.push(owner.createPipeline({ shader: shaderFor(variant), topology: 'triangle-strip',
+                colorFormat: 'rgba8', samples: 1, blend: variant.endsWith('modulate') ? 'modulate' : 'source-over',
+                alphaToCoverage: false, colorWrite: [true, true, true, true], stencil: { enabled: false } }));
+            created.push(owner.createPipeline({ shader: convertShader(), topology: 'triangle-strip', colorFormat: 'r8', samples: 1,
+                blend: 'replace', alphaToCoverage: false, colorWrite: [true, true, true, true], stencil: { enabled: false } }));
+            Promise.all(created).then(made => {
                 if (serial !== incarnation || device !== owner) { for (const pipeline of made) owner.destroy(pipeline); return; }
                 for (let i = 0; i < VARIANTS.length; i++) pipelines[i] = made[i];
                 convertPipeline = made[VARIANTS.length];
@@ -331,7 +338,12 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
                 if (serial !== incarnation) return;
                 pipelinesPending = false; failed = true; host.invalidate('text-pipelines-failed');
             });
-        } catch { pipelinesPending = false; failed = true; }
+        } catch {
+            pipelinesPending = false; failed = true;
+            void Promise.allSettled(created).then(results => {
+                for (const result of results) if (result.status === 'fulfilled') owner.destroy(result.value);
+            });
+        }
         return false;
     };
 
@@ -343,20 +355,16 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         if (!sampler) sampler = owner.createSampler('linear');
         if (!white) {
             const lease = host.allocator.gpu.reserve(1);
-            if (!lease) return { status: 'denied', pool: 'gpu', bytes: 1 };
+            if (!lease) return refused('gpu', 1);
+            try { white = owner.createTexture(1, 1, 'r8', ['sample', 'copy-dst'], lease); }
+            catch (error) { host.allocator.gpu.release(lease); throw error; }
             whiteLease = lease;
-            white = owner.createTexture(1, 1, 'r8', ['sample', 'copy-dst'], lease);
             owner.writeTexture(white, { x: 0, y: 0, width: 1, height: 1 },
                 { source: new Uint8Array([255]), rowBytes: 1, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
         }
         return null;
     };
 
-    const ensureRasterLease = (): boolean => {
-        if (rasterLease) return true;
-        rasterLease = host.allocator.cpu.reserve(MASK_CANVAS_BYTES);
-        return rasterLease !== null;
-    };
     const ensureUniformData = (): boolean => {
         if (uniformData) return true;
         uniformLease = host.allocator.cpu.reserve(16);
@@ -389,8 +397,8 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         let buffer: BufferHandle;
         try { buffer = device!.createBuffer(bytes, ['vertex', 'copy-dst'], gpuLease); }
         catch (error) { host.allocator.gpu.release(gpuLease); host.allocator.cpu.release(cpuLease); throw error; }
+        // The old buffer's lease is the device's: destroying the buffer returns it when it retires.
         if (convertBuffer) device!.destroy(convertBuffer);
-        if (convertLease) host.allocator.gpu.release(convertLease);
         if (convertScratchLease) host.allocator.cpu.release(convertScratchLease);
         convertBuffer = buffer; convertLease = gpuLease; convertCapacity = capacity;
         convertScratch = new Float32Array(capacity * 12); convertScratchLease = cpuLease;
@@ -415,8 +423,8 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
     const releaseStage = (): void => {
         if (!stage) return;
         clearStageTimer();
+        // Created on its lease, which the device returns when the texture retires.
         device!.destroy(stage.texture);
-        host.allocator.gpu.release(stage.lease);
         stage = null;
     };
     /** Arms the idle release: after STAGE_IDLE_MS with no conversion pending, the texture is destroyed from the timer. */
@@ -471,7 +479,7 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         build.x0 = Math.min(build.x0, x0); build.y0 = Math.min(build.y0, y0);
         build.x1 = Math.max(build.x1, x1); build.y1 = Math.max(build.y1, y1);
     };
-    const denied = (): Stop => ({ status: 'denied', pool: 'cpu', bytes: (build.count + 1) * INSTANCE_BYTES });
+    const denied = (): Stop => refused('cpu', (build.count + 1) * INSTANCE_BYTES);
 
     /** A solid rect in device px: analytic coverage in the shader, so its edges match the canvas's fill. False only on refusal. */
     const solidRect = (x0: number, y0: number, x1: number, y1: number, colourOf: Rgba, viewW: number, viewH: number): boolean => {
@@ -571,21 +579,28 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
     const rasterColour = (req: MaskRequest, geometry: MaskGeometry, cellIndex: number, colourOf: Rgba, frame: number, budget: FrameBudget, label: string): Stop | null => {
         const at = sliceCell(geometry, cellIndex, cell);
         const bytes = at.w * at.h * 4;
-        if (!budget.claimUpload(bytes)) return { status: 'deferred' };
-        // Rastered before it is placed: an entry the atlas holds must already have its texels, or a later draw would read nothing.
-        const made = raster.rasteriseBitmap(req, geometry, cellIndex, colourOf);
-        let placed: AtlasEntry | 'oversize' | 'denied';
+        // The raster's own bytes: its canvas is sized to this cell and its bitmap is this cell, so the cell's bytes are held from
+        // the rasterise until the bitmap is closed. A refusal waits for these bytes, not for a fixed maximum.
+        const rasterLease = host.allocator.cpu.reserve(bytes);
+        auditCount(audit, `text:raster:bucket:${2 ** Math.ceil(Math.log2(Math.max(1, bytes)))}`);
+        if (!rasterLease) return refused('cpu', bytes);
         try {
-            placed = colour!.place(fillIdentity(probe, req, cellIndex, colourOf), at.w, at.h, frame);
-            if (placed === 'oversize') return { status: 'unsupported', why: 'oversize' };
-            if (placed === 'denied') return { status: 'denied', pool: 'gpu', bytes };
-            colour!.uploadBitmap(placed, made.bitmap);
-        } finally { made.bitmap.close(); }
-        auditCount(audit, 'text:mask-raster', 1, { px: at.w * at.h });
-        auditCount(audit, 'upload:mask', 1, { bytes });
-        recordStandIn(req, label, colourOf, colour!, placed, geometry.slices, geometry);
-        slot.entry = placed; slot.rgba = true; slot.standIn = false;
-        return null;
+            if (!budget.claimUpload(bytes)) return { status: 'deferred' };
+            // Rastered before it is placed: an entry the atlas holds must already have its texels, or a later draw would read nothing.
+            const made = raster.rasteriseBitmap(req, geometry, cellIndex, colourOf);
+            let placed: AtlasEntry | 'oversize' | 'denied';
+            try {
+                placed = colour!.place(fillIdentity(probe, req, cellIndex, colourOf), at.w, at.h, frame);
+                if (placed === 'oversize') return { status: 'unsupported', why: 'oversize' };
+                if (placed === 'denied') return refused('gpu', bytes);
+                colour!.uploadBitmap(placed, made.bitmap);
+            } finally { made.bitmap.close(); }
+            auditCount(audit, 'text:mask-raster', 1, { px: at.w * at.h });
+            auditCount(audit, 'upload:mask', 1, { bytes });
+            recordStandIn(req, label, colourOf, colour!, placed, geometry.slices, geometry);
+            slot.entry = placed; slot.rgba = true; slot.standIn = false;
+            return null;
+        } finally { host.allocator.cpu.release(rasterLease); }
     };
 
     /** A mono cell: its bitmap is written into the staging texture, and the conversion puts its alpha into the R8 page at the end
@@ -593,30 +608,39 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
     const stageMono = (req: MaskRequest, label: string, geometry: MaskGeometry, cellIndex: number, frame: number, budget: FrameBudget): Stop | null => {
         const at = sliceCell(geometry, cellIndex, cell);
         const bytes = at.w * at.h * 4;
-        if (!budget.claimUpload(bytes)) return { status: 'deferred' };
+        // Storage before budget: a claim spent on a refused reservation starved the next cell of this frame's allowance. The
+        // staging spot and the conversion capacity are checked first; a spot taken and then deferred by the claim is reclaimed
+        // at the next staging reset, as a refused cell's spot always was.
         const spot = stageSpot(at.w, at.h);
-        if (spot === 'denied') return { status: 'denied', pool: 'gpu', bytes };
+        if (spot === 'denied') return refused('gpu', bytes);
         // A full staging texture is the frame's limit: the run waits for the next frame, which starts with the staging reset.
         if (!spot) { host.invalidate('text-stage-full'); return { status: 'deferred' }; }
-        const staged = stage!;
-        if (!ensureConvertCapacity(pendingCount + 1)) return { status: 'denied', pool: 'gpu', bytes };
-        const made = raster.rasteriseBitmap(req, geometry, cellIndex, null);
+        if (!ensureConvertCapacity(pendingCount + 1)) return refused('gpu', bytes);
+        // The raster's own bytes, as in rasterColour: held until the staging write has taken the bitmap.
+        const rasterLease = host.allocator.cpu.reserve(bytes);
+        auditCount(audit, `text:raster:bucket:${2 ** Math.ceil(Math.log2(Math.max(1, bytes)))}`);
+        if (!rasterLease) return refused('cpu', bytes);
         try {
-            const placed = mono!.place(fillIdentity(probe, req, cellIndex, null), at.w, at.h, frame);
-            if (placed === 'oversize') return { status: 'unsupported', why: 'oversize' };
-            if (placed === 'denied') return { status: 'denied', pool: 'gpu', bytes: at.w * at.h };
-            device!.writeTexture(staged.texture, { x: spot.x, y: spot.y, width: at.w, height: at.h },
-                { source: made.bitmap, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
-            let next = pending[pendingCount];
-            if (next) { next.entry = placed; next.x = spot.x; next.y = spot.y; }
-            else { next = { entry: placed, x: spot.x, y: spot.y }; pending.push(next); }
-            pendingCount++;
-            auditCount(audit, 'text:mask-raster', 1, { px: at.w * at.h });
-            auditCount(audit, 'upload:mask', 1, { bytes });
-            recordStandIn(req, label, null, mono!, placed, geometry.slices, geometry);
-            slot.entry = placed; slot.rgba = false; slot.standIn = false;
-            return null;
-        } finally { made.bitmap.close(); }
+            if (!budget.claimUpload(bytes)) return { status: 'deferred' };
+            const staged = stage!;
+            const made = raster.rasteriseBitmap(req, geometry, cellIndex, null);
+            try {
+                const placed = mono!.place(fillIdentity(probe, req, cellIndex, null), at.w, at.h, frame);
+                if (placed === 'oversize') return { status: 'unsupported', why: 'oversize' };
+                if (placed === 'denied') return refused('gpu', at.w * at.h);
+                device!.writeTexture(staged.texture, { x: spot.x, y: spot.y, width: at.w, height: at.h },
+                    { source: made.bitmap, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
+                let next = pending[pendingCount];
+                if (next) { next.entry = placed; next.x = spot.x; next.y = spot.y; }
+                else { next = { entry: placed, x: spot.x, y: spot.y }; pending.push(next); }
+                pendingCount++;
+                auditCount(audit, 'text:mask-raster', 1, { px: at.w * at.h });
+                auditCount(audit, 'upload:mask', 1, { bytes });
+                recordStandIn(req, label, null, mono!, placed, geometry.slices, geometry);
+                slot.entry = placed; slot.rgba = false; slot.standIn = false;
+                return null;
+            } finally { made.bitmap.close(); }
+        } finally { host.allocator.cpu.release(rasterLease); }
     };
 
     /** One cell of a glyph mask: the exact hit, a stand-in during motion, or the raster and its upload. Writes the slot;
@@ -637,7 +661,6 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         // Motion draws what exists: a missing exact cell is a stand-in, not a raster, until the view settles.
         if (moving && geometry.slices === 1 && standInFor(req, label, colourOf, emoji, false)) return null;
         if (budget.shouldYield()) return { status: 'deferred' };
-        if (!ensureRasterLease()) return { status: 'denied', pool: 'cpu', bytes: MASK_CANVAS_BYTES };
         return emoji ? rasterColour(req, geometry, cellIndex, colourOf, frame, budget, label)
             : stageMono(req, label, geometry, cellIndex, frame, budget);
     };
@@ -744,7 +767,7 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
             const dpr = view.viewport.dpr;
             const viewW = Math.round(view.viewport.width * dpr), viewH = Math.round(view.viewport.height * dpr);
             const scale = view.camera.z * dpr;
-            if (!ensureUniformData()) return { status: 'denied', pool: 'cpu', bytes: 16 };
+            if (!ensureUniformData()) return refused('cpu', 16);
             build.count = 0; build.batchCount = 0; build.inexact = false;
             build.pinAtlas.length = 0; build.pinEntry.length = 0;
             build.x0 = Infinity; build.y0 = Infinity; build.x1 = -Infinity; build.y1 = -Infinity;
@@ -758,9 +781,15 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
             const x1 = Math.min(viewW, Math.ceil(build.x1)), y1 = Math.min(viewH, Math.ceil(build.y1));
             if (x1 <= x0 || y1 <= y0) return { status: 'empty' };
             const bytes = build.count * INSTANCE_BYTES;
+            // Every object the run needs is checked before any budget or storage is spent: a missing one throws with nothing
+            // allocated, where it used to throw after the buffer was created and its lease left unpinned.
+            if (!sampler) throw new Error('Text sampler missing');
+            for (let i = 0; i < build.batchCount; i++) {
+                if (!pipelines[pipelineIndex(build.batches[i].mode, blend)]) throw new Error('Text pipeline missing');
+            }
             if (!budget.claimUpload(bytes)) return { status: 'deferred' };
             const lease = host.allocator.gpu.reserve(bytes);
-            if (!lease) return { status: 'denied', pool: 'gpu', bytes };
+            if (!lease) return refused('gpu', bytes);
             let buffer: BufferHandle | null = null;
             try {
                 buffer = owner.createBuffer(bytes, ['vertex', 'copy-dst'], lease);
@@ -768,18 +797,17 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
                 auditCount(audit, 'upload:vertex', 1, { bytes });
                 auditCount(audit, 'geom:build');
             } catch (error) {
+                // A created buffer owns its lease (destroying it returns the lease); a refused creation left the lease ours.
                 if (buffer) owner.destroy(buffer);
-                host.allocator.gpu.release(lease);
+                else host.allocator.gpu.release(lease);
                 throw error;
             }
             // The run keeps its own batches, commands and pins: the build's objects are reused by the next composition.
-            if (!sampler) throw new Error('Text sampler missing');
             const scissor: RectI = { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
             const batches: Batch[] = new Array<Batch>(build.batchCount);
             for (let i = 0; i < build.batchCount; i++) {
                 const b = build.batches[i];
-                const pipeline = pipelines[pipelineIndex(b.mode, blend)];
-                if (!pipeline) throw new Error('Text pipeline missing');
+                const pipeline = pipelines[pipelineIndex(b.mode, blend)]!;
                 // The uniform slice is the frame's, written at each draw; the placeholder is never submitted.
                 const uniform = { binding: 0, slice: NO_UNIFORM };
                 const command: DrawCommand = { pipeline, bindings: { uniforms: [uniform],
@@ -798,7 +826,12 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         },
         draw(pass: GpuPass, prepared: PreparedRun): void {
             const run = prepared as TextRun;
-            if (!live.has(run) || device !== run.device || host.device() !== run.device) throw new Error('Stale text run');
+            // A run from a device this route no longer holds (lost, or released since admit) draws nothing. Throwing here
+            // would end the composer's frame; the count keeps it visible, and the run's owner admits it again on the next frame.
+            if (!live.has(run) || device !== run.device || host.device() !== run.device) {
+                auditCount(audit, 'text:stale-run-skipped');
+                return;
+            }
             // The uniform block is packed into the encoder's ring at this call, so one leased scratch serves every run.
             const data = uniformData!;
             data[0] = run.viewW; data[1] = run.viewH; data[2] = 0; data[3] = 0;
@@ -842,7 +875,9 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
                 const target = run.page.target;
                 if (!target) throw new Error('R8 text page without a conversion target');
                 const viewport = { x: 0, y: 0, width: ATLAS_PAGE, height: ATLAS_PAGE };
-                const gpuPass = passes.begin(target, viewport, { clear: null, stencil: false });
+                // A page that has never been stored starts clear: a load of a target with no contents is refused (measured: invalid-input on every fresh page).
+                const gpuPass = passes.begin(target, viewport, { clear: run.page.stored ? null : [0, 0, 0, 0], stencil: false });
+                run.page.stored = true;
                 gpuPass.draw({ pipeline, bindings: { uniforms: [], textures: [{ binding: 0, texture: staged.texture, sampler }] },
                     vertices: [{ buffer: convertBuffer, offset: run.first * INSTANCE_BYTES, bytes: run.count * INSTANCE_BYTES }],
                     first: 0, count: 4, instances: run.count, scissor: viewport });
@@ -872,7 +907,7 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         memory(): { gpuBytes: number; cpuBytes: number } {
             let gpuBytes = (mono?.bytes ?? 0) + (colour?.bytes ?? 0) + (whiteLease?.bytes ?? 0) + (stage?.lease.bytes ?? 0) + (convertLease?.bytes ?? 0);
             for (const run of live) gpuBytes += run.bytes;
-            const cpuBytes = (rasterLease?.bytes ?? 0) + (scratchLease?.bytes ?? 0) + (uniformLease?.bytes ?? 0) +
+            const cpuBytes = (scratchLease?.bytes ?? 0) + (uniformLease?.bytes ?? 0) +
                 (convertScratchLease?.bytes ?? 0) + memoAccount.bytes + standAccount.bytes;
             return { gpuBytes, cpuBytes };
         },

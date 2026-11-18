@@ -75,7 +75,6 @@ export const RENDER_CONSTANTS: RenderConstants = Object.freeze({
     liveInputGpuFraction: 0.25,
     qualityReductionFactor: 0.8,
     minInteractiveQualityScale: 0.5,
-    memoryRecoveryRatio: 0.6,
     memoryRecoveryDelayMs: 5000,
     qualityStepSettleMs: 300,
     // A real trouble at a level (a device limit, an allocation refusal) re-fires whenever the level is retried at once, a raise/drop

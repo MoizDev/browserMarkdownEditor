@@ -243,6 +243,9 @@ export interface InkGeometry {
     /** The stroke's sets at one band; `null` when a chunk is refused; `{ denied }` when the pool refuses the bytes even after eviction. */
     strokeSets(item: PaintInkItem, band: number): InkStrokeSetsResult;
     memory(): { readonly cpuBytes: number };
+    /** Frees up to `wanted` bytes of idle chunks, least recently used first: never the current publication's chunks, nor any in `keep`
+     * (the chunks a shown run still maps). Returns the bytes freed. */
+    evictIdle(wanted: number, keep: ReadonlySet<InkCoverage>): number;
     release(): void;
 }
 interface Held {
@@ -310,6 +313,15 @@ export function createInkGeometry(memory: MemoryAllocator, audit: string): InkGe
                 if (placed.triangles.length) sets.push(placed);
             }
             return { origin, sets, shapes: sets.map(set => set.shape) };
+        },
+        evictIdle(wanted: number, keep: ReadonlySet<InkCoverage>): number {
+            let freed = 0;
+            for (const [chunk, entry] of held) {
+                if (freed >= wanted) break;
+                if (entry.use === epoch || keep.has(chunk)) continue;
+                const size = entry.bytes; free(entry); held.delete(chunk); freed += size;
+            }
+            return freed;
         },
         memory: () => ({ cpuBytes: bytes }),
         release(): void {

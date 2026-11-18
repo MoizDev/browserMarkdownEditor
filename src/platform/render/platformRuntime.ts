@@ -43,6 +43,7 @@ export class PlatformRuntime {
     private readonly deniedCpuFloor = new Set<string>();
     private memoryAdvanceQueued = false;
     private recoveryTimer: ReturnType<typeof setTimeout> | null = null;
+    private recoveryAt: number | null = null;
     private motion: MediaQueryList | null = null;
     /** The inputs of the last plan: every pane's demand as it was planned, and the live-gesture flag. Null until the first plan. */
     private planned: { demands: readonly PaneMemoryDemand[]; liveGesture: boolean } | null = null;
@@ -200,15 +201,20 @@ export class PlatformRuntime {
 
     private advance(): void {
         this.lifecycles.advancePressure(performance.now(), [...this.panes.values()].some(pane => pane.interacting()));
-        const canRecover = this.governor.readout().state !== 'normal' && this.governor.cool();
-        if (!canRecover && this.recoveryTimer !== null) {
-            clearTimeout(this.recoveryTimer);
-            this.recoveryTimer = null;
-        } else if (canRecover && this.recoveryTimer === null) {
+        // The governor says when it next needs an advance that no event will bring (a deferred degrade, a recovery's held
+        // window). Only that deadline is armed: nothing polls while the memory is idle.
+        const at = this.governor.wakeAt();
+        if (at === null) {
+            if (this.recoveryTimer !== null) { clearTimeout(this.recoveryTimer); this.recoveryTimer = null; }
+            this.recoveryAt = null;
+        } else if (this.recoveryAt !== at) {
+            if (this.recoveryTimer !== null) clearTimeout(this.recoveryTimer);
+            this.recoveryAt = at;
             this.recoveryTimer = setTimeout(() => {
                 this.recoveryTimer = null;
+                this.recoveryAt = null;
                 this.advance();
-            }, POLICY.memoryRecoveryDelayMs);
+            }, Math.max(0, at - performance.now()));
         }
     }
 }
@@ -223,7 +229,7 @@ export function getPlatformRuntime(): PlatformRuntime {
         // Audit only: the measured inventory reads memory beside its counters (renderAudit.ts).
         if (renderAuditEnabled() && typeof window !== 'undefined') {
             const audit = (window as unknown as { __bmeRenderAudit?: Record<string, unknown> }).__bmeRenderAudit;
-            if (audit) { audit.memory = () => created.governor.readout(); audit.caches = () => created.governor.auditCaches(); audit.degrade = () => created.governor.signalTrouble('slow-gpu'); }
+            if (audit) { audit.memory = () => created.governor.readout(); audit.caches = () => created.governor.auditCaches(); audit.degrade = () => created.trouble('slow-gpu'); }
         }
     }
     return runtime;

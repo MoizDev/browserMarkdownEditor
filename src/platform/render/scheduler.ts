@@ -7,7 +7,7 @@ import { DamageAccumulator } from './damage';
 import { forgetPaneMotion, recordPaneMotion } from './paneMotion';
 import type { DamageRecord } from './damage';
 import type { SurfaceCommit, SurfaceMetricsCommitter } from './surfaceMetrics';
-import type { FrameBudget, FrameToken, Layer } from './types';
+import type { BudgetPhase, FrameBudget, FrameToken, Layer } from './types';
 const benchmarkPerf = __BME_BENCH__ ? await import('./renderPerf') : null;
 
 /** Accumulated CSS camera-pan positions, not raw finger positions (design §7.3:706–713). */
@@ -42,6 +42,9 @@ export interface PresentedLayerRevision {
 export interface ScheduledSubmission {
     readonly drawn: readonly PresentedLayerRevision[];
     readonly completed?: () => boolean;
+    /** True once the submission can never complete (its context was released, or the compositor was disposed). Its acknowledgement
+     * is dropped: the layers are not told it presented, and no frame is kept requested for a submission that is gone. */
+    readonly superseded?: () => boolean;
     /** Benchmark observation is committed only after this exact display and its overlays agree. */
     readonly commitObservation?: () => void;
     readonly cancelObservation?: () => void;
@@ -78,7 +81,13 @@ export interface ScheduledPane {
     /** Platform target/ring admission once per frame, before any layer prepares; never draws. */
     prepareFrame(frame: ScheduledFrame, budget: FrameBudget): void;
     finishPrepareFrame?(frame: ScheduledFrame, budget: FrameBudget): void;
-    encode(frame: ScheduledFrame): ScheduledEncoding | null;
+    /** `changed`: a layer's preparation reported a change this frame, or could not prove none (drawnChange, a full repaint, or a layer
+     * not visited). The scene revisions cannot say that: an adapter can promote a newer picture under the same revision. */
+    encode(frame: ScheduledFrame, changed: boolean): ScheduledEncoding | null;
+    /** A frame skipped because every layer answered unchanged is presented without encode or submit: the picture on screen is the
+     * one it would draw. Returns true when the pane reported that presentation (the same observers and report a present gives);
+     * false when the picture cannot be vouched for (token, revision, camera, geometry or backend moved), and the frame is encoded. */
+    presentUnchanged(frame: ScheduledFrame): boolean;
     writeOverlays(frame: ScheduledFrame): void;
     /** Read-only benchmark snapshot; never queried in production or development. */
     benchmarkMemory?(): { memory: Readonly<Record<string, number>>; grants: Readonly<Record<string, number>> };
@@ -203,10 +212,6 @@ const initialIntervalMs = 16.67;
 const frameGapMs = 250;
 /** Share of the frame target preparation always gets, however long the last presentation took. */
 const PREPARE_FLOOR_FRACTION = 0.25;
-/** Share of the frame interval a pane with nothing presented may prepare with (see `prepareUrgent`). The rest is left for
- * input and the other panes. The 4 ms frame target is for a board that already shows content; a board showing
- * "Loading drawing…" has nothing on screen to protect. */
-const URGENT_PREPARE_INTERVAL_SHARE = 0.8;
 const progressTileBytes = (RENDER_CONSTANTS.tileInteriorPixels + 2 * RENDER_CONSTANTS.tileGutterTexels) ** 2 * RENDER_CONSTANTS.decodedRgbaBytesPerPixel;
 /** The progress grant admits one real tile per frame, and a layer's gutter may be wider than the platform's one-texel
  * minimum: the board's tiles are 516² (2-texel gutters), 8,240 bytes over the 514² tile, so on the GPU backend every
@@ -238,6 +243,9 @@ interface PaneEntry {
     renderable: boolean;
     dormantNotified: boolean;
     optionalBytes: number;
+    /** Measured cost of this pane's encode, submit and overlays per frame (EWMA, ms). The frame's preparation budget is the
+     * display interval less these, so foreground work never takes the time the pane needs to present. */
+    presentMs: number;
     motion: Motion | null;
     binding: FrameToken | null;
     damage: DamageAccumulator;
@@ -262,18 +270,20 @@ const firstPreparing = (layer: Layer): boolean => (layer as Layer & PreparingFir
 interface FrameWork { entry: PaneEntry; frame: ScheduledFrame; batch: DamageBatch; geometry: number; hadInput: boolean; platformPrepared: boolean; platformBudget?: FrameBudget;
     /** A layer's preparation was passed over for lack of time while it did not ask for a frame. */
     skipped: boolean;
-    /** Per layer (index-aligned with frame.layers): prepared first this frame as live work, or null when none is live. */
-    first: boolean[] | null;
     /** A layer's prepare reported (or may have) drawn something different, or the frame was granted an upload. */
     drawnChange: boolean;
-    /** Layers whose prepare ran to completion this frame (a skipped layer is not counted). */
-    called: number;
+    /** Layers settled this frame: prepared to completion (whatever it answered), or passed over while settled (see passedOver). */
+    settled: number;
+    /** Two-phase layers whose foreground call ran this frame, mapped to whether that call answered unchanged. Their background
+     * call runs only for these, and the frame's answer is the background call's (plus a foreground 'changed' marks the frame). */
+    foreground: Map<Layer, boolean>;
     /** A full repaint is due (see the damage decision in the work pass): this frame must reach the canvas. */
     repaint: boolean;
     /** The audit's name for what asked for this frame; '' when the render audit is off. */
     cause: string }
 interface PendingAcknowledgement { entry: PaneEntry; frameId: number; token: FrameToken; submission: ScheduledSubmission }
-interface ScheduledPoll { callback: () => void; earliestFrame: number }
+/** A poll is the owner's persistent work; a throwing poll is kept (the owner's cancel handle stays valid) and backs off in time. */
+interface ScheduledPoll { callback: () => void; earliestFrame: number; failures: number; retryAt: number }
 interface UploadMeter {
     allowance: number;
     sliceMs: number;
@@ -293,6 +303,11 @@ function sameToken(a: FrameToken, b: FrameToken | null): boolean {
 }
 
 let schedulerStarted = false;
+/** A failed frame holds the loop for this back-off before it runs again: doubling from the minimum, capped at the maximum. */
+const RETRY_MIN_MS = 1000;
+const RETRY_MAX_MS = 30000;
+/** The back-off for failing work: doubling from RETRY_MIN_MS, capped at RETRY_MAX_MS. */
+function retryDelay(failures: number): number { return Math.min(RETRY_MAX_MS, RETRY_MIN_MS * 2 ** Math.min(failures - 1, 5)); }
 
 /** One app-wide rAF owner, explicitly started; importing it installs no listeners (C4.6:624–628).
  * Sanctioned deadline path: wakeAt coalesces future layer work into one timer that ONLY invalidates,
@@ -312,6 +327,12 @@ export class FrameScheduler {
     private wakeTimer: ReturnType<typeof setTimeout> | null = null;
     private wakeDeadline: number | null = null;
     private wakeEpoch = 0;
+    /** Frames in a row that threw outside every pane's callback; a successful frame resets it. */
+    private frameFailures = 0;
+    /** The back-off timer after a failed frame: while it runs, no frame is requested. */
+    private frameHold: ReturnType<typeof setTimeout> | null = null;
+    /** Each layer's last prepare answer and the scene revision it was prepared at (see passedOver). */
+    private readonly layerAnswers = new WeakMap<Layer, { revision: number; unchanged: boolean }>();
     private hiddenTimer: ReturnType<typeof setTimeout> | null = null;
     private hiddenAt: number | null = null;
     private retainedReleased = false;
@@ -325,7 +346,6 @@ export class FrameScheduler {
     private criticalCursor = 0;
     private optionalCursor = 0;
     private encodeCursor = 0;
-    private presentationMs = 0;
     private maintenanceMs = 0;
     private meter: UploadMeter | null = null;
     private declare measuredPane: string | null;
@@ -352,6 +372,7 @@ export class FrameScheduler {
         this.running = false;
         schedulerStarted = false;
         this.cancelFrame();
+        if (this.frameHold !== null) { clearTimeout(this.frameHold); this.frameHold = null; }
         this.clearWakeTimer();
         this.clearHiddenTimer();
         document.removeEventListener('visibilitychange', this.visibilityChanged);
@@ -370,7 +391,7 @@ export class FrameScheduler {
         if (this.panes.has(pane.paneId)) throw new Error('A visible pane is already registered');
         const entry: PaneEntry = {
             pane, layers: Object.freeze([...pane.layers]), reasons: new Set(['show']), wakes: new Map(), focused: pane.focused,
-            inputPriority: false, renderable: false, dormantNotified: false, optionalBytes: 0, motion: null, binding: null,
+            inputPriority: false, renderable: false, dormantNotified: false, optionalBytes: 0, presentMs: 0, motion: null, binding: null,
             damage: new DamageAccumulator(), fullDamage: true, presented: null,
             lastFrame: -1, revisionValues: [], revisionKey: '[]',
         };
@@ -421,7 +442,7 @@ export class FrameScheduler {
 
     /** Persistent until cancelled; callbacks added during a frame are not run recursively in it. */
     schedulePoll(callback: () => void): () => void {
-        const poll = { callback, earliestFrame: this.frameId + 1 };
+        const poll: ScheduledPoll = { callback, earliestFrame: this.frameId + 1, failures: 0, retryAt: 0 };
         this.polls.add(poll);
         this.ensureFrame();
         return () => { this.polls.delete(poll); this.ensureFrame(); };
@@ -564,6 +585,11 @@ export class FrameScheduler {
         const bound = entry.binding;
         if (bound && (bound.vaultEpoch !== token.vaultEpoch || bound.documentId !== token.documentId ||
             bound.session !== token.session || bound.viewLease !== token.viewLease)) {
+            // A token change is a rebind: the owner attaches a new pane with the new token (usePlatformPane re-attaches on any
+            // session or byte-generation change; a native view's viewLease is fixed per pane). This pane is unregistered and
+            // suspended with 'unregistered' because its replacement takes over; nothing re-registers it, by design. Counted so a
+            // drop without a rebind would show up: none was found reading the owners (gpu-h11 R7).
+            if (renderAuditEnabled()) auditCount('scheduler', 'binding-dropped');
             this.unregister(entry);
             return null;
         }
@@ -580,8 +606,19 @@ export class FrameScheduler {
      * repaint (a full damage, a new token, camera or geometry since the last presented picture). A pane with a pending
      * acknowledgement presents, because its submission is awaited. A layer that was passed over, or returns nothing, is a
      * change: nothing was proved about it. The reason does not matter when nothing drawn changed. */
+    /** A layer not prepared this frame (the window was exhausted, or the frame's share ran out) settles unchanged only when it
+     * has no pending work: its scene revision has not moved since it last prepared, it does not ask for a frame, and its last
+     * answer was unchanged. Any other passed-over layer is a change, so the frame presents. */
+    private passedOver(item: FrameWork, meta: ScheduledLayerSnapshot): void {
+        const last = this.layerAnswers.get(meta.layer);
+        const pending = last === undefined || !last.unchanged || last.revision !== meta.sceneRevision || meta.layer.needsFrame();
+        if (pending) item.drawnChange = true;
+        else item.settled++;
+        if (renderAuditEnabled()) auditCount('pane', 'prepare-passed-over:' + (item.entry.pane.layerId?.(meta.layer) ?? 'unnamed'));
+    }
+
     private unchangedPicture(item: FrameWork): boolean {
-        if (item.drawnChange || item.called !== item.frame.layers.length || item.repaint) return false;
+        if (item.drawnChange || item.settled !== item.frame.layers.length || item.repaint) return false;
         for (const ack of this.acknowledgements) if (ack.entry === item.entry) return false;
         return true;
     }
@@ -626,10 +663,21 @@ export class FrameScheduler {
 
     private cancelFrame(): void { if (this.raf !== null) { cancelAnimationFrame(this.raf); this.raf = null; } }
 
+    /** Requests the back-off after a failed frame: no frame is requested until it runs out, then the loop resumes as needed. */
+    private holdFrames(ms: number): void {
+        if (this.frameHold !== null) clearTimeout(this.frameHold);
+        this.cancelFrame();
+        this.frameHold = setTimeout(() => { this.frameHold = null; this.ensureFrame(); }, ms);
+    }
+
     private ensureFrame(): void {
-        if (this.inFrame) return;
-        if (!this.running || this.suspended || !this.needsWork()) { this.cancelFrame(); return; }
-        if (this.raf === null) this.raf = requestAnimationFrame(this.runFrame);
+        if (this.inFrame || this.frameHold !== null) return;
+        if (!this.running || this.suspended) { this.cancelFrame(); return; }
+        // A frame already requested decides for itself when it runs (it re-checks at its end), so a burst of marks does not scan
+        // every pane and layer each time (gpu-h11 R11): the scan runs once per frame request, not once per mark.
+        if (this.raf !== null) return;
+        if (!this.needsWork()) return;
+        this.raf = requestAnimationFrame(this.runFrame);
     }
 
     private readonly runFrame = (timestamp: number): void => {
@@ -769,26 +817,23 @@ export class FrameScheduler {
                     const repaint = moved || explicitFull;
                     const damage = batch.damage.freeze()!;
                     const frame = Object.freeze({ frameId, timestamp, intervalMs: this.intervalMs, token, view, layers, reasons, damage });
-                    work.push({ entry, frame, batch, geometry, hadInput: entry.inputPriority || reasons.includes('input'), platformPrepared: false, skipped: false, first: null, drawnChange: false, called: 0, repaint, cause });
+                    work.push({ entry, frame, batch, geometry, hadInput: entry.inputPriority || reasons.includes('input'), platformPrepared: false, skipped: false, drawnChange: false, settled: 0, foreground: new Map(), repaint, cause });
                     entry.inputPriority = false;
                 });
             }
             this.deliverAcknowledgements(frameId);
-            // 4: reserve 30% input/DOM + 35% encode/submit; actual mandatory overruns cut optional first.
+            // 4: the frame's preparation budget, from the interval and the visible panes' measured presentation cost.
             const elapsedInput = performance.now() - started;
-            // Prior encode/submit/overlay cost is mandatory; overrunning it cannot buy optional work.
-            const presentationReserve = Math.max(targetMs * 0.35 + Math.max(0, targetMs * 0.30 - elapsedInput), this.presentationMs);
-            // Prepare always keeps a floor. Presentation of an uncached board is what prepared tiles make cheap, so a
-            // slice derived from the last presentation alone fell to zero and stayed there: measured on ~3,600 strokes,
-            // presentation took the whole 4 ms target, prepare never ran and the board showed "Updating..." for good.
-            // A pane building its first picture has nothing presented to encode, so that share is its preparation's: a
-            // dense first picture was paced at about 1 ms of preparation per frame and took seconds to appear.
-            const urgent = work.some(item => this.call(item.entry, () => item.entry.layers.some(layer => layer.prepareUrgent?.() === true)) === true);
-            const prepareMs = urgent ? Math.max(targetMs * PREPARE_FLOOR_FRACTION, this.intervalMs * URGENT_PREPARE_INTERVAL_SHARE - elapsedInput - this.maintenanceMs)
-                : Math.max(targetMs * PREPARE_FLOOR_FRACTION, Math.min(targetMs * 0.35,
-                    targetMs - elapsedInput - presentationReserve - this.maintenanceMs));
-            const prepareDeadline = performance.now() + prepareMs;
-            meter.deadline = performance.now() + meter.sliceMs;
+            // The frame's preparation budget is the display interval less what the visible panes cost to encode, submit and present
+            // (their measured EWMA) and less the time already spent this frame. Foreground work decides whether this frame is
+            // complete, so it gets that whole budget; the upload window caps only background work (below). A pane that has not
+            // presented yet has no measured cost, so its first frame has the whole interval. Prepare keeps its floor: presentation
+            // of an uncached board must not take every frame (measured on ~3,600 strokes, the board showed "Updating..." for good).
+            let presentReserve = 0;
+            for (const item of work) presentReserve += item.entry.presentMs;
+            const foregroundMs = Math.max(targetMs * PREPARE_FLOOR_FRACTION, this.intervalMs - presentReserve - elapsedInput - this.maintenanceMs);
+            const prepareDeadline = performance.now() + foregroundMs;
+            meter.deadline = prepareDeadline;
             const criticalOrder = this.rotate(work, this.criticalCursor++);
             const criticalPending = () => work.some(item => this.call(item.entry,
                 () => item.frame.layers.some(meta => item.entry.pane.isCritical(meta.layer, item.frame.view))) === true);
@@ -800,30 +845,49 @@ export class FrameScheduler {
                 if (!item.platformPrepared) continue;
                 // Live work first, critical or not: a layer with ink in flight takes the pane's time and upload allowance before
                 // paper, board tiles or any other layer. Measured on notebook draw: a paper layer still building was admitted 570
-                // times while the wet layer was refused every frame (its cover incomplete, 121 compositor refusals). Its flags are
-                // kept for the optional pass, so each layer is prepared once per frame.
+                // times while the wet layer was refused every frame (its cover incomplete, 121 compositor refusals). A flagged layer is
+                // prepared here and skipped below, so each single-phase layer is prepared once per frame.
                 const layers = item.frame.layers;
                 const flags = this.call(item.entry, () => layers.some(meta => firstPreparing(meta.layer)) ? layers.map(meta => firstPreparing(meta.layer)) : null) ?? null;
-                item.first = flags;
                 if (flags) {
                     for (let i = 0; i < layers.length; i++) {
-                        if (flags[i]) prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, layers[i], prepareDeadline, layers[i].critical, meter, criticalPending));
+                        if (!flags[i]) continue;
+                        // A two-phase layer's foreground call is always the critical class: its background call comes later.
+                        const twoPhase = layers[i].layer.twoPhase === true;
+                        prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, layers[i], prepareDeadline, twoPhase || layers[i].critical,
+                            meter, criticalPending, twoPhase ? 'foreground' : 'single'));
                     }
                 }
+                // Every single-phase layer is foreground: it is what the frame shows, so it takes the foreground budget, not the 1 ms
+                // background window. The critical class (its full byte allowance) goes first, the rest after it.
                 for (let i = 0; i < layers.length; i++) {
-                    if (layers[i].critical && !flags?.[i]) prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, layers[i], prepareDeadline, true, meter, criticalPending));
+                    if (flags?.[i]) continue;
+                    const twoPhase = layers[i].layer.twoPhase === true;
+                    if (!twoPhase && !layers[i].critical) continue;
+                    prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, layers[i], prepareDeadline, true, meter, criticalPending,
+                        twoPhase ? 'foreground' : 'single'));
+                }
+                for (let i = 0; i < layers.length; i++) {
+                    if (flags?.[i] || layers[i].critical || layers[i].layer.twoPhase === true) continue;
+                    prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, layers[i], prepareDeadline, false, meter, criticalPending, 'single'));
                 }
             }
+            // Background runs only in what foreground and the presentation reserve left of this frame's interval, and never longer
+            // than the upload window (min(1 ms, 0.12 interval)): the window keeps background work from causing jank.
+            const backgroundEnd = performance.now() + Math.min(meter.sliceMs, Math.max(0, started + this.intervalMs - presentReserve - performance.now()));
+            meter.deadline = backgroundEnd;
             const optionalOrder = this.focusFirst(this.rotate(work, this.optionalCursor++));
-            const optionalMs = Math.max(0, prepareDeadline - performance.now()) / Math.max(1, work.length);
+            const optionalMs = Math.max(0, backgroundEnd - performance.now()) / Math.max(1, work.length);
             for (const item of optionalOrder) {
                 if (!item.platformPrepared) continue;
                 item.entry.optionalBytes = Math.min(Math.max(meter.allowance, progressUploadBytes),
                     item.entry.optionalBytes + meter.allowance / Math.max(1, work.length));
-                const deadline = Math.min(prepareDeadline, performance.now() + optionalMs);
-                for (let i = 0; i < item.frame.layers.length; i++) {
-                    const meta = item.frame.layers[i];
-                    if (!meta.critical && !item.first?.[i]) prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, meta, deadline, false, meter, criticalPending));
+                const deadline = Math.min(backgroundEnd, performance.now() + optionalMs);
+                // Only two-phase layers have background work here, and only after their foreground call ran this frame: a layer the
+                // foreground pass passed over is not composed.
+                for (const meta of item.frame.layers) {
+                    if (meta.layer.twoPhase !== true || !item.foreground.has(meta.layer)) continue;
+                    prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, meta, deadline, false, meter, criticalPending, 'background'));
                 }
             }
             // A layer passed over for time, not asking for a frame, has nothing else to wake it. After a restore that
@@ -840,14 +904,21 @@ export class FrameScheduler {
                 }
             }
             // 5: focus/input first, then rotate neighbours; nobody's mandatory draw is budget-skipped.
-            const presentationStarted = performance.now();
+            // Each pane's encode, submit and overlay time this frame; it feeds the pane's EWMA, the next frame's presentation reserve.
+            const presentCost = new Map<PaneEntry, number>();
             for (const item of this.focusFirst(this.rotate(work, this.encodeCursor++))) {
+                const encodeStarted = performance.now();
                 this.call(item.entry, () => {
                     if (!item.platformPrepared || !this.valid(item.entry, item.frame.token)) return;
-                    // A frame whose layers all report unchanged presents nothing new, whatever invalidated it. Its damage stays pending
-                    // (merged back below, unsubmitted), and any work still outstanding keeps its own mark or needsFrame.
-                    if (this.unchangedPicture(item)) {
+                    // A frame whose layers all report unchanged shows the picture it would draw: the presented-frame observers run for
+                    // it (presentUnchanged), and only the GPU encode and submit are skipped, whatever invalidated the frame. Its damage
+                    // stays pending (merged back below, unsubmitted), and any work still outstanding keeps its own mark or needsFrame.
+                    // A skipped frame is a presented frame whose GPU work is skipped: the same observers, overlays and presented record
+                    // run for it. Acknowledgements are not added: nothing it draws is new, and the earlier ones still arrive on their own.
+                    if (this.unchangedPicture(item) && item.entry.pane.presentUnchanged(item.frame)) {
                         if (renderAuditEnabled()) auditCount('pane', 'present-skipped:unchanged');
+                        item.entry.presented = { token: item.frame.token, epoch: item.frame.view.epoch, geometry: item.geometry };
+                        item.entry.pane.writeOverlays(item.frame);
                         return;
                     }
                     if (renderAuditEnabled()) {
@@ -855,16 +926,19 @@ export class FrameScheduler {
                             : item.drawnChange ? 'changed' : 'not-called';
                         auditCount('pane', 'present-kept:' + kept);
                     }
-                    const encoding = item.entry.pane.encode(item.frame);
+                    const changed = item.drawnChange || item.repaint || item.settled !== item.frame.layers.length;
+                    const encoding = item.entry.pane.encode(item.frame, changed);
                     if (encoding) encodings.push({ work: item, encoding, done: false });
                     else if (item.entry.layers.some(layer => layer.needsFrame())) {
                         // An external wait must wake the pane on arrival; polling it here spins rAF.
                         this.mark(item.entry, 'presentation-deferred', true);
                     }
                 });
+                presentCost.set(item.entry, (presentCost.get(item.entry) ?? 0) + performance.now() - encodeStarted);
             }
             // 6: publish overlays only for the exact snapshot successfully submitted by its compositor.
             for (const item of encodings) {
+                const submitStarted = performance.now();
                 this.call(item.work.entry, () => {
                     if (!this.valid(item.work.entry, item.work.frame.token)) return;
                     const submission = item.encoding.submit();
@@ -901,16 +975,26 @@ export class FrameScheduler {
                             uploadedBytes: uploads?.bytes ?? 0, uploadCalls: uploads?.calls ?? 0, uploadMs: uploads?.ms ?? 0 });
                     }
                 });
+                presentCost.set(item.work.entry, (presentCost.get(item.work.entry) ?? 0) + performance.now() - submitStarted);
                 if (!item.done) { this.discard(item.work.entry, item.encoding); item.done = true; }
             }
-            if (work.length) this.presentationMs = performance.now() - presentationStarted;
+            // The EWMA of each visible pane's presentation cost (encode, submit, overlays). A pane with no presentation this frame
+            // decays toward zero, so a pane that stopped drawing stops reserving its share.
+            for (const item of work) item.entry.presentMs = 0.8 * item.entry.presentMs + 0.2 * (presentCost.get(item.entry) ?? 0);
             // 7: bounded retirement/compile/readback polls. They never draw a hidden pane.
             const maintenanceStart = performance.now();
             this.runPolls(started + targetMs);
             this.maintenanceMs = performance.now() - maintenanceStart;
+            this.frameFailures = 0;
         } catch (error) {
-            this.stop();
-            this.options.onError(null, error);
+            // The scheduler never stops for good: a stopped scheduler freezes every pane, healthy ones included, and start() is
+            // one-shot. A pane's own callbacks are contained by call(), which names the pane it demotes or unregisters; an error
+            // that reaches here escaped every pane, so it names no pane. The loop holds for a back-off (1 s, doubling, to 30 s)
+            // and resumes; the first failure of a streak is reported, the rest are counted.
+            this.frameFailures++;
+            if (this.frameFailures === 1) this.options.onError(null, error);
+            else if (renderAuditEnabled()) auditCount('scheduler', 'frame-failed');
+            this.holdFrames(retryDelay(this.frameFailures));
         } finally {
             for (const item of encodings) if (!item.done) this.discard(item.work.entry, item.encoding);
             for (const batch of batches) if (!batch.submitted && this.live(batch.entry)) {
@@ -930,11 +1014,14 @@ export class FrameScheduler {
                     const complete = meter.reportedCalls > 0 && meter.admittedBytes === meter.reportedBytes;
                     const missingMeasurement = !complete && (meter.admittedBytes > 0 || meter.reportedBytes > 0);
                     if (elapsedMs > targetMs || prepareOvershootMs > 0 || bytes > meter.allowance || meter.callMs > meter.sliceMs || missingMeasurement) {
-                        this.options.onPressure(Object.freeze({ frameId, targetMs, elapsedMs, prepareOvershootMs,
-                            admittedUploadBytes: meter.admittedBytes, uploadByteAllowance: meter.allowance,
-                            uploadByteOvershoot: Math.max(0, bytes - meter.allowance), reportedUploadBytes: meter.reportedBytes,
-                            reportedUploadCalls: meter.reportedCalls, uploadCallMs: meter.callMs, uploadTimeAllowanceMs: meter.sliceMs,
-                            uploadTimeOvershootMs: Math.max(0, meter.callMs - meter.sliceMs), uploadMeasurementsComplete: complete }));
+                        // The pressure report is the owner's code: its throw is reported without leaving the frame's bookkeeping.
+                        try {
+                            this.options.onPressure(Object.freeze({ frameId, targetMs, elapsedMs, prepareOvershootMs,
+                                admittedUploadBytes: meter.admittedBytes, uploadByteAllowance: meter.allowance,
+                                uploadByteOvershoot: Math.max(0, bytes - meter.allowance), reportedUploadBytes: meter.reportedBytes,
+                                reportedUploadCalls: meter.reportedCalls, uploadCallMs: meter.callMs, uploadTimeAllowanceMs: meter.sliceMs,
+                                uploadTimeOvershootMs: Math.max(0, meter.callMs - meter.sliceMs), uploadMeasurementsComplete: complete }));
+                        } catch (error) { this.options.onError(null, error); }
                     }
                 }
             } finally { this.refreshWakeTimer(); this.ensureFrame(); }
@@ -942,7 +1029,7 @@ export class FrameScheduler {
     };
 
     private prepare(item: FrameWork, meta: ScheduledLayerSnapshot | null, deadline: number, critical: boolean,
-        meter: UploadMeter, criticalPending: () => boolean): number {
+        meter: UploadMeter, criticalPending: () => boolean, phase: BudgetPhase = 'single'): number {
         let overshoot = 0;
         this.call(item.entry, () => {
             // A layer that reports needsFrame() must be prepared in THIS frame, or its pump keeps running with nothing
@@ -959,12 +1046,13 @@ export class FrameScheduler {
             const platform = meta === null;
             if (exhausted && !requesting && !platform) {
                 item.skipped = true;
-                if (renderAuditEnabled() && meta) auditCount('pane', 'prepare-passed-over:' + (item.entry.pane.layerId?.(meta.layer) ?? 'unnamed'));
+                if (meta) this.passedOver(item, meta);
                 return;
             }
             const limit = exhausted && !platform ? performance.now() + meter.sliceMs : deadline;
+            // A two-phase layer's pass is its phase, not the pane's critical class: its foreground call is critical by construction.
             const shouldYield = () => !this.valid(item.entry, item.frame.token) || performance.now() >= limit ||
-                (meta !== null && item.entry.pane.isCritical(meta.layer, item.frame.view) !== critical);
+                (meta !== null && phase === 'single' && item.entry.pane.isCritical(meta.layer, item.frame.view) !== critical);
             // remainingBytes includes the explicit one-tile progress grant, not a disguised larger cap.
             // The nominal cap stays in the frame meter and any use beyond it is reported as an overrun.
             const availableBytes = () => {
@@ -976,7 +1064,7 @@ export class FrameScheduler {
             };
             const upload = { remainingBytes: availableBytes(), deadline: meter.deadline };
             const budget: FrameBudget = {
-                frameId: item.frame.frameId, token: item.frame.token, cameraEpoch: item.frame.view.epoch, damage: item.frame.damage,
+                frameId: item.frame.frameId, token: item.frame.token, cameraEpoch: item.frame.view.epoch, damage: item.frame.damage, phase,
                 prepareDeadline: limit, upload, shouldYield,
                 claimUpload: (bytes: number, kind?: 'media') => {
                     if (!Number.isSafeInteger(bytes) || bytes < 0) throw new RangeError('Upload claim must be nonnegative safe bytes');
@@ -1016,13 +1104,27 @@ export class FrameScheduler {
                 }
             } else if (meta && !shouldYield()) {
                 // prepare returns false only when a completed prepare left nothing it draws next different (types.ts). A layer
-                // that returns nothing, or that was not called, leaves the frame's picture open: it is presented.
-                const unchanged = meta.layer.prepare(item.frame.view, budget) === false;
-                item.called++;
-                if (!unchanged) {
-                    item.drawnChange = true;
-                    if (renderAuditEnabled()) auditCount('pane', 'prepare-changed:' + (item.entry.pane.layerId?.(meta.layer) ?? 'unnamed'));
+                // that returns nothing leaves the frame's picture open: it is presented.
+                const answered = meta.layer.prepare(item.frame.view, budget) === false;
+                if (phase === 'foreground') {
+                    // Not the frame's answer: the background call settles the layer. A changed answer here still marks the frame.
+                    item.foreground.set(meta.layer, answered);
+                    if (!answered) {
+                        item.drawnChange = true;
+                        if (renderAuditEnabled()) auditCount('pane', 'prepare-changed:' + (item.entry.pane.layerId?.(meta.layer) ?? 'unnamed'));
+                    }
+                } else {
+                    // A two-phase layer is unchanged only when both calls answered unchanged (the background call is always after foreground).
+                    const unchanged = answered && (phase === 'single' || item.foreground.get(meta.layer) === true);
+                    this.layerAnswers.set(meta.layer, { revision: meta.sceneRevision, unchanged });
+                    item.settled++;
+                    if (!unchanged) {
+                        item.drawnChange = true;
+                        if (renderAuditEnabled()) auditCount('pane', 'prepare-changed:' + (item.entry.pane.layerId?.(meta.layer) ?? 'unnamed'));
+                    }
                 }
+            } else if (meta) {
+                this.passedOver(item, meta);
             }
             overshoot = Math.max(0, performance.now() - deadline);
         });
@@ -1042,6 +1144,7 @@ export class FrameScheduler {
         for (const ack of pending) {
             this.call(ack.entry, () => {
                 if (!this.valid(ack.entry, ack.token)) return;
+                if (ack.submission.superseded?.()) return;
                 if (ack.frameId >= frameId || (ack.submission.completed && !ack.submission.completed())) {
                     this.acknowledgements.push(ack);
                     return;
@@ -1078,14 +1181,20 @@ export class FrameScheduler {
         let ran = false;
         for (const poll of [...this.polls]) {
             if (!this.running || this.suspended) break;
-            if (!this.polls.has(poll) || poll.earliestFrame > this.frameId) continue;
+            if (!this.polls.has(poll) || poll.earliestFrame > this.frameId || poll.retryAt > performance.now()) continue;
             if (ran && performance.now() >= deadline) break;
             // Rotate persistent work so a tight frame cannot starve later fences. One gets progress.
             this.polls.delete(poll);
             this.polls.add(poll);
             ran = true;
-            try { poll.callback(); }
-            catch (error) { this.polls.delete(poll); this.options.onError(null, error); }
+            try { poll.callback(); poll.failures = 0; }
+            catch (error) {
+                // Kept, not dropped: the owner cancels through its handle, and a dropped poll left that handle pointing at nothing.
+                poll.failures++;
+                if (poll.failures === 1) this.options.onError(null, error);
+                else if (renderAuditEnabled()) auditCount('scheduler', 'poll-failed');
+                poll.retryAt = performance.now() + retryDelay(poll.failures);
+            }
         }
     }
 

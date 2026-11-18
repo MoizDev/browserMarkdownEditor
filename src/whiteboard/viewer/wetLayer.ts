@@ -11,6 +11,7 @@ import type { BoardWetLayer } from '../input/attach';
 import type { DryInkIdentity, WetInkHandover, WetInkSnapshot } from '../input/liveInk';
 import type { Swatch } from '../model/styles';
 import { colourCss, resolveSwatch, withOpacity, type PaintPalette } from '../render/colour';
+import { inkCoverageChunks } from '../render/paintStream';
 import { HIGHLIGHT_OVERLAY_ALPHA, HIGHLIGHT_UNDERLAY_ALPHA, inkMaterial, type InkMaterial } from '../render/material';
 import type { PaintSource, PaintInkItem, PaintClip } from '../render/paintStream';
 import type { Admission, CreateInkRoutes, InkRouteFor, ItemRoute, PreparedRun, WithClips } from '../render/gpu/contracts';
@@ -19,7 +20,13 @@ import { appendPath2d, path2d } from '../render/reference/coverage2d';
 
 // Provenance: wet/dry ink handover, bounded ink outline and C4 layer contracts;
 // independently wired renderer, no third-party source.
-const CHUNK = 256, FINAL_SPANS = 16, TEMP_BYTES = 4 * 1024 * 1024, PATH_BLOCK = 256 * 1024;
+/** The primitive ceiling of one chunk's coverage job (its segment, disc and centreline stores). */
+const CHUNK_PRIMITIVES = 4096;
+const CHUNK = 256, FINAL_SPANS = 16, PATH_BLOCK = 256 * 1024;
+/** The scratch a chunk's tessellation holds, derived from what it can reach: per span its cubics (8 doubles), flags (1 byte) and
+ * radii (2 doubles); and the coverage job's three stores at their ceiling (6 + 3 + 4 doubles per primitive). A store grows by copy,
+ * so it holds its old and new arrays for a moment: 3/2 of the ceiling. 660 KB, not the 4 MiB it was sized at before. */
+const TEMP_BYTES = CHUNK * (8 * 8 + 1 + 2 * 8) + Math.ceil(CHUNK_PRIMITIVES * (6 + 3 + 4) * 8 * 3 / 2);
 /** The tip's upload grant past a frame's yield: one kit upload piece (64 KiB), so a chunk's append always fits. */
 const TIP_UPLOAD_BYTES = 64 * 1024;
 type Bounds = { x: number; y: number; w: number; h: number };
@@ -63,6 +70,9 @@ export interface BoardWetRenderer extends BoardWetLayer {
     readonly layers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }>;
     consumeInput(): void;
     liveNodeIds(): ReadonlySet<string>;
+    /** Whether this band's wet layer paints the node at `view` on the given backend. A changed node the live layer paints is covered
+     * by the picture it drew; one it does not paint (not a stroke it holds, or not yet shown) is not. */
+    drawsLive(nodeId: string, band: WetBand, view: ViewState, canvas: boolean): boolean;
     presented(revision: number, token: RenderToken, frame?: PaintSource): void;
     clear(): void;
     dispose(): void;
@@ -119,7 +129,8 @@ type WetBand = 'underlay' | 'content';
 const BANDS: readonly WetBand[] = ['underlay', 'content'];
 type InkRoutes = ReturnType<CreateInkRoutes>;
 /** What a slot draws: a route's run, or the CPU scrap of a stroke the route refuses. */
-interface WetShown { readonly clips: readonly PaintClip[]; readonly draw: () => void; readonly dispose: () => void }
+/** `kept` is the geometry chunks a union run maps: they stay cached while it is shown, so a CPU reclaim never frees them. */
+interface WetShown { readonly clips: readonly PaintClip[]; readonly draw: () => void; readonly dispose: () => void; readonly kept?: readonly InkCoverage[] }
 /** One stroke's GPU run for one band. `shown` is what is drawn; the rest says what the current publication needs. A
  * deferred or denied admission keeps drawing the last shown tip while coverage waits for the new one. */
 interface WetRunSlot {
@@ -136,6 +147,8 @@ interface WetRunSlot {
     viewBound: boolean; viewKey: string;
     /** The first refusal of this stroke is reported; a refusal is never reported per frame. */
     reported: boolean;
+    /** The upload meter a deferred admission used: its retry waits until the frame's meter holds that much (admitRuns). */
+    waitBytes: number;
 }
 interface WetScrap { readonly device: GfxDevice; readonly texture: TextureHandle; readonly world: Bounds; readonly pw: number; readonly ph: number }
 /** A run's key: no string per band per frame. Gesture sequences are small sequential integers. */
@@ -372,9 +385,9 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
     const stamp = (key: number, gesture: number, current: WetRunSlot | undefined, source: Prepared, palette: PaintPalette,
         token: FrameToken, viewKey: string, material: InkMaterial | null, item: PaintInkItem | null): WetRunSlot => {
         const slot: WetRunSlot = current ?? { gesture, serial: 0, scale: 0, palette: null, material: null, item: null,
-            token, state: 'pending', shown: null, viewBound: false, viewKey: '', reported: false };
+            token, state: 'pending', shown: null, viewBound: false, viewKey: '', reported: false, waitBytes: 0 };
         slot.serial = source.serial; slot.scale = source.scale; slot.palette = palette; slot.material = material; slot.item = item;
-        slot.token = { ...token }; slot.viewBound = false; slot.viewKey = viewKey;
+        slot.token = { ...token }; slot.viewBound = false; slot.viewKey = viewKey; slot.waitBytes = 0;
         runs.set(key, slot);
         return slot;
     };
@@ -415,6 +428,10 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                 // A band with nothing shown yet is admitted even past the frame's budget: the tessellation spent it, and until
                 // it is admitted the frame presents without the newest tip (measured: 41 yields left drawing frames unsharp).
                 if (audited && current?.shown && budget.shouldYield()) auditCount('wet', 'admit-tip:yielded');
+                // A deferred run waits for the upload meter to hold the bytes its last attempt used. Re-admitting it every frame
+                // re-uploads the stroke each time and spends the meter the board needs (measured as a feedback loop).
+                if (current && current.state === 'pending' && current.waitBytes > 0 && current.serial === source.serial && current.palette === palette
+                    && (budget.shouldYield() || budget.upload.remainingBytes < current.waitBytes)) { if (audited) auditCount('wet', 'admit-wait:meter'); continue; }
                 const reuse = current && current.serial === source.serial && current.palette === palette ? current : null;
                 const material = reuse ? reuse.material : bandMaterial(shown, band, palette);
                 if (!material) {
@@ -428,7 +445,9 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                     clips: shown.presentation.clips ?? [], coverage: source.coverageChunks, material } satisfies PaintInkItem;
                 const route = gpuRoutes.inkRouteFor(item) === 'ink-analytic' ? routes.analytic : routes.union;
                 const before = audited ? route.memory().gpuBytes : 0;
+                const meterBefore = budget.upload.remainingBytes;
                 const admission = route.admit([item], view, 'over', tip);
+                const meterUsed = meterBefore - budget.upload.remainingBytes;
                 if (audited) {
                     auditCount('wet', `admit:${admission.status}`, 1, { [route.id]: 1 });
                     const grown = route.memory().gpuBytes - before; if (grown > 0) auditCount('wet', 'upload:vertex', 1, { bytes: grown });
@@ -437,17 +456,21 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                 switch (admission.status) {
                     case 'ready': {
                         const run = admission.value;
-                        setShown(slot, { clips: item.clips, draw: () => { if (drawCall.pass) route.draw(drawCall.pass, run); }, dispose: () => route.retire(run) }, 'ready');
+                        setShown(slot, { clips: item.clips, kept: inkCoverageChunks(item.coverage), draw: () => { if (drawCall.pass) route.draw(drawCall.pass, run); }, dispose: () => route.retire(run) }, 'ready');
                         break;
                     }
                     // A replaced shown is disposed only when its successor is admitted: a deferred or denied admission keeps the last tip.
                     case 'empty': slot.viewBound = true; setShown(slot, null, 'empty'); break;
-                    case 'deferred': slot.state = 'pending'; break;
+                    case 'deferred': slot.state = 'pending'; slot.waitBytes = Math.max(1, meterUsed); break;
                     case 'denied': slot.state = 'denied'; denied = true; awaitSizedCapacity(host, invalidate, { pool: admission.pool, bytes: admission.bytes }); break;
                     case 'unsupported': {
                         // The route refused the stroke: it is drawn through the CPU path, and the refusal is reported once.
                         if (!slot.reported) { slot.reported = true; report(new Error(`Wet ink route refused a stroke (${admission.why}); it is drawn through the CPU path`)); }
-                        const scrap = admitScrap(host, shown, source, material, admission.why, view, budget);
+                        // stamp has already written this publication's serial: a throw here leaves the slot pending and not current, so the
+                        // stroke is retried and the frame is never counted sharp for a tip that was not drawn.
+                        let scrap: ReturnType<typeof admitScrap>;
+                        try { scrap = admitScrap(host, shown, source, material, admission.why, view, budget); }
+                        catch (error) { slot.serial = -1; slot.state = 'pending'; throw error; }
                         if (scrap.status === 'ready') {
                             const value = scrap.value;
                             slot.viewBound = true;
@@ -548,7 +571,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         if (c?.retained) {
             const retained = c.retained;
             const lease = retained.bytes ? reserve(retained.bytes) : null;
-            if (retained.bytes && !lease) { denied = true; return false; }
+            if (retained.bytes && !lease) { denied = true; awaitSizedCapacity(owner, invalidate, { pool: 'cpu', bytes: retained.bytes }); return false; }
             if (lease) c.leases.push(lease);
             if (c.finalizing) {
                 s.chunks.push(retained.coverage); s.spans = c.first + c.count;
@@ -578,14 +601,15 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         if (offset < spans || (spans === 0 && offset === 0)) {
             const finalizing = spans > 0 && offset + FINAL_SPANS <= publication.finalizedSpanCount;
             const count = spans === 0 ? 0 : finalizing ? FINAL_SPANS : Math.min(CHUNK, spans - offset);
-            const temp = s.temp ?? reserve(TEMP_BYTES); if (!temp) { denied = true; return false; }
+            // A refusal waits for the pool to have TEMP_BYTES free, as every other wet refusal does: without the wake the stroke polled.
+            const temp = s.temp ?? reserve(TEMP_BYTES); if (!temp) { denied = true; awaitSizedCapacity(owner, invalidate, { pool: 'cpu', bytes: TEMP_BYTES }); return false; }
             s.temp = temp;
             const geometry = materializeCurveRange(real, { firstSpan: offset, spanCount: count }, publication.parameters);
             w.offset = spans === 0 ? 1 : offset + count;
             const style: InkWidth = s.style ??= { width: w.snapshot.presentation.width, model: { id: 'uniform' }, pressure: 'none' };
             const dot: InkDot | null = offset === 0 && s.dot ? { x: real.x(0), y: real.y(0), radius: DOT_METRIC_PROVISIONAL.radius(style.width, style.width / 2, style.model) } : null;
             w.chunk = { first: offset, count, finalizing, leases: [], retained: null,
-                coverage: new InkCoverageJob(real, geometry, style, { deviceScale: w.scale, dot, maxPrimitives: 4096 }) };
+                coverage: new InkCoverageJob(real, geometry, style, { deviceScale: w.scale, dot, maxPrimitives: CHUNK_PRIMITIVES }) };
             // A non-finalized chunk is the tip: rebuilt on every publication, so this counts the per-input tessellation.
             if (!finalizing) auditCount('wet', 'tip-build');
             return false;
@@ -624,7 +648,6 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         if (disposed || !owner || !options.current()) return false;
         if (lastPrepareFrame === budget.frameId) return frameAnswer;
         lastPrepareFrame = budget.frameId;
-        let complete = false;
         // A denied reservation waits for a genuine scheduler wake, not another polling frame.
         denied = false;
         try {
@@ -644,7 +667,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                         const old = prepared.get(item.identity.gestureSequence);
                         if (old?.snapshot !== item || old.scale < scaleAt(view, item)) { next = item; break; }
                     }
-                    if (!next) { dirty = false; complete = true; break; }
+                    if (!next) { dirty = false; break; }
                     if (!begin(next, view)) { denied = true; break; }
                 }
                 step();
@@ -658,15 +681,35 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         if (owner.device() && sameToken(options.token, budget.token)) {
             try { admitRuns(owner, view, budget); admitted = true; } catch (error) { report(error); }
         } else auditCount('wet', 'admit-skip:device-or-token');
-        frameAnswer = complete && admitted && !denied && routedCoverage(budget.token, view) === VERDICT_SHARP;
+        // Complete is the state, not the loop: a frame whose budget was spent before the loop ran (no work to do) is complete too.
+        // Every pending stroke must be prepared at its current snapshot and scale, with no work left in progress.
+        const caughtUp = (handover?.pendingSnapshots() ?? []).every(item => { const old = prepared.get(item.identity.gestureSequence); return old?.snapshot === item && old.scale >= scaleAt(view, item); });
+        frameAnswer = caughtUp && work === null && admitted && !denied && routedCoverage(budget.token, view) === VERDICT_SHARP;
         return frameAnswer;
+    };
+    // A band that holds nothing shown has nothing to draw, so it has nothing that differs from its last presented frame: it answers
+    // unchanged even before it has ever drawn (measured: a band with no stroke answered changed on every idle frame).
+    const bandHasInk = (band: WetBand): boolean => {
+        for (const [key, slot] of runs) if (((key & 1) === 1) === (band === 'content') && slot.shown) return true;
+        return false;
     };
     const prepareBand = (band: WetBand) => (view: ViewState, budget: FrameBudget): boolean | undefined => {
         if (!prepareShared(view, budget)) return undefined;
+        if (drawnKey[band] === undefined) return bandHasInk(band) ? undefined : false;
         return drawnKey[band] === fingerprintOf(view) ? false : undefined;
     };
     const make = (band: WetBand): PlatformLayerDefinition => ({
         id: `board-wet-${band}`, group: 'document', liveInput: true,
+        // The owner band reclaims for the pane, under cpuWorkingSet's guard: the geometry is one set of bytes for both bands. A chunk a
+        // shown run maps is kept (its triangles are the kit's until the run is retired), so only idle geometry is given back.
+        cpuEvict(layer, bytes) {
+            if (!owner || hostLayers.get(owner) !== layer) return;
+            const keep = new Set<InkCoverage>();
+            for (const slot of runs.values()) for (const chunk of slot.shown?.kept ?? []) keep.add(chunk);
+            const freed = inkRoutes?.evictCpu(bytes, keep) ?? 0;
+            // Measured for the pressure run: the bytes of idle geometry this live layer gave back to the pool.
+            if (renderAuditEnabled()) auditCount('wet', 'reclaim:geometry', 1, { bytes: freed });
+        },
         create(host) {
             if (disposed) throw new Error('Wet layer disposed');
             hosts.add(host); owner ??= host;
@@ -717,8 +760,11 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                 },
                 releaseGpu(reason) { if (reason === 'hidden' || reason === 'pressure') clear(); else releaseRoutes(); },
                 memory() {
-                    const memory = host === owner ? routesMemory() : undefined;
-                    return { gpuBytes: memory?.gpuBytes ?? 0, cpuBytes: host === owner ? reserved + (memory?.cpuBytes ?? 0) : 0 };
+                    // The shared routes and the reserve are one set of bytes for both bands, which share an owner host. Only the layer that
+                    // cpuWorkingSet demands them for reports them: a host check alone counted them twice in the pane's sum.
+                    const reporting = !!owner && hostLayers.get(owner) === layer;
+                    const memory = reporting ? routesMemory() : undefined;
+                    return { gpuBytes: memory?.gpuBytes ?? 0, cpuBytes: reporting ? reserved + (memory?.cpuBytes ?? 0) : 0 };
                 },
                 needsFrame() { return !ended && !disposed && !denied && (dirty || !!work || (!!owner?.device() && runsPending())); },
                 dispose() { if (ended) return; ended = true; if (owner === host) { clear(); owner = null; } hosts.delete(host); hostLayers.delete(host); owner ??= hosts.values().next().value ?? null; },
@@ -733,7 +779,9 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
             const pending = !!work || snapshots.some(item => prepared.get(item.identity.gestureSequence)?.snapshot !== item);
             // Each band shares this one owner. Demand the NEXT bounded native-path/coverage
             // allocation before prepare, including a replacement while old wet pixels stay live.
-            const extra = pending ? (work?.stable.temp ? 0 : TEMP_BYTES) + PATH_BLOCK + (work?.chunk?.retained?.bytes ?? 0) : 0;
+            // A pending stroke's scratch is already held (in reserved) from its first step until it is retired: it is demanded once, not per frame.
+            const scratchHeld = snapshots.some(item => stables.get(item.identity.gestureSequence)?.temp) || !!work?.stable.temp;
+            const extra = pending ? (scratchHeld ? 0 : TEMP_BYTES) + PATH_BLOCK + (work?.chunk?.retained?.bytes ?? 0) : 0;
             return { mandatoryBytes: reserved + extra + (owner.device() ? routesMemory().cpuBytes : 0), prefetchBytes: 0 };
         },
         // A live stroke whose GPU runs are still in flight is critical: the non-critical share of a frame is one sliver,
@@ -755,6 +803,22 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         onInputFrame(callback) { callbacks.add(callback); return () => { callbacks.delete(callback); }; },
         invalidate,
         consumeInput() { if (disposed || !options.current()) return; for (const callback of callbacks) callback(); },
+        // The same conditions the band's draw applies to this stroke: a pending stroke this band draws (its source, its
+        // pigment on canvas2d, its shown run on a device), an off-screen one (no pixel of the view changes), or one this band
+        // never paints (the underlay holds only highlighters). Board-drawn ink is the board's, so it is not covered here.
+        drawsLive(nodeId, band, view, canvas) {
+            if (disposed || !options.current()) return false;
+            const snapshot = (handover?.pendingSnapshots() ?? []).find(item => item.identity.nodeId === nodeId);
+            if (!snapshot) return false;
+            const source = sourceOf(snapshot);
+            if (!source) return false;
+            if (offScreen(source.bounds, snapshot.presentation.localToWorld, view)) return true;
+            const isHighlight = snapshot.presentation.tool === 'highlighter';
+            if (band === 'underlay' && !isHighlight) return true;
+            if (options.boardDrawnInk().has(nodeId)) return false;
+            if (!canvas) return !!runs.get(runKey(snapshot.identity.gestureSequence, band))?.shown;
+            return !!resolveSwatch(options.palette(), snapshot.presentation.color as Swatch, isHighlight ? 'highlight' : 'stroke');
+        },
         liveNodeIds() {
             if (disposed) return EMPTY_LIVE_IDS;
             // Compared in place: the set is rebuilt only when it changes, since the board reads it every frame.

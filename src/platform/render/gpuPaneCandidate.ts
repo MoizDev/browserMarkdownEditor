@@ -1,5 +1,5 @@
 import type { GfxError } from './gfx/api';
-import { auditCount } from './renderAudit';
+import { auditCount, auditGpuError } from './renderAudit';
 import { currentGpuPaneFactory } from './gpuPaneFactory';
 import type { PreparedGpuPane } from './gpuPaneFactory';
 import { GpuPaneServices } from './gpuPaneServices';
@@ -17,10 +17,11 @@ export interface QualifiedGpuPane {
 
 /** A GPU failure is never the document's: it demotes its pane to canvas2d, so the board opens. Logged once per failure with
  * its stack, because the harness and the console show only a message otherwise. Returns the typed code it fell back with. */
-export function reportGpuFallback(where: string, error: unknown): GfxError {
+export function reportGpuFallback(where: string, error: unknown, pane: string | null = null): GfxError {
     const raw = typeof error === 'object' && error !== null && 'code' in error ? error.code : null;
     const code: GfxError = typeof raw === 'string' && GFX_CODES.includes(raw as GfxError) ? raw as GfxError : 'invalid-resource';
     auditCount('pane', `fallback:pane-2d:gpu-error:${typeof raw === 'string' ? raw : 'unknown'}`);
+    auditGpuError(pane, where, error);
     console.error(`GPU ${where} failed; this pane continues on canvas2d:`, error instanceof Error ? error.stack ?? error.message : error);
     return code;
 }
@@ -124,7 +125,7 @@ export class GpuPaneCandidate {
                         return { width: 0, height: 0, complete: false, generation: preparation.generation };
                     }
                     return backing.resize(width, height, grant.resizeSurface) ??
-                        { width: 0, height: 0, complete: false, generation: preparation.generation };
+                        { width: 0, height: 0, complete: false, refused: true, generation: preparation.generation };
                 },
                 invalidate: this.options.invalidate,
                 // Every GPU compositor error demotes this pane; none reaches the owner, so a board never fails to open on one.
@@ -146,6 +147,9 @@ export class GpuPaneCandidate {
             return {
                 limits: owner.limits,
                 resizeSurface: (width, height) => owner.resizeSurface(width, height),
+                openOffscreen: (width, height) => owner.openOffscreen(width, height),
+                commitSurface: () => owner.commitSurface(),
+                closeOffscreen: () => owner.closeOffscreen(),
                 releaseGpu: reason => this.release(generation, reason),
                 dispose: reason => this.disposeGeneration(generation, reason),
             };
@@ -153,7 +157,7 @@ export class GpuPaneCandidate {
             // A budget or allocation refusal is normal flow and is not logged; any other setup failure is, with its stack.
             const refusal = typeof error === 'object' && error !== null && 'code' in error &&
                 (error.code === 'out-of-budget' || error.code === 'allocation');
-            if (!preparation.signal.aborted && !refusal) reportGpuFallback('setup', error);
+            if (!preparation.signal.aborted && !refusal) reportGpuFallback('setup', error, this.options.paneId);
             // Only a capability failure and a real context loss reach the runtime. A refused creation is already accounted by
             // the governor's reservation; signalling it as trouble degraded the whole app's quality and showed the
             // 'reduced to fit memory' notice for one pane's forced failure (by reading: signalTrouble → degrade → onPressureChange).
@@ -191,7 +195,7 @@ export class GpuPaneCandidate {
         if (current && !current.disposed) { this.demote(current, where, error); return; }
         if (this.orphanReported) return;
         this.orphanReported = true;
-        reportGpuFallback(where, error);
+        reportGpuFallback(where, error, this.options.paneId);
     }
 
     /** Demotes the pane once per generation: the first GPU error is counted and logged with its stack, and asks the broker
@@ -199,7 +203,7 @@ export class GpuPaneCandidate {
     private demote(generation: Generation, where: string, error: unknown): void {
         if (generation.fellBack || generation.disposed || this.current !== generation) return;
         generation.fellBack = true;
-        this.failure(generation.preparation.generation, reportGpuFallback(where, error));
+        this.failure(generation.preparation.generation, reportGpuFallback(where, error, this.options.paneId));
     }
 
     presented(generation: number): void {

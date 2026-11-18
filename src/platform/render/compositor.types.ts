@@ -173,6 +173,9 @@ export interface CompositorCoverage extends LayerCoverage {
     readonly token: FrameToken;
     readonly presented: boolean;
     readonly qualityScale: number;
+    /** Every item drew complete: no hole, raster stand-ins allowed. The commit gate of a size change (`complete` keeps its meaning
+     * for presentation, where a non-critical layer may present its stand-in). A hole is layersComplete=false in the audit. */
+    readonly layersComplete: boolean;
 }
 
 /** An absent capture hook is unavailable, never a successful blank (design §4.6). */
@@ -202,14 +205,18 @@ export interface PaneCompositor {
     setLayers(layers: readonly CompositorLayer[]): void;
     setLayout(stack: Readonly<PageStack> | null): void;
     setAppearance(appearance: CompositorAppearance): void;
-    setMetrics(metrics: ReadySurfaceMetrics): void;
+    /** `offscreen`: the metrics are a pending size whose target the device has just opened, so the canvas still holds the old size. */
+    setMetrics(metrics: ReadySurfaceMetrics, offscreen?: boolean): void;
+    /** Asked after a frame's GPU submit, with whether every item drew complete: true when the frame reaches the canvas. A build that
+     * stays off the canvas (an offscreen target, or the commit that refused) is not a present. Null: every frame reaches the canvas. */
+    setCanvasGate(gate: ((layersComplete: boolean) => boolean) | null): void;
     /** O(1) config snapshot, called with the same view handed to every layer. */
     snapshot(view: ViewState): void;
     /** Begin platform preparation before layers; the original frozen frame is shared everywhere. */
     prepareFrame(frame: ScheduledFrame, budget: FrameBudget): void;
     /** Admit declared peak inventory after all Layer.prepare calls, under the SAME budget/deadline. */
     finishPrepareFrame?(frame: ScheduledFrame, budget: FrameBudget): void;
-    encode(frame: ScheduledFrame): ScheduledEncoding | null;
+    encode(frame: ScheduledFrame, changed: boolean): ScheduledEncoding | null;
     coverage(frame: ScheduledFrame): CompositorCoverage;
     page(view: ViewState, index: number): CompositorPage | null;
     paneTransform(view: ViewState, frameId: number): Affine | null;

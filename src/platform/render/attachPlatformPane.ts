@@ -11,9 +11,12 @@ import { CaptureError } from './captureError';
 import type { GpuCompositor } from './compositor';
 import { registerWebgl2PaneFactory } from './compositorFactory';
 import { GPU_RETRY_QUIET_MS, GpuPaneCandidate } from './gpuPaneCandidate';
+
+/** How long a fresh view keeps its previous picture while its layers first draw complete and sharp. A bound, not a target. */
+const FRESH_VIEW_COVER_MS = 3000;
 import type { QualifiedGpuPane } from './gpuPaneCandidate';
 import type { CameraConstraint } from './camera';
-import type { CompositorLayer, Compositor2DOptions, CreatedCompositor2D, PaneCompositor } from './compositor.types';
+import type { CompositorBackend, CompositorLayer, Compositor2DOptions, CreatedCompositor2D, PaneCompositor } from './compositor.types';
 import { RENDER_CONSTANTS } from './constants';
 import { createLayerHost } from './layerHost';
 import type { MemoryCacheHandle } from './memoryGovernor';
@@ -70,6 +73,9 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     const compositorRef: { current: PaneCompositor | null } = { current: null };
     let lastView: ViewState = { camera: { ...camera.camera }, viewport: { ...camera.viewport }, epoch: 0, moving: false };
     let lastQuality: number | null = null;
+    /** What the last real present reported, for the frames that skip it (see presentUnchanged). Cleared whenever the pane stops presenting. */
+    let lastReport: { revision: string; backend: PaneCompositor['backend']; complete: boolean; sharp: boolean;
+        staleVersion: boolean | undefined; camera: { x: number; y: number; z: number }; geometry: number | undefined } | null = null;
     // Audit only: the camera scale of the previous mirrored present, for the present's zooming flag.
     let lastMirroredScale: number | null = null;
     let sampledCamera = { ...camera.camera };
@@ -83,6 +89,54 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     let gpuRequested = false;
     const drawCompositor = (): PaneCompositor | null => gpu && cpuPresented ? gpu.bundle.compositor : compositorRef.current;
     const activeMetrics = (): SurfaceMetricsCommitter => gpu && cpuPresented ? gpuMetrics : cpuMetrics;
+    // A displayed GPU canvas keeps its picture while its new size is built offscreen. The size is reserved on the backing and opened on
+    // the device; the complete frame's submit commits it (canvas resize + blit in one task). Dropped on any abandon.
+    let pendingSurface: { width: number; height: number; grant: QualifiedGpuPane['grant']; backing: QualifiedGpuPane['backing'] } | null = null;
+    const releasePendingSurface = (): void => {
+        const pending = pendingSurface;
+        if (!pending) return;
+        pendingSurface = null;
+        pending.grant.closeOffscreen();
+        pending.backing.releasePending();
+    };
+
+    // The target a displayed GPU canvas's size change is committed against: the reserve and the device's offscreen target, never the canvas.
+    const offscreenTarget = (drawing: PaneCompositor, owner: QualifiedGpuPane): PaneCompositor['target'] => {
+        const generation = (): number => owner.grant.generation;
+        return Object.freeze({
+            get generation() { return drawing.target.generation; },
+            limits: drawing.target.limits,
+            resizeSurface: (width: number, height: number) => {
+                const pending = pendingSurface;
+                if (pending && pending.width === width && pending.height === height && pending.grant === owner.grant) {
+                    return { width, height, complete: true, generation: generation() };
+                }
+                releasePendingSurface();
+                const bytes = width * height * RENDER_CONSTANTS.surfaceReserveBytesPerPixel;
+                if (!owner.backing.reservePending(bytes)) return { width: 0, height: 0, complete: false, refused: true, generation: generation() };
+                if (!owner.grant.openOffscreen(width, height)) {
+                    owner.backing.releasePending();
+                    return { width: 0, height: 0, complete: false, generation: generation() };
+                }
+                pendingSurface = { width, height, grant: owner.grant, backing: owner.backing };
+                return { width, height, complete: true, generation: generation() };
+            },
+        });
+    };
+    // The compositor asks after each frame's submit: a complete frame commits a pending size (the canvas takes the offscreen size and
+    // shows it in this same task), and reaches the canvas. An incomplete frame, or a pending size with no open target, does not.
+    const canvasGate = (layersComplete: boolean): boolean => {
+        const pending = pendingSurface;
+        if (!pending) return true;
+        if (!layersComplete) return false;
+        pendingSurface = null;
+        const actual = pending.grant.commitSurface();
+        pending.backing.releasePending();
+        if (!actual) { auditCount('pane', 'commit-surface:none'); return false; }
+        if (!actual.complete) auditCount('pane', 'commit-surface:incomplete');
+        else if (actual.width !== pending.width || actual.height !== pending.height) auditCount('pane', 'commit-surface:size-mismatch');
+        return true;
+    };
 
     const token = (): FrameToken | null => {
         const current = options.currentToken();
@@ -100,17 +154,18 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         return { token: current, sourceRole: '', contentRevision: options.revision(), colourVersion: 0,
             geometryDigest: '', nominalDpr: lastView.viewport.dpr, view: lastView };
     };
-    // The frame this pane was last prepared or presented in. Its caches are never evicted in the frame in progress, nor in
-    // the frame that just ran when a release is deferred to a microtask: an eviction of a pane that is on screen is re-
-    // prepared the next frame and evicted again (measured: 170 'budget' invalidations per 3 s on the large seed).
+    // The frame this pane was last prepared or presented in. Whole-layer victims are chosen only in a frame this pane has not
+    // presented: an eviction of a pane that is on screen is re-prepared the next frame and evicted again (measured: 170 'budget'
+    // invalidations per 3 s on the large seed). A pane presented after the choice is released after the task, see below.
     let touchedFrame = -1;
     const touchedThisFrame = (): boolean => touchedFrame === runtime.scheduler.currentFrame();
     // Layers whose GPU release is already scheduled. Several caches of one pane can ask in the same trim; the second must not
     // count residency the first has already promised to free.
     const releasing = new Set<Layer>();
     /** Frees this pane's GPU residency, up to `bytes`, from its layers in order (or only `only`). The bytes are decided and
-     * returned now, so the governor can count them; the release waits for a microtask, outside any reservation, and only
-     * then invalidates the pane. A pane with nothing resident frees 0 and is not invalidated. */
+     * returned now, so the governor can count them, and a whole-layer victim is released in a microtask, outside any
+     * reservation: the governor counts it as freed, so that release must happen (it does unless the pane is gone), and then
+     * the pane is invalidated for the budget. A pane with nothing resident frees 0 and is not invalidated. */
     const trimGpu = (bytes: number, only?: Layer): number => {
         if (disposed || !visible) return 0;
         const frameId = runtime.scheduler.currentFrame();
@@ -149,17 +204,23 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         if (!victims.length) return 0;
         queueMicrotask(() => {
             for (const layer of victims) releasing.delete(layer);
-            if (disposed || !visible || touchedThisFrame()) return;
+            // The victims were chosen in a frame this pane had not presented, and the bytes above were counted on that promise.
+            // The release is kept: it runs after the task that presented this pane (the picture on screen is already drawn), so
+            // the only cost of a later paint is re-rastering the victims, which the next prepare does when they are still wanted.
+            // Only a pane that is gone keeps them: its caches have already left the governor's books.
+            if (disposed || !visible) return;
             // Releasing a visible pane's whole working set dropped the plans on screen (a notebook's paper and board) on each
-            // eviction, so only the layers the governor asked for are released, and only while they are off this frame.
-            // The pane is repainted for the budget only when a release actually freed bytes: a layer that is already gone, or
-            // one the lifecycle refused to release, leaves the picture as it is and asks for no frame.
+            // eviction, so only the layers the governor asked for are released. The pane is repainted for the budget only when a
+            // release actually freed bytes: a layer that is already gone, or one the lifecycle refused to release, leaves the
+            // picture as it is and asks for no frame. A promised release that did not free its bytes is audited by name.
             let released = false;
             for (const layer of victims) {
                 if (!layerSet.layers.includes(layer)) continue;
                 const before = layer.memory().gpuBytes;
                 lifecycle?.releaseLayerGpu(layer, 'pressure');
-                if (layer.memory().gpuBytes < before) released = true;
+                const after = layer.memory().gpuBytes;
+                if (after < before) released = true;
+                else if (after > 0 && renderAuditEnabled()) auditCount('governor', `evict-unrealized:${layerSet.definition(layer)?.id ?? 'unnamed'}`, 1, { bytes: after });
             }
             if (released) lifecycle?.invalidate('budget');
         });
@@ -180,7 +241,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         const common = { paneId: options.paneId, owner: options.documentToken, hiddenAt: visible ? null : now,
             lastVisibleAt: now, lastUsedAt: now, class: 'scene-cache' as const };
         const cacheId = `${options.paneId}:${options.viewLease}:${id}:${++cacheSerial}`;
-        const cpu = runtime.governor.register({ ...common, id: `${cacheId}:cpu`, pool: 'cpu', kind: 'working',
+        const cpu = runtime.governor.register({ ...common, id: `${cacheId}:cpu`, pool: 'cpu', kind: 'working', liveInput: definition.liveInput === true,
             memory: () => ({ live: current()?.memory().cpuBytes ?? 0, retiring: 0 }),
             // The layer names what it can rebuild; without the hook nothing in this cache is reclaimable, and the bytes its
             // drop measures are the bytes freed.
@@ -225,9 +286,21 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     });
     // The compositor's view of the layers. Its critical() is the definition's, judged on each frame's view: a layer whose
     // content a stand-in covers is non-critical and presents with it (PLAN issue 3). Rebuilt only when the layer set changes.
+    // A fresh view's layers (attached by beginFreshView, never a layer added mid-life) report incomplete until each first draws
+    // complete and sharp: the frame is refused and the picture on screen stays the previous one (the cover). Bounded by
+    // FRESH_VIEW_COVER_MS, so a stuck build releases to today's behaviour, counted as fresh-cover:expired.
+    const freshLayers = new Set<unknown>();
+    let freshSince = 0;
     const compositorLayers = (): readonly CompositorLayer[] => layerSet.compositorLayers.map(binding => ({
         ...binding,
         critical: (frame: ScheduledFrame) => layerSet.definition(binding.layer)?.critical(binding.layer, frame.view) ?? true,
+        coverage: (frame: ScheduledFrame, backend: CompositorBackend) => {
+            const coverage = binding.coverage(frame, backend);
+            if (!freshLayers.has(binding.layer)) return coverage;
+            if (coverage.complete && coverage.sharp) { freshLayers.delete(binding.layer); return coverage; }
+            if (performance.now() - freshSince > FRESH_VIEW_COVER_MS) { freshLayers.delete(binding.layer); auditCount('pane', 'fresh-cover:expired'); return coverage; }
+            return { ...coverage, complete: false };
+        },
     }));
     try { layerSet.replace(options.layers); }
     catch (error) {
@@ -348,9 +421,10 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         },
         interacting: options.isInteracting,
         windowVisibility: (windowVisible: boolean) => {
-            if (!windowVisible) { options.onPresentation(null); return; }
+            if (!windowVisible) { lastReport = null; options.onPresentation(null); return; }
             const state = lifecycle?.surface.snapshot().state;
             if (state !== 'gpu-visible' && state !== 'rebuilding') {
+                releasePendingSurface();
                 gpu = null;
                 cpuPresented = false;
                 gpuRequested = false;
@@ -374,6 +448,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         onReady: ready => {
             if (disposed || !visible) return;
             gpu = ready;
+            gpu.bundle.compositor.setCanvasGate(canvasGate);
             gpu.bundle.compositor.setLayers(compositorLayers());
             gpu.bundle.compositor.setLayout(layout);
             gpu.bundle.compositor.setAppearance(options.readAppearance());
@@ -401,10 +476,11 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                     onCapabilityFailure: () => runtime.observeCapabilityFailure(options.paneId),
                     onCpuFallback: reason => {
                         auditCount('pane', `fallback:pane-2d:${reason}`);
+                        releasePendingSurface();
                         gpu = null;
                         cpuPresented = false;
                         surfaceHost.clearStaged();
-                        options.onPresentation(null);
+                        lastReport = null; options.onPresentation(null);
                         // Every fallback, a GPU error included, needs a frame now: the GPU frame that failed may have cleared the
                         // canvas, and only a 2D frame repaints it. Without this the pane waited for an unrelated change.
                         lifecycle?.invalidate('cpu-fallback');
@@ -422,23 +498,23 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                         const size = observer.readForFrame(frameId);
                         const grant = runtime.governor.grant(options.paneId);
                         if (!size || !grant) return null;
-                        let drawing = drawCompositor();
+                        const drawing = drawCompositor();
                         if (!drawing) return null;
-                        let planned = computeSurfaceMetrics(size.physical, size.nominalDpr, drawing.target.limits, grant.pixelGrant);
-                        if (drawing !== compositor && surfaceHost.current === drawing && planned.kind === 'ready' &&
-                            (drawing.surface.width !== planned.backingWidth || drawing.surface.height !== planned.backingHeight)) {
-                            // Resizing a displayed GL canvas destroys its last complete pixels before
-                            // layers can prepare the new viewport. Build the normal CPU bridge detached,
-                            // then resize/rebuild this SAME kept GPU behind that complete picture.
-                            cpuPresented = false;
-                            // The bridge is board content rastered on the CPU while the device exists: counted with its pixels.
-                            auditCount('pane', 'fallback:2d-bridge', 1, { px: size.physical.width * size.physical.height });
-                            drawing = compositor;
-                            planned = computeSurfaceMetrics(size.physical, size.nominalDpr, drawing.target.limits, grant.pixelGrant);
-                        }
-                        const result = activeMetrics().commit(frameId, size.generation, planned, drawing.target);
-                        if (result?.kind === 'ready') drawing.setMetrics(result.metrics);
+                        const planned = computeSurfaceMetrics(size.physical, size.nominalDpr, drawing.target.limits, grant.pixelGrant);
+                        // A displayed GPU canvas of another size is never resized in place (that clears its picture before any new frame
+                        // exists): the new size is built offscreen, and its target is what the metrics commit validates.
+                        const displayedRaise = drawing !== compositor && surfaceHost.current === drawing && planned.kind === 'ready' &&
+                            (drawing.surface.width !== planned.backingWidth || drawing.surface.height !== planned.backingHeight);
+                        // Any commit that is not a displayed raise resizes the canvas itself, which supersedes an open target (the device's rule).
+                        if (!displayedRaise) releasePendingSurface();
+                        const target = displayedRaise && gpu ? offscreenTarget(drawing, gpu) : drawing.target;
+                        const result = activeMetrics().commit(frameId, size.generation, planned, target);
+                        if (result?.kind === 'ready') drawing.setMetrics(result.metrics, displayedRaise);
                         if (result?.kind !== 'failed') return result;
+                        // A governor refusal is pressure the governor has already answered with its own quality step. The pane keeps
+                        // its complete picture and waits for capacity; it is neither a framebuffer fault nor a reason to fall back to
+                        // 2D, whose working canvases need more of the same pool (the fallback refused too, and the loop cycled 1.0 <-> 0.8).
+                        if (result.reason === 'refused') return result;
                         const failedGeneration = gpu?.grant.generation;
                         runtime.trouble('framebuffer');
                         if (drawing === compositor || !lifecycle) return result;
@@ -496,7 +572,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                     finishPrepareFrame: (frame: ScheduledFrame, budget: Parameters<PaneCompositor['prepareFrame']>[1]) => {
                         drawCompositor()?.finishPrepareFrame?.(frame, budget);
                     },
-                    encode: (frame: ScheduledFrame) => {
+                    encode: (frame: ScheduledFrame, changed: boolean) => {
                         lastFrameInterval = frame.intervalMs;
                         const drawing = drawCompositor();
                         if (!drawing) return null;
@@ -506,7 +582,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                             auditCount('pane', 'cpu-raster', 1, { px: drawing.surface.width * drawing.surface.height });
                         }
                         const encodeStart = performance.now();
-                        const encoding = drawing.encode(frame);
+                        const encoding = drawing.encode(frame, changed);
                         if (!encoding && !(drawing === compositor && options.session.mirrors)) return null;
                         const revision = options.revision();
                         const sourceCamera = sampledCamera;
@@ -574,6 +650,8 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                                 touchedFrame = frame.frameId;
                                 if (qualityScale < 1) auditCount('pane', 'quality-below-1');
                                 if (drawing !== compositor) candidate.presented(frame.token.deviceGeneration);
+                                lastReport = { revision, backend: drawing.backend, complete, sharp, staleVersion,
+                                    camera: { x: liveCamera.x, y: liveCamera.y, z: liveCamera.z }, geometry: geometry?.generation };
                                 options.onPresentation({ frameId: frame.frameId, token: frame.token, backend: drawing.backend,
                                     complete, sharp, staleVersion,
                                     viewEpoch: frame.view.epoch, revision });
@@ -587,6 +665,22 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                             },
                         };
                     },
+                    // A frame whose layers all answered unchanged is presented without encode or submit: the picture on screen is the one
+                    // it would draw. It reports what the last real present reported, and only for the same token, revision, camera,
+                    // geometry and backend; anything else returns false and the scheduler encodes the frame as usual.
+                    presentUnchanged: (frame: ScheduledFrame): boolean => {
+                        const last = lastReport;
+                        const drawing = drawCompositor();
+                        if (!last || !drawing || drawing.backend !== last.backend || disposed) return false;
+                        const current = token();
+                        const liveCamera = options.readCamera();
+                        if (!current || !sameFrame(current, frame.token) || options.revision() !== last.revision ||
+                            liveCamera.x !== last.camera.x || liveCamera.y !== last.camera.y || liveCamera.z !== last.camera.z ||
+                            observer.current?.generation !== last.geometry) return false;
+                        options.onPresentation({ frameId: frame.frameId, token: frame.token, backend: last.backend, complete: last.complete,
+                            sharp: last.sharp, staleVersion: last.staleVersion, viewEpoch: frame.view.epoch, revision: last.revision });
+                        return true;
+                    },
                     writeOverlays: options.writeOverlays,
                     ...(__BME_BENCH__ ? { benchmarkMemory: () => {
                         const memory = runtime.governor.readout();
@@ -599,7 +693,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                                 cpuBytes: grant?.cpuBytes ?? 0 },
                         };
                     } } : {}),
-                    suspend: (reason: Parameters<PaneLifecycle<T>['suspend']>[0]) => { options.onPresentation(null); lifecycle?.suspend(reason); },
+                    suspend: (reason: Parameters<PaneLifecycle<T>['suspend']>[0]) => { lastReport = null; options.onPresentation(null); lifecycle?.suspend(reason); },
                 };
                 frameLease = runtime.scheduler.register(pane);
                 const lease = frameLease;
@@ -632,9 +726,10 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         if (disposed || visible === next) return;
         visible = next;
         if (!next) {
-            cpuPresented = false; gpuRequested = false; options.onPresentation(null);
+            cpuPresented = false; gpuRequested = false; lastReport = null; options.onPresentation(null);
             lifecycle?.hidePane();
             surfaceHost.clearStaged();
+            releasePendingSurface();
             gpu = null;
         }
         const now = performance.now();
@@ -656,6 +751,12 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         setVisible,
         setFocused(value) { if (!disposed && focused !== value) { focused = value; lifecycle?.setFocused(value); runtime.refresh(); } },
         observeSize() { if (!disposed) { observer.start(); observer.refresh(); } },
+        beginFreshView() {
+            if (disposed) return;
+            freshLayers.clear();
+            for (const binding of layerSet.compositorLayers) freshLayers.add(binding.layer);
+            freshSince = performance.now();
+        },
         setLayers(definitions: readonly PlatformLayerDefinition[]) {
             if (disposed) return;
             const previousCount = caches.length;
@@ -705,7 +806,8 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             if (disposed) return;
             setVisible(false);
             disposed = true;
-            options.onPresentation(null);
+            releasePendingSurface();
+            lastReport = null; options.onPresentation(null);
             candidate.dispose();
             observer.dispose();
             removeCapture();

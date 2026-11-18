@@ -335,6 +335,7 @@ export function createNativeViewLease(options: {
         // attachView owns the notebook's actual paper layer; adding another one
         // here gives the compositor two definitions with the same layer id.
         ...(backdrop ? { backdrops: backdrop.layers, pages: backdrop.pages } : {}) });
+    const paneId = `native-${identity.documentId}-${viewLease}`;
     let viewer: ReturnType<typeof attachView>;
     const reveal = (rect: Rect) => { camera.bringIntoView(rect, 24); cameraOwner.changed(); };
     try {
@@ -342,7 +343,7 @@ export function createNativeViewLease(options: {
         images.setVisible(parameters.visible && current());
         video.setVisible(parameters.visible && current());
         animation.setVisible(parameters.visible && current(), performance.now());
-        viewer = attachView({ session: board, token, view: viewParameters(), images, liveFrames: videoFrameOverlay(images.frames, syncAnimation, keys => images.setDemand(keys)),
+        viewer = attachView({ session: board, token, view: viewParameters(), images, auditPane: paneId, liveFrames: videoFrameOverlay(images.frames, syncAnimation, keys => images.setDemand(keys)),
             reveal, onError: options.onError });
         snapshotNow = () => viewer.getSnapshot();
     } catch (error) { animation.dispose(); video.dispose(); backdrop?.dispose(); images.dispose(); if (!cameraClaim) cameraOwner.dispose(); throw error; }
@@ -373,7 +374,6 @@ export function createNativeViewLease(options: {
         visible: () => parameters.visible && !!platformPane, current,
         changed: () => cameraOwner.changed(), onUserNavigation: markUserNavigation, invalidate, onError: options.onError,
         mac: /Mac|iPhone|iPad/.test(navigator.platform), invertMouseZoom: mouseZoomInverted });
-    const paneId = `native-${identity.documentId}-${viewLease}`;
     const withCapturer = <T,>(run: (capturer: ReturnType<typeof createPlatformCapturer>) => Promise<T>): Promise<T> => {
         if (!current()) return Promise.reject(new Error('Native view capture is unavailable'));
         const sheetId = runtime.selection.getSnapshot().sheet;
@@ -619,7 +619,7 @@ export function createNativeViewLease(options: {
                 if (!next) { recordViewport(); navigation.cancelViewWork('platform-detach'); }
                 platformPane = next;
                 updateInput();
-                if (next) next.invalidate('native-attachment');
+                if (next) { next.beginFreshView(); next.invalidate('native-attachment'); }
             },
             attachInput(interaction, overlay) {
                 detachSurface(); surface = interaction;

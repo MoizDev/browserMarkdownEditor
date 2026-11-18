@@ -1,4 +1,4 @@
-import { coverageTargetBytes } from './api';
+import { COVERAGE_ATLAS_TILE, coverageTargetBytes } from './api';
 import type {
     BitmapUpload, BufferHandle, BufferUse, ByteLease, ClipHandle, CoverageTarget, CoverageTargetOptions, GfxDevice, GfxError,
     FrameEncoder, GfxLimits, Handle, PipelineDesc, PipelineHandle, PixelUpload, RectI, SamplerHandle,
@@ -9,7 +9,7 @@ import { createWebgl2Frame } from './webgl2Frame';
 import type { ControlledFrame, DrawContext, EncodedDraw, FrameBackend, FrameTarget, FrameTexture, QuadCommand, QuadPin, TargetRequest } from './webgl2Frame';
 import { Webgl2TargetPool } from './webgl2Pool';
 import type { PoolStorage } from './webgl2Pool';
-import { COMPOSITION_SHADER, GRID_RESOLVE_SHADER, MODULATE_COMPOSITE_SHADER } from './webgl2Shaders';
+import { COMPOSITION_SHADER, GRID16_RESOLVE_SHADER, GRID_RESOLVE_SHADER, MODULATE_COMPOSITE_SHADER } from './webgl2Shaders';
 import { Webgl2IndexMirror } from './webgl2Index';
 import { Webgl2Timer } from './webgl2Timer';
 import { Webgl2IsolationPool } from './webgl2Isolation';
@@ -64,6 +64,13 @@ export interface Webgl2Services {
     onFramebufferFailure?(): void;
     /** Called only when a failed encode schedules the next bounded ring capacity. */
     recordUniformGrowth?(previousBytes: number, nextBytes: number): void;
+}
+
+interface OffscreenSurface {
+    readonly framebuffer: WebGLFramebuffer;
+    readonly texture: WebGLTexture;
+    readonly width: number;
+    readonly height: number;
 }
 
 /** Platform-internal owner only; layers never receive an arena or raw GL (design:88). */
@@ -223,10 +230,11 @@ void main() {
 };
 
 function count(value: number, positive = false): void {
-    if (!Number.isSafeInteger(value) || value < (positive ? 1 : 0)) throw new ArenaError('invalid-input');
+    if (!Number.isSafeInteger(value) || value < (positive ? 1 : 0)) throw new ArenaError('invalid-input', { site: 'count', value, positive });
 }
 function byteSize(...factors: number[]): number {
     const bytes = factors.reduce((a, b) => a * b, 1);
+    if (!Number.isSafeInteger(bytes) || bytes < 0) throw new ArenaError('invalid-input', { site: 'byteSize', factors: [...factors], bytes });
     count(bytes);
     return bytes;
 }
@@ -246,7 +254,7 @@ function mipChainBytes(width: number, height: number, channels: number, levels: 
 }
 function rectangle(rect: RectI, width: number, height: number): void {
     for (const value of [rect.x, rect.y, rect.width, rect.height]) count(value);
-    if (rect.x > width - rect.width || rect.y > height - rect.height) throw new ArenaError('invalid-input');
+    if (rect.x > width - rect.width || rect.y > height - rect.height) throw new ArenaError('invalid-input', { site: 'rectangle', rect: { ...rect }, target: { width, height } });
 }
 function uniqueUses<T extends string>(uses: readonly T[], allowed: readonly T[]): readonly T[] {
     if (!uses.length || uses.some(use => !allowed.includes(use))) throw new ArenaError('invalid-input');
@@ -324,8 +332,11 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     readonly #uniformGrowths: { previous: number; next: number }[] = [];
     #uniformBytes = 1 << 20;
     #surfaceRevision = 0;
+    /** The new-size target a raise draws into while the displayed canvas keeps its old picture (openOffscreen). */
+    #offscreen: OffscreenSurface | null = null;
     #composition: PipelineHandle | null = null;
     #gridComposition: PipelineHandle | null = null;
+    #grid16Composition: PipelineHandle | null = null;
     #modulateComposition: PipelineHandle | null = null;
     #white: TextureHandle | null = null;
     readonly #fences = new Map<number, WebGLSync | null>();
@@ -656,7 +667,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         }
         // An r8 texture takes its single channel from a PixelUpload only. A bitmap is RGBA: blitting it into R8 would
         // keep one channel without any error, so it is refused here rather than after the staging copy.
-        if (texture.format === 'r8' && !('rowBytes' in src)) throw new ArenaError('invalid-input');
+        if (texture.format === 'r8' && !('rowBytes' in src)) throw new ArenaError('invalid-input', { site: 'writeTexture:r8-bitmap', rect: { ...rect }, format: texture.format });
         if (!rect.width || !rect.height) return;
         const encoding = this.#arena.beginEncoding();
         let cpu: ByteLease | null = null;
@@ -668,7 +679,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 const row = byteSize(rect.width, channels);
                 count(src.rowBytes);
                 const needed = byteSize(src.rowBytes, rect.height - 1) + row;
-                if (src.rowBytes < row || !Number.isSafeInteger(needed) || src.source.byteLength < needed) throw new ArenaError('invalid-input');
+                if (src.rowBytes < row || !Number.isSafeInteger(needed) || src.source.byteLength < needed) throw new ArenaError('invalid-input', { site: 'writeTexture:rowBytes', rect: { ...rect }, rowBytes: src.rowBytes, row, needed, sourceBytes: src.source.byteLength, format: texture.format });
                 cpu = this.#reserve(this.#services.cpuStaging, byteSize(row, rect.height), false);
                 const flipped = new Uint8Array(row * rect.height);
                 for (let y = 0; y < rect.height; y++) {
@@ -683,7 +694,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             } else {
                 // A VideoFrame has no width or height of its own; its display size is the size WebGL reads it at.
                 const size = 'displayWidth' in src.source ? { width: src.source.displayWidth, height: src.source.displayHeight } : src.source;
-                if (size.width !== rect.width || size.height !== rect.height) throw new ArenaError('invalid-input');
+                if (size.width !== rect.width || size.height !== rect.height) throw new ArenaError('invalid-input', { site: 'writeTexture:size', rect: { ...rect }, source: { width: size.width, height: size.height }, format: texture.format });
                 staging = this.acquireTarget({ width: rect.width, height: rect.height, format: 'rgba8', samples: 1, stencil: false, purpose: 'group' });
                 if (!staging) throw new ArenaError('out-of-budget');
                 const stageTexture = this.#pin(encoding, staging.texture, 'texture');
@@ -811,10 +822,34 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         }
     }
 
-    createRenderTexture(width: number, height: number, lease: ByteLease): { texture: TextureHandle; target: TargetHandle } {
+    /** The overlap atlas (grid 16): `slotsAcross`×`slotsDown` slots of one tile each, one r8 texel per 1/16 device px and a stencil
+     * at the same texel size. The lease is charged exactly coverageTargetBytes(…, 1, 16). A slot is drawn through beginCoverage.
+     * A throw leaves the lease open for the caller to release (as createCoverageTarget does). */
+    createCoverageAtlas(slotsAcross: number, slotsDown: number, lease: ByteLease): CoverageTarget {
         this.#usable();
-        if (lease.bytes < width * height * 4) throw new ArenaError('out-of-budget');
-        const texture = this.#createTexture(width, height, 'rgba8', ['render', 'sample'], lease);
+        if (!Number.isSafeInteger(slotsAcross) || !Number.isSafeInteger(slotsDown) || slotsAcross <= 0 || slotsDown <= 0) throw new ArenaError('invalid-input');
+        // No grid-16 program (not yet compiled, or refused): the caller takes its grid-4 route. The lease is the caller's to release
+        // on a throw, as for createCoverageTarget.
+        if (!this.#grid16Composition) throw new ArenaError('invalid-resource');
+        const width = slotsAcross * COVERAGE_ATLAS_TILE, height = slotsDown * COVERAGE_ATLAS_TILE;
+        if (lease.bytes < coverageTargetBytes(width, height, 1, 16)) throw new ArenaError('out-of-budget');
+        const texture = this.#createTexture(width * 16, height * 16, 'r8', ['render', 'sample'], lease);
+        try {
+            const target = this.createTarget(texture, { samples: 1, stencil: true }, lease);
+            this.#arena.closeLease(lease);
+            return { target, texture, width, height, samples: 1, grid: 16 };
+        } catch (error) {
+            this.destroy(texture);
+            throw error;
+        }
+    }
+
+    createRenderTexture(width: number, height: number, lease: ByteLease, options?: { format?: 'rgba8' | 'r8'; copyDst?: boolean }): { texture: TextureHandle; target: TargetHandle } {
+        this.#usable();
+        const format = options?.format ?? 'rgba8';
+        if (lease.bytes < width * height * (format === 'r8' ? 1 : 4)) throw new ArenaError('out-of-budget');
+        const uses: TextureUse[] = ['render', 'sample', ...(options?.copyDst ? ['copy-dst' as const] : [])];
+        const texture = this.#createTexture(width, height, format, uses, lease);
         try {
             const target = this.createTarget(texture, { samples: 1, stencil: false }, lease);
             this.#arena.closeLease(lease);
@@ -913,13 +948,100 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         return { live: this.#cpuBytes, retiring: 0 };
     }
 
-    resizeSurface(width: number, height: number): SurfaceResizeResult {
-        const gl = this.#healthy();
-        if (this.#disposed) throw new ArenaError('aborted');
+    #checkSurfaceSize(width: number, height: number): void {
         count(width); count(height);
         if (width > Math.min(this.limits.maxRenderTargetSize, this.limits.maxViewport[0], RENDER_CONSTANTS.maxSurfaceAxisPixels) ||
             height > Math.min(this.limits.maxRenderTargetSize, this.limits.maxViewport[1], RENDER_CONSTANTS.maxSurfaceAxisPixels) ||
             byteSize(width, height) > RENDER_CONSTANTS.maxSurfacePixels) throw new ArenaError('invalid-input');
+    }
+
+    /** Opens the new-size target for a raise. The displayed canvas is not touched: its old picture stays on screen until
+     * commitSurface presents this frame. Opening the same size again keeps the open target. False when the size is zero or
+     * the browser refuses the target; the caller then keeps the displayed picture. */
+    openOffscreen(width: number, height: number): boolean {
+        const gl = this.#usable();
+        this.#checkSurfaceSize(width, height);
+        if (width === 0 || height === 0) return false;
+        const open = this.#offscreen;
+        if (open && open.width === width && open.height === height) return true;
+        this.#dropOffscreen();
+        const texture = gl.createTexture();
+        const framebuffer = gl.createFramebuffer();
+        if (!texture || !framebuffer) {
+            if (texture) gl.deleteTexture(texture);
+            if (framebuffer) gl.deleteFramebuffer(framebuffer);
+            return false;
+        }
+        try {
+            gl.bindTexture(gl.TEXTURE_2D, texture);
+            gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, width, height);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+            gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+            gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+            const complete = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+            const clean = gl.getError() === gl.NO_ERROR;
+            this.#forgetState();
+            this.#reset();
+            if (!complete || !clean) throw new ArenaError('allocation');
+        } catch {
+            gl.deleteFramebuffer(framebuffer);
+            gl.deleteTexture(texture);
+            if (!this.#lost && !gl.isContextLost()) this.#reset();
+            return false;
+        }
+        this.#offscreen = { framebuffer, texture, width, height };
+        this.#surfaceRevision++;
+        return true;
+    }
+
+    /** Presents the open target: the canvas takes the target's size (which clears the displayed picture), the target is
+     * blitted to the default framebuffer, and the target is released. The caller calls this only for a frame that is complete,
+     * in the same task as that frame's draw, so no task ever shows the cleared canvas. Null when nothing is open. */
+    commitSurface(): SurfaceResizeResult | null {
+        const offscreen = this.#offscreen;
+        if (!offscreen) return null;
+        const gl = this.#healthy();
+        if (this.#disposed) throw new ArenaError('aborted');
+        const canvas = this.#canvas!;
+        this.#forgetState();
+        if (canvas.width !== offscreen.width) canvas.width = offscreen.width;
+        if (canvas.height !== offscreen.height) canvas.height = offscreen.height;
+        gl.bindFramebuffer(gl.READ_FRAMEBUFFER, offscreen.framebuffer);
+        gl.readBuffer(gl.COLOR_ATTACHMENT0);
+        gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+        gl.drawBuffers([gl.BACK]);
+        gl.disable(gl.SCISSOR_TEST);
+        gl.blitFramebuffer(0, 0, offscreen.width, offscreen.height, 0, 0, offscreen.width, offscreen.height, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        const complete = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+        this.#dropOffscreen();
+        this.#reset();
+        return { width: gl.drawingBufferWidth, height: gl.drawingBufferHeight, complete, generation: this.generation };
+    }
+
+    /** Abandon of an open raise (hidden, context lost, refused): the displayed picture is untouched. Idempotent. */
+    closeOffscreen(): void { this.#dropOffscreen(); }
+
+    #dropOffscreen(): void {
+        const offscreen = this.#offscreen;
+        if (!offscreen) return;
+        this.#offscreen = null;
+        this.#surfaceRevision++;
+        const gl = this.#gl;
+        if (!gl || this.#lost || gl.isContextLost()) return;
+        this.#forgetState();
+        gl.deleteFramebuffer(offscreen.framebuffer);
+        gl.deleteTexture(offscreen.texture);
+        this.#reset();
+    }
+
+    resizeSurface(width: number, height: number): SurfaceResizeResult {
+        const gl = this.#healthy();
+        if (this.#disposed) throw new ArenaError('aborted');
+        this.#checkSurfaceSize(width, height);
+        // An immediate resize supersedes any open raise: its target was sized for a request that is no longer current.
+        this.#dropOffscreen();
         const canvas = this.#canvas!;
         if (canvas.width !== width || canvas.height !== height) {
             if (canvas.width !== width) canvas.width = width;
@@ -948,7 +1070,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         try {
             this.#cleanup([
                 ...[...this.#frames.values()].map(frame => () => frame.controller?.cancel()),
-                () => this.#timer.clear(false), () => this.#isolation.clear(), () => this.#dropUniformSlots(), () => this.#dropVaos(), () => this.#pool.clear(),
+                () => this.#dropOffscreen(), () => this.#timer.clear(false), () => this.#isolation.clear(), () => this.#dropUniformSlots(), () => this.#dropVaos(), () => this.#pool.clear(),
                 () => this.#arena.releaseAll(reason),
                 () => {
                     for (const handle of this.#handles) {
@@ -974,12 +1096,12 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         this.#work.abort();
         this.#cleanup([
             ...[...this.#frames.values()].map(frame => () => frame.controller?.cancel()),
-            () => this.#timer.clear(false), () => this.#isolation.clear(), () => this.#dropUniformSlots(), () => this.#dropVaos(), () => this.#pool.clear(),
+            () => this.#dropOffscreen(), () => this.#timer.clear(false), () => this.#isolation.clear(), () => this.#dropUniformSlots(), () => this.#dropVaos(), () => this.#pool.clear(),
             () => this.#arena.releaseAll('hidden'),
             () => { for (const handle of this.#handles) this.#arena.release(handle); },
             () => this.#handles.clear(), () => this.#programs.clear(), () => this.#programSignatures.clear(),
             () => this.#samplers.clear(), () => this.#attachments.clear(),
-            () => { this.#white = null; this.#composition = null; this.#gridComposition = null; this.#modulateComposition = null; }, () => this.#collect(),
+            () => { this.#white = null; this.#composition = null; this.#gridComposition = null; this.#grid16Composition = null; this.#modulateComposition = null; }, () => this.#collect(),
         ]);
     }
 
@@ -992,12 +1114,12 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         try {
             this.#cleanup([
                 ...[...this.#frames.values()].map(frame => () => frame.controller?.cancel()),
-                () => this.#timer.clear(true), () => this.#isolation.abandon(), () => this.#pool.abandon(),
+                () => this.#dropOffscreen(), () => this.#timer.clear(true), () => this.#isolation.abandon(), () => this.#pool.abandon(),
                 ...this.#uniformSlots.map(slot => () => this.#returnCpu(slot.lease)),
                 () => { this.#uniformSlots.length = 0; },
                 ...[...this.#indexBuffers].map(buffer => () => this.#dropIndexData(buffer)),
                 () => this.#pipelines.clear(), () => this.#pollCancel?.(),
-                () => { this.#pollCancel = null; this.#white = null; this.#composition = null; this.#gridComposition = null; this.#modulateComposition = null; },
+                () => { this.#pollCancel = null; this.#white = null; this.#composition = null; this.#gridComposition = null; this.#grid16Composition = null; this.#modulateComposition = null; },
                 () => { this.#fences.clear(); this.#fenceTimes.clear(); }, () => this.#handles.clear(), () => this.#programs.clear(),
                 () => this.#programSignatures.clear(), () => this.#samplers.clear(), () => this.#attachments.clear(),
                 () => this.#textureUnits.clear(), () => this.#uniformUnits.clear(),
@@ -1065,6 +1187,14 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     async #prepareComposition(signal: AbortSignal): Promise<void> {
         this.#composition = await this.#program(COMPOSITION_SHADER, AbortSignal.any([signal, this.#work.signal]));
         this.#gridComposition = await this.#program(GRID_RESOLVE_SHADER, AbortSignal.any([signal, this.#work.signal]));
+        // The grid-16 resolve is optional: a compile or link failure there must not take the grid 1 and 4 composition down with it.
+        // Without it no atlas is admitted (createCoverageAtlas refuses), so the caller falls back to grid 4 and counts it.
+        const both = AbortSignal.any([signal, this.#work.signal]);
+        try { this.#grid16Composition = await this.#program(GRID16_RESOLVE_SHADER, both); }
+        catch (error) {
+            if (both.aborted) throw error;
+            this.#grid16Composition = null;
+        }
         this.#modulateComposition = await this.#program(MODULATE_COMPOSITE_SHADER, AbortSignal.any([signal, this.#work.signal]));
         const sampler = this.createSampler('linear');
         this.destroy(sampler);
@@ -1104,7 +1234,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         const error = gl.getError();
         if (error !== gl.NO_ERROR) {
             this.#healthy();
-            throw new ArenaError(error === gl.OUT_OF_MEMORY ? 'allocation' : 'invalid-input');
+            throw new ArenaError(error === gl.OUT_OF_MEMORY ? 'allocation' : 'invalid-input', { site: 'gl-error', glError: error });
         }
     }
 
@@ -1223,6 +1353,13 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                         color: this.#frameTexture(work.encoding, root.texture, native.colorTexture),
                         usedRect: { x: 0, y: 0, width: root.width, height: root.height }, retained: { colorStored: false, stencilStored: false } };
                 }
+                // A raise draws its new size here while the displayed canvas keeps the old picture (commitSurface presents it).
+                const offscreen = this.#offscreen;
+                if (offscreen) {
+                    return { handle, framebuffer: offscreen.framebuffer, resolveFramebuffer: offscreen.framebuffer, ...(__BME_BENCH__ ? { coverage: null } : {}),
+                        width: offscreen.width, height: offscreen.height, format: 'rgba8', samples: 1, stencil: false, capture: false, color: null,
+                        usedRect: { x: 0, y: 0, width: offscreen.width, height: offscreen.height }, retained: { colorStored: false, stencilStored: false } };
+                }
                 return { handle, framebuffer: null, resolveFramebuffer: null, ...(__BME_BENCH__ ? { coverage: null } : {}), width: gl.drawingBufferWidth, height: gl.drawingBufferHeight,
                     format: 'rgba8', samples: 1, stencil: false, capture: false, color: null,
                     usedRect: { x: 0, y: 0, width: gl.drawingBufferWidth, height: gl.drawingBufferHeight }, retained: { colorStored: false, stencilStored: false } };
@@ -1277,7 +1414,8 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             endReplay: () => this.#endReplay(),
             bindTarget: framebuffer => this.#bindTarget(framebuffer),
             quad: command => {
-                const handle = command.variant === 'grid' ? this.#gridComposition : command.variant === 'modulate' ? this.#modulateComposition : this.#composition;
+                const handle = command.variant === 'grid' ? this.#gridComposition : command.variant === 'grid16' ? this.#grid16Composition
+                    : command.variant === 'modulate' ? this.#modulateComposition : this.#composition;
                 if (!handle) throw new ArenaError('invalid-resource');
                 const cached = work.quadPins.get(handle);
                 if (cached) return cached;

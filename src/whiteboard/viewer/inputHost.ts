@@ -98,6 +98,7 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
             if (options.presented) safe(() => options.presented?.(revision, actual, frame, context));
         },
         liveNodeIds: () => wet.liveNodeIds(),
+        liveDraws: (nodeId, band, view, canvas) => wet.drawsLive(nodeId, band, view, canvas),
         paletteChanged: () => wet.invalidate(),
         sensitiveNodeIds: () => options.overlays?.sensitiveNodeIds?.() ?? NO_SENSITIVE_IDS,
     };

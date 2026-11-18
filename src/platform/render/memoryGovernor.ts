@@ -9,7 +9,7 @@ import type { LayerTrouble, RenderToken } from './types';
 export type MemoryPool = 'gpu' | 'cpu';
 export type MemoryClass = 'hidden-mirror' | 'obsolete-arrival' | 'offscreen-high' |
     'redundant-level' | 'prefetch' | 'scene-cache' | 'critical';
-export type MemoryKind = 'working' | 'canvas-working' | 'program' | 'context' | 'surface' | 'mirror' | 'mirror-retiring' | 'capture' |
+export type MemoryKind = 'working' | 'canvas-working' | 'surface-scratch' | 'program' | 'context' | 'surface' | 'mirror' | 'mirror-retiring' | 'capture' |
     /** A live gesture's working set (wet ink). Bounded by the pool, outside its pane's cache grant: it is released only
      * after the committed layers present the dry frame, so charging it to the grant those layers need was a cycle
      * (measured: 101 wet-tile refusals in one stroke with the pool 57% full, then the stroke's tail never drew). */
@@ -44,6 +44,8 @@ export interface MemoryCacheRegistration extends CacheActivity {
     readonly kind: MemoryKind;
     readonly class: MemoryClass;
     readonly paneId?: string;
+    /** A live layer's cache (a stroke in flight). Its CPU reservations reclaim their own idle geometry before the pane's others. */
+    readonly liveInput?: boolean;
     readonly owner?: MemorySessionOwner;
     readonly memory: () => ArenaMemory;
     /** Eviction request for up to `bytes`; returns the bytes it frees, or 0 when it frees nothing (a touched entry). An owner
@@ -261,6 +263,7 @@ export class MemoryGovernor {
     private failedQuality: number | null = null;
     private failedUntil = Number.NEGATIVE_INFINITY;
     private failureBackoffMs: number = POLICY.qualityFailureBackoffMinMs;
+    private wake: number | null = null;
     private levelSince = Number.NEGATIVE_INFINITY;
     private pressureHoldUntil = Number.NEGATIVE_INFINITY;
     private now = 0;
@@ -286,7 +289,7 @@ export class MemoryGovernor {
         }
         if (!registration.id || this.caches.has(registration.id) ||
             (['mirror', 'mirror-retiring'].includes(registration.kind) && registration.pool !== 'cpu') ||
-            (['program', 'context', 'surface', 'canvas-working'].includes(registration.kind) && registration.pool !== 'gpu') ||
+            (['program', 'context', 'surface', 'canvas-working', 'surface-scratch'].includes(registration.kind) && registration.pool !== 'gpu') ||
             (registration.pool === 'gpu' && registration.kind !== 'context' && !registration.paneId)) {
             throw new MemoryAdmissionError('invalid-input');
         }
@@ -426,7 +429,7 @@ export class MemoryGovernor {
         for (const record of records) {
             const source = record.cache.registration;
             if (record.returned) return false;
-            if (source.pool !== 'gpu' || source.kind !== 'canvas-working' || source.paneId !== destination.registration.paneId ||
+            if (source.pool !== 'gpu' || source.kind !== 'surface-scratch' || source.paneId !== destination.registration.paneId ||
                 !owner || !source.owner || owner.vaultEpoch !== source.owner.vaultEpoch || owner.documentId !== source.owner.documentId ||
                 owner.session !== source.owner.session || record.bytes % POLICY.surfaceReserveBytesPerPixel !== 0) {
                 throw new MemoryAdmissionError('foreign-owner');
@@ -480,6 +483,8 @@ export class MemoryGovernor {
     advance(now: number, liveGesture: boolean): void {
         if (!Number.isFinite(now) || now < this.now) throw new MemoryAdmissionError('invalid-input');
         this.now = now;
+        this.now = now;
+        for (const cache of this.caches.values()) this.reconcileUnaccounted(cache);
         this.trimHiddenMirrors();
         // Quality drops only when the trims cannot bring a pool back to target: a trim that frees what it is asked for
         // is the answer to pressure, and a degradation for pressure it has not yet had the chance to release is premature.
@@ -509,11 +514,34 @@ export class MemoryGovernor {
             this.belowRecoverySince = now;
             this.replan();
         }
+        // Pressure is over once the cool window has held, whether or not the raise is allowed: the label then follows the quality
+        // (degraded while it is lowered). Measured: a raise refused at 1.0 left 'trimming' for the whole run at 0.8.
+        if (this.state === 'trimming' && cool && this.belowRecoverySince !== null && now - this.belowRecoverySince >= POLICY.memoryRecoveryDelayMs) {
+            this.state = this.qualityLimit < 1 ? 'degraded' : 'normal';
+        }
         if (this.failedQuality !== null && now - this.levelSince >= POLICY.qualityFailureResetMs) {
             this.failedQuality = null;
             this.failureBackoffMs = POLICY.qualityFailureBackoffMinMs;
         }
+        this.wake = this.nextWake(now, cool, unmet);
     }
+
+    /** The next instant at which advancing again changes something, with no event to wait for: a degrade that a resume hold
+     * deferred, and a recovery that has held its cool window (or its failed level's back-off). Null when nothing is pending. */
+    private nextWake(now: number, cool: boolean, unmet: boolean): number | null {
+        const hold = unmet && now < this.pressureHoldUntil ? this.pressureHoldUntil : null;
+        let recovery: number | null = null;
+        if (this.state !== 'normal' && cool && this.belowRecoverySince !== null) {
+            let due = this.belowRecoverySince + POLICY.memoryRecoveryDelayMs;
+            if (this.failedQuality !== null) due = Math.max(due, this.failedUntil);
+            recovery = Math.max(due, now);
+        }
+        if (hold === null) return recovery;
+        return recovery === null ? hold : Math.min(hold, recovery);
+    }
+
+    /** When the governor next needs an advance with no event to deliver it (see nextWake), or null. */
+    wakeAt(): number | null { return this.wake; }
 
     signalTrouble(reason: MemoryTrouble): void {
         this.lastTrouble = reason;
@@ -561,30 +589,34 @@ export class MemoryGovernor {
         };
     }
 
+    /** A read reports what the owner holds and never changes a charge: the charge moves in reconcileUnaccounted, once per
+     * frame, so two reads in a frame (the scheduler's and the audit's) cannot disagree about it. */
     private cacheReadout(cache: CacheRecord): MemoryCacheReadout {
         const { live, retiring } = cache.registration.memory();
         count(live);
         count(retiring);
-        // Publication without a covering reservation is an accounting fault in the owner. It never throws out of a frame (the
-        // frame would be lost on screen): the bytes are charged to the cache and the owner is named once.
-        if (live + retiring > cache.bytes) this.reconcileUnaccounted(cache, live, retiring);
         return { live, retiring, reservedBytes: cache.bytes, leaseCount: cache.leaseCount, closed: cache.closed };
     }
 
-    /** Charges a cache for live bytes its reservation does not cover, so the pool counts what is on the device. The charge is
-     * the full deficit, not a clamp: a clamp would understate the pool. advance() trims a pool charged past its target on
-     * the next frame, which is the trim the excess needs. Counted per event with its bytes; logged once per cache, named. */
-    private reconcileUnaccounted(cache: CacheRecord, live: number, retiring: number): void {
+    /** Sets the charge a cache holds for live bytes its leases do not cover, so the pool counts what is on the device. Idempotent:
+     * the charge is the owner's current excess over its leases, not a running sum, so a publication that lags its release (a
+     * retiring buffer) keeps the charge until the owner's bytes fall, and a read that repeats changes nothing. The charge is
+     * the full deficit, not a clamp: a clamp would understate the pool. Logged once per cache, named. */
+    private reconcileUnaccounted(cache: CacheRecord): void {
         const { id, pool } = cache.registration;
-        const deficit = live + retiring - cache.bytes;
-        cache.bytes += deficit;
-        cache.unaccounted += deficit;
-        this.charged[pool] += deficit;
-        auditCount('governor', `unaccounted:${id}`, 1, { bytes: deficit });
-        if (!cache.unaccountedReported) {
+        const { live, retiring } = cache.registration.memory();
+        const leased = cache.bytes - cache.unaccounted;
+        const next = Math.max(0, live + retiring - leased);
+        const delta = next - cache.unaccounted;
+        if (!delta) return;
+        cache.bytes += delta;
+        cache.unaccounted = next;
+        this.charged[pool] += delta;
+        if (delta > 0) auditCount('governor', `unaccounted:${id}`, 1, { bytes: delta });
+        if (next > 0 && !cache.unaccountedReported) {
             cache.unaccountedReported = true;
             console.error(`GPU accounting: ${id} published ${live + retiring} bytes (live ${live}, retiring ${retiring}) against ` +
-                `${cache.bytes - deficit} reserved; the difference is charged to it until its leases return.`);
+                `${leased} reserved; the difference is charged to it until the owner publishes no more than its leases.`);
         }
     }
 
@@ -646,6 +678,23 @@ export class MemoryGovernor {
         // first refusal. Measured earlier as the evict/realloc loop; an owner that retries each frame must not re-run them.
         if (cache.refusal && cache.refusal.epoch === this.capacityEpoch && bytes >= cache.refusal.bytes) return null;
         const allowed = () => this.fits(cache, bytes);
+        // A pane with no demand yet holds a zero grant, so its first allocation is refused without being over anything.
+        // That is not pressure: nothing is trimmed and no quality is stepped. The refused work waits, and the replan that
+        // grants the pane's demand wakes it. Seen: a new arrow's first 64 KB working buffer degraded a near-empty canvas2d pane.
+        if (!allowed() && !this.overPool(pool, bytes) && !this.hasDemand(cache)) return null;
+        // A pane's GPU surface replaces its 2D picture: the 2D working canvases of the same pane are that picture's scratch, and they
+        // are dropped before the pane's new backing is refused for want of room they hold (measured, DPR 2: a 2D fallback held 44 MB of
+        // working canvases beside its 33 MB display, so the GPU scratch of the same pane was refused and quality stepped down).
+        const paneOf = cache.registration.paneId;
+        if (kind === 'surface-scratch' && paneOf !== undefined) {
+            this.trimming = true;
+            try {
+                for (const other of [...this.caches.values()]) {
+                    if (other.registration.paneId !== paneOf || other.registration.kind !== 'canvas-working' || other.bytes === 0) continue;
+                    this.evictCache(other, other.bytes);
+                }
+            } finally { this.trimming = false; }
+        }
         if (!allowed()) {
             // Pressure is the pool's, not one pane reaching its own grant: adapters retry a refused grant each frame, and
             // resetting the recovery clock for it kept the governor 'trimming' at quality 0.8 with the GPU pool 57% full.
@@ -685,6 +734,19 @@ export class MemoryGovernor {
         return lease;
     }
 
+    /** The pool itself cannot take the bytes: the only refusal that is pressure without a pane's own demand. */
+    private overPool(pool: MemoryPool, bytes: number): boolean {
+        return this.charged[pool] + bytes > this.target[pool];
+    }
+
+    /** A visible, shown pane that asked for pixels. A pane-less cache (the app's own) always has demand. */
+    private hasDemand(cache: CacheRecord): boolean {
+        const { paneId } = cache.registration;
+        if (paneId === undefined) return true;
+        const pane = this.panes.find(item => item.paneId === paneId);
+        return !!pane && pane.visible && pane.requestedPixels > 0 && cache.activity.hiddenAt === null;
+    }
+
     private fits(cache: CacheRecord, bytes: number): boolean {
         const { pool, kind, paneId } = cache.registration;
         // Existing leases are grandfathered only for accounting, never for new admission.
@@ -697,7 +759,7 @@ export class MemoryGovernor {
         const pane = paneId === undefined ? undefined : this.paneById.get(paneId);
         const grant = paneId === undefined ? undefined : this.grants.get(paneId);
         if (pool === 'gpu' && (cache.activity.hiddenAt !== null || !pane?.visible || !pane.requestedPixels ||
-            (pane.cpuPinned && kind !== 'surface' && kind !== 'canvas-working'))) return false;
+            (pane.cpuPinned && kind !== 'surface' && kind !== 'canvas-working' && kind !== 'surface-scratch'))) return false;
         if (kind === 'mirror' && cache.activity.hiddenAt !== null &&
             this.hiddenMirrorBytes() + bytes > this.hiddenMirrorLimit()) return false;
         if (paneId === undefined || kind === 'program') return true;
@@ -707,7 +769,10 @@ export class MemoryGovernor {
         if (kind === 'live-input') return this.kindBytes('live-input') + bytes <= this.target[pool] * POLICY.liveInputGpuFraction;
         if (pool === 'cpu' && (cache.activity.hiddenAt !== null || !pane?.visible)) return true;
         if (!grant) return false;
-        const limit = kind === 'surface' ? grant.pixelGrant * POLICY.surfaceReserveBytesPerPixel :
+        // A surface backing's scratch is sized by the pixel grant, as the display is. Checked against the cache share it was
+        // refused at quality 1 (measured, DPR 2 GPU: 32.7 MB requested, 81 MB charged, cache share below the backing), and each
+        // refusal stepped the quality down again. Its own kind, so a 2D compositor's working canvas keeps the cache share.
+        const limit = kind === 'surface' || kind === 'surface-scratch' ? grant.pixelGrant * POLICY.surfaceReserveBytesPerPixel :
             pool === 'gpu' ? grant.gpuCacheBytes : grant.cpuBytes;
         const used = this.paneUsed(paneId, pool, kind);
         if (pool === 'gpu' && kind === 'capture') {
@@ -722,11 +787,12 @@ export class MemoryGovernor {
     private paneUsed(paneId: string, pool: MemoryPool, kind: MemoryKind): number {
         return [...this.caches.values()].filter(other => other.registration.paneId === paneId &&
             other.registration.pool === pool && other.activity.hiddenAt === null && (kind === 'surface' ? other.registration.kind === 'surface' :
+                kind === 'surface-scratch' ? other.registration.kind === 'surface-scratch' :
                 // The 2D compositor's working set and the GPU layer caches are counted apart: a resize bridges through a
                 // detached 2D picture while the kept GPU caches stay charged, and one shared limit refused every bridge
                 // image forever (measured: 3,484 refusals, no frame after a PDF's quality returned to 1).
                 kind === 'canvas-working' ? other.registration.kind === 'canvas-working' :
-                !['surface', 'program', 'context', 'live-input', 'canvas-working'].includes(other.registration.kind)))
+                !['surface', 'program', 'context', 'live-input', 'canvas-working', 'surface-scratch'].includes(other.registration.kind)))
             .reduce((sum, other) => sum + other.bytes, 0);
     }
 
@@ -741,7 +807,7 @@ export class MemoryGovernor {
                 if (excess <= 0) continue;
                 const candidates = [...this.caches.values()].filter(other => other.registration.paneId === paneId &&
                     other.registration.pool === 'gpu' && other.bytes > 0 && other.activity.hiddenAt === null &&
-                    !['surface', 'program', 'context', 'mirror', 'mirror-retiring', 'live-input', 'canvas-working'].includes(other.registration.kind))
+                    !['surface', 'program', 'context', 'mirror', 'mirror-retiring', 'live-input', 'canvas-working', 'surface-scratch'].includes(other.registration.kind))
                     .sort((a, b) => a.activity.lastVisibleAt - b.activity.lastVisibleAt || a.activity.lastUsedAt - b.activity.lastUsedAt ||
                         stableId(a.registration.id, b.registration.id));
                 for (const other of candidates) {
@@ -763,7 +829,7 @@ export class MemoryGovernor {
         // GPU too: a pane at its own GPU grant with the pool 83% full refused the board's tiles on every frame while the
         // pane's page tiles held 19 MB, and nothing reclaimed (measured: an annotated PDF never presented after a drag).
         // Only the pane's layer caches compete there; its surface, working set and live input are counted apart.
-        if (pool === 'gpu' && ['surface', 'program', 'context', 'live-input', 'canvas-working'].includes(kind)) return;
+        if (pool === 'gpu' && ['surface', 'program', 'context', 'live-input', 'canvas-working', 'surface-scratch'].includes(kind)) return;
         let excess = this.paneUsed(paneId, pool, kind) + bytes - (pool === 'gpu' ? grant.gpuCacheBytes : grant.cpuBytes);
         if (excess <= 0) return;
         const candidates = [...this.caches.values()].filter(other => other.registration.paneId === paneId &&
@@ -771,8 +837,11 @@ export class MemoryGovernor {
             RECLAIMABLE.includes(other.registration.class) &&
             // A GPU layer evicted whole cannot be the one asking: it would release the residency it is growing.
             (pool === 'cpu' || other !== cache) &&
-            !['surface', 'program', 'context', 'mirror', 'mirror-retiring', 'live-input', 'canvas-working'].includes(other.registration.kind))
-            .sort((a, b) => RECLAIMABLE.indexOf(a.registration.class) - RECLAIMABLE.indexOf(b.registration.class) ||
+            !['surface', 'program', 'context', 'mirror', 'mirror-retiring', 'live-input', 'canvas-working', 'surface-scratch'].includes(other.registration.kind))
+            // A live stroke's CPU request reclaims its own layer's idle geometry first (the route's chunks the stroke no longer
+            // draws): that is what a new stroke needs back, and the pane's other caches are only asked for what it leaves.
+            .sort((a, b) => (pool === 'cpu' && cache.registration.liveInput ? (a === cache ? 0 : 1) - (b === cache ? 0 : 1) : 0) ||
+                RECLAIMABLE.indexOf(a.registration.class) - RECLAIMABLE.indexOf(b.registration.class) ||
                 a.activity.lastVisibleAt - b.activity.lastVisibleAt || a.activity.lastUsedAt - b.activity.lastUsedAt ||
                 stableId(a.registration.id, b.registration.id));
         this.trimming = true;
@@ -857,8 +926,10 @@ export class MemoryGovernor {
         cache.leaseCount--;
         const pool = cache.registration.pool;
         this.charged[pool] -= record.bytes;
-        // The unaccounted charge goes with the cache's last lease: nothing that holds bytes is left to publish them.
-        if (!cache.leaseCount && cache.unaccounted > 0) {
+        // A closed cache's unaccounted charge goes with its last lease. A live one keeps it: the owner may still hold the bytes
+        // (a publication that lags its release), and reconcileUnaccounted drops the charge when they fall. Dropping it here made
+        // the charge return on every release and come back on the next read, while the owner still held the bytes.
+        if (cache.closed && !cache.leaseCount && cache.unaccounted > 0) {
             cache.bytes -= cache.unaccounted;
             this.charged[pool] -= cache.unaccounted;
             cache.unaccounted = 0;
@@ -946,12 +1017,13 @@ export class MemoryGovernor {
         return layerTroubleOf(this.state, this.lastTrouble);
     }
 
-    /** Usage low enough to step quality back up. GPU grants are planned up to the trim target, so a pane using its own
-     * grant sits there; the CPU's 0.6 ratio applied to the GPU never came once it was degraded (measured: a PDF held at
-     * 44 of 64 MB stayed at quality 0.8, so no webgl2 frame was ever sharp). */
+    /** Usage low enough to step quality back up. The GPU is under its trim target: a pane's grant sits there, so a lower ratio
+     * never came once degraded (measured: a PDF held at 44 of 64 MB stayed at quality 0.8, so no webgl2 frame was ever sharp).
+     * The CPU is under its soft-pressure line, not 0.6: a visible PDF's working set alone is 20-27 MB of the 33.5 MB pool at
+     * DPR 2 (measured), so a 0.6 line never came, quality stayed at 0.8, and the editing cover waited for a sharp frame. */
     cool(): boolean {
         return this.charged.gpu < this.target.gpu * POLICY.memoryTrimTargetRatio &&
-            this.charged.cpu < this.target.cpu * POLICY.memoryRecoveryRatio;
+            this.charged.cpu < this.target.cpu * POLICY.memorySoftPressureRatio;
     }
 
     /** The level being left failed under trouble: a raise back to it waits out the back-off, which doubles on repeat failures of

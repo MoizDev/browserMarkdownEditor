@@ -16,8 +16,6 @@ export const MASK_SLICE = 1024;
 export const MASK_MAX_HEIGHT = 2048;
 /** Most cells one run may take. Beyond it the run is oversize (an extreme zoom): its item falls back to the CPU path, counted. */
 const MASK_MAX_CELLS = 16;
-/** The one canvas's bytes, which the route reserves from the CPU pool before its first raster. */
-export const MASK_CANVAS_BYTES = MASK_SLICE * MASK_MAX_HEIGHT * 4;
 /** Measurements kept per font epoch. Cleared whole when full: a run is measured again on its next use, which is cheap. */
 const MEASURE_CACHE_LIMIT = 4096;
 /** Bytes charged per memo entry beyond the strings it keeps (the entry object, its bucket slot). */
@@ -246,7 +244,7 @@ interface MeasureEntry extends Indexed { readonly value: MaskMeasure }
 /** `account` charges each memoised measurement; a measurement the pool will not charge is computed and not kept, and each such
  * recomputation is counted as `text:measure-uncached` on `audit`, so a pool at its limit shows as a count, not as a silent cost. */
 export function createMaskRaster(account?: CpuAccount, audit?: string): MaskRaster {
-    // Created on the first raster only: an 8 MB canvas is not worth holding for a board without text.
+    // Created on the first raster only.
     let ctx: OffscreenCanvasRenderingContext2D | null = null;
     const measured = new KeyedIndex<MeasureEntry>();
     let measuredEpoch = Number.NaN;
@@ -256,7 +254,8 @@ export function createMaskRaster(account?: CpuAccount, audit?: string): MaskRast
     const context = (): OffscreenCanvasRenderingContext2D => {
         if (ctx) return ctx;
         // Read back on the CPU: an accelerated canvas would make every getImageData a GPU readback.
-        const made = new OffscreenCanvas(MASK_SLICE, MASK_MAX_HEIGHT).getContext('2d', { willReadFrequently: true });
+        // Sized by drawCell to each cell it rasters: a fixed maximum here held 8 MiB the route could not lease at a large zoom.
+        const made = new OffscreenCanvas(1, 1).getContext('2d', { willReadFrequently: true });
         if (!made) throw new Error('Offscreen 2D canvas unavailable');
         ctx = made;
         return made;

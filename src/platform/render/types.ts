@@ -24,11 +24,17 @@ export type FrameToken = RenderToken & {
 /** Shared-frame admission, using the performance.now clock (rendering-design.md §7.1:664–673).
  * The upload deadline bounds admitted work, not an already-running GPU upload; record overshoot.
  */
+/** Which pass of the frame a prepare call runs in (see Layer.twoPhase). 'single' is every layer that does not split: a critical
+ * one runs in the foreground pass, any other in the background pass, as before. */
+export type BudgetPhase = 'foreground' | 'background' | 'single';
+
 export interface FrameBudget {
     frameId: number;
     token: FrameToken;
     cameraEpoch: number;
     readonly damage?: DamageRecord;
+    /** Always set by the scheduler. A two-phase layer is prepared once per phase per frame, foreground first across every pane. */
+    readonly phase: BudgetPhase;
     prepareDeadline: number;
     upload: { remainingBytes: number; deadline: number };
     shouldYield(): boolean;
@@ -56,11 +62,20 @@ export interface Layer {
      * each, which removes a framebuffer switch per tile. Only clear passes without stencil use the atlas; anything else draws
      * its own target and is counted as a fallback. */
     readonly atlas?: boolean;
+    /** Opt-in (default off): preparation is split into two calls per frame, budget.phase 'foreground' then 'background'. The
+     * scheduler runs every pane's foreground call before any background call, both sharing the frame's one upload window.
+     * Foreground does this frame's begin-of-frame work (keyed by frameId, since both calls see the same frame) and the work
+     * the frame's completeness needs; background does the rest. A foreground answer of changed marks the frame changed; the
+     * frame's answer is the background call's. The scheduler skips the background call when the foreground call did not run. */
+    readonly twoPhase?: true;
     /** Schedule work without blocking; preparation is split into resumable units (design:677–679).
      * Returns `false` only when a prepare ran to completion for this view and nothing the layer draws next can differ from what
      * it last presented, so a continuation frame may skip encode and present. A layer the budget or deadline skipped this frame
      * has proved nothing, so the scheduler counts it as changed. Any other answer, including no answer (every layer that does not
-     * say), means the picture may have changed. A forwarding wrapper that does not return the inner answer simply reports changed. */
+     * say), means the picture may have changed. A forwarding wrapper that does not return the inner answer simply reports changed.
+     * A frame of `false` answers is a presented frame whose GPU work is skipped: the picture on screen is the one it would draw, so
+     * the scheduler still delivers the presented-frame observers, overlays and presented record for it (only encode and submit are
+     * skipped). That is why a layer must count every change it draws, its chrome included: an unchanged answer over a change is hidden. */
     prepare(view: ViewState, budget: FrameBudget): boolean | void;
     drawGpu(pass: GpuPass, view: ViewState): void;
     /** Optional, GPU only. Encodes passes into the layer's OWN offscreen targets (tile textures) on this frame's encoder,
@@ -78,8 +93,9 @@ export interface Layer {
     memory(): { gpuBytes: number; cpuBytes: number };
     /** Awaiting a worker alone is not executable work and must return false (design:661). */
     needsFrame(): boolean;
-    /** Optional. True while the layer's picture for the requested revision is not yet current and it is building one: its
-     * preparation may then take the frame's presentation share, since nothing current is waiting to be encoded there. */
+    /** Deprecated, not read by the scheduler: every pane's foreground preparation now gets the frame's whole preparation budget
+     * (the interval less the measured presentation cost), so an unpresented picture needs no separate share. Kept until the
+     * implementers (the board layer) drop it, since removing it is a change in their files. */
     prepareUrgent?(): boolean;
     /** Optional by vr-lead ruling; a later rAF after submission, not physical scan-out (C4.3:538–542).
      * The compositor validates the full FrameToken before acknowledging a drawn revision.
@@ -176,7 +192,6 @@ export interface RenderConstants {
     /** Hysteresis from §6.3:643 and §6.4:653; lower q remains allowed if 0.5 cannot fit. */
     readonly qualityReductionFactor: 0.8;
     readonly minInteractiveQualityScale: 0.5;
-    readonly memoryRecoveryRatio: 0.6;
     readonly memoryRecoveryDelayMs: 5000;
     /** Over budget takes one quality step per settle window: the step re-plans the grants, and the charge settles after it. */
     readonly qualityStepSettleMs: 300;

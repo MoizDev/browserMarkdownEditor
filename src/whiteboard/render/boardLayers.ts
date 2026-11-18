@@ -76,6 +76,8 @@ export interface BoardLayersOptions {
     readonly liveNodes?: ReadonlySet<string>;
     /** An overlay (a drag's preview): its few plain parts are drawn live with no tiles, so no tile grant can stall it. */
     readonly liveOverlay?: boolean;
+    /** Whether an optional layer has a request to draw. Nothing requested is nothing to draw: the layer is complete and counts no hole. */
+    readonly requested?: () => boolean;
 }
 /** The whole plane, in world units: board coordinates are bounded by the 1e12 world limit (services.ts inverse). */
 const WHOLE_PLANE: readonly Rect[] = Object.freeze([Object.freeze({ x: -1e12, y: -1e12, width: 2e12, height: 2e12 })]);
@@ -1012,6 +1014,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         // froze the pane (a board whose ink tile could not be admitted refused every frame, and nothing requested another).
         critical() { return presented === null && !adapter?.readyFrame() && !gpu?.readyFrame() && !gpu?.memoryBlocked(); },
         coverage(layer, frame, backend) {
+            // An optional layer with no request has nothing to draw: the platform reads it complete, and so does the audit.
+            if (options.optional && options.requested && !options.requested()) return { complete: true, sharp: true };
             const actual = coverageOf(band, frame, backend);
             // What the board draws besides the current picture, for the present audit: a previous frame or a scaled tile is a
             // stand-in; nothing drawable at all is a hole. Both bands read the same composer and adapter, so their coverage is one

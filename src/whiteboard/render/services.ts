@@ -737,6 +737,8 @@ export function createBoardRenderServices(options: {
     };
     return {
         text, bounds, changeGeometry, retainRenderer, variantForBand, pinVisible, releasePins,
+        /** The stroke band key the producers and pinVisible use, for a device scale and the flags the paint request carries. */
+        inkBandKey(context?: Pick<SceneResolveContext, 'deviceScale' | 'sensitive' | 'allowInkLod'>): string { return inkPrecision(context).key; },
         /** Actual source admission belongs to the App owner. This captures publication identity
          * for NEW work over the same canonical model/cache; existing sources are never retagged. */
         capturePaintBinding(token: RenderToken) {

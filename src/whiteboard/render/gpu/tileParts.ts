@@ -345,13 +345,15 @@ export const createTileParts: CreateTileParts = (_host, audit) => {
     const startBuild = (prepared: PreparedPaint2d): Build => {
         const root = prepared.root, revision = root.sceneRevision;
         const cause = !index ? 'no-index' : index.theme !== root.theme ? 'theme' : index.variant !== root.rasterVariant ? 'variant' : null;
-        const full = cause !== null;
+        // A raster variant change (font epoch, palette) is not a rebuild: only the items whose fonts or colours moved change, and
+        // they are found by content, as an unknown span. A theme change or a first index still rebuilds everything.
+        const full = cause === 'no-index' || cause === 'theme';
         let regions: readonly Rect[] = NO_RECTS;
         // A span without region history (no regionChangesSince on the source, or one the scene cannot bound) is not a rebuild:
         // the items are diffed against the index, so only the parts that actually changed are reported.
         let unknown = false;
         if (!full && index) {
-            const changes = root.regionChangesSince?.(index.revision);
+            const changes = cause === 'variant' ? undefined : root.regionChangesSince?.(index.revision);
             if (!changes || changes.full) unknown = true;
             else regions = changes.regions;
         }
@@ -365,6 +367,7 @@ export const createTileParts: CreateTileParts = (_host, audit) => {
         next.length = 0;
         spare = [];
         if (unknown) auditCount(audit, 'index:unknown-span');
+        if (cause === 'variant') auditCount(audit, 'index:variant');
         return { original: originalOf(prepared.sourceFrame), revision, theme: root.theme, variant: root.rasterVariant, windows: prepared.windows,
             old: full ? null : index, target, full, cause, deriving: null, prior: index !== null, unknown, regions, regionBox, pass: ++passes, next, added: [],
             window: 0, item: 0, seq: 0, replaced: 0, epochs: 0, rederived: 0 };

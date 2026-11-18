@@ -108,6 +108,10 @@ export interface LayerHost {
     demandChanged?(): void;
     /** Re-collects this pane's demand now, for a refusal that the current grant may be the cause of. */
     refreshDemandNow?(): void;
+    /** A layer that refused part of its own encode (a tile, a path, an ink batch) says so during encode: the frame cannot claim
+     * the layer complete. A critical layer's frame is refused and the previous picture stays; a non-critical one presents with
+     * layersComplete false. A canvas2d frame draws each layer directly, so there it is a no-op. */
+    markIncomplete(reason: string): void;
     readonly allocator: LayerAllocators;
     reserveIsolation(reservation: IsolationReservation): void;
     paintIsolation(ctx: CanvasRenderingContext2D, bounds: Readonly<RectI>, options: IsolationPaintOptions, paint: (isolatedCtx: CanvasRenderingContext2D) => void): void;
@@ -137,6 +141,8 @@ export interface CompositorResources {
     paintIsolation(ctx: CanvasRenderingContext2D, bounds: Readonly<RectI>, options: IsolationPaintOptions, paint: (isolatedCtx: CanvasRenderingContext2D) => void): void;
     /** Throws outside active GPU encoding; never returns a fictitious slice. */
     uniforms(bytes: ArrayBufferView): UniformSlice;
+    /** The layer being encoded cannot complete its content this frame (see LayerHost.markIncomplete). */
+    markIncomplete(reason: string): void;
     uniformsInto(bytes: ArrayBufferView, into: UniformSlice): void;
     drawTexturedQuad(pass: GpuPass, texture: TextureHandle, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
     drawTexturedQuad(ctx: CanvasRenderingContext2D, image: DrawableImage, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;

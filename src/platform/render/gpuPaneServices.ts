@@ -42,11 +42,13 @@ export class GpuPaneServices {
             const program = register('program', 'gpu', 'program');
             const gpuStaging = register('gpu-staging', 'gpu', 'working');
             const cpuStaging = register('cpu-staging', 'cpu', 'working');
-            // The ring's CPU mirror is what the frame writes now: foreground, so it is admitted while the pool fits (1c081cd4).
+            // The ring's CPU scratch and its GPU slots are what the frame's draws read now: foreground, so they are admitted while the
+            // pool fits (1c081cd4 for the CPU pool; the GPU pool follows the same rule).
             const uniformCpu = register('uniform-cpu', 'cpu', 'working', true);
+            const uniformGpu = register('uniform-gpu', 'gpu', 'working', true);
             this.services = {
                 ...(__BME_BENCH__ ? { measurementPaneId: options.paneId } : {}),
-                working, program, gpuStaging, cpuStaging, uniformCpu,
+                working, program, gpuStaging, cpuStaging, uniformCpu, uniformGpu,
                 returnLease: lease => options.governor.releaseLease(lease),
                 schedulePoll: callback => options.scheduler.schedulePoll(callback),
                 onFailure: options.onFailure,

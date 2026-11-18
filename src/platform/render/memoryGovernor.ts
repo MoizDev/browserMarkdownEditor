@@ -758,10 +758,11 @@ export class MemoryGovernor {
         const { pool, kind, paneId } = cache.registration;
         // Existing leases are grandfathered only for accounting, never for new admission.
         if (this.charged[pool] > this.target[pool] || this.charged[pool] + bytes > this.target[pool]) return false;
-        // A foreground CPU request (what the frame shows) is admitted while the pool fits, whatever its pane's share: the share sized
+        // A foreground request (what the frame shows) is admitted while the pool fits, whatever its pane's share: the share sized
         // around unowned derived geometry, so the pane was refused with the pool 27-29 MB of 32 MiB (measured: 4.8 MB short over 7
-        // refusals in the draw phase). Background work below stays inside the grant.
-        if (cache.registration.foreground && pool === 'cpu') return true;
+        // refusals in the draw phase). Background work below stays inside the grant. The GPU side is the uniform ring's slots: the
+        // frame's draws read them now, and refusing one defers the frame's uniform writes (gpu:uniform-gpu-refused, 12-15 per zoom run).
+        if (cache.registration.foreground && (pool === 'cpu' || pool === 'gpu')) return true;
         // The broker's one app-wide allocator owns all reservations, including lost ones (§3.3:360).
         if (kind === 'context') {
             const held = this.kindBytes('context');

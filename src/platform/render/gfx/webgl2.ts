@@ -48,9 +48,11 @@ export interface Webgl2Services {
     program: MemoryAllocator;
     gpuStaging: MemoryAllocator;
     cpuStaging: MemoryAllocator;
-    /** The uniform ring's CPU mirror: foreground memory, since the frame that writes it needs it now (admitted while the pool fits).
-     * Absent, the ring takes cpuStaging. */
+    /** The uniform ring's CPU scratch: foreground memory, since the frame that writes it needs it now (admitted while the pool fits).
+     * Absent, the scratch takes cpuStaging. */
     uniformCpu?: MemoryAllocator;
+    /** The uniform ring's GPU slots: foreground GPU memory, for the same reason. Absent, the ring takes working. */
+    uniformGpu?: MemoryAllocator;
     returnLease(lease: ByteLease): void;
     schedulePoll(callback: () => void): () => void;
     /** Unrecoverable device fault: stop view GPU work and permanently abandon the broker
@@ -1745,7 +1747,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 // 'vertex' too: a batched textured-quad draw binds its instance records as a vertex slice from this same ring
                 // (compositor.ts drawTexturedQuads). The device refuses a vertex slice whose buffer lacks the use, which demoted
                 // the pane mid-draw (seen in the final run's audit: pane:fallback:pane-2d:gpu-error:invalid-input).
-                try { handle = this.#owned('buffer', { bytes: size, uses: ['uniform', 'vertex', 'copy-dst'] }, size, this.#services.working); }
+                try { handle = this.#owned('buffer', { bytes: size, uses: ['uniform', 'vertex', 'copy-dst'] }, size, this.#services.uniformGpu ?? this.#services.working); }
                 catch (error) { if (error instanceof ArenaError && error.code === 'out-of-budget') auditCount('gpu', 'uniform-gpu-refused', 1, { bytes: size }); throw error; }
                 slot = { handle, native: this.#arena.validate(handle, 'buffer'), size, serial: 0, owners: 0, valid: true, used: 0, base: 0 };
                 this.#uniformSlots.push(slot);

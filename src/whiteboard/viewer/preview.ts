@@ -89,6 +89,9 @@ function operationNodes(doc: BoardDoc, ops: readonly Op[]): { changes: Map<NodeI
     return { changes, ...(paper ? { paper } : {}) };
 }
 
+/** The largest overlay built synchronously at the hand-off (a gesture's few items); a larger one keeps the yielding build. */
+const SYNC_OVERLAY_NODES = 16;
+
 export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
     const { runtime, engine, render } = options;
     if (engine.session !== runtime.session) throw new Error('Preview needs the existing board session');
@@ -230,8 +233,9 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
             onOffsetUnsupported: () => queueMicrotask(rebuildTranslation),
             // The overlay's few nodes are drawn live at the view: a refused tile store cannot stall the drag's preview.
             liveOverlay: true, liveNodes: overlayNodes,
-            // Nothing is requested until a build is handed to the layers: that layer has nothing to draw, so it is complete.
-            requested: () => requestedIds !== null });
+            // An overlay is requested only once it has drawn a node of the hand-off: until then the base draws that node itself and
+            // the overlay declares nothing, so a refused admission costs latency and never a hole (gpu's rule).
+            requested: () => requestedIds !== null && layers.drawnLiveNodeIds().size > 0 });
         frames = assembler; pair = layers;
         engine.setPreviewLayers({ underlay: { ...layers[0], id: 'board-preview-underlay' },
             content: { ...layers[1], id: 'board-preview-content' } }, () => {
@@ -240,7 +244,10 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
             const ids = frame && frameIds.get(frame);
             if (frame && ids && assembler.isCurrent(frame)) {
                 if (frameGenerations.get(frame) === generation) settle();
-                return { frame, nodeIds: ids };
+                // The base omits a node only from the frame after the overlay drew it: the overlay declares just the nodes it drew.
+                const drawn = layers.drawnLiveNodeIds(), declared = new Set<string>();
+                for (const id of ids) if (drawn.has(id)) declared.add(id);
+                return declared.size ? { frame, nodeIds: declared } : null;
             }
             return null;
         });
@@ -371,7 +378,11 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
                     }
                     [ids, scratch] = [scratch, ids];
                 }
-                const source = await binding.prepareOverlay(doc, { sheetId: sheet, theme: view.theme, sensitiveNodes: new Set(ids) }, ids, job.signal);
+                const overlayRequest = { sheetId: sheet, theme: view.theme, sensitiveNodes: new Set(ids) };
+                // A few nodes are built synchronously, so the hand-off follows the pointer-down with no worker round trip: the first
+                // frame's prepare finds the overlay built. A larger overlay keeps the async build (it yields between its items).
+                const source = ids.length <= SYNC_OVERLAY_NODES ? binding.prepareOverlayNow(doc, overlayRequest, ids, job.signal)
+                    : await binding.prepareOverlay(doc, overlayRequest, ids, job.signal);
                 check();
                 let textItem: PaintTextItem | null = null, textIndex = -1;
                 if (textOverlay) {

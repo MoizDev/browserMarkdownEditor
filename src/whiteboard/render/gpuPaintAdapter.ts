@@ -367,7 +367,11 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                     if (!device) auditCount(surface, `prepare:hidden:no-device:f${budget.frameId}`);
                 }
                 composer.release('hidden');
-                presented = null; omitPrepared = null; ledger = null;
+                // A device that is merely absent (the 2D bridge: the first CPU picture, a resize) keeps the presented picture: the
+                // device comes back for the same paint. Only a lost or released device, or a paint of another document, drops it.
+                const bridge = !device && !!prepared && documentMatches(prepared.root, budget.token) && documentMatches(prepared.sourceFrame, budget.token);
+                if (!bridge) presented = null;
+                omitPrepared = null; ledger = null;
                 return true;
             }
             omitPrepared = omit?.size ? omit : null;

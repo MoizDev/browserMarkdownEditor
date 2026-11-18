@@ -1377,7 +1377,16 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     const diff = new Set<string>();
                     for (const id of omitIds ?? []) if (!nextOmit?.has(id)) diff.add(id);
                     for (const id of nextOmit ?? []) if (!omitIds?.has(id)) diff.add(id);
-                    for (const rect of parts.boundsOfNodes(diff)) store.markDirty(rect);
+                    for (const rect of parts.boundsOfNodes(diff)) {
+                        store.markDirty(rect);
+                        // A node that enters or leaves the omit set changes its own region: it is pending like a changed region, so
+                        // its dirty positions are covered by live parts until they compose (a released node was not, before).
+                        pendingRegions.push({ x: rect.x, y: rect.y, width: rect.width, height: rect.height });
+                    }
+                    if (pendingRegions.length > PENDING_REGION_LIMIT) {
+                        auditCount(audit, 'live:region:dropped');
+                        pendingRegions.splice(0, pendingRegions.length - PENDING_REGION_LIMIT);
+                    }
                     // A node that leaves the omit set is drawn live until the tiles under it are composed: its old tiles lack it.
                     for (const id of omitIds ?? []) if (!nextOmit?.has(id)) heldNodes.set(id, frame);
                     omitIds = nextOmit ? new Set(nextOmit) : null;

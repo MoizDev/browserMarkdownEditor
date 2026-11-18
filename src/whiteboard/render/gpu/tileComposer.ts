@@ -296,6 +296,37 @@ function clipOnSurface(view: ViewState, target: number, x: number, y: number): R
 function inSpan(span: Span, x: number, y: number): boolean {
     return x >= span.x0 && x < span.x1 && y >= span.y0 && y < span.y1;
 }
+/** The changed regions a frame keeps pending: a bounded list, so a long drag cannot grow it past what a frame can lay live. */
+const PENDING_REGION_LIMIT = 64;
+function overlapsRect(a: Readonly<Rect>, b: Readonly<Rect>): boolean {
+    return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+}
+/** The surface pixels a world rectangle may touch, rounded outward: a cut-out never leaves a stale pixel at its edge. */
+function surfacePixels(view: ViewState, world: Readonly<Rect>): Rect {
+    const cam = view.camera, scale = cam.z * view.viewport.dpr;
+    const left = Math.floor((world.x - cam.x) * scale), top = Math.floor((world.y - cam.y) * scale);
+    const right = Math.ceil((world.x + world.width - cam.x) * scale), bottom = Math.ceil((world.y + world.height - cam.y) * scale);
+    return { x: left, y: top, width: right - left, height: bottom - top };
+}
+/** The parts of `rect` outside every hole, as disjoint rectangles: at most four per hole cut. */
+function subtractRects(rect: Rect, holes: readonly Rect[]): Rect[] {
+    let pieces: Rect[] = [rect];
+    for (const hole of holes) {
+        const next: Rect[] = [];
+        for (const piece of pieces) {
+            const px1 = piece.x + piece.width, py1 = piece.y + piece.height;
+            const x0 = Math.max(piece.x, hole.x), y0 = Math.max(piece.y, hole.y);
+            const x1 = Math.min(px1, hole.x + hole.width), y1 = Math.min(py1, hole.y + hole.height);
+            if (x1 <= x0 || y1 <= y0) { next.push(piece); continue; }
+            if (y0 > piece.y) next.push({ x: piece.x, y: piece.y, width: piece.width, height: y0 - piece.y });
+            if (y1 < py1) next.push({ x: piece.x, y: y1, width: piece.width, height: py1 - y1 });
+            if (x0 > piece.x) next.push({ x: piece.x, y: y0, width: x0 - piece.x, height: y1 - y0 });
+            if (x1 < px1) next.push({ x: x1, y: y0, width: px1 - x1, height: y1 - y0 });
+        }
+        pieces = next;
+    }
+    return pieces;
+}
 
 export function createTileComposer(options: TileComposerOptions): TileComposer {
     const { host, audit, parts, store, routes, tileWorld, inkRouteFor, lay, layQuads, admitClips, withPreparedClips } = options;
@@ -335,7 +366,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     // A live part deferred this frame asks for the next one. Consecutive deferred frames are counted and the asking stops at the
     // retry limit (a part that never fits its upload budget must not keep the board framing at rest).
     let liveDeferredNow = false, liveDeferredFrames = 0;
-    const liveScratch: { order: number; run: PreparedRun; route: ItemRoute; nodeId: string }[] = [];
+    // A part of a cut is drawn inside its pieces only (pixel-disjoint from the tile pieces beside them); any other part, inside the clip.
+    const liveScratch: { order: number; run: PreparedRun; route: ItemRoute; nodeId: string; pieces?: readonly Rect[] }[] = [];
     const standScratch: { order: number; entry: TileEntry; slot: Slot }[] = [];
     // Batch scratch: the quads of one call, reused. The pool holds spec objects for the composer's life.
     const quadPool: { sourceRect: Rect; destRect: Rect }[] = [];
@@ -376,6 +408,12 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     // Nodes that left the omit set while their tiles lack them: drawn live until the tiles under them are composed (see prepare).
     // The value is the frame it left: a tile encoded from that frame on already holds the node, so its live part is skipped.
     const heldNodes = new Map<string, number>();
+    // Changed regions (world rects) whose tiles are still dirty: a dirty tile's pixels are cut out where a region is, and the parts
+    // reaching the region are drawn live instead, until no dirty tile under it is in view. Bounded: the oldest is dropped past the
+    // limit, and its tiles then draw as before, flagged stale.
+    const pendingRegions: Rect[] = [];
+    // The positions whose dirty tiles this frame's live parts cover (positionKey): their picture is current, not stale.
+    const coveredPositions = new Set<number>();
     // The frame each tile entry was last encoded (its content's frame), read against heldNodes.
     const composedAt = new WeakMap<TileEntry, number>();
     let lastZoom: number | undefined;
@@ -909,6 +947,68 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         return true;
     };
 
+    /** True while a dirty tile under a pending region is in view at `target`: the region's live parts are still owed. */
+    const regionStillDirty = (region: Readonly<Rect>, target: number, span: Span): boolean => {
+        const x0 = Math.max(span.x0, Math.floor(region.x * target / EDGE)), x1 = Math.min(span.x1, Math.ceil((region.x + region.width) * target / EDGE));
+        const y0 = Math.max(span.y0, Math.floor(region.y * target / EDGE)), y1 = Math.min(span.y1, Math.ceil((region.y + region.height) * target / EDGE));
+        for (const band of BANDS) {
+            for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) if (statusAt(band, target, x, y) === 'dirty') return true;
+        }
+        return false;
+    };
+
+    const NO_REGIONS: readonly Rect[] = Object.freeze([]);
+    const NO_PIECES: readonly Rect[] = Object.freeze([]);
+    /** The pending regions that reach one position's interior. */
+    const pendingRegionsIn = (band: PaintBand, target: number, x: number, y: number): readonly Rect[] => {
+        const interior = tileWorld(keyOf(band, target, x, y, 0));
+        const found = pendingRegions.filter(region => overlapsRect(region, interior));
+        return found.length ? found : NO_REGIONS;
+    };
+    /** The surface pixels of the regions under one position, as disjoint rectangles inside its clip: each pixel is cut out once. */
+    const cutPieces = (view: ViewState, regions: readonly Rect[], clip: Rect): Rect[] => {
+        const disjoint: Rect[] = [];
+        for (const region of regions) disjoint.push(...subtractRects(surfacePixels(view, region), disjoint));
+        const cut: Rect[] = [];
+        for (const piece of disjoint) {
+            const x0 = Math.max(piece.x, clip.x), y0 = Math.max(piece.y, clip.y);
+            const x1 = Math.min(piece.x + piece.width, clip.x + clip.width), y1 = Math.min(piece.y + piece.height, clip.y + clip.height);
+            if (x1 > x0 && y1 > y0) cut.push({ x: x0, y: y0, width: x1 - x0, height: y1 - y0 });
+        }
+        return cut;
+    };
+    /** Draws a dirty entry around its cut: one clipped draw per piece of its clip the cut leaves, so no pixel is drawn twice. */
+    const addPieces = (band: PaintBand, entry: TileEntry, slot: Pick<Slot, 'mode' | 'inkNodes'>, clip: Rect | null,
+        cut: readonly Rect[]): void => {
+        if (!clip) return;
+        for (const piece of subtractRects(clip, cut)) addDraw(band, entry, slot, piece);
+        auditCount(audit, 'live:region:tile-cut');
+    };
+    /** Appends to `liveScratch` the live parts reaching a cut, each drawn only inside the cut pieces it reaches: all or none for the
+     * position, so a part the frame cannot admit (deferred, denied, unsupported) leaves the cut stale and the position uncovered. */
+    const appendRegionLive = (band: PaintBand, target: number, x: number, y: number, view: ViewState, budget: FrameBudget,
+        cut: readonly Rect[]): boolean => {
+        const mark = liveScratch.length;
+        const interior = tileWorld(keyOf(band, target, x, y, 0));
+        const pad = GUTTER / target;
+        const gutter: Rect = { x: interior.x - pad, y: interior.y - pad, width: interior.width + 2 * pad, height: interior.height + 2 * pad };
+        for (const part of parts.partsFor(band, gutter, omitIds ?? undefined)) {
+            if (isLivePart(part.item)) continue;
+            const reach = surfacePixels(view, part.world);
+            const pieces = cut.filter(piece => overlapsRect(piece, reach));
+            if (!pieces.length) continue;
+            const admitted = admitLive(part.item, part.blend, view, budget);
+            if (!admitted) {
+                liveScratch.length = mark;
+                auditCount(audit, 'live:region:uncovered');
+                return false;
+            }
+            liveScratch.push({ order: part.order, run: admitted.run, route: admitted.route, nodeId: part.nodeId, pieces });
+        }
+        auditCount(audit, 'live:region:covered');
+        return true;
+    };
+
     /** The live parts of a position, in paint order, admitted for this frame into `liveScratch`. Video parts only when `wanted`; the
      * parts of a held node (its tiles lack it) when `held`. */
     const collectLive = (band: PaintBand, target: number, x: number, y: number, view: ViewState, budget: FrameBudget,
@@ -947,7 +1047,9 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     const liveBefore = (band: PaintBand, order: number, from: number, clip: Rect | null): number => {
         let li = from;
         for (; li < liveScratch.length && liveScratch[li].order < order; li++) {
-            if (clip) addLiveDraw(band, liveScratch[li].run, liveScratch[li].route, clip, liveScratch[li].nodeId);
+            const live = liveScratch[li];
+            if (live.pieces) { for (const piece of live.pieces) addLiveDraw(band, live.run, live.route, piece, live.nodeId); }
+            else if (clip) addLiveDraw(band, live.run, live.route, clip, live.nodeId);
         }
         return li;
     };
@@ -982,6 +1084,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
 
     const buildDraws = (view: ViewState, target: number, zooming: boolean, budget: FrameBudget): void => {
         drawCount = 0;
+        coveredPositions.clear();
         if (paintLiveOnly) { buildLiveDraws(view, target, budget); return; }
         const span = spanAt(view, target);
         const clipAt = (x: number, y: number): Rect | null => clipOnSurface(view, target, x, y);
@@ -1017,15 +1120,27 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         const slot0 = first ? slots.get(first) : undefined;
                         const count = slot0?.count ?? 0;
                         const withLive = (slot0?.live ?? 0) > 0;
-                        const clip = withLive ? clipAt(x, y) : null;
                         collectLive(band, target, x, y, view, budget, withLive, null);
+                        // A dirty position under a pending change: its live parts replace the stale pixels there, cut out of its
+                        // tiles, or the position draws as it did (stale, flagged by coverage). All or nothing per position.
+                        const regions = status === 'dirty' ? pendingRegionsIn(band, target, x, y) : NO_REGIONS;
+                        const position = regions.length ? clipAt(x, y) : null;
+                        const cut = position ? cutPieces(view, regions, position) : NO_PIECES;
+                        const covered = cut.length > 0 && appendRegionLive(band, target, x, y, view, budget, cut);
+                        if (covered) {
+                            liveScratch.sort((a, b) => a.order - b.order);
+                            coveredPositions.add(positionKey(band, target, x, y));
+                        }
+                        const clip = withLive || covered ? clipAt(x, y) : null;
                         let li = 0;
                         for (let s = 0; s < count; s++) {
                             const entry = entryAt(band, target, x, y, s);
                             const slot = entry && slots.get(entry);
                             if (entry && slot) {
                                 li = liveBefore(band, slot.firstOrder[s], li, clip);
-                                addDraw(band, entry, slot, null);
+                                // Every slice is cut, not only the dirty ones: the live parts reaching the cut cover all of its slices' parts there.
+                                if (covered) addPieces(band, entry, slot, clip, cut);
+                                else addDraw(band, entry, slot, null);
                             }
                         }
                         liveBefore(band, Infinity, li, clip);
@@ -1187,6 +1302,13 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 const changes = parts.takeChanges();
                 if (changes === 'all') { store.markDirty('all'); invalidated = true; }
                 else if (changes.length) { for (const rect of changes) store.markDirty(rect); invalidated = true; }
+                // A whole-scene change is not laid live (every part would be): its tiles draw as before, flagged stale until composed.
+                if (changes === 'all') pendingRegions.length = 0;
+                else for (const rect of changes) pendingRegions.push({ x: rect.x, y: rect.y, width: rect.width, height: rect.height });
+                if (pendingRegions.length > PENDING_REGION_LIMIT) {
+                    auditCount(audit, 'live:region:dropped');
+                    pendingRegions.splice(0, pendingRegions.length - PENDING_REGION_LIMIT);
+                }
                 validRevision = prepared.root.sceneRevision;
                 // A node a drag omits leaves the tiles it painted: its old bounds are recomposed once, when the set changes. The
                 // tracker reports a change of members only, so a new Set of the same nodes costs nothing here.
@@ -1238,6 +1360,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     for (const position of finished) cancel(position);
                     finished = [];
                 } else if (device) compose(view, budget, device, target, span);
+                // A region is owed live parts while a dirty tile under it is in view: once those tiles are composed, it is let go.
+                for (let r = pendingRegions.length - 1; r >= 0; r--) if (!regionStillDirty(pendingRegions[r], target, span)) pendingRegions.splice(r, 1);
                 // A held node stays live while a tile under it is dirty, or a visible one under it has nothing yet.
                 for (const id of heldNodes.keys()) if (!heldStillMissing(id, target, span)) heldNodes.delete(id);
             } else {
@@ -1382,7 +1506,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         // coverage before the encode, and the entry it still finds is the old one; the draw is not.
                         if (status === 'missing' && finishedAt(band, target, x, y)) continue;
                         sharp = false;
-                        if (status === 'dirty') { stale = true; continue; }
+                        // A dirty position whose changed pixels this frame's live parts lay is current, not stale.
+                        if (status === 'dirty') { if (!coveredPositions.has(positionKey(band, target, x, y))) stale = true; continue; }
                         if (!zoomingFrame && !standInsOf(band, target, x, y).length) complete = false;
                     }
                 }

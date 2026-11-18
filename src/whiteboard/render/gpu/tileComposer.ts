@@ -1500,6 +1500,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             const panning = !zooming && view.moving === true && !indexing && anyVisibleMissing(view, target);
             liveNow = paintLiveOnly || (!indexing && (zooming || panning) && zoomDirectOk(view, target));
             if (panning && liveNow) auditCount(audit, 'pan:direct:frame');
+            // Why a moving view does not draw live (counters only): the index (indexing) gates the live draw, then the missing check.
+            if (view.moving === true && !zooming) auditCount(audit, indexing ? 'pan:skip:indexing' : !panning ? 'pan:skip:complete' : liveNow ? 'pan:live' : 'pan:skip:parts');
             if (liveNow && !paintLiveOnly) auditCount(audit, 'zoom:direct:frame');
             // A live-drawn frame draws in the background call, so its admissions are made here, in the foreground call: its live parts
             // are what the frame shows, and foreground is the budget they must not be starved from.

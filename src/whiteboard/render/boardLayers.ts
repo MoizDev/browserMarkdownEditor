@@ -15,6 +15,7 @@ import { paintItemsOf } from './paintWindows';
 import type { PaintImageProvider } from './resources';
 import { createCanvasPaintAdapter, type CanvasPaintAdapter, type PreparedRetain } from './reference/canvasPaintAdapter';
 import { createGpuPaintAdapter } from './gpuPaintAdapter';
+import type { GeometryPins } from './gpu/tileComposer';
 import { auditCount, auditDrawn } from '../../platform/render/renderAudit';
 import { createDensePaintAdapter } from './densePlan';
 import { MEMORY_RETRY_MIN_MS, MemoryRetryGate } from './memoryRetryGate';
@@ -74,6 +75,8 @@ export interface BoardLayersOptions {
     readonly opaqueWorld?: () => readonly Rect[];
     /** A live-only overlay's own nodes: its composer indexes and draws only these items of the paint it is handed (see the GPU adapter). */
     readonly liveNodes?: ReadonlySet<string>;
+    /** The geometry service a live zoom pins its visible strokes in (the GPU adapter's pins; absent pins nothing). */
+    readonly geometryPins?: GeometryPins;
     /** An overlay (a drag's preview): its few plain parts are drawn live with no tiles, so no tile grant can stall it. */
     readonly liveOverlay?: boolean;
     /** Whether an optional layer has a request to draw. Nothing requested is nothing to draw: the layer is complete and counts no hole. */
@@ -272,7 +275,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     // `opaqueWorld` in wave 2, and until then today's adapter ignores it.
     const gpuOptions = () => ({ audit: options.auditSurface ?? 'board', ...(options.liveOverlay ? { liveOverlay: true } : {}),
         ...(typeof options.opaqueWorld === 'function' ? { opaqueWorld: options.opaqueWorld } : {}),
-        ...(options.liveNodes ? { liveNodes: options.liveNodes } : {}) });
+        ...(options.liveNodes ? { liveNodes: options.liveNodes } : {}), ...(options.geometryPins ? { pins: options.geometryPins } : {}) });
     // The drag's omitted set is applied where the tiles are built: prepare takes it, and each prepare reads the current
     // omitNodes(frame). The draw never took it (the composer's draw has no omission), so it is not passed there.
     // A live-only overlay admits its parts at the view they are drawn at (its live runs are baked at prepare, and only tiles take

@@ -145,6 +145,8 @@ export class GpuCompositor implements PaneCompositor {
     #report: CompositorCoverage | null = null;
     readonly #encodings = new Set<FrameEncoder>();
     #canvasGate: ((layersComplete: boolean) => boolean) | null = null;
+    /** The metrics are a pending raise: frames draw into the device's offscreen target at this size while the canvas keeps its old one. */
+    #pendingDraw = false;
     readonly #quadData = new Float32Array(16);
     /** Batched quads: one instance record (dst x0,y0,x1,y1 and src x,y,w,h) per quad, grown to the largest batch so far, and the batch's uniform block. */
     #batchData = new Float32Array(BATCH_FLOOR_FLOATS);
@@ -257,6 +259,7 @@ export class GpuCompositor implements PaneCompositor {
             this.#report = null;
         }
         this.#metrics = metrics;
+        this.#pendingDraw = offscreen;
         this.#available = true;
     }
 
@@ -821,7 +824,9 @@ export class GpuCompositor implements PaneCompositor {
     #drawable(snapshot: Snapshot, frame: ScheduledFrame): boolean {
         return !this.#disposed && this.#snapshot === snapshot && !!snapshot.metrics &&
             frame.token.deviceGeneration === this.target.generation &&
-            this.surface.width === snapshot.metrics.backingWidth && this.surface.height === snapshot.metrics.backingHeight &&
+            // A pending raise draws at its new size into the offscreen target (the pane opened it at that size); the canvas keeps its
+            // old size until the complete frame commits. Requiring the canvas to match here refused every pending frame, so a raise never completed.
+            (this.#pendingDraw || this.surface.width === snapshot.metrics.backingWidth && this.surface.height === snapshot.metrics.backingHeight) &&
             snapshot.layers.every(binding => frame.layers.some(meta => meta.layer === binding.layer));
     }
     /** Compiles the single and the batched quad together: a batch is useless without its single fallback, and one promise

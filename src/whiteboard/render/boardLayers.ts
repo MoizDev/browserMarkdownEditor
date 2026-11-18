@@ -938,6 +938,17 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         const scratch = allocatorHost?.device() ? gpu?.cpuWorkingSet().mandatoryBytes ?? 0 : 0;
         return reserved + upcoming + scratch + (useDense ? dense?.cpuWorkingSet(estimate?.maxItemBytes ?? 0) ?? 0 : 0) + (options.frames.cpuWorkingSet?.() ?? 0);
     };
+    // The live nodes each band's canvas2d draw painted in its last draw. The GPU composer reports its own drawn live nodes; a canvas2d
+    // overlay has no composer, so without this it reports none, the base never omits its node, and the edited text draws twice (measured:
+    // canvas2d edit glyphs carry twice their alpha; the GPU edit matches its rest). An overlay's node is drawn when the frame holds it.
+    const drawn2d: Record<PaintBand, ReadonlySet<string>> = { underlay: NO_INK, content: NO_INK };
+    const liveDrawn = (frame: PaintSource): ReadonlySet<string> => {
+        const live = options.liveNodes, held = frame.sensitiveNodes;
+        if (!live?.size || !held?.size) return NO_INK;
+        const drawn = new Set<string>();
+        for (const id of live) if (held.has(id)) drawn.add(id);
+        return drawn.size ? drawn : NO_INK;
+    };
     const definition = (band: PaintBand): PlatformLayerDefinition => ({
         id: `board-${band}`, group: 'document', ...gpuWorkingSetFor(band),
         create(host) {
@@ -953,6 +964,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     return budget.phase === 'foreground' || prepareUnchanged ? false : true;
                 },
                 drawGpu(pass, view) {
+                    drawn2d[band] = NO_INK;
                     const frame = gpu?.readyFrame();
                     if (!frame || !drawable(frame)) return;
                     const omit = options.omitNodes?.(frame) ?? null;
@@ -985,6 +997,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     if (typeof encoder?.encodeOffscreen === 'function') encoder.encodeOffscreen(passes, view, band);
                 },
                 draw2d(ctx, view) {
+                    drawn2d[band] = NO_INK;
                     const frame = adapter?.readyFrame();
                     if (!frame || !drawable(frame)) return;
                     const omit = options.omitNodes?.(frame) ?? null;
@@ -993,6 +1006,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     if (!prepareToken) return;
                     const actualView = copyView(view);
                     adapter!.draw2d(ctx, shift ? shiftedView(view, shift) : view, band, omit ?? undefined);
+                    drawn2d[band] = liveDrawn(frame);
                     // Borrowed right after the draw read its snapshot, before anything else can move the adapter on.
                     const hold = captureDraw(frame, omit);
                     const context = Object.freeze({ view: actualView, frameId: prepareFrameId,
@@ -1080,12 +1094,11 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     pair.drawnInkNodeIds = () => (gpu as DrawnInkReporter | null)?.drawnInkNodeIds?.() ?? NO_INK;
     pair.drawnLiveNodeIds = () => {
         const reporter = gpu as DrawnLiveReporter | null;
-        if (!reporter?.drawnLiveNodeIds) return NO_INK;
-        const under = reporter.drawnLiveNodeIds('underlay'), content = reporter.drawnLiveNodeIds('content');
-        // One band empty (the usual case): its set is returned, with no allocation per read (a preview's coverage reads it every frame).
-        if (!under.size) return content.size ? content : NO_INK;
-        if (!content.size) return under;
-        return new Set([...under, ...content]);
+        const under = reporter?.drawnLiveNodeIds?.('underlay') ?? NO_INK, content = reporter?.drawnLiveNodeIds?.('content') ?? NO_INK;
+        const sets = [under, content, drawn2d.underlay, drawn2d.content].filter(set => set.size);
+        // One set (the usual case): it is returned, with no allocation per read (a preview's coverage reads it every frame).
+        if (sets.length <= 1) return sets[0] ?? NO_INK;
+        return new Set(sets.flatMap(set => [...set]));
     };
     pair.onDevice = () => !!activeHost()?.device();
     pair.cpuMandatoryBytes = cpuMandatory;

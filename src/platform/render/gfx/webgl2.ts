@@ -9,7 +9,7 @@ import { createWebgl2Frame } from './webgl2Frame';
 import type { ControlledFrame, DrawContext, EncodedDraw, FrameBackend, FrameTarget, FrameTexture, QuadCommand, QuadPin, TargetRequest } from './webgl2Frame';
 import { Webgl2TargetPool } from './webgl2Pool';
 import type { PoolStorage } from './webgl2Pool';
-import { COMPOSITION_SHADER, GRID16_RESOLVE_SHADER, GRID_RESOLVE_SHADER, MODULATE_COMPOSITE_SHADER } from './webgl2Shaders';
+import { AREA_RESOLVE_SHADER, COMPOSITION_SHADER, GRID16_RESOLVE_SHADER, GRID_RESOLVE_SHADER, MODULATE_COMPOSITE_SHADER } from './webgl2Shaders';
 import { Webgl2IndexMirror } from './webgl2Index';
 import { Webgl2Timer } from './webgl2Timer';
 import { auditCount } from '../renderAudit';
@@ -243,6 +243,12 @@ void main() {
 function count(value: number, positive = false): void {
     if (!Number.isSafeInteger(value) || value < (positive ? 1 : 0)) throw new ArenaError('invalid-input', { site: 'count', value, positive });
 }
+/** Bytes per device px of a texture format: an R8 texel is one byte; RGBA8 and R32F are four. */
+function pixelBytes(format: TextureFormat): number { return format === 'r8' ? 1 : 4; }
+/** The GL internal format of a texture format. R32F is only ever used by area targets (see api.ts TextureFormat). */
+function glInternal(gl: WebGL2RenderingContext, format: TextureFormat): number {
+    return format === 'rgba8' ? gl.RGBA8 : format === 'r32f' ? gl.R32F : gl.R8;
+}
 function byteSize(...factors: number[]): number {
     const bytes = factors.reduce((a, b) => a * b, 1);
     if (!Number.isSafeInteger(bytes) || bytes < 0) throw new ArenaError('invalid-input', { site: 'byteSize', factors: [...factors], bytes });
@@ -302,6 +308,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     readonly limits: GfxLimits;
     readonly resources: GfxDevice = this;
     readonly uploadMeterAvailable: boolean;
+    readonly areaTargets: boolean;
     readonly #services: Webgl2Services;
     declare readonly prepareCoverageFrame?: Webgl2Owner['prepareCoverageFrame'];
     declare readonly commitCoverage?: Webgl2Owner['commitCoverage'];
@@ -371,6 +378,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     #gridComposition: PipelineHandle | null = null;
     #grid16Composition: PipelineHandle | null = null;
     #modulateComposition: PipelineHandle | null = null;
+    #areaComposition: PipelineHandle | null = null;
     #white: TextureHandle | null = null;
     readonly #fences = new Map<number, WebGLSync | null>();
     readonly #fenceTimes = new Map<number, number>();
@@ -447,6 +455,8 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             this.#sampleCounts.set(format, new Set(samples instanceof Int32Array ? samples : []));
         }
         this.#parallel = gl.getExtension('KHR_parallel_shader_compile');
+        // R32F is renderable only with EXT_color_buffer_float; ADD, MIN and MAX blending of it only with EXT_float_blend.
+        this.areaTargets = gl.getExtension('EXT_color_buffer_float') !== null && gl.getExtension('EXT_float_blend') !== null;
         this.#timer = new Webgl2Timer(gl, services.observeGpuTiming);
         gl.drawingBufferColorSpace = RENDER_CONSTANTS.colorSpace;
         gl.unpackColorSpace = RENDER_CONSTANTS.colorSpace;
@@ -680,7 +690,9 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         mips = false): TextureHandle {
         this.#usable();
         this.#extent(width, height, this.limits.maxTexture2D);
-        if (format !== 'rgba8' && format !== 'r8') throw new ArenaError('invalid-input');
+        if (format !== 'rgba8' && format !== 'r8' && format !== 'r32f') throw new ArenaError('invalid-input');
+        // An r32f texture is an area target: only where the device offers float targets, and never mipmapped.
+        if (format === 'r32f' && (!this.areaTargets || mips)) throw new ArenaError('unsupported');
         if (mips && (width < 1 || height < 1)) throw new ArenaError('invalid-input');
         const checked = uniqueUses(uses, ['sample', 'render', 'copy-src', 'copy-dst']);
         const channels = format === 'r8' ? 1 : 4;
@@ -877,10 +889,12 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         }
     }
 
-    createRenderTexture(width: number, height: number, lease: ByteLease, options?: { format?: 'rgba8' | 'r8'; copyDst?: boolean }): { texture: TextureHandle; target: TargetHandle } {
+    createRenderTexture(width: number, height: number, lease: ByteLease, options?: { format?: TextureFormat; copyDst?: boolean }): { texture: TextureHandle; target: TargetHandle } {
         this.#usable();
         const format = options?.format ?? 'rgba8';
-        if (lease.bytes < width * height * (format === 'r8' ? 1 : 4)) throw new ArenaError('out-of-budget');
+        // A float area target is one R32F texel per device px and needs EXT_color_buffer_float; without it, it is refused.
+        if (format === 'r32f' && !this.areaTargets) throw new ArenaError('unsupported');
+        if (lease.bytes < width * height * pixelBytes(format)) throw new ArenaError('out-of-budget');
         const uses: TextureUse[] = ['render', 'sample', ...(options?.copyDst ? ['copy-dst' as const] : [])];
         const texture = this.#createTexture(width, height, format, uses, lease);
         try {
@@ -1147,7 +1161,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             () => { for (const handle of this.#handles) this.#arena.release(handle); },
             () => this.#handles.clear(), () => this.#programs.clear(), () => this.#programSignatures.clear(),
             () => this.#samplers.clear(), () => this.#attachments.clear(),
-            () => { this.#white = null; this.#composition = null; this.#gridComposition = null; this.#grid16Composition = null; this.#modulateComposition = null; }, () => this.#collect(),
+            () => { this.#white = null; this.#composition = null; this.#gridComposition = null; this.#grid16Composition = null; this.#modulateComposition = null; this.#areaComposition = null; }, () => this.#collect(),
         ]);
     }
 
@@ -1165,7 +1179,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 () => { this.#uniformSlots.length = 0; },
                 ...[...this.#indexBuffers].map(buffer => () => this.#dropIndexData(buffer)),
                 () => this.#pipelines.clear(), () => this.#pollCancel?.(),
-                () => { this.#pollCancel = null; this.#white = null; this.#composition = null; this.#gridComposition = null; this.#grid16Composition = null; this.#modulateComposition = null; },
+                () => { this.#pollCancel = null; this.#white = null; this.#composition = null; this.#gridComposition = null; this.#grid16Composition = null; this.#modulateComposition = null; this.#areaComposition = null; },
                 () => { this.#fences.clear(); this.#fenceTimes.clear(); }, () => this.#handles.clear(), () => this.#programs.clear(),
                 () => this.#programSignatures.clear(), () => this.#samplers.clear(), () => this.#attachments.clear(),
                 () => this.#textureUnits.clear(), () => this.#uniformUnits.clear(),
@@ -1243,6 +1257,14 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             auditCount('gpu', 'grid16-compile-failed');
             this.#grid16Composition = null;
         }
+        // The area resolve is optional: only the union ink route calls it. A compile failure there must not take the grid 1 and 4
+        // composition down with it, so the area route is refused (counted by its caller) and the rest of the device stays up.
+        const area = AbortSignal.any([signal, this.#work.signal]);
+        try { this.#areaComposition = await this.#program(AREA_RESOLVE_SHADER, area); }
+        catch (error) {
+            if (area.aborted) throw error;
+            this.#areaComposition = null;
+        }
         this.#modulateComposition = await this.#program(MODULATE_COMPOSITE_SHADER, AbortSignal.any([signal, this.#work.signal]));
         const sampler = this.createSampler('linear');
         this.destroy(sampler);
@@ -1312,9 +1334,9 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
 
     #createPoolStorage(request: TargetRequest): PoolStorage {
         const format = request.format ?? 'rgba8';
-        const colorBytes = byteSize(request.width, request.height, format === 'r8' ? 1 : 4);
+        const colorBytes = byteSize(request.width, request.height, pixelBytes(format));
         const extra = byteSize(request.width, request.height,
-            (request.samples === 4 ? (format === 'r8' ? 1 : 4) * 4 : 0) + (request.stencil ? request.samples * 8 : 0));
+            (request.samples === 4 ? pixelBytes(format) * 4 : 0) + (request.stencil ? request.samples * 8 : 0));
         const lease = this.#reserve(this.#services.working, colorBytes + extra);
         let texture: TextureHandle | null = null;
         try {
@@ -1463,12 +1485,15 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             bindTarget: framebuffer => this.#bindTarget(framebuffer),
             quad: command => {
                 const handle = command.variant === 'grid' ? this.#gridComposition : command.variant === 'grid16' ? this.#grid16Composition
+                    : command.variant === 'area' ? this.#areaComposition
                     : command.variant === 'modulate' ? this.#modulateComposition : this.#composition;
                 if (!handle) throw new ArenaError('invalid-resource');
                 const cached = work.quadPins.get(handle);
                 if (cached) return cached;
                 const program = this.#pin(work.encoding, handle, 'pipeline');
-                const samplerHandle = this.#samplers.get('linear');
+                // The area target is r32f, not filterable: a linear sampler object overrides its nearest filter and makes the texture
+                // incomplete, so every texelFetch reads zero. The area variant is only ever read with texelFetch, so it takes nearest.
+                const samplerHandle = this.#samplers.get(command.variant === 'area' ? 'nearest' : 'linear');
                 if (program.role !== 'program' || !samplerHandle) throw new ArenaError('invalid-resource');
                 const sampler = this.#pin(work.encoding, samplerHandle, 'sampler');
                 const pin = { program, sampler };
@@ -1834,6 +1859,12 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             gl.enable(gl.BLEND);
             gl.blendEquation(gl.FUNC_ADD);
             gl.blendFuncSeparate(gl.ZERO, gl.SRC_COLOR, gl.ZERO, gl.ONE);
+        } else if (blend === 'min' || blend === 'max') {
+            // Float area targets only: each texel keeps the minimum or maximum of what is written (EXT_float_blend). The
+            // factors are ignored by MIN and MAX, so the flag pass writes its edge id as the source value.
+            gl.enable(gl.BLEND);
+            gl.blendEquation(blend === 'min' ? gl.MIN : gl.MAX);
+            gl.blendFunc(gl.ONE, gl.ONE);
         } else {
             gl.enable(gl.BLEND);
             gl.blendEquation(blend === 'mask-max' ? gl.MAX : gl.FUNC_ADD);
@@ -2020,13 +2051,13 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         this.#extent(texture.width, texture.height, this.limits.maxRenderTargetSize);
         if (samples !== 1 && samples !== 4 || typeof stencil !== 'boolean') throw new ArenaError('invalid-input');
         const gl = this.#healthy();
-        const internal = texture.format === 'rgba8' ? gl.RGBA8 : gl.R8;
+        const internal = glInternal(gl, texture.format);
         if (samples === 4 && (!this.#sampleCounts.get(internal)?.has(4) || stencil && !this.#sampleCounts.get(gl.DEPTH24_STENCIL8)?.has(4))) {
             throw new ArenaError('unsupported');
         }
         // Resolve texture is already charged separately; unknown native depth/stencil uses 8 B/px/sample.
         return byteSize(texture.width, texture.height,
-            (samples === 4 ? (texture.format === 'r8' ? 1 : 4) * 4 : 0) + (stencil ? 8 * samples : 0));
+            (samples === 4 ? pixelBytes(texture.format) * 4 : 0) + (stencil ? 8 * samples : 0));
     }
 
     #attachment(texture: TextureHandle): TargetHandle {
@@ -2045,8 +2076,11 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             typeof desc.shader.glsl.vertex !== 'string' || !desc.shader.glsl.vertex ||
             typeof desc.shader.glsl.fragment !== 'string' || !desc.shader.glsl.fragment) throw new ArenaError('invalid-input');
         count(desc.shader.revision);
-        if (!['triangles', 'triangle-strip'].includes(desc.topology) || !['rgba8', 'r8'].includes(desc.colorFormat) ||
-            ![1, 4].includes(desc.samples) || !['replace', 'source-over', 'mask-max', 'add', 'modulate'].includes(desc.blend) ||
+        if (!['triangles', 'triangle-strip'].includes(desc.topology) || !['rgba8', 'r8', 'r32f'].includes(desc.colorFormat) ||
+            ![1, 4].includes(desc.samples) || !['replace', 'source-over', 'mask-max', 'add', 'modulate', 'min', 'max'].includes(desc.blend) ||
+            // A float target is single-sampled, and only area pipelines (add, min, max) may write it.
+            desc.colorFormat === 'r32f' && (desc.samples !== 1 || !this.areaTargets || !['add', 'min', 'max', 'replace'].includes(desc.blend)) ||
+            (desc.blend === 'min' || desc.blend === 'max') && desc.colorFormat !== 'r32f' ||
             typeof desc.alphaToCoverage !== 'boolean' ||
             desc.colorWrite.length !== 4 || desc.colorWrite.some(value => typeof value !== 'boolean')) throw new ArenaError('invalid-input');
         const gl = this.#healthy();
@@ -2080,7 +2114,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         for (const texture of desc.shader.layout.textures) {
             count(texture.binding);
             if (texture.binding >= this.limits.maxTextureBindings || bindings.has(texture.binding) ||
-                texture.format !== 'rgba8' && texture.format !== 'r8') throw new ArenaError('invalid-input');
+                texture.format !== 'rgba8' && texture.format !== 'r8' && texture.format !== 'r32f') throw new ArenaError('invalid-input');
             bindings.add(texture.binding);
         }
         bindings.clear();
@@ -2355,9 +2389,12 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 if (!texture) throw new ArenaError('allocation');
                 try {
                     gl.bindTexture(gl.TEXTURE_2D, texture);
-                    gl.texStorage2D(gl.TEXTURE_2D, desc.levels ?? 1, desc.format === 'rgba8' ? gl.RGBA8 : gl.R8, desc.width, desc.height);
-                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+                    gl.texStorage2D(gl.TEXTURE_2D, desc.levels ?? 1, glInternal(gl, desc.format), desc.width, desc.height);
+                    // A float texture is not filterable without OES_texture_float_linear, and an area target is only ever
+                    // read with texelFetch: nearest keeps it complete on every device that offers it.
+                    const filter = desc.format === 'r32f' ? gl.NEAREST : gl.LINEAR;
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
                     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
                     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
                     // Allocation only, never per draw: refuse OOM before publishing a texture.

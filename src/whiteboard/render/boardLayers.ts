@@ -16,7 +16,7 @@ import type { PaintImageProvider } from './resources';
 import { createCanvasPaintAdapter, type CanvasPaintAdapter, type PreparedRetain } from './reference/canvasPaintAdapter';
 import { createGpuPaintAdapter } from './gpuPaintAdapter';
 import type { GeometryPins } from './gpu/tileComposer';
-import { auditCount, auditDrawn } from '../../platform/render/renderAudit';
+import { auditCount, auditDrawn, renderAuditEnabled } from '../../platform/render/renderAudit';
 import { createDensePaintAdapter } from './densePlan';
 import { MEMORY_RETRY_MIN_MS, MemoryRetryGate } from './memoryRetryGate';
 import { DensityController, type DensityMode } from './density';
@@ -48,6 +48,9 @@ export interface BoardLayersOptions {
     /** Whether the live layer paints this changed node in the frame at `view`: a changed node counts as covered by the picture
      * only then (or when it is omitted, a drag's preview). Membership in liveNodeIds alone is not coverage. */
     readonly liveDraws?: (nodeId: string, band: PaintBand, view: ViewState, canvas: boolean) => boolean;
+    /** The overlay's report of the nodes it drew at a scene revision (after a commit it is frozen, so this is its last composite).
+     * A stale base picture covers a changed node only where this report has it at the latest revision (gpu's ruling). */
+    readonly overlayDrawn?: () => { readonly sceneRevision: number; readonly nodes: ReadonlySet<string> } | null;
     readonly beforePrepare?: (view: ViewState, budget: FrameBudget) => void;
     readonly onPresented?: (revision: number, token: RenderToken, frame: PaintSource, context?: ViewerPaintPresentation) => void;
     /** Called after every prepare that reached the adapter, before a compositor frame draws what it built; a caller checks what is built. */
@@ -320,6 +323,10 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     let presentedContext: ViewerPaintPresentation | null = null;
     // What the last presented frame drew beyond its context: the live set and the draw version (both read at draw time).
     let presentedLive: ReadonlySet<string> | undefined, presentedDrawVersion = -1;
+    // The adapter's content version at the moment each draw context was drawn (gpu-h2's contentKey). 'Unchanged' compares it with the
+    // presented picture's, never the frame object: a new frame with the same content is the same picture.
+    const contentOfContext = new WeakMap<object, number>();
+    let presentedContent: number | undefined;
     // The layer's answer for the frame it prepared: true only when every input to the draw matches the presented frame.
     let prepareUnchanged = false;
     // The source whose reference paths the device route built last: a camera-only frame of it builds nothing.
@@ -570,6 +577,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         if (!dense) dense = createDensePaintAdapter(denseResources!, allocatorHost!, report, memoryGate);
         return dense;
     };
+    let gpuBoundHost: LayerHost | null = null;
     const ensureAdapter = (host: LayerHost): CanvasPaintAdapter => {
         if (!adapter) {
             allocatorHost = host;
@@ -593,7 +601,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 needsFrame: () => current().needsFrame(), memory: () => current().memory(),
                 dispose: () => { direct!.dispose(); dense?.dispose(); },
             };
-            gpu = createGpuPaintAdapter(adapter, host, report, gpuOptions());
+            gpu = createGpuPaintAdapter(adapter, host, report, gpuOptions()); gpuBoundHost = host;
         }
         return adapter;
     };
@@ -622,12 +630,14 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         let held = 0;
         for (const lease of leases) held += lease.bytes;
         if (held >= want) { denied = false; return true; }
-        if (memoryGate.closed()) { denied = true; return false; }
+        if (memoryGate.closed()) { auditCount(options.auditSurface ?? 'board', 'direct:gate-closed'); denied = true; return false; }
         while (held < want) {
             const lease = allocatorHost!.allocator.cpu.reserve(DIRECT_CHUNK);
             if (!lease) {
                 memoryGate.refused(); denied = true;
                 auditCount(options.auditSurface ?? 'board', 'direct:charge-refused');
+                // Audit only: how much the build wanted and did not hold when the reserve refused (the bytes it is short by).
+                auditCount(options.auditSurface ?? 'board', 'direct:refused-missing', 1, { bytes: want - held });
                 allocatorHost!.demandChanged?.();
                 awaitCpu(DIRECT_CHUNK);
                 return false;
@@ -644,24 +654,41 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     // presented frame's view, omission and frame. Any difference, or no presented frame, is changed.
     const unchangedSincePresented = (view: ViewState, budget: FrameBudget, frame: PaintSource): boolean => {
         const context = presentedContext, host = activeHost();
-        if (!context || !host || presented !== frame || !options.frames.isCurrent(frame)) return false;
-        if (frame.sceneRevision !== options.requestedRevision() || frame.theme !== options.requestedTheme()) return false;
-        if (!sameView(context.view, view) || !sameTransform(context.paneTransform, host.paneTransform(view, budget.frameId))) return false;
-        if (!sameOmission(context.omittedNodeIds, omittedOf(options.omitNodes?.(frame) ?? null))) return false;
+        // gh14 audit: the first input that differs from the presented frame names why the layer answered changed.
+        const miss = (why: string): false => { if (renderAuditEnabled()) auditCount(options.auditSurface ?? 'board', `unchanged-miss:${why}`); return false; };
+        if (!context || !host) return miss(!context ? 'no-context' : 'no-host');
+        // The picture is compared by content: the adapter's version at the presented draw against its version now. A new frame object
+        // with the same content is the same picture, so the frame's identity and scene revision are not compared.
+        if (presentedContent === undefined || !gpu || presentedContent !== gpu.contentKey()) return miss('content');
+        if (!options.frames.isCurrent(frame)) return miss('not-current');
+        if (frame.theme !== options.requestedTheme()) return miss('theme');
+        if (!sameView(context.view, view)) return miss('view');
+        if (!sameTransform(context.paneTransform, host.paneTransform(view, budget.frameId))) return miss('transform');
+        if (!sameOmission(context.omittedNodeIds, omittedOf(options.omitNodes?.(frame) ?? null))) return miss('omission');
         const offset = options.drawOffset?.(frame);
-        if (offset && (offset.x !== 0 || offset.y !== 0)) return false;
-        if ((options.drawVersion?.() ?? 0) !== presentedDrawVersion || liveFor(frame) !== presentedLive) return false;
+        if (offset && (offset.x !== 0 || offset.y !== 0)) return miss('offset');
+        if ((options.drawVersion?.() ?? 0) !== presentedDrawVersion) return miss('draw-version');
+        if (liveFor(frame) !== presentedLive) return miss('live');
         return true;
     };
+    // gh14 audit: every silent path that answers changed names itself, so a redundant present is traced to its branch.
+    const missAnswer = (why: string): void => { if (renderAuditEnabled()) auditCount(options.auditSurface ?? 'board', `answer-miss:${why}`); };
     // The background call of a two-phase frame: the composer's background part, then what the foreground call left (the charge, the prune,
     // the answer). A background call with no foreground of its frame answers changed.
+    // The two bands share one prepare (the frame and the answer are the board's): the second band's background call of a frame finds the
+    // frame already finished and answers what it answered. Measured: every draw frame named bg-no-pending for the second band, which
+    // answered changed over an unchanged picture.
+    let answeredFrame = -1, answeredUnchanged = false;
     const finishBackground = (view: ViewState, budget: FrameBudget): void => {
         const frame = pendingFrame;
         pendingFrame = null;
-        if (!frame || foregroundFrame !== budget.frameId || !adapter || disposed) { prepareUnchanged = false; return; }
+        if (!frame && answeredFrame === budget.frameId) { prepareUnchanged = answeredUnchanged; return; }
+        if (!frame || foregroundFrame !== budget.frameId || !adapter || disposed) { missAnswer(!frame ? 'bg-no-pending' : 'bg-no-foreground'); prepareUnchanged = false; return; }
         foregroundFrame = -1;
+        answeredFrame = budget.frameId;
         try {
             const composerChanged = prepareGpu(view, budget, frame);
+            if (composerChanged && renderAuditEnabled()) auditCount(options.auditSurface ?? 'board', 'unchanged-miss:composer');
             if (onDeviceRoute) {
                 const charged = chargeDirect(frame);
                 prepareUnchanged = charged && !composerChanged && unchangedSincePresented(view, budget, frame);
@@ -669,7 +696,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             prune(frame, adapter.readyFrame());
             options.onPrepared?.();
         } catch (error) { prepareUnchanged = false; report(error); }
-        finally { refreshProgress(); }
+        finally { answeredUnchanged = prepareUnchanged; refreshProgress(); }
     };
     // Returns nothing on every path it does not prove unchanged; the layer's answer is read from prepareUnchanged. The foreground call
     // (budget.phase 'foreground') stops after the composer's foreground part and leaves the frame for the background call.
@@ -690,6 +717,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             // else asks for its replacement. Each asks ONCE per frame object, as the missing-live-node case does, so a
             // frame that never changes cannot keep the pump running with no progress.
             if (!frame || !options.frames.isCurrent(frame) || !sameToken(frame.token, budget.token)) {
+                missAnswer(!frame ? 'no-frame' : !options.frames.isCurrent(frame) ? 'frame-not-current' : 'frame-token');
                 if (frame && !replacementAsked.has(frame)) { replacementAsked.add(frame); options.requestFrame?.(); }
                 return;
             }
@@ -711,6 +739,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     return;
                 }
                 if (frame.liveOnly) {
+                    missAnswer('live-only-gpu');
                     if (!replacementAsked.has(frame)) { replacementAsked.add(frame); options.requestFrame?.(); }
                     return;
                 }
@@ -729,6 +758,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 } else if (directBuiltFor !== frame) auditCount(options.auditSurface ?? 'board', 'direct:build-held');
                 if (directBuiltFor !== frame) prepareUnchanged = false;
                 const composerChanged = prepareGpu(view, budget, frame);
+                if (composerChanged && renderAuditEnabled()) auditCount(options.auditSurface ?? 'board', 'unchanged-miss:composer');
                 if (budget.phase === 'foreground') { pendingFrame = frame; foregroundFrame = budget.frameId; return; }
                 // A refused charge leaves the build unheld: the frame then answers changed, never unchanged.
                 const charged = chargeDirect(frame);
@@ -740,6 +770,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             // A live-only frame holds no other items, so it can never serve direct drawing; a direct frame
             // cannot serve dense drawing either. The owner's request for the other kind is already in flight.
             if (!!frame.liveOnly !== useDense && frame.openTile) {
+                missAnswer('open-tile');
                 if (!replacementAsked.has(frame)) { replacementAsked.add(frame); options.requestFrame?.(); }
                 return;
             }
@@ -853,7 +884,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             options.frames.presented(frame);
             acceptHolds([...(drawTokens.get(token)?.values() ?? [])].map(drawn => drawn.hold));
             const previous = presented; presented = frame; presentedOmit = omit; presentedInk = ink; presentedContext = context;
-            presentedLive = liveFor(frame); presentedDrawVersion = options.drawVersion?.() ?? 0;
+            presentedLive = liveFor(frame); presentedDrawVersion = options.drawVersion?.() ?? 0; presentedContent = contentOfContext.get(context);
             // A completed presentation is the only event that clears a real error.
             lastError = null; refreshProgress();
             ackFrame = null; ackOmit = null; ackInk = null; ackMask = 0; ackToken = null; ackContext = null; drawTokens.delete(token);
@@ -876,7 +907,16 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     // it is one the band does not draw: the omitted nodes (a drag's moving node, drawn by the preview) and the live ones (drawn
     // by their live layer). A drag moves only those, so its base picture stays current (measured: stale:revision on 186 of 186
     // drag-sat frames). Unknown history (null, or a structural change) is stale.
-    const undrawnChangeSince = (from: number, to: number, band: PaintBand, view: ViewState, canvas: boolean): boolean => {
+    // The node ids a presented base picture holds (its items' nodes and its ink ids), built once per picture.
+    const heldNodesOf = new WeakMap<object, ReadonlySet<string>>();
+    const nodesHeldBy = (base: PaintSource): ReadonlySet<string> => {
+        const known = heldNodesOf.get(base); if (known) return known;
+        const held = new Set<string>(base.inkNodeIds);
+        const lists = base as { underlay?: readonly { nodeId?: string }[]; content?: readonly { nodeId?: string }[] };
+        for (const list of [lists.underlay, lists.content]) if (list) for (const item of list) if (item.nodeId) held.add(item.nodeId);
+        heldNodesOf.set(base, held); return held;
+    };
+    const undrawnChangeSince = (from: number, to: number, band: PaintBand, view: ViewState, canvas: boolean, base: PaintSource): boolean => {
         // The live scene history first (it names the revisions a frame lags behind); the pinned frame's own history when the
         // live one is not retained for this span.
         const now = options.frames.readFrame();
@@ -886,7 +926,17 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         // A node the composer plans to lay live for this band (the prepare that runs before coverage in this frame, d14a4dfa) is drawn
         // live, so it is current wherever the board shows it. A frame whose composite is not presented reports no coverage at all.
         const laid = canvas ? null : gpu?.plannedLiveNodeIds(band) ?? null;
-        for (const id of changed) if (!omitted?.has(id) && !options.liveDraws?.(id, band, view, canvas) && !laid?.has(id)) return false;
+        // A changed node is current in a stale picture only when the picture does not show it (omitted, or created after the picture)
+        // and a live layer drew it at the latest revision (the wet layer this frame, or the overlay's report). A node the picture
+        // holds with an old copy (a move) stays stale: covering it would show the old copy as current.
+        const overlay = options.overlayDrawn?.() ?? null;
+        const held = nodesHeldBy(base);
+        for (const id of changed) {
+            const live = options.liveDraws?.(id, band, view, canvas) || !!laid?.has(id) ||
+                (overlay !== null && overlay.sceneRevision >= to && overlay.nodes.has(id));
+            if (!live) return false;
+            if (!omitted?.has(id) && held.has(id)) return false;
+        }
         return true;
     };
     const coverageOf = (band: PaintBand, frame: ScheduledFrame, backend: CompositorBackend): LayerCoverage => {
@@ -899,7 +949,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         const latest = options.requestedRevision();
         // The picture drawn is current at the latest revision, whatever revision this layer's frame was scheduled for (a preview
         // band's scheduled frame lags the drag's moves while its picture is already the latest: measured 62 of 62 as stale).
-        const current = (ready.sceneRevision === latest || undrawnChangeSince(ready.sceneRevision, latest, band, frame.view, backend === 'canvas2d'))
+        const current = (ready.sceneRevision === latest || undrawnChangeSince(ready.sceneRevision, latest, band, frame.view, backend === 'canvas2d', ready))
             && ready.theme === options.requestedTheme() && options.frames.isCurrent(ready);
         return current ? { complete: true, sharp: (gpuCoverage?.sharp ?? true) && (denseCoverage?.sharp ?? true) } : STALE;
     };
@@ -916,10 +966,23 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         const scratch = allocatorHost?.device() ? gpu?.cpuWorkingSet().mandatoryBytes ?? 0 : 0;
         return reserved + upcoming + scratch + (useDense ? dense?.cpuWorkingSet(estimate?.maxItemBytes ?? 0) ?? 0 : 0) + (options.frames.cpuWorkingSet?.() ?? 0);
     };
+    // The live nodes each band's canvas2d draw painted in its last draw. The GPU composer reports its own drawn live nodes; a canvas2d
+    // overlay has no composer, so without this it reports none, the base never omits its node, and the edited text draws twice (measured:
+    // canvas2d edit glyphs carry twice their alpha; the GPU edit matches its rest). An overlay's node is drawn when the frame holds it.
+    const drawn2d: Record<PaintBand, ReadonlySet<string>> = { underlay: NO_INK, content: NO_INK };
+    const liveDrawn = (frame: PaintSource): ReadonlySet<string> => {
+        const live = options.liveNodes, held = frame.sensitiveNodes;
+        if (!live?.size || !held?.size) return NO_INK;
+        const drawn = new Set<string>();
+        for (const id of live) if (held.has(id)) drawn.add(id);
+        return drawn.size ? drawn : NO_INK;
+    };
     const definition = (band: PaintBand): PlatformLayerDefinition => ({
-        id: `board-${band}`, group: 'document', ...gpuWorkingSetFor(band),
+        id: `board-${band}`, group: 'document', foregroundCpu: true, ...gpuWorkingSetFor(band),
         create(host) {
             if (disposed || hosts.has(band)) throw new Error('Board layer already attached');
+            // Trace (counters only): a band re-attached after the GPU adapter was bound to an earlier host keeps that host.
+            auditCount(options.auditSurface ?? 'board', `host:attach:${band}:${gpu ? (gpuBoundHost === host ? 'same' : 'rebound-needed') : 'first'}`);
             hosts.set(band, host); ensureAdapter(host);
             let ended = false;
             const layer: Layer & LayerEvicting = {
@@ -931,6 +994,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     return budget.phase === 'foreground' || prepareUnchanged ? false : true;
                 },
                 drawGpu(pass, view) {
+                    drawn2d[band] = NO_INK;
                     const frame = gpu?.readyFrame();
                     if (!frame || !drawable(frame)) return;
                     const omit = options.omitNodes?.(frame) ?? null;
@@ -939,12 +1003,14 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     if (!prepareToken) return;
                     const actualView = copyView(view);
                     gpu!.drawGpu(pass, shift ? shiftedView(view, shift) : view, band);
+                    const content = gpu!.contentKey();
                     // Borrowed right after the draw read its snapshot, before anything else can move the adapter on.
                     const hold = captureDraw(frame, omit);
                     const context = Object.freeze({ view: actualView, frameId: prepareFrameId,
                         paneTransform: host.paneTransform(actualView, prepareFrameId),
                         token: Object.freeze({ ...prepareToken }), omittedNodeIds: omittedOf(omit),
                         retain: () => options.frames.retain(frame), retainImages: () => leaseOf(hold) });
+                    contentOfContext.set(context, content);
                     recordDraw(band, { frame, omit, ink, context, hold });
                 },
                 evictGpu(bytes, frameId) {
@@ -963,6 +1029,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     if (typeof encoder?.encodeOffscreen === 'function') encoder.encodeOffscreen(passes, view, band);
                 },
                 draw2d(ctx, view) {
+                    drawn2d[band] = NO_INK;
                     const frame = adapter?.readyFrame();
                     if (!frame || !drawable(frame)) return;
                     const omit = options.omitNodes?.(frame) ?? null;
@@ -971,6 +1038,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     if (!prepareToken) return;
                     const actualView = copyView(view);
                     adapter!.draw2d(ctx, shift ? shiftedView(view, shift) : view, band, omit ?? undefined);
+                    drawn2d[band] = liveDrawn(frame);
                     // Borrowed right after the draw read its snapshot, before anything else can move the adapter on.
                     const hold = captureDraw(frame, omit);
                     const context = Object.freeze({ view: actualView, frameId: prepareFrameId,
@@ -1001,6 +1069,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 dispose() {
                     if (ended) return;
                     ended = true;
+                    auditCount(options.auditSurface ?? 'board', `host:detach:${band}`);
                     armMemoryRetry(false);
                     if (allocatorHost === host) { clearResources('pressure'); allocatorHost = null; }
                     hosts.delete(band);
@@ -1058,12 +1127,11 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     pair.drawnInkNodeIds = () => (gpu as DrawnInkReporter | null)?.drawnInkNodeIds?.() ?? NO_INK;
     pair.drawnLiveNodeIds = () => {
         const reporter = gpu as DrawnLiveReporter | null;
-        if (!reporter?.drawnLiveNodeIds) return NO_INK;
-        const under = reporter.drawnLiveNodeIds('underlay'), content = reporter.drawnLiveNodeIds('content');
-        // One band empty (the usual case): its set is returned, with no allocation per read (a preview's coverage reads it every frame).
-        if (!under.size) return content.size ? content : NO_INK;
-        if (!content.size) return under;
-        return new Set([...under, ...content]);
+        const under = reporter?.drawnLiveNodeIds?.('underlay') ?? NO_INK, content = reporter?.drawnLiveNodeIds?.('content') ?? NO_INK;
+        const sets = [under, content, drawn2d.underlay, drawn2d.content].filter(set => set.size);
+        // One set (the usual case): it is returned, with no allocation per read (a preview's coverage reads it every frame).
+        if (sets.length <= 1) return sets[0] ?? NO_INK;
+        return new Set(sets.flatMap(set => [...set]));
     };
     pair.onDevice = () => !!activeHost()?.device();
     pair.cpuMandatoryBytes = cpuMandatory;

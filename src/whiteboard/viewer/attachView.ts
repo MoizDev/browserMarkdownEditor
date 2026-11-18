@@ -66,6 +66,8 @@ export const attachView: AttachView = options => {
     const sameSceneKey = (a: SceneKey | null, b: SceneKey): boolean => !!a && a.revision === b.revision && a.sheet === b.sheet
         && a.theme === b.theme && a.sensitive === b.sensitive && a.band === b.band;
     let viewAsked: SceneKey | null = null, sceneAsked: SceneKey | null = null, sceneDue = false;
+    // A refusal is for the whole sheet's size (revision, sheet, theme, sensitivity), not for the band: it latches across crossings.
+    const sameSheetState = (a: SceneKey | null, b: SceneKey): boolean => sameSceneKey(a, { ...b, band: a?.band ?? null });
     // The band the last request was made at, and whether that request carried the band before it (a crossing during a live zoom).
     // A carried request is made again at rest, without the previous band, so the strokes settle on the wanted band.
     let liveBand: number | null = null, carrying = false;
@@ -199,7 +201,7 @@ export const attachView: AttachView = options => {
             // The view frame of the current key is up: the whole scene may now be asked for (once).
             // The request is made by the next prepare, which a presentation alone does not schedule: ask for that frame.
             // Armed once per key: while the stage is already due, a presented frame must not invalidate again (that re-presented forever).
-            if (layers.onDevice() && !sceneDue && viewAsked && revision === viewAsked.revision && !sameSceneKey(sceneAsked, viewAsked) && !sameSceneKey(sceneRefused, viewAsked)) { sceneDue = true; layers.invalidate('board-scene-request'); }
+            if (layers.onDevice() && !sceneDue && viewAsked && revision === viewAsked.revision && !sameSceneKey(sceneAsked, viewAsked) && !sameSheetState(sceneRefused, viewAsked)) { sceneDue = true; layers.invalidate('board-scene-request'); }
             interaction?.presented?.(revision, token, frame, context);
             embedProducer?.presented(revision, token, frame, context);
         },

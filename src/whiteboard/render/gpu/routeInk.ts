@@ -3,7 +3,7 @@ import type { LayerHost } from '../../../platform/render/compositor.types';
 import type { GpuPass } from '../../../platform/render/gfx/api';
 import type { FrameBudget } from '../../../platform/render/types';
 import { createPathCoverageKit, type PathCoverageAdmission, type PreparedPathCoverage } from '../../../platform/render/pathCoverage';
-import { auditCount } from '../../../platform/render/renderAudit';
+import { auditCount, renderAuditEnabled } from '../../../platform/render/renderAudit';
 import type { PaintInkItem, PaintItem } from '../paintStream';
 import type { Rgba } from '../../../platform/types';
 import { analyticCapsule } from '../analyticInk';
@@ -79,7 +79,10 @@ export const createInkRoutes: CreateInkRoutes = (host: LayerHost, audit: string)
                 const deviceScale = view.camera.z * view.viewport.dpr * Math.hypot(a, b, c, d);
                 if (!(deviceScale > 0) || !Number.isFinite(deviceScale)) { retireAll(); return { status: 'unsupported', why: 'scale' }; }
                 // One set per chunk, all under one affine and one stencil cover: a publication uploads only the chunks it adds.
+                // Timed under the audit (gpu-h4's split of a zoom frame): the tessellation and placement of the item's chunks, in hundredths of a ms.
+                const timed = renderAuditEnabled() ? performance.now() : 0;
                 const stroke = geometry.strokeSets(item, inkToleranceBand(deviceScale));
+                if (timed) { auditCount(audit, 'refuse:ink-strokesets-calls'); auditCount(audit, 'refuse:ink-strokesets-hundredths-ms', Math.round((performance.now() - timed) * 100)); }
                 if (stroke && 'denied' in stroke) { retireAll(); return { status: 'denied', pool: 'cpu', bytes: stroke.denied }; }
                 if (!stroke) { retireAll(); return { status: 'unsupported', why: 'outline-refused' }; }
                 const result: PathCoverageAdmission = kit.admitSets({

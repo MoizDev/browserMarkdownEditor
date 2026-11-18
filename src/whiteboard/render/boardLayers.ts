@@ -15,6 +15,7 @@ import { paintItemsOf } from './paintWindows';
 import type { PaintImageProvider } from './resources';
 import { createCanvasPaintAdapter, type CanvasPaintAdapter, type PreparedRetain } from './reference/canvasPaintAdapter';
 import { createGpuPaintAdapter } from './gpuPaintAdapter';
+import type { GeometryPins } from './gpu/tileComposer';
 import { auditCount, auditDrawn } from '../../platform/render/renderAudit';
 import { createDensePaintAdapter } from './densePlan';
 import { MEMORY_RETRY_MIN_MS, MemoryRetryGate } from './memoryRetryGate';
@@ -74,6 +75,8 @@ export interface BoardLayersOptions {
     readonly opaqueWorld?: () => readonly Rect[];
     /** A live-only overlay's own nodes: its composer indexes and draws only these items of the paint it is handed (see the GPU adapter). */
     readonly liveNodes?: ReadonlySet<string>;
+    /** The geometry service a live zoom pins its visible strokes in (the GPU adapter's pins; absent pins nothing). */
+    readonly geometryPins?: GeometryPins;
     /** An overlay (a drag's preview): its few plain parts are drawn live with no tiles, so no tile grant can stall it. */
     readonly liveOverlay?: boolean;
     /** Whether an optional layer has a request to draw. Nothing requested is nothing to draw: the layer is complete and counts no hole. */
@@ -219,6 +222,8 @@ export interface BoardLayerPair extends Readonly<[PlatformLayerDefinition, Platf
     invalidate(reason?: string): void;
     /** The ink nodes the board's GPU tiles drew in the last composite: the live stroke's wet layer hands over to them. */
     drawnInkNodeIds(): ReadonlySet<string>;
+    /** The live-only nodes the board's GPU tiles drew in the last composite, both bands: a live overlay hands a node over only after this. */
+    drawnLiveNodeIds(): ReadonlySet<string>;
     /** Whether the board draws on a device (its GPU composer), so the owner may ask for whole-scene frames. */
     onDevice(): boolean;
     /** The owning band's CPU bytes now (the direct charge, the dense plan, the device scratch): the measured cost a request's size is judged by. */
@@ -250,6 +255,7 @@ const NO_INK: ReadonlySet<string> = Object.freeze(new Set<string>());
 /** The GPU adapter's report of the ink its tiles drew (h2 adds it to the adapter). Until then nothing is reported drawn,
  * so the live stroke keeps drawing itself, as it does today. */
 type DrawnInkReporter = { drawnInkNodeIds?(): ReadonlySet<string> };
+type DrawnLiveReporter = { drawnLiveNodeIds?(band: PaintBand): ReadonlySet<string> };
 /** The GPU adapter's mandatory bytes for a viewport (h2 adds it to the adapter). Until then a device reports none beyond its
  * own leases, as before this member existed. */
 type GpuWorkingSetReporter = { gpuMandatoryBytes?(viewport: Readonly<{ width: number; height: number }>): number };
@@ -272,7 +278,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     // `opaqueWorld` in wave 2, and until then today's adapter ignores it.
     const gpuOptions = () => ({ audit: options.auditSurface ?? 'board', ...(options.liveOverlay ? { liveOverlay: true } : {}),
         ...(typeof options.opaqueWorld === 'function' ? { opaqueWorld: options.opaqueWorld } : {}),
-        ...(options.liveNodes ? { liveNodes: options.liveNodes } : {}) });
+        ...(options.liveNodes ? { liveNodes: options.liveNodes } : {}), ...(options.geometryPins ? { pins: options.geometryPins } : {}) });
     // The drag's omitted set is applied where the tiles are built: prepare takes it, and each prepare reads the current
     // omitNodes(frame). The draw never took it (the composer's draw has no omission), so it is not passed there.
     // A live-only overlay admits its parts at the view they are drawn at (its live runs are baked at prepare, and only tiles take
@@ -315,6 +321,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     let presentedLive: ReadonlySet<string> | undefined, presentedDrawVersion = -1;
     // The layer's answer for the frame it prepared: true only when every input to the draw matches the presented frame.
     let prepareUnchanged = false;
+    // The source whose reference paths the device route built last: a camera-only frame of it builds nothing.
+    let directBuiltFor: PaintSource | null = null;
     // Two-phase prepare (Layer.twoPhase): the foreground call of frame `foregroundFrame` leaves the frame it prepared in `pendingFrame`
     // for the background call of the same frame, which completes it and sets the answer.
     let foregroundFrame = -1;
@@ -580,7 +588,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 readyFrame: () => current().readyFrame(), borrowPrepared: () => current().borrowPrepared(),
                 retainPrepared: () => current().retainPrepared(),
                 draw2d: (ctx, view, band, omit) => current().draw2d(ctx, view, band, omit),
-                release: reason => { direct!.release(reason); dense?.release(reason); },
+                release: reason => { directBuiltFor = null; direct!.release(reason); dense?.release(reason); },
                 needsFrame: () => current().needsFrame(), memory: () => current().memory(),
                 dispose: () => { direct!.dispose(); dense?.dispose(); },
             };
@@ -618,6 +626,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             const lease = allocatorHost!.allocator.cpu.reserve(DIRECT_CHUNK);
             if (!lease) {
                 memoryGate.refused(); denied = true;
+                auditCount(options.auditSurface ?? 'board', 'direct:charge-refused');
                 allocatorHost!.demandChanged?.();
                 awaitCpu(DIRECT_CHUNK);
                 return false;
@@ -653,8 +662,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         try {
             const composerChanged = prepareGpu(view, budget, frame);
             if (onDeviceRoute) {
-                chargeDirect(frame);
-                prepareUnchanged = !composerChanged && unchangedSincePresented(view, budget, frame);
+                const charged = chargeDirect(frame);
+                prepareUnchanged = charged && !composerChanged && unchangedSincePresented(view, budget, frame);
             } else prepareUnchanged = false;
             prune(frame, adapter.readyFrame());
             options.onPrepared?.();
@@ -705,14 +714,25 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     return;
                 }
                 known.add(frame);
-                // Charged before the build (the grant may already refuse) and after it (what this step built is held).
-                if (!chargeDirect(frame)) return;
-                adapter.prepare(view, budget);
+                // The reference's CPU paths are the composer's input, so they are built once per source. While a refused charge's
+                // back-off runs, a source that has no paths yet waits for the wake (one attempt per wake); a camera-only frame reuses
+                // the paths built for its source, and the GPU composer prepares at the new camera either way (a refused charge never
+                // stopped it: 85 of 94 device prepares were refused before this, measured). The build is charged after it, as held bytes.
+                // While a refused charge's back-off runs, a new source is not built: the paths built for the previous source stay bound
+                // and the composer still prepares, at the new camera, from them, so the previous band keeps drawing under the live
+                // camera until the new one is built (the wake). Without this the composer did not prepare, and the draw-list guard
+                // drew nothing for the frame.
+                if (directBuiltFor !== frame && !memoryGate.closed()) {
+                    adapter.prepare(view, budget);
+                    directBuiltFor = frame;
+                } else if (directBuiltFor !== frame) auditCount(options.auditSurface ?? 'board', 'direct:build-held');
+                if (directBuiltFor !== frame) prepareUnchanged = false;
                 const composerChanged = prepareGpu(view, budget, frame);
                 if (budget.phase === 'foreground') { pendingFrame = frame; foregroundFrame = budget.frameId; return; }
-                chargeDirect(frame);
+                // A refused charge leaves the build unheld: the frame then answers changed, never unchanged.
+                const charged = chargeDirect(frame);
                 prune(frame, adapter.readyFrame());
-                prepareUnchanged = !composerChanged && unchangedSincePresented(view, budget, frame);
+                prepareUnchanged = charged && !composerChanged && unchangedSincePresented(view, budget, frame);
                 options.onPrepared?.();
                 return;
             }
@@ -862,7 +882,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         const changed = options.changedNodesSince?.(from, to) ?? (now && now.sceneRevision === to ? now.changedNodesSince?.(from) : null);
         if (!changed) return false;
         const omitted = now ? options.omitNodes?.(now) ?? null : null;
-        // A node the device's live draw laid in the last composite of this band is drawn live, so it is current wherever the board shows it.
+        // The live parts the next prepare plans are drawn live in this frame: coverage runs after prepare in the same frame (d14a4dfa),
+        // so the plan is this frame's own, and the draw-time set would be one composite late.
         const laid = canvas ? null : gpu?.plannedLiveNodeIds(band) ?? null;
         for (const id of changed) if (!omitted?.has(id) && !options.liveDraws?.(id, band, view, canvas) && !laid?.has(id)) return false;
         return true;
@@ -1027,6 +1048,13 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     const pair = [definition('underlay'), definition('content')] as unknown as BoardLayerPair;
     pair.invalidate = (reason = 'board-content') => { for (const host of hosts.values()) host.invalidate(reason); };
     pair.drawnInkNodeIds = () => (gpu as DrawnInkReporter | null)?.drawnInkNodeIds?.() ?? NO_INK;
+    pair.drawnLiveNodeIds = () => {
+        const reporter = gpu as DrawnLiveReporter | null;
+        if (!reporter?.drawnLiveNodeIds) return NO_INK;
+        const under = reporter.drawnLiveNodeIds('underlay'), content = reporter.drawnLiveNodeIds('content');
+        if (!under.size && !content.size) return NO_INK;
+        return new Set([...under, ...content]);
+    };
     pair.onDevice = () => !!activeHost()?.device();
     pair.cpuMandatoryBytes = cpuMandatory;
     // Typeof-guarded: an allocator that does not report a grant reads as 0 (none known).

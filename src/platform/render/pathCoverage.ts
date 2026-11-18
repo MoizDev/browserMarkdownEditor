@@ -1,4 +1,4 @@
-import { auditCount } from './renderAudit';
+import { auditCount, auditStage, renderAuditEnabled } from './renderAudit';
 import type { Affine, Rgba } from '../types';
 import type { LayerHost } from './compositor.types';
 import type { MemoryAllocator } from './memoryGovernor';
@@ -27,6 +27,10 @@ const PATH_COVERAGE_MAX_TARGET_BYTES = 8 * 2 ** 20;
  * request that pushed a notebook's load over the GPU pool (paper, board and wet layers each hold a kit), degrading it;
  * at 2 MiB a 516-texel tile draws in about four bands. */
 const PATH_COVERAGE_SCRATCH_BYTES = 2 * 2 ** 20;
+/** The smallest band a refused scratch shrinks to: a band below it draws too many passes per item to be worth its target. Between this
+ * and the cap the scratch is halved on each refusal, so a pool that cannot grant the request's own band grants a smaller one (go-gpu:
+ * a 1.68 MiB request refused three times while the pool had less than that free). */
+const PATH_COVERAGE_MIN_SCRATCH_BAND_BYTES = 256 * 1024;
 /** One vertex upload piece; a frame's allowance takes as many as it covers. 64 KiB, not larger: the scheduler's progress grant
  * admits an oversize claim only while less than 64 KiB has been admitted this frame, once per frame (scheduler.ts,
  * claimUpload). A 256 KiB piece therefore passes only in a frame that is almost empty, and a busy frame refused it every time
@@ -501,7 +505,11 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         if (current && kept && current.target.height >= exact) { rehome(owner, grid); return true; }
         // The request's height, rounded to a power of two within the band, as the width is. A refused rounded height retries at the exact one.
         const roundedHeight = Math.min(band, 2 ** Math.ceil(Math.log2(exact)));
-        const sizes = roundedHeight > exact ? [roundedHeight, exact] : [exact];
+        // The attempts, largest first: the rounded height, the exact height, then halvings of the exact height down to the smallest band.
+        // Bounded by the halvings of one band (about log2 of its rows), and each refusal is counted.
+        const sizes: number[] = roundedHeight > exact ? [roundedHeight, exact] : [exact];
+        const minRows = Math.max(1, Math.floor(PATH_COVERAGE_MIN_SCRATCH_BAND_BYTES / coverageTargetBytes(w, 1, samples, grid)));
+        for (let rows = Math.floor(exact / 2); rows >= minRows; rows = Math.floor(rows / 2)) sizes.push(rows);
         // The pool counts the old scratch's lease until it is returned, so a growth that reserves first is refused for bytes the kit
         // itself holds. When no admission holds the old scratch (its draws read it at draw time, and none is pending), its lease goes
         // back first. An admission still holding it keeps it: the growth reserves first, and its refusal is a short wait until those
@@ -510,11 +518,11 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         if (current && current.refs === 0) { table.targets.delete(owner); destroyScratchTarget(owner, current); reclaimed = true; }
         let lease: ByteLease | null = null;
         let h = exact, bytes = 0;
-        for (const size of sizes) {
-            h = size; bytes = coverageTargetBytes(w, size, samples, grid);
+        for (let attempt = 0; attempt < sizes.length; attempt++) {
+            h = sizes[attempt]; bytes = coverageTargetBytes(w, h, samples, grid);
             lease = host.allocator.gpu.reserve(bytes);
             if (lease) break;
-            if (size !== exact) auditCount(audit, 'kit:scratch-height-fallback', 1, { bytes });
+            if (attempt + 1 < sizes.length) auditCount(audit, 'kit:scratch-height-fallback', 1, { bytes });
         }
         if (!lease) { auditCount(audit, 'kit:scratch-refused', 1, { bytes }); return bytes; }
         let target: CoverageTarget;
@@ -677,7 +685,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
     const paintOutput: { kind: 'paint'; blend: 'normal' | 'modulate'; rgb: [number, number, number]; alpha: number } =
         { kind: 'paint', blend: 'normal', rgb: [0, 0, 0], alpha: 0 };
     const bandRect: RectI = { x: 0, y: 0, width: 0, height: 0 };
-    const render = (pass: GpuPass, prepared: PreparedPathCoverage, paint?: Rgba): void => {
+    const renderCoverage = (pass: GpuPass, prepared: PreparedPathCoverage, paint?: Rgba): void => {
         if (disposed || !live.has(prepared) || !pipelines || prepared.device !== device || host.device() !== device ||
             host.generation !== prepared.device.generation) throw new Error('Stale path coverage');
         const { affine, viewport, output } = prepared;
@@ -733,6 +741,12 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
                 }
             } finally { pass.endCoverage(token, drawOutput); }
         }
+    };
+    /** One coverage draw's encode time (CPU), named 'draw'; the timed path is taken only while the render audit is on. */
+    const render = (pass: GpuPass, prepared: PreparedPathCoverage, paint?: Rgba): void => {
+        if (!renderAuditEnabled()) { renderCoverage(pass, prepared, paint); return; }
+        const started = performance.now();
+        try { renderCoverage(pass, prepared, paint); } finally { auditStage(audit, 'draw', performance.now() - started); }
     };
     /** The winding and cover uniforms, written into the kit's one scratch and copied by the frame's ring at once. */
     const windingSlice = (viewport: Readonly<{ width: number; height: number }>, affine: Affine, dx: number, dy: number) => {
@@ -793,6 +807,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
                 piece % 4 !== 0 || offset + piece > up.bytes) {
                 throw new RangeError(`Invalid path vertex upload: offset ${offset}, bytes ${piece}, buffer ${up.bytes}`);
             }
+            const writeStarted = renderAuditEnabled() ? performance.now() : 0;
             try { up.device.writeBuffer(up.buffer, offset, up.data.subarray(offset / 4, (offset + piece) / 4)); }
             catch (error) {
                 if (!(error instanceof ArenaError) || error.code !== 'invalid-input') throw error;
@@ -801,6 +816,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
                 auditCount(audit, 'fallback:path-coverage:upload-refused', 1, { bytes: piece });
                 return 'unsupported';
             }
+            if (writeStarted) auditStage(audit, 'upload', performance.now() - writeStarted);
             auditCount(audit, 'upload:vertex', 1, { bytes: piece });
             up.written += piece;
         }
@@ -914,7 +930,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         VertexSet | Denial | 'deferred' | 'unsupported' => {
         const vertexBytes = vertexCount * 8;
         const found = shared.get(set.positive);
-        if (found && found.device === owner && found.negative === set.negative && found.used === vertexBytes) return found;
+        if (found && found.device === owner && found.negative === set.negative && found.used === vertexBytes) { auditCount(audit, 'kit:set-hit', 1, { bytes: vertexBytes }); return found; }
         if (found) {
             // The same positive array with another negative or size (or a stale device) holds a buffer this set cannot draw. A held set
             // cannot be replaced while a draw reads it: that is a fallback, counted. An idle one is replaced by a fresh upload; the array
@@ -926,6 +942,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         if (up && (up.device !== owner || up.negative !== set.negative || up.bytes !== vertexBytes)) { dropUpload(set.positive); up = undefined; }
         if (up) up.usedFrame = frame;
         if (!up) {
+            auditCount(audit, 'kit:set-new', 1, { bytes: vertexBytes });
             const staging = host.allocator.cpu.reserve(vertexBytes);
             if (!staging) return { status: 'denied', pool: 'cpu', bytes: vertexBytes };
             // Positive triangles first, then negative: the draw ranges follow this order.
@@ -949,6 +966,19 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         const state = writeUpload(up, budget);
         return state === 'done' ? finishUpload(up) : state;
     };
+    /** Admission, timed as 'admit' (its uploads are timed as 'upload' within it) while the render audit is on. */
+    const admitSets = (request: PathCoverageSetsRequest, budget: FrameBudget): PathCoverageAdmission => {
+        if (!renderAuditEnabled()) return admitSetsUntimed(request, budget);
+        const started = performance.now();
+        let result: PathCoverageAdmission;
+        try { result = admitSetsUntimed(request, budget); } finally { auditStage(audit, 'admit', performance.now() - started); }
+        // Debug log (audit only): one entry per admission, with the time it began, its outcome, the upload allowance left and whether
+        // the frame had yielded. A measurement reads it from globalThis.__bmeKitLog and joins it to presents by time.
+        const log = ((globalThis as { __bmeKitLog?: unknown[] }).__bmeKitLog ??= []) as unknown[];
+        if (log.length < 20000) log.push({ at: started, ms: performance.now() - started, status: result.status, left: budget.upload.remainingBytes,
+            budgetMs: budget.prepareDeadline - performance.now(), yield: budget.shouldYield(), phase: budget.phase, audit });
+        return result;
+    };
     /** Admission happens here, in prepare: targets, vertex buffers and any clip handle are created before any draw. Failure is
      * permanent for this device incarnation and returns 'unsupported'. A set uploaded by an admission that is then refused
      * keeps its buffer at zero refs, so the retry uploads nothing; release() frees it. */
@@ -957,18 +987,24 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         auditCount(audit, `fallback:path-coverage:${reason}`);
         return { status: 'unsupported' };
     };
-    const admitSets = (request: PathCoverageSetsRequest, budget: FrameBudget): PathCoverageAdmission => {
+    const admitSetsUntimed = (request: PathCoverageSetsRequest, budget: FrameBudget): PathCoverageAdmission => {
         // Failure is permanent for this device incarnation: the caller's exact route takes the item.
         if (disposed || failed || unsupported) return unsupportedBecause(disposed ? 'disposed' : failed ? 'failed' : 'device-unsupported');
         warm();
-        // A generation change is the device moving under this kit: its release follows, so the admission waits a frame. It is checked
-        // before readiness, so a kit whose pipelines are built waits here too instead of taking the CPU route as 'not-ready'.
+        // A generation change under this kit (the device's context was lost and restored since the frame began): the kit rebinds in this
+        // frame, releasing the old device's state and binding the current one, instead of deferring the admission a frame. Anything the
+        // old generation held is stale by the draw's own check, so the release does not change what a later frame can draw.
         if (device && (device.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration)) {
-            return { status: 'deferred' };
+            auditCount(audit, 'path-coverage:rebound:generation');
+            release(); warm();
         }
-        // Pipelines still compiling are a wait, not a fallback; ready invalidates the frame.
-        // Compiling pipelines and a device not yet bound are frame waits: nothing is refused for memory, so nothing is named.
-        if (!isReady()) return pending || !device ? { status: 'deferred' } : unsupportedBecause('not-ready');
+        // The three frame waits, each counted by its reason: pipelines still compiling (an async creation, so the first admission of a new
+        // device waits for it), no device yet bound. Nothing is refused for memory here, so nothing is named as a fallback.
+        if (!isReady()) {
+            if (!device) { auditCount(audit, 'path-coverage:deferred:no-device'); return { status: 'deferred' }; }
+            if (pending) { auditCount(audit, 'path-coverage:deferred:compiling'); return { status: 'deferred' }; }
+            return unsupportedBecause('not-ready');
+        }
         const owner = device!, { sets, rule, affine, viewport, output } = request;
         // Empty sets draw nothing. The rest are one set: several sets, or one shifted set, are packed into a copy with the shifts
         // baked in (see packSets), so the admission draws one winding per band, not one per set.
@@ -1066,11 +1102,21 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         }
         return { status: 'ready', value: prepared };
     };
+    // The kit starts its pipelines when it is created: a device already bound starts their compile now, and beginFrame starts it again
+    // for a device bound later. Pipeline creation is async, so by the time a person draws, the compile has long finished.
+    warm();
     return {
         warm,
         ready: isReady,
         /** Marks the frame the calls that follow belong to. An idle set used in this frame is never reclaimed. */
-        beginFrame(next: number): void { frame = next; },
+        beginFrame(next: number): void {
+            if (next === frame) { frame = next; return; }
+            auditCount(audit, 'kit:frame');
+            frame = next;
+            // Pipelines compile from the frame's start, not from its first admission (an async creation: a device bound at a release or a
+            // context loss waits for them, so the start is the earliest that wait can end).
+            if (!disposed && !failed && !unsupported) warm();
+        },
         /** Whether the kit still holds this triangle array (a shared set or an upload in progress). */
         holds(key: Float64Array): boolean { return shared.has(key) || uploading.has(key); },
         /** The owner has let go of a triangle array (its outline was dropped): the packs built from it are released with it. A pack

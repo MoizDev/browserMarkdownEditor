@@ -16,7 +16,7 @@ import { InkCoverageUnionPath2dJob, Path2dJob, type PathOrigin2d } from './refer
 import { isBudgetRefusal } from './budgetRefusal';
 import { TILE_SIZE } from './imageSampling';
 import type { Blend, ItemRoute, PreparedRun } from './gpu/contracts';
-import { createTileComposer, type ResourcedRoute, type TileLay, type TileRoutes } from './gpu/tileComposer';
+import { createTileComposer, type GeometryPins, type ResourcedRoute, type TileLay, type TileRoutes } from './gpu/tileComposer';
 import { createTileParts } from './gpu/tileParts';
 import { createTileStore, tileWorld } from './gpu/tileStore';
 import { createPath, withPreparedClips } from './gpu/routePath';
@@ -211,6 +211,12 @@ export interface GpuPaintAdapter {
     /** Indexes the reference's paint, composes what the view needs within the frame's limit. `omit` is the drag's omitted nodes.
      * True when anything visible changed since the previous prepare (the composer's report); true when it could not tell. */
     prepare(view: ViewState, budget: FrameBudget, omit?: ReadonlySet<string>): boolean;
+    /** The content of the paint this adapter last prepared, as one number: equal values draw the same picture. It is the same
+     * whether or not that paint was presented, and moves on every change that can alter the composite (an edit, an eviction, a
+     * live part drawn, a resource change, an index in progress). The board compares it with the value it presented. */
+    contentKey(): number;
+    /** Indexes a paint to completion within `maxMs`, outside any frame (the same filter the frames apply, so the index matches). */
+    warm(prepared: PreparedPaint2d, maxMs: number): boolean;
     /** The paint the composed tiles were built from, once a paint has been prepared. */
     readyFrame(): PaintSource | null;
     readyPaint(): PreparedPaint2d | null;
@@ -255,6 +261,8 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         readonly opaqueWorld?: () => readonly Rect[];
         /** An overlay: its few plain parts are drawn live each frame, with no tile grant (see the composer's liveOverlay). */
         readonly liveOverlay?: boolean;
+        /** The geometry service's pins a live zoom holds (see GeometryPins in tileComposer.ts); absent holds none. */
+        readonly pins?: GeometryPins;
         /** A live-only overlay's nodes (its gesture's): the composer indexes and draws only these items of the paint it is handed. */
         readonly liveNodes?: ReadonlySet<string>;
     } = {}): GpuPaintAdapter {
@@ -320,11 +328,15 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         layQuads: (pass, texture, quads) => host.drawTexturedQuads(pass, texture, quads, QUAD),
         ...(options.opaqueWorld ? { opaqueWorld: options.opaqueWorld } : {}),
         ...(options.liveOverlay ? { liveOverlay: true } : {}),
+        ...(options.pins ? { pins: options.pins } : {}),
         // The compose limit halves while the host reports a slow GPU, read each frame (PLAN 3.1).
         slowGpu: () => host.trouble() === 'slow-gpu',
     });
 
     return {
+        warm(prepared: PreparedPaint2d, maxMs: number): boolean {
+            return composer.warm(forComposer(prepared), maxMs);
+        },
         prepare(view: ViewState, budget: FrameBudget, omit?: ReadonlySet<string>): boolean {
             // The background call of a two-phase frame: the composer completes the paint its foreground call prepared (no new frame).
             if (budget.phase === 'background') {
@@ -339,6 +351,8 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                     return true;
                 }
             }
+            // Only this frame's background call reads the paint its foreground call left: a foreground call drops any earlier one.
+            pendingPrepared = null;
             if (disposed || lastFrame === budget.frameId) return true;
             lastFrame = budget.frameId;
             pathRoute.beginFrame(budget.frameId);
@@ -405,6 +419,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         drawnInkNodeIds(): ReadonlySet<string> { return disposed ? NO_INK : composer.drawnInkNodeIds(); },
         drawnLiveNodeIds(band: PaintBand): ReadonlySet<string> { return disposed ? NO_INK : composer.drawnLiveNodeIds(band); },
         plannedLiveNodeIds(band: PaintBand): ReadonlySet<string> { return disposed ? NO_INK : composer.plannedLiveNodeIds(band); },
+        contentKey(): number { return disposed ? -1 : composer.contentKey(); },
         gpuMandatoryBytes(viewport: { width: number; height: number }): number {
             return disposed || !presented ? 0 : composer.mandatoryBytes(viewport.width, viewport.height);
         },
@@ -416,6 +431,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             if (freed < bytes) freed += imageRoute.evictTextures(bytes - freed, frameId);
             if (freed < bytes) freed += textRoute.evictTextures?.(bytes - freed, frameId) ?? 0;
             if (freed < bytes && lastView) freed += store.evict(bytes - freed, frameId, lastView);
+            if (freed > 0) composer.noteEvicted();
             return freed;
         },
         evictCpu(bytes: number): number {

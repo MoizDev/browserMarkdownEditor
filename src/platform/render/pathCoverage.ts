@@ -1102,6 +1102,9 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         }
         return { status: 'ready', value: prepared };
     };
+    // The kit starts its pipelines when it is created: a device already bound starts their compile now, and beginFrame starts it again
+    // for a device bound later. Pipeline creation is async, so by the time a person draws, the compile has long finished.
+    warm();
     return {
         warm,
         ready: isReady,

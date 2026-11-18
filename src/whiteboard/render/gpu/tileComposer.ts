@@ -761,7 +761,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         const drive = (position: Position, key: number, pass: 'held' | 'dirty' | 'missing' | 'ring'): boolean => {
             if (position.parked) return true;
             // Why a frame composes nothing is the zoom question: each exit is counted (pass and cause).
-            if (frameComposed >= limit) { auditCount(audit, `compose:limit:${pass}`); return false; }
+            // The count limit is for background recomposes: a foreground compose (a visible tile with no valid cover) is bounded by the budget.
+            if (only !== 'foreground' && frameComposed >= limit) { auditCount(audit, `compose:limit:${pass}`); return false; }
             if (budget.shouldYield()) { auditCount(audit, `compose:yield:${pass}`); return false; }
             let outcome = advance(position, budget, gpu);
             // At rest a refused or denied position frees this composer's own tiles and is admitted in the same frame, instead of
@@ -777,7 +778,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 auditCount(audit, `compose:done:${pass}`);
                 building.delete(key);
                 finished.push(position);
-                frameComposed += position.slices.length;
+                if (only !== 'foreground') frameComposed += position.slices.length;
                 return true;
             }
             if (outcome === 'refused' && pass !== 'ring' && !position.lowered) {
@@ -946,7 +947,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             else if (outcome.status === 'deferred') {
                 // A deferral is a frame wait: nothing else invalidates the board for it, so the next frame asks again (bounded, below).
                 // Split by route: the admission reports no reason, so the route is the cause the counters can name.
-                liveDeferredNow = true; auditCount(audit, 'live:dropped:deferred'); auditCount(audit, `live:dropped:deferred:${route.id}`);
+                liveDeferredNow = true; auditCount(audit, 'live:dropped:deferred'); auditCount(audit, `live:dropped:deferred:${route.id}`); auditCount(audit, `live:dropped:deferred:${budget.phase}`);
             } else if (outcome.status === 'denied') {
                 // A denial waits on the governor like a tile's: the wake is the capacity change, not a timer, so a steady pool costs nothing.
                 refuseAdmission(outcome.pool, outcome.bytes); auditCount(audit, 'live:dropped:denied');
@@ -1018,7 +1019,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             const admitted = admitLive(part.item, part.blend, view, budget);
             if (!admitted) {
                 liveScratch.length = mark;
-                auditCount(audit, 'live:region:uncovered');
+                auditCount(audit, 'live:region:uncovered'); auditCount(audit, `live:region:uncovered:${budget.phase}`);
                 return false;
             }
             liveScratch.push({ order: part.order, run: admitted.run, route: admitted.route, nodeId: part.nodeId, pieces });

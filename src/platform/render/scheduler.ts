@@ -908,6 +908,12 @@ export class FrameScheduler {
             // 5: focus/input first, then rotate neighbours; nobody's mandatory draw is budget-skipped.
             // Each pane's encode, submit and overlay time this frame; it feeds the pane's EWMA, the next frame's presentation reserve.
             const presentCost = new Map<PaneEntry, number>();
+            // Audit only, in microseconds: how far past its preparation deadline the presentation started (foreground ran long),
+            // and how far the preparation ran past it (the last call's overrun).
+            if (renderAuditEnabled()) {
+                const late = performance.now() - prepareDeadline;
+                if (late > 0) auditCount('scheduler', 'present-late-us', Math.round(late * 1000));
+            }
             for (const item of this.focusFirst(this.rotate(work, this.encodeCursor++))) {
                 const encodeStarted = performance.now();
                 this.call(item.entry, () => {
@@ -987,6 +993,12 @@ export class FrameScheduler {
             const maintenanceStart = performance.now();
             this.runPolls(started + targetMs);
             this.maintenanceMs = performance.now() - maintenanceStart;
+            if (renderAuditEnabled()) {
+                // The whole frame against its interval: a frame past it is late for its display.
+                const total = performance.now() - started;
+                auditCount('scheduler', 'frame-us', Math.round(total * 1000));
+                if (total > this.intervalMs) auditCount('scheduler', 'frame-over-interval');
+            }
             this.frameFailures = 0;
         } catch (error) {
             // The scheduler never stops for good: a stopped scheduler freezes every pane, healthy ones included, and start() is

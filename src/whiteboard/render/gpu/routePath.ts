@@ -504,8 +504,10 @@ export function createPath(host: LayerHost, audit: string): {
         finally { drawPass = null; drawingItem = null; }
     };
 
-    const route: ItemRoute<PaintPathItem> = {
+    const route: ItemRoute<PaintPathItem> & { drawRefusedThisFrame(): boolean } = {
         id: 'path',
+        // The kit caught a uniform-ring refusal at one of this frame's draws: the frame's coverage is incomplete there (gpu-h4's kit).
+        drawRefusedThisFrame: (): boolean => kit.drawRefusedThisFrame(),
         accepts: (item): item is PaintPathItem => item.kind === 'path',
         admit(items, view, blend, budget): Admission<PreparedRun> {
             const cover: CoverBlend = blend === 'modulate' ? 'modulate' : 'normal';

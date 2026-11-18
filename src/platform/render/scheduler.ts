@@ -1149,8 +1149,9 @@ export class FrameScheduler {
                     // The frame's last call records the camera: a foreground call must compare with the previous frame's, not its own.
                     if (phase !== 'foreground') lastPreparedCamera.set(meta.layer, { x: item.frame.view.camera.x, y: item.frame.view.camera.y, z: item.frame.view.camera.z });
                     if (moved) {
-                        auditCount('scheduler', 'camera-prepare:' + phase);
-                        if (answered) auditCount('scheduler', 'camera-unchanged:' + phase);
+                        const named = phase + ':' + (item.entry.pane.layerId?.(meta.layer) ?? 'unnamed');
+                        auditCount('scheduler', 'camera-prepare:' + named);
+                        if (answered) auditCount('scheduler', 'camera-unchanged:' + named);
                     }
                 }
                 if (phase === 'foreground') {

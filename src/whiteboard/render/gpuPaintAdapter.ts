@@ -16,7 +16,7 @@ import { InkCoverageUnionPath2dJob, Path2dJob, type PathOrigin2d } from './refer
 import { isBudgetRefusal } from './budgetRefusal';
 import { TILE_SIZE } from './imageSampling';
 import type { Blend, ItemRoute, PreparedRun } from './gpu/contracts';
-import { createTileComposer, type ResourcedRoute, type TileLay, type TileRoutes } from './gpu/tileComposer';
+import { createTileComposer, type GeometryPins, type ResourcedRoute, type TileLay, type TileRoutes } from './gpu/tileComposer';
 import { createTileParts } from './gpu/tileParts';
 import { createTileStore, tileWorld } from './gpu/tileStore';
 import { createPath, withPreparedClips } from './gpu/routePath';
@@ -255,6 +255,8 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         readonly opaqueWorld?: () => readonly Rect[];
         /** An overlay: its few plain parts are drawn live each frame, with no tile grant (see the composer's liveOverlay). */
         readonly liveOverlay?: boolean;
+        /** The geometry service's pins a live zoom holds (see GeometryPins in tileComposer.ts); absent holds none. */
+        readonly pins?: GeometryPins;
         /** A live-only overlay's nodes (its gesture's): the composer indexes and draws only these items of the paint it is handed. */
         readonly liveNodes?: ReadonlySet<string>;
     } = {}): GpuPaintAdapter {
@@ -320,6 +322,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         layQuads: (pass, texture, quads) => host.drawTexturedQuads(pass, texture, quads, QUAD),
         ...(options.opaqueWorld ? { opaqueWorld: options.opaqueWorld } : {}),
         ...(options.liveOverlay ? { liveOverlay: true } : {}),
+        ...(options.pins ? { pins: options.pins } : {}),
         // The compose limit halves while the host reports a slow GPU, read each frame (PLAN 3.1).
         slowGpu: () => host.trouble() === 'slow-gpu',
     });

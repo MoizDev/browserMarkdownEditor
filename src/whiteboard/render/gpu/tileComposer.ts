@@ -35,6 +35,9 @@ const GPU_RETRY_MAX_MS = 4000;
 /** Misses with no capacity change before the retries stop: the position then waits for the governor's wake (a real capacity change),
  * not a timer. A refusal the pool can never admit is counted (compose:retry:stopped) and draws its stand-in. */
 const GPU_RETRY_LIMIT = 12;
+// A live part's admission is tried again within the frame while its budget has time: 4 tries at most, so a route that stays deferred
+// costs a bounded share of the frame.
+const LIVE_ADMIT_ATTEMPTS = 4;
 const CLEAR: RgbaP = [0, 0, 0, 0], WHITE: RgbaP = [1, 1, 1, 1];
 /** The texture's interior. The gutter is composed (so edges are right) and never drawn. */
 const CROP: Readonly<Rect> = Object.freeze({ x: GUTTER, y: GUTTER, width: EDGE, height: EDGE });
@@ -923,12 +926,18 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         // The CPU route rasters a tile-sized scratch at the camera origin: it cannot draw a live part over the surface.
         if (!route || route === routes.cpu) auditCount(audit, route ? 'live:dropped:cpu-route' : 'live:dropped:route-absent');
         else {
-            const outcome = route.admit([item], view, blend, budget);
+            let outcome = route.admit([item], view, blend, budget);
+            // Admission is resumable: a deferral while the frame still has time is resumed now, not left for the next frame.
+            for (let attempt = 1; outcome.status === 'deferred' && attempt < LIVE_ADMIT_ATTEMPTS && !budget.shouldYield(); attempt++) {
+                auditCount(audit, 'live:resumed');
+                outcome = route.admit([item], view, blend, budget);
+            }
             if (outcome.status === 'ready') { admitted = { route, run: outcome.value }; liveRuns.push(admitted); }
             else if (outcome.status === 'unsupported') auditCount(audit, `live:dropped:${outcome.why}`);
             else if (outcome.status === 'deferred') {
                 // A deferral is a frame wait: nothing else invalidates the board for it, so the next frame asks again (bounded, below).
-                liveDeferredNow = true; auditCount(audit, 'live:dropped:deferred');
+                // Split by route: the admission reports no reason, so the route is the cause the counters can name.
+                liveDeferredNow = true; auditCount(audit, 'live:dropped:deferred'); auditCount(audit, `live:dropped:deferred:${route.id}`);
             } else if (outcome.status === 'denied') {
                 // A denial waits on the governor like a tile's: the wake is the capacity change, not a timer, so a steady pool costs nothing.
                 refuseAdmission(outcome.pool, outcome.bytes); auditCount(audit, 'live:dropped:denied');

@@ -259,6 +259,8 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
     if (options.streaming) auditCount(surface, 'option:streaming-ignored');
     let disposed = false;
     let lastFrame = -1;
+    // The paint a two-phase frame's foreground call prepared, for its background call (which the composer's prepare completes).
+    let pendingPrepared: PreparedPaint2d | null = null;
     let presented: PreparedPaint2d | null = null;
     // The device and generation the composer's leases were granted on, set when it last prepared. Once either changes the
     // arena has returned those leases, so the composer's bytes are no longer reserved to this layer and are not reported.
@@ -310,6 +312,19 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
 
     return {
         prepare(view: ViewState, budget: FrameBudget, omit?: ReadonlySet<string>): boolean {
+            // The background call of a two-phase frame: the composer completes the paint its foreground call prepared (no new frame).
+            if (budget.phase === 'background') {
+                const pending = pendingPrepared;
+                pendingPrepared = null;
+                if (disposed || !pending || lastFrame !== budget.frameId) return true;
+                try {
+                    return timed(surface, 'prepare', () => composer.prepare(view, budget, pending, omit));
+                } catch (error) {
+                    if (isBudgetRefusal(error)) return true;
+                    host.reportGpuError(error);
+                    return true;
+                }
+            }
             if (disposed || lastFrame === budget.frameId) return true;
             lastFrame = budget.frameId;
             pathRoute.beginFrame(budget.frameId);
@@ -336,6 +351,8 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             }
             presented = prepared;
             lastView = view;
+            // A two-phase frame's foreground call answers false: its background call (later this frame) gives the answer.
+            if (budget.phase === 'foreground') { pendingPrepared = prepared; return false; }
             return changed;
         },
         readyFrame(): PaintSource | null { return disposed ? null : presented?.sourceFrame ?? null; },

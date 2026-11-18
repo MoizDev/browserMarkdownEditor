@@ -417,6 +417,12 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     const pendingRegions: Rect[] = [];
     // The positions whose dirty tiles this frame's live parts cover (positionKey): their picture is current, not stale.
     const coveredPositions = new Set<number>();
+    // Two-phase frames (budget.phase): the foreground call of frame `foregroundFrame` leaves its target, span, zoom and edit count for the
+    // background call of the same frame. `frameComposed` counts this frame's composes across both calls, so the limit stays per frame.
+    let foregroundFrame = -1;
+    let fTarget = 0, fZooming = false, fEditsBefore = 0;
+    let fSpan: Span = { x0: 0, y0: 0, x1: 0, y1: 0 };
+    let frameComposed = 0;
     // The frame each tile entry was last encoded (its content's frame), read against heldNodes.
     const composedAt = new WeakMap<TileEntry, number>();
     let lastZoom: number | undefined;
@@ -746,15 +752,16 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
 
     /** The compose pass of one frame, in priority order: dirty visible positions, then missing visible ones, then the
      * missing positions one ring outside the view. The frame's limit is the number of tiles it may compose. */
-    const compose = (view: ViewState, budget: FrameBudget, gpu: GfxDevice, target: number, span: Span): void => {
+    // `only` is the part of the frame this call composes: 'foreground' the held, dirty and visible-missing-without-stand-in work (what
+    // completeness needs), 'background' the rest (visible positions a stand-in shows, leftovers, the ring), 'all' both (single-phase).
+    const compose = (view: ViewState, budget: FrameBudget, gpu: GfxDevice, target: number, span: Span, only: 'foreground' | 'background' | 'all'): void => {
         let limit = view.moving ? 2 : 8;
         if (options.slowGpu?.()) limit = Math.max(1, limit >> 1);
-        let composed = 0;
         // Advances one position. False when this frame's compose is spent (limit, budget, a wait); true when the pass goes on.
         const drive = (position: Position, key: number, pass: 'held' | 'dirty' | 'missing' | 'ring'): boolean => {
             if (position.parked) return true;
             // Why a frame composes nothing is the zoom question: each exit is counted (pass and cause).
-            if (composed >= limit) { auditCount(audit, `compose:limit:${pass}`); return false; }
+            if (frameComposed >= limit) { auditCount(audit, `compose:limit:${pass}`); return false; }
             if (budget.shouldYield()) { auditCount(audit, `compose:yield:${pass}`); return false; }
             let outcome = advance(position, budget, gpu);
             // At rest a refused or denied position frees this composer's own tiles and is admitted in the same frame, instead of
@@ -770,7 +777,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 auditCount(audit, `compose:done:${pass}`);
                 building.delete(key);
                 finished.push(position);
-                composed += position.slices.length;
+                frameComposed += position.slices.length;
                 return true;
             }
             if (outcome === 'refused' && pass !== 'ring' && !position.lowered) {
@@ -802,7 +809,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         };
         // The positions under a held node come first: it stays live until they are composed, so they shorten every hold, and
         // a held node's content is composed before any other tile in the frame's budget (gpu).
-        for (const id of heldNodes.keys()) {
+        for (const id of only === 'background' ? NO_IDS : heldNodes.keys()) {
             for (const rect of parts.boundsOfNodes(new Set([id]))) {
                 const x0 = Math.max(span.x0, Math.floor(rect.x * target / EDGE)), x1 = Math.min(span.x1, Math.ceil((rect.x + rect.width) * target / EDGE));
                 const y0 = Math.max(span.y0, Math.floor(rect.y * target / EDGE)), y1 = Math.min(span.y1, Math.ceil((rect.y + rect.height) * target / EDGE));
@@ -825,7 +832,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         }
         for (const pass of ['dirty', 'missing', 'ring'] as const) {
             // While zooming only the visible positions are composed: the ring is the next view's, and the zoom's compose is its cost.
-            if (pass === 'ring' && zoomingFrame) continue;
+            if (pass === 'ring' && (zoomingFrame || only === 'foreground')) continue;
             const margin = pass === 'ring' ? 1 : 0;
             for (const band of BANDS) {
                 for (let y = span.y0 - margin; y < span.y1 + margin; y++) {
@@ -837,6 +844,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         if (!position) {
                             const status = statusAt(band, target, x, y);
                             if (pass === 'dirty' ? status !== 'dirty' : status !== 'missing') continue;
+                            // A visible position a stand-in already shows is not the foreground's: it waits for the background call.
+                            if (only === 'foreground' && pass === 'missing' && standInsOf(band, target, x, y).length) continue;
                             // While zooming, content a stand-in can show is not composed again at this scale: its raster is scaled.
                             if (zoomingFrame && pass !== 'dirty' && heldByZoom(band, target, x, y)) { auditCount(audit, 'compose:zoom:held'); continue; }
                             const started = begin(band, target, x, y, view);
@@ -1294,9 +1303,17 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     return {
         prepare(view: ViewState, budget: FrameBudget, prepared: PreparedPaint2d | null, omit?: ReadonlySet<string>): boolean {
             if (disposed) return true;
-            const editsBefore = visibleEdits;
+            // Two-phase (budget.phase): the foreground call runs this frame's intake and the foreground composes, then answers false (the
+            // frame's answer is the background call's). The background call of the same frame finishes it. The scheduler never makes a
+            // background call without its foreground; one that finds none answers true.
+            const background = budget.phase === 'background';
+            if (background && foregroundFrame !== budget.frameId) return true;
+            let target = fTarget, zooming = fZooming, editsBefore = fEditsBefore, frameSpan = fSpan;
+            if (!background) {
+            editsBefore = visibleEdits;
             editBits = 0;
             frame = budget.frameId;
+            frameComposed = 0;
             drawnInk.clear();
             drawnLive.underlay.clear(); drawnLive.content.clear();
             plannedLive.underlay.clear(); plannedLive.content.clear();
@@ -1326,7 +1343,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 for (const route of routeList) (route as ItemRoute & ResourcedRoute).useResources?.(prepared.resources);
             }
             // The scale moves only with the camera's zoom: a pan or a drag keeps the tiles' scale and their pixels.
-            const zooming = lastZoom !== undefined && view.camera.z !== lastZoom;
+            zooming = lastZoom !== undefined && view.camera.z !== lastZoom;
             lastZoom = view.camera.z;
             zoomingFrame = zooming;
             // The text route draws a missing exact mask from its stand-in while the zoom is live; the flag is set before its admits.
@@ -1334,7 +1351,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             if (zooming) inexactPending.clear();
             const exact = exactScale(demand);
             // Compose targets the exact scale every frame, visible positions first (exact-first zoom, gpu).
-            const target = exact;
+            target = exact;
             zoomSpan = zooming ? spanAt(view, target) : null;
             drawnCamX = view.camera.x; drawnCamY = view.camera.y; drawnCamZ = view.camera.z;
 
@@ -1404,14 +1421,23 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     building.clear();
                     for (const position of finished) cancel(position);
                     finished = [];
-                } else if (device) compose(view, budget, device, target, span);
-                // A region is owed live parts while a dirty tile under it is in view: once those tiles are composed, it is let go.
-                for (let r = pendingRegions.length - 1; r >= 0; r--) if (!regionStillDirty(pendingRegions[r], target, span)) pendingRegions.splice(r, 1);
-                // A held node stays live while a tile under it is dirty, or a visible one under it has nothing yet.
-                for (const id of heldNodes.keys()) if (!heldStillMissing(id, target, span)) heldNodes.delete(id);
+                } else if (device) compose(view, budget, device, target, span, budget.phase === 'single' ? 'all' : 'foreground');
             } else {
                 for (const position of finished) cancel(position);
                 finished = [];
+            }
+            frameSpan = spanAt(view, target);
+            fTarget = target; fZooming = zooming; fEditsBefore = editsBefore; fSpan = frameSpan;
+            if (budget.phase === 'foreground') { foregroundFrame = budget.frameId; return false; }
+            }
+            // The background call (or the single-phase call) finishes the frame: the rest of the composes, the pending regions and held
+            // nodes it no longer owes, then the draw list and the answer.
+            if (!indexing) {
+                if (background && !paintLiveOnly && device) compose(view, budget, device, target, frameSpan, 'background');
+                // A region is owed live parts while a dirty tile under it is in view: once those tiles are composed, it is let go.
+                for (let r = pendingRegions.length - 1; r >= 0; r--) if (!regionStillDirty(pendingRegions[r], target, frameSpan)) pendingRegions.splice(r, 1);
+                // A held node stays live while a tile under it is dirty, or a visible one under it has nothing yet.
+                for (const id of heldNodes.keys()) if (!heldStillMissing(id, target, frameSpan)) heldNodes.delete(id);
             }
             // Each position draws its exact tile where it is there, and otherwise its nearest composed tiles, clipped to it. No frame
             // waits for the compose: a zoom shows what exists (gpu's ruling: geometry exact, raster scaled).

@@ -2,14 +2,19 @@
 // A copy of the adapter's path admission and draw (gpuPaintAdapter.ts admitPathItem, drawPathItem, deviceAffine,
 // deviceClipRect), reworked so that a pan or a zoom inside one tolerance band triangulates nothing and uploads nothing.
 // Triangles are keyed by the commands' content and a band; the device affine is a uniform of the coverage kit.
-import type { Affine, PathCommand, ViewState } from '../../../platform/types';
+import type { Affine, PathCommand, Rgba, ViewState } from '../../../platform/types';
 import type { LayerHost } from '../../../platform/render/compositor.types';
 import type { ByteLease, ClipToken, GpuPass, RectI } from '../../../platform/render/gfx/api';
 import type { FrameBudget } from '../../../platform/render/types';
 import { auditCount } from '../../../platform/render/renderAudit';
 import { createPathCoverageKit, type PathCoverageAdmission, type PathCoverageShapes, type PreparedPathCoverage } from '../../../platform/render/pathCoverage';
-import { pathFillTriangles } from '../pathFillTriangles';
-import { pathStrokeTriangles } from '../pathStrokeTriangles';
+import { PATH_FILL_MAX_EDGES, flattenContours, pathFillTriangles } from '../pathFillTriangles';
+import { flattenPolylines, pathStrokeTriangles } from '../pathStrokeTriangles';
+import { createAreaKit, type AreaAdmission, type AreaKit, type AreaPending, type AreaSpans, type PreparedArea } from '../../../platform/render/areaCoverage';
+import { fillContours, strokeContours, type Contour } from './areaOutlines';
+import { areaNestingExact, createAreaCellBuilder } from '../inkAreaCells';
+import type { AreaOutput } from '../../../platform/render/gfx/api';
+import { ArenaError } from '../../../platform/render/resourceArena';
 import type { PaintClip, PaintPathItem } from '../paintStream';
 import type { Admission, CreatePathRoute, ItemRoute, PreparedRun, WithClips } from './contracts';
 
@@ -56,8 +61,28 @@ export interface PreparedClips {
 /** Admits the clips of one draw for one view. Empty when a clip excludes the view (the caller hides what it clips). */
 export type AdmitClips = (clips: readonly PaintClip[], view: ViewState, budget: FrameBudget) => Admission<PreparedClips>;
 
+/** Device pixels of flattening error allowed for a shape on the exact-area route. The cells are exact for the flattened outline,
+ * so the chords are the route's only error: a chord's sagitta s loses about 2s/3 of a pixel it crosses, and at the coverage route's
+ * 0.1 px that is up to ~17 levels, past the 8 the truth yardstick allows (FAULT-GPU.md). At 0.02 px it is ~3 levels, for about 2.2×
+ * the points of a curve; the cells grow with the rows an edge crosses, not with its points, so the cost is the flattening alone,
+ * done once per band (areaContours). */
+const AREA_FLATTEN_DEVICE_PX = 0.02;
+/** Path-local contours kept per content and band for the exact-area route, in CPU bytes (the outline cache's rules). */
+const AREA_CACHE_BYTES = 8 * 2 ** 20;
 /** One path item's admitted work, in draw order: clip masks, then the fill and stroke inside the pushed clips. */
-interface PreparedPathItem { readonly clips: PreparedClips; readonly fill: PreparedPathCoverage | null; readonly stroke: PreparedPathCoverage | null }
+/** A fill or stroke admitted on the exact-area route, with the output it is composited with. */
+interface AreaItem { readonly prepared: PreparedArea; readonly output: AreaOutput }
+interface PreparedPathItem { readonly clips: PreparedClips; readonly fill: PreparedPathCoverage | null; readonly stroke: PreparedPathCoverage | null;
+    readonly fillArea: AreaItem | null; readonly strokeArea: AreaItem | null }
+/** Whatever an admission acquired from a kit: retired together when the admission stops. */
+type Acquired = PreparedPathCoverage | PreparedArea;
+/** A fill or stroke as cells of its band, or why the coverage route takes it instead (counted), or nothing to draw. */
+type AreaShape = { readonly kind: 'area'; readonly spans: AreaSpans; readonly bounds: RectI } | { readonly kind: 'coverage'; readonly why: string }
+    | { readonly kind: 'empty' };
+/** A fill's or stroke's exact-area contours for one band, path-local, with their CPU lease; or, with null contours, why the
+ * coverage route takes it (kept, so the refusal is decided once per band). */
+interface AreaOutline { readonly contours: readonly Contour[] | null; readonly why: string | null; readonly bytes: number;
+    readonly lease: ByteLease | null; usedFrame: number }
 /** A run of path items sharing one blend, prepared for one view. */
 interface PathRun extends PreparedRun { readonly route: 'path'; readonly items: readonly PreparedPathItem[] }
 type ItemAdmission = { readonly status: 'ready'; readonly value: PreparedPathItem } | Stop;
@@ -312,6 +337,8 @@ export function createPath(host: LayerHost, audit: string): {
     const kit = createPathCoverageKit(host, () => auditCount(audit, 'kit:pipeline-failed'), audit,
         // The kit has let go of an array: its lease goes unless the cache still holds the array.
         array => { if (!cachedArrays.has(array)) releaseLease(array); });
+    /** The exact-area kit of the same host: the fills and strokes whose contours the exact sum takes (see areaOutlines.ts). */
+    const areaKit: AreaKit = createAreaKit();
     /** Takes an outline out of the cache. Its lease goes now unless the kit still holds the array; if it does, the kit's
      * release (onFreed) returns the lease. Returns the bytes given back now. */
     const dropFromCache = (key: string, old: Outline): number => {
@@ -368,13 +395,24 @@ export function createPath(host: LayerHost, audit: string): {
 
     /** Takes the kit's result into `acquired`, or says why not. A denial is the kit's own: the pool and bytes it needs, so the caller
      * waits on the pool that frees them (a CPU staging copy or pack is not a GPU wait). */
-    const take = (result: PathCoverageAdmission, acquired: PreparedPathCoverage[]): PreparedPathCoverage | Stop => {
+    const take = (result: PathCoverageAdmission, acquired: Acquired[]): PreparedPathCoverage | Stop => {
         if (result.status === 'ready') { acquired.push(result.value); return result.value; }
         if (result.status === 'denied') return { status: 'denied', pool: result.pool, bytes: result.bytes };
         if (result.status === 'deferred') return { status: 'deferred' };
         if (result.status === 'empty') return { status: 'empty' };
         return { status: 'unsupported', why: 'coverage kit' };
     };
+    /** The area kit's result, as `take` takes the coverage kit's. A deferral is discarded here: the next frame admits the shape again. */
+    const takeArea = (pending: AreaPending, result: AreaAdmission, acquired: Acquired[]): PreparedArea | Stop => {
+        if (result.status === 'ready') { acquired.push(result.value); return result.value; }
+        if (result.status === 'denied') return { status: 'denied', pool: result.pool, bytes: result.bytes };
+        if (result.status === 'deferred') { areaKit.discard(pending); return { status: 'deferred' }; }
+        if (result.status === 'empty') return { status: 'empty' };
+        // A stale admission was discarded by the kit: it is admitted again on the next frame.
+        if (result.status === 'stale') return { status: 'deferred' };
+        return { status: 'unsupported', why: result.why };
+    };
+    const retireAcquired = (held: Acquired): void => { if ('pieces' in held) areaKit.retire(held); else kit.retire(held); };
     const makeClips = (scissors: RectI[], masks: PreparedPathCoverage[]): PreparedClips => ({
         scissors: Object.freeze(scissors),
         masks: Object.freeze(masks),
@@ -389,10 +427,32 @@ export function createPath(host: LayerHost, audit: string): {
      * member's geometry cannot be built or the kit calls the group unsupported (a nonzero stencil over its edge bound): the caller
      * then admits the items one by one, which the same kit takes. */
     const admitGroup = (members: readonly PaintPathItem[], view: ViewState, viewport: Viewport, cover: CoverBlend, budget: FrameBudget,
-        acquired: PreparedPathCoverage[]): ItemAdmission | null => {
+        acquired: Acquired[]): ItemAdmission | null => {
         const lead = members[0];
         const band = bandOf(lead.localToWorld, view);
         if (band === null) return null;
+        // On the exact-area route the group is one area: its members share a transform and their device boxes are apart, so the
+        // sum of their contours is exact. One member the route refuses sends the whole group to the coverage pass below.
+        const areaSets: (readonly Contour[])[] = [];
+        for (const member of members) {
+            const outline = areaContours(member, 'fill', band);
+            if ('refused' in outline) return { status: 'denied', bytes: outline.refused, pool: 'cpu' };
+            if (!outline.contours) { auditCount(audit, `area:fallback:${outline.why}`); areaSets.length = 0; break; }
+            areaSets.push(outline.contours);
+        }
+        if (areaSets.length) {
+            const shape = areaCells(areaSets, lead.localToWorld, view, viewport);
+            if (shape.kind === 'empty') return { status: 'empty' };
+            if (shape.kind === 'area') {
+                const admitted = admitCells(shape, lead.material.fill!, cover, viewport, budget, acquired);
+                if (admitted && isStop(admitted)) return admitted;
+                if (admitted) {
+                    auditCount(audit, 'route:path-group', members.length);
+                    auditCount(audit, 'area:exact:group');
+                    return { status: 'ready', value: { clips: noClips, fill: null, stroke: null, fillArea: admitted, strokeArea: null } };
+                }
+            } else auditCount(audit, `area:fallback:${shape.why}`);
+        }
         const outlines: Outline[] = [];
         for (const member of members) {
             const geometry = outlineFor(`fill|${commandKey(member.d)}|${band}`, member.d, band,
@@ -414,12 +474,12 @@ export function createPath(host: LayerHost, audit: string): {
         const taken = take(result, acquired);
         if (isStop(taken)) return taken;
         auditCount(audit, 'route:path-group', members.length);
-        return { status: 'ready', value: { clips: noClips, fill: taken, stroke: null } };
+        return { status: 'ready', value: { clips: noClips, fill: taken, stroke: null, fillArea: null, strokeArea: null } };
     };
 
     /** Admits a clip list. Masks it acquires go into `acquired`; the caller retires them on any stop. */
     const admitClipList = (clips: readonly PaintClip[], view: ViewState, viewport: Viewport, budget: FrameBudget,
-        acquired: PreparedPathCoverage[]): PreparedClips | Stop => {
+        acquired: Acquired[]): PreparedClips | Stop => {
         // Most items have no clip: they share the frozen empty clips, so an unclipped admission builds no arrays.
         if (!clips.length) return noClips;
         const scissors: RectI[] = [], masks: PreparedPathCoverage[] = [];
@@ -447,56 +507,211 @@ export function createPath(host: LayerHost, audit: string): {
         return makeClips(scissors, masks);
     };
 
+    /** Path-local contours of a fill or stroke on the exact-area route, by content and band, most recently used last; or why the
+     * coverage route takes it. The flattening and both exactness checks (a simple contour, nesting of opposite signs only) run
+     * once per band: they are invariant under the item's affine, so a pan or a zoom inside the band only maps and cuts cells. A
+     * refusal is kept as well, so a refused shape is not flattened again on every frame it is composed. */
+    const areaOutlines = new Map<string, AreaOutline>();
+    let areaBytes = 0;
+    const dropArea = (key: string, old: AreaOutline): number => {
+        areaOutlines.delete(key);
+        if (!old.lease) return 0;
+        areaBytes -= old.bytes; host.allocator.cpu.release(old.lease);
+        return old.bytes;
+    };
+    const reclaimArea = (bytes: number): number => {
+        let freed = 0;
+        for (const [key, old] of areaOutlines) {
+            if (freed >= bytes) break;
+            if (old.usedFrame < frame) freed += dropArea(key, old);
+        }
+        return freed;
+    };
+    const areaContours = (item: PaintPathItem, which: 'fill' | 'stroke', band: number): AreaOutline | Refused => {
+        const style = item.material.stroke;
+        const key = which === 'fill' ? `${commandKey(item.d)}|${band}|${item.fillRule}`
+            : `${commandKey(item.d)}|${band}|${style!.width}|${style!.cap}|${style!.join}|${style!.miterLimit}|${style!.dash ? 'dash' : ''}`;
+        const full = `${which}|${key}`;
+        const cached = areaOutlines.get(full);
+        if (cached) { areaOutlines.delete(full); areaOutlines.set(full, cached); cached.usedFrame = frame; return cached; }
+        const tolerance = AREA_FLATTEN_DEVICE_PX / Math.pow(2, (band + 1) / 2);
+        let contours: Contour[] | null = null, why: string | null = null;
+        if (which === 'fill') {
+            const subpaths = flattenContours(item.d, tolerance, PATH_FILL_MAX_EDGES);
+            contours = subpaths && fillContours(subpaths);
+        } else if (style!.dash) why = 'dash';
+        else {
+            const lines = flattenPolylines(item.d, tolerance);
+            contours = lines && strokeContours(lines, { width: style!.width, cap: style!.cap, join: style!.join, miterLimit: style!.miterLimit }, tolerance);
+        }
+        if (!why && !contours) why = `${which}-outline`;
+        // The exact sum needs contours that cross and touch nothing, and nest only with opposite signs (areaNestingExact).
+        if (!why && contours!.length && !areaNestingExact(contours!)) why = 'nesting';
+        let outline: AreaOutline;
+        if (why) outline = { contours: null, why, bytes: 0, lease: null, usedFrame: frame };
+        else {
+            let bytes = 0;
+            for (const contour of contours!) bytes += contour.byteLength;
+            const lease = bytes ? leaseBytes(bytes) : null;
+            if (bytes && !lease) { auditCount(audit, 'area:geom-refused'); return { refused: bytes }; }
+            outline = { contours: contours!, why: null, bytes, lease, usedFrame: frame };
+            areaBytes += bytes;
+        }
+        areaOutlines.set(full, outline);
+        auditCount(audit, 'area:geom-build');
+        if (areaBytes > AREA_CACHE_BYTES) {
+            for (const [oldKey, old] of areaOutlines) {
+                if (areaBytes <= AREA_CACHE_BYTES) break;
+                if (old.usedFrame < frame && oldKey !== full) dropArea(oldKey, old);
+            }
+        }
+        return outline;
+    };
+    /** Cells of path-local contours under one item transform, over the device box they cover cut to the viewport (the kit's scratch
+     * is viewport-sized; cells outside it are dropped, those left of it carried per row). Per admission: this is what a new view
+     * costs on the route, a map of the contour points and one pass of the cell builder. */
+    const areaCells = (sets: readonly (readonly Contour[])[], localToWorld: Affine, view: ViewState, viewport: Viewport): AreaShape => {
+        // The contours are in path-local coordinates: the zero origin maps them through the item's full device affine.
+        const affine = deviceAffine(localToWorld, ORIGIN, view);
+        if (!affine) return { kind: 'coverage', why: 'transform' };
+        const [A, B, C, D, E, F] = affine;
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const contours of sets) for (const contour of contours) {
+            for (let i = 0; i < contour.length; i += 2) {
+                const x = contour[i], y = contour[i + 1];
+                const X = A * x + C * y + E, Y = B * x + D * y + F;
+                if (X < minX) minX = X;
+                if (X > maxX) maxX = X;
+                if (Y < minY) minY = Y;
+                if (Y > maxY) maxY = Y;
+            }
+        }
+        const x0 = Math.max(0, Math.floor(minX)), y0 = Math.max(0, Math.floor(minY));
+        const x1 = Math.min(viewport.width, Math.ceil(maxX) + 1), y1 = Math.min(viewport.height, Math.ceil(maxY) + 1);
+        if (!(x1 > x0 && y1 > y0)) return { kind: 'empty' };
+        const width = x1 - x0, height = y1 - y0;
+        const builder = createAreaCellBuilder(width, height);
+        for (const contours of sets) for (const contour of contours) {
+            const points = areaScratch(contour.length);
+            for (let i = 0; i < contour.length; i += 2) {
+                const x = contour[i], y = contour[i + 1];
+                points[i] = A * x + C * y + E - x0; points[i + 1] = B * x + D * y + F - y0;
+            }
+            builder.addContour(points.subarray(0, contour.length));
+        }
+        const cells = builder.result();
+        if (cells.count === 0) return { kind: 'empty' };
+        return { kind: 'area', spans: { cells: cells.cells, count: cells.count }, bounds: { x: x0, y: y0, width, height } };
+    };
+    /** One reused buffer for a contour's device points: the cell builder reads them during addContour only. */
+    let areaPoints = new Float64Array(256);
+    const areaScratch = (length: number): Float64Array => {
+        if (areaPoints.length < length) areaPoints = new Float64Array(Math.max(length, areaPoints.length * 2));
+        return areaPoints;
+    };
+    /** Admits cells on the area kit. Null when the kit cannot take them (no float targets: counted) and the coverage route must. */
+    const admitCells = (shape: Extract<AreaShape, { kind: 'area' }>, colour: Rgba, cover: CoverBlend, viewport: Viewport, budget: FrameBudget,
+        acquired: Acquired[]): AreaItem | Stop | null => {
+        const pending = areaKit.begin(shape.spans, shape.bounds);
+        const taken = takeArea(pending, areaKit.admit(host, pending, budget, viewport), acquired);
+        if (isStop(taken)) {
+            if (taken.status === 'unsupported') { auditCount(audit, 'area:fallback:unsupported'); return null; }
+            return taken;
+        }
+        return { prepared: taken, output: { kind: 'area', blend: cover, rgb: [colour[0], colour[1], colour[2]], alpha: colour[3] } };
+    };
+    /** The exact-area route for one fill or stroke: its cells admitted on the area kit, or null when the coverage route takes it (the
+     * reason is counted). A kit refusal stops the item as the coverage kit's does. */
+    const admitArea = (item: PaintPathItem, which: 'fill' | 'stroke', view: ViewState, viewport: Viewport, band: number, cover: CoverBlend,
+        budget: FrameBudget, acquired: Acquired[]): AreaItem | Stop | null => {
+        const outline = areaContours(item, which, band);
+        if ('refused' in outline) return { status: 'denied', pool: 'cpu', bytes: outline.refused };
+        if (!outline.contours) { auditCount(audit, `area:fallback:${outline.why}`); return null; }
+        if (!outline.contours.length) return { status: 'empty' };
+        const shape = areaCells([outline.contours], item.localToWorld, view, viewport);
+        if (shape.kind === 'coverage') { auditCount(audit, `area:fallback:${shape.why}`); return null; }
+        if (shape.kind === 'empty') return { status: 'empty' };
+        const colour = which === 'fill' ? item.material.fill! : item.material.stroke!.color;
+        const admitted = admitCells(shape, colour, cover, viewport, budget, acquired);
+        if (admitted && !isStop(admitted)) auditCount(audit, `area:exact:${which}`);
+        return admitted;
+    };
     /** One path item: its clips, fill and stroke. Whatever it acquires goes into `acquired`; the caller retires it on any stop.
-     * An item is 'empty' when nothing of it can show in this view. */
+     * An item is 'empty' when nothing of it can show in this view. A fill or stroke takes the exact-area route when its contours are
+     * exact, and the coverage route otherwise (counted). */
     const admitItem = (item: PaintPathItem, view: ViewState, viewport: Viewport, cover: CoverBlend, budget: FrameBudget,
-        acquired: PreparedPathCoverage[]): ItemAdmission => {
+        acquired: Acquired[]): ItemAdmission => {
         const clips = admitClipList(item.clips, view, viewport, budget, acquired);
         if (isStop(clips)) return clips;
-        let fill: PreparedPathCoverage | null = null;
+        let fill: PreparedPathCoverage | null = null, fillArea: AreaItem | null = null;
         if (item.material.fill) {
             const band = bandOf(item.localToWorld, view);
             if (band === null) return { status: 'unsupported', why: 'path transform' };
-            const geometry = outlineFor(`fill|${commandKey(item.d)}|${band}`, item.d, band,
-                (tolerance, origin) => pathFillTriangles(item.d, { tolerance, origin: [origin.x, origin.y] }));
-            if (isRefused(geometry)) return { status: 'denied', bytes: geometry.refused, pool: 'cpu' };
-            const affine = geometry && deviceAffine(item.localToWorld, geometry.origin, view);
-            if (!geometry || !affine) return { status: 'unsupported', why: 'path geometry' };
-            const taken = take(kit.admit({ shapes: geometry, rule: item.fillRule, affine, viewport, colour: item.material.fill,
-                output: { kind: 'composite', blend: cover } }, budget), acquired);
-            if (isStop(taken)) { if (taken.status !== 'empty') return taken; }
-            else fill = taken;
+            const area = admitArea(item, 'fill', view, viewport, band, cover, budget, acquired);
+            if (area && isStop(area)) { if (area.status !== 'empty') return area; }
+            else if (area) fillArea = area;
+            else {
+                const geometry = outlineFor(`fill|${commandKey(item.d)}|${band}`, item.d, band,
+                    (tolerance, origin) => pathFillTriangles(item.d, { tolerance, origin: [origin.x, origin.y] }));
+                if (isRefused(geometry)) return { status: 'denied', bytes: geometry.refused, pool: 'cpu' };
+                const affine = geometry && deviceAffine(item.localToWorld, geometry.origin, view);
+                if (!geometry || !affine) return { status: 'unsupported', why: 'path geometry' };
+                const taken = take(kit.admit({ shapes: geometry, rule: item.fillRule, affine, viewport, colour: item.material.fill,
+                    output: { kind: 'composite', blend: cover } }, budget), acquired);
+                if (isStop(taken)) { if (taken.status !== 'empty') return taken; }
+                else fill = taken;
+            }
         }
-        let stroke: PreparedPathCoverage | null = null;
+        let stroke: PreparedPathCoverage | null = null, strokeArea: AreaItem | null = null;
         const style = item.material.stroke;
         if (style && style.width > 0) {
             const band = bandOf(item.localToWorld, view);
             if (band === null) return { status: 'unsupported', why: 'path transform' };
-            const dash = style.dash ? `${style.dash.phase}:${style.dash.array.join(',')}` : '';
-            const key = `stroke|${commandKey(item.d)}|${band}|${style.width}|${style.cap}|${style.join}|${style.miterLimit}|${dash}`;
-            const geometry = outlineFor(key, item.d, band, (tolerance, origin) => {
-                const outline = pathStrokeTriangles(item.d, { width: style.width, cap: style.cap, join: style.join, miterLimit: style.miterLimit,
-                    ...(style.dash ? { dash: style.dash } : {}), tolerance, origin: [origin.x, origin.y] });
-                return outline && { positive: outline.triangles, negative: NO_TRIANGLES, edges: 0, bounds: outline.bounds };
-            });
-            if (isRefused(geometry)) return { status: 'denied', bytes: geometry.refused, pool: 'cpu' };
-            const affine = geometry && deviceAffine(item.localToWorld, geometry.origin, view);
-            if (!geometry || !affine) return { status: 'unsupported', why: 'stroke geometry' };
-            const taken = take(kit.admit({ shapes: geometry, rule: 'union', affine, viewport, colour: style.color,
-                output: { kind: 'composite', blend: cover } }, budget), acquired);
-            if (isStop(taken)) { if (taken.status !== 'empty') return taken; }
-            else stroke = taken;
+            const area = admitArea(item, 'stroke', view, viewport, band, cover, budget, acquired);
+            if (area && isStop(area)) { if (area.status !== 'empty') return area; }
+            else if (area) strokeArea = area;
+            else {
+                const dash = style.dash ? `${style.dash.phase}:${style.dash.array.join(',')}` : '';
+                const key = `stroke|${commandKey(item.d)}|${band}|${style.width}|${style.cap}|${style.join}|${style.miterLimit}|${dash}`;
+                const geometry = outlineFor(key, item.d, band, (tolerance, origin) => {
+                    const outline = pathStrokeTriangles(item.d, { width: style.width, cap: style.cap, join: style.join, miterLimit: style.miterLimit,
+                        ...(style.dash ? { dash: style.dash } : {}), tolerance, origin: [origin.x, origin.y] });
+                    return outline && { positive: outline.triangles, negative: NO_TRIANGLES, edges: 0, bounds: outline.bounds };
+                });
+                if (isRefused(geometry)) return { status: 'denied', bytes: geometry.refused, pool: 'cpu' };
+                const affine = geometry && deviceAffine(item.localToWorld, geometry.origin, view);
+                if (!geometry || !affine) return { status: 'unsupported', why: 'stroke geometry' };
+                const taken = take(kit.admit({ shapes: geometry, rule: 'union', affine, viewport, colour: style.color,
+                    output: { kind: 'composite', blend: cover } }, budget), acquired);
+                if (isStop(taken)) { if (taken.status !== 'empty') return taken; }
+                else stroke = taken;
+            }
         }
-        if (!fill && !stroke) return { status: 'empty' };
-        return { status: 'ready', value: { clips, fill, stroke } };
+        if (!fill && !stroke && !fillArea && !strokeArea) return { status: 'empty' };
+        return { status: 'ready', value: { clips, fill, stroke, fillArea, strokeArea } };
     };
 
     // One closure for every item: the pass and item of the draw in progress are held here, so a draw builds no closure.
     let drawPass: GpuPass | null = null, drawingItem: PreparedPathItem | null = null;
+    /** The frame whose area draw a uniform-ring refusal cost (-1: none). An area draw refused like a coverage draw: skipped, counted,
+     * the next frame requested, and the frame reported incomplete through drawRefusedThisFrame. */
+    let areaRefusedFrame = -1;
+    /** One exact-area draw. Only the out-of-budget refusal is caught here; anything else propagates. */
+    const drawArea = (pass: GpuPass, area: AreaItem): void => {
+        try { areaKit.draw(host, pass, area.prepared, area.output); }
+        catch (error) {
+            if (!(error instanceof ArenaError) || error.code !== 'out-of-budget') throw error;
+            areaRefusedFrame = frame;
+            auditCount(audit, 'area:draw-refused');
+            host.invalidate('path-coverage-refused');
+        }
+    };
     const drawInside = (): void => {
         const pass = drawPass!, item = drawingItem!;
         if (item.fill) kit.draw(pass, item.fill);
+        if (item.fillArea) drawArea(pass, item.fillArea);
         if (item.stroke) kit.draw(pass, item.stroke);
+        if (item.strokeArea) drawArea(pass, item.strokeArea);
     };
     const drawItem = (pass: GpuPass, item: PreparedPathItem): void => {
         drawPass = pass; drawingItem = item;
@@ -507,24 +722,24 @@ export function createPath(host: LayerHost, audit: string): {
     const route: ItemRoute<PaintPathItem> & { drawRefusedThisFrame(): boolean } = {
         id: 'path',
         // The kit caught a uniform-ring refusal at one of this frame's draws: the frame's coverage is incomplete there (gpu-h4's kit).
-        drawRefusedThisFrame: (): boolean => kit.drawRefusedThisFrame(),
+        drawRefusedThisFrame: (): boolean => kit.drawRefusedThisFrame() || areaRefusedFrame === frame,
         accepts: (item): item is PaintPathItem => item.kind === 'path',
         admit(items, view, blend, budget): Admission<PreparedRun> {
             const cover: CoverBlend = blend === 'modulate' ? 'modulate' : 'normal';
             const viewport = viewportOf(view);
-            const acquired: PreparedPathCoverage[] = [], prepared: PreparedPathItem[] = [];
+            const acquired: Acquired[] = [], prepared: PreparedPathItem[] = [];
             // Consecutive items that can share a coverage pass wait in `group` (with their device boxes); the first item that cannot
             // join ends the group, so the draw order of every item is kept.
             const group: PaintPathItem[] = [], boxes: DeviceBox[] = [];
             const stopWith = (stop: Stop): Admission<PreparedRun> => {
-                for (const held of acquired) kit.retire(held);
+                for (const held of acquired) retireAcquired(held);
                 return stopAdmission(stop);
             };
             /** Places one admission: a ready item is prepared, an empty one is skipped and what it acquired retired, any other
              * stop is returned for the caller to end the run with. */
             const place = (admission: ItemAdmission, mark: number): Stop | null => {
                 if (admission.status === 'ready') { prepared.push(admission.value); return null; }
-                for (let i = acquired.length - 1; i >= mark; i--) kit.retire(acquired[i]);
+                for (let i = acquired.length - 1; i >= mark; i--) retireAcquired(acquired[i]);
                 acquired.length = mark;
                 return admission.status === 'empty' ? null : admission;
             };
@@ -574,25 +789,29 @@ export function createPath(host: LayerHost, audit: string): {
                 item.clips.retire();
                 if (item.fill) kit.retire(item.fill);
                 if (item.stroke) kit.retire(item.stroke);
+                if (item.fillArea) areaKit.retire(item.fillArea.prepared);
+                if (item.strokeArea) areaKit.retire(item.strokeArea.prepared);
             }
         },
         release(): void {
             // The cache lets go first, so the kit's releases return every lease (a lease is kept while the cache holds its array).
             outlines.clear(); cachedArrays.clear(); outlineBytes = 0;
+            for (const [key, old] of [...areaOutlines]) dropArea(key, old);
             kit.release();
+            areaKit.release();
             for (const array of [...leases.keys()]) releaseLease(array);
         },
         memory(): { gpuBytes: number; cpuBytes: number } {
             // The kit's packs are CPU leases of its own (a group's packed triangles): they are the route's bytes too.
             const kitMemory = kit.memory();
-            return { gpuBytes: kitMemory.gpuBytes, cpuBytes: leasedBytes + kitMemory.cpuBytes };
+            return { gpuBytes: kitMemory.gpuBytes + areaKit.memory().gpuBytes, cpuBytes: leasedBytes + kitMemory.cpuBytes };
         },
     };
     const admitClips: AdmitClips = (clips, view, budget) => {
-        const acquired: PreparedPathCoverage[] = [];
+        const acquired: Acquired[] = [];
         const result = admitClipList(clips, view, viewportOf(view), budget, acquired);
         if (isStop(result)) {
-            for (const held of acquired) kit.retire(held);
+            for (const held of acquired) retireAcquired(held);
             return stopAdmission(result);
         }
         return { status: 'ready', value: result };
@@ -605,7 +824,7 @@ export function createPath(host: LayerHost, audit: string): {
         route, admitClips, coverage: { ...kit, beginFrame: beginFrameBoth },
         beginFrame: beginFrameBoth,
         /** The governor's CPU reclaim for the outline cache: frees unused outlines oldest first and returns the bytes freed. */
-        evictCpu(bytes: number): number { return reclaimLeases(bytes); },
+        evictCpu(bytes: number): number { const freed = reclaimLeases(bytes); return freed < bytes ? freed + reclaimArea(bytes - freed) : freed; },
     };
 }
 

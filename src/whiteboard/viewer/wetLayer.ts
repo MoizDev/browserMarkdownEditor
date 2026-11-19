@@ -506,7 +506,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
     const runsPending = (): boolean => {
         const drawn = options.boardDrawnInk();
         for (const snapshot of handover?.pendingSnapshots() ?? []) {
-            if (drawn.has(snapshot.identity.nodeId)) continue;
+            if (snapshot.dry && drawn.has(snapshot.identity.nodeId)) continue;
             const gesture = snapshot.identity.gestureSequence, source = sourceOf(snapshot);
             if (!source) continue;
             for (const band of BANDS) {
@@ -525,7 +525,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         const viewKey = viewKeyOf(view), drawn = options.boardDrawnInk();
         let sharp = true;
         for (const snapshot of handover?.pendingSnapshots() ?? []) {
-            if (drawn.has(snapshot.identity.nodeId)) continue;
+            if (snapshot.dry && drawn.has(snapshot.identity.nodeId)) continue;
             const gesture = snapshot.identity.gestureSequence, source = sourceOf(snapshot);
             if (!source) continue;
             for (const band of BANDS) {
@@ -544,11 +544,13 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         if (disposed || !options.current() || !inkRoutes || !owner) return;
         const host = owner;
         let drawn = 0;
+        // A stroke hands over to the board only once it is committed (it has a dry identity): a frame can hold an earlier revision of
+        // the node an in-progress stroke continues, and skipping on it would drop the stroke being drawn.
         const boardDrawn = options.boardDrawnInk();
         drawCall.pass = pass; drawCall.view = view; drawCall.host = host;
         try {
             for (const snapshot of handover?.pendingSnapshots() ?? []) {
-                if (boardDrawn.has(snapshot.identity.nodeId)) { if (renderAuditEnabled()) auditCount('wet', 'skip:board-drawn'); continue; }
+                if (snapshot.dry && boardDrawn.has(snapshot.identity.nodeId)) { if (renderAuditEnabled()) auditCount('wet', 'skip:board-drawn'); continue; }
                 const gesture = snapshot.identity.gestureSequence, source = sourceOf(snapshot);
                 if (!source || offScreen(source.bounds, source.snapshot.presentation.localToWorld, view)) continue;
                 const shown = runs.get(runKey(gesture, band))?.shown;
@@ -655,7 +657,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
     };
     const fingerprintOf = (view: ViewState): string => {
         const drawn = options.boardDrawnInk(), parts: string[] = [viewKeyOf(view), options.current() ? 'c' : 'x', disposed ? 'd' : 'l'];
-        for (const snapshot of handover?.pendingSnapshots() ?? []) parts.push(`s${snapshot.identity.gestureSequence}:${drawn.has(snapshot.identity.nodeId) ? 1 : 0}`);
+        for (const snapshot of handover?.pendingSnapshots() ?? []) parts.push(`s${snapshot.identity.gestureSequence}:${snapshot.dry && drawn.has(snapshot.identity.nodeId) ? 1 : 0}`);
         for (const [key, slot] of runs) {
             parts.push(`${key}:${slot.state}:${slot.serial}:${slot.scale}:${slot.viewBound ? slot.viewKey : '-'}:${slot.token.viewLease}:${slot.token.deviceGeneration}:${shownIdOf(slot.shown)}`);
         }
@@ -760,7 +762,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                     const snapshots = handover?.pendingSnapshots() ?? [];
                     host.paintWorld(ctx, view, () => {
                         for (const snapshot of snapshots) {
-                            if (boardDrawn.has(snapshot.identity.nodeId)) continue;
+                            if (snapshot.dry && boardDrawn.has(snapshot.identity.nodeId)) continue;
                             const item = sourceOf(snapshot);
                             if (!item) continue;
                             if (offScreen(item.bounds, snapshot.presentation.localToWorld, view)) continue;
@@ -846,7 +848,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
             if (offScreen(source.bounds, snapshot.presentation.localToWorld, view)) return true;
             const isHighlight = snapshot.presentation.tool === 'highlighter';
             if (band === 'underlay' && !isHighlight) return true;
-            if (options.boardDrawnInk().has(nodeId)) return false;
+            if (snapshot.dry && options.boardDrawnInk().has(nodeId)) return false;
             if (!canvas) return !!runs.get(runKey(snapshot.identity.gestureSequence, band))?.shown;
             return !!resolveSwatch(options.palette(), snapshot.presentation.color as Swatch, isHighlight ? 'highlight' : 'stroke');
         },

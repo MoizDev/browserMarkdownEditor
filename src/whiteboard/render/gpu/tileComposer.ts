@@ -1697,6 +1697,10 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         scissor.x = draw.cx; scissor.y = draw.cy; scissor.width = draw.cw; scissor.height = draw.ch;
                         const clip = pass.pushClip(scissor);
                         drawnLive[draw.band].add(draw.node);
+                        // Ink laid live is drawn ink: the wet layer hands a stroke over on this report in the same frame. Reported for tiles
+                        // only, a committed stroke laid live at pen-up (its positions still composing) was drawn by both for one frame:
+                        // measured, every anti-aliased edge of the stroke 2,168 px darker for one frame, then back.
+                        if (draw.liveRoute?.id === 'ink-analytic' || draw.liveRoute?.id === 'ink-union') drawnInk.add(draw.node);
                         // The pop is in finally: a throw inside the draw must not leave the scope open (the encoder then refuses the frame).
                         try { draw.liveRoute?.draw(pass, draw.live); }
                         catch (error) {

@@ -251,18 +251,22 @@ class NotebookPaperLayer implements Layer {
         this.gpuPaper = null; this.claim = null;
         this.host.invalidate('notebook-paper-ready');
     }
-    // Reports changed (true) on every path: the paper's own staging and source steps can change what it draws, and the
-    // composer's prepare reports nothing, so no path can prove the picture unchanged yet. Forwarding the composer's answer
-    // (false, once it proves one) needs those steps to prove idle too.
+    // Changed when the paper's ready template, its GPU source or its composer's picture moved this frame. It answered changed on
+    // every frame, so a frame whose picture was the last one could never be skipped: on the notebook 61 of 123 draw-phase presents
+    // and 49 of 97 saturated were the same pixels as the one before (canvas2d 6 and 1; the drawing 11). canvas2d keeps answering
+    // changed: its paper is drawn by draw2d, which proves nothing about its picture.
     prepare(view: ViewState, budget: FrameBudget): boolean {
+        const readyBefore = this.ready;
         // One page step is always admitted: under a zero slice the staging never advances, and needsFrame keeps asking.
         this.preparePaper(withFirstUnit(budget));
         if (this.disposed || !this.host.device()) return true;
+        const sourceBefore = this.gpuPrepared;
+        let changed = true;
         try {
             this.prepareGpuSource(view, budget.token);
-            this.gpu.prepare(view, budget);
-        } catch (error) { this.report(error); }
-        return true;
+            changed = this.gpu.prepare(view, budget);
+        } catch (error) { this.report(error); return true; }
+        return changed || this.ready !== readyBefore || this.gpuPrepared !== sourceBefore;
     }
     private prepareGpuSource(view: ViewState, token: FrameToken): void {
         const ready = this.ready;

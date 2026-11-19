@@ -998,7 +998,21 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     // The live nodes each band's canvas2d draw painted in its last draw. The GPU composer reports its own drawn live nodes; a canvas2d
     // overlay has no composer, so without this it reports none, the base never omits its node, and the edited text draws twice (measured:
     // canvas2d edit glyphs carry twice their alpha; the GPU edit matches its rest). An overlay's node is drawn when the frame holds it.
+    const inkLessCache = new WeakMap<ReadonlySet<string>, { omit: ReadonlySet<string>; ink: ReadonlySet<string> }>();
+    /** A frame's ink less a drag's omitted nodes, cached by both sets (a drag draws the same pair every frame). */
+    const inkLess = (ink: ReadonlySet<string>, omit: ReadonlySet<string>): ReadonlySet<string> => {
+        const known = inkLessCache.get(ink);
+        if (known?.omit === omit) return known.ink;
+        const kept = new Set<string>();
+        for (const id of ink) if (!omit.has(id)) kept.add(id);
+        inkLessCache.set(ink, { omit, ink: kept });
+        return kept;
+    };
     const drawn2d: Record<PaintBand, ReadonlySet<string>> = { underlay: NO_INK, content: NO_INK };
+    // The ink nodes each band's canvas2d draw painted in its last draw (its frame's ink, less what a drag omits). The wet layer draws
+    // after the board in each band, so this is the current frame's report when it hands over. Without it canvas2d handed over only on the
+    // next present, and the pen-up frame drew the stroke twice (wet and committed; measured: 2,215 px of edge darker for one frame).
+    const drawnInk2d: Record<PaintBand, ReadonlySet<string>> = { underlay: NO_INK, content: NO_INK };
     const liveDrawn = (frame: PaintSource): ReadonlySet<string> => {
         const live = options.liveNodes, held = frame.sensitiveNodes;
         if (!live?.size || !held?.size) return NO_INK;
@@ -1058,7 +1072,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     if (typeof encoder?.encodeOffscreen === 'function') encoder.encodeOffscreen(passes, view, band);
                 },
                 draw2d(ctx, view) {
-                    drawn2d[band] = NO_INK;
+                    drawn2d[band] = NO_INK; drawnInk2d[band] = NO_INK;
                     // A 2D picture replaces the last GPU draw on screen: the next GPU frame is not known to match it.
                     lastDrawn = null;
                     const frame = adapter?.readyFrame();
@@ -1070,6 +1084,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     const actualView = copyView(view);
                     adapter!.draw2d(ctx, shift ? shiftedView(view, shift) : view, band, omit ?? undefined);
                     drawn2d[band] = liveDrawn(frame);
+                    // Only the source's current frame: an older one can hold an earlier revision of a node the wet layer is still drawing.
+                    drawnInk2d[band] = !options.frames.isCurrent(frame) ? NO_INK : omit?.size ? inkLess(ink, omit) : ink;
                     // Borrowed right after the draw read its snapshot, before anything else can move the adapter on.
                     const hold = captureDraw(frame, omit);
                     const context = Object.freeze({ view: actualView, frameId: prepareFrameId,
@@ -1155,7 +1171,14 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     });
     const pair = [definition('underlay'), definition('content')] as unknown as BoardLayerPair;
     pair.invalidate = (reason = 'board-content') => { for (const host of hosts.values()) host.invalidate(reason); };
-    pair.drawnInkNodeIds = () => (gpu as DrawnInkReporter | null)?.drawnInkNodeIds?.() ?? NO_INK;
+    pair.drawnInkNodeIds = () => {
+        const device = (gpu as DrawnInkReporter | null)?.drawnInkNodeIds?.() ?? NO_INK;
+        const sets = [device, drawnInk2d.underlay, drawnInk2d.content].filter(set => set.size);
+        if (sets.length <= 1) return sets[0] ?? NO_INK;
+        // Both bands of one canvas2d frame hold the same ink set: no union is built for it.
+        if (sets.length === 2 && sets[0] === sets[1]) return sets[0];
+        return new Set(sets.flatMap(set => [...set]));
+    };
     pair.drawnLiveNodeIds = () => {
         const reporter = gpu as DrawnLiveReporter | null;
         const under = reporter?.drawnLiveNodeIds?.('underlay') ?? NO_INK, content = reporter?.drawnLiveNodeIds?.('content') ?? NO_INK;

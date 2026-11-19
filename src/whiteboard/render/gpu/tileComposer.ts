@@ -273,6 +273,12 @@ const LIVE_OVERLAY_MAX_PARTS = 256;
 const ZOOM_DIRECT_MAX_PARTS = 512;
 /** The most tiles a rest margin composes beyond the visible span, each side (one viewport, bounded). */
 const RING_MAX_TILES = 8;
+/** The tiles each side of the view the ring holds: one while zooming, at rest a viewport each side (bounded). The compose pass and the
+ * still-wanted test use the same margin: the test kept one tile, so every ring position past it was cancelled each frame and begun
+ * again (measured, dark notebook at 332%, DPR 2: 64 positions cancelled, begun and refused per frame at rest, 60 frames a second). */
+function ringMargin(span: Span, zooming: boolean): number {
+    return zooming ? 1 : Math.min(RING_MAX_TILES, Math.max(1, span.x1 - span.x0, span.y1 - span.y0));
+}
 /** A live part: a video picture, whose image key carries the video prefix. It is never composed into a tile: it is drawn each
  * frame through the image route, between the slices its paint order falls between. */
 function isLivePart(item: PaintItem): boolean {
@@ -933,7 +939,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             // While zooming only the visible positions are composed: the ring is the next view's, and the zoom's compose is its cost.
             if (pass === 'ring' && (zoomingFrame || only === 'foreground')) continue;
             // At rest the ring is a viewport each side (bounded): a pan reveals composed tiles, not stand-ins (gpu's ruling).
-            const margin = pass === 'ring' ? (zoomingFrame ? 1 : Math.min(RING_MAX_TILES, Math.max(1, span.x1 - span.x0, span.y1 - span.y0))) : 0;
+            const margin = pass === 'ring' ? ringMargin(span, zoomingFrame) : 0;
             for (const band of BANDS) {
                 for (let y = span.y0 - margin; y < span.y1 + margin; y++) {
                     for (let x = span.x0 - margin; x < span.x1 + margin; x++) {
@@ -1577,7 +1583,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 // A position admitted against the old content or omission would be encoded stale (it is not in the store
                 // yet, so markDirty cannot reach it): every position in progress restarts when either changes.
                 const span = spanAt(view, target);
-                const ring: Span = { x0: span.x0 - 1, y0: span.y0 - 1, x1: span.x1 + 1, y1: span.y1 + 1 };
+                const margin = ringMargin(span, zooming);
+                const ring: Span = { x0: span.x0 - margin, y0: span.y0 - margin, x1: span.x1 + margin, y1: span.y1 + margin };
                 staleScratch.length = 0;
                 for (const position of building.values()) if (invalidated || !stillWanted(position, target, ring)) staleScratch.push(position);
                 for (const position of staleScratch) { cancel(position); building.delete(position.key); }
@@ -1705,6 +1712,10 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         scissor.x = draw.cx; scissor.y = draw.cy; scissor.width = draw.cw; scissor.height = draw.ch;
                         const clip = pass.pushClip(scissor);
                         drawnLive[draw.band].add(draw.node);
+                        // Ink laid live is drawn ink: the wet layer hands a stroke over on this report in the same frame. Reported for tiles
+                        // only, a committed stroke laid live at pen-up (its positions still composing) was drawn by both for one frame:
+                        // measured, every anti-aliased edge of the stroke 2,168 px darker for one frame, then back.
+                        if (draw.liveRoute?.id === 'ink-analytic' || draw.liveRoute?.id === 'ink-union') drawnInk.add(draw.node);
                         // The pop is in finally: a throw inside the draw must not leave the scope open (the encoder then refuses the frame).
                         try { draw.liveRoute?.draw(pass, draw.live); }
                         catch (error) {

@@ -23,6 +23,12 @@ Shared rules (layers, frames, the governor) are in `rendering-platform`. This fi
   the draw never takes an omit set.
 - Routes: `routePath` (clips admitted through its coverage kit), `routeInk` (analytic and union), `routeImage`, `routeText`
   (with text masks), and `cpu`. A run no GPU route takes is counted `fallback:item-cpu:<kind>:<why>`.
+- `routePath` draws a fill or stroke by EXACT AREA (`areaCoverage.ts`, cells from `areaOutlines.ts`) when its outline is exact
+  (simple contours, nesting only with opposite signs; groups of separated opaque fills as one area), else by the 4x MSAA
+  coverage kit, counted `area:fallback:<why>` (dash, non-simple outline, nesting). The bar for shapes and ink is the exact
+  coverage of the item's own geometry, not canvas2d (which is the inexact one: measured 44-96 levels off on diagonals).
+- Fidelity evidence: with `bme.renderAudit=1`, `__bmeRenderAudit.scenes()` gives each board's last presented items and pane
+  matrix (`sceneAudit.ts`): the fidelity kit rasterises the exact coverage of those items and scores the shot against it.
 - A change marks the positions under its bounds dirty (`tileParts.ts` parts index). A dirty position is recomposed into the
   target it already has.
 - Coverage (`coverage(view)`): a position is `ok`, `dirty` or `missing`. A position with any picture (its tile, a dirty one, a
@@ -37,6 +43,11 @@ Shared rules (layers, frames, the governor) are in `rendering-platform`. This fi
 - Text route (`ZoomRoute.setZoom`): while zooming, a missing exact mask is drawn from its cached stand-in, never rastered. A run
   that drew one is marked `exact: false`, and its tile recomposes exact once the camera rests.
 - At rest, a position encoded exact supersedes its stand-ins at other scales (`dropScalesExcept`).
+- The rest ring (a viewport each side, one tile while zooming; `ringMargin`) is prefetch: its targets are reserved first with
+  `reserve(bytes, { prefetch: true })`, admitted only if they fit as the pool and grant stand, never reclaiming or freeing own tiles.
+  Two composers' rings that reclaimed each other's undrawn tiles recomposed them every frame at rest. Keep the still-wanted test on the
+  same margin, or ring positions are cancelled and begun again each frame.
+- The notebook paper's revision is its own (paper properties, page count), never `doc.rev`: a stroke must not re-stage the paper.
 - A position the governor refuses is composed one level down (half the scale), which covers four positions; a second refusal
   waits. At rest a refused position first frees its own composer tiles and is admitted in the same frame (`freeOwn`).
 

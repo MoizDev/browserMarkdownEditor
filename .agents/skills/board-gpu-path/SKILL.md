@@ -43,6 +43,11 @@ Shared rules (layers, frames, the governor) are in `rendering-platform`. This fi
 - Text route (`ZoomRoute.setZoom`): while zooming, a missing exact mask is drawn from its cached stand-in, never rastered. A run
   that drew one is marked `exact: false`, and its tile recomposes exact once the camera rests.
 - At rest, a position encoded exact supersedes its stand-ins at other scales (`dropScalesExcept`).
+- The rest ring (a viewport each side, one tile while zooming; `ringMargin`) is prefetch: its targets are reserved first with
+  `reserve(bytes, { prefetch: true })`, admitted only if they fit as the pool and grant stand, never reclaiming or freeing own tiles.
+  Two composers' rings that reclaimed each other's undrawn tiles recomposed them every frame at rest. Keep the still-wanted test on the
+  same margin, or ring positions are cancelled and begun again each frame.
+- The notebook paper's revision is its own (paper properties, page count), never `doc.rev`: a stroke must not re-stage the paper.
 - A position the governor refuses is composed one level down (half the scale), which covers four positions; a second refusal
   waits. At rest a refused position first frees its own composer tiles and is admitted in the same frame (`freeOwn`).
 

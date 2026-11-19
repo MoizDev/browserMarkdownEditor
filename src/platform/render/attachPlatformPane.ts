@@ -637,6 +637,11 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                             sharp: last.sharp, staleVersion: last.staleVersion, viewEpoch: frame.view.epoch, revision: last.revision });
                         return true;
                     },
+                    // Only the GPU compositor has offscreen passes; a 2D or bridge frame has none.
+                    encodeOffscreen: (frame: ScheduledFrame) => {
+                        const drawing = drawCompositor();
+                        return drawing && drawing !== compositor ? drawing.encodeOffscreen?.(frame) ?? null : null;
+                    },
                     writeOverlays: options.writeOverlays,
                     ...(__BME_BENCH__ ? { benchmarkMemory: () => {
                         const memory = runtime.governor.readout();

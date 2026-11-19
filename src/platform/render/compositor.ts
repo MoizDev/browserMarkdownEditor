@@ -351,6 +351,19 @@ export class GpuCompositor implements PaneCompositor {
         }
     }
 
+    /** See PaneCompositor.encodeOffscreen: the refused frame's offscreen-only encode, for a frame the scheduler skips as unchanged. Off-screen
+     * tile work used to run only inside a presented frame, so finishing a ring tile presented the unchanged picture again (measured: 52 of
+     * 134 zoom presents pixel-identical to the one before). */
+    encodeOffscreen(frame: ScheduledFrame): ScheduledEncoding | null {
+        this.#check();
+        const prepared = this.#prepared;
+        const snapshot = this.#snapshot;
+        if (!prepared || !snapshot || !snapshot.metrics || prepared.snapshot !== snapshot || snapshot.view !== frame.view ||
+            prepared.frameId !== frame.frameId || this.#isolationReadyFrame !== frame.frameId || !sameToken(prepared.token, frame.token) ||
+            !this.#drawable(snapshot, frame)) return null;
+        return this.#encodeRefused(snapshot, frame);
+    }
+
     encode(frame: ScheduledFrame): ScheduledEncoding | null {
         this.#check();
         const prepared = this.#prepared;

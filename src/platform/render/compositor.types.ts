@@ -219,6 +219,9 @@ export interface PaneCompositor {
     /** Admit declared peak inventory after all Layer.prepare calls, under the SAME budget/deadline. */
     finishPrepareFrame?(frame: ScheduledFrame, budget: FrameBudget): void;
     encode(frame: ScheduledFrame, changed: boolean): ScheduledEncoding | null;
+    /** The layers' offscreen passes of a frame whose picture is unchanged, with no surface pass: nothing is presented. Null when no
+     * layer has offscreen work or the frame cannot be encoded. Absent on a backend with no offscreen work (canvas2d). */
+    encodeOffscreen?(frame: ScheduledFrame): ScheduledEncoding | null;
     coverage(frame: ScheduledFrame): CompositorCoverage;
     page(view: ViewState, index: number): CompositorPage | null;
     paneTransform(view: ViewState, frameId: number): Affine | null;

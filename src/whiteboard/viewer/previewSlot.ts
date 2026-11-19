@@ -67,6 +67,8 @@ export function createPreviewSlot(id: string, base: PlatformLayerDefinition): Pr
             const answer = inner.prepare(...args);
             return swapped ? undefined : answer;
         }
+        // A cleared slot draws nothing: nothing it shows moves with the camera.
+        idle(): boolean { return this.innerEpoch === epoch && this.inner === null; }
         drawGpu(...args: Parameters<Layer['drawGpu']>) { this.sync()?.drawGpu(...args); }
         // Without this the compositor skips the preview's offscreen tiles entirely: nothing it composes is ever drawn.
         encodeOffscreen(...args: Parameters<NonNullable<Layer['encodeOffscreen']>>) { this.sync()?.encodeOffscreen?.(...args); }

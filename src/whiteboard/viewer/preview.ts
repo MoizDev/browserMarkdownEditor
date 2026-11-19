@@ -15,6 +15,7 @@ import type { FaceTable, TextPaint } from '../text/paint';
 import type { PaintImageProvider } from '../render/resources';
 import type { ScenePaintRequest, SceneSnapshot } from '../scene/types';
 import type { ViewerEngine } from './types';
+import { auditTape, renderAuditEnabled } from '../../platform/render/renderAudit';
 
 export interface BoardPreviewOptions {
     readonly engine: ViewerEngine;
@@ -245,12 +246,17 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
             // Keyed on the layers' wrapper the lookup missed on every drag of an ink node (measured: 84 of 84 calls).
             const frame = assemblerFrameOf(layers.readyFrame());
             const ids = frame && frameIds.get(frame);
+            if (renderAuditEnabled() && !(frame && ids && assembler.isCurrent(frame))) {
+                auditTape(`preview-coverage:none:${!frame ? 'no-frame' : !ids ? 'no-ids' : 'not-current'}${commitRevision !== null ? ':committed' : ''}`);
+            }
             if (frame && ids && assembler.isCurrent(frame)) {
                 if (frameGenerations.get(frame) === generation) settle();
                 // The base omits a node only from the frame after the overlay drew it: the overlay declares just the nodes it drew.
                 const drawn = layers.drawnLiveNodeIds(), declared = new Set<string>();
                 for (const id of ids) if (drawn.has(id)) declared.add(id);
-                return declared.size ? { frame, nodeIds: declared } : null;
+                // Committed, the overlay is frozen: what it drew is the commit's content, reported at the commit revision.
+                if (!declared.size && renderAuditEnabled()) auditTape(`preview-coverage:none:undrawn${commitRevision !== null ? ':committed' : ''}`);
+                return declared.size ? { frame, nodeIds: declared, ...(commitRevision !== null ? { committed: commitRevision } : {}) } : null;
             }
             return null;
         });

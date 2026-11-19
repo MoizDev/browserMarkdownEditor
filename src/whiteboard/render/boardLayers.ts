@@ -154,6 +154,10 @@ function omittedOf(omit: ReadonlySet<string> | null): OmittedSnapshot | null {
     if (!snapshot) { snapshot = new OmittedSnapshot(omit); omittedSnapshots.set(omit, snapshot); }
     return snapshot;
 }
+function sameCameraView(a: ViewState, b: ViewState): boolean {
+    return a.camera.x === b.camera.x && a.camera.y === b.camera.y && a.camera.z === b.camera.z
+        && a.viewport.width === b.viewport.width && a.viewport.height === b.viewport.height && a.viewport.dpr === b.viewport.dpr;
+}
 function sameView(a: ViewState | null | undefined, b: ViewState): boolean {
     return !!a && a.epoch === b.epoch && a.camera.x === b.camera.x && a.camera.y === b.camera.y && a.camera.z === b.camera.z
         && a.viewport.width === b.viewport.width && a.viewport.height === b.viewport.height && a.viewport.dpr === b.viewport.dpr;
@@ -180,6 +184,15 @@ function sameOmission(a: ReadonlySet<string> | null, b: ReadonlySet<string> | nu
     if (!a || !b || a.size !== b.size) return false;
     for (const id of a) if (!b.has(id)) return false;
     return true;
+}
+/** The same live nodes, by members: each paint frame brings its own (equal) set, and an identity compare named every new frame a
+ * changed picture (measured: 31 of 31 redundant presents at rest on LARGE=11, unchanged-miss:live). Absent and empty are the same. */
+function sameLive(a: ReadonlySet<string> | undefined, b: ReadonlySet<string> | undefined): boolean {
+    if (a === b) return true;
+    let count = 0;
+    if (a) for (const id of a) { if (!b?.has(id)) return false; count++; }
+    if (b) for (const _id of b) if (--count < 0) return false;
+    return count === 0;
 }
 function addBytes(state: Estimate, bytes: number): void {
     const next = state.bytes + bytes;
@@ -324,12 +337,13 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     let ackFrame: PaintSource | null = null, ackOmit: ReadonlySet<string> | null = null, ackInk: ReadonlySet<string> | null = null, ackMask = 0;
     let ackToken: RenderToken | null = null, ackContext: ViewerPaintPresentation | null = null;
     let presentedContext: ViewerPaintPresentation | null = null;
-    // What the last presented frame drew beyond its context: the live set and the draw version (both read at draw time).
-    let presentedLive: ReadonlySet<string> | undefined, presentedDrawVersion = -1;
-    // The adapter's content version at the moment each draw context was drawn (gpu-h2's contentKey). 'Unchanged' compares it with the
-    // presented picture's, never the frame object: a new frame with the same content is the same picture.
-    const contentOfContext = new WeakMap<object, number>();
-    let presentedContent: number | undefined;
+    // 'Unchanged' compares the adapter's content version (gpu-h2's contentKey) at the last draw, never the frame object: a new frame
+    // with the same content is the same picture.
+    // The last GPU draw's inputs, recorded at the draw: what is on screen once its frame submits. The unchanged answer compares with
+    // it, not with the acknowledged picture, which arrives only when the GPU completes the frame: while a frame was in flight the next
+    // identical one compared with the older picture and presented again (measured: 12 of 12 remaining redundant zoom presents on
+    // LARGE=11, present-kept:ack). A draw whose frame does not submit keeps the scheduler's full-repaint mark, so the next frame presents.
+    let lastDrawn: { context: ViewerPaintPresentation; content: number; live: ReadonlySet<string> | undefined; drawVersion: number } | null = null;
     // The layer's answer for the frame it prepared: true only when every input to the draw matches the presented frame.
     let prepareUnchanged = false;
     // The source whose reference paths the device route built last: a camera-only frame of it builds nothing.
@@ -551,7 +565,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     // The presented picture lives on a device or tile set that is being released; forget it and every input its unchanged answer
     // compares, so the next prepare answers changed until a new picture is presented.
     const forgetPresented = (): void => {
-        presented = null; presentedOmit = null; presentedInk = null; presentedContext = null; presentedLive = undefined; presentedDrawVersion = -1;
+        presented = null; presentedOmit = null; presentedInk = null; presentedContext = null;
+        lastDrawn = null;
         refreshProgress();
     };
     const clearResources = (reason: GpuReleaseReason) => {
@@ -656,22 +671,23 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     // The draw inputs that a change would alter without a composer change (a drag's offset or draw version, the live set) and the
     // presented frame's view, omission and frame. Any difference, or no presented frame, is changed.
     const unchangedSincePresented = (view: ViewState, budget: FrameBudget, frame: PaintSource): boolean => {
-        const context = presentedContext, host = activeHost();
+        const drawn = lastDrawn, context = drawn?.context ?? null, host = activeHost();
         // gh14 audit: the first input that differs from the presented frame names why the layer answered changed.
         const miss = (why: string): false => { if (renderAuditEnabled()) auditCount(options.auditSurface ?? 'board', `unchanged-miss:${why}`); return false; };
         if (!context || !host) return miss(!context ? 'no-context' : 'no-host');
         // The picture is compared by content: the adapter's version at the presented draw against its version now. A new frame object
         // with the same content is the same picture, so the frame's identity and scene revision are not compared.
-        if (presentedContent === undefined || !gpu || presentedContent !== gpu.contentKey()) return miss('content');
+        if (!drawn || !gpu || drawn.content !== gpu.contentKey()) return miss('content');
         if (!options.frames.isCurrent(frame)) return miss('not-current');
         if (frame.theme !== options.requestedTheme()) return miss('theme');
-        if (!sameView(context.view, view)) return miss('view');
+        // The camera and viewport, not the epoch: the board draws the same picture whatever the moving flag says.
+        if (!sameCameraView(context.view, view)) return miss('view');
         if (!sameTransform(context.paneTransform, host.paneTransform(view, budget.frameId))) return miss('transform');
         if (!sameOmission(context.omittedNodeIds, omittedOf(options.omitNodes?.(frame) ?? null))) return miss('omission');
         const offset = options.drawOffset?.(frame);
         if (offset && (offset.x !== 0 || offset.y !== 0)) return miss('offset');
-        if ((options.drawVersion?.() ?? 0) !== presentedDrawVersion) return miss('draw-version');
-        if (liveFor(frame) !== presentedLive) return miss('live');
+        if ((options.drawVersion?.() ?? 0) !== drawn.drawVersion) return miss('draw-version');
+        if (!sameLive(liveFor(frame), drawn.live)) return miss('live');
         return true;
     };
     // gh14 audit: every silent path that answers changed names itself, so a redundant present is traced to its branch.
@@ -887,7 +903,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             options.frames.presented(frame);
             acceptHolds([...(drawTokens.get(token)?.values() ?? [])].map(drawn => drawn.hold));
             const previous = presented; presented = frame; presentedOmit = omit; presentedInk = ink; presentedContext = context;
-            presentedLive = liveFor(frame); presentedDrawVersion = options.drawVersion?.() ?? 0; presentedContent = contentOfContext.get(context);
+
             // A completed presentation is the only event that clears a real error.
             lastError = null; refreshProgress();
             ackFrame = null; ackOmit = null; ackInk = null; ackMask = 0; ackToken = null; ackContext = null; drawTokens.delete(token);
@@ -1037,7 +1053,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                         paneTransform: host.paneTransform(actualView, prepareFrameId),
                         token: Object.freeze({ ...prepareToken }), omittedNodeIds: omittedOf(omit),
                         retain: () => options.frames.retain(frame), retainImages: () => leaseOf(hold) });
-                    contentOfContext.set(context, content);
+                    lastDrawn = { context, content, live: liveFor(frame), drawVersion: options.drawVersion?.() ?? 0 };
                     recordDraw(band, { frame, omit, ink, context, hold });
                 },
                 evictGpu(bytes, frameId) {
@@ -1057,6 +1073,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 },
                 draw2d(ctx, view) {
                     drawn2d[band] = NO_INK; drawnInk2d[band] = NO_INK;
+                    // A 2D picture replaces the last GPU draw on screen: the next GPU frame is not known to match it.
+                    lastDrawn = null;
                     const frame = adapter?.readyFrame();
                     if (!frame || !drawable(frame)) return;
                     const omit = options.omitNodes?.(frame) ?? null;

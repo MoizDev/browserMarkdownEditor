@@ -267,7 +267,8 @@ interface PaneEntry {
     binding: FrameToken | null;
     damage: DamageAccumulator;
     fullDamage: boolean;
-    presented: { token: FrameToken; epoch: number; geometry: number } | null;
+    /** The last presented frame's token, view and geometry: a later frame that changes none of them repaints only if a layer says so. */
+    presented: { token: FrameToken; view: ViewState; geometry: number } | null;
     /** The last frame that detached this pane; the layer-driven pass skips a pane already taken by the reason-driven pass. */
     lastFrame: number;
     /** Last scene revisions and their tag string, so an unchanged pane reuses its string (see revisionKey). */
@@ -304,6 +305,8 @@ interface FrameWork { entry: PaneEntry; frame: ScheduledFrame; batch: DamageBatc
     cause: string }
 /** Audit only: the camera each layer last prepared with, so a prepare that skips a camera change is visible in the counters. */
 const lastPreparedCamera = new WeakMap<Layer, { x: number; y: number; z: number }>();
+const sameCamera = (a: ViewState, b: ViewState): boolean => a.camera.x === b.camera.x && a.camera.y === b.camera.y && a.camera.z === b.camera.z
+    && a.viewport.width === b.viewport.width && a.viewport.height === b.viewport.height && a.viewport.dpr === b.viewport.dpr;
 const cameraMoved = (layer: Layer, view: ViewState): boolean => {
     const last = lastPreparedCamera.get(layer);
     return !last || last.x !== view.camera.x || last.y !== view.camera.y || last.z !== view.camera.z;
@@ -633,11 +636,6 @@ export class FrameScheduler {
         return this.running && !this.suspended && this.live(entry) && !this.demoted.has(entry) && sameToken(token, entry.pane.currentToken());
     }
 
-    /** True when this frame cannot change the picture, whatever invalidated it: every layer of the pane ran its preparation to
-     * completion and none reported a visible change (prepare returned false), no upload was granted, and the frame needs no
-     * repaint (a full damage, a new token, camera or geometry since the last presented picture). A pane with a pending
-     * acknowledgement presents, because its submission is awaited. A layer that was passed over, or returns nothing, is a
-     * change: nothing was proved about it. The reason does not matter when nothing drawn changed. */
     /** A layer not prepared this frame (the window was exhausted, or the frame's share ran out) settles unchanged only when it
      * has no pending work: its scene revision has not moved since it last prepared, it does not ask for a frame, and its last
      * answer was unchanged. Any other passed-over layer is a change, so the frame presents. */
@@ -661,10 +659,15 @@ export class FrameScheduler {
         });
     }
 
+    /** True when this frame cannot change the picture, whatever invalidated it: every layer of the pane ran its preparation to
+     * completion and none reported a visible change (prepare returned false), and the frame needs no repaint (explicit full damage,
+     * a new token, camera, viewport or geometry since the last presented picture). A layer that was passed over, or returns nothing,
+     * is a change: nothing was proved about it. The reason does not matter when nothing drawn changed.
+     * A pending acknowledgement does not make a frame present: it is delivered by its own poll each frame (deliverAcknowledgements),
+     * and a skipped frame adds none and supersedes none. Presenting for it drew the same picture again while the GPU finished the
+     * last one (measured: 14 of 15 remaining redundant zoom presents on LARGE=11, present-kept:ack with no layer changed). */
     private unchangedPicture(item: FrameWork): boolean {
-        if (item.drawnChange || item.settled !== item.frame.layers.length || item.repaint) return false;
-        for (const ack of this.acknowledgements) if (ack.entry === item.entry) return false;
-        return true;
+        return !item.drawnChange && item.settled === item.frame.layers.length && !item.repaint;
     }
 
     /** The pane handled its own error (a GPU failure): it stays registered and its work for this frame is skipped. A pane
@@ -855,14 +858,17 @@ export class FrameScheduler {
                     // The skip needs only a real repaint: a new token, a camera or geometry change, or explicit full damage from a
                     // damage record. An invalidation with no damage record also sets the batch's full flag, but nothing it reports
                     // requires a present if every layer answers unchanged, so that flag draws in full and does not force a present.
-                    const moved = !previous || !sameToken(token, previous.token) || previous.epoch !== view.epoch || previous.geometry !== geometry;
+                    // The camera and viewport, not the view epoch: the epoch also moves when the moving flag flips at a gesture's start and
+                    // end with the camera where it was, and every such frame repainted the same picture (measured: 2 redundant presents per
+                    // stroke or drag, repaint:epoch). A layer whose picture depends on the flag (the PDF's motion tiles) answers changed itself.
+                    const moved = !previous || !sameToken(token, previous.token) || !sameCamera(previous.view, view) || previous.geometry !== geometry;
                     batch.pending = batch.damage.freeze();
                     const explicitFull = batch.pending?.full === true;
                     if (batch.full || revision.length > 4096 || moved || !batch.damage.freeze()) batch.damage.markFull(tags);
                     else batch.damage.mark({ x: 0, y: 0, width: 0, height: 0 }, tags);
                     const repaint = moved || explicitFull;
                     if (repaint && renderAuditEnabled()) {
-                        auditTape(`repaint:${!previous ? 'first' : !sameToken(token, previous.token) ? 'token' : previous.epoch !== view.epoch ? 'epoch'
+                        auditTape(`repaint:${!previous ? 'first' : !sameToken(token, previous.token) ? 'token' : !sameCamera(previous.view, view) ? 'camera'
                             : previous.geometry !== geometry ? 'geometry' : 'full-damage'}`);
                     }
                     if (renderAuditEnabled()) auditTape(`cause:${cause}`);
@@ -989,7 +995,7 @@ export class FrameScheduler {
                     if (this.unchangedPicture(item) && item.entry.pane.presentUnchanged(item.frame)) {
                         if (renderAuditEnabled()) auditCount('pane', 'present-skipped:unchanged');
                         item.batch.skipped = true;
-                        item.entry.presented = { token: item.frame.token, epoch: item.frame.view.epoch, geometry: item.geometry };
+                        item.entry.presented = { token: item.frame.token, view: item.frame.view, geometry: item.geometry };
                         item.entry.pane.writeOverlays(item.frame);
                         // Its layers' offscreen work (tiles composed off the view) is encoded without presenting: no surface pass.
                         const offscreen = item.entry.pane.encodeOffscreen?.(item.frame) ?? null;
@@ -1054,7 +1060,7 @@ export class FrameScheduler {
                         // cause hides the invalidations behind it while the pane is interacting.
                         for (const reason of item.work.frame.reasons) auditCount('pane', 'present-reason:' + reason);
                     }
-                    item.work.entry.presented = { token: item.work.frame.token, epoch: item.work.frame.view.epoch, geometry: item.work.geometry };
+                    item.work.entry.presented = { token: item.work.frame.token, view: item.work.frame.view, geometry: item.work.geometry };
                     const drawn = Object.freeze(submission.drawn.filter(revision => revision.layer.onFramePresented !== undefined)
                         .map(revision => Object.freeze({ layer: revision.layer, sceneRevision: revision.sceneRevision })));
                     // Preserve a class-backed completion predicate's receiver; object spread would drop
@@ -1221,7 +1227,8 @@ export class FrameScheduler {
                     meter.admittedBytes += bytes;
                     if (!critical) item.entry.optionalBytes -= bytes;
                     upload.remainingBytes = availableBytes();
-                    item.drawnChange = true;
+                    // An upload is not a visible change by itself: the layer that made it says whether the picture changed (an off-screen
+                    // ring tile's upload presented the same picture, measured: 6 of 17 redundant zoom presents on LARGE=11).
                     return true;
                 },
             };

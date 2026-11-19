@@ -11,7 +11,7 @@ import { createNativeEmbedPresentationProducer, type NativeEmbedPresentationProd
 import { boardPageStack } from '../model/pages';
 import { createBoardLayers, BOARD_BACKEND_PREFERENCE, createDrawnPagesReader, opaqueWorldOf } from '../render/boardLayers';
 import { chooseTileScale } from '../render/tileHierarchy';
-import { auditCount, auditGauge } from '../../platform/render/renderAudit';
+import { auditCount, auditGauge, auditTape, renderAuditEnabled } from '../../platform/render/renderAudit';
 import { RENDER_CONSTANTS } from '../../platform/render/constants';
 import type { DensityMode } from '../render/density';
 import { createPaintFrameAssembler } from '../render/frameAssembler';
@@ -90,7 +90,7 @@ export const attachView: AttachView = options => {
     };
     let interactionLayers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null = null;
     let previewLayers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null = null;
-    let previewCoverage: (() => Readonly<{ frame: PaintSource; nodeIds: ReadonlySet<string> }> | null) | null = null;
+    let previewCoverage: (() => Readonly<{ frame: PaintSource; nodeIds: ReadonlySet<string>; committed?: number }> | null) | null = null;
     let clearPreview: (() => void) | null = null;
     /** 'paint': the paint progress moved (see onPaintProgress); anything else is a change to the view's state. */
     const listeners = new Set<(change?: ViewChange) => void>();
@@ -143,7 +143,18 @@ export const attachView: AttachView = options => {
     const previewOmission = (dry: PaintSource): ReadonlySet<string> | null => {
         if (!previewLayers || !view.visible || disposed) return null;
         const preview = previewCoverage?.();
-        if (!preview || preview.frame.sceneRevision !== dry.sceneRevision || dry.sceneRevision !== options.session.doc.rev) return null;
+        // Audit only: why the base omits nothing while a preview is shown (a release frame's stale picture is traced to it).
+        const none = (why: string): null => { if (renderAuditEnabled()) auditTape(`preview-omit:none:${why}`); return null; };
+        if (!preview) return none('no-coverage');
+        // A committed overlay keeps its nodes until the base has presented the commit revision, and the base omits them until then,
+        // from its older paint frame and from the commit's: the picture is the base without them and the overlay with them. Omitting
+        // nothing at the commit drew the moved node at its old place and its new one for the frames the base's commit frame took,
+        // then twice at the new place (measured: 2 stand-in presents per release, coverage-not:revision).
+        if (preview.committed !== undefined && options.session.doc.rev === preview.committed) {
+            if (dry.sceneRevision !== preview.frame.sceneRevision && dry.sceneRevision !== preview.committed) return none('committed-dry');
+        } else if (preview.frame.sceneRevision !== dry.sceneRevision || dry.sceneRevision !== options.session.doc.rev) {
+            return none(preview.committed !== undefined ? `armed-rev:${options.session.doc.rev - preview.committed}` : 'revision');
+        }
         const a = preview.frame.token, b = dry.token;
         return a.vaultEpoch === b.vaultEpoch && a.documentId === b.documentId && a.bytesGeneration === b.bytesGeneration
             && a.session === b.session ? preview.nodeIds : null;
@@ -174,7 +185,14 @@ export const attachView: AttachView = options => {
         if (paper) pageLayers.push(paper);
         return opaqueWorldOf(host, view.inverted, drawnPages(pageLayers));
     };
+    // What a committed overlay drew, at the commit revision: the base's older picture omits those nodes and is current for them.
+    const overlayDrawn = () => {
+        const preview = previewLayers && view.visible && !disposed ? previewCoverage?.() : null;
+        return preview?.committed !== undefined && options.session.doc.rev === preview.committed
+            ? { sceneRevision: preview.committed, nodes: preview.nodeIds } : null;
+    };
     const layers = createBoardLayers({ frames, images, onError: report, requestedRevision: () => options.session.doc.rev, requestedTheme: () => view.theme, omitNodes: omitPreview,
+        overlayDrawn,
         changedNodesSince: (from, to) => runtime.scene?.changedNodesSince(from, to) ?? null,
         opaqueWorld,
         // The live zoom's geometry pins (the composer holds the visible strokes at the band it draws and the band before it).

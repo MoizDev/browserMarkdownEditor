@@ -1270,11 +1270,19 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         const span = spanAt(view, target);
         const clipAt = (x: number, y: number): Rect | null => clipOnSurface(view, target, x, y);
         for (const band of BANDS) {
-            let complete = true;
+            // `complete`: every visible position draws its exact tile this frame, a position composed this frame (finished, encoded
+            // before the draw) included. Counting those as missing drew stand-ins over positions that had their exact tiles, and the
+            // next frame swapped them in with the same pixels (measured: one redundant present every second zoom step on LARGE=11).
+            // The other scales are dropped only once no position depends on this frame's encode.
+            let complete = true, held = true;
             for (let y = span.y0; y < span.y1 && complete; y++) {
-                for (let x = span.x0; x < span.x1 && complete; x++) if (statusAt(band, target, x, y) === 'missing') complete = false;
+                for (let x = span.x0; x < span.x1 && complete; x++) {
+                    if (statusAt(band, target, x, y) !== 'missing') continue;
+                    held = false;
+                    if (!finishedAt(band, target, x, y)) complete = false;
+                }
             }
-            if (!zooming && complete && store.dropScalesExcept(target, band) > 0) editEvent(EDIT_SCALES);
+            if (!zooming && complete && held && store.dropScalesExcept(target, band) > 0) editEvent(EDIT_SCALES);
             for (let y = span.y0; y < span.y1; y++) {
                 for (let x = span.x0; x < span.x1; x++) {
                     const status = statusAt(band, target, x, y);
@@ -1861,7 +1869,9 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             return { gpuBytes, cpuBytes };
         },
         release(_reason: GpuReleaseReason): void { releaseAll(); },
-        noteEvicted(): void { evictEpoch++; contentVersion++; },
+        // The epoch alone: an evicted entry that was drawn leaves the next draw list (listUsable fails until it is rebuilt), so the
+        // signature moves; one that was not drawn changes nothing on screen (measured: 9 of 17 redundant zoom presents on LARGE=11).
+        noteEvicted(): void { evictEpoch++; },
         contentKey(): number { return hashMix(drawSignature, contentVersion); },
         listInvalid(view: ViewState): boolean { return drawCount > 0 && !listUsable(view); },
         dispose(): void {

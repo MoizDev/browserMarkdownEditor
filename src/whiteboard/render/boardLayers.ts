@@ -11,6 +11,7 @@ import type { FrameBudget, FrameToken, GpuReleaseReason, Layer, OffscreenPasses,
 import type { PaintFrameAssembler } from './frameTypes';
 import type { PaintBand } from './material';
 import { inkCoverageChunks, type PaintItem, type PaintSource } from './paintStream';
+import { presentedScene } from './sceneAudit';
 import { paintItemsOf } from './paintWindows';
 import type { PaintImageProvider } from './resources';
 import { createCanvasPaintAdapter, type CanvasPaintAdapter, type PreparedRetain } from './reference/canvasPaintAdapter';
@@ -304,6 +305,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     /** Segment count at which a direct cache was refused; null while direct drawing fits. */
     let deniedDirectSegments: number | null = null;
     let estimate: Estimate | null = null, denied = false, disposed = false, lastPrepareFrame: number | null = null;
+    // The presented scene for the fidelity kit's exact reference (audit only; sceneAudit.ts).
+    const sceneAudit = presentedScene(`${options.auditSurface ?? 'board'}${options.liveOverlay ? ':live' : ''}`);
     // One back-off for every refused reservation of this layer pair; the dense plan and the direct estimate both consult it.
     const memoryGate = new MemoryRetryGate();
     // One sized waiter for the layer pair's refused CPU reservations: a refusal registers it once, until it fires.
@@ -891,6 +894,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             if (previous && previous !== frame && !retainedByDense().has(previous)) {
                 options.frames.retire(previous); releaseFrame(previous); known.delete(previous);
             }
+            sceneAudit.update(frame, context.view, context.paneTransform);
             options.onPresented?.(revision, token, presentedFrame(inkFrame(frame, ink), context.omittedNodeIds), context);
         } catch (error) { report(error); }
     };
@@ -1074,7 +1078,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     if (allocatorHost === host) { clearResources('pressure'); allocatorHost = null; }
                     hosts.delete(band);
                     if (!hosts.size) {
-                        disposed = true; discardHolds(); gpu?.dispose(); gpu = null; adapter?.dispose(); adapter = null;
+                        disposed = true; sceneAudit.dispose(); discardHolds(); gpu?.dispose(); gpu = null; adapter?.dispose(); adapter = null;
                         deferredClear = true; collectRetired(); presented = null; refreshProgress();
                     } else if (!allocatorHost) {
                         // A route change: the surviving band's adapter replaces the released one, so the old presented picture goes too.

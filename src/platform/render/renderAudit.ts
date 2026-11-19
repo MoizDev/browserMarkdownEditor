@@ -172,6 +172,23 @@ export function auditGauges(): Record<string, number> {
     return values;
 }
 
+/** Named scene reads, audit only: a surface registers how to describe what it last presented (the board: its paint items and the
+ * view they were drawn at), and the fidelity kit reads it at a screenshot to rasterise the exact reference of the same geometry
+ * (FAULT-GPU.md, the truth yardstick). Read lazily: nothing is serialised unless the kit asks. Same replacement rule as gauges. */
+const scenes = new Map<string, () => unknown>();
+export function auditScene(name: string, read: () => unknown): () => void {
+    if (!enabled) return () => {};
+    scenes.set(name, read);
+    return () => { if (scenes.get(name) === read) scenes.delete(name); };
+}
+export function auditScenes(): Record<string, unknown> {
+    const values: Record<string, unknown> = {};
+    for (const [name, read] of scenes) {
+        try { values[name] = read(); } catch (error) { values[name] = { error: String(error) }; }
+    }
+    return values;
+}
+
 /** The first GPU error of each pane, audit only: what failed (its code and message), the arguments its throw site named as
  * failing validation (ArenaError.detail), and the top of its stack. Read with __bmeRenderAudit.gpuErrors(); never read by the device. */
 export interface GpuErrorRecord { readonly pane: string | null; readonly where: string; readonly code: string; readonly message: string;
@@ -215,5 +232,5 @@ export function auditReset(): void {
 }
 
 if (enabled && typeof window !== 'undefined') {
-    (window as unknown as { __bmeRenderAudit?: unknown }).__bmeRenderAudit = { snapshot: auditSnapshot, reset: auditReset, presents: auditPresents, gauges: auditGauges, gpuErrors: auditGpuErrors, arenaErrors: auditArenaErrors };
+    (window as unknown as { __bmeRenderAudit?: unknown }).__bmeRenderAudit = { snapshot: auditSnapshot, reset: auditReset, presents: auditPresents, gauges: auditGauges, scenes: auditScenes, gpuErrors: auditGpuErrors, arenaErrors: auditArenaErrors };
 }

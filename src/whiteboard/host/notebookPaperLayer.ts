@@ -383,7 +383,7 @@ class NotebookPaperLayer implements Layer {
     coverage(frame: ScheduledFrame, layer: Layer, backend: CompositorBackend): LayerCoverage {
         const result = this.coverageNow(frame, layer, backend);
         // What the paper draws besides the current picture, for the present audit: pages drawn before are stand-ins; none drawn is a hole.
-        if (!result.complete || !result.sharp) auditDrawn(!result.complete && !this.drawnOnce ? 'hole' : 'stand-in');
+        if (!result.complete || !result.sharp) auditDrawn(!result.complete && !this.drawnOnce ? 'hole' : 'stand-in', 1, 'geometry', !result.complete ? 'paper-incomplete' : 'paper-unsharp');
         return result;
     }
     private coverageNow(frame: ScheduledFrame, layer: Layer, backend: CompositorBackend): LayerCoverage {

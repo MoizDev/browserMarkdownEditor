@@ -48,6 +48,7 @@ export function auditCount(surface: string, event: string, amount = 1, extra?: R
     if (!enabled) return;
     const key = `${surface}:${event}`;
     counters.set(key, (counters.get(key) ?? 0) + amount);
+    if (TAPE_KEYS.test(event)) tape.add(key);
     if (extra) for (const name in extra) {
         const sub = `${key}:${name}`;
         counters.set(sub, (counters.get(sub) ?? 0) + extra[name]);
@@ -92,11 +93,15 @@ export interface PresentInfo {
     readonly exact: boolean;
     /** Why the frame was refused instead of presented; null for a presented frame. */
     readonly refusal: string | null;
+    /** The frame's tape: the decision counters (why each layer answered changed, which coverage check failed, who drew a stand-in)
+     * counted since the scheduler started this frame. Phase counters cannot attribute a redundant present or a stand-in to its frame:
+     * measured, 41 of 123 zoom presents redundant with every layer's reason summed over the phase (gpu-h2, gpu-h13). */
+    readonly why: readonly string[];
 }
 
 /** What a compositor passes to auditPresent. It states the layers' own verdict; auditPresent derives `exact` and `complete`
  * from the counts, so no caller can report a frame complete while it drew a stand-in or a hole. */
-export interface PresentInput extends Omit<PresentInfo, 'complete' | 'exact'> {
+export interface PresentInput extends Omit<PresentInfo, 'complete' | 'exact' | 'why'> {
     readonly layersComplete: boolean;
 }
 
@@ -109,11 +114,20 @@ const PRESENT_CAPACITY = 1024;
 const presentRing: (PresentRecord | undefined)[] = new Array(PRESENT_CAPACITY);
 let presentTotal = 0;
 let drawn: DrawnTally = { standIns: 0, standInsRaster: 0, holes: 0 };
+/** The decision events that enter a frame's tape (see PresentInfo.why); per-item and per-draw counters stay out of it. */
+const TAPE_KEYS = /unchanged-miss|prepare:changed|prepare-changed|answer-miss|coverage-not|standin|incomplete|present-kept|present-skipped|^present:|^pan:|zoom:direct|refuse|held|^live:|passed-over|inflight:wait|claim-refused|repaint:|camera-unchanged|fallback:/;
+let tape = new Set<string>();
+
+/** The scheduler starts each frame's tape before any pane prepares; every present of the frame carries what was taped since. */
+export function auditTapeStart(): void { if (enabled) tape = new Set(); }
+/** Adds a decision to the frame's tape without counting it. */
+export function auditTape(entry: string): void { if (enabled) tape.add(entry); }
 
 /** A layer reports, while it draws a frame, the stand-ins it drew and the positions it left with nothing. `origin` tells a
  * geometry stand-in (the default) from a raster stand-in; the layer classifies, the platform only counts. */
-export function auditDrawn(kind: 'stand-in' | 'hole', count = 1, origin: 'geometry' | 'raster' = 'geometry'): void {
+export function auditDrawn(kind: 'stand-in' | 'hole', count = 1, origin: 'geometry' | 'raster' = 'geometry', who = 'unnamed'): void {
     if (!enabled || !(count > 0)) return;
+    tape.add(`drawn:${kind}:${origin}:${who}`);
     if (kind === 'hole') drawn.holes += count;
     else if (origin === 'raster') drawn.standInsRaster += count;
     else drawn.standIns += count;
@@ -137,7 +151,7 @@ export function auditPresent(input: PresentInput): void {
     const complete = input.layersComplete && input.holes === 0 && input.standIns === 0 && (input.standInsRaster === 0 || input.zooming);
     const record: PresentRecord = { pane: input.pane, frame: input.frame, rawTick: input.rawTick, backend: input.backend,
         complete, standIns: input.standIns, standInsRaster: input.standInsRaster, holes: input.holes,
-        zooming: input.zooming, exact, refusal: input.refusal };
+        zooming: input.zooming, exact, refusal: input.refusal, why: [...tape] };
     presentRing[presentTotal % PRESENT_CAPACITY] = record;
     presentTotal++;
     (globalThis as unknown as { __bmePresentHook?: (info: PresentInfo) => void }).__bmePresentHook?.({ ...record, canvas: input.canvas });

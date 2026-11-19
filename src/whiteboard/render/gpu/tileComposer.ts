@@ -147,6 +147,8 @@ interface Span { readonly x0: number; readonly y0: number; readonly x1: number; 
 /** One tile to lay this frame. Pooled: a steady frame rewrites its fields and allocates nothing. */
 interface Draw {
     band: PaintBand; texture: TextureHandle | null; mode: Mode;
+    /** The drawn entry's compose generation (entryGen): a tile recomposed into the texture it already had draws new pixels. */
+    gen: number;
     /** The tile's interior, in world units. */
     x: number; y: number; w: number; h: number;
     /** A stand-in is clipped to the position it covers; device pixels. */
@@ -424,17 +426,20 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     let disposed = false, presenting = false, indexing = false;
     // This frame's zoom, set in prepare: while zooming, coverage does not hold the frame for a position with nothing (see coverage).
     let zoomingFrame = false, panned = false;
-    // Visible edits: counted wherever the composer changes what it draws or holds for drawing (a position composed, cancelled or
-    // dropped, a store slot freed for it, an invalidation). prepare reports whether any happened since its last call, together with
-    // a signature of the draw list it laid, so a frame that draws what the last one drew is reported unchanged.
-    let visibleEdits = 0;
-    // The kinds of edit this prepare made (one bit each), so a 'changed' answer names its reason as audit counters.
+    // The kinds of store edit this prepare made (one bit each: a position composed, cancelled or dropped, a slot freed, an
+    // invalidation), so a 'changed' answer names its reasons as audit counters. The answer itself is the draw signature (see prepare).
     let editBits = 0;
     const EDIT_SUPERSEDED = 1, EDIT_EMPTY = 2, EDIT_CANCEL = 4, EDIT_FREE = 8, EDIT_DONE = 16, EDIT_SCALES = 32, EDIT_INVALID = 64;
-    // The content version moves on every change that can alter what the composite draws: an edit, an eviction the adapter made, a
-    // live part drawn (its pixels change), a resource change, an index in progress. contentKey() reads it with the draw signature.
+    // The content version moves on every change to what the composite draws that the draw signature cannot see: an eviction the adapter
+    // made, a live part drawn (its pixels change), an index in progress. contentKey() reads it with the draw signature, which holds each
+    // drawn entry's compose generation, so a store edit changes the key only where it changes a drawn tile. Counting every edit here
+    // (a ring position composed, a build cancelled, an unused scale dropped) presented the unchanged picture again: measured, 26 of 52
+    // redundant zoom presents named only such edits, and a new paint frame's resources object 31 of 31 at rest.
     let contentVersion = 0;
-    const editEvent = (bit: number): void => { visibleEdits++; editBits |= bit; contentVersion++; };
+    const editEvent = (bit: number): void => { editBits |= bit; };
+    // Each entry's compose generation, moved when its position is composed (the pixels its texture will hold): see Draw.gen.
+    const entryGen = new WeakMap<TileEntry, number>();
+    let genCounter = 0;
     let drawSignature = 0;
     // The visible span at the compose scale while zooming, null otherwise: the positions a superseded entry must be exact under to be dropped.
     let zoomSpan: Span | null = null;
@@ -470,7 +475,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     // Two-phase frames (budget.phase): the foreground call of frame `foregroundFrame` leaves its target, span, zoom and edit count for the
     // background call of the same frame. `frameComposed` counts this frame's composes across both calls, so the limit stays per frame.
     let foregroundFrame = -1;
-    let fTarget = 0, fZooming = false, fEditsBefore = 0;
+    let fTarget = 0, fZooming = false;
     let fSpan: Span = { x0: 0, y0: 0, x1: 0, y1: 0 };
     let frameComposed = 0;
     // The frame each tile entry was last encoded (its content's frame), read against heldNodes.
@@ -865,6 +870,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             }
             if (outcome === 'done') {
                 editEvent(EDIT_DONE);
+                for (const slice of position.slices) if (slice.entry) entryGen.set(slice.entry, ++genCounter);
                 auditCount(audit, `compose:done:${pass}`);
                 building.delete(key);
                 finished.push(position);
@@ -1002,11 +1008,11 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         const world = tileWorld(entry.key);
         let draw = draws[drawCount];
         if (!draw) {
-            draw = { band, texture: target.texture, mode: slot.mode, x: 0, y: 0, w: 0, h: 0, clipOn: false, cx: 0, cy: 0, cw: 0, ch: 0, ink: NO_IDS, live: null, liveRoute: null, node: '' };
+            draw = { band, texture: target.texture, mode: slot.mode, gen: 0, x: 0, y: 0, w: 0, h: 0, clipOn: false, cx: 0, cy: 0, cw: 0, ch: 0, ink: NO_IDS, live: null, liveRoute: null, node: '' };
             draws.push(draw);
         }
         drawCount++;
-        draw.band = band; draw.texture = target.texture; draw.mode = slot.mode;
+        draw.band = band; draw.texture = target.texture; draw.mode = slot.mode; draw.gen = entryGen.get(entry) ?? 0;
         draw.x = world.x; draw.y = world.y; draw.w = world.width; draw.h = world.height;
         draw.clipOn = clip !== null;
         draw.ink = slot.inkNodes;
@@ -1184,11 +1190,11 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     const addLiveDraw = (band: PaintBand, run: PreparedRun, route: ItemRoute, clip: Rect, nodeId: string): void => {
         let draw = draws[drawCount];
         if (!draw) {
-            draw = { band, texture: null, mode: 'over', x: 0, y: 0, w: 0, h: 0, clipOn: true, cx: 0, cy: 0, cw: 0, ch: 0, ink: NO_IDS, live: null, liveRoute: null, node: '' };
+            draw = { band, texture: null, mode: 'over', gen: 0, x: 0, y: 0, w: 0, h: 0, clipOn: true, cx: 0, cy: 0, cw: 0, ch: 0, ink: NO_IDS, live: null, liveRoute: null, node: '' };
             draws.push(draw);
         }
         drawCount++;
-        draw.band = band; draw.texture = null; draw.mode = 'over'; draw.clipOn = true;
+        draw.band = band; draw.texture = null; draw.mode = 'over'; draw.gen = 0; draw.clipOn = true;
         draw.cx = clip.x; draw.cy = clip.y; draw.cw = clip.width; draw.ch = clip.height;
         draw.ink = NO_IDS; draw.live = run; draw.liveRoute = route; draw.node = nodeId;
         plannedLive[band].add(nodeId);
@@ -1342,9 +1348,9 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     // is geometry when any stand-in holds geometry, which a zoom must draw exact (the audit counts it apart).
                     if (standScratch.length) {
                         const geometry = standScratch.some(item => item.slot.geometry);
-                        auditDrawn('stand-in', 1, geometry ? 'geometry' : 'raster');
+                        auditDrawn('stand-in', 1, geometry ? 'geometry' : 'raster', `${audit}-tile-${band}-${status}${zooming ? '-zoom' : panned ? '-pan' : ''}`);
                         if (zooming) auditCount(audit, geometry ? 'zoom:draw:standin:geometry' : 'zoom:draw:standin:raster');
-                    } else auditDrawn('hole');
+                    } else auditDrawn('hole', 1, 'geometry', `${audit}-tile-${band}-${status}`);
                     auditCount(audit, 'tile:standin');
                 }
             }
@@ -1450,9 +1456,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             // background call without its foreground; one that finds none answers true.
             const background = budget.phase === 'background';
             if (background && foregroundFrame !== budget.frameId) return true;
-            let target = fTarget, zooming = fZooming, editsBefore = fEditsBefore, frameSpan = fSpan;
+            let target = fTarget, zooming = fZooming, frameSpan = fSpan;
             if (!background) {
-            editsBefore = visibleEdits;
             editBits = 0;
             frame = budget.frameId;
             frameComposed = 0;
@@ -1480,9 +1485,9 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             presenting = true;
             preparedSharp = prepared.sharp !== false;
             if (prepared !== paintScanned) { paintScanned = prepared; paintHasLive = windowsHaveLive(prepared); paintLiveOnly = liveOnlyPaint(prepared); }
+            // A new resources object changes no tile already composed; a live draw that reads it moves contentVersion itself.
             if (prepared.resources !== resourcesSeen) {
                 resourcesSeen = prepared.resources;
-                contentVersion++;
                 for (const route of routeList) (route as ItemRoute & ResourcedRoute).useResources?.(prepared.resources);
             }
             // The scale moves only with the camera's zoom: a pan or a drag keeps the tiles' scale and their pixels.
@@ -1605,7 +1610,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 finished = [];
             }
             frameSpan = spanAt(view, target);
-            fTarget = target; fZooming = zooming; fEditsBefore = editsBefore; fSpan = frameSpan;
+            fTarget = target; fZooming = zooming; fSpan = frameSpan;
             if (budget.phase === 'foreground') { foregroundFrame = budget.frameId; return false; }
             }
             // The background call (or the single-phase call) finishes the frame: the rest of the composes, the pending regions and held
@@ -1632,13 +1637,16 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 signature = hashMix(signature, Math.round(draw.w * 64)); signature = hashMix(signature, Math.round(draw.h * 64));
                 signature = hashMix(signature, draw.clipOn ? Math.round(draw.cx) * 4 + Math.round(draw.cy) * 8 + Math.round(draw.cw) * 16 + Math.round(draw.ch) * 32 : 0);
                 signature = hashMix(signature, idOfObject(draw.texture));
+                signature = hashMix(signature, draw.gen);
                 signature = hashMix(signature, draw.live ? 1 + idOfObject(draw.liveRoute) : 0);
                 if (draw.live) contentVersion++;
                 if (draw.ink.length) signature = hashMix(signature, hashText(draw.ink.join('\u0001')));
             }
             const sigChanged = signature !== drawSignature;
             if (indexing) contentVersion++;
-            const changed = indexing || visibleEdits !== editsBefore || sigChanged;
+            // An edit the draw list does not show (a ring position composed, a cancelled build, a dropped scale) is not a visible change:
+            // the signature holds every drawn entry's generation. Its offscreen encode runs in a frame that does not present.
+            const changed = indexing || sigChanged;
             drawSignature = signature;
             // Why it answered changed, as audit counters (gh14): a prepare names every condition that held.
             if (changed && renderAuditEnabled()) {

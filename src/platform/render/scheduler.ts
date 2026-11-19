@@ -1,4 +1,4 @@
-import { auditCount, auditFrame, renderAuditEnabled } from './renderAudit';
+import { auditCount, auditFrame, auditTape, auditTapeStart, renderAuditEnabled } from './renderAudit';
 import type { Viewport, ViewState } from '../types';
 import { cameraAtAnchor, surfaceToWorld } from './camera';
 import type { CameraAnchor, CameraController, Point } from './camera';
@@ -88,6 +88,8 @@ export interface ScheduledPane {
      * one it would draw. Returns true when the pane reported that presentation (the same observers and report a present gives);
      * false when the picture cannot be vouched for (token, revision, camera, geometry or backend moved), and the frame is encoded. */
     presentUnchanged(frame: ScheduledFrame): boolean;
+    /** The offscreen work of a frame presentUnchanged accepted (see PaneCompositor.encodeOffscreen); null when there is none. */
+    encodeOffscreen?(frame: ScheduledFrame): ScheduledEncoding | null;
     writeOverlays(frame: ScheduledFrame): void;
     /** Read-only benchmark snapshot; never queried in production or development. */
     benchmarkMemory?(): { memory: Readonly<Record<string, number>>; grants: Readonly<Record<string, number>> };
@@ -212,6 +214,17 @@ const initialIntervalMs = 16.67;
 const frameGapMs = 250;
 /** Share of the frame target preparation always gets, however long the last presentation took. */
 const PREPARE_FLOOR_FRACTION = 0.25;
+/** Submitted frames of one pane that may still be unfinished on the GPU. A frame past the limit waits (its prepare still ran, its damage
+ * stays pending) until the oldest one completes, so the picture on screen is never more than this many frames behind the input.
+ * Measured: the GPU ran up to five or six frames behind the CPU on a notebook zoom, and each queued frame is input latency. */
+const FRAMES_IN_FLIGHT = 3;
+/** Audit only: an input's latency, counted in 17 ms buckets (inputs of the same bucket sum into one counter) with its total. */
+function recordInputLatency(stage: 'submit' | 'complete', ms: number): void {
+    if (!renderAuditEnabled() || !Number.isFinite(ms)) return;
+    auditCount('input', `${stage}:n`);
+    auditCount('input', `${stage}:ms-sum`, Math.round(ms));
+    auditCount('input', `${stage}:bucket`, 1, { [String(Math.min(12, Math.floor(ms / 17)))]: 1 });
+}
 const progressTileBytes = (RENDER_CONSTANTS.tileInteriorPixels + 2 * RENDER_CONSTANTS.tileGutterTexels) ** 2 * RENDER_CONSTANTS.decodedRgbaBytesPerPixel;
 /** The progress grant admits one real tile per frame, and a layer's gutter may be wider than the platform's one-texel
  * minimum: the board's tiles are 516² (2-texel gutters), 8,240 bytes over the 514² tile, so on the GPU backend every
@@ -246,6 +259,10 @@ interface PaneEntry {
     /** Measured cost of this pane's encode, submit and overlays per frame (EWMA, ms). The frame's preparation budget is the
      * display interval less these, so foreground work never takes the time the pane needs to present. */
     presentMs: number;
+    /** Submitted frames the GPU may not have finished; pruned on every frame (completed or superseded ones leave). */
+    inflight: { submission: ScheduledSubmission; inputAt: number | null }[];
+    /** When the earliest input not yet in a submitted frame arrived (audit only; null when the audit is off). */
+    pendingInputAt: number | null;
     motion: Motion | null;
     binding: FrameToken | null;
     damage: DamageAccumulator;
@@ -261,7 +278,11 @@ interface PaneEntry {
 const NO_REASONS: readonly string[] = Object.freeze([]);
 
 
-interface DamageBatch { entry: PaneEntry; damage: DamageAccumulator; full: boolean; submitted: boolean }
+interface DamageBatch { entry: PaneEntry; damage: DamageAccumulator; full: boolean; submitted: boolean;
+    /** The damage as detached, before the frame marked its own drawing damage (set in the work pass; null: none was recorded). */
+    pending?: DamageRecord | null;
+    /** The frame was skipped as unchanged (its picture is on screen): only `pending` returns to the pane, not the frame's own marks. */
+    skipped?: boolean }
 /** Optional on a layer: true while its live work (a stroke's GPU runs in flight) must be prepared before the pane's other critical
  * layers. Declared here, not on Layer, so the layer contract stays as it is; a layer without the hook is ordered as before. */
 interface PreparingFirst { prepareFirst?(): boolean }
@@ -299,6 +320,8 @@ interface UploadMeter {
     reportedCalls: number;
     callMs: number;
     progressUsed: boolean;
+    /** The critical-class layers not yet prepared this frame (see criticalPending); emptied as each one's prepare runs. */
+    criticalToRun?: Set<Layer>;
     byPane?: Map<string, { bytes: number; calls: number; ms: number }>;
 }
 
@@ -397,7 +420,7 @@ export class FrameScheduler {
         if (this.panes.has(pane.paneId)) throw new Error('A visible pane is already registered');
         const entry: PaneEntry = {
             pane, layers: Object.freeze([...pane.layers]), reasons: new Set(['show']), wakes: new Map(), focused: pane.focused,
-            inputPriority: false, renderable: false, dormantNotified: false, optionalBytes: 0, presentMs: 0, motion: null, binding: null,
+            inputPriority: false, renderable: false, dormantNotified: false, optionalBytes: 0, presentMs: 0, inflight: [], pendingInputAt: null, motion: null, binding: null,
             damage: new DamageAccumulator(), fullDamage: true, presented: null,
             lastFrame: -1, revisionValues: [], revisionKey: '[]',
         };
@@ -429,7 +452,10 @@ export class FrameScheduler {
     invalidate(paneId: string, reason: string, damage?: DamageRecord): void {
         const entry = this.panes.get(paneId);
         if (!entry) return;
-        if (reason === 'input') { this.cancelMotion(entry); entry.inputPriority = true; }
+        if (reason === 'input') {
+            this.cancelMotion(entry); entry.inputPriority = true;
+            if (renderAuditEnabled() && entry.pendingInputAt === null) entry.pendingInputAt = performance.now();
+        }
         if (damage) this.mergeDamage(entry.damage, damage);
         else entry.fullDamage = true;
         this.mark(entry, reason, true);
@@ -623,6 +649,18 @@ export class FrameScheduler {
         if (renderAuditEnabled()) auditCount('pane', 'prepare-passed-over:' + (item.entry.pane.layerId?.(meta.layer) ?? 'unnamed'));
     }
 
+    /** Drops the pane's submissions that have completed or can no longer complete (see FRAMES_IN_FLIGHT). A completed one that
+     * carried an input records that input's latency to completion, the time the person sees the frame on the GPU. */
+    private pruneInFlight(entry: PaneEntry): void {
+        if (entry.inflight.length === 0) return;
+        entry.inflight = entry.inflight.filter(({ submission, inputAt }) => {
+            if (submission.superseded?.() ?? false) return false;
+            if (!(submission.completed?.() ?? false)) return true;
+            if (inputAt !== null) recordInputLatency('complete', performance.now() - inputAt);
+            return false;
+        });
+    }
+
     private unchangedPicture(item: FrameWork): boolean {
         if (item.drawnChange || item.settled !== item.frame.layers.length || item.repaint) return false;
         for (const ack of this.acknowledgements) if (ack.entry === item.entry) return false;
@@ -692,8 +730,9 @@ export class FrameScheduler {
         this.inFrame = true;
         this.demoted.clear();
         const frameId = ++this.frameId;
+        auditTapeStart();
         const started = performance.now();
-        const encodings: Array<{ work: FrameWork; encoding: ScheduledEncoding; done: boolean }> = [];
+        const encodings: Array<{ work: FrameWork; encoding: ScheduledEncoding; done: boolean; offscreenOnly?: true }> = [];
         const batches: DamageBatch[] = [];
         let prepareOvershootMs = 0;
         let targetMs = 0;
@@ -817,10 +856,16 @@ export class FrameScheduler {
                     // damage record. An invalidation with no damage record also sets the batch's full flag, but nothing it reports
                     // requires a present if every layer answers unchanged, so that flag draws in full and does not force a present.
                     const moved = !previous || !sameToken(token, previous.token) || previous.epoch !== view.epoch || previous.geometry !== geometry;
-                    const explicitFull = batch.damage.freeze()?.full === true;
+                    batch.pending = batch.damage.freeze();
+                    const explicitFull = batch.pending?.full === true;
                     if (batch.full || revision.length > 4096 || moved || !batch.damage.freeze()) batch.damage.markFull(tags);
                     else batch.damage.mark({ x: 0, y: 0, width: 0, height: 0 }, tags);
                     const repaint = moved || explicitFull;
+                    if (repaint && renderAuditEnabled()) {
+                        auditTape(`repaint:${!previous ? 'first' : !sameToken(token, previous.token) ? 'token' : previous.epoch !== view.epoch ? 'epoch'
+                            : previous.geometry !== geometry ? 'geometry' : 'full-damage'}`);
+                    }
+                    if (renderAuditEnabled()) auditTape(`cause:${cause}`);
                     const damage = batch.damage.freeze()!;
                     const frame = Object.freeze({ frameId, timestamp, intervalMs: this.intervalMs, token, view, layers, reasons, damage });
                     work.push({ entry, frame, batch, geometry, hadInput: entry.inputPriority || reasons.includes('input'), platformPrepared: false, skipped: false, drawnChange: false, settled: 0, foreground: new Map(), repaint, cause });
@@ -842,8 +887,15 @@ export class FrameScheduler {
             const prepareDeadline = performance.now() + foregroundMs;
             meter.deadline = prepareDeadline;
             const criticalOrder = this.rotate(work, this.criticalCursor++);
-            const criticalPending = () => work.some(item => this.call(item.entry,
-                () => item.frame.layers.some(meta => item.entry.pane.isCritical(meta.layer, item.frame.view))) === true);
+            // The critical class of every pane still to prepare this frame (a two-phase layer's foreground call is that class). The
+            // one-tile progress grant is held for it until it has run; after that an optional layer may take it. Asking whether a layer
+            // IS critical starved optional layers for good: a layer that stays critical after its prepare (it has no use for the
+            // grant) held every optional upload past its frame (measured: a PDF's exact tiles refused 510 of 510 claims after a zoom,
+            // their textures created and destroyed every frame, the raster stand-in shown and a present per tick, for good).
+            const criticalToRun = new Set<Layer>();
+            for (const item of work) for (const meta of item.frame.layers) if (meta.critical || meta.layer.twoPhase === true) criticalToRun.add(meta.layer);
+            meter.criticalToRun = criticalToRun;
+            const criticalPending = () => criticalToRun.size > 0;
             for (const item of criticalOrder) {
                 prepareOvershootMs = Math.max(prepareOvershootMs, this.prepare(item, null, prepareDeadline, true, meter, criticalPending));
                 if (!item.platformPrepared && this.valid(item.entry, item.frame.token)) this.mark(item.entry, 'preparation-deferred', true);
@@ -936,8 +988,15 @@ export class FrameScheduler {
                     // run for it. Acknowledgements are not added: nothing it draws is new, and the earlier ones still arrive on their own.
                     if (this.unchangedPicture(item) && item.entry.pane.presentUnchanged(item.frame)) {
                         if (renderAuditEnabled()) auditCount('pane', 'present-skipped:unchanged');
+                        item.batch.skipped = true;
                         item.entry.presented = { token: item.frame.token, epoch: item.frame.view.epoch, geometry: item.geometry };
                         item.entry.pane.writeOverlays(item.frame);
+                        // Its layers' offscreen work (tiles composed off the view) is encoded without presenting: no surface pass.
+                        const offscreen = item.entry.pane.encodeOffscreen?.(item.frame) ?? null;
+                        if (offscreen) {
+                            encodings.push({ work: item, encoding: offscreen, done: false, offscreenOnly: true });
+                            if (renderAuditEnabled()) auditCount('pane', 'offscreen-only');
+                        }
                         return;
                     }
                     if (renderAuditEnabled()) {
@@ -946,6 +1005,14 @@ export class FrameScheduler {
                         auditCount('pane', 'present-kept:' + kept);
                     }
                     const changed = item.drawnChange || item.repaint || item.settled !== item.frame.layers.length;
+                    // Backpressure: a pane with FRAMES_IN_FLIGHT unfinished submissions waits for its oldest one. The prepare already ran and
+                    // the damage stays pending, so the frame is presented by a later one, not dropped.
+                    this.pruneInFlight(item.entry);
+                    if (item.entry.inflight.length >= FRAMES_IN_FLIGHT) {
+                        if (renderAuditEnabled()) auditCount('scheduler', 'inflight:wait');
+                        this.mark(item.entry, 'presentation-deferred', true);
+                        return;
+                    }
                     const encoding = item.entry.pane.encode(item.frame, changed);
                     if (encoding) encodings.push({ work: item, encoding, done: false });
                     else if (item.entry.layers.some(layer => layer.needsFrame())) {
@@ -962,9 +1029,20 @@ export class FrameScheduler {
                 const submitStarted = performance.now();
                 this.call(item.work.entry, () => {
                     if (!this.valid(item.work.entry, item.work.frame.token)) return;
+                    // An offscreen-only encoding presents nothing: the skipped frame already ran its observers, and its damage stays pending.
+                    if (item.offscreenOnly) { item.encoding.submit(); item.done = true; return; }
                     const submission = item.encoding.submit();
                     item.done = true;
                     if (!submission) { this.mark(item.work.entry, 'presentation-deferred', true); return; }
+                    if (submission.completed) {
+                        item.work.entry.inflight.push({ submission, inputAt: item.work.entry.pendingInputAt });
+                    }
+                    if (item.work.entry.pendingInputAt !== null) {
+                        // Submit is the earliest the frame can be shown; the GPU completion is recorded by pruneInFlight.
+                        recordInputLatency('submit', performance.now() - item.work.entry.pendingInputAt);
+                        item.work.entry.pendingInputAt = null;
+                    }
+                    if (renderAuditEnabled()) auditCount('scheduler', `inflight-at-submit:${Math.min(item.work.entry.inflight.length, 4)}`);
                     if (!this.valid(item.work.entry, item.work.frame.token)) {
                         if (__BME_BENCH__) submission.cancelObservation?.();
                         return;
@@ -1004,6 +1082,8 @@ export class FrameScheduler {
             for (const item of work) item.entry.presentMs = 0.8 * item.entry.presentMs + 0.2 * (presentCost.get(item.entry) ?? 0);
             // 7: bounded retirement/compile/readback polls. They never draw a hidden pane.
             const maintenanceStart = performance.now();
+            // Audit only: a frame's completion is seen here too, so the last frame of a gesture is measured, not only ones followed by a frame.
+            if (renderAuditEnabled()) for (const entry of this.panes.values()) this.pruneInFlight(entry);
             if (renderAuditEnabled()) auditCount('scheduler', 'submit-us', Math.round((maintenanceStart - submitStart) * 1000));
             this.runPolls(started + targetMs);
             this.maintenanceMs = performance.now() - maintenanceStart;
@@ -1036,7 +1116,10 @@ export class FrameScheduler {
         } finally {
             for (const item of encodings) if (!item.done) this.discard(item.work.entry, item.encoding);
             for (const batch of batches) if (!batch.submitted && this.live(batch.entry)) {
-                const damage = batch.damage.freeze();
+                // A skipped frame returns the damage it was given, not the full mark it drew with: merged back, that mark made the next
+                // frame an explicit full repaint, so every skip was followed by a present of the same picture (measured: 30 of 30 at rest).
+                // A frame that meant to present and did not keeps its marks, so the next one presents what this one prepared.
+                const damage = batch.skipped && batch.pending !== undefined ? batch.pending : batch.damage.freeze();
                 if (damage) this.mergeDamage(batch.entry.damage, damage);
                 batch.entry.fullDamage ||= batch.full;
             }
@@ -1120,14 +1203,20 @@ export class FrameScheduler {
                         item.drawnChange = true;
                         return true;
                     }
-                    if (shouldYield() || performance.now() >= meter.deadline) return false;
+                    // Audit only: a refused claim names its check, so a layer that retries a refused upload every frame is traced.
+                    const refused = (why: string): false => {
+                        if (renderAuditEnabled()) auditCount('scheduler', `claim-refused:${why}:${meta ? item.entry.pane.layerId?.(meta.layer) ?? 'unnamed' : 'platform'}`);
+                        return false;
+                    };
+                    if (shouldYield()) return refused('yield');
+                    if (performance.now() >= meter.deadline) return refused('deadline');
                     const remaining = meter.allowance - Math.max(meter.admittedBytes, meter.reportedBytes);
-                    if (!critical && bytes > item.entry.optionalBytes) return false;
+                    if (!critical && bytes > item.entry.optionalBytes) return refused('optional');
                     // §5.6 progress guarantee, vr-lead: optional too after all critical work drains.
                     // At 240Hz ~1MiB is smaller than a 1,056,784-byte tile; DRR alone cannot fix that.
                     const progress = bytes > remaining && !meter.progressUsed && Math.max(meter.admittedBytes, meter.reportedBytes) < PROGRESS_SMALL_BYTES &&
                         bytes <= progressUploadBytes && (critical || !criticalPending());
-                    if (bytes > remaining && !progress) return false;
+                    if (bytes > remaining && !progress) return refused(meter.progressUsed ? 'progress-used' : criticalPending() && !critical ? 'critical-pending' : 'remaining');
                     meter.progressUsed ||= progress;
                     meter.admittedBytes += bytes;
                     if (!critical) item.entry.optionalBytes -= bytes;
@@ -1151,7 +1240,7 @@ export class FrameScheduler {
                 // with the previous frame's last call; a foreground call does not record it (the background call that follows does).
                 const moved = cameraMoved(meta.layer, item.frame.view);
                 const unchangedAnswer = meta.layer.prepare(item.frame.view, budget) === false;
-                const answered = unchangedAnswer && !moved;
+                const answered = unchangedAnswer && (!moved || meta.layer.idle?.() === true);
                 if (phase !== 'foreground') lastPreparedCamera.set(meta.layer, { x: item.frame.view.camera.x, y: item.frame.view.camera.y, z: item.frame.view.camera.z });
                 if (renderAuditEnabled() && moved) {
                     const named = phase + ':' + (item.entry.pane.layerId?.(meta.layer) ?? 'unnamed');
@@ -1182,6 +1271,8 @@ export class FrameScheduler {
             overshoot = Math.max(0, performance.now() - deadline);
             if (overshoot > 0 && renderAuditEnabled()) auditCount('scheduler', 'overshoot-us:' + phase, Math.round(overshoot * 1000));
         });
+        // The critical-class call has had its turn at the progress grant this frame, prepared or not (see criticalToRun).
+        if (critical && meta) meter.criticalToRun?.delete(meta.layer);
         return overshoot;
     }
 

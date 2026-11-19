@@ -943,19 +943,28 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         }
         return true;
     };
+    // Audit only: names the check that made a band's coverage incomplete or stale, so a stand-in present can be traced to its cause.
+    const coverageNot = (result: LayerCoverage, why: string): LayerCoverage => {
+        if (renderAuditEnabled()) auditCount('board', `coverage-not:${why}`);
+        return result;
+    };
     const coverageOf = (band: PaintBand, frame: ScheduledFrame, backend: CompositorBackend): LayerCoverage => {
         const gpuCoverage = backend !== 'canvas2d' ? gpu?.coverage(frame.view) : null;
         const ready = backend === 'canvas2d' ? adapter?.readyFrame() : gpu?.readyFrame();
         const denseCoverage = useDense && ready ? dense?.coverage(frame.view, liveFor(ready)) : null;
-        if (useDense && !denseCoverage?.complete) return INCOMPLETE;
-        if (backend !== 'canvas2d' && !gpuCoverage?.complete) return INCOMPLETE;
-        if (!ready || !sameToken(ready.token, frame.token)) return INCOMPLETE;
+        if (useDense && !denseCoverage?.complete) return coverageNot(INCOMPLETE, `dense-${band}`);
+        if (backend !== 'canvas2d' && !gpuCoverage?.complete) return coverageNot(INCOMPLETE, `gpu-${band}`);
+        if (!ready) return coverageNot(INCOMPLETE, `no-ready-frame-${band}`);
+        if (!sameToken(ready.token, frame.token)) return coverageNot(INCOMPLETE, `token-${band}`);
         const latest = options.requestedRevision();
         // The picture drawn is current at the latest revision, whatever revision this layer's frame was scheduled for (a preview
         // band's scheduled frame lags the drag's moves while its picture is already the latest: measured 62 of 62 as stale).
-        const current = (ready.sceneRevision === latest || undrawnChangeSince(ready.sceneRevision, latest, band, frame.view, backend === 'canvas2d', ready))
-            && ready.theme === options.requestedTheme() && options.frames.isCurrent(ready);
-        return current ? { complete: true, sharp: (gpuCoverage?.sharp ?? true) && (denseCoverage?.sharp ?? true) } : STALE;
+        if (ready.sceneRevision !== latest && !undrawnChangeSince(ready.sceneRevision, latest, band, frame.view, backend === 'canvas2d', ready)) {
+            return coverageNot(STALE, `revision-${band}`);
+        }
+        if (ready.theme !== options.requestedTheme()) return coverageNot(STALE, `theme-${band}`);
+        if (!options.frames.isCurrent(ready)) return coverageNot(STALE, `not-current-${band}`);
+        return { complete: true, sharp: (gpuCoverage?.sharp ?? true) && (denseCoverage?.sharp ?? true) };
     };
     // The GPU working set a band reports: only the band that owns the adapter reports it, so one adapter is counted once for the
     // pair (the rule evictGpu follows). A spread, not a literal member, until the platform type carries gpuWorkingSet (h9).
@@ -1122,7 +1131,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             // What the board draws besides the current picture, for the present audit: a previous frame or a scaled tile is a
             // stand-in; nothing drawable at all is a hole. Both bands read the same composer and adapter, so their coverage is one
             // state: it is reported once per frame, from the underlay band, not once per band.
-            if (band === 'underlay' && (!actual.complete || !actual.sharp)) auditDrawn(!actual.complete && presented === null ? 'hole' : 'stand-in');
+            if (band === 'underlay' && (!actual.complete || !actual.sharp)) auditDrawn(!actual.complete && presented === null ? 'hole' : 'stand-in', 1, 'geometry', !actual.complete ? 'board-incomplete' : 'board-unsharp');
             return options.optional && !actual.complete ? { complete: true, sharp: true } : actual;
         },
     });

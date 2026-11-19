@@ -549,7 +549,7 @@ export class PdfTileLayer implements Layer {
         for (const mark of marks) {
             if (!mark.stand) continue;
             const area = clipped(mark, surface);
-            if (area && leavesUncovered(area, cover)) auditDrawn('stand-in', 1, 'raster');
+            if (area && leavesUncovered(area, cover)) auditDrawn('stand-in', 1, 'raster', 'pdf-tile');
         }
     }
 
@@ -928,6 +928,9 @@ export class PdfTileLayer implements Layer {
             this.onError(new RangeError('PDF tile is larger than a tile texture'), entry.request);
             return 'done';
         }
+        // A frame that cannot grant the bytes creates nothing: the texture was created and destroyed on every refused frame
+        // (measured: 510 createTexture calls in one zoom phase, none uploaded). The claim below still decides.
+        if (budget.upload.remainingBytes < bytes) { this.pendingFrame = true; return 'budget'; }
         const again = !!entry.texture;
         this.dropTexture(entry);
         let texture: PooledTexture | null;

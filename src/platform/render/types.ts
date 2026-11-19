@@ -68,6 +68,10 @@ export interface Layer {
      * the frame's completeness needs; background does the rest. A foreground answer of changed marks the frame changed; the
      * frame's answer is the background call's. The scheduler skips the background call when the foreground call did not run. */
     readonly twoPhase?: true;
+    /** True when this layer has nothing to draw now (a cleared preview slot, an empty overlay): a camera move changes nothing it shows, so
+     * the scheduler does not force a change for it. Measured: a cleared preview answered unchanged on every zoom frame, and the forced
+     * camera-move change presented each of those frames identically (28 to 43 redundant presents per zoom). */
+    readonly idle?: () => boolean;
     /** Schedule work without blocking; preparation is split into resumable units (design:677–679).
      * Returns `false` only when a prepare ran to completion for this view and nothing the layer draws next can differ from what
      * it last presented, so a continuation frame may skip encode and present. A layer the budget or deadline skipped this frame

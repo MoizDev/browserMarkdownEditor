@@ -95,7 +95,9 @@ export interface ViewerEngine {
     boardDrawnInk(): ReadonlySet<string>;
     setInteractionLayers(layers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null): void;
     setPreviewLayers(layers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null,
-        coverage?: () => Readonly<{ frame: PaintSource; nodeIds: ReadonlySet<string> }> | null): void;
+        coverage?: () => Readonly<{ frame: PaintSource; nodeIds: ReadonlySet<string>;
+            /** The commit revision while a committed overlay waits for the base to present it (see BoardPreview.presented). */
+            committed?: number }> | null): void;
     bindPreviewClear(clear: () => void): () => void;
     /** Detach the platform pane first: lifecycle disposes its layers. Releases only this view's
      * jobs/borrowed leases/listeners, NEVER the App-owned BoardSession or its undo/save state.

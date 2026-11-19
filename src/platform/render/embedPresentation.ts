@@ -44,8 +44,11 @@ type DrawnView = { epoch: number; x: number; y: number; z: number; width: number
 function drawnViewOf(view: ViewState): DrawnView {
     return { epoch: view.epoch, x: view.camera.x, y: view.camera.y, z: view.camera.z, width: view.viewport.width, height: view.viewport.height, dpr: view.viewport.dpr };
 }
-function sameDrawnView(view: ViewState, drawn: DrawnView | null): boolean {
-    return !!drawn && view.epoch === drawn.epoch && view.camera.x === drawn.x && view.camera.y === drawn.y && view.camera.z === drawn.z &&
+/** The camera and viewport the overlay was placed for, and the epoch while it shows any slot (a stale epoch hides them). An empty overlay
+ * ignores the epoch: it also moves when the moving flag flips at a gesture's start and end, and an overlay with nothing in it answered
+ * changed for that alone (measured: 2 redundant presents per stroke). */
+function sameDrawnView(view: ViewState, drawn: DrawnView | null, shown: boolean): boolean {
+    return !!drawn && (!shown || view.epoch === drawn.epoch) && view.camera.x === drawn.x && view.camera.y === drawn.y && view.camera.z === drawn.z &&
         view.viewport.width === drawn.width && view.viewport.height === drawn.height && view.viewport.dpr === drawn.dpr;
 }
 function sameNumbers(a: readonly number[], b: readonly number[]): boolean {
@@ -212,7 +215,7 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
         let whole = true;
         // A budget cut anywhere in this prepare means the work is unproven, so the answer is changed.
         const yielded = (): boolean => { if (budget.shouldYield()) { whole = false; return true; } return false; };
-        const answer = (): boolean => !(whole && mutations === drawnAt && sameDrawnView(view, drawnView));
+        const answer = (): boolean => !(whole && mutations === drawnAt && sameDrawnView(view, drawnView, slots.size > 0));
         if (!host || !validFrame(view, budget.token)) {
             for (const slot of slots.values()) hide(slot);
             // Requests wait for a packet that names their node; present() wakes only for that packet.

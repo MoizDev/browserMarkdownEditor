@@ -6,7 +6,7 @@ import type { Rect, ViewState } from '../../platform/types';
 import type { LayerHost } from '../../platform/render/compositor.types';
 import type { ByteLease, GfxDevice, GpuPass, RectI, TextureHandle } from '../../platform/render/gfx/api';
 import type { FrameBudget, FrameToken, GpuReleaseReason, OffscreenPasses } from '../../platform/render/types';
-import { auditCount, auditStage, renderAuditEnabled, type AuditStage } from '../../platform/render/renderAudit';
+import { auditCount, auditStage, auditTape, renderAuditEnabled, type AuditStage } from '../../platform/render/renderAudit';
 import { filterWindows } from './paintWindows';
 import type { PaintBand } from './material';
 import type { PaintItem, PaintSource } from './paintStream';
@@ -424,6 +424,8 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             return presented && reference.readyFrame() !== presented.sourceFrame ? { ...base, staleVersion: true } : base;
         },
         release(reason: GpuReleaseReason): void {
+            // Audit only: a released adapter has no picture to draw until it prepares again (a layer that loses its frame is traced).
+            if (renderAuditEnabled()) auditTape(`adapter-release:${surface}:${reason}`);
             composer.release(reason);
             presented = null; omitPrepared = null; lastFrame = -1; ledger = null;
         },

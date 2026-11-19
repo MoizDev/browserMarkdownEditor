@@ -11,7 +11,7 @@ import type { PdfDemandInput, PdfTileRequest } from './tileDemand';
 import { getPdfFontEpoch, pdfMirrorProfilePrefix, pdfVariantRevision } from '../fonts/profiles';
 import { pdfDocKey } from '../worker/protocol';
 import { consumePdfTileArrival, forgetPdfTileArrival } from '../pool/arrivalWindow';
-import { auditCount, auditDrawn, renderAuditEnabled } from '../../platform/render/renderAudit';
+import { auditCount, auditDrawn, auditTape, renderAuditEnabled } from '../../platform/render/renderAudit';
 import { QuadList } from './quadList';
 
 /** The pool returns the requested cell plus its one-pixel apron. Ownership of
@@ -562,6 +562,7 @@ export class PdfTileLayer implements Layer {
             if (!texture || texture.device !== device) continue;
             const { source, destination } = this.quad(entry.request, stack.rects[entry.request.page], view);
             const stand = scaleDiffers(entry.request.scale.scale, rasterScale);
+            if (stand && renderAuditEnabled()) auditTape(`pdf-standin-ratio:${(entry.request.scale.scale / rasterScale).toPrecision(9)}`);
             this.markQuad(destination, stand);
             this.host.drawTexturedQuad(pass, texture.handle, source, destination, { opacity: 1, sampling: 'linear',
                 ...(__BME_BENCH__ ? {

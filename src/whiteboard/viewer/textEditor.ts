@@ -95,7 +95,7 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
     if (engine.session !== session) throw new Error('Text editing needs the existing board session');
     let disposed = false, active: NodeId | null = null, paint: TextPaint | null = null, faces: FaceTable | null = null;
     let currentWorld: Affine | null = null, handles = false, scroll: { x: number; y: number } | null = null;
-    let scheduled: (() => void) | null = null, editingEpoch = 0, ownBaseRevision = -1;
+    let editingEpoch = 0, ownBaseRevision = -1;
     const metrics = new Map<NodeId, { revision: number; font: number; value: ConnectorMetrics }>();
     let svg: SVGSVGElement | null = null, toolbar: HTMLElement | null = null, lastZoom = camera.camera.z;
     let spell: BoardSpellClient | null = null, spellLoad: Promise<BoardSpellClient> | null = null;
@@ -266,18 +266,20 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
             const growth = doc.host.kind === 'notebook' ? notebookGrowthOp(doc, y) : undefined;
             return { parent, page, x: c * dx + s * dy, y: -s * dx + c * dy, ...(growth ? { before: [growth] } : {}) };
         } });
-    const stopScroll = () => { scroll = null; scheduled?.(); scheduled = null; };
-    const scheduleScroll = () => {
-        if (!scroll || scheduled || !current()) return;
-        scheduled = options.inputFrames.schedule(() => {
-            scheduled = null; if (!scroll || !current()) return;
-            const rect = overlay.getBoundingClientRect(), margin = 32;
-            const dx = scroll.x < rect.left + margin ? scroll.x - rect.left - margin : scroll.x > rect.right - margin ? scroll.x - rect.right + margin : 0;
-            const dy = scroll.y < rect.top + margin ? scroll.y - rect.top - margin : scroll.y > rect.bottom - margin ? scroll.y - rect.bottom + margin : 0;
-            if (dx || dy) { camera.panBy({ x: Math.max(-24, Math.min(24, dx)), y: Math.max(-24, Math.min(24, dy)) });
-                options.interaction.cameraChanged(); manager.refresh(); requestFrame(); scheduleScroll(); }
-        });
+    // The edge-scroll step carries no state of its own: stopping the scroll makes a queued step a no-op. The input host
+    // may drop a queued callback when input is disabled, so a guard that only that callback clears would stay set and
+    // later scroll requests would be skipped (the same fault as the marquee overlay: 11b74174). Requesting again is
+    // cheap: the host de-duplicates the same callback reference.
+    const stepScroll = () => {
+        if (!scroll || !current()) return;
+        const rect = overlay.getBoundingClientRect(), margin = 32;
+        const dx = scroll.x < rect.left + margin ? scroll.x - rect.left - margin : scroll.x > rect.right - margin ? scroll.x - rect.right + margin : 0;
+        const dy = scroll.y < rect.top + margin ? scroll.y - rect.top - margin : scroll.y > rect.bottom - margin ? scroll.y - rect.bottom + margin : 0;
+        if (dx || dy) { camera.panBy({ x: Math.max(-24, Math.min(24, dx)), y: Math.max(-24, Math.min(24, dy)) });
+            options.interaction.cameraChanged(); manager.refresh(); requestFrame(); scheduleScroll(); }
     };
+    const scheduleScroll = () => { if (!scroll || !current()) return; options.inputFrames.schedule(stepScroll); };
+    const stopScroll = () => { scroll = null; };
     const manager = createTextEditingManager({ session, createText: create, select: id => runtime.selection.replace([id]), error: report,
         binding(id, key, initialSelection, creationToken) {
             active = id; options.editingChanged?.(id); editingEpoch++; misspellings = []; queueMicrotask(checkSpelling); let latest: TextPaint | null = null;

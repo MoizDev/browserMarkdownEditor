@@ -96,17 +96,27 @@ export const attachView: AttachView = options => {
     const listeners = new Set<(change?: ViewChange) => void>();
     const palettes = options.palette ?? DEFAULT_BOARD_PALETTES;
     const sheet = () => view.sheetId ?? runtime.selection.getSnapshot().sheet;
-    let paperSnapshot: NotebookPaperSnapshot | null = null;
+    // The paper's revision is its own: it moves only when the paper's properties or its page count change. It was the document's
+    // revision, so every stroke made the paper a new revision: it re-staged its template and recomposed every paper tile, and until
+    // that finished it was not current, so no frame was complete (measured, notebook gesture kit on WebGL2: after the draw phase
+    // pan-sat 0/90, zoom-sat 0/77, draw-sat 0/91 complete, paper cov:not-current on every frame; wet ink unprepared 119 of 123
+    // draw frames, its budget spent by the paper's staging).
+    let paperSnapshot: NotebookPaperSnapshot | null = null, paperSource: NotebookPaperSnapshot['host']['paper'] | null = null, paperRevision = 0;
     const paper = options.session.doc.host.kind === 'notebook' ? createNotebookPaperLayer({
         read() {
             const doc = options.session.doc, host = doc.host;
             if (host.kind !== 'notebook') throw new Error('Notebook host changed');
-            if (paperSnapshot?.revision === doc.rev) return paperSnapshot;
+            if (paperSnapshot && host.paper === paperSource) return paperSnapshot;
+            const was = paperSnapshot?.host.paper, next = host.paper;
+            paperSource = next;
+            if (paperSnapshot && was && was.size === next.size && was.orientation === next.orientation && was.ruling === next.ruling
+                && was.spacing === next.spacing && was.margin === next.margin && was.pageCount === next.pageCount) return paperSnapshot;
             const stack = boardPageStack(host);
             if (!stack) throw new Error('Notebook page layout unavailable');
             const pages = stack.rects.map((rect, index) => Object.freeze({ index, width: rect.width, height: rect.height,
                 rotate: 0 as const, userUnit: 1, toUserSpace: [1, 0, 0, 1, 0, 0] as const }));
-            paperSnapshot = Object.freeze({ revision: doc.rev, host: Object.freeze({ ...host, paper: Object.freeze({ ...host.paper }) }), pages: Object.freeze(pages) });
+            paperSnapshot = Object.freeze({ revision: paperSnapshot ? ++paperRevision : paperRevision,
+                host: Object.freeze({ ...host, paper: Object.freeze({ ...next }) }), pages: Object.freeze(pages) });
             return paperSnapshot;
         }, palette: () => palettes.light, onError: error => report(error),
     }) : null;

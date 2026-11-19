@@ -12,7 +12,7 @@ import { TILE_EDGE, TILE_GUTTER, TILE_SIZE } from '../imageSampling';
 import { isBudgetRefusal } from '../budgetRefusal';
 import type { PaintBand } from '../material';
 import type { PaintClip, PaintInkItem, PaintItem } from '../paintStream';
-import type { AdmitClips, PreparedClips } from './routePath';
+import { everyClipIsRectangle, type AdmitClips, type PreparedClips } from './routePath';
 import { tileKeyNum, TileKeyMap } from './tileKeys';
 import { lowerTileKey, type NumericTileStore } from './tileStore';
 import { blendOf, OmitTracker } from './tileParts';
@@ -659,8 +659,11 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 if (++count > ZOOM_DIRECT_MAX_PARTS) { auditCount(audit, 'zoom:direct:off:count'); return false; }
                 if (isLivePart(part.item)) continue;
                 if (blendOf(part.item) !== 'over') { auditCount(audit, 'zoom:direct:off:blend'); return false; }
-                if (part.item.clips.length) { auditCount(audit, 'zoom:direct:off:clips'); return false; }
-                if (routeOf(part.item).route === routes.cpu) { auditCount(audit, `zoom:direct:off:cpu:${part.item.kind}`); return false; }
+                // The path route clips its own items, and a rectangle clip is its scissor: a notebook page's clip is one, so the paper
+                // draws live. Any other clip is admitted by the composer per item, which the live draw does not do.
+                const route = routeOf(part.item).route;
+                if (part.item.clips.length && !(route === routes.path && everyClipIsRectangle(part.item.clips))) { auditCount(audit, 'zoom:direct:off:clips'); return false; }
+                if (route === routes.cpu) { auditCount(audit, `zoom:direct:off:cpu:${part.item.kind}`); return false; }
             }
         }
         return target > 0;

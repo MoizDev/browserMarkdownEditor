@@ -34,6 +34,14 @@ export interface NotebookPaperSnapshot {
 }
 const NO_RECTS: readonly Rect[] = Object.freeze([]);
 const NO_CHANGES: RegionChanges = Object.freeze({ full: false, regions: NO_RECTS });
+/** Path commands appended per staging step. One command per step put a budget check between every two commands, and a frame
+ * whose budget is spent admits one step (withFirstUnit): a dotted template of thousands of commands then took thousands of frames
+ * under saturated input. A Path2D append is a few tens of nanoseconds, so a step of this many stays well under a millisecond. */
+const PATH_STEP = 256;
+/** Whether two papers draw the same page template: everything the template depends on but the page count (notebookBackdrop). */
+function sameTemplate(a: Readonly<NotebookHost['paper']>, b: Readonly<NotebookHost['paper']>): boolean {
+    return a.size === b.size && a.orientation === b.orientation && a.ruling === b.ruling && a.spacing === b.spacing && a.margin === b.margin;
+}
 /** Pages a paper keeps items for before it is replaced: by reading, a dotted page is about a thousand items, so this bounds a scroll. */
 const PAGE_CACHE_LIMIT = 48;
 /** A page's GPU paint: the template's items moved to the page, each clipped to it. Built once per ready paper. */
@@ -47,8 +55,8 @@ export interface NotebookPaperLayerOptions {
     readonly onError: (error: unknown) => void;
 }
 type Prepared = { readonly item: PaintPathItem; readonly path: PreparedPath2d };
-type Ready = { readonly revision: number; readonly stack: Readonly<PageStack>; readonly items: readonly Prepared[];
-    readonly lease: ByteLease; token: FrameToken };
+type Ready = { readonly revision: number; readonly paper: Readonly<NotebookHost['paper']>; readonly stack: Readonly<PageStack>;
+    readonly items: readonly Prepared[]; readonly lease: ByteLease; token: FrameToken };
 type Staging = { readonly snapshot: NotebookPaperSnapshot; readonly stack: Readonly<PageStack>; readonly lease: ByteLease;
     readonly items: Prepared[]; token: FrameToken; page: number; iterator: Generator<PaintPathItem> | null;
     job: { item: PaintPathItem; path: Path2dJob } | null };
@@ -76,6 +84,12 @@ function workingBytes(snapshot: NotebookPaperSnapshot, stack: Readonly<PageStack
     return bytes;
 }
 
+function checkPage(snapshot: NotebookPaperSnapshot, stack: Readonly<PageStack>, index: number): void {
+    const page = snapshot.pages[index], box = stack.rects[index];
+    if (page.index !== index || page.width !== box.width || page.height !== box.height || page.rotate !== 0) {
+        throw new RangeError('Notebook page geometry does not match the canonical stack');
+    }
+}
 /** A page's paint, built on first use. Its items are the paper's template moved to the page, with the page's clip. */
 function paperPage(paper: GpuPaper, page: number): PagePaint {
     const known = paper.pages.get(page);
@@ -176,6 +190,7 @@ class NotebookPaperLayer implements Layer {
             const snapshot = this.options.read(); attemptedRevision = snapshot.revision; checkSnapshot(snapshot);
             if (this.desired?.revision !== snapshot.revision) {
                 this.dropStaged(); this.desired = snapshot; this.denied = false; this.failedRevision = null;
+                this.adoptPageCount(snapshot);
             }
             if (this.ready?.revision === snapshot.revision) {
                 if (!sameToken(this.ready.token, budget.token)) this.ready.token = { ...budget.token };
@@ -194,19 +209,13 @@ class NotebookPaperLayer implements Layer {
             const stage = this.staged;
             while (!budget.shouldYield()) {
                 if (this.options.read().revision !== stage.snapshot.revision) { this.dropStaged(); return; }
-                if (stage.page < stage.snapshot.pages.length) {
-                    const index = stage.page++, page = stage.snapshot.pages[index], box = stage.stack.rects[index];
-                    if (page.index !== index || page.width !== box.width || page.height !== box.height || page.rotate !== 0) {
-                        throw new RangeError('Notebook page geometry does not match the canonical stack');
-                    }
-                    continue;
-                }
+                if (stage.page < stage.snapshot.pages.length) { checkPage(stage.snapshot, stage.stack, stage.page++); continue; }
                 if (!stage.iterator) {
                     const box = stage.stack.rects[0];
                     stage.iterator = notebookBackdrop(stage.snapshot.host.paper, 0, { x: 0, y: 0, width: box.width, height: box.height });
                 }
                 if (stage.job) {
-                    if (stage.job.path.step(1) === 'complete') {
+                    if (stage.job.path.step(PATH_STEP) === 'complete') {
                         const path = stage.job.path.result;
                         if (!path) throw new Error('Notebook paper path cancelled');
                         const prepared = { path, origin: stage.job.path.origin };
@@ -218,7 +227,8 @@ class NotebookPaperLayer implements Layer {
                 if (!next.done) { stage.job = { item: next.value, path: new Path2dJob(next.value.d) }; continue; }
                 if (this.options.read().revision !== stage.snapshot.revision) { this.dropStaged(); return; }
                 this.dropReady();
-                this.ready = { revision: stage.snapshot.revision, stack: stage.stack, items: Object.freeze(stage.items), lease: stage.lease, token: stage.token };
+                this.ready = { revision: stage.snapshot.revision, paper: stage.snapshot.host.paper, stack: stage.stack,
+                    items: Object.freeze(stage.items), lease: stage.lease, token: stage.token };
                 this.staged = null; this.host.invalidate('notebook-paper-ready'); return;
             }
         } catch (error) {
@@ -226,6 +236,20 @@ class NotebookPaperLayer implements Layer {
             try { this.dropStaged(); } catch (cleanup) { this.report(cleanup); }
             this.report(error);
         }
+    }
+    /** A new revision that only adds or removes pages keeps the ready template: every page draws the same items, moved to it
+     * (paperPage), and the working set is per page box, which is unchanged. Re-staging it held the paper not current for as
+     * long as the template took to stage, so adding a page left every frame incomplete under input. */
+    private adoptPageCount(snapshot: NotebookPaperSnapshot): void {
+        const ready = this.ready;
+        if (!ready || !sameTemplate(ready.paper, snapshot.host.paper)) return;
+        const stack = boardPageStack(snapshot.host);
+        if (!stack || stack.rects.length !== snapshot.pages.length || stack.rects[0]?.width !== ready.stack.rects[0]?.width
+            || stack.rects[0]?.height !== ready.stack.rects[0]?.height) return;
+        for (let index = 0; index < snapshot.pages.length; index++) checkPage(snapshot, stack, index);
+        this.ready = { ...ready, revision: snapshot.revision, paper: snapshot.host.paper, stack };
+        this.gpuPaper = null; this.claim = null;
+        this.host.invalidate('notebook-paper-ready');
     }
     // Reports changed (true) on every path: the paper's own staging and source steps can change what it draws, and the
     // composer's prepare reports nothing, so no path can prove the picture unchanged yet. Forwarding the composer's answer

@@ -5,7 +5,7 @@
 import type { Rect, ViewState } from '../../../platform/types';
 import type { LayerHost } from '../../../platform/render/compositor.types';
 import type { GfxDevice } from '../../../platform/render/gfx/api';
-import type { MemoryAllocator } from '../../../platform/render/memoryGovernor';
+import type { MemoryAllocator, ReserveOptions } from '../../../platform/render/memoryGovernor';
 import { auditCount, renderAuditEnabled } from '../../../platform/render/renderAudit';
 import { ArenaError } from '../../../platform/render/resourceArena';
 import { createTileTarget, destroyTileTarget, tileTargetBytes, type TileTarget } from '../../../platform/render/tileTarget';
@@ -13,6 +13,8 @@ import type { PaintBand } from '../material';
 import { TILE_EDGE, TILE_GUTTER, TILE_SIZE } from '../imageSampling';
 import type { Blend, TileEntry, TileIdFn, TileKey, TileStore, TileWorldFn } from './contracts';
 import { TILE_KEY_REACH, TILE_KEY_SCALES, TILE_KEY_SLICES, TileKeyMap, tileKeyNum } from './tileKeys';
+/** A ring tile's reservation: admitted only if it fits without displacing anything (memoryGovernor ReserveOptions). */
+const PREFETCH: ReserveOptions = Object.freeze({ prefetch: true });
 
 /** One scale's share of the store, from breakdown(). Bytes are the targets' bytes; an entry without a target counts in
  * `entries` only. */
@@ -374,7 +376,7 @@ class GpuTileStore implements NumericTileStore {
 
     /** A target for `key`: the entry's own if it has one, else a free-list target, else a new lease. Null when the governor
      * refuses; the caller keeps its stand-in and waits. */
-    acquire(key: TileKey, blend: Blend, device: GfxDevice): TileEntry | null {
+    acquire(key: TileKey, blend: Blend, device: GfxDevice, prefetch = false): TileEntry | null {
         checkKey(key);
         this.lastAcquireAt = performance.now();
         // A position the packed key cannot name is refused here, counted as its own cause, never stored.
@@ -388,7 +390,7 @@ class GpuTileStore implements NumericTileStore {
             if (slot.blend !== blend) throw new RangeError('Tile blend changed while its target is live');
             return slot;
         }
-        const target = this.takeTarget(device);
+        const target = this.takeTarget(device, prefetch);
         if (!target) {
             if (slot) {
                 slot.composed = false;
@@ -410,7 +412,7 @@ class GpuTileStore implements NumericTileStore {
     }
 
     /** A kept target if one is free, else a new target on the governor's lease. */
-    private takeTarget(device: GfxDevice): TileTarget | null {
+    private takeTarget(device: GfxDevice, prefetch: boolean): TileTarget | null {
         // The free list holds only the current generation's targets (adopt drops the rest), so its top is reusable as it is.
         const kept = this.free.pop();
         if (kept) {
@@ -418,7 +420,7 @@ class GpuTileStore implements NumericTileStore {
             auditCount(this.audit, 'tile:target-reuse');
             return kept;
         }
-        const made = createTileTarget(device, this.allocator, TILE_SIZE);
+        const made = createTileTarget(device, this.allocator, TILE_SIZE, prefetch ? PREFETCH : undefined);
         if (!made) return null;
         this.gpuBytes += made.bytes;
         this.targetsHeld++;

@@ -19,8 +19,16 @@ export type MemoryPressureState = 'normal' | 'trimming' | 'degraded' | 'cpu-pinn
 export type DeviceMemoryClass = 'low' | 'medium' | 'high';
 
 /** The exact token object crosses the arena boundary; never reconstruct a ByteLease by id. */
+/** How a reservation may be admitted. */
+export interface ReserveOptions {
+    /** Work ahead of need (a tile ring outside the view): admitted only if it fits as the pool and grant stand. A refusal reclaims
+     * nothing, trims nothing and is not pressure. Two layers of one notebook pane prefetched rings that reclaimed each other's
+     * undrawn tiles, recomposed the next frame: at rest at 332%, 60 presents a second and 985 MB of tiles evicted per second, and the
+     * board never left 'Updating'. */
+    readonly prefetch?: boolean;
+}
 export interface MemoryAllocator {
-    reserve(bytes: number): ByteLease | null;
+    reserve(bytes: number, options?: ReserveOptions): ByteLease | null;
     release(lease: ByteLease): void;
     /** One-shot: `wake` runs once after the next lease release or grant change, so a denied owner retries on a real
      * capacity change instead of polling. It only schedules work, so it must not reserve synchronously.
@@ -299,7 +307,7 @@ export class MemoryGovernor {
             registration: { ...registration, owner: registration.owner ? Object.freeze({ ...registration.owner }) : undefined },
             activity: { ...registration }, bytes: 0, leaseCount: 0, closed: false, refusal: null, unaccounted: 0, unaccountedReported: false,
             handle: {
-                reserve: bytes => this.reserve(cache, bytes),
+                reserve: (bytes, options) => this.reserve(cache, bytes, options),
                 release: lease => this.release(lease, cache),
                 whenAvailable: (wake, bytes) => {
                     if (cache.closed) return;
@@ -665,7 +673,7 @@ export class MemoryGovernor {
         };
     }
 
-    private reserve(cache: CacheRecord, bytes: number): ByteLease | null {
+    private reserve(cache: CacheRecord, bytes: number, options?: ReserveOptions): ByteLease | null {
         count(bytes);
         if (cache.closed || this.trimming || cache.registration.kind === 'mirror-retiring' || !this.caches.has(cache.registration.id)) return null;
         const { kind, pool } = cache.registration;
@@ -684,6 +692,7 @@ export class MemoryGovernor {
         // That is not pressure: nothing is trimmed and no quality is stepped. The refused work waits, and the replan that
         // grants the pane's demand wakes it. Seen: a new arrow's first 64 KB working buffer degraded a near-empty canvas2d pane.
         if (!allowed() && !this.overPool(pool, bytes) && !this.hasDemand(cache)) return null;
+        if (options?.prefetch && !allowed()) { auditCount('governor', `prefetch-refused:${pool}`, 1, { bytes }); return null; }
         // A pane's GPU surface replaces its 2D picture: the 2D working canvases of the same pane are that picture's scratch, and they
         // are dropped before the pane's new backing is refused for want of room they hold (measured, DPR 2: a 2D fallback held 44 MB of
         // working canvases beside its 33 MB display, so the GPU scratch of the same pane was refused and quality stepped down).

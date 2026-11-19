@@ -87,8 +87,9 @@ export interface TileEntry {
 
 export interface TileStore {
     get(id: string): TileEntry | undefined;
-    /** A target from the free list or a new lease. null = refused: keep the stand-in and call `wait(bytes)`. */
-    acquire(key: TileKey, blend: Blend, device: GfxDevice): TileEntry | null;
+    /** A target from the free list or a new lease. null = refused: keep the stand-in and call `wait(bytes)`. A `prefetch` target (the
+     * rest ring) takes a new lease only if it fits without the governor reclaiming anything. */
+    acquire(key: TileKey, blend: Blend, device: GfxDevice, prefetch?: boolean): TileEntry | null;
     putEmpty(key: TileKey): TileEntry;
     markDirty(world: Readonly<Rect> | 'all', band?: PaintBand): number;
     /** Composed entries of other scales covering `world`, nearest scale first. */

@@ -1,5 +1,6 @@
 import type { ViewState } from '../types';
 import type { ByteLease, GfxDevice, TargetHandle, TextureHandle } from './gfx/api';
+import type { ReserveOptions } from './memoryGovernor';
 
 /**
  * A layer-owned square render target that a tile's content is composed INTO on the GPU (Layer.encodeOffscreen), then
@@ -20,11 +21,11 @@ export function tileTargetBytes(size: number): number {
 }
 
 /** Null when the allocator refuses: a wait for capacity, never an unaccounted allocation. */
-export function createTileTarget(device: GfxDevice, allocator: { reserve(bytes: number): ByteLease | null; release(lease: ByteLease): void },
-    size: number): TileTarget | null {
+export function createTileTarget(device: GfxDevice, allocator: { reserve(bytes: number, options?: ReserveOptions): ByteLease | null; release(lease: ByteLease): void },
+    size: number, options?: ReserveOptions): TileTarget | null {
     if (!Number.isSafeInteger(size) || size <= 0) throw new RangeError('Invalid tile target size');
     const bytes = tileTargetBytes(size);
-    const lease = allocator.reserve(bytes);
+    const lease = allocator.reserve(bytes, options);
     if (!lease) return null;
     let made: { texture: TextureHandle; target: TargetHandle };
     try { made = device.createRenderTexture(size, size, lease); }

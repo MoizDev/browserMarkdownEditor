@@ -12,7 +12,7 @@ import { TILE_EDGE, TILE_GUTTER, TILE_SIZE } from '../imageSampling';
 import { isBudgetRefusal } from '../budgetRefusal';
 import type { PaintBand } from '../material';
 import type { PaintClip, PaintInkItem, PaintItem } from '../paintStream';
-import type { AdmitClips, PreparedClips } from './routePath';
+import { everyClipIsRectangle, type AdmitClips, type PreparedClips } from './routePath';
 import { tileKeyNum, TileKeyMap } from './tileKeys';
 import { lowerTileKey, type NumericTileStore } from './tileStore';
 import { blendOf, OmitTracker } from './tileParts';
@@ -664,8 +664,11 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 if (++count > ZOOM_DIRECT_MAX_PARTS) { auditCount(audit, 'zoom:direct:off:count'); return false; }
                 if (isLivePart(part.item)) continue;
                 if (blendOf(part.item) !== 'over') { auditCount(audit, 'zoom:direct:off:blend'); return false; }
-                if (part.item.clips.length) { auditCount(audit, 'zoom:direct:off:clips'); return false; }
-                if (routeOf(part.item).route === routes.cpu) { auditCount(audit, `zoom:direct:off:cpu:${part.item.kind}`); return false; }
+                // The path route clips its own items, and a rectangle clip is its scissor: a notebook page's clip is one, so the paper
+                // draws live. Any other clip is admitted by the composer per item, which the live draw does not do.
+                const route = routeOf(part.item).route;
+                if (part.item.clips.length && !(route === routes.path && everyClipIsRectangle(part.item.clips))) { auditCount(audit, 'zoom:direct:off:clips'); return false; }
+                if (route === routes.cpu) { auditCount(audit, `zoom:direct:off:cpu:${part.item.kind}`); return false; }
             }
         }
         return target > 0;
@@ -774,7 +777,18 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     };
 
     /** Admits and acquires a position's slices in order. 'wait' resumes next frame; 'denied' waits for memory. */
-    const advance = (position: Position, budget: FrameBudget, gpu: GfxDevice): 'done' | 'wait' | 'denied' | 'refused' => {
+    const advance = (position: Position, budget: FrameBudget, gpu: GfxDevice, prefetch = false): 'done' | 'wait' | 'denied' | 'refused' => {
+        // A ring position takes its targets first, as prefetch: one that does not fit admits nothing, so its route resources reclaim
+        // nothing either. A ring compose that displaced undrawn tiles was recomposed the next frame, forever (memoryGovernor ReserveOptions).
+        if (prefetch) {
+            for (let i = position.cursor; i < position.slices.length; i++) {
+                const slice = position.slices[i];
+                if (slice.entry) continue;
+                const entry = store.acquire(slice.key, slice.blend, gpu, true);
+                if (!entry) return 'refused';
+                slice.entry = entry;
+            }
+        }
         for (; position.cursor < position.slices.length; position.cursor++) {
             const slice = position.slices[position.cursor];
             if (slice.next < slice.runs.length) {
@@ -845,12 +859,12 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             // The count limit is for background recomposes: a foreground compose (a visible tile with no valid cover) is bounded by the budget.
             if (only !== 'foreground' && frameComposed >= limit) { auditCount(audit, `compose:limit:${pass}`); return false; }
             if (budget.shouldYield()) { auditCount(audit, `compose:yield:${pass}`); return false; }
-            let outcome = advance(position, budget, gpu);
+            let outcome = advance(position, budget, gpu, pass === 'ring');
             // At rest a refused or denied position frees this composer's own tiles and is admitted in the same frame, instead of
             // waiting for the governor (see freeOwn). While zooming the stand-ins stay: they are what the zoom shows.
             // Only a GPU refusal frees this composer's own tiles: a CPU denial (path staging) is not a GPU shortage, and evicting
-            // tiles for it recomposes what was just freed.
-            if ((outcome === 'refused' || (outcome === 'denied' && blockedOnGpu)) && !zoomingFrame && freeOwn(view, target)) {
+            // tiles for it recomposes what was just freed. A ring position frees nothing: what it would free is the ring itself.
+            if ((outcome === 'refused' || (outcome === 'denied' && blockedOnGpu)) && pass !== 'ring' && !zoomingFrame && freeOwn(view, target)) {
                 auditCount(audit, `compose:free-retry:${pass}`);
                 outcome = advance(position, budget, gpu);
             }

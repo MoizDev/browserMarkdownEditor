@@ -140,8 +140,9 @@ void main() { accumulated = 0.0; }`,
 };
 const NO_STENCIL = { enabled: false } as const;
 
-/** The shared scratch of one device: one r32f target sized to the viewport, used by every area kit on the device. */
-interface Scratch { readonly target: AreaTarget; readonly bytes: number; users: number }
+/** The shared scratch of one device: one r32f target at least as large as every viewport an area kit there has drawn into, used by
+ * every area kit on the device. `holder` is the kit that reports its bytes (one report, however many kits draw with it). */
+interface Scratch { readonly target: AreaTarget; readonly bytes: number; users: number; holder: object | null }
 const scratchOf = new WeakMap<GfxDevice, Scratch>();
 
 export function createAreaKit(): AreaKit {
@@ -155,9 +156,9 @@ export function createAreaKit(): AreaKit {
     /** Whether this kit holds a reference on the device's scratch (taken at its first ready area, returned at release). */
     let holding = false;
     let pieceBytes = 0;
-    /** The scratch's bytes, counted while this kit holds it. */
-    let scratchBytes = 0;
     const uniformScratch = new Float32Array(8);
+    /** This kit's identity as a scratch holder. */
+    const kitToken = {};
 
     /** The area pipelines, or null while they compile (or after a refused compile, which the caller sees as deferral). */
     const ensurePipelines = (owner: GfxDevice): boolean => {
@@ -176,11 +177,15 @@ export function createAreaKit(): AreaKit {
         return false;
     };
 
-    /** Takes a reference on the device's scratch, creating it at the viewport's size on first use. */
+    /** The device's scratch, large enough for `viewport`: created at its size on first use, and grown to the larger of each side when a
+     * larger viewport arrives (a tile's composer and a pane-sized preview share it). An area larger than its scratch is refused by
+     * beginArea as invalid input, so a scratch kept at the first viewport's size failed every later, larger one. Growth replaces the
+     * target: draws look the scratch up at draw time, and the device retires the old target's lease. A refused growth keeps the old one. */
     const acquireScratch = (host: LayerHost, owner: GfxDevice, viewport: { width: number; height: number }): Scratch | 'denied' => {
         const existing = scratchOf.get(owner);
-        if (existing) return existing;
-        const bytes = viewport.width * viewport.height * 4;
+        if (existing && existing.target.width >= viewport.width && existing.target.height >= viewport.height) return existing;
+        const width = Math.max(viewport.width, existing?.target.width ?? 0), height = Math.max(viewport.height, existing?.target.height ?? 0);
+        const bytes = width * height * 4;
         const lease = host.allocator.gpu.reserve(bytes);
         if (!lease || lease.bytes < bytes) {
             if (lease) host.allocator.gpu.release(lease);
@@ -188,13 +193,14 @@ export function createAreaKit(): AreaKit {
         }
         let target: AreaTarget;
         try {
-            const made = owner.createRenderTexture(viewport.width, viewport.height, lease, { format: 'r32f' });
-            target = { target: made.target, texture: made.texture, width: viewport.width, height: viewport.height };
+            const made = owner.createRenderTexture(width, height, lease, { format: 'r32f' });
+            target = { target: made.target, texture: made.texture, width, height };
         } catch (error) {
             if (error instanceof ArenaError && error.code === 'out-of-budget') return 'denied';
             throw error;
         }
-        const scratch: Scratch = { target, bytes, users: 0 };
+        if (existing) { owner.destroy(existing.target.target); owner.destroy(existing.target.texture); }
+        const scratch: Scratch = { target, bytes, users: existing?.users ?? 0, holder: kitToken };
         scratchOf.set(owner, scratch);
         return scratch;
     };
@@ -218,9 +224,9 @@ export function createAreaKit(): AreaKit {
             if (scratch && --scratch.users === 0) {
                 scratchOf.delete(device);
                 device.destroy(scratch.target.target); device.destroy(scratch.target.texture);
-            }
+            } else if (scratch && scratch.holder === kitToken) scratch.holder = null;
         }
-        holding = false; scratchBytes = 0;
+        holding = false;
         if (span && device) device.destroy(span);
         if (clear && device) device.destroy(clear);
         span = null; clear = null; pending = false; failed = false; device = null;
@@ -273,7 +279,7 @@ export function createAreaKit(): AreaKit {
             if (!ensurePipelines(owner)) return { status: 'deferred' };
             const scratch = acquireScratch(host, owner, viewport);
             if (scratch === 'denied') { discard(admission); return { status: 'denied', pool: 'gpu', bytes: viewport.width * viewport.height * 4 }; }
-            if (!holding) { scratch.users++; holding = true; scratchBytes = scratch.bytes; }
+            if (!holding) { scratch.users++; holding = true; }
             uploading.delete(admission);
             const prepared: PreparedArea = { device: owner, generation: admission.generation, pieces: admission.pieces.slice(),
                 bytes: admission.bytes, bounds: admission.bounds };
@@ -304,6 +310,12 @@ export function createAreaKit(): AreaKit {
         },
         retire(prepared): void { destroy(prepared); },
         release,
-        memory: () => ({ gpuBytes: pieceBytes + scratchBytes }),
+        // The scratch is reported once, by its holder; when the holder lets go while others draw with it, the next of them to be
+        // asked takes the report.
+        memory: () => {
+            const scratch = holding && device ? scratchOf.get(device) : undefined;
+            if (scratch && scratch.holder === null) scratch.holder = kitToken;
+            return { gpuBytes: pieceBytes + (scratch && scratch.holder === kitToken ? scratch.bytes : 0) };
+        },
     };
 }

@@ -71,6 +71,15 @@ function clipped(box: Readonly<Rect>, viewport: Readonly<Rect>): Rect | null {
 
 /** A tile or mirror drawn at a scale other than the frame's is a stand-in. The two scales are computed separately, so one zoom can
  * differ in its last float bits (1.4379084967320261 vs ...255): a relative tolerance, as the supersession check uses, not equality. */
+/** A small stable number per object, for the picture key (see PdfTileLayer.pictureKey); a string id hashes as its characters. */
+const identities = new WeakMap<object, number>();
+let nextIdentity = 1;
+function identityOf(value: object | string): number {
+    if (typeof value === 'string') { let hash = 7; for (let i = 0; i < value.length; i++) hash = Math.imul(hash, 31) + value.charCodeAt(i) | 0; return hash >>> 0; }
+    let id = identities.get(value);
+    if (id === undefined) { id = nextIdentity++; identities.set(value, id); }
+    return id;
+}
 function scaleDiffers(scale: number, frame: number): boolean { return Math.abs(scale / frame - 1) > 1e-6; }
 
 /** One quad of the frame in device pixels: whether it is a stand-in. Collected only while the render audit is on. */
@@ -183,7 +192,7 @@ export class PdfTileLayer implements Layer {
     /** Bumped by every change to what the layer draws (tiles, bridge items, the frame texture, the content). prepare answers
      * unchanged only while this has not moved since the frame it last answered changed for (see answer). */
     private drawVersion = 0;
-    private presented = { version: -1, view: '' };
+    private presented = { version: -1, view: '', picture: 0 };
     private latestDemand: Omit<PdfDemandInput, 'covered' | 'previousMotionScale'> | null = null;
     private latestView: ViewState | null = null;
     private mirrorJob: MirrorJob | null = null;
@@ -414,12 +423,39 @@ export class PdfTileLayer implements Layer {
      * that a budget or deadline cut short is changed; so is any change to the view the picture is drawn at. */
     private answer(view: ViewState, budget: FrameBudget): boolean {
         const shown = `${budget.cameraEpoch}|${view.camera.x}|${view.camera.y}|${view.camera.z}|${view.viewport.width}|${view.viewport.height}|${view.viewport.dpr}`;
-        if (!this.pendingFrame && this.presented.version === this.drawVersion && this.presented.view === shown) {
+        // What the next draw lays, by identity: the tiles it draws with their pixels (texture on a device, bitmap on 2D), the bridge
+        // pictures and the paper. The draw version also moves for work nothing draws (a tile started, evicted off the view, or uploaded
+        // where an exact tile already covers it), and answering changed on it presented the same picture: measured on doc12, the wake
+        // frame of every paced zoom step (37 of 117 zoom presents redundant). The version still decides when the picture is unknown.
+        const picture = this.pictureKey(view);
+        if (this.presented.view === shown && (picture !== 0 ? picture === this.presented.picture
+            : !this.pendingFrame && this.presented.version === this.drawVersion)) {
             auditCount('pdf-page', 'prepare-unchanged');
             return false;
         }
-        this.presented = { version: this.drawVersion, view: shown };
+        this.presented = { version: this.drawVersion, view: shown, picture };
         return true;
+    }
+
+    /** A hash of what drawGpu or draw2d lays for this view, allocation-free; 0 when it cannot be told (no current content). */
+    private pictureKey(view: ViewState): number {
+        const input = this.latestDemand;
+        if (!input || this.latestView !== view) return 0;
+        const current = contentFamily(input) === this.contentIdentity;
+        if (!current) return 0;
+        const device = this.host.device();
+        let hash = 0x811c9dc5;
+        const mix = (value: number): void => { hash = Math.imul(hash ^ value, 0x01000193) >>> 0; };
+        mix(device && this.frameTexture?.device === device ? identityOf(this.frameTexture.handle) : 1);
+        if (device) { for (const texture of this.bridgeTextures.values()) if (texture.device === device) mix(identityOf(texture.handle)); }
+        else for (const id of this.bridgeReady) mix(identityOf(id));
+        for (const entry of this.drawable(view, current, !!device)) {
+            const pixels = device ? entry.texture?.device === device ? entry.texture.handle : null : entry.bitmap ?? null;
+            mix(pixels ? identityOf(pixels) : 2);
+            const key = entry.request.text;
+            for (let i = 0; i < key.length; i++) mix(key.charCodeAt(i));
+        }
+        return hash || 1;
     }
 
     /**
@@ -513,7 +549,7 @@ export class PdfTileLayer implements Layer {
                 ...(__BME_BENCH__ ? { coverage: 'standin' as const, standInRatio: item.pixels.source.width / item.pixels.world.width / rasterScale } : {}) });
         }
         const device = this.host.device();
-        const tiles = this.drawable(view, current);
+        const tiles = this.drawable(view, current, true);
         for (const entry of tiles) entry.drawnFrame = this.preparedFrame;
         // Scale order is kept between groups, since different scales overlap; same-scale tiles are batched by page.
         let start = 0;
@@ -1194,7 +1230,7 @@ export class PdfTileLayer implements Layer {
     }
 
     /** `current` is the caller's own check that the frame's content identity is the one entries were planned for. */
-    private drawable(view: ViewState, current: boolean): Entry[] {
+    private drawable(view: ViewState, current: boolean, exactLast = false): Entry[] {
         const out = this.drawScratch;
         out.length = 0;
         if (!current) return out;
@@ -1202,7 +1238,19 @@ export class PdfTileLayer implements Layer {
         // Sorted by scale only, and only when the settled set changes: same-scale tiles are disjoint cells, so their order is free.
         this.settledOrder ??= [...this.entries.values()].filter(entry => entry.settled)
             .sort((a, b) => a.request.scale.scale - b.request.scale.scale);
-        for (const entry of this.settledOrder) if (intersects(rect(entry.request), viewport)) out.push(entry);
+        // Other scales first, the current raster scale last, on top: in scale order alone a higher-scale stand-in was drawn over the
+        // exact tile that replaced it, so the exact upload changed nothing on screen until the stand-in was evicted (measured on doc12:
+        // the wake frame of each paced zoom step pixel-identical, 31 of 111 zoom presents, and its stand-in still shown).
+        // On the GPU path only: canvas2d keeps the feature branch's picture, scale order alone.
+        const exact = exactLast ? this.latestDemand?.rasterScale : undefined;
+        for (const entry of this.settledOrder) {
+            if (intersects(rect(entry.request), viewport) && (exact === undefined || scaleDiffers(entry.request.scale.scale, exact))) out.push(entry);
+        }
+        if (exact !== undefined) {
+            for (const entry of this.settledOrder) {
+                if (intersects(rect(entry.request), viewport) && !scaleDiffers(entry.request.scale.scale, exact)) out.push(entry);
+            }
+        }
         return out;
     }
 

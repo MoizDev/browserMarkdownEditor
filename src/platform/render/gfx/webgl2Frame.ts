@@ -771,6 +771,7 @@ class DevicePass implements GpuPass {
             empty: false, coverage: target.format === 'r8' };
         this.#clip = intersect(this.#scope.bounds, desc.viewport);
     }
+    clipRect(): Readonly<RectI> { return this.#clip; }
     #guard<T>(operation: () => T): T {
         return this.#frame.guard(() => {
             if (this.#closed) throw new ArenaError('invalid-input');

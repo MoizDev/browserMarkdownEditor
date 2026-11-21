@@ -1,4 +1,4 @@
-import { renderAuditEnabled } from './renderAudit';
+import { auditTrimHook, renderAuditEnabled } from './renderAudit';
 import { getTerminalContextActive, subscribeTerminalContext } from '../terminalContext';
 import { RENDER_CONSTANTS as POLICY } from './constants';
 import { MemoryGovernor } from './memoryGovernor';
@@ -50,6 +50,7 @@ export class PlatformRuntime {
     private planned: { demands: readonly PaneMemoryDemand[]; liveGesture: boolean } | null = null;
 
     constructor() {
+        if (renderAuditEnabled()) auditTrimHook(pool => this.governor.trimForAudit(pool));
         const context = this.governor.register({
             id: 'platform:native-contexts', pool: 'gpu', kind: 'context', class: 'scene-cache',
             hiddenAt: null, lastVisibleAt: 0, lastUsedAt: 0,

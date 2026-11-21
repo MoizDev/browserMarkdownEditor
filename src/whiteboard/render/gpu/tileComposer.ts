@@ -482,6 +482,13 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     // pixel the same on the paper (19 redundant presents a phase) and a slight edge change on the board.
     // A repeated settling frame (same camera, no scene change) draws the same live picture, so it does not move the content version.
     let directBefore = false, settling = false, settleRepeat = false;
+    // Whether the last prepare found every visible tile exact, and at which camera. A composer that has its exact tiles asks for no
+    // frame, so a later frame at that camera was asked for by another layer that changes anyway (wet ink, a PDF tile, an edit): it
+    // draws the tiles, and the switch from the live picture rides on that present. At rest no frame comes and nothing is drawn.
+    // Kept live until the camera moved, every frame after a zoom drew the whole visible board live (measured: 121 settling frames in a
+    // paced draw on every document), and a tile that never became exact kept the composer asking for a frame every ~133 ms at rest
+    // (gpu-f4, notebook at 57%).
+    let exactAtX = Number.NaN, exactAtY = Number.NaN, exactAtZ = Number.NaN;
     /** A live draw of the frame admitted a run its route marked inexact (a path area on the zoom-time coverage route, a text stand-in):
      * the next settling frame at the same camera draws it exact, so it is not a repeat and presents. Measured (notebook, 40% after a
      * zoom step): without it the zoom's last coverage picture stayed up at rest, paper ruled lines 11 levels off the exact picture. */
@@ -1569,7 +1576,9 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             // A drag's omitted nodes are the preview's; its frames keep the path they had (the pan path is for the base's camera moves).
             // The drag preview's composer (a live overlay) has no tiles to miss: its parts are drawn live already.
             const panning = panned && options.liveOverlay !== true && !omitIds?.size && !indexing && anyVisibleMissing(view, target);
-            settling = !zooming && !panned && directBefore && options.liveOverlay !== true && !omitIds?.size && !indexing;
+            const exactBefore = exactAtX === view.camera.x && exactAtY === view.camera.y && exactAtZ === view.camera.z;
+            settling = !zooming && !panned && directBefore && !exactBefore && options.liveOverlay !== true && !omitIds?.size && !indexing;
+            if (directBefore && exactBefore && !zooming && !panned) auditCount(audit, 'settle:end:exact');
             liveNow = paintLiveOnly || (!indexing && (zooming || panning || settling) && zoomDirectOk(view, target));
             settling &&= liveNow;
             // The last direct frame (a zoom's, a pan's or a settling one) drew these parts at this camera: the same live picture.
@@ -1602,9 +1611,12 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     invalidated = true;
                     // A settling frame's live picture holds the view's parts only: a change off the view (a wider paint window after a zoom
                     // step) leaves it the same (measured on LARGE=11: 30 of 36 redundant zoom presents named such a paint-ready frame).
-                    if (settleRepeat) {
+                    if (settling) {
                         const world: Rect = { x: view.camera.x, y: view.camera.y, width: view.viewport.width / view.camera.z, height: view.viewport.height / view.camera.z };
-                        for (const rect of changes) if (overlapsRect(rect, world)) { settleRepeat = false; auditCount(audit, 'settle:fresh:visible-change'); break; }
+                        for (const rect of changes) if (overlapsRect(rect, world)) {
+                            if (settleRepeat) auditCount(audit, 'settle:fresh:visible-change');
+                            settleRepeat = false; break;
+                        }
                     }
                 }
                 // A whole-scene change is not laid live (every part would be): its tiles draw as before, flagged stale until composed.
@@ -1705,7 +1717,12 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             drawnTarget = target;
             buildDraws(view, target, zooming, budget);
             // A settling frame is drawn live but owes its tiles: it is settled only once they are exact, so the composer keeps asking.
-            settled = !indexing && ((liveNow && !settling) || allExact(view, target));
+            const exact = allExact(view, target);
+            // Settled with nothing in flight too: a visible position that composes nothing (empty) or waits on the governor must not keep
+            // a settling composer asking for frames at rest; the governor's wake or the next change resumes it.
+            settled = !indexing && ((liveNow && !settling) || exact || (settling && building.size === 0 && finished.length === 0 && inexactPending.size === 0));
+            if (exact) { exactAtX = view.camera.x; exactAtY = view.camera.y; exactAtZ = view.camera.z; }
+            else { exactAtX = Number.NaN; exactAtY = Number.NaN; exactAtZ = Number.NaN; }
             // Changed unless the frame drew what the last one drew: no edit, the same draw list, and a settled index.
             let signature = hashMix(drawCount, liveNow ? 1 : 0);
             for (let i = 0; i < drawCount; i++) {

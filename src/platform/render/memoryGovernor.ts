@@ -183,6 +183,16 @@ function activityValid(activity: CacheActivity): void {
     }
 }
 
+/** One recovery step up. A level within float noise of full is full: a pane's ceiling is the square root of its pixel share
+ * (0.7999999 for a 0.8 grant), and divided back up it came to 0.99999998, so the plan granted the request less one pixel, the
+ * surface was 1871x1455 for 1872x1456, no frame was ever at quality 1 and a WebGL2 PDF's editing cover, which waits for a sharp
+ * frame, never lifted (measured at DPR 2; each retry for the missing pixel needed a full-size bridge that the pool refused, and
+ * quality fell back to 0.8). */
+function raisedQuality(value: number): number {
+    const next = value / POLICY.qualityReductionFactor;
+    return next >= 1 - 1e-6 ? 1 : next;
+}
+
 /** Need-capped weighted water filling (§6.3:640–641); integer remainders use stable ids. */
 function waterFill(items: readonly Share[], capacity: number): Map<string, number> {
     const grants = new Map(items.map(item => [item.id, 0]));
@@ -524,8 +534,8 @@ export class MemoryGovernor {
         if (!cool) this.belowRecoverySince = null;
         else if (this.belowRecoverySince === null) this.belowRecoverySince = now;
         else if (now - this.belowRecoverySince >= POLICY.memoryRecoveryDelayMs && !this.raiseRefused(now)) {
-            this.qualityLimit = Math.min(1, this.qualityLimit / POLICY.qualityReductionFactor);
-            for (const [id, value] of this.paneCeiling) this.paneCeiling.set(id, Math.min(1, value / POLICY.qualityReductionFactor));
+            this.qualityLimit = raisedQuality(this.qualityLimit);
+            for (const [id, value] of this.paneCeiling) this.paneCeiling.set(id, raisedQuality(value));
             this.levelSince = now;
             this.state = this.qualityLimit < 1 ? 'degraded' : 'normal';
             if (this.state === 'normal') this.lastTrouble = null;

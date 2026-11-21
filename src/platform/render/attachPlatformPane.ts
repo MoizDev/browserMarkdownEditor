@@ -459,8 +459,15 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                             cpuPresented = false;
                             // The bridge is board content rastered on the CPU while the device exists: counted with its pixels.
                             auditCount('pane', 'fallback:2d-bridge', 1, { px: size.physical.width * size.physical.height });
+                            const shown = drawing.surface.width * drawing.surface.height;
                             drawing = compositor;
-                            planned = computeSurfaceMetrics(size.physical, size.nominalDpr, drawing.target.limits, grant.pixelGrant);
+                            // The bridge stands in for the picture on screen while the GL canvas rebuilds, so it needs no more pixels
+                            // than that picture has: its back buffer and its staged display are both charged at the surface reserve,
+                            // on top of the kept GPU display and caches. At the grant it did not fit (measured, WebGL2 DPR 2 annotated
+                            // PDF, raise 0.8 -> 1.0: 2 x 32.7 MB of bridge beside 57 MB of GPU, pool 116 MB): the raise was refused,
+                            // quality stepped back to 0.8 every 5 s, and the editing cover, which waits for a sharp frame, never lifted.
+                            planned = computeSurfaceMetrics(size.physical, size.nominalDpr, drawing.target.limits,
+                                shown > 0 ? Math.min(grant.pixelGrant, shown) : grant.pixelGrant);
                         }
                         const result = activeMetrics().commit(frameId, size.generation, planned, drawing.target);
                         if (result?.kind === 'ready') drawing.setMetrics(result.metrics);

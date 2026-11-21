@@ -198,6 +198,12 @@ export function auditPresents(): { dropped: number; records: readonly PresentRec
     return { dropped: presentTotal - kept, records };
 }
 
+/** A forced trim (audit only: the session kit proves that everything above the visible view and its ring is given back on request).
+ * The runtime registers the governor's trim; the kit calls `__bmeRenderAudit.trim(pool)` and reads the charge again after it. */
+let trimHook: ((pool: 'gpu' | 'cpu') => number) | null = null;
+export function auditTrimHook(trim: (pool: 'gpu' | 'cpu') => number): void { if (enabled) trimHook = trim; }
+function auditTrim(pool: 'gpu' | 'cpu'): number { return trimHook?.(pool) ?? -1; }
+
 /** Named gauges: a surface registers a read of a live value (a node count, a cache size) and the audit reads it when asked.
  * Off, registering returns a no-op and nothing is kept. A registration under a name replaces the earlier one; the returned
  * function removes it only while it is still this one. */
@@ -276,5 +282,5 @@ export function auditReset(): void {
 }
 
 if (enabled && typeof window !== 'undefined') {
-    (window as unknown as { __bmeRenderAudit?: unknown }).__bmeRenderAudit = { snapshot: auditSnapshot, reset: auditReset, presents: auditPresents, gauges: auditGauges, scenes: auditScenes, gpuErrors: auditGpuErrors, arenaErrors: auditArenaErrors, slowFrames: auditSlowFrames };
+    (window as unknown as { __bmeRenderAudit?: unknown }).__bmeRenderAudit = { snapshot: auditSnapshot, reset: auditReset, presents: auditPresents, gauges: auditGauges, scenes: auditScenes, gpuErrors: auditGpuErrors, arenaErrors: auditArenaErrors, slowFrames: auditSlowFrames, trim: auditTrim };
 }

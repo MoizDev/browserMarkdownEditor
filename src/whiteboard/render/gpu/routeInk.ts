@@ -233,9 +233,7 @@ export const createInkRoutes: CreateInkRoutes = (host: LayerHost, audit: string)
                     }
                     // The grid: one set per chunk, all under one affine and one stencil cover.
                     const started = renderAuditEnabled() ? performance.now() : 0;
-                    // A moving view may draw a chunk's outline one band coarser than its scale asks (inkGeometry.place); a tile
-                    // composed at rest has a still view, so it is drawn exact.
-                    const stroke = geometry.strokeSets(item, band, view.moving);
+                    const stroke = geometry.strokeSets(item, band);
                     if (started) { auditCount(audit, 'ink:strokesets-calls'); auditCount(audit, 'ink:strokesets-hundredths-ms', Math.round((performance.now() - started) * 100)); }
                     if (stroke && 'denied' in stroke) { retireAll(); return { status: 'denied', pool: 'cpu', bytes: stroke.denied }; }
                     if (!stroke) { retireAll(); return { status: 'unsupported', why: 'outline-refused' }; }

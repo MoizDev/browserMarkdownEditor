@@ -1,4 +1,4 @@
-import { renderAuditEnabled } from './renderAudit';
+import { auditTrimHook, renderAuditEnabled } from './renderAudit';
 import { getTerminalContextActive, subscribeTerminalContext } from '../terminalContext';
 import { RENDER_CONSTANTS as POLICY } from './constants';
 import { MemoryGovernor } from './memoryGovernor';
@@ -21,8 +21,9 @@ function sameDemands(a: readonly PaneMemoryDemand[], b: readonly PaneMemoryDeman
     if (a.length !== b.length) return false;
     for (let i = 0; i < a.length; i++) {
         const x = a[i], y = b[i];
+        // Every field the governor plans from (samePaneDemand): a demand that moved only its pinned bytes or its DPR was dropped here.
         if (x.paneId !== y.paneId || x.visible !== y.visible || x.focused !== y.focused || x.requestedPixels !== y.requestedPixels ||
-            x.gpuNeedBytes !== y.gpuNeedBytes || x.cpuNeedBytes !== y.cpuNeedBytes || x.cpuMandatoryBytes !== y.cpuMandatoryBytes ||
+            x.devicePixelRatio !== y.devicePixelRatio || x.gpuPinnedBytes !== y.gpuPinnedBytes || x.gpuNeedBytes !== y.gpuNeedBytes || x.cpuNeedBytes !== y.cpuNeedBytes || x.cpuMandatoryBytes !== y.cpuMandatoryBytes ||
             x.cpuPinned !== y.cpuPinned) return false;
     }
     return true;
@@ -49,6 +50,7 @@ export class PlatformRuntime {
     private planned: { demands: readonly PaneMemoryDemand[]; liveGesture: boolean } | null = null;
 
     constructor() {
+        if (renderAuditEnabled()) auditTrimHook(pool => this.governor.trimForAudit(pool));
         const context = this.governor.register({
             id: 'platform:native-contexts', pool: 'gpu', kind: 'context', class: 'scene-cache',
             hiddenAt: null, lastVisibleAt: 0, lastUsedAt: 0,

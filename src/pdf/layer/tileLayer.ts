@@ -118,8 +118,10 @@ const TILE_EDGE = 514;
 const ZOOM_GESTURE_GAP_MS = 150;
 /** A gesture's covered tiles wait this many of its own step intervals after its last step before they raster. Started sooner,
  * the next step replanned the scale before they landed: measured on doc12's paced GPU zoom (a step every ~56 ms), 113 of 124
- * rasters were thrown away unused (fallback:raster-unused) and the last step's tiles queued behind them in the worker pool. */
-const ZOOM_GESTURE_HOLD = 1.25;
+ * rasters were thrown away unused (fallback:raster-unused) and the last step's tiles queued behind them in the worker pool.
+ * One interval: the first frame a full interval after the last step with no new one shows the gesture has ended. At 1.25 a
+ * saturated zoom (a step every frame) held its first quiet frame too, and sharpened a frame later than it could. */
+const ZOOM_GESTURE_HOLD = 1;
 /** The hold's bound (t21): three frames, so a slow notched wheel's tiles never wait longer. */
 const ZOOM_GESTURE_HOLD_MAX_MS = 48;
 /** The step of a gesture its hold starts at (t21): a notch or a short zoom of two steps holds nothing and starts its tiles at once,
@@ -234,7 +236,7 @@ export class PdfTileLayer implements Layer {
     /** Bumped by every change to what the layer draws (tiles, bridge items, the frame texture, the content). prepare answers
      * unchanged only while this has not moved since the frame it last answered changed for (see answer). */
     private drawVersion = 0;
-    private presented = { version: -1, view: '', picture: 0 };
+    private presented = { version: -1, view: '', picture: 0, epoch: -1 };
     private latestDemand: Omit<PdfDemandInput, 'covered' | 'previousMotionScale'> | null = null;
     private latestView: ViewState | null = null;
     private mirrorJob: MirrorJob | null = null;
@@ -500,18 +502,23 @@ export class PdfTileLayer implements Layer {
      * the layer draws differs from what it last presented, so a continuation frame may skip encode and present. A prepare
      * that a budget or deadline cut short is changed; so is any change to the view the picture is drawn at. */
     private answer(view: ViewState, budget: FrameBudget): boolean {
-        const shown = `${budget.cameraEpoch}|${view.camera.x}|${view.camera.y}|${view.camera.z}|${view.viewport.width}|${view.viewport.height}|${view.viewport.dpr}`;
+        // The view by position, not by epoch: the epoch also moves when the moving flag flips at a gesture's start and end with the
+        // camera where it was, and keyed on it the page answered changed over the same picture (measured, doc12: 6 of 14 redundant
+        // presents, pane:prepare-changed:pdf-page alone). What the flag changes (the motion tiles) is in the picture key; the epoch
+        // still decides when the picture is unknown.
+        const shown = `${view.camera.x}|${view.camera.y}|${view.camera.z}|${view.viewport.width}|${view.viewport.height}|${view.viewport.dpr}`;
+        const epoch = budget.cameraEpoch;
         // What the next draw lays, by identity: the tiles it draws with their pixels (texture on a device, bitmap on 2D), the bridge
         // pictures and the paper. The draw version also moves for work nothing draws (a tile started, evicted off the view, or uploaded
         // where an exact tile already covers it), and answering changed on it presented the same picture: measured on doc12, the wake
         // frame of every paced zoom step (37 of 117 zoom presents redundant). The version still decides when the picture is unknown.
         const picture = this.pictureKey(view);
         if (this.presented.view === shown && (picture !== 0 ? picture === this.presented.picture
-            : !this.pendingFrame && this.presented.version === this.drawVersion)) {
+            : !this.pendingFrame && this.presented.version === this.drawVersion && this.presented.epoch === epoch)) {
             auditCount('pdf-page', 'prepare-unchanged');
             return false;
         }
-        this.presented = { version: this.drawVersion, view: shown, picture };
+        this.presented = { version: this.drawVersion, view: shown, picture, epoch };
         return true;
     }
 

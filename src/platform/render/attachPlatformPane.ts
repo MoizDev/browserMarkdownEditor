@@ -75,7 +75,8 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     let lastQuality: number | null = null;
     /** What the last real present reported, for the frames that skip it (see presentUnchanged). Cleared whenever the pane stops presenting. */
     let lastReport: { revision: string; backend: PaneCompositor['backend']; complete: boolean; sharp: boolean;
-        staleVersion: boolean | undefined; camera: { x: number; y: number; z: number }; geometry: number | undefined } | null = null;
+        staleVersion: boolean | undefined; camera: { x: number; y: number; z: number }; drawn: { x: number; y: number; z: number };
+        geometry: number | undefined } | null = null;
     // Audit only: the camera scale of the previous mirrored present, for the present's zooming flag.
     let lastMirroredScale: number | null = null;
     let sampledCamera = { ...camera.camera };
@@ -364,7 +365,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             }
             const cpuMandatoryBytes = requestedPixels ? Math.max(mandatory, requestedPixels * RENDER_CONSTANTS.decodedRgbaBytesPerPixel) +
                 (requestedPixels + bandPixels) * 4 : 0;
-            return { paneId: options.paneId, visible, focused, requestedPixels,
+            return { paneId: options.paneId, visible, focused, requestedPixels, devicePixelRatio: size?.nominalDpr ?? 1,
                 // Needs stay inside G/C: detached CPU completion, staged GPU, mirror/effect targets,
                 // native bitmap residency and one bounded colour band do not raise either cap.
                 gpuPinnedBytes: pinned,
@@ -616,7 +617,8 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                                 if (qualityScale < 1) auditCount('pane', 'quality-below-1');
                                 if (drawing !== compositor) candidate.presented(frame.token.deviceGeneration);
                                 lastReport = { revision, backend: drawing.backend, complete, sharp, staleVersion,
-                                    camera: { x: liveCamera.x, y: liveCamera.y, z: liveCamera.z }, geometry: geometry?.generation };
+                                    camera: { x: liveCamera.x, y: liveCamera.y, z: liveCamera.z },
+                                    drawn: { x: frame.view.camera.x, y: frame.view.camera.y, z: frame.view.camera.z }, geometry: geometry?.generation };
                                 options.onPresentation({ frameId: frame.frameId, token: frame.token, backend: drawing.backend,
                                     complete, sharp, staleVersion,
                                     viewEpoch: frame.view.epoch, revision });
@@ -638,10 +640,17 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                         const drawing = drawCompositor();
                         if (!last || !drawing || drawing.backend !== last.backend || disposed) return false;
                         const current = token();
-                        const liveCamera = options.readCamera();
+                        // The frame's own camera (as drawn: snapped to the pixel grid, not the live value) decides what it would draw: it
+                        // must be the one on screen.
+                        const drawn = frame.view.camera;
                         if (!current || !sameFrame(current, frame.token) || options.revision() !== last.revision ||
-                            liveCamera.x !== last.camera.x || liveCamera.y !== last.camera.y || liveCamera.z !== last.camera.z ||
+                            drawn.x !== last.drawn.x || drawn.y !== last.drawn.y || drawn.z !== last.drawn.z ||
                             observer.current?.generation !== last.geometry) return false;
+                        // The camera has moved past this frame (input after its snapshot): a real present at a stale camera reports nothing
+                        // either (see the present path), so this one skips and reports nothing. Refused, it presented the picture already on
+                        // screen (measured, doc12 paced pan: 1 redundant present, unchanged-refused:camera with every layer unchanged).
+                        const liveCamera = options.readCamera();
+                        if (liveCamera.x !== last.camera.x || liveCamera.y !== last.camera.y || liveCamera.z !== last.camera.z) return true;
                         options.onPresentation({ frameId: frame.frameId, token: frame.token, backend: last.backend, complete: last.complete,
                             sharp: last.sharp, staleVersion: last.staleVersion, viewEpoch: frame.view.epoch, revision: last.revision });
                         return true;

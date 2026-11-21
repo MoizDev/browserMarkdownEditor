@@ -12,7 +12,7 @@ import type { PoolStorage } from './webgl2Pool';
 import { AREA_RESOLVE_SHADER, COMPOSITION_SHADER, GRID16_RESOLVE_SHADER, GRID_RESOLVE_SHADER, MODULATE_COMPOSITE_SHADER } from './webgl2Shaders';
 import { Webgl2IndexMirror } from './webgl2Index';
 import { Webgl2Timer } from './webgl2Timer';
-import { auditCount } from '../renderAudit';
+import { auditCount, renderAuditEnabled } from '../renderAudit';
 import { Webgl2IsolationPool } from './webgl2Isolation';
 import type { GpuIsolationAdmission, IsolationReservation } from './webgl2Isolation.types';
 import { ArenaError, ResourceArena } from '../resourceArena';
@@ -1869,6 +1869,9 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
         this.#cFramebuffer = framebuffer;
         this.#replaySwitches++;
+        // On a tiled GPU (Apple through ANGLE Metal) each change of bound target ends a render pass and starts another, loading and
+        // storing the attachment: the count per frame is the load-insensitive proxy for that cost (audit only).
+        if (renderAuditEnabled()) auditCount('gpu', framebuffer ? 'target-switch' : 'target-switch:surface');
     }
 
     #useProgram(program: WebGLProgram): void {

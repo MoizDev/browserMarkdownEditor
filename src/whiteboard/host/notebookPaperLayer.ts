@@ -5,7 +5,7 @@ import type { ByteLease, GpuPass } from '../../platform/render/gfx/api';
 import { pageAt, type PageStack } from '../../platform/render/pageStack';
 import type { ScheduledFrame } from '../../platform/render/scheduler';
 import type { FrameBudget, FrameToken, GpuReleaseReason, Layer, OffscreenPasses } from '../../platform/render/types';
-import { auditDrawn } from '../../platform/render/renderAudit';
+import { auditCount, auditDrawn } from '../../platform/render/renderAudit';
 import { boardPageStack } from '../model/pages';
 import type { HostBlock } from '../model/doc';
 import type { PaintPalette } from '../render/colour';
@@ -18,6 +18,7 @@ import { preparedOfFrame, type CanvasPaintAdapter, type PreparedPaint2d } from '
 import { Path2dJob } from '../render/reference/coverage2d';
 import { paintItem2d, type PaintResources2d, type PreparedPath2d } from '../render/reference/paint2d';
 import { notebookBackdrop } from './notebookBackdrop';
+import { createProceduralPaper, type ProceduralPaper } from './proceduralPaper';
 import { FULL_REGION_CHANGES, type RegionChanges } from '../scene/boundsVersions';
 
 /** The composer's offscreen encode (PLAN §3.3, wave 2). Today's adapter has none, so the layer's call is guarded: a no-op. */
@@ -147,7 +148,13 @@ class NotebookPaperLayer implements Layer {
         needsFrame: () => false, memory: () => ({ gpuBytes: 0, cpuBytes: 0 }), dispose: () => {},
     };
     private readonly gpu: ReturnType<typeof createGpuPaintAdapter>;
+    /** Lined, grid and blank paper on the GPU: one procedural pass per frame instead of composed tiles (proceduralPaper.ts). */
+    private readonly procedural: ProceduralPaper;
+    private proceduralOn = false;
+    /** What the last procedural picture was drawn for: the same view and paper is the same picture. */
+    private proceduralKey: { ready: Ready; x: number; y: number; z: number; w: number; h: number; dpr: number } | null = null;
     constructor(private readonly host: LayerHost, private readonly options: NotebookPaperLayerOptions) {
+        this.procedural = createProceduralPaper(host);
         // The paper's own opaque world: its page rects, which the paper fills (notebookPaper.ts), exact for an inverted view.
         // The paper's lines draw the same pixels live and from tiles (measured: its settle-to-tile switch presented identical pictures,
         // 19 a zoom phase), so its composer goes back to its tiles at rest without drawing the paper live through a drag or a stroke.
@@ -262,6 +269,12 @@ class NotebookPaperLayer implements Layer {
         // One page step is always admitted: under a zero slice the staging never advances, and needsFrame keeps asking.
         this.preparePaper(withFirstUnit(budget));
         if (this.disposed || !this.host.device()) return true;
+        if (this.prepareProcedural(view, budget.token)) {
+            const key = this.proceduralKey, ready = this.ready!, cam = view.camera, vp = view.viewport;
+            const same = !!key && key.ready === ready && key.x === cam.x && key.y === cam.y && key.z === cam.z && key.w === vp.width && key.h === vp.height && key.dpr === vp.dpr;
+            if (!same) this.proceduralKey = { ready, x: cam.x, y: cam.y, z: cam.z, w: vp.width, h: vp.height, dpr: vp.dpr };
+            return !same || this.ready !== readyBefore;
+        }
         const sourceBefore = this.gpuPrepared;
         let changed = true;
         try {
@@ -269,6 +282,24 @@ class NotebookPaperLayer implements Layer {
             changed = this.gpu.prepare(view, budget);
         } catch (error) { this.report(error); return true; }
         return changed || this.ready !== readyBefore || this.gpuPrepared !== sourceBefore;
+    }
+    /** Whether this frame's paper is the procedural pass. Entering it releases the composed tiles (they are not drawn again until
+     * the paper leaves it); a paper it cannot draw, or a pipeline still compiling, keeps the composed route (counted by reason). */
+    private prepareProcedural(_view: ViewState, token: FrameToken): boolean {
+        const ready = this.ready;
+        let on = false;
+        if (ready && sameToken(ready.token, token)) {
+            const refusal = this.procedural.refusal(ready.paper, ready.stack);
+            if (refusal) auditCount('notebook-paper', `procedural:off:${refusal}`);
+            else if (!this.procedural.ready()) auditCount('notebook-paper', 'procedural:off:pipeline');
+            else on = true;
+        }
+        if (on && !this.proceduralOn) {
+            this.gpu.release('pressure'); this.gpuPrepared = null; this.gpuSource = null; this.proceduralKey = null;
+        }
+        if (!on && this.proceduralOn) this.proceduralKey = null;
+        this.proceduralOn = on;
+        return on;
     }
     private prepareGpuSource(view: ViewState, token: FrameToken): void {
         const ready = this.ready;
@@ -314,6 +345,12 @@ class NotebookPaperLayer implements Layer {
         return paper;
     }
     drawGpu(pass: GpuPass, view: ViewState): void {
+        const ready = this.ready;
+        if (this.proceduralOn && ready) {
+            const pages = this.procedural.draw(pass, view, ready.paper, ready.stack);
+            if (pages) for (let page = pages[0]; page <= pages[1]; page++) this.markDrawn(ready.stack.rects[page]);
+            return;
+        }
         this.gpu.drawGpu(pass, view, 'content');
         // Drawn only when the adapter's ready tiles are the ones prepared for this paper (the coverage test below).
         const source = this.gpuSource;
@@ -381,7 +418,9 @@ class NotebookPaperLayer implements Layer {
         });
     }
     releaseGpu(reason: GpuReleaseReason): void {
-        this.gpu.release(reason); this.gpuPrepared = null; this.gpuSource = null; this.drawn = new WeakSet(); this.drawnOnce = false; this.claim = null;
+        this.gpu.release(reason);
+        // The pipeline is device state: a pressure release keeps it (it holds no budgeted bytes); any other release drops it.
+        if (reason !== 'pressure') { this.procedural.release(); this.proceduralOn = false; this.proceduralKey = null; } this.gpuPrepared = null; this.gpuSource = null; this.drawn = new WeakSet(); this.drawnOnce = false; this.claim = null;
         // Pressure takes GPU memory only. The CPU paths stay: dropping them made every pressure release a
         // full rebuild (measured: 788 rebuilds in one notebook stroke), and the rebuild asked for the same tiles again.
         if (reason === 'pressure') return;
@@ -397,7 +436,7 @@ class NotebookPaperLayer implements Layer {
         if (this.disposed || this.denied) return false;
         const revision = this.options.read().revision;
         return !Object.is(this.failedRevision, revision) && (this.staged !== null || this.ready?.revision !== revision ||
-            (!!this.host.device() && !!this.gpuPrepared && this.gpu.needsFrame()));
+            (!this.proceduralOn && !!this.host.device() && !!this.gpuPrepared && this.gpu.needsFrame()));
     }
     dispose(): void { if (!this.disposed) { this.disposed = true; this.releaseGpu('hidden'); this.gpu.dispose(); } }
     currentRevision(): number { return this.snapshot().revision; }
@@ -422,6 +461,8 @@ class NotebookPaperLayer implements Layer {
         const current = ready.revision === requested && ready.revision === this.options.read().revision;
         if (!current) return { complete: false, sharp: false, staleVersion: true };
         if (backend === 'canvas2d') return { complete: true, sharp: true };
+        // The procedural pass draws every visible page exactly in this frame: nothing composes, nothing stands in.
+        if (this.proceduralOn) return { complete: true, sharp: true };
         if (this.gpu.readyPaint() !== this.gpuPrepared) return { complete: false, sharp: false, staleVersion: true };
         return this.gpu.coverage(frame.view);
     }

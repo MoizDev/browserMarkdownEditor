@@ -71,6 +71,8 @@ export interface ViewerInteractionPorts {
     paletteChanged?(): void;
     /** Immutable, identity-stable semantic hover/edit targets requiring exact paint. */
     sensitiveNodeIds?(): ReadonlySet<string>;
+    /** Whether a pointer is down on the board (a stroke, a drag or a marquee in progress): its frames change for that input. */
+    pointerDown?(): boolean;
 }
 export interface ViewerEngine {
     readonly session: BoardSession; // EXACT same instance the App acquired; never a second doc.

@@ -218,6 +218,8 @@ export interface TileComposerOptions {
     /** The content draws the same pixels live and from its tiles (a notebook's paper): settling ends as soon as the tiles are exact, and
      * the switch answers unchanged. Other content settles until the camera moves (a stroke's tip can differ by a sample). */
     readonly liveMatchesTiles?: boolean;
+    /** Whether a pointer is down (a stroke, a drag, a marquee): the frame changes for that input anyway, so settling may end in it. */
+    readonly inputActive?: () => boolean;
 }
 
 export interface TileComposer {
@@ -1580,7 +1582,13 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             const exactBefore = exactAtX === view.camera.x && exactAtY === view.camera.y && exactAtZ === view.camera.z;
             // Content whose live and tiled pixels match leaves settling once its tiles are exact at this camera, quietly (no present).
             quietSwitch = options.liveMatchesTiles === true && directBefore && exactBefore && !zooming && !panned;
-            settling = !zooming && !panned && directBefore && !quietSwitch && options.liveOverlay !== true && !omitIds?.size && !indexing;
+            // While a pointer is down the frame changes for its input anyway (the wet stroke grows, a marquee moves), so a board settled
+            // live switches to its exact tiles there: settled live, every frame of a stroke redrew the whole visible board live (measured,
+            // hz120 DPR 2: drawing saturated draw 42% of frames over 8.33 ms GPU, LARGE=11 73%). At rest the switch still waits for the
+            // camera: alone in its frame, a stroke tip's edge sample changed with no input (gpu-f4, doc12 pen-up).
+            const inputSwitch = !quietSwitch && directBefore && exactBefore && !zooming && !panned && options.inputActive?.() === true;
+            if (inputSwitch) auditCount(audit, 'settle:switch:input');
+            settling = !zooming && !panned && directBefore && !quietSwitch && !inputSwitch && options.liveOverlay !== true && !omitIds?.size && !indexing;
             liveNow = paintLiveOnly || (!indexing && (zooming || panning || settling) && zoomDirectOk(view, target));
             settling &&= liveNow;
             // The last direct frame (a zoom's, a pan's or a settling one) drew these parts at this camera: the same live picture.

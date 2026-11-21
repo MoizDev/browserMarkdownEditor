@@ -391,7 +391,11 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     let finished: Position[] = [];
     const draws: Draw[] = [];
     // The ink nodes the composite draws, filled in drawGpu and cleared in prepare: one set for the composer's life.
+    // The ink the last draw drew, kept until the next frame's draw starts: a prepare reads what is on screen. Cleared at each prepare, it
+    // read empty in every other layer's prepare and full after this draw, so the wet layer's picture key flipped on its hand-over flag
+    // and presented the same picture again once per stroke (measured: 20 of the 33 redundant GPU presents over five documents).
     const drawnInk = new Set<string>();
+    let drawnInkFrame = -1;
     // The nodes whose live parts the composite lays, per band: filled in drawGpu beside the live draw, cleared in prepare. The board
     // trusts a changed node as drawn only when it is in this set, so a live part that was deferred or denied is not counted.
     const drawnLive: Record<PaintBand, Set<string>> = { underlay: new Set<string>(), content: new Set<string>() };
@@ -1458,7 +1462,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         retireLive();
         store.releaseAll();
         for (const route of routeList) route.release();
-        denied = false; waiting = false; blockedOnGpu = false; retryAt = 0; retryDelay = GPU_RETRY_MS; retryMisses = 0; settled = false; presenting = false;
+        denied = false; waiting = false; blockedOnGpu = false; retryAt = 0; retryDelay = GPU_RETRY_MS; retryMisses = 0; settled = false; presenting = false; drawnInk.clear(); drawnInkFrame = -1;
         heldNodes.clear();
     };
 
@@ -1485,7 +1489,6 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             editBits = 0;
             frame = budget.frameId;
             frameComposed = 0;
-            drawnInk.clear();
             drawnLive.underlay.clear(); drawnLive.content.clear();
             plannedLive.underlay.clear(); plannedLive.content.clear();
             retireLive();
@@ -1504,7 +1507,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             if (!prepared || !device || !(demand > 0) || !Number.isFinite(demand)) {
                 for (const position of finished) cancel(position);
                 finished = [];
-                drawCount = 0; presenting = false; drawSignature = 0; contentVersion++; return true;
+                drawCount = 0; presenting = false; drawSignature = 0; contentVersion++; drawnInk.clear(); return true;
             }
             presenting = true;
             preparedSharp = prepared.sharp !== false;
@@ -1729,6 +1732,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             reportRouteRefusals();
         },
         drawGpu(pass: GpuPass, view: ViewState, band: PaintBand): void {
+            if (drawnInkFrame !== frame) { drawnInkFrame = frame; drawnInk.clear(); }
             if (!drawCount) return;
             if (!listUsable(view)) { auditCount(audit, 'draw:stale-list'); wantFrame = true; return; }
             const cam = view.camera, scale = cam.z * view.viewport.dpr;

@@ -95,7 +95,7 @@ const UNIFORM_BYTES = 64;
 
 /** One instance per edge: a strip from its leftmost pixel to the band's right edge over the rows it crosses. */
 const EDGE_SHADER: ShaderModule = {
-    id: 'platform-area-edge', revision: 3,
+    id: 'platform-area-edge', revision: 4,
     layout: {
         uniforms: [{ binding: 0, byteSize: UNIFORM_BYTES }],
         textures: [],
@@ -135,9 +135,15 @@ void main() {
     float v0 = max(p.y, a.y), v1 = min(p.y + 1.0, b.y);
     if (!(v1 > v0) || !(b.y > a.y)) { accumulated = 0.0; return; }
     float dxdy = (b.x - a.x) / (b.y - a.y);
-    float ta = a.x + (v0 - a.y) * dxdy - p.x, tb = a.x + (v1 - a.y) * dxdy - p.x;
-    // The mean share over the edge's run through this row: exact for a straight edge.
-    float mean = abs(tb - ta) > 1e-5 ? (share(tb) - share(ta)) / (tb - ta) : clamp(1.0 - 0.5 * (ta + tb), 0.0, 1.0);
+    // The run's column offsets: ta, and tb as ta plus the run's own width d, so the two never round apart. Taken as two separate
+    // differences of pixel-sized coordinates, a near-vertical run's tb - ta (about 1e-4) was rounding noise of the same size, and
+    // fast-math compiles the quotient's two sides differently: every column right of the edge took a wrong share, a streak to the
+    // area's right side (measured on Apple's GPU, exact-area ink: 1 to 6 levels along up to 1,000 px of a row).
+    float ta = (a.x - p.x) + (v0 - a.y) * dxdy, d = (v1 - v0) * dxdy, tb = ta + d;
+    // The mean share over the edge's run through this row: exact for a straight edge. Wholly left of the column it is all of the run,
+    // wholly right none; a run narrower than 1e-3 px takes the midpoint (off by at most d / 8 where it straddles a column side).
+    float mean = max(ta, tb) <= 0.0 ? 1.0 : (min(ta, tb) >= 1.0 ? 0.0
+        : (abs(d) >= 1e-3 ? (share(tb) - share(ta)) / d : clamp(1.0 - 0.5 * (ta + tb), 0.0, 1.0)));
     accumulated = dir * (v1 - v0) * mean;
 }`,
     },

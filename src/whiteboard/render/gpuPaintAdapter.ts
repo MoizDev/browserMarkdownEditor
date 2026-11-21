@@ -365,7 +365,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             pendingPrepared = null;
             if (disposed || lastFrame === budget.frameId) return true;
             lastFrame = budget.frameId;
-            pathRoute.beginFrame(budget.frameId);
+            pathRoute.beginFrame(budget.frameId); ink.beginFrame(budget.frameId);
             const prepared = reference.borrowPrepared(), device = host.device();
             if (!prepared || !device || !documentMatches(prepared.root, budget.token) || !documentMatches(prepared.sourceFrame, budget.token) ||
                 device.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration) {
@@ -448,7 +448,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         evictGpu(bytes: number, frameId: number): number {
             if (disposed || !(bytes > 0)) return 0;
             // Route caches first, then composed tiles: each frees only what this frame did not use. The sum is what was freed.
-            pathRoute.beginFrame(frameId);
+            pathRoute.beginFrame(frameId); ink.beginFrame(frameId);
             let freed = pathRoute.coverage.evict(bytes);
             if (freed < bytes) freed += imageRoute.evictTextures(bytes - freed, frameId);
             if (freed < bytes) freed += textRoute.evictTextures?.(bytes - freed, frameId) ?? 0;

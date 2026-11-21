@@ -31,6 +31,9 @@ export interface InkCoverage {
     readonly radii: Float64Array;
     readonly arcMaps: readonly CubicArcMap[];
     readonly segments: Float64Array; // stride 6: x0,y0,r0,x1,y1,r1; endpoint-disc convex hulls.
+    // Segment-row indices (into segments, stride 6) where a run of contiguous rows begins, ascending. A run breaks at a dash
+    // off-interval, so the first row after one starts a run; the first emitted row of a chunk always starts one.
+    readonly segmentRunStarts: Uint32Array;
     readonly discs: Float64Array; // stride 3: x,y,r; explicit taps and round point motifs.
     readonly centreline: Float64Array; // stride 4, undashed canonical centreline approximation.
     readonly boundsLocal: Readonly<{ x: number; y: number; w: number; h: number; }>;
@@ -138,6 +141,8 @@ export class InkCoverageJob {
     private centreError = 0;
     private radiusError = 0;
     private resultValue: InkCoverage | undefined;
+    private readonly runStarts: number[] = [];
+    private runOpen = false;
     private cancelled = false;
     private failure: unknown;
     private readonly closed: boolean;
@@ -300,11 +305,12 @@ export class InkCoverageJob {
         const a = length ? this.progress / length : 0, b = length ? (this.progress + amount) / length : 1;
         if (!dash || !(dash.index & 1)) {
             const i = this.segments.reserve(), out = this.segments.data;
+            if (!this.runOpen) { this.runStarts.push(i / 6); this.runOpen = true; }
             out[i] = ax + (bx - ax) * a; out[i + 1] = ay + (by - ay) * a;
             out[i + 2] = interpolateRadius(r0, r1, start + (end - start) * a);
             out[i + 3] = ax + (bx - ax) * b; out[i + 4] = ay + (by - ay) * b;
             out[i + 5] = interpolateRadius(r0, r1, start + (end - start) * b);
-        }
+        } else this.runOpen = false;
         this.progress += amount;
         if (dash) dash.remaining = Math.max(0, dash.remaining - amount);
         if (this.progress >= length) { this.arcPosition += length; this.row++; this.progress = 0; this.leafStarted = false; }
@@ -355,7 +361,8 @@ export class InkCoverageJob {
             throw new RangeError('Ink conservative bounds overflow');
         }
         this.resultValue = Object.freeze({
-            geometry: this.geometry, radii, arcMaps: maps, segments, discs, centreline, boundsLocal, centrelineBoundsLocal,
+            geometry: this.geometry, radii, arcMaps: maps, segments, segmentRunStarts: Uint32Array.from(this.runStarts), discs, centreline,
+            boundsLocal, centrelineBoundsLocal,
             centreErrorWorld: this.centreError, radiusErrorWorld: radiusError,
             dashPhaseErrorWorld: phaseError,
             lengthWorld: this.arcPosition, lengthLowerWorld: this.lengthLower, lengthUpperWorld: this.lengthUpper, closed: this.closed,

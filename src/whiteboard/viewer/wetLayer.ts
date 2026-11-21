@@ -705,6 +705,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         if (disposed || !owner || !options.current()) return false;
         if (lastPrepareFrame === budget.frameId) return frameAnswer;
         lastPrepareFrame = budget.frameId;
+        inkRoutes?.beginFrame(budget.frameId);
         // A denied reservation waits for a genuine scheduler wake, not another polling frame.
         denied = false;
         try {

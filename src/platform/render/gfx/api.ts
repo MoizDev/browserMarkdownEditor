@@ -290,6 +290,9 @@ export interface GpuPass {
     releaseTarget(target: TargetLease): void;
     pushClip(clip: RectI | ClipHandle): ClipToken;
     popClip(token: ClipToken): void;
+    /** The current clip, in the same space as a draw's scissor: nothing outside it is drawn. Read-only; for work that can skip what
+     * the clip excludes (the coverage kit's bands). */
+    clipRect(): Readonly<RectI>;
     // Ordinary node/ancestor opacity multiplies emitted paints, without isolation.
     // 'modulate' composites the group's premultiplied colour over white by fixed-function dst·k, k = rgb + (1 − a): the
     // multiply slice of a group drawn normally, with no backdrop copy. It takes colourEffect 'none' only.

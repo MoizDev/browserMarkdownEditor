@@ -27,6 +27,12 @@ const PATH_COVERAGE_MAX_TARGET_BYTES = 8 * 2 ** 20;
  * request that pushed a notebook's load over the GPU pool (paper, board and wet layers each hold a kit), degrading it;
  * at 2 MiB a 516-texel tile draws in about four bands. */
 const PATH_COVERAGE_SCRATCH_BYTES = 2 * 2 ** 20;
+/** The grid scratch's cap. A grid-4 texel row costs 144 B per device pixel (16 r8 texels and their stencil), so at 2 MiB a band
+ * of a 936 px view was 15 rows (7 at DPR 2): an ink stroke 70 px tall took five passes, each a render-target switch and a resolve
+ * (measured, notebook saturated zoom: 29 resolves and ~145 switches per frame). The scratch is one per device, shared by every
+ * kit (the paper no longer holds one), and a refused band still halves down to the smallest. */
+const PATH_COVERAGE_GRID_SCRATCH_BYTES = 8 * 2 ** 20;
+const scratchCap = (grid: CompositeGrid): number => grid === 4 ? PATH_COVERAGE_GRID_SCRATCH_BYTES : PATH_COVERAGE_SCRATCH_BYTES;
 /** The smallest band a refused scratch shrinks to: a band below it draws too many passes per item to be worth its target. Between this
  * and the cap the scratch is halved on each refusal, so a pool that cannot grant the request's own band grants a smaller one (go-gpu:
  * a 1.68 MiB request refused three times while the pool had less than that free). */
@@ -511,7 +517,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         const table = scratchTables[String(grid) as '1' | '4'];
         const samples = grid === 4 ? 1 : PATH_COVERAGE_SAMPLES;
         const rowBytes = coverageTargetBytes(width, 1, samples, grid);
-        if (rowBytes > PATH_COVERAGE_SCRATCH_BYTES) return 'unsupported';
+        if (rowBytes > scratchCap(grid)) return 'unsupported';
         // A grid texture is (grid·width) texels wide, and the device's largest texture side bounds both axes of it.
         const cap = owner.limits.maxRenderTargetSize;
         if (width * grid > cap) return 'unsupported';
@@ -519,7 +525,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         // over bands of this height, so a band taller than the largest texture side is never asked for (measured: a notebook asked 2×20164
         // against a 16384 cap, and createCoverageTarget refused it).
         const fullBand = (w: number): number =>
-            Math.min(Math.floor(PATH_COVERAGE_SCRATCH_BYTES / coverageTargetBytes(w, 1, samples, grid)), Math.floor(cap / grid));
+            Math.min(Math.floor(scratchCap(grid) / coverageTargetBytes(w, 1, samples, grid)), Math.floor(cap / grid));
         const current = table.targets.get(owner);
         // A current scratch at least as wide is kept (its width is the device's widest), and grows only in height when the request is taller.
         const kept = current && current.target.width >= width ? current.target.width : 0;
@@ -528,7 +534,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         // no drop). Rounded, the scratch grows at most once per doubling; otherwise the exact request is used.
         const needed = Math.max(width, table.widths.get(owner) ?? 0);
         const rounded = 2 ** Math.ceil(Math.log2(needed));
-        const fitsRounded = rounded * grid <= cap && coverageTargetBytes(rounded, 1, samples, grid) <= PATH_COVERAGE_SCRATCH_BYTES;
+        const fitsRounded = rounded * grid <= cap && coverageTargetBytes(rounded, 1, samples, grid) <= scratchCap(grid);
         const w = kept || (fitsRounded ? rounded : needed);
         if (w * grid > cap) return 'unsupported';
         const band = fullBand(w);
@@ -752,7 +758,14 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         // One rect serves every band: a scope keeps its bounds only until its endCoverage, and the next band rewrites the rect after that.
         const band = bandRect;
         band.x = whole.x; band.y = whole.y; band.width = whole.width; band.height = 0;
-        for (let y = whole.y; y < whole.y + whole.height; y += target.height) {
+        // Bands the current clip misses are skipped: each is a pass and a resolve that would draw nothing. An item is admitted for the
+        // view, and drawn under a tile position's or a cut piece's clip, so every band of its whole bounds ran under every clip
+        // (measured, a drag's end: 422 resolves and 2,072 render-target switches in one frame).
+        const clip = pass.clipRect();
+        if (clip.width <= 0 || clip.height <= 0 || clip.x >= whole.x + whole.width || clip.x + clip.width <= whole.x) { auditCount(audit, 'kit:clipped-out'); return; }
+        const first = whole.y + Math.max(0, Math.floor((clip.y - whole.y) / target.height)) * target.height;
+        const last = Math.min(whole.y + whole.height, clip.y + clip.height);
+        for (let y = first; y < last; y += target.height) {
             band.y = y; band.height = Math.min(target.height, whole.y + whole.height - y);
             const coverUniforms = coverSlice(viewport, band, coverColour, 1);
             const token = pass.beginCoverage(target, band);
@@ -1082,7 +1095,7 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         const grid: CompositeGrid = composite && request.sampling === 'grid4' ? 4 : 1;
         const targetBytes = composite ? 0 : coverageTargetBytes(bounds.width, bounds.height, PATH_COVERAGE_SAMPLES);
         if (targetBytes > PATH_COVERAGE_MAX_TARGET_BYTES) { auditCount(audit, 'fallback:raster-route'); return { status: 'unsupported' }; }
-        if (composite && coverageTargetBytes(bounds.width, 1, grid === 4 ? 1 : PATH_COVERAGE_SAMPLES, grid) > PATH_COVERAGE_SCRATCH_BYTES) {
+        if (composite && coverageTargetBytes(bounds.width, 1, grid === 4 ? 1 : PATH_COVERAGE_SAMPLES, grid) > scratchCap(grid)) {
             auditCount(audit, 'fallback:raster-route'); return { status: 'unsupported' };
         }
         const vertexCount = chainSets ? chainSets.reduce((sum, part) => sum + part.positive.length, 0) / 2

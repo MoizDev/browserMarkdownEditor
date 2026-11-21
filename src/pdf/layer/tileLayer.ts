@@ -168,6 +168,12 @@ function projectInto(box: Readonly<Rect>, page: Readonly<Rect>, view: ViewState,
     return out;
 }
 
+/** A device or arena refusing memory ("not now"), told by its code: the arena's error class is not imported into the PDF chunk. */
+function budgetRefusal(error: unknown): boolean {
+    const code = (error as { code?: unknown } | null)?.code;
+    return code === 'out-of-budget' || code === 'allocation';
+}
+
 /**
  * A page layer has no frame loop and never opens a worker. The pane gives it a
  * session-bound producer; scheduler budgets, allocator leases and device lifetime
@@ -807,7 +813,39 @@ export class PdfTileLayer implements Layer {
         }
         // Off-view and other-scale tiles go first, farthest first; a tile on screen or drawn by the last prepared frame stays.
         if (freed < bytes) freed += this.evictTiles(bytes - freed, input);
+        if (freed < bytes) freed += this.evictHiddenTextures(bytes - freed, input);
         if (freed) auditCount('pdf-page', 'evict-gpu', 1, { bytes: freed });
+        return freed;
+    }
+
+    /** Textures that show nothing: on-view stand-ins of another scale wholly under the plan's uploaded tiles (the draw culls them),
+     * then off-plan tiles whose bitmap the CPU trim already took, least recently used first. Neither was ever given back to the
+     * pane's grant: evictTiles keeps a tile on the view or without a bitmap. Measured (WebGL2, DPR 2 annotated PDF, a new note):
+     * the PDF's textures held 39.7 of the pane's 55.7 MB, the board's 1 MB tile for the note was refused, and the note showed
+     * 1.8 s after the click instead of 0.25-0.47 s (1 in 8 notes). Never a tile the last prepared frame drew. */
+    private evictHiddenTextures(bytes: number, input: Omit<PdfDemandInput, 'covered' | 'previousMotionScale'>): number {
+        const device = this.host.device();
+        if (!device) return 0;
+        const covered: Entry[] = [], idle: Entry[] = [];
+        let plan: Map<number, Readonly<Rect>[]> | null = null;
+        for (const [key, entry] of this.entries) {
+            if (!entry.texture || entry.drawnFrame === this.preparedFrame || this.desired.has(key)) continue;
+            const box = rect(entry.request);
+            if (!intersects(box, input.viewport)) { if (!entry.bitmap) idle.push(entry); continue; }
+            if (!scaleDiffers(entry.request.scale.scale, input.rasterScale)) continue;
+            const area = clipped(box, input.viewport);
+            plan ??= this.drawablePlanBoxes(device);
+            if (!area || covers(area, plan.get(entry.request.page) ?? [])) covered.push(entry);
+        }
+        idle.sort((a, b) => a.used - b.used);
+        let freed = 0;
+        for (const entry of [...covered, ...idle]) {
+            if (freed >= bytes) break;
+            freed += entry.texture!.bytes;
+            auditCount('pdf-page', covered.includes(entry) ? 'evict-gpu:covered' : 'evict-gpu:gpu-only', 1, { bytes: entry.texture!.bytes });
+            this.releaseTile(entry);
+        }
+        if (freed) { this.drawVersion++; this.coverCache = null; }
         return freed;
     }
 
@@ -1125,7 +1163,12 @@ export class PdfTileLayer implements Layer {
             for (let attempt = 0; !texture && attempt < STANDIN_RELEASES_PER_TILE && this.releaseStandinUnder(rect(entry.request)); attempt++) {
                 texture = createTileTexture(this.host.allocator.gpu, device, width, height);
             }
-        } catch (error) { this.failed.add(key); this.onError(error, entry.request); return 'done'; }
+        } catch (error) {
+            // A device refusing memory is "not now": the tile waits for capacity like a refused lease. Reported as a failure, it
+            // reached the person as an 'out-of-budget' dialog (measured: WebGL2, DPR 2 annotated PDF, 1 in 16 new notes).
+            if (budgetRefusal(error)) { this.awaitGpuCapacity(bytes); return 'capacity'; }
+            this.failed.add(key); this.onError(error, entry.request); return 'done';
+        }
         if (!texture) { this.awaitGpuCapacity(bytes); return 'capacity'; }
         // The reclaim may have taken this very tile when it was off view (a prefetch).
         if (this.entries.get(key) !== entry || !entry.bitmap) { texture.device.destroy(texture.handle); return 'done'; }
@@ -1134,7 +1177,11 @@ export class PdfTileLayer implements Layer {
         try {
             device.writeTexture(texture.handle, { x: 0, y: 0, width, height },
                 { source: bitmap, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
-        } catch (error) { texture.device.destroy(texture.handle); this.failed.add(key); this.onError(error, entry.request); return 'done'; }
+        } catch (error) {
+            texture.device.destroy(texture.handle);
+            if (budgetRefusal(error)) { this.awaitGpuCapacity(bytes); return 'capacity'; }
+            this.failed.add(key); this.onError(error, entry.request); return 'done';
+        }
         entry.texture = texture;
         this.drawVersion++;
         this.tileBytes += bytes;

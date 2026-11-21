@@ -101,6 +101,7 @@ export function createBoardInputHost(options: BoardInputHostOptions) {
         liveDraws: (nodeId, band, view, canvas) => wet.drawsLive(nodeId, band, view, canvas),
         paletteChanged: () => wet.invalidate(),
         sensitiveNodeIds: () => options.overlays?.sensitiveNodeIds?.() ?? NO_SENSITIVE_IDS,
+        pointerDown: () => contacts.size > 0,
     };
     const stopInteraction = options.engine.bindInteractions(interaction);
     const stopAttachment = () => {

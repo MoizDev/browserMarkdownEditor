@@ -1,10 +1,13 @@
 import type { PageDisplayList, PathCommand, Rgba } from '../../platform/types';
 import { columnOffsets, marginX, paperPageSize, ruleOffsets, type NotebookPaper } from '../../utils/paper';
 
-const WHITE: Rgba = [1, 1, 1, 1];
-const RULE: Rgba = [195 / 255, 211 / 255, 232 / 255, 1];
-const MARGIN: Rgba = [233 / 255, 184 / 255, 189 / 255, 1];
-const EDGE: Rgba = [226 / 255, 226 / 255, 226 / 255, 1];
+// Shared with the procedural paper pass (proceduralPaper.ts), which draws lined, grid and blank paper from these same values.
+export const PAPER_WHITE: Rgba = [1, 1, 1, 1];
+export const PAPER_RULE: Rgba = [195 / 255, 211 / 255, 232 / 255, 1];
+export const PAPER_MARGIN: Rgba = [233 / 255, 184 / 255, 189 / 255, 1];
+export const PAPER_EDGE: Rgba = [226 / 255, 226 / 255, 226 / 255, 1];
+export const PAPER_RULE_WIDTH = 0.75, PAPER_MARGIN_WIDTH = 1, PAPER_EDGE_WIDTH = 0.5;
+const WHITE = PAPER_WHITE, RULE = PAPER_RULE, MARGIN = PAPER_MARGIN, EDGE = PAPER_EDGE;
 type PaperItem = PageDisplayList['items'][number];
 
 /** Each yielded item is bounded, so a backdrop can paint incrementally. */
@@ -18,7 +21,7 @@ export function* notebookPaperItems(paper: Readonly<NotebookPaper>): Generator<P
     if (paper.ruling === 'lined' || paper.ruling === 'grid') {
         for (const y of ruleOffsets(paper)) line(0, y, width, y);
         if (paper.ruling === 'grid') for (const x of columnOffsets(paper)) line(x, 0, x, height);
-        yield { kind: 'path', d: rules, stroke: { color: RULE, width: 0.75, cap: 'butt', join: 'miter' } };
+        yield { kind: 'path', d: rules, stroke: { color: RULE, width: PAPER_RULE_WIDTH, cap: 'butt', join: 'miter' } };
     } else if (paper.ruling === 'dotted') {
         const r = 1.1, k = r * 0.5522847498307936;
         for (const y of ruleOffsets(paper)) {
@@ -34,10 +37,11 @@ export function* notebookPaperItems(paper: Readonly<NotebookPaper>): Generator<P
     }
     const margin = marginX(paper);
     if (margin !== null) yield { kind: 'path', d: [['M', margin, 0], ['L', margin, height]],
-        stroke: { color: MARGIN, width: 1, cap: 'butt', join: 'miter' } };
-    yield { kind: 'path', d: [['M', 0.25, 0.25], ['L', width - 0.25, 0.25],
-        ['L', width - 0.25, height - 0.25], ['L', 0.25, height - 0.25], ['Z']],
-    stroke: { color: EDGE, width: 0.5, cap: 'butt', join: 'miter' } };
+        stroke: { color: MARGIN, width: PAPER_MARGIN_WIDTH, cap: 'butt', join: 'miter' } };
+    const e = PAPER_EDGE_WIDTH / 2;
+    yield { kind: 'path', d: [['M', e, e], ['L', width - e, e],
+        ['L', width - e, height - e], ['L', e, height - e], ['Z']],
+    stroke: { color: EDGE, width: PAPER_EDGE_WIDTH, cap: 'butt', join: 'miter' } };
 }
 
 /** One physical page in point units, shared by display and PDF output. */

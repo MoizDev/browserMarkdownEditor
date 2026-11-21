@@ -16,9 +16,9 @@ export interface RenderAuditSnapshot {
     readonly enabled: boolean;
     readonly since: number;
     readonly counters: Readonly<Record<string, number>>;
-    readonly frames: Readonly<Record<string, { count: number; totalMs: number; maxMs: number; over16: number }>>;
-    /** Keyed `surface:stage`; `sum` and `max` are milliseconds, `count` the timed calls. */
-    readonly stages: Readonly<Record<string, { sum: number; count: number; max: number }>>;
+    readonly frames: Readonly<Record<string, { count: number; totalMs: number; maxMs: number; over16: number; over8: number }>>;
+    /** Keyed `surface:stage`; `sum` and `max` are milliseconds, `count` the timed calls, `over8` the calls over a 120 Hz frame. */
+    readonly stages: Readonly<Record<string, { sum: number; count: number; max: number; over8: number }>>;
 }
 
 /** The phases a GPU frame's main-thread time is split into; one name per stage keeps the table comparable across surfaces. */
@@ -29,8 +29,10 @@ let enabled = false;
 try { enabled = typeof localStorage !== 'undefined' && localStorage.getItem('bme.renderAudit') === '1'; } catch { enabled = false; }
 let since = typeof performance !== 'undefined' ? performance.now() : 0;
 let counters = new Map<string, number>();
-let frames = new Map<string, { count: number; totalMs: number; maxMs: number; over16: number }>();
-let stages = new Map<string, { sum: number; count: number; max: number }>();
+let frames = new Map<string, { count: number; totalMs: number; maxMs: number; over16: number; over8: number }>();
+let stages = new Map<string, { sum: number; count: number; max: number; over8: number }>();
+// A 120 Hz display's frame (the owner's ProMotion screen): a sum and a max cannot say how many frames missed it.
+const FRAME_120HZ_MS = 1000 / 120;
 
 export function renderAuditEnabled(): boolean { return enabled; }
 
@@ -38,8 +40,9 @@ export function renderAuditEnabled(): boolean { return enabled; }
 export function auditStage(surface: string, stage: AuditStage, ms: number): void {
     if (!enabled || !Number.isFinite(ms)) return;
     const key = `${surface}:${stage}`;
-    const entry = stages.get(key) ?? { sum: 0, count: 0, max: 0 };
+    const entry = stages.get(key) ?? { sum: 0, count: 0, max: 0, over8: 0 };
     entry.sum += ms; entry.count++; entry.max = Math.max(entry.max, ms);
+    if (ms > FRAME_120HZ_MS) entry.over8++;
     stages.set(key, entry);
 }
 
@@ -58,9 +61,10 @@ export function auditCount(surface: string, event: string, amount = 1, extra?: R
 /** One presented frame of a pane on a backend, with the main-thread time the frame took. */
 export function auditFrame(backend: string, ms: number): void {
     if (!enabled || !Number.isFinite(ms)) return;
-    const entry = frames.get(backend) ?? { count: 0, totalMs: 0, maxMs: 0, over16: 0 };
+    const entry = frames.get(backend) ?? { count: 0, totalMs: 0, maxMs: 0, over16: 0, over8: 0 };
     entry.count++; entry.totalMs += ms; entry.maxMs = Math.max(entry.maxMs, ms);
     if (ms > 16.7) entry.over16++;
+    if (ms > FRAME_120HZ_MS) entry.over8++;
     frames.set(backend, entry);
 }
 
@@ -119,7 +123,33 @@ const TAPE_KEYS = /^answer:|unchanged-miss|prepare:changed|prepare-changed|answe
 let tape = new Set<string>();
 
 /** The scheduler starts each frame's tape before any pane prepares; every present of the frame carries what was taped since. */
-export function auditTapeStart(): void { if (enabled) tape = new Set(); }
+export function auditTapeStart(): void { if (enabled) { tape = new Set(); frameStart = new Map(counters); } }
+/** The counters at the frame's start: a frame's record is what moved since (audit only, copied once per frame). */
+let frameStart: Map<string, number> | null = null;
+
+/** One frame's work as the audit saw it: its tape and every counter that moved since the scheduler started it. */
+export interface FrameRecord { readonly t: number; readonly tape: readonly string[]; readonly delta: Readonly<Record<string, number>> }
+/** A frame whose GPU time exceeded a 120 Hz frame, with what that frame did: the log that names each hitch's work. */
+export interface SlowFrame extends FrameRecord { readonly ms: number }
+/** One frame at 120 Hz: the GPU time a frame may take on the owner's display. */
+const SLOW_FRAME_MS = 1000 / 120;
+const SLOW_CAPACITY = 256;
+const slowFrames: SlowFrame[] = [];
+let slowDropped = 0;
+/** The record of the frame being submitted, taken where its GPU timer ends; null when the audit is off. */
+export function auditFrameRecord(): FrameRecord | null {
+    if (!enabled) return null;
+    const delta: Record<string, number> = {};
+    for (const [key, value] of counters) { const moved = value - (frameStart?.get(key) ?? 0); if (moved) delta[key] = moved; }
+    return { t: typeof performance !== 'undefined' ? performance.now() : 0, tape: [...tape], delta };
+}
+/** The GPU time of a recorded frame, once its timer resolves: kept when it is over a 120 Hz frame. */
+export function auditFrameTime(ms: number, record: FrameRecord | null): void {
+    if (!enabled || !record || !(ms > SLOW_FRAME_MS)) return;
+    if (slowFrames.length >= SLOW_CAPACITY) { slowFrames.shift(); slowDropped++; }
+    slowFrames.push({ ...record, ms });
+}
+export function auditSlowFrames(): { dropped: number; records: readonly SlowFrame[] } { return { dropped: slowDropped, records: slowFrames.slice() }; }
 /** Adds a decision to the frame's tape without counting it. */
 export function auditTape(entry: string): void { if (enabled) tape.add(entry); }
 
@@ -241,10 +271,10 @@ export function auditSnapshot(): RenderAuditSnapshot {
 
 export function auditReset(): void {
     counters = new Map(); frames = new Map(); stages = new Map();
-    presentRing.fill(undefined); presentTotal = 0; drawn = { standIns: 0, standInsRaster: 0, holes: 0 }; gpuErrors.clear(); arenaLog.length = 0; arenaDropped = 0;
+    presentRing.fill(undefined); presentTotal = 0; slowFrames.length = 0; slowDropped = 0; drawn = { standIns: 0, standInsRaster: 0, holes: 0 }; gpuErrors.clear(); arenaLog.length = 0; arenaDropped = 0;
     since = typeof performance !== 'undefined' ? performance.now() : 0;
 }
 
 if (enabled && typeof window !== 'undefined') {
-    (window as unknown as { __bmeRenderAudit?: unknown }).__bmeRenderAudit = { snapshot: auditSnapshot, reset: auditReset, presents: auditPresents, gauges: auditGauges, scenes: auditScenes, gpuErrors: auditGpuErrors, arenaErrors: auditArenaErrors };
+    (window as unknown as { __bmeRenderAudit?: unknown }).__bmeRenderAudit = { snapshot: auditSnapshot, reset: auditReset, presents: auditPresents, gauges: auditGauges, scenes: auditScenes, gpuErrors: auditGpuErrors, arenaErrors: auditArenaErrors, slowFrames: auditSlowFrames };
 }

@@ -680,16 +680,19 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         keyNumber(view.camera.x); keyNumber(view.camera.y); keyNumber(view.camera.z);
         keyNumber(view.viewport.width); keyNumber(view.viewport.height); keyNumber(view.viewport.dpr);
         keyInt(options.current() ? 1 : 0); keyInt(disposed ? 1 : 0);
-        const pending = handover?.pendingSnapshots() ?? [];
-        keyInt(pending.length);
-        for (const snapshot of pending) { keyNumber(snapshot.identity.gestureSequence); keyInt(snapshot.dry && drawn.has(snapshot.identity.nodeId) ? 1 : 0); }
-        keyInt(runs.size);
-        runs.forEach(keyRun);
+        // Only what drawRouted draws: the pending strokes the board has not drawn, each with its two band runs. A stroke the board drew
+        // (skipped at draw) or a run of a stroke no longer pending draws nothing, so its retirement leaves the picture as it was; keyed,
+        // every pen-up's hand-over presented the same picture once more (measured: 12 of 18 redundant GPU presents, drawing, notebook, img8).
+        for (const snapshot of handover?.pendingSnapshots() ?? []) {
+            if (snapshot.dry && drawn.has(snapshot.identity.nodeId)) continue;
+            const gesture = snapshot.identity.gestureSequence;
+            keyNumber(gesture); keyRun(runs.get(runKey(gesture, 'underlay'))); keyRun(runs.get(runKey(gesture, 'content')));
+        }
         return keyEnd();
     };
-    // One callback for the layer's life: a Map's entry iteration may allocate a pair per run.
-    const keyRun = (slot: WetRunSlot, key: number): void => {
-        keyNumber(key); keyInt(SLOT_STATES[slot.state]); keyNumber(slot.serial); keyNumber(slot.scale);
+    const keyRun = (slot: WetRunSlot | undefined): void => {
+        if (!slot) { keyInt(-2); return; }
+        keyInt(SLOT_STATES[slot.state]); keyNumber(slot.serial); keyNumber(slot.scale);
         if (slot.viewBound) keyString(slot.viewKey); else keyInt(-1);
         keyNumber(slot.token.viewLease); keyNumber(slot.token.deviceGeneration); keyNumber(shownIdOf(slot.shown));
     };
@@ -822,6 +825,17 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                     });
                 },
                 releaseGpu(reason) { if (reason === 'hidden' || reason === 'pressure') clear(); else releaseRoutes(); },
+                // Partial relief: with no stroke in flight the routes draw nothing, so their GPU bytes (the union route's scratch, 16.8 MB)
+                // are given back when the governor asks; the next stroke makes them again. Without it a pane that had prepared this frame
+                // could not release the layer at all, and the pool's trim fell short (measured, notebook zoom to 332%: quality 1 -> 0.8,
+                // the rest picture blurred for the 5 s recovery).
+                evictGpu(bytes) {
+                    if (bytes <= 0 || runs.size || work || !inkRoutes) return 0;
+                    const freed = routesMemory().gpuBytes;
+                    releaseRoutes();
+                    auditCount('wet', 'evict:routes', 1, { bytes: freed });
+                    return freed;
+                },
                 memory() {
                     // The shared routes and the reserve are one set of bytes for both bands, which share an owner host. Only the layer that
                     // cpuWorkingSet demands them for reports them: a host check alone counted them twice in the pane's sum.

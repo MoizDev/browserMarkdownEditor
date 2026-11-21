@@ -184,17 +184,18 @@ class GpuTileStore implements NumericTileStore {
     private readonly rangeScratch: Slot[] = [];
     private readonly standFound: Slot[] = [];
     private readonly standOrder = new Float64Array(SCALE_SLOTS);
-    /** Scratch for evict's three candidate tiers, scanned once per call and reused. */
+    /** Scratch for evict's candidate tiers, scanned once per call and reused. */
     private readonly evictStaleOff: Slot[] = [];
     private readonly evictCurrentOff: Slot[] = [];
     private readonly evictStaleOn: Slot[] = [];
+    private readonly evictCurrentOn: Slot[] = [];
     /** Entries that hold a target: the only ones evict can free, so its scan walks these and not every entry (a parked entry
      * holds no bytes). Kept at every point a slot gains or loses its target. */
     private readonly held = new Set<Slot>();
     /** Bumped on every change to the held set or the free list; evict's dry memo is valid only while this has not moved. */
     private heldRevision = 0;
     /** The last evict that found no candidate left to free, for this frame, view and held state: a repeat frees nothing. */
-    private evictDry: { frameId: number; revision: number; view: ViewState } | null = null;
+    private evictDry: { frameId: number; revision: number; view: ViewState; live: boolean } | null = null;
     /** Scratch for dropScalesExcept: the other scales' entries of one band, collected before any is unlinked. */
     private readonly dropScratch: Slot[] = [];
     /** band → scale → packed position → slots there (one per slice). Queries arrive as world rects at one scale. */
@@ -521,15 +522,17 @@ class GpuTileStore implements NumericTileStore {
         }
     }
 
-    /** Frees at least `bytes` when it can, and never an entry touched in `frameId`. Order: the free list; other scales off
+    /** Frees at least `bytes` when it can, and never an entry on the view touched in `frameId` unless the composer draws the view
+     * live (`drawnLive`: no tile is drawn then). Live, the order is every other-scale tile (on view or not, least recently used first),
+     * the current scale off view, then the current scale on view. Otherwise: the free list; other scales off
      * view (least recently used first); the current scale off view (farthest from the view first); other scales on view
      * that the current scale composes at their centre, so the picture never loses its stand-in. Returns the bytes freed. */
-    evict(bytes: number, frameId: number, view: ViewState): number {
+    evict(bytes: number, frameId: number, view: ViewState, drawnLive = false): number {
         if (!Number.isFinite(bytes) || bytes < 0) throw new RangeError('Invalid eviction size');
         // A refused position repeats this call every frame: when nothing changed since the last call found no candidate left,
         // the answer is the same, so it returns here without a scan.
         const dry = this.evictDry;
-        if (dry && dry.frameId === frameId && dry.revision === this.heldRevision && dry.view === view) return 0;
+        if (dry && dry.frameId === frameId && dry.revision === this.heldRevision && dry.view === view && dry.live === drawnLive) return 0;
         let freed = 0;
         while (freed < bytes && this.free.length) {
             const target = this.free.pop()!;
@@ -544,13 +547,25 @@ class GpuTileStore implements NumericTileStore {
         const centreX = shown.x + shown.width / 2, centreY = shown.y + shown.height / 2;
         // One scan into scratch lists. Each tier is sorted only when the bytes still needed reach it, so a call that frees
         // enough from the first tier never sorts the others; no tile rect is built for an entry the scan only reads.
-        const staleOff = this.evictStaleOff, currentOff = this.evictCurrentOff, staleOn = this.evictStaleOn;
+        const staleOff = this.evictStaleOff, currentOff = this.evictCurrentOff, staleOn = this.evictStaleOn, currentOn = this.evictCurrentOn;
         staleOff.length = 0;
         currentOff.length = 0;
         staleOn.length = 0;
+        currentOn.length = 0;
         for (const slot of this.held) {
-            if (slot.usedFrame === frameId) continue;
             const on = overlapsKey(slot.key, shown);
+            // Touched this frame protects what the frame draws: a slot on the view. An off-view slot touched this frame is the rest
+            // ring kept as prefetch (ringMargin), and it gives way to need: protected, it held a pane's GPU grant against the layer
+            // beside it (measured: doc12 with a picture, WebGL2 DPR 1, the board's view and ring held 32.2 of the pane's 41.3 MB,
+            // the PDF's visible exact tiles were refused 540 times at rest and the page stayed on stand-ins).
+            // While the composer draws the view live no tile is drawn: a board settling live held 32.2 of its pane's 41.3 MB in tiles
+            // of the zoom's two scales while the PDF beside it waited for room for its visible tiles (doc12 with a picture, WebGL2).
+            if (drawnLive) {
+                if (slot.key.scale !== scale) staleOff.push(slot);
+                else (on ? currentOn : currentOff).push(slot);
+                continue;
+            }
+            if (slot.usedFrame === frameId && on) continue;
             if (slot.key.scale !== scale) (on ? staleOn : staleOff).push(slot);
             else if (!on) currentOff.push(slot);
         }
@@ -568,6 +583,13 @@ class GpuTileStore implements NumericTileStore {
             if (freed >= bytes) return freed;
             freed += this.evictSlot(slot, 'same-scale');
         }
+        if (drawnLive) {
+            currentOn.sort((a, b) => a.usedFrame - b.usedFrame);
+            for (const slot of currentOn) {
+                if (freed >= bytes) return freed;
+                freed += this.evictSlot(slot, 'live-covered');
+            }
+        }
         let covered = 0;
         for (const slot of staleOn) if (this.coveredAt(scale, slot)) staleOn[covered++] = slot;
         staleOn.length = covered;
@@ -577,7 +599,7 @@ class GpuTileStore implements NumericTileStore {
             freed += this.evictSlot(slot, 'covered');
         }
         // Every tier is spent and the bytes are still short: no candidate is left for this frame, view and held state.
-        this.evictDry = { frameId, revision: this.heldRevision, view };
+        this.evictDry = { frameId, revision: this.heldRevision, view, live: drawnLive };
         return freed;
     }
 

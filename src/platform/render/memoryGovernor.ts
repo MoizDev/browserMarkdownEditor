@@ -715,7 +715,11 @@ export class MemoryGovernor {
         // above it is evicted again. Measured (canvas2d, DPR 2 annotated PDF): prefetch filled the CPU pool to its target, every mirror
         // crop or board buffer after it was refused, its refusal trimmed the pool to 80% (4.3 MB of prefetch), the prefetch was rastered
         // again into the room, 733 times in 30 s, and no shape the board made ever presented.
-        if (options?.prefetch && (!allowed() || this.charged[pool] + bytes > this.target[pool] * POLICY.memorySoftPressureRatio)) {
+        // Nor while a cache of the same pane waits for room it needs: the room an eviction gives back is that cache's, and a ring
+        // refilled first took it (measured: doc12 with a picture, WebGL2, at rest: the board's ring refilled what its evictions freed and
+        // the PDF's visible exact tiles were refused for good, the page on stand-ins).
+        if (options?.prefetch && (!allowed() || this.charged[pool] + bytes > this.target[pool] * POLICY.memorySoftPressureRatio ||
+            this.paneNeedWaiting(cache, pool))) {
             auditCount('governor', `prefetch-refused:${pool}`, 1, { bytes });
             return null;
         }
@@ -784,6 +788,22 @@ export class MemoryGovernor {
         if (kind === 'context' || kind === 'program') this.plan();
         if (this.charged[pool] > this.target[pool] * POLICY.memorySoftPressureRatio) this.onPressureChange?.();
         return lease;
+    }
+
+    /** Another cache of `cache`'s pane in `pool` waits for need capacity the grant can hold: a refusal of this capacity epoch, or a
+     * sized waiter. One the grant can never hold, or a refusal from before capacity last moved, blocks nothing. Counted. */
+    private paneNeedWaiting(cache: CacheRecord, pool: MemoryPool): boolean {
+        const paneId = cache.registration.paneId;
+        const grant = paneId === undefined ? undefined : this.grants.get(paneId);
+        if (paneId === undefined || !grant) return false;
+        const limit = pool === 'gpu' ? grant.gpuCacheBytes : grant.cpuBytes;
+        for (const other of this.caches.values()) {
+            if (other === cache || other.registration.paneId !== paneId || other.registration.pool !== pool) continue;
+            let waiting = other.refusal !== null && other.refusal.epoch === this.capacityEpoch && other.refusal.bytes <= limit;
+            if (!waiting) for (const bytes of this.capacityWaiters.get(other)?.values() ?? []) if (bytes !== undefined && bytes <= limit) { waiting = true; break; }
+            if (waiting) { auditCount('governor', `prefetch-yield:${pool}`); return true; }
+        }
+        return false;
     }
 
     /** The pool itself cannot take the bytes: the only refusal that is pressure without a pane's own demand. */
@@ -906,6 +926,8 @@ export class MemoryGovernor {
             // draws): that is what a new stroke needs back, and the pane's other caches are only asked for what it leaves.
             .sort((a, b) => (pool === 'cpu' && cache.registration.liveInput ? (a === cache ? 0 : 1) - (b === cache ? 0 : 1) : 0) ||
                 RECLAIMABLE.indexOf(a.registration.class) - RECLAIMABLE.indexOf(b.registration.class) ||
+                // The pane's largest holder first (t21): a board holding 32.2 of its pane's 41.3 MB was asked after the smaller caches.
+                b.bytes - a.bytes ||
                 a.activity.lastVisibleAt - b.activity.lastVisibleAt || a.activity.lastUsedAt - b.activity.lastUsedAt ||
                 stableId(a.registration.id, b.registration.id));
         this.trimming = true;

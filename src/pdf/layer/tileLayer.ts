@@ -1288,9 +1288,9 @@ export class PdfTileLayer implements Layer {
         // Other scales first, the current raster scale last, on top: in scale order alone a higher-scale stand-in was drawn over the
         // exact tile that replaced it, so the exact upload changed nothing on screen until the stand-in was evicted (measured on doc12:
         // the wake frame of each paced zoom step pixel-identical, 31 of 111 zoom presents, and its stand-in still shown).
-        // canvas2d too: in feature-branch order a higher-scale stand-in stayed over its exact replacement for good at rest (measured on
-        // feat/in-house-engines, DPR 2 doc12: two tiles soft for the 25 s to the end of the run), and once the trim loop no longer evicted
-        // such stand-ins by accident, every canvas2d pan frame on impl/gpu showed six of them (gpu-f2: paced complete 244/247 -> 41/247).
+        // Both backends: the feature branch's canvas2d draws exact tiles last too (60dcef15: soft text tiles at rest, 11156 px -> 0).
+        // Once the trim loop no longer evicted such stand-ins by accident, every canvas2d pan frame on impl/gpu showed six of them (gpu-f2:
+        // paced complete 244/247 -> 41/247).
         const exact = exactLast && rasterScale > 0 ? rasterScale : undefined;
         for (const entry of this.settledOrder) {
             if (intersects(rect(entry.request), viewport) && (exact === undefined || scaleDiffers(entry.request.scale.scale, exact))) out.push(entry);

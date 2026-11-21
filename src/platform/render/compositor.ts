@@ -10,14 +10,14 @@ import { paintPageScope, paintWorldScope, paneCssTransform, projectPage } from '
 import { TEXTURED_QUAD_SHADER } from './compositorShader';
 import { GpuIsolationPlan } from './gpuIsolationPlan';
 import { IsolationShortfall } from './gfx/webgl2Isolation';
-import type { ClipToken, CoverageOutput, CoverageToken, DrawableImage, FrameEncoder, GpuPass, GroupToken, PipelineDesc, PipelineHandle, RectI, RgbaP, SamplerHandle, ShaderModule, TargetHandle, TargetLease, TextureHandle, UniformSlice } from './gfx/api';
+import type { AreaOutput, AreaTarget, ClipHandle, ClipToken, CoverageOutput, CoverageTarget, CoverageToken, DrawCommand, DrawableImage, FrameEncoder, GpuPass, GroupToken, PipelineDesc, PipelineHandle, RectI, RgbaP, SamplerHandle, ShaderModule, TargetHandle, TargetLease, TextureHandle, UniformSlice } from './gfx/api';
 import type { Webgl2Owner } from './gfx/webgl2';
 import type { PageStack } from './pageStack';
 import { ArenaError } from './resourceArena';
 import type { ScheduledEncoding, ScheduledFrame, ScheduledSubmission } from './scheduler';
 import type { ReadySurfaceMetrics, SurfaceCommitTarget } from './surfaceMetrics';
 import { allocateSurfaceGeneration } from './surfaceGeneration';
-import type { FrameBudget, FrameToken, GpuReleaseReason } from './types';
+import type { FrameBudget, FrameToken, GpuReleaseReason, OffscreenPasses } from './types';
 
 const benchmarkDomain = __BME_BENCH__ ? await import('./benchmarkPaintDomain') : null;
 
@@ -56,7 +56,7 @@ interface Snapshot {
     readonly metrics: ReadySurfaceMetrics | null;
 }
 interface Prepared { readonly frameId: number; readonly token: FrameToken; readonly snapshot: Snapshot }
-interface DrawScope { readonly encoder: FrameEncoder; readonly view: ViewState; readonly passes: Set<GpuPass> }
+interface DrawScope { encoder: FrameEncoder; view: ViewState; readonly passes: Set<GpuPass> }
 
 function sameToken(a: FrameToken, b: FrameToken): boolean {
     return a.vaultEpoch === b.vaultEpoch && a.documentId === b.documentId && a.bytesGeneration === b.bytesGeneration &&
@@ -82,51 +82,63 @@ function quietly(action: () => void): void {
     try { action(); } catch { /* the failure in flight is the one reported */ }
 }
 
-function layerPass(pass: GpuPass): { pass: GpuPass; finish(): void; abandon(): void } {
-    const scopes: Array<{ kind: 'clip'; token: ClipToken } | { kind: 'group'; token: GroupToken } | { kind: 'coverage' | 'area'; token: CoverageToken }> = [];
-    let active = true;
-    const check = () => { if (!active) throw new ArenaError('aborted'); };
-    const pop = (kind: 'clip' | 'group' | 'coverage' | 'area', token: ClipToken | GroupToken | CoverageToken) => {
-        check();
-        const top = scopes.at(-1);
+type PassScope = { readonly kind: 'clip'; readonly token: ClipToken } | { readonly kind: 'group'; readonly token: GroupToken }
+    | { readonly kind: 'coverage' | 'area'; readonly token: CoverageToken };
+type PassDesc = Parameters<GpuPass['acquireTarget']>[0];
+type GroupOptions = Parameters<GpuPass['beginGroup']>[1];
+type CompositeOptions = Parameters<GpuPass['composite']>[2];
+
+/** A layer's view of one pass. One instance per use, never pooled: a layer that kept a pass past its frame finds it inactive
+ * ('aborted'), which a reused object could not tell from the next frame's pass. Its methods are the prototype's, so a use costs this
+ * object and its scope list; the closure form built about seventeen objects per layer per frame, and again per offscreen tile pass. */
+class ScopedPass implements GpuPass {
+    readonly #scopes: PassScope[] = [];
+    #active = true;
+    /** `onEnd`: the offscreen form, which the layer ends itself. Without it end() is refused: the compositor ends the surface pass. */
+    constructor(readonly raw: GpuPass, private readonly onEnd: ((pass: ScopedPass) => void) | null = null) {}
+    #check(): void { if (!this.#active) throw new ArenaError('aborted'); }
+    #pop(kind: PassScope['kind'], token: ClipToken | GroupToken | CoverageToken): void {
+        this.#check();
+        const top = this.#scopes.at(-1);
         if (!top || top.kind !== kind || top.token !== token) throw new ArenaError('invalid-input');
-        scopes.pop();
-    };
-    return {
-        pass: {
-            draw: command => { check(); pass.draw(command); },
-            acquireTarget: desc => { check(); return pass.acquireTarget(desc); },
-            releaseTarget: lease => { check(); pass.releaseTarget(lease); },
-            pushClip: clip => { check(); const token = pass.pushClip(clip); scopes.push({ kind: 'clip', token }); return token; },
-            popClip: token => { pop('clip', token); pass.popClip(token); },
-            beginGroup: (bounds, options) => {
-                check(); const token = pass.beginGroup(bounds, options); scopes.push({ kind: 'group', token }); return token;
-            },
-            endGroup: token => { pop('group', token); pass.endGroup(token); },
-            beginCoverage: (target, bounds) => {
-                check(); const token = pass.beginCoverage(target, bounds); scopes.push({ kind: 'coverage', token }); return token;
-            },
-            endCoverage: (token, output) => { pop('coverage', token); pass.endCoverage(token, output); },
-            beginArea: (target, bounds) => {
-                check(); const token = pass.beginArea(target, bounds); scopes.push({ kind: 'area', token }); return token;
-            },
-            endArea: (token, output) => { pop('area', token); pass.endArea(token, output); },
-            composite: (source, bounds, options) => { check(); pass.composite(source, bounds, options); },
-            end: () => { check(); throw new ArenaError('invalid-input'); },
-        },
-        finish: () => { active = false; if (scopes.length) throw new ArenaError('invalid-input'); },
-        // A layer that threw is abandoned, not finished: its open scopes are ended on the raw pass, innermost first, without throwing,
-        // so the error that abandoned it is the one reported. A coverage scope needs the output it would have composited; an abandoned
-        // layer composites nothing, so that scope is only dropped.
-        abandon: () => {
-            active = false;
-            while (scopes.length) {
-                const top = scopes.pop()!;
-                if (top.kind === 'clip') quietly(() => pass.popClip(top.token));
-                else if (top.kind === 'group') quietly(() => pass.endGroup(top.token));
-            }
-        },
-    };
+        this.#scopes.pop();
+    }
+    draw(command: DrawCommand): void { this.#check(); this.raw.draw(command); }
+    acquireTarget(desc: PassDesc): TargetLease | null { this.#check(); return this.raw.acquireTarget(desc); }
+    releaseTarget(lease: TargetLease): void { this.#check(); this.raw.releaseTarget(lease); }
+    pushClip(clip: RectI | ClipHandle): ClipToken {
+        this.#check(); const token = this.raw.pushClip(clip); this.#scopes.push({ kind: 'clip', token }); return token;
+    }
+    popClip(token: ClipToken): void { this.#pop('clip', token); this.raw.popClip(token); }
+    beginGroup(bounds: RectI, options: GroupOptions): GroupToken {
+        this.#check(); const token = this.raw.beginGroup(bounds, options); this.#scopes.push({ kind: 'group', token }); return token;
+    }
+    endGroup(token: GroupToken): void { this.#pop('group', token); this.raw.endGroup(token); }
+    beginCoverage(target: CoverageTarget, bounds: RectI): CoverageToken {
+        this.#check(); const token = this.raw.beginCoverage(target, bounds); this.#scopes.push({ kind: 'coverage', token }); return token;
+    }
+    endCoverage(token: CoverageToken, output: CoverageOutput): void { this.#pop('coverage', token); this.raw.endCoverage(token, output); }
+    beginArea(target: AreaTarget, bounds: RectI): CoverageToken {
+        this.#check(); const token = this.raw.beginArea(target, bounds); this.#scopes.push({ kind: 'area', token }); return token;
+    }
+    endArea(token: CoverageToken, output: AreaOutput): void { this.#pop('area', token); this.raw.endArea(token, output); }
+    composite(source: TextureHandle, bounds: RectI, options: CompositeOptions): void { this.#check(); this.raw.composite(source, bounds, options); }
+    end(): void {
+        if (!this.onEnd) { this.#check(); throw new ArenaError('invalid-input'); }
+        this.onEnd(this);
+    }
+    finish(): void { this.#active = false; if (this.#scopes.length) throw new ArenaError('invalid-input'); }
+    // A layer that threw is abandoned, not finished: its open scopes are ended on the raw pass, innermost first, without throwing,
+    // so the error that abandoned it is the one reported. A coverage scope needs the output it would have composited; an abandoned
+    // layer composites nothing, so that scope is only dropped.
+    abandon(): void {
+        this.#active = false;
+        while (this.#scopes.length) {
+            const top = this.#scopes.pop()!;
+            if (top.kind === 'clip') quietly(() => this.raw.popClip(top.token));
+            else if (top.kind === 'group') quietly(() => this.raw.endGroup(top.token));
+        }
+    }
 }
 
 /** Normal frames draw directly to the stencil-less displayed surface (design §4, §10).
@@ -169,6 +181,20 @@ export class GpuCompositor implements PaneCompositor {
     #deferredBindings = new Set<CompositorLayer | null>();
     #report: CompositorCoverage | null = null;
     readonly #encodings = new Set<FrameEncoder>();
+    /** The frame's draw scope, reused: one record and one pass set for the compositor's life, emptied per encode. A pass from an
+     * earlier frame is not in the set (each is removed when its layer finishes, and the set is cleared), so it is refused as before. */
+    #frameScope: DrawScope | null = null;
+    #scopeFor(encoder: FrameEncoder, view: ViewState): DrawScope {
+        const scope = this.#frameScope ??= { encoder, view, passes: new Set() };
+        scope.encoder = encoder; scope.view = view; scope.passes.clear();
+        return scope;
+    }
+    /** The offscreen encode in progress: one record and one `begin` object for the compositor's life, so a layer's offscreen encode
+     * builds no closure per layer per frame (it built a `begin` and a `close` per layer, and a spread pass plus a list per tile pass). */
+    readonly #offscreen: { encoder: FrameEncoder | null; drawScope: DrawScope | null; layer: CompositorLayer['layer'] | null; auditId: string;
+        passes: number; open: ScopedPass | null; counted: GpuPass | null; readonly api: OffscreenPasses } = {
+        encoder: null, drawScope: null, layer: null, auditId: 'layer', passes: 0, open: null, counted: null,
+        api: { begin: (target, viewport, options) => this.#beginOffscreen(target, viewport, options) } };
     readonly #quadData = new Float32Array(16);
     /** Batched quads: one instance record (dst x0,y0,x1,y1 and src x,y,w,h) per quad, grown to the largest batch so far, and the batch's uniform block. */
     #batchData = new Float32Array(BATCH_FLOOR_FLOATS);
@@ -383,13 +409,17 @@ export class GpuCompositor implements PaneCompositor {
         try {
             const zooming = timed && this.#zoomStep(frame.view.camera.z);
             if (timed) auditDrawnStart();
-            const coverage = snapshot.layers.map(binding => binding.coverage(frame, this.backend));
             // Only a critical layer's missing content refuses the frame. A non-critical layer presents with its stand-in (what it
             // drew), so one incomplete layer cannot hold back every other layer on a quiet board (PLAN issue 3, the 0-presents class).
-            let refuse = false;
-            for (let i = 0; i < coverage.length; i++) {
-                if (coverage[i].complete) continue;
+            // The verdicts are read once into three facts the report needs; no array per frame.
+            let refuse = false, allComplete = true, allSharp = true, anyStale = false;
+            for (let i = 0; i < snapshot.layers.length; i++) {
                 const layer = snapshot.layers[i];
+                const verdict = layer.coverage(frame, this.backend);
+                if (!verdict.sharp || verdict.staleVersion) allSharp = false;
+                if (verdict.staleVersion) anyStale = true;
+                if (verdict.complete) continue;
+                allComplete = false;
                 if (layer.critical?.(frame) === false) { if (renderAuditEnabled()) auditCount(layer.id, 'standin'); continue; }
                 refuse = true;
                 if (renderAuditEnabled()) auditCount(layer.id, 'incomplete');
@@ -408,7 +438,7 @@ export class GpuCompositor implements PaneCompositor {
             encoder = this.#options.owner.resources.beginFrame();
             this.#encodings.add(encoder);
             const bounds = { x: 0, y: 0, width: snapshot.metrics.backingWidth, height: snapshot.metrics.backingHeight };
-            const drawScope: DrawScope = { encoder, view: frame.view, passes: new Set() };
+            const drawScope = this.#scopeFor(encoder, frame.view);
             this.#active = drawScope;
             // Every layer's offscreen passes are recorded before the surface pass; the frame replays independent ones grouped
             // by program and target (webgl2Frame.ts #order), since a layer's own draws are not reordered here.
@@ -435,16 +465,16 @@ export class GpuCompositor implements PaneCompositor {
                     }
                     const isolation = effect ? pass.beginGroup(effectBounds,
                         { opacity: effect.opacity, blend: effect.blend, colourEffect: 'none' }) : null;
-                    const scope = layerPass(pass);
-                    drawScope.passes.add(scope.pass);
+                    const scope = new ScopedPass(pass);
+                    drawScope.passes.add(scope);
                     const auditId = (binding as { id?: string }).id ?? 'layer';
                     auditCount(auditId, 'gpu-layer');
                     // Audit only: count the layer's own draw calls (quads included; gpu-draw minus gpu-quad is its shader work).
-                    const layerTarget = renderAuditEnabled() ? new Proxy(scope.pass, { get(target, key) {
+                    const layerTarget = renderAuditEnabled() ? new Proxy(scope, { get(target, key) {
                         const value = Reflect.get(target, key, target) as unknown;
                         if (key === 'draw' && typeof value === 'function') return (cmd: unknown) => { auditCount(auditId, 'gpu-draw'); return (value as (c: unknown) => void).call(target, cmd); };
                         return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(target) : value;
-                    } }) : scope.pass;
+                    } }) : scope;
                     // The layer receives the audit view, so the scope must admit that same object: drawTexturedQuad checks identity.
                     drawScope.passes.add(layerTarget);
                     const drawStarted = timed ? performance.now() : 0;
@@ -454,7 +484,7 @@ export class GpuCompositor implements PaneCompositor {
                     catch (error) { auditGpuError(null, `layer-draw:${auditId}`, error); throw error; }
                     finally {
                         this.#drawingBinding = null;
-                        drawScope.passes.delete(layerTarget); drawScope.passes.delete(scope.pass);
+                        drawScope.passes.delete(layerTarget); drawScope.passes.delete(scope);
                         try { if (drawn) scope.finish(); else scope.abandon(); }
                         finally {
                             if (isolation) { if (drawn) pass.endGroup(isolation); else quietly(() => pass.endGroup(isolation)); }
@@ -473,7 +503,9 @@ export class GpuCompositor implements PaneCompositor {
             // and the report says the layers are not complete. Either way the next frame is requested.
             const deferred = this.#deferredBindings.size > 0;
             if (deferred) this.#options.invalidate('gpu-uniform-ring-deferred');
-            if ([...this.#deferredBindings].some(binding => binding === null || binding.critical?.(frame) !== false)) {
+            let criticalDeferred = false;
+            for (const binding of this.#deferredBindings) if (binding === null || binding.critical?.(frame) !== false) { criticalDeferred = true; break; }
+            if (criticalDeferred) {
                 auditCount('compositor', 'refuse:uniform-ring');
                 this.#encodings.delete(encoder);
                 this.#options.owner.discardFrame(encoder);
@@ -510,10 +542,10 @@ export class GpuCompositor implements PaneCompositor {
                         this.#encodings.delete(owned);
                         this.#retryPending = false;
                         this.#shortfalls = [];
-                        const layersComplete = !deferred && coverage.every(item => item.complete);
+                        const layersComplete = !deferred && allComplete;
                         this.#report = Object.freeze({ frameId: frame.frameId, token: Object.freeze({ ...frame.token }), presented: true,
-                            complete: true, sharp: snapshot.metrics!.qualityScale === 1 && coverage.every(item => item.sharp && !item.staleVersion),
-                            staleVersion: coverage.some(item => item.staleVersion), layersComplete,
+                            complete: true, sharp: snapshot.metrics!.qualityScale === 1 && allSharp,
+                            staleVersion: anyStale, layersComplete,
                             qualityScale: snapshot.metrics!.qualityScale });
                         if (tally) auditPresent({ pane: this.#options.paneId ?? null, frame: frame.frameId, rawTick: frame.timestamp,
                             backend: this.backend, layersComplete, canvas: this.surface,
@@ -562,7 +594,7 @@ export class GpuCompositor implements PaneCompositor {
         try {
             encoder = this.#options.owner.resources.beginFrame();
             this.#encodings.add(encoder);
-            const drawScope: DrawScope = { encoder, view: frame.view, passes: new Set() };
+            const drawScope = this.#scopeFor(encoder, frame.view);
             this.#active = drawScope;
             let offscreen = 0;
             this.#atlas = null;
@@ -641,10 +673,10 @@ export class GpuCompositor implements PaneCompositor {
     withCapturePass(encoder: FrameEncoder, pass: GpuPass, view: ViewState, paint: (scope: GpuPass) => void): void {
         this.#check();
         if (this.#active || !this.#available || !this.#quad || !this.#linear || !this.#nearest) throw new ArenaError('out-of-budget');
-        const scoped = layerPass(pass);
-        this.#active = { encoder, view, passes: new Set([scoped.pass]) };
+        const scoped = new ScopedPass(pass);
+        this.#active = { encoder, view, passes: new Set([scoped]) };
         let painted = false;
-        try { paint(scoped.pass); painted = true; }
+        try { paint(scoped); painted = true; }
         finally { this.#active = null; if (painted) scoped.finish(); else scoped.abandon(); }
     }
 
@@ -850,56 +882,69 @@ export class GpuCompositor implements PaneCompositor {
     }
 
     #encodeOffscreen(snapshot: Snapshot, frame: ScheduledFrame, encoder: FrameEncoder, drawScope: DrawScope): number {
-        let passes = 0;
+        const run = this.#offscreen;
+        run.encoder = encoder; run.drawScope = drawScope; run.passes = 0;
         this.#deferredBindings.clear();
-        for (const binding of snapshot.layers) {
-            const layer = binding.layer;
-            if (!layer.encodeOffscreen) continue;
-            this.#drawingBinding = binding;
-            const auditId = (binding as { id?: string }).id ?? 'layer';
-            let open: { pass: GpuPass; finish(): void; abandon(): void; raw: GpuPass; registered: GpuPass[] } | null = null;
-            const close = (abandoned: boolean) => {
-                if (!open) return;
-                const current = open; open = null;
-                for (const registered of current.registered) drawScope.passes.delete(registered);
-                if (abandoned) { current.abandon(); quietly(() => current.raw.end()); }
-                else { current.finish(); current.raw.end(); }
-            };
-            const timed = renderAuditEnabled();
-            const started = timed ? performance.now() : 0;
-            let completed = false;
-            try {
-                layer.encodeOffscreen({
-                    begin: (target, viewport, options) => {
-                        if (open) throw new ArenaError('invalid-input');
-                        const atlas = layer.atlas === true ? this.#atlasRegion(encoder, target, viewport, options) : null;
-                        const raw = encoder.beginPass({ target: atlas ? atlas.target : target, viewport: atlas ? atlas.viewport : viewport,
-                            ...(atlas ? { clearViewport: atlas.clear } : {}),
-                            load: options.clear ? { kind: 'clear', color: options.clear } : { kind: 'load' }, store: 'store',
-                            ...(options.stencil ? { stencil: { load: { kind: 'clear', value: 0 }, store: 'discard' } as const } : {}) });
-                        const scope = layerPass(raw);
-                        passes++;
-                        auditCount(auditId, 'offscreen-pass');
-                        const counted: GpuPass = renderAuditEnabled() ? new Proxy(scope.pass, { get(t, key) {
-                            const value = Reflect.get(t, key, t) as unknown;
-                            if (key === 'draw' && typeof value === 'function') return (cmd: unknown) => { auditCount(auditId, 'gpu-draw'); return (value as (c: unknown) => void).call(t, cmd); };
-                            return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(t) : value;
-                        } }) : scope.pass;
-                        const pass: GpuPass = { ...counted, draw: c => counted.draw(c), end: () => { if (open?.pass !== pass) throw new ArenaError('invalid-input'); close(false); } };
-                        const registered = [pass, counted, scope.pass];
-                        open = { pass, finish: scope.finish, abandon: scope.abandon, raw, registered };
-                        for (const value of registered) drawScope.passes.add(value);
-                        return pass;
-                    },
-                }, frame.view);
-                if (open) throw new ArenaError('invalid-input');
-                completed = true;
-            } finally {
-                close(!completed);
-                if (timed) auditStage(auditId, 'encodeOffscreen', performance.now() - started);
+        try {
+            for (const binding of snapshot.layers) {
+                const layer = binding.layer;
+                if (!layer.encodeOffscreen) continue;
+                this.#drawingBinding = binding;
+                run.layer = layer; run.auditId = (binding as { id?: string }).id ?? 'layer';
+                const timed = renderAuditEnabled();
+                const started = timed ? performance.now() : 0;
+                let completed = false;
+                try {
+                    layer.encodeOffscreen(run.api, frame.view);
+                    if (run.open) throw new ArenaError('invalid-input');
+                    completed = true;
+                } finally {
+                    this.#closeOffscreen(!completed);
+                    if (timed) auditStage(run.auditId, 'encodeOffscreen', performance.now() - started);
+                }
             }
-        }
-        return passes;
+            return run.passes;
+        } finally { run.encoder = null; run.drawScope = null; run.layer = null; }
+    }
+
+    /** Opens one offscreen pass for the layer being encoded (Layer.encodeOffscreen's `begin`). One pass is open at a time. */
+    #beginOffscreen(target: TargetHandle, viewport: RectI, options: { clear: RgbaP | null; stencil: boolean }): GpuPass {
+        const run = this.#offscreen, encoder = run.encoder, drawScope = run.drawScope, layer = run.layer;
+        if (!encoder || !drawScope || !layer || run.open) throw new ArenaError('invalid-input');
+        const atlas = layer.atlas === true ? this.#atlasRegion(encoder, target, viewport, options) : null;
+        const raw = encoder.beginPass({ target: atlas ? atlas.target : target, viewport: atlas ? atlas.viewport : viewport,
+            ...(atlas ? { clearViewport: atlas.clear } : {}),
+            load: options.clear ? { kind: 'clear', color: options.clear } : { kind: 'load' }, store: 'store',
+            ...(options.stencil ? { stencil: { load: { kind: 'clear', value: 0 }, store: 'discard' } as const } : {}) });
+        const scope = new ScopedPass(raw, this.#endOffscreen);
+        run.passes++;
+        const auditId = run.auditId;
+        auditCount(auditId, 'offscreen-pass');
+        // Audit only: the layer's draws counted through a proxy, which the scope admits as well (the layer receives the proxy).
+        const counted: GpuPass = renderAuditEnabled() ? new Proxy(scope, { get(t, key) {
+            const value = Reflect.get(t, key, t) as unknown;
+            if (key === 'draw' && typeof value === 'function') return (cmd: unknown) => { auditCount(auditId, 'gpu-draw'); return (value as (c: unknown) => void).call(t, cmd); };
+            return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(t) : value;
+        } }) : scope;
+        run.open = scope; run.counted = counted;
+        drawScope.passes.add(scope); drawScope.passes.add(counted);
+        return counted;
+    }
+
+    /** The layer's own end of its open offscreen pass; an end of any other pass is refused. */
+    readonly #endOffscreen = (pass: ScopedPass): void => {
+        if (this.#offscreen.open !== pass) throw new ArenaError('invalid-input');
+        this.#closeOffscreen(false);
+    };
+
+    #closeOffscreen(abandoned: boolean): void {
+        const run = this.#offscreen, current = run.open;
+        if (!current) return;
+        run.open = null;
+        if (run.drawScope) { run.drawScope.passes.delete(current); if (run.counted) run.drawScope.passes.delete(run.counted); }
+        run.counted = null;
+        if (abandoned) { current.abandon(); quietly(() => current.raw.end()); }
+        else { current.finish(); current.raw.end(); }
     }
 
     #check(): void { if (this.#disposed) throw new ArenaError('aborted'); }

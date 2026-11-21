@@ -115,7 +115,7 @@ const presentRing: (PresentRecord | undefined)[] = new Array(PRESENT_CAPACITY);
 let presentTotal = 0;
 let drawn: DrawnTally = { standIns: 0, standInsRaster: 0, holes: 0 };
 /** The decision events that enter a frame's tape (see PresentInfo.why); per-item and per-draw counters stay out of it. */
-const TAPE_KEYS = /^answer:|unchanged-miss|prepare:changed|prepare-changed|answer-miss|coverage-not|standin|incomplete|present-kept|present-skipped|^present:|^pan:|zoom:direct|refuse|held|^live:|passed-over|inflight:wait|claim-refused|repaint:|camera-unchanged|fallback:/;
+const TAPE_KEYS = /^answer:|unchanged-miss|prepare:changed|prepare-changed|answer-miss|coverage-not|standin|incomplete|present-kept|present-skipped|^present:|^pan:|zoom:direct|refuse|held|^live:|passed-over|inflight:wait|claim-refused|settle:|repaint:|camera-unchanged|fallback:/;
 let tape = new Set<string>();
 
 /** The scheduler starts each frame's tape before any pane prepares; every present of the frame carries what was taped since. */

@@ -46,6 +46,8 @@ export interface BoardLayersOptions {
     /** View-only suppression, evaluated against the actual ready preview frame. */
     readonly omitNodes?: (frame: PaintSource) => ReadonlySet<string> | null;
     readonly liveNodeIds?: () => ReadonlySet<string> | undefined;
+    /** Whether a pointer is down on the board: the frame changes for that input (see the composer's inputActive). */
+    readonly inputActive?: () => boolean;
     /** Whether the live layer paints this changed node in the frame at `view`: a changed node counts as covered by the picture
      * only then (or when it is omitted, a drag's preview). Membership in liveNodeIds alone is not coverage. */
     readonly liveDraws?: (nodeId: string, band: PaintBand, view: ViewState, canvas: boolean) => boolean;
@@ -289,7 +291,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     // `opaqueWorld` in wave 2, and until then today's adapter ignores it.
     const gpuOptions = () => ({ audit: options.auditSurface ?? 'board', ...(options.liveOverlay ? { liveOverlay: true } : {}),
         ...(typeof options.opaqueWorld === 'function' ? { opaqueWorld: options.opaqueWorld } : {}),
-        ...(options.liveNodes ? { liveNodes: options.liveNodes } : {}), ...(options.geometryPins ? { pins: options.geometryPins } : {}) });
+        ...(options.liveNodes ? { liveNodes: options.liveNodes } : {}), ...(options.geometryPins ? { pins: options.geometryPins } : {}),
+        ...(options.inputActive ? { inputActive: options.inputActive } : {}) });
     // The drag's omitted set is applied where the tiles are built: prepare takes it, and each prepare reads the current
     // omitNodes(frame). The draw never took it (the composer's draw has no omission), so it is not passed there.
     // A live-only overlay admits its parts at the view they are drawn at (its live runs are baked at prepare, and only tiles take
@@ -301,6 +304,12 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     // good: every edit command disabled and the camera 'moving' forever (measured: ack:reset:omit on 182 of 182 band
     // acknowledgements after the first drag; a PDF then stayed on its motion tiles at rest).
     let preparedOmit: { frame: PaintSource; omit: ReadonlySet<string> | null } | null = null;
+    // The canvas2d draw's omission, read once per frame for both bands, as preparedOmit is for the GPU draw. Read at each band's draw,
+    // it changed between the underlay and content bands of a commit's frame, so their acknowledgements never paired and the commit
+    // hold never ended: a canvas2d rotate (Shift+.) left 'Updating…' and every edit command disabled at rest (measured: revision 7
+    // drawn and onPresented in both bands, preview never presented; feat/in-house-engines d9dff027 clean on the same case).
+    // Keyed by the encode: the underlay band, drawn first, reads it; the content band right after it, for the same frame and view, reuses it.
+    let drawnOmit2d: { view: ViewState; frame: PaintSource; omit: ReadonlySet<string> | null } | null = null;
     const prepareGpu = (view: ViewState, budget: FrameBudget, frame: PaintSource): boolean => {
         const shift = options.liveOverlay ? options.drawOffset?.(frame) : null;
         const at = shift && (shift.x !== 0 || shift.y !== 0) ? shiftedView(view, shift) : view;
@@ -579,7 +588,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         direct?.release(reason === 'context-lost' ? 'pressure' : reason);
         dense?.release(reason);
         for (const frame of [...reservations.keys()]) releaseFrame(frame);
-        estimate = null; denied = false; deniedDirectSegments = null; lastPrepareFrame = null; preparedOmit = null; drawn.clear(); drawTokens = new WeakMap(); announced = new WeakMap(); drawSource = null; prepareToken = null; prepareFrameId = -1;
+        estimate = null; denied = false; deniedDirectSegments = null; lastPrepareFrame = null; preparedOmit = null; drawnOmit2d = null; drawn.clear(); drawTokens = new WeakMap(); announced = new WeakMap(); drawSource = null; prepareToken = null; prepareFrameId = -1;
         ackFrame = null; ackInk = null; ackMask = 0; ackToken = null; ackContext = null; presentedInk = null;
         if (reason === 'hidden') {
             const wasDense = useDense;
@@ -780,11 +789,17 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 // and the composer still prepares, at the new camera, from them, so the previous band keeps drawing under the live
                 // camera until the new one is built (the wake). Without this the composer did not prepare, and the draw-list guard
                 // drew nothing for the frame.
+                // A source's build is finished only when the reference presents it: a picture's lease resolves after the call that asked
+                // for it, and a build longer than one budget yields, and either completes only in a later prepare. Built once per
+                // source, a dropped picture's frame never completed on a device: the board drew its previous picture and showed
+                // 'Updating…' for good, the picture never drawn (canvas2d, which prepares every frame, drew it). So a source the
+                // reference has not yet presented is prepared again on each frame; a presented one returns at once.
                 if (directBuiltFor !== frame && !memoryGate.closed()) {
                     adapter.prepare(view, budget);
                     directBuiltFor = frame;
                 } else if (directBuiltFor !== frame) auditCount(options.auditSurface ?? 'board', 'direct:build-held');
-                if (directBuiltFor !== frame) prepareUnchanged = false;
+                else if (adapter.readyFrame() !== frame) { adapter.prepare(view, budget); auditCount(options.auditSurface ?? 'board', 'direct:build-resumed'); }
+                if (directBuiltFor !== frame || adapter.readyFrame() !== frame) prepareUnchanged = false;
                 const composerChanged = prepareGpu(view, budget, frame);
                 if (composerChanged && renderAuditEnabled()) auditCount(options.auditSurface ?? 'board', 'unchanged-miss:composer');
                 if (budget.phase === 'foreground') { pendingFrame = frame; foregroundFrame = budget.frameId; return; }
@@ -1087,7 +1102,9 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     lastDrawn = null;
                     const frame = adapter?.readyFrame();
                     if (!frame || !drawable(frame)) return;
-                    const omit = options.omitNodes?.(frame) ?? null;
+                    const reuse = band === 'content' && drawnOmit2d?.view === view && drawnOmit2d.frame === frame;
+                    const omit = reuse ? drawnOmit2d!.omit : options.omitNodes?.(frame) ?? null;
+                    drawnOmit2d = band === 'underlay' ? { view, frame, omit } : null;
                     const shift = drawnOffset(frame, useDense); if (shift === undefined) return;
                     const ink = adapter!.borrowPrepared()?.root.inkNodeIds ?? frame.inkNodeIds;
                     if (!prepareToken) return;

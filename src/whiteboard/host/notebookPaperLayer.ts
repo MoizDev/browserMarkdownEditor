@@ -156,7 +156,9 @@ class NotebookPaperLayer implements Layer {
     constructor(private readonly host: LayerHost, private readonly options: NotebookPaperLayerOptions) {
         this.procedural = createProceduralPaper(host);
         // The paper's own opaque world: its page rects, which the paper fills (notebookPaper.ts), exact for an inverted view.
-        const gpuOptions = { audit: 'notebook-paper', opaqueWorld: () => this.drawnPageRects() };
+        // The paper's lines draw the same pixels live and from tiles (measured: its settle-to-tile switch presented identical pictures,
+        // 19 a zoom phase), so its composer goes back to its tiles at rest without drawing the paper live through a drag or a stroke.
+        const gpuOptions = { audit: 'notebook-paper', opaqueWorld: () => this.drawnPageRects(), liveMatchesTiles: true };
         this.gpu = createGpuPaintAdapter(this.gpuReference, host, error => this.report(error), gpuOptions);
     }
     /** The paper's CPU working set for its current snapshot: the size a refused staging waits for. */

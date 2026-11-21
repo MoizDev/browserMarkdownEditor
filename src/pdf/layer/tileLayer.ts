@@ -120,9 +120,17 @@ const ZOOM_GESTURE_GAP_MS = 150;
  * the next step replanned the scale before they landed: measured on doc12's paced GPU zoom (a step every ~56 ms), 113 of 124
  * rasters were thrown away unused (fallback:raster-unused) and the last step's tiles queued behind them in the worker pool. */
 const ZOOM_GESTURE_HOLD = 1.25;
-/** The hold's bound (t21): three frames, so a slow notched wheel's tiles never wait longer. A gesture's first step does not hold
- * at all: a single notch starts its tiles in its own frame, as canvas2d does. */
+/** The hold's bound (t21): three frames, so a slow notched wheel's tiles never wait longer. */
 const ZOOM_GESTURE_HOLD_MAX_MS = 48;
+/** The step of a gesture its hold starts at (t21): a notch or a short zoom of two steps holds nothing and starts its tiles at once,
+ * as canvas2d does. Holding from the second step, a 3-step zoom (steps ~45 ms apart) was exact 124 ms after its last step against
+ * canvas2d's 49: the full 48 ms hold, then the resting tiles in three rounds of the raster cap. */
+const ZOOM_GESTURE_HOLD_FROM_STEP = 3;
+/** Rasters running at once while the view moves, and once it rests: at rest the visible exact tiles get the whole worker pool
+ * (pool.ts maximumWorkers, at most 4), so the resting view sharpens in fewer rounds. */
+const MOVING_RASTERS = 3, RESTING_RASTERS = 4;
+/** Stand-ins a refused visible exact tile may release to fit (releaseStandinUnder): a tile overlaps a few of another scale. */
+const STANDIN_RELEASES_PER_TILE = 4;
 /** Four tile textures: what the visible exact tiles of a resting view may upload past the frame's allowance (see prepare). */
 const REST_EXACT_UPLOAD_BYTES = 4 * TILE_EDGE * TILE_EDGE * 4;
 
@@ -215,7 +223,14 @@ export class PdfTileLayer implements Layer {
     private scaleChangedAt = 0;
     /** This prepare's upload grant for landed visible exact tiles at rest (REST_EXACT_UPLOAD_BYTES), spent by uploadTile. */
     private restGrant = 0;
+    /** A wanted tile was not started because three rasters were running: the next one to settle or fail asks for the frame that
+     * starts it. A raster that landed off screen or was abandoned asked for none, so after a short zoom the resting view's exact
+     * tiles waited behind the gesture's intermediate-scale rasters and the page stayed on stand-ins (measured: doc12, WebGL2,
+     * >= 1.5 s at rest, 10 requests skipped for slots in 7 rest prepares and no prepare after). */
+    private slotWaiting = false;
     private zoomCadence = 0;
+    /** The steps of the current zoom gesture so far (a step is a frame whose raster scale changed; 0 before any). */
+    private gestureSteps = 0;
     /** Bumped by every change to what the layer draws (tiles, bridge items, the frame texture, the content). prepare answers
      * unchanged only while this has not moved since the frame it last answered changed for (see answer). */
     private drawVersion = 0;
@@ -320,9 +335,10 @@ export class PdfTileLayer implements Layer {
         if (zooming) {
             const since = now - this.scaleChangedAt;
             this.zoomCadence = this.scaleChangedAt > 0 && since < ZOOM_GESTURE_GAP_MS ? since : 0;
+            this.gestureSteps = this.zoomCadence > 0 ? this.gestureSteps + 1 : 1;
             this.scaleChangedAt = now;
         }
-        const holdUntil = !device || this.zoomCadence === 0 ? 0
+        const holdUntil = !device || this.zoomCadence === 0 || this.gestureSteps < ZOOM_GESTURE_HOLD_FROM_STEP ? 0
             : this.scaleChangedAt + Math.min(ZOOM_GESTURE_HOLD_MAX_MS, this.zoomCadence * ZOOM_GESTURE_HOLD);
         const holding = holdUntil > now;
         // A spare page is kept only for a zoom that is still changing: at rest it is 4 MB of empty texture.
@@ -386,7 +402,14 @@ export class PdfTileLayer implements Layer {
             }
             this.restGrant = 0;
         }
-        let running = [...this.entries.values()].filter(entry => !entry.settled).length;
+        const resting = !input.moving && !holding && !zooming;
+        // On the device only: canvas2d keeps its own scheduling (the owner's daily driver does not change).
+        const rasterCap = resting && device ? RESTING_RASTERS : MOVING_RASTERS;
+        // At rest the visible exact tiles come first: a raster still running for a tile off the resting view (work ahead, or the
+        // gesture's) gives its slot up while one of them waits for a slot, and is asked for again after them.
+        if (resting && device) this.yieldOffViewRasters(planned.requests, input.viewport, rasterCap);
+        let running = 0;
+        for (const entry of this.entries.values()) if (!entry.settled) running++;
         let zoomHeld = false;
         // Set by the first prefetch tile the pool refuses: the rest of this prepare's prefetch is not asked for. Measured (canvas2d,
         // DPR 2 annotated PDF at rest): asking each one spent the frame's budget on ~6,000 refusals, the yield asked for another frame,
@@ -413,7 +436,8 @@ export class PdfTileLayer implements Layer {
                 }
                 continue;
             }
-            if (this.failed.has(key) || running >= 3) continue;
+            if (this.failed.has(key)) continue;
+            if (running >= rasterCap) { this.slotWaiting = true; continue; }
             // Held for the frame the scale rests; pendingFrame keeps the next frame coming so the rest is not missed.
             // Held without asking for a frame: the frame that starts it is the wake armed below, one frame after the scale stops changing.
             if (holding && this.covered(request.page, rect(request), device)) { auditCount('pdf-page', zooming ? 'zoom-deferred' : 'zoom-deferred:gesture'); zoomHeld = true; continue; }
@@ -436,6 +460,7 @@ export class PdfTileLayer implements Layer {
             const entry: Entry = { request, lease, controller: new AbortController(), used: ++this.sequence };
             this.entries.set(key, entry); running++;
             void Promise.resolve().then(() => this.producer.render(request, entry.controller.signal)).then(bitmap => {
+                this.slotFreed();
                 const current = !this.disposed && this.isCurrent() && this.entries.get(key) === entry && !entry.controller.signal.aborted;
                 if (!current || bitmap.width !== request.tile.textureWidth || bitmap.height !== request.tile.textureHeight) {
                     forgetPdfTileArrival(bitmap);
@@ -455,6 +480,7 @@ export class PdfTileLayer implements Layer {
                 // A tile that landed off screen changes nothing on screen: the camera's next move presents it.
                 if (this.onScreen(entry.request)) this.host.invalidate('pdf-tile-arrived');
             }, error => {
+                this.slotFreed();
                 const current = this.entries.get(key) === entry;
                 const cancelled = entry.controller.signal.aborted || (error instanceof Error && error.name === 'AbortError');
                 if (current) this.remove(key, entry);
@@ -749,6 +775,25 @@ export class PdfTileLayer implements Layer {
         }
         if (!victim) return false;
         auditCount('pdf-page', 'standin-last-resort');
+        this.remove(victim.key, victim.entry);
+        return true;
+    }
+
+    /** For a refused visible exact tile: the on-view stand-in at another scale that overlaps `area` most, drawn last frame or not
+     * (the tile takes its place in this prepare). False when none overlaps it. */
+    private releaseStandinUnder(area: Readonly<Rect>): boolean {
+        const input = this.latestDemand;
+        if (!input || !intersects(area, input.viewport)) return false;
+        let victim: { key: string; entry: Entry } | null = null, best = 0;
+        for (const [key, entry] of this.entries) {
+            if (!entry.texture || !scaleDiffers(entry.request.scale.scale, input.rasterScale) || entry.request.level === 'low') continue;
+            const under = rect(entry.request);
+            const overlap = Math.max(0, Math.min(under.x + under.width, area.x + area.width) - Math.max(under.x, area.x))
+                * Math.max(0, Math.min(under.y + under.height, area.y + area.height) - Math.max(under.y, area.y));
+            if (overlap > best) { best = overlap; victim = { key, entry }; }
+        }
+        if (!victim) return false;
+        auditCount('pdf-page', 'standin-replaced');
         this.remove(victim.key, victim.entry);
         return true;
     }
@@ -1059,6 +1104,32 @@ export class PdfTileLayer implements Layer {
 
     /** Uploads a settled tile's bitmap into the tile's own texture, sized to the bitmap. 'capacity' when the governor refused
      * the texture (the layer waits for it), 'budget' when this frame's upload allowance is spent (the frame stops here). */
+    /** At rest, aborts running rasters off the view while a visible exact tile of the plan has neither a tile nor a slot. */
+    private yieldOffViewRasters(requests: readonly PdfTileRequest[], viewport: Readonly<Rect>, cap: number): void {
+        let running = 0, waiting = 0;
+        for (const entry of this.entries.values()) if (!entry.settled) running++;
+        if (running < cap) return;
+        for (const request of requests) {
+            if (request.level !== 'exact' || !intersects(rect(request), viewport)) continue;
+            if (!this.entries.get(request.text) && !this.failed.has(request.text)) waiting++;
+        }
+        if (waiting === 0) return;
+        // Running off-view rasters give way until the free slots cover the waiting visible tiles.
+        for (const [key, entry] of this.entries) {
+            if (waiting <= cap - running) break;
+            if (entry.settled || intersects(rect(entry.request), viewport)) continue;
+            auditCount('pdf-page', 'raster-yielded');
+            this.remove(key, entry); running--;
+        }
+    }
+
+    /** A raster settled or failed: its slot is free, so work skipped for the running cap gets the frame that starts it. */
+    private slotFreed(): void {
+        if (!this.slotWaiting || this.disposed) return;
+        this.slotWaiting = false;
+        this.host.invalidate('pdf-tile-slot');
+    }
+
     private uploadTile(device: GfxDevice, key: string, entry: Entry, budget: FrameBudget): 'done' | 'capacity' | 'budget' {
         const bitmap = entry.bitmap!;
         const width = bitmap.width, height = bitmap.height, bytes = width * height * 4;
@@ -1075,8 +1146,23 @@ export class PdfTileLayer implements Layer {
         this.dropTexture(entry);
         let texture: PooledTexture | null;
         try {
-            texture = createTileTexture(this.host.allocator.gpu, device, width, height);
+            // A tile off the view is work ahead of need: its texture is reserved as prefetch, refused rather than reclaiming, and its
+            // refusal arms no wait (the next frame that happens for its own reason uploads it). Reserved as need, each landed prefetch
+            // tile's refusal evicted another off-view tile, which the plan asked for again: measured, a 3-step zoom then rest
+            // uploaded 350 tiles (370 MB) and evicted 346 (doc12, WebGL2, DPR 1).
+            const view = this.latestDemand?.viewport;
+            if (view && !intersects(rect(entry.request), view)) {
+                texture = createTileTexture(this.host.allocator.gpu, device, width, height, { prefetch: true });
+                if (!texture) { auditCount('pdf-page', 'upload:prefetch-refused'); return 'capacity'; }
+            } else texture = createTileTexture(this.host.allocator.gpu, device, width, height);
             if (!texture && this.reclaimTile()) texture = createTileTexture(this.host.allocator.gpu, device, width, height);
+            // A visible exact tile replaces the other-scale stand-ins under it: those go for it, the one under it most first, even
+            // when the last frame drew them, until it fits (bounded: a tile overlaps few). Measured: at rest after a short zoom 9
+            // visible exact textures were refused, every on-view stand-in was excluded as drawn by the last frame, and the page
+            // stayed on stand-ins for good (doc12, WebGL2).
+            for (let attempt = 0; !texture && attempt < STANDIN_RELEASES_PER_TILE && this.releaseStandinUnder(rect(entry.request)); attempt++) {
+                texture = createTileTexture(this.host.allocator.gpu, device, width, height);
+            }
         } catch (error) {
             // A device refusing memory is "not now": the tile waits for capacity like a refused lease. Reported as a failure, it
             // reached the person as an 'out-of-budget' dialog (measured: WebGL2, DPR 2 annotated PDF, 1 in 16 new notes).

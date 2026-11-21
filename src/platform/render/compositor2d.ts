@@ -1030,6 +1030,18 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             back.images.set(image, use);
         }
         if (use.resident || use.admission !== null && use.admission.frameId === this.budget?.frameId) return true;
+        // Admitted now when this frame's upload allowance still holds it. The preparation's admission pass runs before the layers, so a
+        // tile first asked for by the frame that needs it (an off-view prefetch tile a zoom brings on view) waited a whole frame, and
+        // that frame was dropped: canvas2d presented a single notch in at +4 ticks, against +3 on WebGL2 and on feat/in-house-engines
+        // (doc12: four prefetch tiles rastered at rest, never drawn, needed by the notch's first frame).
+        const budget = this.budget;
+        if (budget && !budget.shouldYield()) {
+            this.busy++;
+            try {
+                if (!use.lease) use.lease = this.reserveGpu(use.bytes);
+                if (use.lease && budget.claimUpload(use.bytes)) { use.admission = budget; return true; }
+            } finally { this.busy--; }
+        }
         // A new use, or one whose upload the frame's allowance refused, is admitted by a later frame; one refused its residency waits
         // for the next frame something else asks for (retrying it every frame would spin rAF on a full pool).
         if (made || use.lease) this.options.invalidate('2d-image-admission');

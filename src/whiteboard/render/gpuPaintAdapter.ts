@@ -265,6 +265,10 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         readonly opaqueWorld?: () => readonly Rect[];
         /** An overlay: its few plain parts are drawn live each frame, with no tile grant (see the composer's liveOverlay). */
         readonly liveOverlay?: boolean;
+        /** Content whose live and tiled pictures are the same pixels (see the composer's liveMatchesTiles). */
+        readonly liveMatchesTiles?: boolean;
+        /** Whether the frame changes for input anyway (see the composer's inputActive). */
+        readonly inputActive?: () => boolean;
         /** The geometry service's pins a live zoom holds (see GeometryPins in tileComposer.ts); absent holds none. */
         readonly pins?: GeometryPins;
         /** A live-only overlay's nodes (its gesture's): the composer indexes and draws only these items of the paint it is handed. */
@@ -332,6 +336,8 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         layQuads: (pass, texture, quads) => host.drawTexturedQuads(pass, texture, quads, QUAD),
         ...(options.opaqueWorld ? { opaqueWorld: options.opaqueWorld } : {}),
         ...(options.liveOverlay ? { liveOverlay: true } : {}),
+        ...(options.liveMatchesTiles ? { liveMatchesTiles: true } : {}),
+        ...(options.inputActive ? { inputActive: options.inputActive } : {}),
         ...(options.pins ? { pins: options.pins } : {}),
         // The compose limit halves while the host reports a slow GPU, read each frame (PLAN 3.1).
         slowGpu: () => host.trouble() === 'slow-gpu',
@@ -446,7 +452,8 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             let freed = pathRoute.coverage.evict(bytes);
             if (freed < bytes) freed += imageRoute.evictTextures(bytes - freed, frameId);
             if (freed < bytes) freed += textRoute.evictTextures?.(bytes - freed, frameId) ?? 0;
-            if (freed < bytes && lastView) freed += store.evict(bytes - freed, frameId, lastView);
+            // A composer drawing live draws no tile: its tiles go before anything the view shows is refused (store.evict).
+            if (freed < bytes && lastView) freed += store.evict(bytes - freed, frameId, lastView, composer.drawsLive());
             if (freed > 0) composer.noteEvicted();
             return freed;
         },

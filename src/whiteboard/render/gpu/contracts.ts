@@ -95,9 +95,10 @@ export interface TileStore {
     /** Composed entries of other scales covering `world`, nearest scale first. */
     standIns(band: PaintBand, world: Readonly<Rect>, scale: number): readonly TileEntry[];
     touch(entry: TileEntry, frameId: number): void;
-    /** Never an entry touched in `frameId`. Order: free list, other scales off view, same scale off view (farthest
-     *  first), other scales on view that a composed tile covers. Returns the bytes actually freed. */
-    evict(bytes: number, frameId: number, view: ViewState): number;
+    /** Never an on-view entry touched in `frameId`, unless `drawnLive` (the composer draws the view live: no tile is drawn). Order:
+     *  free list, other scales off view (live: every other scale), same scale off view (farthest first), then live the same scale on
+     *  view, else other scales on view that a composed tile covers. Returns the bytes actually freed. */
+    evict(bytes: number, frameId: number, view: ViewState, drawnLive?: boolean): number;
     /** Stamps every held entry the view shows, at any scale, as used in `frameId` (see Layer.protectFrame). */
     touchVisible(view: ViewState, frameId: number): void;
     dropScalesExcept(scale: number, band: PaintBand): number;

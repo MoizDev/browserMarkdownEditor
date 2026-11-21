@@ -1040,8 +1040,10 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
             gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
             gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
-            const complete = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
-            const clean = gl.getError() === gl.NO_ERROR;
+            // The commit checks the target before it touches the canvas (commitSurface): read here too, it was a second synchronous
+            // round trip per raise. The benchmark build keeps it.
+            const complete = !__BME_BENCH__ || gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+            const clean = !__BME_BENCH__ || gl.getError() === gl.NO_ERROR;
             this.#forgetState();
             this.#reset();
             if (!complete || !clean) throw new ArenaError('allocation');
@@ -1084,8 +1086,9 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         gl.drawBuffers([gl.BACK]);
         gl.disable(gl.SCISSOR_TEST);
         gl.blitFramebuffer(0, 0, offscreen.width, offscreen.height, 0, 0, offscreen.width, offscreen.height, gl.COLOR_BUFFER_BIT, gl.NEAREST);
-        // The blit's own error is the result. The default framebuffer's status is always complete, so it says nothing about this copy.
-        const complete = gl.getError() === gl.NO_ERROR;
+        // The blit's own error is the result in the benchmark build. The default framebuffer's status is always complete, so it says
+        // nothing about this copy; the source was checked above (the one synchronous read of a raise), and the blit's arguments are valid.
+        const complete = !__BME_BENCH__ || gl.getError() === gl.NO_ERROR;
         if (!complete) auditCount('gpu', 'commit-blit-failed');
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
         this.#dropOffscreen();
@@ -2472,8 +2475,10 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
                     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
                     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-                    // Allocation only, never per draw: refuse OOM before publishing a texture.
-                    if (gl.getError() !== gl.NO_ERROR) { this.#healthy(); throw new ArenaError('allocation'); }
+                    // Not read in production: gl.getError is a synchronous round trip to the GPU process, and tiles allocate textures inside
+                    // frames, so a compose behind a deep GPU queue waited for all of it. The bytes are reserved with the governor before
+                    // this point and a lost context is seen by #healthy; the benchmark build keeps the read (as #checkUpload does).
+                    if (__BME_BENCH__ && gl.getError() !== gl.NO_ERROR) { this.#healthy(); throw new ArenaError('allocation'); }
                     object = { ...desc, levels: desc.levels ?? 1, texture };
                 } catch (error) { if (!gl.isContextLost()) gl.deleteTexture(texture); throw error; }
                 break;
@@ -2553,7 +2558,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 else gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH24_STENCIL8, texture.width, texture.height);
                 gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, target.depthStencil);
             }
-            this.#assertFramebuffer();
+            this.#assertFramebuffer(`${texture.format}:${desc.samples}:${desc.stencil ? 1 : 0}:${coverage ? 1 : 0}`);
             if (desc.samples === 4) {
                 const resolve = gl.createFramebuffer();
                 if (!resolve) throw new ArenaError('allocation');
@@ -2561,14 +2566,19 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 this.#forgetState();
                 gl.bindFramebuffer(gl.FRAMEBUFFER, resolve);
                 gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture.texture, 0);
-                this.#assertFramebuffer();
+                this.#assertFramebuffer(`resolve:${texture.format}`);
             }
             return target;
         } catch (error) { if (!gl.isContextLost()) this.#deleteTarget(target); throw error; }
     }
-    #assertFramebuffer(): void {
+    // Completeness depends on the attachments' formats and sample counts, not on the texture: each kind is checked once per device.
+    // Asked for every target (checkFramebufferStatus is a synchronous round trip), each tile's target made inside a frame waited on the
+    // GPU queue.
+    readonly #completeKinds = new Set<string>();
+    #assertFramebuffer(kind: string): void {
+        if (this.#completeKinds.has(kind)) return;
         const gl = this.#healthy();
-        if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE) return;
+        if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE) { this.#completeKinds.add(kind); return; }
         this.#healthy();
         this.#services.onFramebufferFailure?.();
         throw new ArenaError('unsupported');

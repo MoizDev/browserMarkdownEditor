@@ -37,6 +37,15 @@ Shared rules (layers, frames, the governor) are in `rendering-platform`. This fi
   grid and blank notebook paper is ONE procedural pass (`host/proceduralPaper.ts`, exact box coverage per item; dotted keeps the
   composed route, counted `procedural:off:<why>`); a live frame draws each part once over the view, never per tile position; the
   grid-4 coverage scratch is 8 MiB (a band is a switch and a resolve). Measured: notebook zoom-sat 848 switches -> 51, 14.6 -> 3.3 ms.
+- Union ink is EXACT AREA too: `ink/unionOutline.ts` builds a stroke's union boundary (one offset contour per run, cut by an
+  arrangement where contours cross, kept where the outer winding is zero); a refusal goes to the grid, counted
+  `ink:area:fallback:<why>`. Wet and committed ink share the route, so pen-up hands over identical coverage. A moving view may hold
+  a FINER band's outline, never a coarser one (the board rests on its last live picture). Measured, real DPR 2: notebook draw
+  13.2 -> 1.3 ms per frame. The area shader's per-column share is taken from the run's own width (`tb = ta + d`): two separate
+  differences of pixel-sized coordinates streaked rows on Apple's GPU.
+- **Hitches are named by the slow-frame log** (`__bmeRenderAudit.slowFrames()`: each frame over 1000/120 ms GPU with its tape and
+  counter deltas). A frame composes at most one dirty tile a pending region covers (`DIRTY_COVERED_PER_FRAME`); a covered position,
+  and one whose tile replaced its cover, signs as its position (`coverSignature`), so the swap presents nothing.
 - The wet layer lets go of a stroke when the board reports its node in `drawnInkNodeIds`, which the wet layer reads in its own
   prepare. A node goes in only once every live part of it was admitted this frame: reported before admission, a deferred
   re-admission at pen-up left the stroke on neither layer for a frame. With no stroke in flight the wet layer's routes are

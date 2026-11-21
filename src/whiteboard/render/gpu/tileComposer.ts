@@ -164,6 +164,8 @@ interface Draw {
     liveRoute: ItemRoute | null;
     /** The node a live part belongs to, added to the band's drawn-live set when the part is laid. */
     node: string;
+    /** Drawn for a covered position, or one whose tile replaced its cover this frame: signed as its position (coverSignature). */
+    cover: boolean;
 }
 
 /** A live part admitted for this frame: its run and the route that owns it, retired by that route. */
@@ -513,6 +515,16 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     const pendingRegions: Rect[] = [];
     // The positions whose dirty tiles this frame's live parts cover (positionKey): their picture is current, not stale.
     const coveredPositions = new Set<number>();
+    // Last frame's, read when this frame's draws are built: a position covered then and composed since shows the same picture.
+    let lastCovered = new Set<number>(), spareCovered = new Set<number>();
+    // The draw-list signature of the covered positions (and those whose tile replaced their cover this frame): each as its position and
+    // clip only, not its textures or live parts. Swapping a cover for its fresh tile changes no pixel, and counted as a change it
+    // presented once per staggered tile (gpu-f1's doc12 tape: 2 redundant presents per stroke at pen-up, 4 in a paced draw).
+    let coverSignature = 0;
+    // A position whose tile replaced its cover keeps signing as its position while it draws the tiles it swapped to (their texture and
+    // generation, hashed): untagged the frame after the swap, its draws signed in full moved the signature over the same picture (the
+    // next present after each swap was redundant). A recompose changes the hash and ends the tag; a position not drawn loses it.
+    let swappedTiles = new Map<number, number>(), spareSwapped = new Map<number, number>();
     // Two-phase frames (budget.phase): the foreground call of frame `foregroundFrame` leaves its target, span, zoom and edit count for the
     // background call of the same frame. `frameComposed` counts this frame's composes across both calls, so the limit stays per frame.
     let foregroundFrame = -1;
@@ -1061,7 +1073,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         const world = tileWorld(entry.key);
         let draw = draws[drawCount];
         if (!draw) {
-            draw = { band, texture: target.texture, mode: slot.mode, gen: 0, x: 0, y: 0, w: 0, h: 0, clipOn: false, cx: 0, cy: 0, cw: 0, ch: 0, ink: NO_IDS, live: null, liveRoute: null, node: '' };
+            draw = { band, texture: target.texture, mode: slot.mode, gen: 0, x: 0, y: 0, w: 0, h: 0, clipOn: false, cx: 0, cy: 0, cw: 0, ch: 0, ink: NO_IDS, live: null, liveRoute: null, node: '', cover: false };
             draws.push(draw);
         }
         drawCount++;
@@ -1069,7 +1081,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         draw.x = world.x; draw.y = world.y; draw.w = world.width; draw.h = world.height;
         draw.clipOn = clip !== null;
         draw.ink = slot.inkNodes;
-        draw.live = null; draw.liveRoute = null;
+        draw.live = null; draw.liveRoute = null; draw.cover = false;
         if (clip) { draw.cx = clip.x; draw.cy = clip.y; draw.cw = clip.width; draw.ch = clip.height; }
         if (draw.mode === 'isolated') auditCount(audit, 'isolation:copy');
         store.touch(entry, frame);
@@ -1246,13 +1258,13 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     const addLiveDraw = (band: PaintBand, run: PreparedRun, route: ItemRoute, clip: Rect, nodeId: string): void => {
         let draw = draws[drawCount];
         if (!draw) {
-            draw = { band, texture: null, mode: 'over', gen: 0, x: 0, y: 0, w: 0, h: 0, clipOn: true, cx: 0, cy: 0, cw: 0, ch: 0, ink: NO_IDS, live: null, liveRoute: null, node: '' };
+            draw = { band, texture: null, mode: 'over', gen: 0, x: 0, y: 0, w: 0, h: 0, clipOn: true, cx: 0, cy: 0, cw: 0, ch: 0, ink: NO_IDS, live: null, liveRoute: null, node: '', cover: false };
             draws.push(draw);
         }
         drawCount++;
         draw.band = band; draw.texture = null; draw.mode = 'over'; draw.gen = 0; draw.clipOn = true;
         draw.cx = clip.x; draw.cy = clip.y; draw.cw = clip.width; draw.ch = clip.height;
-        draw.ink = NO_IDS; draw.live = run; draw.liveRoute = route; draw.node = nodeId;
+        draw.ink = NO_IDS; draw.live = run; draw.liveRoute = route; draw.node = nodeId; draw.cover = false;
         plannedLive[band].add(nodeId);
         auditCount(audit, 'tile:live-part');
     };
@@ -1317,7 +1329,11 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         drawsEpoch = evictEpoch; drawsFrame = frame;
         drawsCam.x = view.camera.x; drawsCam.y = view.camera.y; drawsCam.z = view.camera.z;
         drawsCam.w = view.viewport.width; drawsCam.h = view.viewport.height; drawsCam.dpr = view.viewport.dpr;
+        const swap = lastCovered; lastCovered = spareCovered; spareCovered = swap;
+        const swapped = swappedTiles; swappedTiles = spareSwapped; spareSwapped = swapped; swappedTiles.clear();
+        lastCovered.clear(); for (const key of coveredPositions) lastCovered.add(key);
         coveredPositions.clear();
+        coverSignature = 0;
         if (liveNow) { buildLiveDraws(view, budget); return; }
         const span = spanAt(view, target);
         const clipAt = (x: number, y: number): Rect | null => clipOnSurface(view, target, x, y);
@@ -1375,6 +1391,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                             coveredPositions.add(positionKey(band, target, x, y));
                         }
                         const clip = withLive || covered ? clipAt(x, y) : null;
+                        const coverKey = positionKey(band, target, x, y);
+                        const coverFrom = drawCount;
                         let li = 0;
                         for (let s = 0; s < count; s++) {
                             const entry = entryAt(band, target, x, y, s);
@@ -1387,6 +1405,19 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                             }
                         }
                         liveBefore(band, Infinity, li, clip);
+                        let tiles = 0;
+                        if (!covered && status === 'ok') for (let d = coverFrom; d < drawCount; d++) tiles = hashMix(hashMix(tiles, idOfObject(draws[d].texture)), draws[d].gen);
+                        const held = spareSwapped.get(coverKey);
+                        const swappedNow = !covered && status === 'ok' && lastCovered.has(coverKey);
+                        const signAsCover = covered || swappedNow || (status === 'ok' && held === tiles);
+                        if (!covered && status === 'ok' && (swappedNow || held === tiles)) swappedTiles.set(coverKey, tiles);
+                        if (signAsCover) {
+                            auditCount(audit, covered ? 'cover:signed' : swappedNow ? 'cover:swapped' : 'cover:held');
+                            for (let d = coverFrom; d < drawCount; d++) draws[d].cover = true;
+                            const at = clipAt(x, y);
+                            coverSignature = hashMix(coverSignature, coverKey);
+                            if (at) { coverSignature = hashMix(coverSignature, Math.round(at.x) * 4 + Math.round(at.y) * 8 + Math.round(at.width) * 16 + Math.round(at.height) * 32); }
+                        }
                         auditCount(audit, 'tile:hit');
                         if (zooming) auditCount(audit, 'zoom:draw:exact');
                         continue;
@@ -1757,9 +1788,15 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             if (exact) { exactAtX = view.camera.x; exactAtY = view.camera.y; exactAtZ = view.camera.z; }
             else { exactAtX = Number.NaN; exactAtY = Number.NaN; exactAtZ = Number.NaN; }
             // Changed unless the frame drew what the last one drew: no edit, the same draw list, and a settled index.
-            let signature = hashMix(drawCount, liveNow ? 1 : 0);
+            let signature = hashMix(liveNow ? 1 : 0, coverSignature);
             for (let i = 0; i < drawCount; i++) {
                 const draw = draws[i];
+                // A cover's live parts change only with an edit, which presents through its scene revision: re-laid unchanged, they are the
+                // same picture (counted, every staggered compose frame presented the cover again: gpu-f1's doc12 tape).
+                if (draw.live && !settleRepeat && !draw.cover) contentVersion++;
+                // Sequential mixing keeps the order; a covered position's draws (which change in number when its tile replaces the cover)
+                // are left out, so the draws after it sign the same.
+                if (draw.cover) continue;
                 signature = hashMix(signature, draw.band === 'underlay' ? 1 : 2);
                 signature = hashMix(signature, hashText(String(draw.mode)));
                 signature = hashMix(signature, Math.round(draw.x * 64)); signature = hashMix(signature, Math.round(draw.y * 64));
@@ -1768,7 +1805,6 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 signature = hashMix(signature, idOfObject(draw.texture));
                 signature = hashMix(signature, draw.gen);
                 signature = hashMix(signature, draw.live ? 1 + idOfObject(draw.liveRoute) : 0);
-                if (draw.live && !settleRepeat) contentVersion++;
                 if (draw.ink.length) signature = hashMix(signature, hashText(draw.ink.join('\u0001')));
             }
             const sigChanged = signature !== drawSignature;

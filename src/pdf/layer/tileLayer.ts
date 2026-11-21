@@ -168,6 +168,7 @@ export class PdfTileLayer implements Layer {
     // The view, settled set, backend and scale drawScratch was selected for, and the per-page boxes of the current scale it used.
     private drawMemo: { view: ViewState; order: Entry[] | null; device: GfxDevice | null; rasterScale: number; revision: number; version: number; exactLast: boolean } | null = null;
     private readonly coverScratch = new Map<number, Rect[]>();
+    private readonly hiddenScratch: boolean[] = [];
     private readonly pageScratch: number[] = [];
     private readonly retiring = new Set<Entry>();
     private readonly texturePool: PdfTexturePool;
@@ -1263,11 +1264,11 @@ export class PdfTileLayer implements Layer {
     }
 
     /** `current` is the caller's own check that the frame's content identity is the one entries were planned for. Unless the camera
-     * travels, a tile of another scale whose part on the view is wholly under drawable tiles of the current exact scale drawn over it
-     * is left out: those tiles are opaque page raster, so it adds no pixel, only work and residency. Measured (canvas2d, DPR 2 annotated
-     * PDF after the annotate toggle's zoom): the back buffer drew 28 tiles (26 MB) for a 10.9 MB view, the 2D working canvases filled
-     * the pane's 59.9 MB grant, the next tile image was refused and no frame presented again ('Updating' for good). While the camera
-     * travels every tile is kept: an unsnapped camera puts tile edges between device pixels, where the scale beneath fills the seam. */
+     * travels, a tile wholly under tiles drawn after it is left out: page tiles are opaque raster, so it adds no pixel, only work and
+     * residency. Measured (canvas2d, DPR 2 annotated PDF after the annotate toggle's zoom): the back buffer drew 28 tiles (26 MB) of
+     * three scales for a 10.9 MB view, the 2D working canvases filled the pane's 59.9 MB grant, the next tile image was refused and
+     * no frame presented again ('Updating' for good). While the camera travels every tile is kept: an unsnapped camera puts tile edges
+     * between device pixels, where the tile beneath fills the seam. */
     private drawable(view: ViewState, current: boolean, device: GfxDevice | null = null, rasterScale = 0, exactLast = false): Entry[] {
         const out = this.drawScratch;
         if (!current) { out.length = 0; return out; }
@@ -1284,37 +1285,39 @@ export class PdfTileLayer implements Layer {
         // was, snapped to the pixel grid, and a stroke on a PDF drew the hidden scales again until the 2D residency was refused.
         const previous = memo?.view.camera, camera = view.camera;
         const travelling = view.moving && (!previous || previous.x !== camera.x || previous.y !== camera.y || previous.z !== camera.z);
-        const cull = !travelling && rasterScale > 0;
-        const cover = this.coverScratch;
-        cover.clear();
-        if (cull) {
-            for (const entry of this.settledOrder) {
-                if (entry.request.level !== 'exact' || scaleDiffers(entry.request.scale.scale, rasterScale) ||
-                    !(device ? entry.texture?.device === device : !!entry.bitmap) || !intersects(rect(entry.request), viewport)) continue;
-                const boxes = cover.get(entry.request.page);
-                if (boxes) boxes.push(rect(entry.request)); else cover.set(entry.request.page, [rect(entry.request)]);
-            }
-        }
         // Other scales first, the current raster scale last, on top: in scale order alone a higher-scale stand-in was drawn over the
         // exact tile that replaced it, so the exact upload changed nothing on screen until the stand-in was evicted (measured on doc12:
         // the wake frame of each paced zoom step pixel-identical, 31 of 111 zoom presents, and its stand-in still shown).
-        // On the GPU path only: canvas2d keeps the feature branch's picture, scale order alone, so there only a lower scale, which the
-        // exact tiles are drawn over, is ever left out.
-        const hidden = (entry: Entry, box: Readonly<Rect>): boolean => {
-            if (!cull || !scaleDiffers(entry.request.scale.scale, rasterScale) || (!exactLast && entry.request.scale.scale > rasterScale)) return false;
-            const area = clipped(box, viewport), boxes = cover.get(entry.request.page);
-            return !!area && !!boxes && covers(area, boxes);
-        };
+        // On the GPU path only: canvas2d keeps the feature branch's picture, scale order alone.
         const exact = exactLast && rasterScale > 0 ? rasterScale : undefined;
         for (const entry of this.settledOrder) {
-            const box = rect(entry.request);
-            if (!intersects(box, viewport) || (exact !== undefined && !scaleDiffers(entry.request.scale.scale, exact))) continue;
-            if (hidden(entry, box)) { auditCount('pdf-page', 'draw-culled'); continue; }
-            out.push(entry);
+            if (intersects(rect(entry.request), viewport) && (exact === undefined || scaleDiffers(entry.request.scale.scale, exact))) out.push(entry);
         }
         if (exact !== undefined) {
             for (const entry of this.settledOrder) {
                 if (intersects(rect(entry.request), viewport) && !scaleDiffers(entry.request.scale.scale, exact)) out.push(entry);
+            }
+        }
+        // Back to front: a tile whose part on the view lies wholly under tiles drawn after it is dropped. Page tiles are opaque raster
+        // and a later tile covers its whole cell, so the picture is unchanged; only the drawn pixels this backend holds cover.
+        if (!travelling && out.length > 1) {
+            const cover = this.coverScratch;
+            cover.clear();
+            const hidden = this.hiddenScratch;
+            hidden.length = out.length;
+            let kept = out.length;
+            for (let i = out.length - 1; i >= 0; i--) {
+                const entry = out[i], box = rect(entry.request), boxes = cover.get(entry.request.page);
+                const area = clipped(box, viewport);
+                hidden[i] = !!area && !!boxes && covers(area, boxes);
+                if (hidden[i]) { kept--; auditCount('pdf-page', 'draw-culled'); continue; }
+                if (!(device ? entry.texture?.device === device : !!entry.bitmap)) continue;
+                if (boxes) boxes.push(box); else cover.set(entry.request.page, [box]);
+            }
+            if (kept !== out.length) {
+                let j = 0;
+                for (let i = 0; i < out.length; i++) if (!hidden[i]) out[j++] = out[i];
+                out.length = j;
             }
         }
         this.drawMemo = { view, order: this.settledOrder, device, rasterScale, revision: this.contentRevision, version: this.drawVersion, exactLast };

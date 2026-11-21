@@ -18,7 +18,6 @@ export type MemorySessionOwner = Readonly<Pick<RenderToken, 'vaultEpoch' | 'docu
 export type MemoryPressureState = 'normal' | 'trimming' | 'degraded' | 'cpu-pinned';
 export type DeviceMemoryClass = 'low' | 'medium' | 'high';
 
-/** The exact token object crosses the arena boundary; never reconstruct a ByteLease by id. */
 /** How a reservation may be admitted. */
 export interface ReserveOptions {
     /** Work ahead of need (a tile ring outside the view): admitted only if it fits as the pool and grant stand. A refusal reclaims
@@ -27,6 +26,9 @@ export interface ReserveOptions {
      * board never left 'Updating'. */
     readonly prefetch?: boolean;
 }
+/** The kinds a pane's layer-cache share never counts: each is limited apart (paneUsed). */
+const PANE_APART_KINDS: ReadonlySet<string> = new Set(['surface', 'program', 'context', 'live-input', 'canvas-working', 'surface-scratch']);
+/** The exact token object crosses the arena boundary; never reconstruct a ByteLease by id. */
 export interface MemoryAllocator {
     reserve(bytes: number, options?: ReserveOptions): ByteLease | null;
     release(lease: ByteLease): void;
@@ -820,15 +822,22 @@ export class MemoryGovernor {
 
     /** The bytes a pane's grant counts against a new cache of this kind: its visible, non-surface residency. */
     private paneUsed(paneId: string, pool: MemoryPool, kind: MemoryKind): number {
-        return [...this.caches.values()].filter(other => other.registration.paneId === paneId &&
-            other.registration.pool === pool && other.activity.hiddenAt === null && (kind === 'surface' ? other.registration.kind === 'surface' :
-                kind === 'surface-scratch' ? other.registration.kind === 'surface-scratch' :
+        // A loop, not filter/reduce: this runs on every admission check (each tile, route set and uniform slot), and the array it
+        // built, with a kind list per cache, was garbage made per reservation.
+        let used = 0;
+        for (const other of this.caches.values()) {
+            const { registration } = other;
+            if (registration.paneId !== paneId || registration.pool !== pool || other.activity.hiddenAt !== null) continue;
+            const counted = kind === 'surface' ? registration.kind === 'surface'
+                : kind === 'surface-scratch' ? registration.kind === 'surface-scratch'
                 // The 2D compositor's working set and the GPU layer caches are counted apart: a resize bridges through a
                 // detached 2D picture while the kept GPU caches stay charged, and one shared limit refused every bridge
                 // image forever (measured: 3,484 refusals, no frame after a PDF's quality returned to 1).
-                kind === 'canvas-working' ? other.registration.kind === 'canvas-working' :
-                !['surface', 'program', 'context', 'live-input', 'canvas-working', 'surface-scratch'].includes(other.registration.kind)))
-            .reduce((sum, other) => sum + other.bytes, 0);
+                : kind === 'canvas-working' ? registration.kind === 'canvas-working'
+                : !PANE_APART_KINDS.has(registration.kind);
+            if (counted) used += other.bytes;
+        }
+        return used;
     }
 
     /** A pane's GPU layer caches above its grant give back what they can rebuild, off view first, now: a grant that shrank

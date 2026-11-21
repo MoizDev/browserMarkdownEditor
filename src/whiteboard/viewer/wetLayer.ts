@@ -362,7 +362,11 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         if (!path) return { status: 'deferred' };
         const lease = host.allocator.gpu.reserve(bytes);
         if (!lease) return { status: 'denied', pool: 'gpu', bytes };
-        if (!budget.claimUpload(bytes)) { host.allocator.gpu.release(lease); return { status: 'deferred' }; }
+        // The raster's CPU pixels (the canvas, then the bitmap it transfers into) are charged while they exist: they were the one
+        // CPU allocation of the scrap the governor never saw.
+        const cpuLease = host.allocator.cpu.reserve(bytes);
+        if (!cpuLease) { host.allocator.gpu.release(lease); return { status: 'denied', pool: 'cpu', bytes }; }
+        if (!budget.claimUpload(bytes)) { host.allocator.gpu.release(lease); host.allocator.cpu.release(cpuLease); return { status: 'deferred' }; }
         let canvas: OffscreenCanvas | null = null, bitmap: ImageBitmap | null = null, texture: TextureHandle | null = null, attached = false;
         try {
             canvas = new OffscreenCanvas(pw, ph);
@@ -388,6 +392,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         } finally {
             bitmap?.close();
             if (canvas) { canvas.width = 0; canvas.height = 0; }
+            host.allocator.cpu.release(cpuLease);
             if (texture) device.destroy(texture);
             if (!attached) host.allocator.gpu.release(lease);
         }

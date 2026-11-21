@@ -1,132 +1,145 @@
-/** Exact-area coverage kit: the union ink route's alternative to the stencil grid (see whiteboard/render/inkAreaCells.ts).
+/** Exact-area coverage kit: path shapes drawn by the exact area of their outline, the GPU route's answer to 4x MSAA's quarter
+ * steps (FAULT-GPU.md: the yardstick is the truth, measured 1-3 levels from it against canvas2d's 44-99).
  *
- * A stroke admits its cells (instances (x0, y, n, A), band-local device px), uploaded once as vertex buffers in pieces of at
- * most PIECE_INSTANCES instances. A non-critical layer is granted only its own allowance per frame, so a refused piece halves
- * down to MIN_PIECE_INSTANCES before the admission defers.
+ * Geometry: an outline is its closed contours as EDGES (x0, y0, x1, y1), item-local and origin-relative, uploaded once as one
+ * shared edge set per content and tolerance band (the caller caches the array; the kit keys its buffer on that array). A view
+ * is a uniform: the edges are transformed on the GPU, so a pan or a zoom inside a band uploads nothing and computes nothing on
+ * the CPU. Measured before this design (CPU-cut cells, one upload per admission): 1,024 shapes in a saturated zoom took 0.94 ms
+ * of board prepare per frame against the MSAA route's 0.21.
  *
- * Drawing accumulates the cells into one SCRATCH r32f target per device, shared by every kit there and sized to the viewport
- * (the largest band a view can have). Each area is drawn in turn: its band is cleared by the kit's clear pass, its pieces
- * accumulate by additive blending, and the composite resolves min(1, |acc|) with the paint output before the next area starts.
- * Areas are sequential within a frame, so the shared scratch is never read across two of them. Only the cells stay resident
- * per stroke, so GPU bytes are the cells plus one scratch, not a target per stroke.
+ * Drawing accumulates into one SCRATCH r32f target per device, shared by every kit there: each area clears its band, then every
+ * edge instance covers the strip from its leftmost pixel to the band's right edge of each row it crosses, and the fragment adds
+ * the exact signed area that the edge leaves to its right inside that pixel (font-rs's accumulation, integrated per pixel rather
+ * than prefix-summed). Summed, |acc| clamped to 1 is the outline's nonzero coverage, exact where the contours cross and touch
+ * nothing and nest with opposite signs (the caller's areaNestingExact). The composite paints min(1, |acc|) with the output.
  *
- * Admission is resumable. `begin` is pure: it holds the cells, no device work. `admit` uploads what the frame's allowance
- * takes and keeps every piece it has uploaded across a deferral; the retry resumes at the next piece, so no byte is uploaded
- * twice. `discard` is the only way an unfinished admission lets go of its pieces.
+ * Uploads are resumable: an edge set's pieces persist across a deferral, so no byte is uploaded twice, and a refused piece halves
+ * down to MIN_PIECE_INSTANCES before the admission defers. An edge set lives while an admission holds it; idle sets are kept up to
+ * IDLE_EDGE_BYTES, least recently used first out, and re-uploaded if drawn again.
  *
  * The kit only takes the device's own float targets: a device without EXT_color_buffer_float and EXT_float_blend is refused as
- * 'unsupported', and its caller keeps the grid route, counted.
- *
- * Ownership: leases are handed to the device at creation (it returns them on destroy), so nothing is released twice. */
+ * 'unsupported', and its caller keeps the coverage route, counted. Leases are handed to the device at creation (it returns them
+ * on destroy), so nothing is released twice. */
+import type { Affine } from '../types';
 import type { AreaOutput, AreaTarget, BufferHandle, GfxDevice, GpuPass, PipelineHandle, RectI, ShaderModule } from './gfx/api';
 import type { LayerHost } from './compositor.types';
 import type { FrameBudget } from './types';
 import { ArenaError } from './resourceArena';
 
-/** The admitted cells of one area: four floats per instance, `count` instances, band-local device px. */
-export interface AreaSpans {
-    readonly cells: Float32Array;
-    readonly count: number;
-}
+/** One uploaded piece of an edge set: a vertex buffer of `count` edges (16 bytes each). */
+interface EdgePiece { readonly buffer: BufferHandle; readonly count: number; readonly bytes: number }
 
-/** One uploaded piece of an area's cells: a vertex buffer of `count` instances (16 bytes each). */
-interface AreaPiece {
-    readonly buffer: BufferHandle;
-    readonly count: number;
-    readonly bytes: number;
-}
-
-/** An admission in progress: its cells and the pieces uploaded so far. Owned by the caller until it is ready or discarded. */
-export interface AreaPending {
-    readonly spans: AreaSpans;
-    readonly bounds: RectI;
-    readonly pieces: AreaPiece[];
+/** One content's edges on one device: uploaded once, shared by every admission that draws them. */
+interface EdgeSet {
+    readonly key: Float32Array;
+    readonly device: GfxDevice;
+    readonly generation: number;
+    readonly pieces: EdgePiece[];
     uploaded: number;
     piece: number;
     bytes: number;
-    device: GfxDevice | null;
-    generation: number;
+    refs: number;
+    usedFrame: number;
 }
+
+/** What one area draws: its edge sets, each under its own item-local to band-local device affine, summed in one accumulation. */
+export interface AreaPart { readonly edges: Float32Array; readonly affine: Affine }
 
 export interface PreparedArea {
     readonly device: GfxDevice;
     readonly generation: number;
-    readonly pieces: readonly AreaPiece[];
-    readonly bytes: number;
-    /** The band rectangle in device px: the area's texels in the scratch, which is the band's own size. */
+    readonly sets: readonly EdgeSet[];
+    readonly affines: readonly Affine[];
+    /** The band rectangle in device px: the area's texels in the scratch, which is at least the band's size. */
     readonly bounds: RectI;
 }
 
 export type AreaAdmission =
     | { readonly status: 'ready'; readonly value: PreparedArea }
     | { readonly status: 'empty' }
-    /** The pending admission is kept: retry it with the same AreaPending, and it resumes where it stopped. */
+    /** Retry with the same parts: the uploads resume where they stopped. */
     | { readonly status: 'deferred' }
-    /** The device or its generation moved under the pending admission: it was discarded. */
-    | { readonly status: 'stale' }
-    /** The pending admission was discarded. */
     | { readonly status: 'denied'; readonly pool: 'gpu' | 'cpu'; readonly bytes: number }
-    /** The pending admission was discarded. */
     | { readonly status: 'unsupported'; readonly why: string };
 
 export interface AreaKit {
-    begin(spans: AreaSpans, bounds: RectI): AreaPending;
-    admit(host: LayerHost, pending: AreaPending, budget: FrameBudget, viewport: { readonly width: number; readonly height: number }): AreaAdmission;
-    discard(pending: AreaPending): void;
+    /** Admits the parts (each an edge array the caller keeps alive and unchanged, and its affine to band-local px) over `bounds`. */
+    admit(host: LayerHost, parts: readonly AreaPart[], bounds: RectI, budget: FrameBudget, viewport: { readonly width: number; readonly height: number }): AreaAdmission;
     draw(host: LayerHost, pass: GpuPass, prepared: PreparedArea, output: AreaOutput): void;
     retire(prepared: PreparedArea): void;
+    /** The caller no longer keeps this edge array: its buffer goes once no admission holds it. */
+    forget(edges: Float32Array): void;
+    beginFrame(frame: number): void;
     release(): void;
     memory(): { readonly gpuBytes: number };
 }
 
-/** An upload piece is 4096 instances (64 KiB) at most. A refused piece halves down to MIN_PIECE_INSTANCES (4 KiB, as the path kit's
- * pieces do) before the admission defers: a fixed 64 KiB piece deferred every frame on a busy layer. */
+/** An upload piece is 4096 edges (64 KiB) at most; a refused piece halves down to 256 (4 KiB) before the admission defers. */
 const PIECE_INSTANCES = 4096;
 const MIN_PIECE_INSTANCES = 256;
 const INSTANCE_BYTES = 16;
+/** GPU bytes of edge sets no admission holds. A shape's tiles share its set, so a few megabytes is thousands of shapes' worth. */
+const IDLE_EDGE_BYTES = 8 * 2 ** 20;
+/** viewport, band, matrix, translation: four vec4. */
+const UNIFORM_BYTES = 64;
 
-/** One instance per span: vertices are a 4-vertex strip from x0 to the band's right edge, covering row y. */
-const SPAN_SHADER: ShaderModule = {
-    id: 'platform-area-span', revision: 2,
+/** One instance per edge: a strip from its leftmost pixel to the band's right edge over the rows it crosses. */
+const EDGE_SHADER: ShaderModule = {
+    id: 'platform-area-edge', revision: 2,
     layout: {
-        uniforms: [{ binding: 0, byteSize: 32 }],
+        uniforms: [{ binding: 0, byteSize: UNIFORM_BYTES }],
         textures: [],
         attributes: [{ location: 0, bufferSlot: 0, offset: 0, stride: INSTANCE_BYTES, format: 'float32x4', step: 'instance' }],
     },
     glsl: {
         vertex: `#version 300 es
 precision highp float;
-layout(std140) uniform GfxUniforms0 { vec4 viewport; vec4 band; };
-layout(location=0) in vec4 span;
-flat out vec4 ramp;
+layout(std140) uniform GfxUniforms0 { vec4 viewport; vec4 band; vec4 matrix; vec4 translation; };
+layout(location=0) in vec4 edge;
+flat out vec4 ends;
 void main() {
+    vec2 a = vec2(matrix.x * edge.x + matrix.z * edge.y, matrix.y * edge.x + matrix.w * edge.y) + translation.xy;
+    vec2 b = vec2(matrix.x * edge.z + matrix.z * edge.w, matrix.y * edge.z + matrix.w * edge.w) + translation.xy;
+    ends = vec4(a, b);
     vec2 corner = vec2(float(gl_VertexID & 1), float((gl_VertexID >> 1) & 1));
-    float left = max(span.x, 0.0);
-    vec2 pixel = vec2(mix(left, band.x, corner.x), span.y + corner.y);
+    float left = clamp(floor(min(a.x, b.x)), 0.0, band.x);
+    float top = clamp(floor(min(a.y, b.y)), 0.0, band.y), bottom = clamp(ceil(max(a.y, b.y)), 0.0, band.y);
+    vec2 pixel = vec2(mix(left, band.x, corner.x), mix(top, bottom, corner.y));
     vec2 unit = pixel / viewport.xy;
     gl_Position = vec4(unit.x * 2.0 - 1.0, 1.0 - unit.y * 2.0, 0.0, 1.0);
-    ramp = vec4(span.x, span.z, span.w, 0.0);
 }`,
         fragment: `#version 300 es
 precision highp float;
-flat in vec4 ramp;
+layout(std140) uniform GfxUniforms0 { vec4 viewport; vec4 band; vec4 matrix; vec4 translation; };
+flat in vec4 ends;
 out float accumulated;
+// The antiderivative of clamp(1 - t, 0, 1), the share of a pixel column right of an edge at column offset t.
+float share(float t) { return t <= 0.0 ? t : (t >= 1.0 ? 0.5 : t - 0.5 * t * t); }
 void main() {
-    // The fragment's device px is floor(gl_FragCoord.x); the instance adds A·clamp(x − x0 + 1, 0, n) there.
-    float x = floor(gl_FragCoord.x);
-    accumulated = ramp.z * clamp(x - ramp.x + 1.0, 0.0, ramp.y);
+    // Rows count from the top here (the vertex stage maps pixel y to 1 - 2y/height); gl_FragCoord counts from the bottom.
+    vec2 p = vec2(floor(gl_FragCoord.x), floor(viewport.y - gl_FragCoord.y));
+    vec2 a = ends.xy, b = ends.zw;
+    float dir = 1.0;
+    if (a.y > b.y) { vec2 s = a; a = b; b = s; dir = -1.0; }
+    float v0 = max(p.y, a.y), v1 = min(p.y + 1.0, b.y);
+    if (!(v1 > v0) || !(b.y > a.y)) { accumulated = 0.0; return; }
+    float dxdy = (b.x - a.x) / (b.y - a.y);
+    float ta = a.x + (v0 - a.y) * dxdy - p.x, tb = a.x + (v1 - a.y) * dxdy - p.x;
+    // The mean share over the edge's run through this row: exact for a straight edge.
+    float mean = abs(tb - ta) > 1e-5 ? (share(tb) - share(ta)) / (tb - ta) : clamp(1.0 - 0.5 * (ta + tb), 0.0, 1.0);
+    accumulated = dir * (v1 - v0) * mean;
 }`,
     },
 };
 
 /** The band's clear pass: a band-sized quad written with zero, so the area starts from nothing without clearing the scratch. */
 const CLEAR_SHADER: ShaderModule = {
-    id: 'platform-area-clear', revision: 1,
-    layout: { uniforms: [{ binding: 0, byteSize: 32 }], textures: [], attributes: [] },
+    id: 'platform-area-clear', revision: 2,
+    layout: { uniforms: [{ binding: 0, byteSize: UNIFORM_BYTES }], textures: [], attributes: [] },
     glsl: {
         vertex: `#version 300 es
 precision highp float;
-layout(std140) uniform GfxUniforms0 { vec4 viewport; vec4 band; };
+layout(std140) uniform GfxUniforms0 { vec4 viewport; vec4 band; vec4 matrix; vec4 translation; };
 void main() {
     vec2 corner = vec2(float(gl_VertexID & 1), float((gl_VertexID >> 1) & 1));
     vec2 unit = (corner * band.xy) / viewport.xy;
@@ -147,32 +160,34 @@ const scratchOf = new WeakMap<GfxDevice, Scratch>();
 
 export function createAreaKit(): AreaKit {
     let device: GfxDevice | null = null;
-    let span: PipelineHandle | null = null;
+    let edgePipeline: PipelineHandle | null = null;
     let clear: PipelineHandle | null = null;
-    let pending = false, failed = false, serial = 0;
-    const live = new Map<PreparedArea, number>();
-    /** Admissions with uploaded pieces that are not yet ready: the kit holds their bytes until they are ready or discarded. */
-    const uploading = new Set<AreaPending>();
+    let pending = false, failed = false, serial = 0, frame = 0;
+    /** Every edge set on the device, by its edge array; idle ones (refs 0) are the least recently used first. */
+    const sets = new Map<Float32Array, EdgeSet>();
+    const live = new Set<PreparedArea>();
     /** Whether this kit holds a reference on the device's scratch (taken at its first ready area, returned at release). */
     let holding = false;
-    let pieceBytes = 0;
-    const uniformScratch = new Float32Array(8);
+    let setBytes = 0, idleBytes = 0;
+    const uniformScratch = new Float32Array(UNIFORM_BYTES / 4);
     /** This kit's identity as a scratch holder. */
     const kitToken = {};
 
-    /** The area pipelines, or null while they compile (or after a refused compile, which the caller sees as deferral). */
-    const ensurePipelines = (owner: GfxDevice): boolean => {
-        if (span && clear && device === owner) return true;
+    /** Whether the area pipelines are ready: false while they compile, 'failed' after a refused compile, which the caller takes as
+     * unsupported (the coverage route draws the shape, counted) rather than a wait that never ends. */
+    const ensurePipelines = (owner: GfxDevice): boolean | 'failed' => {
+        if (edgePipeline && clear && device === owner) return true;
         if (device !== owner) { release(); device = owner; }
-        if (pending || failed) return false;
+        if (failed) return 'failed';
+        if (pending) return false;
         pending = true;
         const mine = ++serial;
         const make = (shader: ShaderModule, blend: 'add' | 'replace') => owner.createPipeline({ shader, topology: 'triangle-strip',
             colorFormat: 'r32f', samples: 1, blend, alphaToCoverage: false, colorWrite: [true, true, true, true], stencil: NO_STENCIL });
-        Promise.all([make(SPAN_SHADER, 'add'), make(CLEAR_SHADER, 'replace')]).then(([spanHandle, clearHandle]) => {
+        Promise.all([make(EDGE_SHADER, 'add'), make(CLEAR_SHADER, 'replace')]).then(([edgeHandle, clearHandle]) => {
             pending = false;
-            if (device === owner && mine === serial) { span = spanHandle; clear = clearHandle; }
-            else { owner.destroy(spanHandle); owner.destroy(clearHandle); }
+            if (device === owner && mine === serial) { edgePipeline = edgeHandle; clear = clearHandle; }
+            else { owner.destroy(edgeHandle); owner.destroy(clearHandle); }
         }, () => { pending = false; failed = true; });
         return false;
     };
@@ -204,21 +219,60 @@ export function createAreaKit(): AreaKit {
         scratchOf.set(owner, scratch);
         return scratch;
     };
-    /** Frees an unfinished admission's pieces. Idempotent: an admission the kit already discarded is not counted twice. */
-    const discard = (admission: AreaPending): void => {
-        if (!uploading.delete(admission)) return;
-        for (const piece of admission.pieces) admission.device?.destroy(piece.buffer);
-        pieceBytes -= admission.bytes;
-        admission.pieces.length = 0; admission.uploaded = 0; admission.bytes = 0; admission.device = null;
+    const destroySet = (set: EdgeSet): void => {
+        if (sets.get(set.key) === set) sets.delete(set.key);
+        if (set.refs === 0) idleBytes -= set.bytes;
+        setBytes -= set.bytes;
+        for (const piece of set.pieces) set.device.destroy(piece.buffer);
+        set.pieces.length = 0;
     };
-    const destroy = (prepared: PreparedArea): void => {
-        if (!live.delete(prepared)) return;
-        pieceBytes -= prepared.bytes;
-        for (const piece of prepared.pieces) prepared.device.destroy(piece.buffer);
+    /** Keeps idle sets within IDLE_EDGE_BYTES, least recently used first out; a set used this frame stays. */
+    const trimIdle = (): void => {
+        if (idleBytes <= IDLE_EDGE_BYTES) return;
+        for (const set of [...sets.values()]) {
+            if (idleBytes <= IDLE_EDGE_BYTES) break;
+            if (set.refs === 0 && set.usedFrame < frame) destroySet(set);
+        }
+    };
+    const unref = (set: EdgeSet): void => {
+        if (--set.refs !== 0) return;
+        idleBytes += set.bytes; set.usedFrame = frame;
+        // Most recently used last, so the trim takes the oldest first. A set no longer indexed (forgotten, or of an old device
+        // generation) goes with its last holder.
+        if (sets.get(set.key) === set) { sets.delete(set.key); sets.set(set.key, set); }
+        else destroySet(set);
+    };
+    /** Uploads what the frame allows of one set: true once every edge is on the device. A refused lease is a denial. */
+    const upload = (host: LayerHost, set: EdgeSet, budget: FrameBudget): true | 'deferred' | { denied: number } | 'unsupported' => {
+        const count = set.key.length >> 2;
+        while (set.uploaded < count) {
+            const n = Math.min(set.piece, count - set.uploaded);
+            const bytes = n * INSTANCE_BYTES;
+            if (!budget.claimUpload(bytes)) {
+                if (set.piece > MIN_PIECE_INSTANCES) { set.piece = Math.max(MIN_PIECE_INSTANCES, set.piece >> 1); continue; }
+                return 'deferred';
+            }
+            const lease = host.allocator.gpu.reserve(bytes);
+            if (!lease || lease.bytes < bytes) { if (lease) host.allocator.gpu.release(lease); return { denied: bytes }; }
+            let buffer: BufferHandle;
+            try { buffer = set.device.createBuffer(bytes, ['vertex', 'copy-dst'], lease); }
+            catch (error) {
+                host.allocator.gpu.release(lease);
+                if (error instanceof ArenaError && error.code === 'unsupported') return 'unsupported';
+                throw error;
+            }
+            set.device.writeBuffer(buffer, 0, set.key.subarray(set.uploaded * 4, (set.uploaded + n) * 4));
+            set.pieces.push({ buffer, count: n, bytes });
+            set.uploaded += n; set.bytes += bytes; setBytes += bytes;
+            // A set no admission holds yet counts as idle while it uploads, so a refused admission's pieces are trimmed like any other.
+            if (set.refs === 0) idleBytes += bytes;
+        }
+        return true;
     };
     function release(): void {
-        for (const admission of [...uploading]) discard(admission);
-        for (const prepared of [...live.keys()]) destroy(prepared);
+        for (const prepared of [...live]) retire(prepared);
+        for (const set of [...sets.values()]) { set.refs = 0; destroySet(set); }
+        idleBytes = 0; setBytes = 0;
         if (device && holding) {
             const scratch = scratchOf.get(device);
             if (scratch && --scratch.users === 0) {
@@ -227,95 +281,96 @@ export function createAreaKit(): AreaKit {
             } else if (scratch && scratch.holder === kitToken) scratch.holder = null;
         }
         holding = false;
-        if (span && device) device.destroy(span);
+        if (edgePipeline && device) device.destroy(edgePipeline);
         if (clear && device) device.destroy(clear);
-        span = null; clear = null; pending = false; failed = false; device = null;
+        edgePipeline = null; clear = null; pending = false; failed = false; device = null;
+    }
+    function retire(prepared: PreparedArea): void {
+        if (!live.delete(prepared)) return;
+        for (const set of prepared.sets) unref(set);
+        trimIdle();
     }
 
     return {
-        begin(spans, bounds): AreaPending {
-            return { spans, bounds, pieces: [], uploaded: 0, piece: PIECE_INSTANCES, bytes: 0, device: null, generation: 0 };
-        },
-        admit(host, admission, budget, viewport): AreaAdmission {
+        admit(host, parts, bounds, budget, viewport): AreaAdmission {
             const owner = host.device();
             if (!owner) return { status: 'unsupported', why: 'no-device' };
             if (!owner.areaTargets) return { status: 'unsupported', why: 'no-float-targets' };
-            if (admission.device && (admission.device !== owner || admission.generation !== host.generation)) {
-                discard(admission);
-                return { status: 'stale' };
-            }
-            if (admission.spans.count === 0) return { status: 'empty' };
-            if (!admission.device) {
-                admission.device = owner; admission.generation = host.generation;
-                uploading.add(admission);
-            }
-            // The cells upload first, resuming at the first piece not yet written: a piece is never uploaded twice.
-            while (admission.uploaded < admission.spans.count) {
-                const count = Math.min(admission.piece, admission.spans.count - admission.uploaded);
-                const bytes = count * INSTANCE_BYTES;
-                if (!budget.claimUpload(bytes)) {
-                    if (admission.piece > MIN_PIECE_INSTANCES) { admission.piece = Math.max(MIN_PIECE_INSTANCES, admission.piece >> 1); continue; }
-                    return { status: 'deferred' };
+            if (!parts.length || bounds.width <= 0 || bounds.height <= 0) return { status: 'empty' };
+            if (device && device !== owner) release();
+            const held: EdgeSet[] = [];
+            for (const part of parts) {
+                if (!part.edges.length) continue;
+                let set = sets.get(part.edges);
+                if (set && (set.device !== owner || set.generation !== host.generation)) { if (set.refs === 0) destroySet(set); else sets.delete(set.key); set = undefined; }
+                if (!set) {
+                    set = { key: part.edges, device: owner, generation: host.generation, pieces: [], uploaded: 0, piece: PIECE_INSTANCES, bytes: 0, refs: 0, usedFrame: frame };
+                    sets.set(part.edges, set);
                 }
-                const lease = host.allocator.gpu.reserve(bytes);
-                if (!lease || lease.bytes < bytes) {
-                    if (lease) host.allocator.gpu.release(lease);
-                    discard(admission);
-                    return { status: 'denied', pool: 'gpu', bytes };
-                }
-                // copy-dst: each piece is written once after creation, as the path kit's triangle buffers are.
-                let buffer: BufferHandle;
-                try { buffer = owner.createBuffer(bytes, ['vertex', 'copy-dst'], lease); }
-                catch (error) {
-                    host.allocator.gpu.release(lease); discard(admission);
-                    if (error instanceof ArenaError && error.code === 'unsupported') return { status: 'unsupported', why: 'vertex-buffer' };
-                    throw error;
-                }
-                owner.writeBuffer(buffer, 0, admission.spans.cells.subarray(admission.uploaded * 4, (admission.uploaded + count) * 4));
-                admission.pieces.push({ buffer, count, bytes });
-                admission.uploaded += count; admission.bytes += bytes; pieceBytes += bytes;
+                set.usedFrame = frame;
+                // The upload resumes where it stopped: pieces already written stay on the set, whatever this admission does next.
+                const uploaded = upload(host, set, budget);
+                if (uploaded === 'deferred') return { status: 'deferred' };
+                if (uploaded === 'unsupported') return { status: 'unsupported', why: 'vertex-buffer' };
+                if (uploaded !== true) return { status: 'denied', pool: 'gpu', bytes: uploaded.denied };
+                held.push(set);
             }
-            // The pipelines and the scratch come after the cells: a deferral here keeps every piece already uploaded.
-            if (!ensurePipelines(owner)) return { status: 'deferred' };
+            if (!held.length) return { status: 'empty' };
+            // The pipelines and the scratch come after the edges: a deferral here keeps every piece already uploaded.
+            const pipelines = ensurePipelines(owner);
+            if (pipelines === 'failed') return { status: 'unsupported', why: 'pipeline' };
+            if (!pipelines) return { status: 'deferred' };
             const scratch = acquireScratch(host, owner, viewport);
-            if (scratch === 'denied') { discard(admission); return { status: 'denied', pool: 'gpu', bytes: viewport.width * viewport.height * 4 }; }
+            if (scratch === 'denied') return { status: 'denied', pool: 'gpu', bytes: viewport.width * viewport.height * 4 };
             if (!holding) { scratch.users++; holding = true; }
-            uploading.delete(admission);
-            const prepared: PreparedArea = { device: owner, generation: admission.generation, pieces: admission.pieces.slice(),
-                bytes: admission.bytes, bounds: admission.bounds };
-            live.set(prepared, admission.bytes);
+            for (const set of held) { if (set.refs++ === 0) idleBytes -= set.bytes; }
+            const prepared: PreparedArea = { device: owner, generation: host.generation, sets: held,
+                affines: parts.filter(part => part.edges.length).map(part => part.affine), bounds };
+            live.add(prepared);
             return { status: 'ready', value: prepared };
         },
-        discard,
         draw(host, pass, prepared, output): void {
             const scratch = prepared.device === host.device() && host.generation === prepared.generation ? scratchOf.get(prepared.device) : undefined;
-            if (!live.has(prepared) || !scratch || !span || !clear) throw new Error('Stale area');
+            if (!live.has(prepared) || !scratch || !edgePipeline || !clear) throw new Error('Stale area');
             const token = pass.beginArea(scratch.target, prepared.bounds);
             const { bounds } = prepared;
-            // Both passes map band-local px through the scratch's size (the area's own viewport, see beginArea): the band's texels
-            // are the top-left corner of the scratch, rows counted from its top, which the composite reads the same way.
-            uniformScratch[0] = scratch.target.width; uniformScratch[1] = scratch.target.height; uniformScratch[2] = 0; uniformScratch[3] = 0;
-            uniformScratch[4] = bounds.width; uniformScratch[5] = bounds.height; uniformScratch[6] = 0; uniformScratch[7] = 0;
-            const slice = host.uniforms(uniformScratch);
             const whole = { x: 0, y: 0, width: scratch.target.width, height: scratch.target.height };
+            const write = (affine: Affine | null) => {
+                uniformScratch[0] = scratch.target.width; uniformScratch[1] = scratch.target.height; uniformScratch[2] = 0; uniformScratch[3] = 0;
+                uniformScratch[4] = bounds.width; uniformScratch[5] = bounds.height; uniformScratch[6] = 0; uniformScratch[7] = 0;
+                uniformScratch[8] = affine ? affine[0] : 0; uniformScratch[9] = affine ? affine[1] : 0;
+                uniformScratch[10] = affine ? affine[2] : 0; uniformScratch[11] = affine ? affine[3] : 0;
+                uniformScratch[12] = affine ? affine[4] : 0; uniformScratch[13] = affine ? affine[5] : 0; uniformScratch[14] = 0; uniformScratch[15] = 0;
+                return host.uniforms(uniformScratch);
+            };
             // The band's own clear first: the area accumulates from zero, and nothing outside the band is touched.
-            pass.draw({ pipeline: clear, bindings: { uniforms: [{ binding: 0, slice }], textures: [] }, vertices: [], first: 0, count: 4,
+            pass.draw({ pipeline: clear, bindings: { uniforms: [{ binding: 0, slice: write(null) }], textures: [] }, vertices: [], first: 0, count: 4,
                 instances: 1, scissor: whole });
-            for (const piece of prepared.pieces) {
-                pass.draw({ pipeline: span, bindings: { uniforms: [{ binding: 0, slice }], textures: [] },
-                    vertices: [{ buffer: piece.buffer, offset: 0, bytes: piece.bytes }], first: 0, count: 4,
-                    instances: piece.count, scissor: whole });
+            for (let s = 0; s < prepared.sets.length; s++) {
+                const slice = write(prepared.affines[s]);
+                for (const piece of prepared.sets[s].pieces) {
+                    pass.draw({ pipeline: edgePipeline, bindings: { uniforms: [{ binding: 0, slice }], textures: [] },
+                        vertices: [{ buffer: piece.buffer, offset: 0, bytes: piece.bytes }], first: 0, count: 4, instances: piece.count, scissor: whole });
+                }
             }
             pass.endArea(token, output);
         },
-        retire(prepared): void { destroy(prepared); },
+        retire,
+        forget(edges): void {
+            const set = sets.get(edges);
+            if (!set) return;
+            // A set still held is dropped from the index and destroyed by the last retire's trim once it is idle and unindexed.
+            if (set.refs === 0) destroySet(set);
+            else sets.delete(edges);
+        },
+        beginFrame(next): void { frame = next; },
         release,
         // The scratch is reported once, by its holder; when the holder lets go while others draw with it, the next of them to be
         // asked takes the report.
         memory: () => {
             const scratch = holding && device ? scratchOf.get(device) : undefined;
             if (scratch && scratch.holder === null) scratch.holder = kitToken;
-            return { gpuBytes: pieceBytes + (scratch && scratch.holder === kitToken ? scratch.bytes : 0) };
+            return { gpuBytes: setBytes + (scratch && scratch.holder === kitToken ? scratch.bytes : 0) };
         },
     };
 }

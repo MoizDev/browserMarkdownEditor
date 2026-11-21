@@ -567,8 +567,12 @@ export class PdfTileLayer implements Layer {
         const input = this.demand(view);
         if (contentFamily(input) !== this.contentIdentity) return [];
         const viewport = { x: view.camera.x, y: view.camera.y, width: view.viewport.width / view.camera.z, height: view.viewport.height / view.camera.z };
+        // Exact tiles draw last, over every stand-in. In plain ascending scale a higher-scale stand-in kept covering the exact tile
+        // that replaced it until the allocator evicted it (measured: canvas2d, doc12 at DPR 2, four shapes made, two text tiles still
+        // soft 26 s later, 11156 px over 8 levels, max 168). Stand-ins keep ascending scale beneath, so the sharper one is on top.
+        const exact = (entry: Entry): number => entry.request.scale.scale === input.rasterScale ? 1 : 0;
         return [...this.entries.values()].filter(entry => entry.bitmap && intersects(rect(entry.request), viewport))
-            .sort((a, b) => a.request.scale.scale - b.request.scale.scale || a.used - b.used);
+            .sort((a, b) => exact(a) - exact(b) || a.request.scale.scale - b.request.scale.scale || a.used - b.used);
     }
 
     private quad(request: PdfTileRequest, page: Readonly<Rect>, view: ViewState): { source: Rect; destination: Rect } {

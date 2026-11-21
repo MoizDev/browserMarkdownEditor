@@ -131,6 +131,8 @@ export interface LayerHost {
     drawTexturedQuad(ctx: CanvasRenderingContext2D, image: DrawableImage, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
     drawTexturedQuads(pass: GpuPass, texture: TextureHandle, quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void;
     drawTexturedQuads(ctx: CanvasRenderingContext2D, image: DrawableImage, quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void;
+    /** canvas2d: whether this frame can draw the image (see CompositorResources.imageReady). Always true on the GPU path. */
+    imageReady(image: DrawableImage): boolean;
 }
 
 /** The attach actor forwards these capabilities into its stable LayerHost objects. */
@@ -148,6 +150,10 @@ export interface CompositorResources {
     drawTexturedQuad(ctx: CanvasRenderingContext2D, image: DrawableImage, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
     drawTexturedQuads(pass: GpuPass, texture: TextureHandle, quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void;
     drawTexturedQuads(ctx: CanvasRenderingContext2D, image: DrawableImage, quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void;
+    /** canvas2d only: true when a draw of this image into the display needs no upload this frame has not admitted. A false answer
+     * asks a later frame's preparation to admit it, so a layer with another picture of the same place (a stand-in) draws that one
+     * meanwhile instead of making the frame miss an image: a canvas2d frame that misses one is not presented at all. */
+    imageReady?(image: DrawableImage): boolean;
 }
 
 /** Final clear is opaque; inversion applies once to composited document colour (C2.5). */

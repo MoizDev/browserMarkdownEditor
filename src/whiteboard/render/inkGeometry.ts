@@ -241,7 +241,8 @@ const ZERO_ORIGIN: Readonly<{ x: number; y: number }> = Object.freeze({ x: 0, y:
 export type InkStrokeSetsResult = InkStrokeSets | null | { readonly denied: number };
 export interface InkGeometry {
     /** The stroke's sets at one band; `null` when a chunk is refused; `{ denied }` when the pool refuses the bytes even after eviction. */
-    strokeSets(item: PaintInkItem, band: number): InkStrokeSetsResult;
+    /** `moving`: the view is in motion, so a chunk's held outline one band coarser is good enough (see place). */
+    strokeSets(item: PaintInkItem, band: number, moving?: boolean): InkStrokeSetsResult;
     memory(): { readonly cpuBytes: number };
     /** Frees up to `wanted` bytes of idle chunks, least recently used first: never the current publication's chunks, nor any in `keep`
      * (the chunks a shown run still maps). Returns the bytes freed. */
@@ -279,17 +280,24 @@ export function createInkGeometry(memory: MemoryAllocator, audit: string): InkGe
         entry.leases.push(lease); entry.bytes += size; bytes += size;
         return true;
     };
-    const place = (chunk: InkCoverage, band: number, origin: Readonly<{ x: number; y: number }>): Placed => {
+    /** Whether an outline built for band `held` serves band `band`. A finer one (up to an octave above) is more precise at every
+     * lower scale (see inkToleranceBand), so it always serves; a coarser one (down to an octave below) holds at most twice the
+     * error, which only a moving view may show. One band per chunk was rebuilt at each half-octave a zoom crossed, and a zoom
+     * wavering across one rebuilt every chunk on every frame (measured, LARGE=11 board, WebGL2, DPR 2: the outlines were 75% of
+     * the board's prepare, 388 of 521 ms on a paced zoom, 923 builds). */
+    const serves = (held: number, band: number, moving: boolean): boolean =>
+        held === band || (held > band && held <= 2 * band) || (moving && held < band && 2 * held >= band);
+    const place = (chunk: InkCoverage, band: number, origin: Readonly<{ x: number; y: number }>, moving: boolean): Placed => {
         const old = held.get(chunk);
-        if (old && old.band === band && old.px === origin.x && old.py === origin.y) {
-            held.delete(chunk); held.set(chunk, old); old.use = epoch; auditCount(audit, 'geom:hit');
+        if (old && serves(old.band, band, moving) && old.px === origin.x && old.py === origin.y) {
+            held.delete(chunk); held.set(chunk, old); old.use = epoch; auditCount(audit, old.band === band ? 'geom:hit' : 'geom:hit:near-band');
             return old.placed;
         }
         // The local build survives a change of origin (a copy, not a re-tessellation); a change of band rebuilds it.
-        const kept = old && old.band === band ? old.local : undefined;
+        const kept = old && serves(old.band, band, moving) ? old.local : undefined;
         if (old) { free(old); held.delete(chunk); }
         const local = kept !== undefined ? (auditCount(audit, 'geom:hit'), kept) : buildLocal(chunk, band, audit);
-        const entry: Held = { band, px: origin.x, py: origin.y, local, placed: null, leases: [], bytes: 0, use: epoch };
+        const entry: Held = { band: kept !== undefined && old ? old.band : band, px: origin.x, py: origin.y, local, placed: null, leases: [], bytes: 0, use: epoch };
         if (local && !claim(entry, local, local.triangles.byteLength)) { free(entry); return { denied: local.triangles.byteLength }; }
         const placed = local && rebase(local, origin);
         if (placed && placed !== local && !claim(entry, placed, placed.triangles.byteLength)) {
@@ -299,7 +307,7 @@ export function createInkGeometry(memory: MemoryAllocator, audit: string): InkGe
         return placed;
     };
     return {
-        strokeSets(item: PaintInkItem, band: number): InkStrokeSetsResult {
+        strokeSets(item: PaintInkItem, band: number, moving = false): InkStrokeSetsResult {
             epoch++;
             const chunks = inkCoverageChunks(item.coverage);
             if (!chunks.length) return { origin: ZERO_ORIGIN, sets: [], shapes: [] };
@@ -307,7 +315,7 @@ export function createInkGeometry(memory: MemoryAllocator, audit: string): InkGe
             const origin = { x: chunks[0].boundsLocal.x, y: chunks[0].boundsLocal.y };
             const sets: InkTriangles[] = [];
             for (const chunk of chunks) {
-                const placed = place(chunk, band, origin);
+                const placed = place(chunk, band, origin, moving);
                 if (placed && 'denied' in placed) return placed;
                 if (!placed) return null;
                 if (placed.triangles.length) sets.push(placed);

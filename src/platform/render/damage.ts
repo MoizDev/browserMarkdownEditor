@@ -80,6 +80,14 @@ export class DamageAccumulator {
             contentRevision: this.revision, cameraEpoch: this.epoch });
     }
 
+    /** Empties the accumulator without a record: consume() for a caller that does not read what it consumed. */
+    reset(): void {
+        this.pending = false;
+        this.bits = 0;
+        this.full = false;
+        this.bounds.length = 0;
+    }
+
     consume(): DamageRecord | null {
         const snapshot = this.freeze();
         this.pending = false;

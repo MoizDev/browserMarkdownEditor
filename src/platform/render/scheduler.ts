@@ -266,7 +266,13 @@ interface PaneEntry {
     motion: Motion | null;
     binding: FrameToken | null;
     damage: DamageAccumulator;
+    /** The accumulator the last frame's batch held, reset and returned at the frame's end: detach swaps it in instead of a new one. */
+    spareDamage: DamageAccumulator | null;
     fullDamage: boolean;
+    /** The frame's two-phase foreground answers (FrameWork.foreground), one map for the pane's life, cleared per frame. */
+    foregroundAnswers: Map<Layer, boolean>;
+    /** The last frame's layer snapshots: reused while every layer's revision and critical flag are the same (most frames). */
+    layerSnapshots: readonly ScheduledLayerSnapshot[] | null;
     /** The last presented frame's token, view and geometry: a later frame that changes none of them repaints only if a layer says so. */
     presented: { token: FrameToken; view: ViewState; geometry: number } | null;
     /** The last frame that detached this pane; the layer-driven pass skips a pane already taken by the reason-driven pass. */
@@ -348,6 +354,9 @@ function retryDelay(failures: number): number { return Math.min(RETRY_MAX_MS, RE
 export class FrameScheduler {
     private readonly panes = new Map<string, PaneEntry>();
     private readonly polls = new Set<ScheduledPoll>();
+    /** Per-frame scratch, cleared at the point each frame fills it: the critical class still to prepare, and each pane's present cost. */
+    private readonly criticalToRun = new Set<Layer>();
+    private readonly presentCost = new Map<PaneEntry, number>();
     /** Panes that recovered from an error in the frame in progress: their remaining work this frame is not valid. */
     private readonly demoted = new Set<PaneEntry>();
     private readonly sessionDeadlines = new Set<{ deadline: number; callback: () => void }>();
@@ -424,7 +433,7 @@ export class FrameScheduler {
         const entry: PaneEntry = {
             pane, layers: Object.freeze([...pane.layers]), reasons: new Set(['show']), wakes: new Map(), focused: pane.focused,
             inputPriority: false, renderable: false, dormantNotified: false, optionalBytes: 0, presentMs: 0, inflight: [], pendingInputAt: null, motion: null, binding: null,
-            damage: new DamageAccumulator(), fullDamage: true, presented: null,
+            damage: new DamageAccumulator(), spareDamage: null, fullDamage: true, foregroundAnswers: new Map(), layerSnapshots: null, presented: null,
             lastFrame: -1, revisionValues: [], revisionKey: '[]',
         };
         this.panes.set(pane.paneId, entry);
@@ -554,10 +563,31 @@ export class FrameScheduler {
         const batch: DamageBatch = { entry, damage: entry.damage, full: entry.fullDamage, submitted: false };
         const reasons: readonly string[] = entry.reasons.size ? Object.freeze([...entry.reasons]) : NO_REASONS;
         batches.push(batch);
-        entry.damage = new DamageAccumulator(); entry.fullDamage = false; entry.reasons.clear();
+        entry.damage = entry.spareDamage ?? new DamageAccumulator(); entry.spareDamage = null; entry.fullDamage = false; entry.reasons.clear();
         entry.lastFrame = frameId;
         return { entry, batch, reasons, cause: audit ? this.presentCause(entry, reasons) : '' };
     }
+
+    /** The frame's layer snapshots. Every layer's revision and critical flag are read each frame; the frozen list is rebuilt only
+     * when one of them changed, so a frame at rest or a camera frame builds none (it built a frozen object per layer, per pane,
+     * per frame). Frames keep their list: a reused one is identical, and frozen. */
+    private layerSnapshots(entry: PaneEntry, view: ViewState): readonly ScheduledLayerSnapshot[] {
+        const last = entry.layerSnapshots, layers = entry.layers;
+        let same = last !== null && last.length === layers.length;
+        const revisions = this.revisionScratch, criticals = this.criticalScratch;
+        revisions.length = 0; criticals.length = 0;
+        for (let i = 0; i < layers.length; i++) {
+            const revision = entry.pane.sceneRevision(layers[i]), critical = entry.pane.isCritical(layers[i], view);
+            revisions.push(revision); criticals.push(critical);
+            if (same && (last![i].layer !== layers[i] || last![i].sceneRevision !== revision || last![i].critical !== critical)) same = false;
+        }
+        if (same) return last!;
+        const next = Object.freeze(layers.map((layer, i) => Object.freeze({ layer, sceneRevision: revisions[i], critical: criticals[i] })));
+        entry.layerSnapshots = next;
+        return next;
+    }
+    private readonly revisionScratch: number[] = [];
+    private readonly criticalScratch: boolean[] = [];
 
     /** The scene revisions as a damage tag, rebuilt only when one of them moved: a board at rest repeated the JSON per pane per frame. */
     private revisionKey(entry: PaneEntry, layers: readonly ScheduledLayerSnapshot[]): string {
@@ -847,9 +877,7 @@ export class FrameScheduler {
                 this.call(entry, () => {
                     // 3: freeze authoritative scene/live input before retiring any previously wet revision.
                     entry.pane.snapshotScene(view);
-                    const layers = Object.freeze(entry.layers.map(layer => Object.freeze({
-                        layer, sceneRevision: entry.pane.sceneRevision(layer), critical: entry.pane.isCritical(layer, view),
-                    })));
+                    const layers = this.layerSnapshots(entry, view);
                     const revision = this.revisionKey(entry, layers);
                     const tags = { reasonBits: 0, contentRevision: revision.length <= 4096 ? revision : '', cameraEpoch: view.epoch };
                     const previous = entry.presented;
@@ -864,7 +892,7 @@ export class FrameScheduler {
                     const moved = !previous || !sameToken(token, previous.token) || !sameCamera(previous.view, view) || previous.geometry !== geometry;
                     batch.pending = batch.damage.freeze();
                     const explicitFull = batch.pending?.full === true;
-                    if (batch.full || revision.length > 4096 || moved || !batch.damage.freeze()) batch.damage.markFull(tags);
+                    if (batch.full || revision.length > 4096 || moved || !batch.pending) batch.damage.markFull(tags);
                     else batch.damage.mark({ x: 0, y: 0, width: 0, height: 0 }, tags);
                     const repaint = moved || explicitFull;
                     if (repaint && renderAuditEnabled()) {
@@ -874,7 +902,8 @@ export class FrameScheduler {
                     if (renderAuditEnabled()) auditTape(`cause:${cause}`);
                     const damage = batch.damage.freeze()!;
                     const frame = Object.freeze({ frameId, timestamp, intervalMs: this.intervalMs, token, view, layers, reasons, damage });
-                    work.push({ entry, frame, batch, geometry, hadInput: entry.inputPriority || reasons.includes('input'), platformPrepared: false, skipped: false, drawnChange: false, settled: 0, foreground: new Map(), repaint, cause });
+                    work.push({ entry, frame, batch, geometry, hadInput: entry.inputPriority || reasons.includes('input'), platformPrepared: false, skipped: false, drawnChange: false, settled: 0, foreground: entry.foregroundAnswers, repaint, cause });
+                    entry.foregroundAnswers.clear();
                     entry.inputPriority = false;
                 });
             }
@@ -898,7 +927,7 @@ export class FrameScheduler {
             // IS critical starved optional layers for good: a layer that stays critical after its prepare (it has no use for the
             // grant) held every optional upload past its frame (measured: a PDF's exact tiles refused 510 of 510 claims after a zoom,
             // their textures created and destroyed every frame, the raster stand-in shown and a present per tick, for good).
-            const criticalToRun = new Set<Layer>();
+            const criticalToRun = this.criticalToRun; criticalToRun.clear();
             for (const item of work) for (const meta of item.frame.layers) if (meta.critical || meta.layer.twoPhase === true) criticalToRun.add(meta.layer);
             meter.criticalToRun = criticalToRun;
             const criticalPending = () => criticalToRun.size > 0;
@@ -971,7 +1000,7 @@ export class FrameScheduler {
             }
             // 5: focus/input first, then rotate neighbours; nobody's mandatory draw is budget-skipped.
             // Each pane's encode, submit and overlay time this frame; it feeds the pane's EWMA, the next frame's presentation reserve.
-            const presentCost = new Map<PaneEntry, number>();
+            const presentCost = this.presentCost; presentCost.clear();
             const presentStart = performance.now();
             if (renderAuditEnabled()) {
                 auditCount('scheduler', 'foreground-us', Math.round((backgroundStart - foregroundStart) * 1000));
@@ -1053,7 +1082,7 @@ export class FrameScheduler {
                         if (__BME_BENCH__) submission.cancelObservation?.();
                         return;
                     }
-                    item.work.batch.submitted = true; item.work.batch.damage.consume();
+                    item.work.batch.submitted = true; item.work.batch.damage.reset();
                     if (renderAuditEnabled()) {
                         auditCount('pane', 'present:' + item.work.cause);
                         // Every reason the frame carried, not only the first: the cause names the first match, and a camera
@@ -1128,6 +1157,10 @@ export class FrameScheduler {
                 const damage = batch.skipped && batch.pending !== undefined ? batch.pending : batch.damage.freeze();
                 if (damage) this.mergeDamage(batch.entry.damage, damage);
                 batch.entry.fullDamage ||= batch.full;
+            }
+            // Each batch's accumulator is spent (its damage submitted or merged back above): it is the pane's spare for the next detach.
+            for (const batch of batches) if (this.live(batch.entry) && batch.entry.spareDamage === null && batch.damage !== batch.entry.damage) {
+                batch.damage.reset(); batch.entry.spareDamage = batch.damage;
             }
             const meter = this.meter;
             this.meter = null;

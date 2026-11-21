@@ -267,6 +267,8 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         readonly liveOverlay?: boolean;
         /** Content whose live and tiled pictures are the same pixels (see the composer's liveMatchesTiles). */
         readonly liveMatchesTiles?: boolean;
+        /** Whether the frame changes for input anyway (see the composer's inputActive). */
+        readonly inputActive?: () => boolean;
         /** The geometry service's pins a live zoom holds (see GeometryPins in tileComposer.ts); absent holds none. */
         readonly pins?: GeometryPins;
         /** A live-only overlay's nodes (its gesture's): the composer indexes and draws only these items of the paint it is handed. */
@@ -335,6 +337,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         ...(options.opaqueWorld ? { opaqueWorld: options.opaqueWorld } : {}),
         ...(options.liveOverlay ? { liveOverlay: true } : {}),
         ...(options.liveMatchesTiles ? { liveMatchesTiles: true } : {}),
+        ...(options.inputActive ? { inputActive: options.inputActive } : {}),
         ...(options.pins ? { pins: options.pins } : {}),
         // The compose limit halves while the host reports a slow GPU, read each frame (PLAN 3.1).
         slowGpu: () => host.trouble() === 'slow-gpu',

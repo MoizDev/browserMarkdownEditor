@@ -46,6 +46,8 @@ export interface BoardLayersOptions {
     /** View-only suppression, evaluated against the actual ready preview frame. */
     readonly omitNodes?: (frame: PaintSource) => ReadonlySet<string> | null;
     readonly liveNodeIds?: () => ReadonlySet<string> | undefined;
+    /** Whether a pointer is down on the board: the frame changes for that input (see the composer's inputActive). */
+    readonly inputActive?: () => boolean;
     /** Whether the live layer paints this changed node in the frame at `view`: a changed node counts as covered by the picture
      * only then (or when it is omitted, a drag's preview). Membership in liveNodeIds alone is not coverage. */
     readonly liveDraws?: (nodeId: string, band: PaintBand, view: ViewState, canvas: boolean) => boolean;
@@ -289,7 +291,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     // `opaqueWorld` in wave 2, and until then today's adapter ignores it.
     const gpuOptions = () => ({ audit: options.auditSurface ?? 'board', ...(options.liveOverlay ? { liveOverlay: true } : {}),
         ...(typeof options.opaqueWorld === 'function' ? { opaqueWorld: options.opaqueWorld } : {}),
-        ...(options.liveNodes ? { liveNodes: options.liveNodes } : {}), ...(options.geometryPins ? { pins: options.geometryPins } : {}) });
+        ...(options.liveNodes ? { liveNodes: options.liveNodes } : {}), ...(options.geometryPins ? { pins: options.geometryPins } : {}),
+        ...(options.inputActive ? { inputActive: options.inputActive } : {}) });
     // The drag's omitted set is applied where the tiles are built: prepare takes it, and each prepare reads the current
     // omitNodes(frame). The draw never took it (the composer's draw has no omission), so it is not passed there.
     // A live-only overlay admits its parts at the view they are drawn at (its live runs are baked at prepare, and only tiles take

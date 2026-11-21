@@ -1246,23 +1246,24 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     };
 
     /** The admissions of a live-drawn frame, made in the foreground call (buildLiveDraws reads them back from the per-item cache). */
-    const admitLiveFirst = (view: ViewState, target: number, span: Span, budget: FrameBudget): void => {
-        for (const band of BANDS) {
-            for (let y = span.y0; y < span.y1; y++) {
-                for (let x = span.x0; x < span.x1; x++) {
-                    if (clipOnSurface(view, target, x, y)) collectAllLive(band, target, x, y, view, budget);
-                }
-            }
-        }
+    const admitLiveFirst = (view: ViewState, budget: FrameBudget): void => {
+        setViewRects(view);
+        for (const band of BANDS) collectLiveIn(band, viewWorld, view, budget);
         liveScratch.length = 0;
     };
-    /** A live-only overlay's parts: every part of every visible position, drawn live at the view, with no tile (liveOverlay). */
-    const collectAllLive = (band: PaintBand, target: number, x: number, y: number, view: ViewState, budget: FrameBudget): void => {
+    const setViewRects = (view: ViewState): void => {
+        const cam = view.camera, scale = cam.z * view.viewport.dpr;
+        viewWorld.x = cam.x - 1 / scale; viewWorld.y = cam.y - 1 / scale;
+        viewWorld.width = view.viewport.width / cam.z + 2 / scale; viewWorld.height = view.viewport.height / cam.z + 2 / scale;
+        viewClip.width = Math.round(view.viewport.width * view.viewport.dpr); viewClip.height = Math.round(view.viewport.height * view.viewport.dpr);
+    };
+    /** The view's world rectangle, grown by a device pixel each side: what a live frame's parts are queried over. One object, reused. */
+    const viewWorld: Rect = { x: 0, y: 0, width: 0, height: 0 };
+    const viewClip: Rect = { x: 0, y: 0, width: 0, height: 0 };
+    /** Every part reaching `world`, in paint order, admitted for this frame into `liveScratch`. */
+    const collectLiveIn = (band: PaintBand, world: Readonly<Rect>, view: ViewState, budget: FrameBudget): void => {
         liveScratch.length = 0;
-        const interior = tileWorld(keyOf(band, target, x, y, 0));
-        const pad = GUTTER / target;
-        const gutter: Rect = { x: interior.x - pad, y: interior.y - pad, width: interior.width + 2 * pad, height: interior.height + 2 * pad };
-        for (const part of parts.partsFor(band, gutter, omitIds ?? undefined)) {
+        for (const part of parts.partsFor(band, world, omitIds ?? undefined)) {
             // Per-frame geometry size of the live draw: path commands (the triangles are the route's; no per-frame count exists there).
             if (part.item.kind === 'path') auditCount(audit, 'live:path-commands', part.item.d.length);
             auditCount(audit, 'live:items');
@@ -1274,19 +1275,17 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             }
         }
     };
-    /** The live-only overlay's draw list: each visible position's parts, in paint order, clipped to that position on the surface. */
-    const buildLiveDraws = (view: ViewState, target: number, budget: FrameBudget): void => {
-        const span = spanAt(view, target);
+    /** A live frame's draw list: every part reaching the view, once, in paint order, clipped to the surface. Every visible position
+     * of a live frame is drawn live, and live parts are drawn in device space, so the per-position clips only partitioned one picture:
+     * drawn per position, each coverage-kit part paid a pass and a resolve per position it crossed (measured, notebook saturated zoom:
+     * 6.3 ink parts x 13.1 positions = 51 resolves and ~200 render-target switches per frame). */
+    const buildLiveDraws = (view: ViewState, budget: FrameBudget): void => {
+        setViewRects(view);
+        if (viewClip.width <= 0 || viewClip.height <= 0) return;
         for (const band of BANDS) {
-            for (let y = span.y0; y < span.y1; y++) {
-                for (let x = span.x0; x < span.x1; x++) {
-                    const clip = clipOnSurface(view, target, x, y);
-                    if (!clip) continue;
-                    collectAllLive(band, target, x, y, view, budget);
-                    liveBefore(band, Infinity, 0, clip);
-                    auditCount(audit, 'tile:live-overlay');
-                }
-            }
+            collectLiveIn(band, viewWorld, view, budget);
+            liveBefore(band, Infinity, 0, viewClip);
+            auditCount(audit, 'tile:live-view');
         }
     };
 
@@ -1296,7 +1295,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         drawsCam.x = view.camera.x; drawsCam.y = view.camera.y; drawsCam.z = view.camera.z;
         drawsCam.w = view.viewport.width; drawsCam.h = view.viewport.height; drawsCam.dpr = view.viewport.dpr;
         coveredPositions.clear();
-        if (liveNow) { buildLiveDraws(view, target, budget); return; }
+        if (liveNow) { buildLiveDraws(view, budget); return; }
         const span = spanAt(view, target);
         const clipAt = (x: number, y: number): Rect | null => clipOnSurface(view, target, x, y);
         for (const band of BANDS) {
@@ -1588,7 +1587,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             if (liveNow && !paintLiveOnly) auditCount(audit, 'zoom:direct:frame');
             // A live-drawn frame draws in the background call, so its admissions are made here, in the foreground call: its live parts
             // are what the frame shows, and foreground is the budget they must not be starved from.
-            if (liveNow && device) admitLiveFirst(view, target, spanAt(view, target), budget);
+            if (liveNow && device) admitLiveFirst(view, budget);
             // A live draw holding an inexact run asks for the next frame itself: the frame after the zoom's last step draws it exact. Polled
             // needsFrame alone did not bring that frame (measured, notebook at 40%: the last zoom step's coverage paper stayed at rest).
             if (liveInexact) host.invalidate('live-inexact');

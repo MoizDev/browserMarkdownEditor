@@ -84,6 +84,8 @@ export interface PaneMemoryDemand {
     readonly visible: boolean;
     readonly focused: boolean;
     readonly requestedPixels: number;
+    /** The pane's nominal device pixel ratio (absent: 1). The GPU target's fixed terms were sized for DPR 1 panes (see updatePanes). */
+    readonly devicePixelRatio?: number;
     readonly gpuNeedBytes: number;
     /** The GPU bytes this pane's visible positions at the current scale pin: granted before the surface share and before any
      * other scale or off-view ring, and never trimmed while the pane is visible. Absent: nothing is pinned. */
@@ -232,7 +234,8 @@ function stableId(a: string, b: string): number { return a < b ? -1 : a > b ? 1 
 /** Every field a grant is planned from; a change in any one re-plans. */
 function samePaneDemand(a: PaneMemoryDemand, b: PaneMemoryDemand | undefined): boolean {
     return b !== undefined && a.paneId === b.paneId && a.visible === b.visible && a.focused === b.focused &&
-        a.requestedPixels === b.requestedPixels && a.gpuNeedBytes === b.gpuNeedBytes && a.cpuNeedBytes === b.cpuNeedBytes &&
+        a.requestedPixels === b.requestedPixels && a.devicePixelRatio === b.devicePixelRatio && a.gpuNeedBytes === b.gpuNeedBytes &&
+        a.cpuNeedBytes === b.cpuNeedBytes &&
         a.gpuPinnedBytes === b.gpuPinnedBytes &&
         a.cpuMandatoryBytes === b.cpuMandatoryBytes && a.cpuPinned === b.cpuPinned;
 }
@@ -366,6 +369,7 @@ export class MemoryGovernor {
         const ids = new Set<string>();
         let pixels = 0;
         let visible = 0;
+        let dprScale = 1;
         for (const pane of panes) {
             count(pane.requestedPixels);
             count(pane.gpuNeedBytes);
@@ -376,7 +380,11 @@ export class MemoryGovernor {
             }
             if (!pane.paneId || ids.has(pane.paneId)) throw new MemoryAdmissionError('invalid-input');
             ids.add(pane.paneId);
-            if (pane.visible && pane.requestedPixels > 0) { pixels += pane.requestedPixels; visible++; }
+            if (pane.visible && pane.requestedPixels > 0) {
+                pixels += pane.requestedPixels; visible++;
+                const dpr = pane.devicePixelRatio ?? 1;
+                if (Number.isFinite(dpr) && dpr > 1) dprScale = Math.max(dprScale, Math.min(POLICY.gpuGrantMaxDpr, dpr) ** 2);
+            }
         }
         count(pixels);
         // The scheduler refreshes every frame (snapshotScene), so demand that did not change re-plans nothing: the grants
@@ -388,8 +396,13 @@ export class MemoryGovernor {
         for (const id of this.paneCeiling.keys()) if (!ids.has(id)) this.paneCeiling.delete(id);
         if (changed) {
             this.bumpCapacity();
-            this.target.gpu = Math.min(this.ceilings.gpuBytes, Math.max(POLICY.gpuGrantMinBytes,
-                POLICY.gpuGrantBaseBytes + POLICY.gpuGrantPerVisiblePaneBytes * visible + POLICY.gpuGrantPerVisiblePixelBytes * pixels));
+            // The floor, the base and the per-pane share were sized for DPR 1 panes; at DPR 2 every tile, scratch and surface of the same
+            // pane holds four times the bytes, so they scale with the square of the largest visible DPR, inside the device's ceiling (a
+            // low-memory device stays at its 128 MB). Unscaled, a DPR 2 pane sat at the 64 MB floor: after a saturated zoom the pool
+            // held 59.9 MB, the trim found nothing more to give, the surface rebuild was refused every frame and the pane never drew
+            // again (measured: doc12 and LARGE=11 at DPR 2, draw-sat and drag-sat 0/91; zoom-sat 52-70 stand-in presents).
+            this.target.gpu = Math.min(this.ceilings.gpuBytes, Math.max(POLICY.gpuGrantMinBytes * dprScale,
+                (POLICY.gpuGrantBaseBytes + POLICY.gpuGrantPerVisiblePaneBytes * visible) * dprScale + POLICY.gpuGrantPerVisiblePixelBytes * pixels));
             this.target.cpu = Math.min(this.ceilings.cpuRasterBytes, Math.max(POLICY.cpuGrantMinBytes,
                 POLICY.cpuGrantPerVisiblePaneBytes * visible + POLICY.cpuGrantPerVisiblePixelBytes * pixels));
             this.trimmedAt.gpu = -1;

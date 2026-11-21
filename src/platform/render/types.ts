@@ -179,6 +179,7 @@ export interface RenderConstants {
     readonly gpuGrantBaseBytes: 33554432;
     readonly gpuGrantPerVisiblePaneBytes: 16777216;
     readonly gpuGrantPerVisiblePixelBytes: 24;
+    readonly gpuGrantMaxDpr: 2;
     /** C = min(Cmax, max(min, perPane*N + perPixel*P)). */
     readonly cpuGrantMinBytes: 33554432;
     readonly cpuGrantPerVisiblePaneBytes: 8388608;

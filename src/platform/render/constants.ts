@@ -57,6 +57,8 @@ export const RENDER_CONSTANTS: RenderConstants = Object.freeze({
     gpuGrantBaseBytes: 33554432,
     gpuGrantPerVisiblePaneBytes: 16777216,
     gpuGrantPerVisiblePixelBytes: 24,
+    /** The DPR the GPU target's fixed terms scale to at most (by its square): a desktop's 2; a higher ratio adds only its pixels. */
+    gpuGrantMaxDpr: 2,
     cpuGrantMinBytes: 33554432,
     cpuGrantPerVisiblePaneBytes: 8388608,
     cpuGrantPerVisiblePixelBytes: 8,

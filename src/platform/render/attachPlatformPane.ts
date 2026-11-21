@@ -364,7 +364,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             }
             const cpuMandatoryBytes = requestedPixels ? Math.max(mandatory, requestedPixels * RENDER_CONSTANTS.decodedRgbaBytesPerPixel) +
                 (requestedPixels + bandPixels) * 4 : 0;
-            return { paneId: options.paneId, visible, focused, requestedPixels,
+            return { paneId: options.paneId, visible, focused, requestedPixels, devicePixelRatio: size?.nominalDpr ?? 1,
                 // Needs stay inside G/C: detached CPU completion, staged GPU, mirror/effect targets,
                 // native bitmap residency and one bounded colour band do not raise either cap.
                 gpuPinnedBytes: pinned,

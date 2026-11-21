@@ -156,6 +156,9 @@ export class PdfTileLayer implements Layer {
     /** Settled entries in draw order (scale ascending), rebuilt only when the settled set changes. */
     private settledOrder: Entry[] | null = null;
     private readonly drawScratch: Entry[] = [];
+    // The view, settled set, backend and scale drawScratch was selected for, and the per-page boxes of the current scale it used.
+    private drawMemo: { view: ViewState; order: Entry[] | null; device: GfxDevice | null; rasterScale: number; revision: number; version: number } | null = null;
+    private readonly coverScratch = new Map<number, Rect[]>();
     private readonly pageScratch: number[] = [];
     private readonly retiring = new Set<Entry>();
     private readonly texturePool: PdfTexturePool;
@@ -339,6 +342,10 @@ export class PdfTileLayer implements Layer {
         }
         let running = [...this.entries.values()].filter(entry => !entry.settled).length;
         let zoomHeld = false;
+        // Set by the first prefetch tile the pool refuses: the rest of this prepare's prefetch is not asked for. Measured (canvas2d,
+        // DPR 2 annotated PDF at rest): asking each one spent the frame's budget on ~6,000 refusals, the yield asked for another frame,
+        // the pane presented on every tick and the board's background paint never ran ('Updating' for good).
+        let aheadRefused = false;
         for (const request of planned.requests) {
             const key = request.text;
             let existing = this.entries.get(key);
@@ -366,12 +373,20 @@ export class PdfTileLayer implements Layer {
             if (zooming && this.covered(request.page, rect(request), device)) { auditCount('pdf-page', 'zoom-deferred'); zoomHeld = true; continue; }
             if (budget.shouldYield()) { this.pendingFrame = true; break; }
             const bytes = request.tile.textureWidth * request.tile.textureHeight * 4;
-            let lease = this.host.allocator.cpu.reserve(bytes);
+            // A tile off the view is work ahead of need: it is admitted only if it fits as the pool stands, and its refusal reclaims
+            // nothing. Measured (canvas2d, DPR 2 annotated PDF, pool full): each refused prefetch tile made the governor evict the
+            // farthest prefetch tile to admit it, and the next frame asked for that one again (734 evictions, 3,776 rasters in 30 s).
+            const ahead = request.priority === 'prefetch' ? { prefetch: true } : undefined;
+            if (ahead && aheadRefused) continue;
+            let lease = this.host.allocator.cpu.reserve(bytes, ahead);
             if (!lease) {
-                this.evictUnneeded(input.viewport, bytes);
-                lease = this.host.allocator.cpu.reserve(bytes);
+                this.evictUnneeded(input.viewport, bytes, !ahead);
+                lease = this.host.allocator.cpu.reserve(bytes, ahead);
             }
-            if (!lease) { this.awaitCpuCapacity(bytes); continue; }
+            // A refused prefetch tile arms no capacity wake: its admission line (the pool's soft-pressure line) is stricter than the
+            // sized wake's fit, so every release woke the pane for a refusal (measured: a frame per tick at rest, 'Updating' for good).
+            // The next frame that happens for its own reason asks again.
+            if (!lease) { if (ahead) aheadRefused = true; else this.awaitCpuCapacity(bytes); continue; }
             const entry: Entry = { request, lease, controller: new AbortController(), used: ++this.sequence };
             this.entries.set(key, entry); running++;
             void Promise.resolve().then(() => this.producer.render(request, entry.controller.signal)).then(bitmap => {
@@ -513,7 +528,7 @@ export class PdfTileLayer implements Layer {
                 ...(__BME_BENCH__ ? { coverage: 'standin' as const, standInRatio: item.pixels.source.width / item.pixels.world.width / rasterScale } : {}) });
         }
         const device = this.host.device();
-        const tiles = this.drawable(view, current);
+        const tiles = this.drawable(view, current, device, rasterScale);
         for (const entry of tiles) entry.drawnFrame = this.preparedFrame;
         // Scale order is kept between groups, since different scales overlap; same-scale tiles are batched by page.
         let start = 0;
@@ -593,7 +608,7 @@ export class PdfTileLayer implements Layer {
             this.host.drawTexturedQuad(ctx, item.pixels.bitmap, quad.sourceRect, quad.destRect, { opacity: 1, sampling: 'linear',
                 ...(__BME_BENCH__ ? { coverage: 'standin' as const, standInRatio: item.pixels.source.width / item.pixels.world.width / rasterScale } : {}) });
         }
-        for (const entry of this.drawable(view, current)) {
+        for (const entry of this.drawable(view, current, null, rasterScale)) {
             if (!entry.bitmap) continue;
             const { source, destination } = this.quad(entry.request, stack.rects[entry.request.page], view);
             this.markQuad(destination, scaleDiffers(entry.request.scale.scale, rasterScale));
@@ -739,25 +754,43 @@ export class PdfTileLayer implements Layer {
     /**
      * The governor's CPU reclaim. Without it a full pool refused every new tile for good, since nothing freed the old
      * ones (measured: a 40% zoom-out of a long annotated PDF held 28.1 MB of bitmaps for an 11.9 MB view, refused 780
-     * tiles and froze on the pre-zoom picture). Off-view tiles go first, then other scales, then the least recently
-     * used; the current plan's visible tiles are kept, since they are what the next frame draws.
+     * tiles and froze on the pre-zoom picture). Never a pixel the view still shows: a canvas2d frame draws the CPU bitmap
+     * itself, so an evicted visible tile was a hole until it rastered again. In order: idle tiles (off the view and out of
+     * the plan) least recently used, then the plan's off-view prefetch farthest first, then on-view stand-ins the plan's own
+     * drawable tiles already cover. Prefetch must stay reclaimable: measured (canvas2d, DPR 2 annotated PDF) the layer held
+     * 33.2 of the 33.55 MB pool once only idle tiles could go, the board's 64 KB preview was refused and the shape's commit
+     * waited on it for good. The governor's pressure trim takes prefetch once per growth of the pool, not on every tick
+     * (MemoryGovernor.trimmedAt): asked every tick, it evicted 3.5 MB the next frame rebuilt (133 times in 4.4 s).
      */
     cpuEvict(bytes: number): void {
-        const viewport = this.latestDemand?.viewport;
-        const exact = this.latestDemand && planPdfTileDemand({ ...this.latestDemand, moving: false, covered: () => false })
-            .requests.find(request => request.level === 'exact')?.scale.scale;
-        const rank = (entry: Entry): number => !viewport || !intersects(rect(entry.request), viewport) ? 0
-            : entry.request.scale.scale !== exact ? 1 : 2;
-        const candidates = [...this.entries].filter(([key, entry]) => entry.bitmap &&
-            !(this.desired.has(key) && viewport && intersects(rect(entry.request), viewport)))
-            .sort((a, b) => rank(a[1]) - rank(b[1]) || a[1].used - b[1].used);
+        const input = this.latestDemand;
+        if (!input) return;
+        const viewport = input.viewport;
+        const centre = { x: viewport.x + viewport.width / 2, y: viewport.y + viewport.height / 2 };
+        const distance = (entry: Entry): number => { const box = rect(entry.request);
+            return Math.hypot(box.x + box.width / 2 - centre.x, box.y + box.height / 2 - centre.y); };
+        const idle: Array<[string, Entry]> = [], prefetch: Array<[string, Entry]> = [], standIns: Array<[string, Entry]> = [];
+        let planBoxes: Map<number, Readonly<Rect>[]> | null = null;
+        for (const item of this.entries) {
+            const [key, entry] = item;
+            if (!entry.bitmap) continue;
+            const onView = intersects(rect(entry.request), viewport);
+            if (!onView) { (this.desired.has(key) ? prefetch : idle).push(item); continue; }
+            if (this.desired.has(key)) continue;
+            const area = clipped(rect(entry.request), viewport);
+            planBoxes ??= this.drawablePlanBoxes(this.host.device());
+            if (!area || covers(area, planBoxes.get(entry.request.page) ?? [])) standIns.push(item);
+        }
+        idle.sort((a, b) => a[1].used - b[1].used);
+        prefetch.sort((a, b) => distance(b[1]) - distance(a[1]));
+        standIns.sort((a, b) => a[1].used - b[1].used);
         let freed = 0;
-        for (const [key, entry] of candidates) {
+        for (const [key, entry] of [...idle, ...prefetch, ...standIns]) {
             if (freed >= bytes) break;
             freed += entry.lease?.bytes ?? 0;
             this.remove(key, entry);
         }
-        if (freed) this.host.invalidate('pdf-tile-evicted');
+        if (freed) { auditCount('pdf-page', 'cpu-evict', 1, { bytes: freed }); this.host.invalidate('pdf-tile-evicted'); }
     }
 
     /**
@@ -1193,16 +1226,49 @@ export class PdfTileLayer implements Layer {
         this.drawnPages.set(index, Object.freeze({ x: page.x, y: page.y, width: page.width, height: page.height }));
     }
 
-    /** `current` is the caller's own check that the frame's content identity is the one entries were planned for. */
-    private drawable(view: ViewState, current: boolean): Entry[] {
+    /** `current` is the caller's own check that the frame's content identity is the one entries were planned for. Unless the camera travels, a tile of
+     * another scale whose part on the view is wholly under drawable tiles of the current exact scale is left out: those tiles are
+     * opaque page raster drawn after it, so it adds no pixel, only work and residency. Measured (canvas2d, DPR 2 annotated PDF after
+     * the annotate toggle's zoom): the back buffer drew 28 tiles (26 MB) for a 10.9 MB view, the 2D working canvases filled the
+     * pane's 59.9 MB grant, the next tile image was refused and no frame presented again ('Updating' for good). While the camera
+     * travels every tile is kept: an unsnapped camera puts tile edges between device pixels, where the scale beneath fills the seam. */
+    private drawable(view: ViewState, current: boolean, device: GfxDevice | null = null, rasterScale = 0): Entry[] {
         const out = this.drawScratch;
+        if (!current) { out.length = 0; return out; }
+        // Prepare and draw ask for the same view in one frame: the selection is built once per view, settled set and backend.
+        const memo = this.drawMemo;
+        if (memo && memo.view === view && memo.order === this.settledOrder && memo.device === device && memo.rasterScale === rasterScale &&
+            memo.revision === this.contentRevision && memo.version === this.drawVersion) return out;
         out.length = 0;
-        if (!current) return out;
         const viewport = { x: view.camera.x, y: view.camera.y, width: view.viewport.width / view.camera.z, height: view.viewport.height / view.camera.z };
         // Sorted by scale only, and only when the settled set changes: same-scale tiles are disjoint cells, so their order is free.
         this.settledOrder ??= [...this.entries.values()].filter(entry => entry.settled)
             .sort((a, b) => a.request.scale.scale - b.request.scale.scale);
-        for (const entry of this.settledOrder) if (intersects(rect(entry.request), viewport)) out.push(entry);
+        // Travelling is a camera that moved since the last selection; a pen press marks the view moving but leaves the camera where it
+        // was, snapped to the pixel grid, and a stroke on a PDF drew the hidden scales again until the 2D residency was refused.
+        const previous = memo?.view.camera, camera = view.camera;
+        const travelling = view.moving && (!previous || previous.x !== camera.x || previous.y !== camera.y || previous.z !== camera.z);
+        const cull = !travelling && rasterScale > 0;
+        const cover = this.coverScratch;
+        cover.clear();
+        if (cull) {
+            for (const entry of this.settledOrder) {
+                if (entry.request.level !== 'exact' || scaleDiffers(entry.request.scale.scale, rasterScale) ||
+                    !(device ? entry.texture?.device === device : !!entry.bitmap) || !intersects(rect(entry.request), viewport)) continue;
+                const boxes = cover.get(entry.request.page);
+                if (boxes) boxes.push(rect(entry.request)); else cover.set(entry.request.page, [rect(entry.request)]);
+            }
+        }
+        for (const entry of this.settledOrder) {
+            const box = rect(entry.request);
+            if (!intersects(box, viewport)) continue;
+            if (cull && scaleDiffers(entry.request.scale.scale, rasterScale)) {
+                const area = clipped(box, viewport), boxes = cover.get(entry.request.page);
+                if (area && boxes && covers(area, boxes)) { auditCount('pdf-page', 'draw-culled'); continue; }
+            }
+            out.push(entry);
+        }
+        this.drawMemo = { view, order: this.settledOrder, device, rasterScale, revision: this.contentRevision, version: this.drawVersion };
         return out;
     }
 
@@ -1217,16 +1283,37 @@ export class PdfTileLayer implements Layer {
         return out;
     }
 
-    private evictUnneeded(viewport: Readonly<Rect>, neededBytes: number): void {
+    /** Makes room for a refused tile of this layer's own plan. Idle tiles go first (off the view and out of the plan). A tile the
+     * view needs may also take the plan's off-view prefetch, farthest first, and then the other-scale stand-ins on the view: the
+     * governor's trim reclaims only idle tiles (cpuEvict), so without this a view whose stand-ins and prefetch filled the pool would
+     * wait for good on replacements that could never be admitted (the 40% zoom-out that froze on its pre-zoom picture). */
+    private evictUnneeded(viewport: Readonly<Rect>, neededBytes: number, visibleNeed: boolean): void {
         const candidates = this.entries.evictable(this.desired, viewport, entry => rect(entry.request), entry => !!entry.bitmap);
         candidates.sort((a, b) => Number(a[1].request.level === 'low') - Number(b[1].request.level === 'low') ||
             a[1].used - b[1].used);
+        if (visibleNeed) {
+            const centre = { x: viewport.x + viewport.width / 2, y: viewport.y + viewport.height / 2 };
+            const distance = (entry: Entry): number => { const box = rect(entry.request);
+                return Math.hypot(box.x + box.width / 2 - centre.x, box.y + box.height / 2 - centre.y); };
+            const prefetch: Array<[string, Entry]> = [], standIns: Array<[string, Entry]> = [];
+            for (const item of this.entries) {
+                const [key, entry] = item;
+                if (!entry.bitmap) continue;
+                const onView = intersects(rect(entry.request), viewport);
+                if (this.desired.has(key) && !onView) prefetch.push(item);
+                else if (!this.desired.has(key) && onView) standIns.push(item);
+            }
+            prefetch.sort((a, b) => distance(b[1]) - distance(a[1]));
+            standIns.sort((a, b) => a[1].used - b[1].used);
+            candidates.push(...prefetch, ...standIns);
+        }
         let freed = 0;
         for (const [key, entry] of candidates) {
+            if (freed >= neededBytes) break;
             freed += entry.lease?.bytes ?? 0;
             this.remove(key, entry);
-            if (freed >= neededBytes) break;
         }
+        if (freed && visibleNeed) auditCount('pdf-page', 'evict-for-view', 1, { bytes: freed });
     }
 
     private remove(key: string, entry: Entry): void {

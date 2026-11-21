@@ -276,6 +276,12 @@ export class MemoryGovernor {
     private wake: number | null = null;
     private levelSince = Number.NEGATIVE_INFINITY;
     private pressureHoldUntil = Number.NEGATIVE_INFINITY;
+    // The charge each pool held when its last pressure trim ran, or -1 when the pool has been under its soft line since. A trim
+    // asks every reclaimable cache for bytes; asked again at the same charge it can only take what the owners rebuilt from the
+    // last ask, so it runs again only once the pool has grown past that charge (or its target moved). Measured, canvas2d DPR 2
+    // annotated PDF: the CPU pool sat at 30.3 MB over its 30.2 MB line, every tick evicted 3.5 MB of tiles the plan still
+    // wanted, the next frame rebuilt them (133 evictions in 4.4 s) and the board's new shapes never presented.
+    private readonly trimmedAt: Record<MemoryPool, number> = { gpu: -1, cpu: -1 };
     private now = 0;
     private workerHeapBytes = 0;
     private readonly workerHeaps = new Map<object, number>();
@@ -319,6 +325,8 @@ export class MemoryGovernor {
                 updateActivity: activity => {
                     activityValid(activity);
                     if (cache.closed) return;
+                    // A cache that was hidden or shown changes what a trim may take at the same charge (trimPool asks by visibility).
+                    if (activity.hiddenAt !== cache.activity.hiddenAt) { this.trimmedAt.gpu = -1; this.trimmedAt.cpu = -1; }
                     cache.activity = { ...activity };
                     this.bumpCapacity();
                     this.trimHiddenMirrors();
@@ -372,11 +380,13 @@ export class MemoryGovernor {
                 POLICY.gpuGrantBaseBytes + POLICY.gpuGrantPerVisiblePaneBytes * visible + POLICY.gpuGrantPerVisiblePixelBytes * pixels));
             this.target.cpu = Math.min(this.ceilings.cpuRasterBytes, Math.max(POLICY.cpuGrantMinBytes,
                 POLICY.cpuGrantPerVisiblePaneBytes * visible + POLICY.cpuGrantPerVisiblePixelBytes * pixels));
+            this.trimmedAt.gpu = -1;
+            this.trimmedAt.cpu = -1;
             this.replan();
         }
         this.trimHiddenMirrors();
         for (const pool of ['gpu', 'cpu'] as const) {
-            if (this.charged[pool] > this.target[pool]) this.trimPool(pool, this.target[pool]);
+            if (this.charged[pool] > this.target[pool]) this.pressureTrim(pool, this.target[pool]);
         }
     }
 
@@ -501,11 +511,8 @@ export class MemoryGovernor {
         for (const pool of ['gpu', 'cpu'] as const) {
             if (this.charged[pool] > this.target[pool] * POLICY.memorySoftPressureRatio) {
                 this.state = 'trimming';
-                unmet = this.trimFailed(pool, Math.floor(this.target[pool] * POLICY.memoryTrimTargetRatio)) || unmet;
-            } else if (this.charged[pool] > this.target[pool]) {
-                this.state = 'trimming';
-                unmet = this.trimFailed(pool, this.target[pool]) || unmet;
-            }
+                unmet = this.pressureTrim(pool, Math.floor(this.target[pool] * POLICY.memoryTrimTargetRatio)) || unmet;
+            } else this.trimmedAt[pool] = -1;
         }
         // Over budget steps down unless a resume holds pressure: the rebuild after a return is charged at once, and stepping on it stacked
         // the quality down (1.0 -> 0.8 -> 0.64), which the recovery window then held for five seconds.
@@ -692,7 +699,14 @@ export class MemoryGovernor {
         // That is not pressure: nothing is trimmed and no quality is stepped. The refused work waits, and the replan that
         // grants the pane's demand wakes it. Seen: a new arrow's first 64 KB working buffer degraded a near-empty canvas2d pane.
         if (!allowed() && !this.overPool(pool, bytes) && !this.hasDemand(cache)) return null;
-        if (options?.prefetch && !allowed()) { auditCount('governor', `prefetch-refused:${pool}`, 1, { bytes }); return null; }
+        // Work ahead of need also stops at the soft-pressure line: the pressure trim takes the pool back below it, so prefetch admitted
+        // above it is evicted again. Measured (canvas2d, DPR 2 annotated PDF): prefetch filled the CPU pool to its target, every mirror
+        // crop or board buffer after it was refused, its refusal trimmed the pool to 80% (4.3 MB of prefetch), the prefetch was rastered
+        // again into the room, 733 times in 30 s, and no shape the board made ever presented.
+        if (options?.prefetch && (!allowed() || this.charged[pool] + bytes > this.target[pool] * POLICY.memorySoftPressureRatio)) {
+            auditCount('governor', `prefetch-refused:${pool}`, 1, { bytes });
+            return null;
+        }
         // A pane's GPU surface replaces its 2D picture: the 2D working canvases of the same pane are that picture's scratch, and they
         // are dropped before the pane's new backing is refused for want of room they hold (measured, DPR 2: a 2D fallback held 44 MB of
         // working canvases beside its 33 MB display, so the GPU scratch of the same pane was refused and quality stepped down).
@@ -989,9 +1003,17 @@ export class MemoryGovernor {
         } finally { this.trimming = false; }
     }
 
-    /** A trim that ran out of candidates while the pool is still over its target: the only pressure a degradation answers. A trim
-     * aimed below target (the soft trim) that stops short of its aim, but reached the target, has not failed. */
-    private trimFailed(pool: MemoryPool, aim: number): boolean {
+    /** The trim pressure runs, at most once per growth of the pool (see trimmedAt). Returns whether it failed: it ran out of candidates
+     * while the pool is still over its target, the only pressure a degradation answers. A trim aimed below target (the soft trim) that
+     * stops short of its aim, but reached the target, has not failed. A skipped trim fails while the pool is over its target: the trim
+     * at this charge already found nothing more to give. */
+    private pressureTrim(pool: MemoryPool, aim: number): boolean {
+        if (this.trimming) return false;
+        if (this.trimmedAt[pool] >= 0 && this.charged[pool] <= this.trimmedAt[pool]) {
+            auditCount('governor', `trim-skip:${pool}`);
+            return this.charged[pool] > this.target[pool];
+        }
+        this.trimmedAt[pool] = this.charged[pool];
         return this.trimPool(pool, aim) > 0 && this.charged[pool] > this.target[pool];
     }
 

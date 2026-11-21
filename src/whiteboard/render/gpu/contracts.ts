@@ -124,6 +124,8 @@ export type CreateTileParts = RouteFactory<TileParts>;
 export type CreatePathRoute = RouteFactory<ItemRoute>;
 export type CreateInkRoutes = RouteFactory<{ readonly analytic: ItemRoute<PaintInkItem>; readonly union: ItemRoute<PaintInkItem>;
     /** Frees up to `bytes` of the union route's idle chunk geometry, never a chunk in `keep`; returns the bytes freed. */
-    readonly evictCpu: (bytes: number, keep: ReadonlySet<InkCoverage>) => number }>;
+    readonly evictCpu: (bytes: number, keep: ReadonlySet<InkCoverage>) => number;
+    /** Marks the frame the calls that follow belong to (the union route's kits: a refused draw is reported for its own frame only). */
+    readonly beginFrame: (frame: number) => void }>;
 export type CreateImageRoute = RouteFactory<ItemRoute>;
 export type CreateTextRoute = RouteFactory<ItemRoute>;

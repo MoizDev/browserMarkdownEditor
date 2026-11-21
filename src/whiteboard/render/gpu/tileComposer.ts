@@ -256,6 +256,8 @@ export interface TileComposer {
     release(reason: GpuReleaseReason): void;
     /** The adapter evicted something a draw list may hold (a tile, a texture or a coverage set): no list built before is drawn again. */
     noteEvicted(): void;
+    /** Whether the last prepare's draw list draws the view live (a zoom, a pan or a settle drawn direct): no tile is drawn then. */
+    drawsLive(): boolean;
     /** A value that moves with what the composite draws (see contentVersion): equal keys mean the same picture. */
     contentKey(): number;
     /** True when the draw list cannot be drawn for this view (an eviction or a camera change since it was built, and no prepare since). */
@@ -1907,6 +1909,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         // The epoch alone: an evicted entry that was drawn leaves the next draw list (listUsable fails until it is rebuilt), so the
         // signature moves; one that was not drawn changes nothing on screen (measured: 9 of 17 redundant zoom presents on LARGE=11).
         noteEvicted(): void { evictEpoch++; },
+        drawsLive(): boolean { return liveNow && !paintLiveOnly; },
         contentKey(): number { return hashMix(drawSignature, contentVersion); },
         listInvalid(view: ViewState): boolean { return drawCount > 0 && !listUsable(view); },
         dispose(): void {

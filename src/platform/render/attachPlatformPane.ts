@@ -153,7 +153,9 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             releasing.add(layer);
             freed += remaining;
         }
-        if (!victims.length) return 0;
+        // The partial relief above is freed already: a trim with no whole-layer victim reported 0 for it, so the governor credited a
+        // board that gave back 4.26 MB of tiles with nothing and refused the PDF beside it (doc12, WebGL2, at rest).
+        if (!victims.length) return freed;
         queueMicrotask(() => {
             for (const layer of victims) releasing.delete(layer);
             // The victims were chosen in a frame this pane had not presented, and the bytes above were counted on that promise.

@@ -822,6 +822,17 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
                     });
                 },
                 releaseGpu(reason) { if (reason === 'hidden' || reason === 'pressure') clear(); else releaseRoutes(); },
+                // Partial relief: with no stroke in flight the routes draw nothing, so their GPU bytes (the union route's scratch, 16.8 MB)
+                // are given back when the governor asks; the next stroke makes them again. Without it a pane that had prepared this frame
+                // could not release the layer at all, and the pool's trim fell short (measured, notebook zoom to 332%: quality 1 -> 0.8,
+                // the rest picture blurred for the 5 s recovery).
+                evictGpu(bytes) {
+                    if (bytes <= 0 || runs.size || work || !inkRoutes) return 0;
+                    const freed = routesMemory().gpuBytes;
+                    releaseRoutes();
+                    auditCount('wet', 'evict:routes', 1, { bytes: freed });
+                    return freed;
+                },
                 memory() {
                     // The shared routes and the reserve are one set of bytes for both bands, which share an owner host. Only the layer that
                     // cpuWorkingSet demands them for reports them: a host check alone counted them twice in the pane's sum.

@@ -7,7 +7,7 @@ import type { LayerHost, TexturedQuadSpec } from '../../../platform/render/compo
 import type { GfxDevice, GpuPass, GroupToken, RectI, RgbaP, TextureHandle } from '../../../platform/render/gfx/api';
 import type { FrameBudget, GpuReleaseReason, OffscreenPasses } from '../../../platform/render/types';
 import { tileTargetBytes, tileView } from '../../../platform/render/tileTarget';
-import { auditCount, auditDrawn, auditGpuError, auditStage, renderAuditEnabled, type AuditStage } from '../../../platform/render/renderAudit';
+import { auditCount, auditDrawn, auditGpuError, auditStage, auditTape, renderAuditEnabled, type AuditStage } from '../../../platform/render/renderAudit';
 import { TILE_EDGE, TILE_GUTTER, TILE_SIZE } from '../imageSampling';
 import { isBudgetRefusal } from '../budgetRefusal';
 import type { PaintBand } from '../material';
@@ -392,6 +392,11 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     const draws: Draw[] = [];
     // The ink nodes the composite draws, filled in drawGpu and cleared in prepare: one set for the composer's life.
     const drawnInk = new Set<string>();
+    /** Ink nodes with a live part this frame did not admit (deferred, denied): not drawn, so never reported in drawnInk, whatever
+     * their other parts did. The wet layer reads drawnInk in its own prepare, after this one: a node reported here before its
+     * admission was known left a stroke on neither layer for a frame (measured: pen-up on a notebook, 5,897 px for one frame, when
+     * the committed stroke's live ink-union upload was deferred). */
+    const liveInkDropped = new Set<string>();
     // The nodes whose live parts the composite lays, per band: filled in drawGpu beside the live draw, cleared in prepare. The board
     // trusts a changed node as drawn only when it is in this set, so a live part that was deferred or denied is not counted.
     const drawnLive: Record<PaintBand, Set<string>> = { underlay: new Set<string>(), content: new Set<string>() };
@@ -473,6 +478,10 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     // pixel the same on the paper (19 redundant presents a phase) and a slight edge change on the board.
     // A repeated settling frame (same camera, no scene change) draws the same live picture, so it does not move the content version.
     let directBefore = false, settling = false, settleRepeat = false;
+    /** A live draw of the frame admitted a run its route marked inexact (a path area on the zoom-time coverage route, a text stand-in):
+     * the next settling frame at the same camera draws it exact, so it is not a repeat and presents. Measured (notebook, 40% after a
+     * zoom step): without it the zoom's last coverage picture stayed up at rest, paper ruled lines 11 levels off the exact picture. */
+    let liveInexact = false, settleInexact = false;
     let settleCamX = Number.NaN, settleCamY = Number.NaN, settleCamZ = Number.NaN;
     let device: GfxDevice | null = null;
     let frame = 0, validRevision = 0;
@@ -1065,7 +1074,10 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 auditCount(audit, 'live:resumed');
                 outcome = route.admit([item], view, blend, budget);
             }
-            if (outcome.status === 'ready') { admitted = { route, run: outcome.value }; liveRuns.push(admitted); }
+            if (outcome.status === 'ready') {
+                admitted = { route, run: outcome.value }; liveRuns.push(admitted);
+                if (!exactRun(route, outcome.value)) liveInexact = true;
+            }
             else if (outcome.status === 'unsupported') { liveHoleNow = true; auditCount(audit, `live:dropped:${outcome.why}`); }
             else if (outcome.status === 'deferred') {
                 // A deferral is a frame wait: nothing else invalidates the board for it, so the next frame asks again (bounded, below).
@@ -1247,12 +1259,15 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         const pad = GUTTER / target;
         const gutter: Rect = { x: interior.x - pad, y: interior.y - pad, width: interior.width + 2 * pad, height: interior.height + 2 * pad };
         for (const part of parts.partsFor(band, gutter, omitIds ?? undefined)) {
-            if (part.item.kind === 'ink') drawnInk.add(part.nodeId);
             // Per-frame geometry size of the live draw: path commands (the triangles are the route's; no per-frame count exists there).
             if (part.item.kind === 'path') auditCount(audit, 'live:path-commands', part.item.d.length);
             auditCount(audit, 'live:items');
             const admitted = admitLive(part.item, part.blend, view, budget);
             if (admitted) liveScratch.push({ order: part.order, run: admitted.run, route: admitted.route, nodeId: part.nodeId });
+            if (part.item.kind === 'ink') {
+                if (!admitted) { liveInkDropped.add(part.nodeId); drawnInk.delete(part.nodeId); }
+                else if (!liveInkDropped.has(part.nodeId)) drawnInk.add(part.nodeId);
+            }
         }
     };
     /** The live-only overlay's draw list: each visible position's parts, in paint order, clipped to that position on the surface. */
@@ -1438,7 +1453,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     firstOrder: position.slices.map(part => part.firstOrder), live: position.live,
                     geometry: slice.admitted.some(admitted => isGeometryRoute(admitted.route)),
                     cpu: slice.admitted.some(admitted => admitted.route === routes.cpu) });
-                if (slice.admitted.some(admitted => !exactRun(admitted.route, admitted.run))) inexactPending.add(entry);
+                if (slice.admitted.some(admitted => !exactRun(admitted.route, admitted.run))) { inexactPending.add(entry); auditCount(audit, 'zoom:inexact:composed'); }
                 store.touch(entry, frame);
             }
             for (const { route, run, clips } of slice.admitted) { route.retire(run); clips?.retire(); }
@@ -1485,7 +1500,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             editBits = 0;
             frame = budget.frameId;
             frameComposed = 0;
-            drawnInk.clear();
+            drawnInk.clear(); liveInkDropped.clear();
             drawnLive.underlay.clear(); drawnLive.content.clear();
             plannedLive.underlay.clear(); plannedLive.content.clear();
             retireLive();
@@ -1528,6 +1543,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 } else if (pinsHeld) { pins.releasePins(); pinsHeld = false; }
             }
             zoomingFrame = zooming;
+            if (zooming) { auditCount(audit, 'zoom:prepare'); auditTape(`${audit}:zoom:prepare`); }
             // The text route draws a missing exact mask from its stand-in while the zoom is live; the flag is set before its admits.
             routes.text?.setZoom(zooming);
             // The path route composes a zoom's frames on its coverage route and its rest on exact area (routePath.ts, setZoom).
@@ -1554,6 +1570,9 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             settling &&= liveNow;
             // The last direct frame (a zoom's, a pan's or a settling one) drew these parts at this camera: the same live picture.
             settleRepeat = settling && settleCamX === view.camera.x && settleCamY === view.camera.y && settleCamZ === view.camera.z;
+            settleInexact = settleRepeat && liveInexact;
+            if (settleInexact) { settleRepeat = false; auditCount(audit, 'settle:fresh:inexact'); }
+            liveInexact = false;
             if (settling) auditCount(audit, 'settle:direct:frame');
             if (settling && !settleRepeat) auditCount(audit, Number.isNaN(settleCamX) ? 'settle:fresh:no-direct-before' : 'settle:fresh:camera');
             if (liveNow && !paintLiveOnly) { settleCamX = view.camera.x; settleCamY = view.camera.y; settleCamZ = view.camera.z; }
@@ -1566,6 +1585,9 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             // A live-drawn frame draws in the background call, so its admissions are made here, in the foreground call: its live parts
             // are what the frame shows, and foreground is the budget they must not be starved from.
             if (liveNow && device) admitLiveFirst(view, target, spanAt(view, target), budget);
+            // A live draw holding an inexact run asks for the next frame itself: the frame after the zoom's last step draws it exact. Polled
+            // needsFrame alone did not bring that frame (measured, notebook at 40%: the last zoom step's coverage paper stayed at rest).
+            if (liveInexact) host.invalidate('live-inexact');
             if (zooming && !liveNow) auditCount(audit, indexing ? 'zoom:direct:skip:indexing' : 'zoom:direct:skip:parts');
             if (!indexing) {
                 let invalidated = false;
@@ -1631,7 +1653,10 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 finished = kept;
                 // At rest, the entries that drew a stand-in during the zoom recompose exact: marked dirty, they take the dirty pass.
                 if (!zooming && inexactPending.size) {
-                    for (const entry of inexactPending) if (entry.target && entry.key.scale === target) entry.dirty = true;
+                    for (const entry of inexactPending) {
+                        if (entry.target && entry.key.scale === target) { entry.dirty = true; auditCount(audit, 'zoom:inexact:recompose'); }
+                        else auditCount(audit, 'zoom:inexact:other-scale');
+                    }
                     inexactPending.clear();
                 }
                 // The armed retry is due and the refused position still waits on the GPU: it is advanced again this frame, after the
@@ -1696,11 +1721,15 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             if (indexing) contentVersion++;
             // An edit the draw list does not show (a ring position composed, a cancelled build, a dropped scale) is not a visible change:
             // the signature holds every drawn entry's generation. Its offscreen encode runs in a frame that does not present.
-            const changed = indexing || sigChanged;
+            // A settling frame made fresh by the last live draw's inexact runs draws the same positions with the same routes, so its
+            // signature is the last one's; it is still a new picture (the exact one), and a layer that reads only this answer (the
+            // paper) would otherwise skip it (measured: present-skipped:unchanged, the zoom's coverage paper kept at rest).
+            const changed = indexing || sigChanged || settleInexact;
             drawSignature = signature;
             // Why it answered changed, as audit counters (gh14): a prepare names every condition that held.
             if (changed && renderAuditEnabled()) {
                 if (indexing) auditCount(audit, 'prepare:changed:indexing');
+                if (settleInexact) auditCount(audit, 'prepare:changed:settle-inexact');
                 if (editBits & EDIT_SUPERSEDED) auditCount(audit, 'prepare:changed:superseded');
                 if (editBits & EDIT_EMPTY) auditCount(audit, 'prepare:changed:empty');
                 if (editBits & EDIT_CANCEL) auditCount(audit, 'prepare:changed:cancelled');
@@ -1750,7 +1779,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         // Ink laid live is drawn ink: the wet layer hands a stroke over on this report in the same frame. Reported for tiles
                         // only, a committed stroke laid live at pen-up (its positions still composing) was drawn by both for one frame:
                         // measured, every anti-aliased edge of the stroke 2,168 px darker for one frame, then back.
-                        if (draw.liveRoute?.id === 'ink-analytic' || draw.liveRoute?.id === 'ink-union') drawnInk.add(draw.node);
+                        if ((draw.liveRoute?.id === 'ink-analytic' || draw.liveRoute?.id === 'ink-union') && !liveInkDropped.has(draw.node)) drawnInk.add(draw.node);
                         // The pop is in finally: a throw inside the draw must not leave the scope open (the encoder then refuses the frame).
                         try { draw.liveRoute?.draw(pass, draw.live); }
                         catch (error) {
@@ -1887,6 +1916,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         needsFrame(): boolean {
             if (disposed || !presenting) return false;
             if (wantFrame) return true;
+            // The last live draw held an inexact run (a zoom's coverage-route area, a text stand-in): the frame after it is owed.
+            if (liveInexact) return true;
             // A pinned zoom is released by the frame that finds the zoom over: that frame is asked for, so the pins do not outlive the zoom.
             if (pinsHeld) return true;
             if (denied) return false;

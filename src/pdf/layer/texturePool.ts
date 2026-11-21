@@ -1,5 +1,5 @@
 import type { ByteLease, GfxDevice, TextureHandle } from '../../platform/render';
-import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
+import type { MemoryAllocator, ReserveOptions } from '../../platform/render/memoryGovernor';
 
 export interface PooledTexture {
     readonly device: GfxDevice;
@@ -63,9 +63,9 @@ export class PdfTexturePool {
 
 /** A tile's own texture, created for a tile and destroyed when the tile leaves the GPU. Not pooled: a free texture is charged
  * bytes that nothing draws, so a pool of them is memory the tile model does not need. */
-export function createTileTexture(allocator: MemoryAllocator, device: GfxDevice, width: number, height: number): PooledTexture | null {
+export function createTileTexture(allocator: MemoryAllocator, device: GfxDevice, width: number, height: number, options?: ReserveOptions): PooledTexture | null {
     const bytes = width * height * 4;
-    const lease = allocator.reserve(bytes);
+    const lease = allocator.reserve(bytes, options);
     if (!lease) return null;
     try {
         return { device, handle: device.createTexture(width, height, 'rgba8', ['sample', 'copy-dst'], lease), width, height, bytes };

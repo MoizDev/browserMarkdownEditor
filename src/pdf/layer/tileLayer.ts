@@ -215,6 +215,11 @@ export class PdfTileLayer implements Layer {
     private scaleChangedAt = 0;
     /** This prepare's upload grant for landed visible exact tiles at rest (REST_EXACT_UPLOAD_BYTES), spent by uploadTile. */
     private restGrant = 0;
+    /** A wanted tile was not started because three rasters were running: the next one to settle or fail asks for the frame that
+     * starts it. A raster that landed off screen or was abandoned asked for none, so after a short zoom the resting view's exact
+     * tiles waited behind the gesture's intermediate-scale rasters and the page stayed on stand-ins (measured: doc12, WebGL2,
+     * >= 1.5 s at rest, 10 requests skipped for slots in 7 rest prepares and no prepare after). */
+    private slotWaiting = false;
     private zoomCadence = 0;
     /** Bumped by every change to what the layer draws (tiles, bridge items, the frame texture, the content). prepare answers
      * unchanged only while this has not moved since the frame it last answered changed for (see answer). */
@@ -413,7 +418,8 @@ export class PdfTileLayer implements Layer {
                 }
                 continue;
             }
-            if (this.failed.has(key) || running >= 3) continue;
+            if (this.failed.has(key)) continue;
+            if (running >= 3) { this.slotWaiting = true; continue; }
             // Held for the frame the scale rests; pendingFrame keeps the next frame coming so the rest is not missed.
             // Held without asking for a frame: the frame that starts it is the wake armed below, one frame after the scale stops changing.
             if (holding && this.covered(request.page, rect(request), device)) { auditCount('pdf-page', zooming ? 'zoom-deferred' : 'zoom-deferred:gesture'); zoomHeld = true; continue; }
@@ -436,6 +442,7 @@ export class PdfTileLayer implements Layer {
             const entry: Entry = { request, lease, controller: new AbortController(), used: ++this.sequence };
             this.entries.set(key, entry); running++;
             void Promise.resolve().then(() => this.producer.render(request, entry.controller.signal)).then(bitmap => {
+                this.slotFreed();
                 const current = !this.disposed && this.isCurrent() && this.entries.get(key) === entry && !entry.controller.signal.aborted;
                 if (!current || bitmap.width !== request.tile.textureWidth || bitmap.height !== request.tile.textureHeight) {
                     forgetPdfTileArrival(bitmap);
@@ -455,6 +462,7 @@ export class PdfTileLayer implements Layer {
                 // A tile that landed off screen changes nothing on screen: the camera's next move presents it.
                 if (this.onScreen(entry.request)) this.host.invalidate('pdf-tile-arrived');
             }, error => {
+                this.slotFreed();
                 const current = this.entries.get(key) === entry;
                 const cancelled = entry.controller.signal.aborted || (error instanceof Error && error.name === 'AbortError');
                 if (current) this.remove(key, entry);
@@ -1059,6 +1067,13 @@ export class PdfTileLayer implements Layer {
 
     /** Uploads a settled tile's bitmap into the tile's own texture, sized to the bitmap. 'capacity' when the governor refused
      * the texture (the layer waits for it), 'budget' when this frame's upload allowance is spent (the frame stops here). */
+    /** A raster settled or failed: its slot is free, so work skipped for the running cap gets the frame that starts it. */
+    private slotFreed(): void {
+        if (!this.slotWaiting || this.disposed) return;
+        this.slotWaiting = false;
+        this.host.invalidate('pdf-tile-slot');
+    }
+
     private uploadTile(device: GfxDevice, key: string, entry: Entry, budget: FrameBudget): 'done' | 'capacity' | 'budget' {
         const bitmap = entry.bitmap!;
         const width = bitmap.width, height = bitmap.height, bytes = width * height * 4;
@@ -1075,7 +1090,15 @@ export class PdfTileLayer implements Layer {
         this.dropTexture(entry);
         let texture: PooledTexture | null;
         try {
-            texture = createTileTexture(this.host.allocator.gpu, device, width, height);
+            // A tile off the view is work ahead of need: its texture is reserved as prefetch, refused rather than reclaiming, and its
+            // refusal arms no wait (the next frame that happens for its own reason uploads it). Reserved as need, each landed prefetch
+            // tile's refusal evicted another off-view tile, which the plan asked for again: measured, a 3-step zoom then rest
+            // uploaded 350 tiles (370 MB) and evicted 346 (doc12, WebGL2, DPR 1).
+            const view = this.latestDemand?.viewport;
+            if (view && !intersects(rect(entry.request), view)) {
+                texture = createTileTexture(this.host.allocator.gpu, device, width, height, { prefetch: true });
+                if (!texture) { auditCount('pdf-page', 'upload:prefetch-refused'); return 'capacity'; }
+            } else texture = createTileTexture(this.host.allocator.gpu, device, width, height);
             if (!texture && this.reclaimTile()) texture = createTileTexture(this.host.allocator.gpu, device, width, height);
         } catch (error) {
             // A device refusing memory is "not now": the tile waits for capacity like a refused lease. Reported as a failure, it

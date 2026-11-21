@@ -465,7 +465,7 @@ export class PdfTileLayer implements Layer {
         mix(device && this.frameTexture?.device === device ? identityOf(this.frameTexture.handle) : 1);
         if (device) { for (const texture of this.bridgeTextures.values()) if (texture.device === device) mix(identityOf(texture.handle)); }
         else for (const id of this.bridgeReady) mix(identityOf(id));
-        for (const entry of this.drawable(view, current, device, input.rasterScale, !!device)) {
+        for (const entry of this.drawable(view, current, device, input.rasterScale, true)) {
             const pixels = device ? entry.texture?.device === device ? entry.texture.handle : null : entry.bitmap ?? null;
             mix(pixels ? identityOf(pixels) : 2);
             const key = entry.request.text;
@@ -645,7 +645,7 @@ export class PdfTileLayer implements Layer {
             this.host.drawTexturedQuad(ctx, item.pixels.bitmap, quad.sourceRect, quad.destRect, { opacity: 1, sampling: 'linear',
                 ...(__BME_BENCH__ ? { coverage: 'standin' as const, standInRatio: item.pixels.source.width / item.pixels.world.width / rasterScale } : {}) });
         }
-        for (const entry of this.drawable(view, current, null, rasterScale)) {
+        for (const entry of this.drawable(view, current, null, rasterScale, true)) {
             if (!entry.bitmap) continue;
             const { source, destination } = this.quad(entry.request, stack.rects[entry.request.page], view);
             this.markQuad(destination, scaleDiffers(entry.request.scale.scale, rasterScale));
@@ -1288,7 +1288,9 @@ export class PdfTileLayer implements Layer {
         // Other scales first, the current raster scale last, on top: in scale order alone a higher-scale stand-in was drawn over the
         // exact tile that replaced it, so the exact upload changed nothing on screen until the stand-in was evicted (measured on doc12:
         // the wake frame of each paced zoom step pixel-identical, 31 of 111 zoom presents, and its stand-in still shown).
-        // On the GPU path only: canvas2d keeps the feature branch's picture, scale order alone.
+        // canvas2d too: in feature-branch order a higher-scale stand-in stayed over its exact replacement for good at rest (measured on
+        // feat/in-house-engines, DPR 2 doc12: two tiles soft for the 25 s to the end of the run), and once the trim loop no longer evicted
+        // such stand-ins by accident, every canvas2d pan frame on impl/gpu showed six of them (gpu-f2: paced complete 244/247 -> 41/247).
         const exact = exactLast && rasterScale > 0 ? rasterScale : undefined;
         for (const entry of this.settledOrder) {
             if (intersects(rect(entry.request), viewport) && (exact === undefined || scaleDiffers(entry.request.scale.scale, exact))) out.push(entry);

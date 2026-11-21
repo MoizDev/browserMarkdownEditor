@@ -381,6 +381,10 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     #uniformScratch: { data: Uint8Array<ArrayBuffer>; lease: ByteLease } | null = null;
     #uniformActive: UniformSlot | null = null;
     #surfaceRevision = 0;
+    // The default framebuffer's completeness at the surface revision it was checked for. checkFramebufferStatus is a synchronous round
+    // trip to the GPU process, and the scheduler commits the surface every frame: asked each time, a frame behind a deep GPU queue
+    // waited for all of it (measured: LARGE=11, 17-24 ms in commitMetrics at every drag's start and release, a 30-40 ms hitch).
+    #completeAt: { revision: number; complete: boolean } | null = null;
     /** The new-size target a raise draws into while the displayed canvas keeps its old picture (openOffscreen). */
     #offscreen: OffscreenSurface | null = null;
     #composition: PipelineHandle | null = null;
@@ -1119,7 +1123,12 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         }
         this.#forgetState();
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-        const complete = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+        let complete: boolean;
+        if (this.#completeAt?.revision === this.#surfaceRevision) complete = this.#completeAt.complete;
+        else {
+            complete = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+            this.#completeAt = { revision: this.#surfaceRevision, complete };
+        }
         this.#healthy();
         this.#paused = width === 0 || height === 0;
         this.#reset();

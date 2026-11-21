@@ -30,6 +30,13 @@ Shared rules (layers, frames, the governor) are in `rendering-platform`. This fi
   Edges are cached per content and band and moved by a uniform (a pan or zoom inside a band uploads nothing); a run's areas
   share one accumulation pass, then composite from their scratch regions. While a zoom is live an area over a quarter tile takes
   the coverage route and its run reports inexact (`exact()`), so its tile recomposes exact at rest, as text stand-ins do.
+  A LIVE draw that admitted an inexact run owes the next frame: the composer invalidates `live-inexact`, and that settling
+  frame is not a repeat and answers changed (the paper reads only prepare's answer, never `contentKey`). Else the zoom's last
+  step stays on screen at rest.
+- The wet layer lets go of a stroke when the board reports its node in `drawnInkNodeIds`, which the wet layer reads in its own
+  prepare. A node goes in only once every live part of it was admitted this frame: reported before admission, a deferred
+  re-admission at pen-up left the stroke on neither layer for a frame. With no stroke in flight the wet layer's routes are
+  `evictGpu`-able (16.8 MB): a layer the frame has touched is never released whole, so without it the governor's trim fell short.
 - Fidelity evidence: with `bme.renderAudit=1`, `__bmeRenderAudit.scenes()` gives each board's last presented items and pane
   matrix (`sceneAudit.ts`): the fidelity kit rasterises the exact coverage of those items and scores the shot against it.
 - A change marks the positions under its bounds dirty (`tileParts.ts` parts index). A dirty position is recomposed into the

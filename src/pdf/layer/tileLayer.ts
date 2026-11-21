@@ -71,6 +71,15 @@ function clipped(box: Readonly<Rect>, viewport: Readonly<Rect>): Rect | null {
 
 /** A tile or mirror drawn at a scale other than the frame's is a stand-in. The two scales are computed separately, so one zoom can
  * differ in its last float bits (1.4379084967320261 vs ...255): a relative tolerance, as the supersession check uses, not equality. */
+/** A small stable number per object, for the picture key (see PdfTileLayer.pictureKey); a string id hashes as its characters. */
+const identities = new WeakMap<object, number>();
+let nextIdentity = 1;
+function identityOf(value: object | string): number {
+    if (typeof value === 'string') { let hash = 7; for (let i = 0; i < value.length; i++) hash = Math.imul(hash, 31) + value.charCodeAt(i) | 0; return hash >>> 0; }
+    let id = identities.get(value);
+    if (id === undefined) { id = nextIdentity++; identities.set(value, id); }
+    return id;
+}
 function scaleDiffers(scale: number, frame: number): boolean { return Math.abs(scale / frame - 1) > 1e-6; }
 
 /** One quad of the frame in device pixels: whether it is a stand-in. Collected only while the render audit is on. */
@@ -157,7 +166,7 @@ export class PdfTileLayer implements Layer {
     private settledOrder: Entry[] | null = null;
     private readonly drawScratch: Entry[] = [];
     // The view, settled set, backend and scale drawScratch was selected for, and the per-page boxes of the current scale it used.
-    private drawMemo: { view: ViewState; order: Entry[] | null; device: GfxDevice | null; rasterScale: number; revision: number; version: number } | null = null;
+    private drawMemo: { view: ViewState; order: Entry[] | null; device: GfxDevice | null; rasterScale: number; revision: number; version: number; exactLast: boolean } | null = null;
     private readonly coverScratch = new Map<number, Rect[]>();
     private readonly pageScratch: number[] = [];
     private readonly retiring = new Set<Entry>();
@@ -186,7 +195,7 @@ export class PdfTileLayer implements Layer {
     /** Bumped by every change to what the layer draws (tiles, bridge items, the frame texture, the content). prepare answers
      * unchanged only while this has not moved since the frame it last answered changed for (see answer). */
     private drawVersion = 0;
-    private presented = { version: -1, view: '' };
+    private presented = { version: -1, view: '', picture: 0 };
     private latestDemand: Omit<PdfDemandInput, 'covered' | 'previousMotionScale'> | null = null;
     private latestView: ViewState | null = null;
     private mirrorJob: MirrorJob | null = null;
@@ -429,12 +438,39 @@ export class PdfTileLayer implements Layer {
      * that a budget or deadline cut short is changed; so is any change to the view the picture is drawn at. */
     private answer(view: ViewState, budget: FrameBudget): boolean {
         const shown = `${budget.cameraEpoch}|${view.camera.x}|${view.camera.y}|${view.camera.z}|${view.viewport.width}|${view.viewport.height}|${view.viewport.dpr}`;
-        if (!this.pendingFrame && this.presented.version === this.drawVersion && this.presented.view === shown) {
+        // What the next draw lays, by identity: the tiles it draws with their pixels (texture on a device, bitmap on 2D), the bridge
+        // pictures and the paper. The draw version also moves for work nothing draws (a tile started, evicted off the view, or uploaded
+        // where an exact tile already covers it), and answering changed on it presented the same picture: measured on doc12, the wake
+        // frame of every paced zoom step (37 of 117 zoom presents redundant). The version still decides when the picture is unknown.
+        const picture = this.pictureKey(view);
+        if (this.presented.view === shown && (picture !== 0 ? picture === this.presented.picture
+            : !this.pendingFrame && this.presented.version === this.drawVersion)) {
             auditCount('pdf-page', 'prepare-unchanged');
             return false;
         }
-        this.presented = { version: this.drawVersion, view: shown };
+        this.presented = { version: this.drawVersion, view: shown, picture };
         return true;
+    }
+
+    /** A hash of what drawGpu or draw2d lays for this view, allocation-free; 0 when it cannot be told (no current content). */
+    private pictureKey(view: ViewState): number {
+        const input = this.latestDemand;
+        if (!input || this.latestView !== view) return 0;
+        const current = contentFamily(input) === this.contentIdentity;
+        if (!current) return 0;
+        const device = this.host.device();
+        let hash = 0x811c9dc5;
+        const mix = (value: number): void => { hash = Math.imul(hash ^ value, 0x01000193) >>> 0; };
+        mix(device && this.frameTexture?.device === device ? identityOf(this.frameTexture.handle) : 1);
+        if (device) { for (const texture of this.bridgeTextures.values()) if (texture.device === device) mix(identityOf(texture.handle)); }
+        else for (const id of this.bridgeReady) mix(identityOf(id));
+        for (const entry of this.drawable(view, current, device, input.rasterScale, !!device)) {
+            const pixels = device ? entry.texture?.device === device ? entry.texture.handle : null : entry.bitmap ?? null;
+            mix(pixels ? identityOf(pixels) : 2);
+            const key = entry.request.text;
+            for (let i = 0; i < key.length; i++) mix(key.charCodeAt(i));
+        }
+        return hash || 1;
     }
 
     /**
@@ -528,7 +564,7 @@ export class PdfTileLayer implements Layer {
                 ...(__BME_BENCH__ ? { coverage: 'standin' as const, standInRatio: item.pixels.source.width / item.pixels.world.width / rasterScale } : {}) });
         }
         const device = this.host.device();
-        const tiles = this.drawable(view, current, device, rasterScale);
+        const tiles = this.drawable(view, current, device, rasterScale, true);
         for (const entry of tiles) entry.drawnFrame = this.preparedFrame;
         // Scale order is kept between groups, since different scales overlap; same-scale tiles are batched by page.
         let start = 0;
@@ -1226,19 +1262,19 @@ export class PdfTileLayer implements Layer {
         this.drawnPages.set(index, Object.freeze({ x: page.x, y: page.y, width: page.width, height: page.height }));
     }
 
-    /** `current` is the caller's own check that the frame's content identity is the one entries were planned for. Unless the camera travels, a tile of
-     * another scale whose part on the view is wholly under drawable tiles of the current exact scale is left out: those tiles are
-     * opaque page raster drawn after it, so it adds no pixel, only work and residency. Measured (canvas2d, DPR 2 annotated PDF after
-     * the annotate toggle's zoom): the back buffer drew 28 tiles (26 MB) for a 10.9 MB view, the 2D working canvases filled the
-     * pane's 59.9 MB grant, the next tile image was refused and no frame presented again ('Updating' for good). While the camera
+    /** `current` is the caller's own check that the frame's content identity is the one entries were planned for. Unless the camera
+     * travels, a tile of another scale whose part on the view is wholly under drawable tiles of the current exact scale drawn over it
+     * is left out: those tiles are opaque page raster, so it adds no pixel, only work and residency. Measured (canvas2d, DPR 2 annotated
+     * PDF after the annotate toggle's zoom): the back buffer drew 28 tiles (26 MB) for a 10.9 MB view, the 2D working canvases filled
+     * the pane's 59.9 MB grant, the next tile image was refused and no frame presented again ('Updating' for good). While the camera
      * travels every tile is kept: an unsnapped camera puts tile edges between device pixels, where the scale beneath fills the seam. */
-    private drawable(view: ViewState, current: boolean, device: GfxDevice | null = null, rasterScale = 0): Entry[] {
+    private drawable(view: ViewState, current: boolean, device: GfxDevice | null = null, rasterScale = 0, exactLast = false): Entry[] {
         const out = this.drawScratch;
         if (!current) { out.length = 0; return out; }
         // Prepare and draw ask for the same view in one frame: the selection is built once per view, settled set and backend.
         const memo = this.drawMemo;
         if (memo && memo.view === view && memo.order === this.settledOrder && memo.device === device && memo.rasterScale === rasterScale &&
-            memo.revision === this.contentRevision && memo.version === this.drawVersion) return out;
+            memo.revision === this.contentRevision && memo.version === this.drawVersion && memo.exactLast === exactLast) return out;
         out.length = 0;
         const viewport = { x: view.camera.x, y: view.camera.y, width: view.viewport.width / view.camera.z, height: view.viewport.height / view.camera.z };
         // Sorted by scale only, and only when the settled set changes: same-scale tiles are disjoint cells, so their order is free.
@@ -1259,16 +1295,29 @@ export class PdfTileLayer implements Layer {
                 if (boxes) boxes.push(rect(entry.request)); else cover.set(entry.request.page, [rect(entry.request)]);
             }
         }
+        // Other scales first, the current raster scale last, on top: in scale order alone a higher-scale stand-in was drawn over the
+        // exact tile that replaced it, so the exact upload changed nothing on screen until the stand-in was evicted (measured on doc12:
+        // the wake frame of each paced zoom step pixel-identical, 31 of 111 zoom presents, and its stand-in still shown).
+        // On the GPU path only: canvas2d keeps the feature branch's picture, scale order alone, so there only a lower scale, which the
+        // exact tiles are drawn over, is ever left out.
+        const hidden = (entry: Entry, box: Readonly<Rect>): boolean => {
+            if (!cull || !scaleDiffers(entry.request.scale.scale, rasterScale) || (!exactLast && entry.request.scale.scale > rasterScale)) return false;
+            const area = clipped(box, viewport), boxes = cover.get(entry.request.page);
+            return !!area && !!boxes && covers(area, boxes);
+        };
+        const exact = exactLast && rasterScale > 0 ? rasterScale : undefined;
         for (const entry of this.settledOrder) {
             const box = rect(entry.request);
-            if (!intersects(box, viewport)) continue;
-            if (cull && scaleDiffers(entry.request.scale.scale, rasterScale)) {
-                const area = clipped(box, viewport), boxes = cover.get(entry.request.page);
-                if (area && boxes && covers(area, boxes)) { auditCount('pdf-page', 'draw-culled'); continue; }
-            }
+            if (!intersects(box, viewport) || (exact !== undefined && !scaleDiffers(entry.request.scale.scale, exact))) continue;
+            if (hidden(entry, box)) { auditCount('pdf-page', 'draw-culled'); continue; }
             out.push(entry);
         }
-        this.drawMemo = { view, order: this.settledOrder, device, rasterScale, revision: this.contentRevision, version: this.drawVersion };
+        if (exact !== undefined) {
+            for (const entry of this.settledOrder) {
+                if (intersects(rect(entry.request), viewport) && !scaleDiffers(entry.request.scale.scale, exact)) out.push(entry);
+            }
+        }
+        this.drawMemo = { view, order: this.settledOrder, device, rasterScale, revision: this.contentRevision, version: this.drawVersion, exactLast };
         return out;
     }
 

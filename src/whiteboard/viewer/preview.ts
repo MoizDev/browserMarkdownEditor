@@ -252,7 +252,11 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
             if (frame && ids && assembler.isCurrent(frame)) {
                 if (frameGenerations.get(frame) === generation) settle();
                 // The base omits a node only from the frame after the overlay drew it: the overlay declares just the nodes it drew.
-                const drawn = layers.drawnLiveNodeIds(), declared = new Set<string>();
+                // The nodes the overlay drew last. A committed overlay (frozen, drawn before) reads the nodes its prepare laid when the drawn
+                // set is empty between that prepare and its draw: a coverage check at encode counted it as drawing nothing. A live drag keeps
+                // the strict rule (the base omits a node only from the frame after the overlay drew it).
+                const lastDrawn = layers.drawnLiveNodeIds();
+                const drawn = lastDrawn.size || commitRevision === null ? lastDrawn : layers.plannedLiveNodeIds(), declared = new Set<string>();
                 for (const id of ids) if (drawn.has(id)) declared.add(id);
                 // Committed, the overlay is frozen: what it drew is the commit's content, reported at the commit revision.
                 if (!declared.size && renderAuditEnabled()) auditTape(`preview-coverage:none:undrawn${commitRevision !== null ? ':committed' : ''}`);
@@ -532,9 +536,12 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
         showOps(ops, live = false) {
             try {
                 const shift = translationOf(ops);
-                // A later move of the translation in hand needs no re-check: its nodes and their attachments did not change.
-                if (shift && live && ((translation && sameMovedIds(ops, translation.ids)) || translatable(ops))) { moveTranslation(ops, shift); return; }
-                // Anything else is built for its ops; a translation's commit is built at its moved place, shown unshifted.
+                // A later move of the translation in hand needs no re-check: its nodes and their attachments did not change. Its commit
+                // (the same nodes, not live) moves it too: the moved picture is the commit's content. Rebuilt at the commit, the overlay
+                // had no frame and then an undrawn one while the base had already moved on, so the base showed its stale picture for
+                // 1 to 3 frames at every release (measured: preview-coverage:none:no-frame:committed, then undrawn:committed).
+                if (shift && ((translation && sameMovedIds(ops, translation.ids)) || (live && translatable(ops)))) { moveTranslation(ops, shift); return; }
+                // Anything else is built for its ops; a commit of anything but the translation in hand is built at its moved place, shown unshifted.
                 translation = null;
                 const projected = operationNodes(runtime.session.doc, ops);
                 start(projected.changes, undefined, projected.paper, shift ? { baked: shift, offset: shift } : null);

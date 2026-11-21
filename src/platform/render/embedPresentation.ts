@@ -317,8 +317,13 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
             layer = { prepare, drawGpu: (_pass, view) => draw(view), draw2d: (_ctx, view) => draw(view),
                 releaseGpu(reason) { prepared = null; touch(); if (reason === 'hidden') for (const slot of [...slots.values()]) close(slot); else for (const slot of slots.values()) hide(slot); },
                 memory() { let cpuBytes = 0; for (const slot of slots.values()) cpuBytes += slot.base.bytes + (slot.clipLease?.bytes ?? 0); return { gpuBytes: 0, cpuBytes }; },
-                needsFrame() { return !disposed && visible && ((!requestBlocked && !!prepared && [...requests].some(request => !request.waitingForFacts)) ||
-                    [...slots.values()].some(slot => !!slot.containment && !slot.blocked && !slot.clips)); },
+                // Asked by the scheduler on its frames: loops, not spread arrays, so a board with no embed allocates nothing here.
+                needsFrame() {
+                    if (disposed || !visible) return false;
+                    if (!requestBlocked && prepared) for (const request of requests) if (!request.waitingForFacts) return true;
+                    for (const slot of slots.values()) if (slot.containment && !slot.blocked && !slot.clips) return true;
+                    return false;
+                },
                 dispose() { for (const slot of [...slots.values()]) close(slot); host = null; layer = null; },
             };
             return layer;
@@ -385,7 +390,8 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
             });
         },
         requestedNodeIds() {
-            if (disposed) return EMPTY_INLINE;
+            // Read by the board's live-node union on its prepares: a board with no embed must not build a Set for nothing.
+            if (disposed || (slots.size === 0 && requests.size === 0)) return EMPTY_INLINE;
             const ids = new Set<string>(slots.keys());
             for (const request of requests) ids.add(request.id);
             return ids.size ? new InlineIds(ids) : EMPTY_INLINE;

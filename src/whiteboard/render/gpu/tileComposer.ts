@@ -466,6 +466,14 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     // The frame draws its visible parts live at the view, with no tile: a live-only paint, or a zoom whose visible parts are plain
     // (zoom-direct). Set per prepare once the index is known; tiles are composed when it is off (at rest).
     let liveNow = false;
+    // A settling frame: a frame at rest after a direct (live) zoom or pan frame. It keeps drawing the visible parts live, as the direct
+    // frame did, and composes the tiles meanwhile (encoded without a present); the draw list goes back to tiles at the next camera move,
+    // a frame that presents anyway. Shown as stand-ins until composed, a paced zoom went exact-live, blurred stand-in, exact-live at every
+    // step (gpu-f2, notebook: 21 stand-in presents a phase); switched to tiles as soon as composed, the switch presented again, pixel for
+    // pixel the same on the paper (19 redundant presents a phase) and a slight edge change on the board.
+    // A repeated settling frame (same camera, no scene change) draws the same live picture, so it does not move the content version.
+    let directBefore = false, settling = false, settleRepeat = false;
+    let settleCamX = Number.NaN, settleCamY = Number.NaN, settleCamZ = Number.NaN;
     let device: GfxDevice | null = null;
     let frame = 0, validRevision = 0;
     let omitIds: ReadonlySet<string> | null = null;
@@ -1535,7 +1543,16 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             // A drag's omitted nodes are the preview's; its frames keep the path they had (the pan path is for the base's camera moves).
             // The drag preview's composer (a live overlay) has no tiles to miss: its parts are drawn live already.
             const panning = panned && options.liveOverlay !== true && !omitIds?.size && !indexing && anyVisibleMissing(view, target);
-            liveNow = paintLiveOnly || (!indexing && (zooming || panning) && zoomDirectOk(view, target));
+            settling = !zooming && !panned && directBefore && options.liveOverlay !== true && !omitIds?.size && !indexing;
+            liveNow = paintLiveOnly || (!indexing && (zooming || panning || settling) && zoomDirectOk(view, target));
+            settling &&= liveNow;
+            // The last direct frame (a zoom's, a pan's or a settling one) drew these parts at this camera: the same live picture.
+            settleRepeat = settling && settleCamX === view.camera.x && settleCamY === view.camera.y && settleCamZ === view.camera.z;
+            if (settling) auditCount(audit, 'settle:direct:frame');
+            if (settling && !settleRepeat) auditCount(audit, Number.isNaN(settleCamX) ? 'settle:fresh:no-direct-before' : 'settle:fresh:camera');
+            if (liveNow && !paintLiveOnly) { settleCamX = view.camera.x; settleCamY = view.camera.y; settleCamZ = view.camera.z; }
+            else { settleCamX = Number.NaN; settleCamY = Number.NaN; settleCamZ = Number.NaN; }
+            directBefore = liveNow && !paintLiveOnly;
             if (panning && liveNow) auditCount(audit, 'pan:direct:frame');
             // Why a moving view does not draw live (counters only): the index (indexing) gates the live draw, then the missing check.
             if (panned) auditCount(audit, indexing ? 'pan:skip:indexing' : !panning ? 'pan:skip:complete' : liveNow ? 'pan:live' : 'pan:skip:parts');
@@ -1547,8 +1564,17 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             if (!indexing) {
                 let invalidated = false;
                 const changes = parts.takeChanges();
-                if (changes === 'all') { store.markDirty('all'); invalidated = true; }
-                else if (changes.length) { for (const rect of changes) store.markDirty(rect); invalidated = true; }
+                if (changes === 'all') { store.markDirty('all'); invalidated = true; if (settleRepeat) auditCount(audit, 'settle:fresh:all'); settleRepeat = false; }
+                else if (changes.length) {
+                    for (const rect of changes) store.markDirty(rect);
+                    invalidated = true;
+                    // A settling frame's live picture holds the view's parts only: a change off the view (a wider paint window after a zoom
+                    // step) leaves it the same (measured on LARGE=11: 30 of 36 redundant zoom presents named such a paint-ready frame).
+                    if (settleRepeat) {
+                        const world: Rect = { x: view.camera.x, y: view.camera.y, width: view.viewport.width / view.camera.z, height: view.viewport.height / view.camera.z };
+                        for (const rect of changes) if (overlapsRect(rect, world)) { settleRepeat = false; auditCount(audit, 'settle:fresh:visible-change'); break; }
+                    }
+                }
                 // A whole-scene change is not laid live (every part would be): its tiles draw as before, flagged stale until composed.
                 if (changes === 'all') pendingRegions.length = 0;
                 else for (const rect of changes) pendingRegions.push({ x: rect.x, y: rect.y, width: rect.width, height: rect.height });
@@ -1560,6 +1586,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 // A node a drag omits leaves the tiles it painted: its old bounds are recomposed once, when the set changes. The
                 // tracker reports a change of members only, so a new Set of the same nodes costs nothing here.
                 if (omitTracker.changed(omit)) {
+                    settleRepeat = false;
                     const nextOmit = omit && omit.size ? omit : null;
                     const diff = new Set<string>();
                     for (const id of omitIds ?? []) if (!nextOmit?.has(id)) diff.add(id);
@@ -1613,8 +1640,9 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 // What is on screen now is laid first: the live parts of changed and held nodes take the frame's upload allowance before
                 // any tile compose, which is invisible while their live cover shows the node.
                 if (!liveNow && device) admitVisibleFirst(view, target, span, budget);
-                if (liveNow) {
-                    // Drawn live at the view, so nothing is composed: any position in progress or finished is let go.
+                if (liveNow && !settling) {
+                    // Drawn live at the view, so nothing is composed: any position in progress or finished is let go. A settling frame
+                    // composes as at rest: its tiles are what the next frames draw.
                     for (const position of building.values()) cancel(position);
                     building.clear();
                     for (const position of finished) cancel(position);
@@ -1631,7 +1659,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             // The background call (or the single-phase call) finishes the frame: the rest of the composes, the pending regions and held
             // nodes it no longer owes, then the draw list and the answer.
             if (!indexing) {
-                if (background && !liveNow && device) compose(view, budget, device, target, frameSpan, 'background');
+                if (background && (!liveNow || settling) && device) compose(view, budget, device, target, frameSpan, 'background');
                 // A region is owed live parts while a dirty tile under it is in view: once those tiles are composed, it is let go.
                 for (let r = pendingRegions.length - 1; r >= 0; r--) if (!regionStillDirty(pendingRegions[r], target, frameSpan)) pendingRegions.splice(r, 1);
                 // A held node stays live while a tile under it is dirty, or a visible one under it has nothing yet.
@@ -1641,7 +1669,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             // waits for the compose: a zoom shows what exists (gpu's ruling: geometry exact, raster scaled).
             drawnTarget = target;
             buildDraws(view, target, zooming, budget);
-            settled = !indexing && (liveNow || allExact(view, target));
+            // A settling frame is drawn live but owes its tiles: it is settled only once they are exact, so the composer keeps asking.
+            settled = !indexing && ((liveNow && !settling) || allExact(view, target));
             // Changed unless the frame drew what the last one drew: no edit, the same draw list, and a settled index.
             let signature = hashMix(drawCount, liveNow ? 1 : 0);
             for (let i = 0; i < drawCount; i++) {
@@ -1654,7 +1683,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 signature = hashMix(signature, idOfObject(draw.texture));
                 signature = hashMix(signature, draw.gen);
                 signature = hashMix(signature, draw.live ? 1 + idOfObject(draw.liveRoute) : 0);
-                if (draw.live) contentVersion++;
+                if (draw.live && !settleRepeat) contentVersion++;
                 if (draw.ink.length) signature = hashMix(signature, hashText(draw.ink.join('\u0001')));
             }
             const sigChanged = signature !== drawSignature;

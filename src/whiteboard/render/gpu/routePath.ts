@@ -6,7 +6,7 @@ import type { Affine, PathCommand, Rgba, ViewState } from '../../../platform/typ
 import type { LayerHost } from '../../../platform/render/compositor.types';
 import type { ByteLease, ClipToken, GpuPass, RectI } from '../../../platform/render/gfx/api';
 import type { FrameBudget } from '../../../platform/render/types';
-import { auditCount } from '../../../platform/render/renderAudit';
+import { auditCount, auditTape } from '../../../platform/render/renderAudit';
 import { createPathCoverageKit, type PathCoverageAdmission, type PathCoverageShapes, type PreparedPathCoverage } from '../../../platform/render/pathCoverage';
 import { PATH_FILL_MAX_EDGES, flattenContours, pathFillTriangles } from '../pathFillTriangles';
 import { flattenPolylines, pathStrokeTriangles } from '../pathStrokeTriangles';
@@ -636,7 +636,7 @@ export function createPath(host: LayerHost, audit: string): {
     /** Whether a live zoom sends this area to the coverage route (counted; the run is then inexact and recomposes at rest). */
     const zoomCoverage = (shape: Extract<AreaShape, { kind: 'area' }>): boolean => {
         if (!zooming || shape.bounds.width * shape.bounds.height <= AREA_ZOOM_MAX_PX) return false;
-        buildInexact = true; auditCount(audit, 'area:zoom-coverage');
+        buildInexact = true; auditCount(audit, 'area:zoom-coverage'); auditTape(`${audit}:area:zoom-coverage`);
         return true;
     };
     /** Admits an area on the kit. Null when the kit cannot take it (no float targets: counted) and the coverage route must. */

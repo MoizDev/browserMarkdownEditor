@@ -33,6 +33,10 @@ Shared rules (layers, frames, the governor) are in `rendering-platform`. This fi
   A LIVE draw that admitted an inexact run owes the next frame: the composer invalidates `live-inexact`, and that settling
   frame is not a repeat and answers changed (the paper reads only prepare's answer, never `contentKey`). Else the zoom's last
   step stays on screen at rest.
+- **Cost on a tiled GPU is render-target switches** (`gpu:target-switch`, audit): each loads and stores an attachment. Lined,
+  grid and blank notebook paper is ONE procedural pass (`host/proceduralPaper.ts`, exact box coverage per item; dotted keeps the
+  composed route, counted `procedural:off:<why>`); a live frame draws each part once over the view, never per tile position; the
+  grid-4 coverage scratch is 8 MiB (a band is a switch and a resolve). Measured: notebook zoom-sat 848 switches -> 51, 14.6 -> 3.3 ms.
 - The wet layer lets go of a stroke when the board reports its node in `drawnInkNodeIds`, which the wet layer reads in its own
   prepare. A node goes in only once every live part of it was admitted this frame: reported before admission, a deferred
   re-admission at pen-up left the stroke on neither layer for a frame. With no stroke in flight the wet layer's routes are

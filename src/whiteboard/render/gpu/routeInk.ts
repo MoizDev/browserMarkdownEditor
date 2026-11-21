@@ -46,8 +46,10 @@ interface InkArea { readonly band: number; readonly edges: Float32Array | null; 
     readonly bytes: number; readonly lease: ByteLease | null }
 
 /** The whole stroke's union outline (unionOutline): the chunks' segments and discs in one frame. A chunk's first run start is dropped
- * when it continues the previous chunk exactly (same point and radius), so the two chunks form one run and no seam cap is summed
- * twice; any other chunk edge stays a run boundary (gpu-h5's construction, its arcs now flattened to `tolerance`). */
+ * when it continues the previous chunk at the same point, so the two chunks form one run, as rows inside a run do (the larger radius
+ * wins at the shared point). Requiring the same radius too (gpu-h5's rule) split most seams, since outline.ts makes the radius
+ * right-continuous: two caps on one point, the degenerate contact the arrangement cannot cut. Any other chunk edge stays a run
+ * boundary. */
 function strokeOutline(chunks: readonly InkCoverage[], tolerance: number): ReturnType<typeof unionOutline> {
     let segCount = 0, discCount = 0;
     for (const chunk of chunks) { segCount += chunk.segments.length; discCount += chunk.discs.length; }
@@ -58,7 +60,7 @@ function strokeOutline(chunks: readonly InkCoverage[], tolerance: number): Retur
         if (chunk.closed) closed = true;
         segments.set(chunk.segments, so); discs.set(chunk.discs, dO);
         const n = chunk.segments.length / 6;
-        const continues = pr >= 0 && n > 0 && Math.abs(px - chunk.segments[0]) + Math.abs(py - chunk.segments[1]) <= 1e-9 && pr === chunk.segments[2];
+        const continues = pr >= 0 && n > 0 && Math.abs(px - chunk.segments[0]) + Math.abs(py - chunk.segments[1]) <= 1e-9;
         for (let j = 0; j < chunk.segmentRunStarts.length; j++) if (!(j === 0 && continues)) runStarts.push(rows + chunk.segmentRunStarts[j]);
         if (n) { const last = chunk.segments.length - 6; px = chunk.segments[last + 3]; py = chunk.segments[last + 4]; pr = chunk.segments[last + 5]; }
         rows += n; so += chunk.segments.length; dO += chunk.discs.length;
@@ -121,38 +123,36 @@ export const createInkRoutes: CreateInkRoutes = (host: LayerHost, audit: string)
         }
         return freed;
     };
-    /** A stroke's outline at a band: cached by its coverage (immutable per publication) and band; refused bytes when the CPU pool is. */
-    const areaOf = (item: PaintInkItem, band: number): InkArea | { refused: number } => {
+    /** A stroke's outline at a band: cached by its coverage (immutable per publication) and band; refused bytes when the CPU pool is.
+     * While the view moves, an outline held at a FINER band within one octave of the asked one is drawn instead: a zoom crossing a
+     * half-octave rebuilt and re-uploaded every stroke in view in one frame (measured, LARGE=11 at DPR 2: 16 outlines and 16 edge
+     * buffers, a 19.6 ms frame). Never a coarser one: the board rests on its last live picture, so a coarser outline drawn while
+     * moving stayed at rest (gpu-f2's finding on the grid's sets: 0.04 px off at 332%). */
+    const areaOf = (item: PaintInkItem, band: number, moving: boolean): InkArea | { refused: number } => {
         const key = item.coverage, cached = areas.get(key);
-        if (cached && cached.band === band) { areas.delete(key); areas.set(key, cached); pinned.add(key); return cached; }
+        if (cached && (cached.band === band || (moving && cached.band > band && cached.band <= band * 2))) {
+            if (cached.band !== band) auditCount(audit, 'ink:area:band-held');
+            areas.delete(key); areas.set(key, cached); pinned.add(key); return cached;
+        }
         if (cached) dropArea(key, cached);
         const chunks = inkCoverageChunks(item.coverage);
-        const outline = chunks.length ? strokeOutline(chunks, AREA_FLATTEN_DEVICE_PX / band) : { contours: [], simple: true };
+        const outline = chunks.length ? strokeOutline(chunks, AREA_FLATTEN_DEVICE_PX / band) : { edges: new Float64Array(0), why: null };
         let area: InkArea;
-        if (!outline.simple) area = { band, edges: null, why: 'overlap', origin: { x: 0, y: 0 }, box: { x1: 0, y1: 0 }, bytes: 0, lease: null };
+        if (!outline.edges) area = { band, edges: null, why: outline.why, origin: { x: 0, y: 0 }, box: { x1: 0, y1: 0 }, bytes: 0, lease: null };
         else {
             // Rebased on the outline's lower-left corner in double precision before the edges become float32.
-            let ox = Infinity, oy = Infinity, mx = -Infinity, my = -Infinity, count = 0;
-            for (const contour of outline.contours) {
-                count += contour.length >> 1;
-                for (let i = 0; i < contour.length; i += 2) {
-                    ox = Math.min(ox, contour[i]); mx = Math.max(mx, contour[i]); oy = Math.min(oy, contour[i + 1]); my = Math.max(my, contour[i + 1]);
-                }
+            const source = outline.edges;
+            let ox = Infinity, oy = Infinity, mx = -Infinity, my = -Infinity;
+            for (let i = 0; i < source.length; i += 2) {
+                ox = Math.min(ox, source[i]); mx = Math.max(mx, source[i]); oy = Math.min(oy, source[i + 1]); my = Math.max(my, source[i + 1]);
             }
-            const edges = new Float32Array(4 * count);
-            let at = 0;
-            for (const contour of outline.contours) {
-                const n = contour.length >> 1;
-                for (let i = 0; i < n; i++) {
-                    const j = (i + 1) % n;
-                    edges[at++] = contour[2 * i] - ox; edges[at++] = contour[2 * i + 1] - oy; edges[at++] = contour[2 * j] - ox; edges[at++] = contour[2 * j + 1] - oy;
-                }
-            }
-            const bytes = edges.byteLength;
+            const edges = new Float32Array(source.length);
+            for (let i = 0; i < source.length; i += 2) { edges[i] = source[i] - ox; edges[i + 1] = source[i + 1] - oy; }
+            const bytes = edges.byteLength, any = source.length > 0;
             let lease = bytes ? host.allocator.cpu.reserve(bytes) : null;
             if (bytes && !lease && reclaimAreas(bytes) > 0) lease = host.allocator.cpu.reserve(bytes);
             if (bytes && !lease) { auditCount(audit, 'ink:area:geom-refused'); return { refused: bytes }; }
-            area = { band, edges, why: null, origin: count ? { x: ox, y: oy } : { x: 0, y: 0 }, box: count ? { x1: mx - ox, y1: my - oy } : { x1: 0, y1: 0 }, bytes, lease };
+            area = { band, edges, why: null, origin: any ? { x: ox, y: oy } : { x: 0, y: 0 }, box: any ? { x1: mx - ox, y1: my - oy } : { x1: 0, y1: 0 }, bytes, lease };
             areaBytes += bytes;
         }
         areas.set(key, area); pinned.add(key);
@@ -164,13 +164,12 @@ export const createInkRoutes: CreateInkRoutes = (host: LayerHost, audit: string)
     /** A stroke's exact area: admitted, or null when the grid draws it (the reason counted), or a stop that ends the run's admission. */
     const admitArea = (item: PaintInkItem, view: ViewState, band: number, budget: FrameBudget):
         PreparedArea | 'grid' | 'empty' | Admission<PreparedRun> => {
-        const area = areaOf(item, band);
+        const area = areaOf(item, band, view.moving);
         if ('refused' in area) return { status: 'denied', pool: 'cpu', bytes: area.refused };
         if (!area.edges) { auditCount(audit, `ink:area:fallback:${area.why}`); return 'grid'; }
         if (!area.edges.length) return 'empty';
         const viewport = pixels(view);
-        const affine = affineAt(item.localToWorld, area.origin, view);
-        const [A, B, C, D, E, F] = affine;
+        const [A, B, C, D, E, F] = affineAt(item.localToWorld, area.origin, view);
         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
         for (const [x, y] of [[0, 0], [area.box.x1, 0], [0, area.box.y1], [area.box.x1, area.box.y1]] as const) {
             const X = A * x + C * y + E, Y = B * x + D * y + F;

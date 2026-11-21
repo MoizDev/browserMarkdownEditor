@@ -301,6 +301,30 @@ interface Pipelines {
     readonly gridIncrement: PipelineHandle; readonly gridDecrement: PipelineHandle; readonly gridInvert: PipelineHandle;
     readonly gridUnion: PipelineHandle; readonly gridCover: PipelineHandle;
 }
+/** One pipeline set per device incarnation, shared by every kit on it (the set has no per-kit parameter) and kept while the device lives:
+ * it is a dozen programs, no governed bytes. Each kit compiled its own, and released it with the kit: the preview's kits are made per
+ * drag, so every drag's first frame waited on a compile, drew no overlay ink and went unanswered (measured: pipelines:created at each
+ * drag start, path-coverage:deferred:compiling 8 in the saturated drag; canvas2d answered that input). A restored context's
+ * incarnation compiles a new set; the old one is destroyed once its last kit has let go. */
+interface SharedPipelines { users: number; value: Pipelines | null; dead: boolean; readonly generation: number; readonly promise: Promise<Pipelines> }
+const pipelinesOnDevice = new WeakMap<GfxDevice, SharedPipelines>();
+function destroyPipelines(owner: GfxDevice, set: Pipelines): void { for (const handle of Object.values(set)) owner.destroy(handle); }
+function acquirePipelines(owner: GfxDevice, create: () => Promise<Pipelines>): SharedPipelines {
+    // A set compiled for an earlier incarnation of the device (a restored context) is not reused: its users let go of it as they rebind.
+    const known = pipelinesOnDevice.get(owner);
+    if (known && known.generation === owner.generation) { known.users++; return known; }
+    if (known) { known.dead = true; if (known.users === 0 && known.value) { destroyPipelines(owner, known.value); known.value = null; } }
+    const entry: SharedPipelines = { users: 1, value: null, dead: false, generation: owner.generation, promise: create() };
+    pipelinesOnDevice.set(owner, entry);
+    entry.promise.then(set => { if (entry.dead && entry.users === 0) destroyPipelines(owner, set); else entry.value = set; },
+        () => { entry.dead = true; if (pipelinesOnDevice.get(owner) === entry) pipelinesOnDevice.delete(owner); });
+    return entry;
+}
+function releasePipelines(owner: GfxDevice, entry: SharedPipelines): void {
+    // The current incarnation's set stays for the next kit; a superseded one goes with its last user.
+    if (--entry.users > 0 || !entry.dead) return;
+    if (entry.value) { destroyPipelines(owner, entry.value); entry.value = null; }
+}
 
 /** Platform stencil-coverage executor. Winding or union triangles fill an admitted stencil target,
  * one cover quad paints the colour under the not-equal test, and the scope composites once (or
@@ -310,6 +334,7 @@ interface Pipelines {
 export function createPathCoverageKit(host: LayerHost, report: (error: unknown) => void, audit = 'path-coverage',
     onFreed?: (key: Float64Array) => void) {
     let device: GfxDevice | null = null, pipelines: Pipelines | null = null, pending = false, failed = false, unsupported = false;
+    let pipelineSet: SharedPipelines | null = null;
     let incarnation = 0, disposed = false, gpuBytes = 0;
     const live = new Map<PreparedPathCoverage, number>();
     // One vertex buffer per triangle set, shared by every admission of it: the triangles are origin-relative, so all tile
@@ -558,17 +583,17 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         for (const key of [...uploading.keys()]) dropUpload(key);
         for (const pack of [...packs.values()]) freePack(pack);
         for (const chain of [...chains.values()]) releaseChain(chain);
-        if (pipelines && device) for (const handle of Object.values(pipelines)) device.destroy(handle);
-        pipelines = null; device = null; pending = false; failed = false; unsupported = false;
+        if (pipelineSet && owner) releasePipelines(owner, pipelineSet);
+        pipelineSet = null; pipelines = null; device = null; pending = false; failed = false; unsupported = false;
         if (owner) leaveDevice(owner);
     };
     const ensurePipelines = () => {
         if (!device || pipelines || pending || failed) return;
-        const owner = device, serial = ++incarnation; pending = true;
+        const owner = device, serial = ++incarnation;
         const base = { topology: 'triangles', colorFormat: 'rgba8', samples: PATH_COVERAGE_SAMPLES, alphaToCoverage: false } as const;
         const gridBase = { topology: 'triangles', colorFormat: 'r8', samples: 1, alphaToCoverage: false } as const;
         const hidden = { blend: 'replace', colorWrite: NO_COLOUR_WRITE } as const;
-        Promise.all([
+        const entry = pipelineSet = acquirePipelines(owner, () => Promise.all([
             owner.createPipeline({ ...base, ...hidden, shader: WINDING_SHADER, stencil: winding('increment-wrap') }),
             owner.createPipeline({ ...base, ...hidden, shader: WINDING_SHADER, stencil: winding('decrement-wrap') }),
             owner.createPipeline({ ...base, ...hidden, shader: WINDING_SHADER, stencil: winding('invert') }),
@@ -590,15 +615,15 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
             owner.createPipeline({ ...gridBase, topology: 'triangle-strip', shader: COVER_SHADER, blend: 'replace',
                 colorWrite: [true, false, false, false], stencil: COVER_STENCIL }),
         ]).then(([increment, decrement, invert, union, cover, coverAdd, coverModulate,
-            gridIncrement, gridDecrement, gridInvert, gridUnion, gridCover]) => {
-            const made = [increment, decrement, invert, union, cover, coverAdd, coverModulate, gridIncrement, gridDecrement, gridInvert, gridUnion, gridCover];
-            if (disposed || incarnation !== serial || device !== owner) {
-                for (const handle of made) owner.destroy(handle);
-                return;
-            }
-            pipelines = { increment, decrement, invert, union, cover, coverAdd, coverModulate,
-                gridIncrement, gridDecrement, gridInvert, gridUnion, gridCover };
-            pending = false; host.invalidate('path-coverage-ready');
+            gridIncrement, gridDecrement, gridInvert, gridUnion, gridCover]): Pipelines => ({ increment, decrement, invert, union, cover, coverAdd,
+            coverModulate, gridIncrement, gridDecrement, gridInvert, gridUnion, gridCover })));
+        if (renderAuditEnabled()) auditCount(audit, entry.value ? 'pipelines:shared-ready' : entry.users > 1 ? 'pipelines:shared-pending' : 'pipelines:created');
+        // Another kit on this device compiled the set already: ready in this frame.
+        if (entry.value) { pipelines = entry.value; return; }
+        pending = true;
+        entry.promise.then(set => {
+            if (disposed || incarnation !== serial || device !== owner || pipelineSet !== entry) return;
+            pipelines = set; pending = false; host.invalidate('path-coverage-ready');
         }, error => {
             if (incarnation !== serial) return;
             pending = false; failed = true; report(error); host.invalidate('path-coverage-fallback');

@@ -82,6 +82,10 @@ const hashMix = (hash: number, value: number): number => Math.imul(hash ^ value,
 type RouteWithRefusal = { drawRefusedThisFrame?(): boolean };
 /** The compose passes in order: the foreground takes visible missing positions first, the background dirty ones first. */
 const DIRTY_FIRST = ['dirty', 'missing', 'ring'] as const;
+/** Dirty positions under a pending region composed per frame. Their changed pixels are drawn live meanwhile (the region cover), so the
+ * picture is current either way; composed all at once they were the gesture's worst frames (measured, DPR 2 dark: a commit and a drag's
+ * end composed 4 to 7 dirty tiles in one frame, 25 to 50 ms of GPU). */
+const DIRTY_COVERED_PER_FRAME = 1;
 const MISSING_FIRST = ['missing', 'dirty', 'ring'] as const;
 const hashText = (text: string): number => { let hash = 2166136261; for (let i = 0; i < text.length; i++) hash = hashMix(hash, text.charCodeAt(i)); return hash; };
 /** A position's status at a scale: `missing` has no complete picture; `dirty` shows a picture a change has overtaken. */
@@ -505,6 +509,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     let fTarget = 0, fZooming = false;
     let fSpan: Span = { x0: 0, y0: 0, x1: 0, y1: 0 };
     let frameComposed = 0;
+    // Dirty positions under a pending region driven this frame (see DIRTY_COVERED_PER_FRAME), keyed by position: a resumed one counts once.
+    const frameDirtyCovered = new Set<number>();
     // The frame each tile entry was last encoded (its content's frame), read against heldNodes.
     const composedAt = new WeakMap<TileEntry, number>();
     let lastZoom: number | undefined;
@@ -971,6 +977,13 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         if (pass === 'ring' ? visible : !visible) continue;
                         const key = positionKey(band, target, x, y);
                         let position = building.get(key);
+                        if (!position && pass === 'dirty' && statusAt(band, target, x, y) === 'dirty' && !frameDirtyCovered.has(key)
+                            && pendingRegionsIn(band, target, x, y).length) {
+                            // Its changed pixels are laid live this frame (the region cover), so its compose can wait: at most
+                            // DIRTY_COVERED_PER_FRAME of these per frame. A position no region reaches would show stale: not bounded here.
+                            if (frameDirtyCovered.size >= DIRTY_COVERED_PER_FRAME) { auditCount(audit, 'compose:dirty-covered-deferred'); continue; }
+                            frameDirtyCovered.add(key);
+                        }
                         if (!position) {
                             const status = statusAt(band, target, x, y);
                             if (pass === 'dirty' ? status !== 'dirty' : status !== 'missing') continue;
@@ -1503,6 +1516,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             editBits = 0;
             frame = budget.frameId;
             frameComposed = 0;
+            frameDirtyCovered.clear();
             liveInkDropped.clear();
             drawnLive.underlay.clear(); drawnLive.content.clear();
             plannedLive.underlay.clear(); plannedLive.content.clear();

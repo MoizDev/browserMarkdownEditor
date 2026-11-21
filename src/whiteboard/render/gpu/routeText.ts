@@ -246,6 +246,10 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
     /** The idle release: a timer, armed when a conversion ends and cancelled when one begins. A timer asks for no frame, so an
      * idle board stays idle; deleting a texture needs no pass, so it runs outside the frame. */
     let stageTimer: ReturnType<typeof setTimeout> | null = null;
+    /** Set while a cell is being staged: the conversion buffer and the atlas page it reserves can make the governor call this route's
+     * own evictTextures, which released the staging texture between its spot and its write (pendingCount was still 0), and the
+     * write then failed invalid-resource and demoted the pane to canvas2d (textzoom kit, pinch zoom, about one run in two). */
+    let stageHeld = false;
     /** The composer's zoom flag, set once per frame before its admits. */
     let zooming = false;
     /** The conversion's instance buffer and its CPU twin: grown to the pending count, never shrunk. */
@@ -606,6 +610,10 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
     /** A mono cell: its bitmap is written into the staging texture, and the conversion puts its alpha into the R8 page at the end
      * of the frame. The page entry is placed now, so the frame's draws see it once the conversion has been encoded. */
     const stageMono = (req: MaskRequest, label: string, geometry: MaskGeometry, cellIndex: number, frame: number, budget: FrameBudget): Stop | null => {
+        stageHeld = true;
+        try { return stageMonoHeld(req, label, geometry, cellIndex, frame, budget); } finally { stageHeld = false; }
+    };
+    const stageMonoHeld = (req: MaskRequest, label: string, geometry: MaskGeometry, cellIndex: number, frame: number, budget: FrameBudget): Stop | null => {
         const at = sliceCell(geometry, cellIndex, cell);
         const bytes = at.w * at.h * 4;
         // Storage before budget: a claim spent on a refused reservation starved the next cell of this frame's allowance. The
@@ -894,7 +902,7 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         exact(prepared: PreparedRun): boolean { return !(prepared as TextRun).inexact; },
         evictTextures(bytes: number, frameId: number): number {
             // The staging texture goes first, and only when no conversion is pending in it: nothing it holds is drawn in this frame.
-            const freedStage = stage && pendingCount === 0 && bytes > 0 ? stage.lease.bytes : 0;
+            const freedStage = stage && pendingCount === 0 && !stageHeld && bytes > 0 ? stage.lease.bytes : 0;
             if (freedStage > 0) releaseStage();
             // Mono pages next: they hold most of the bytes. A page pinned or drawn this frame is never freed.
             const left = Math.max(0, bytes - freedStage);

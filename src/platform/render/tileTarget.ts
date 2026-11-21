@@ -44,5 +44,10 @@ export function destroyTileTarget(tile: TileTarget): void {
  * ink, textured quads) then draws into the tile unchanged, in the same paint order as the 2D reference.
  */
 export function tileView(worldX: number, worldY: number, scale: number, size: number, epoch: number): ViewState {
-    return { camera: { x: worldX, y: worldY, z: scale }, viewport: { width: size, height: size, dpr: 1 }, epoch, moving: false };
+    const view: ViewState = { camera: { x: worldX, y: worldY, z: scale }, viewport: { width: size, height: size, dpr: 1 }, epoch, moving: false };
+    tileViews.add(view);
+    return view;
 }
+const tileViews = new WeakSet<ViewState>();
+/** Whether `view` is a tile's composition view (tileView), not a pane's: a route that keeps live draws across frames keeps only those. */
+export function isTileView(view: ViewState): boolean { return tileViews.has(view); }

@@ -18,7 +18,6 @@ export type MemorySessionOwner = Readonly<Pick<RenderToken, 'vaultEpoch' | 'docu
 export type MemoryPressureState = 'normal' | 'trimming' | 'degraded' | 'cpu-pinned';
 export type DeviceMemoryClass = 'low' | 'medium' | 'high';
 
-/** The exact token object crosses the arena boundary; never reconstruct a ByteLease by id. */
 /** How a reservation may be admitted. */
 export interface ReserveOptions {
     /** Work ahead of need (a tile ring outside the view): admitted only if it fits as the pool and grant stand. A refusal reclaims
@@ -27,6 +26,9 @@ export interface ReserveOptions {
      * board never left 'Updating'. */
     readonly prefetch?: boolean;
 }
+/** The kinds a pane's layer-cache share never counts: each is limited apart (paneUsed). */
+const PANE_APART_KINDS: ReadonlySet<string> = new Set(['surface', 'program', 'context', 'live-input', 'canvas-working', 'surface-scratch']);
+/** The exact token object crosses the arena boundary; never reconstruct a ByteLease by id. */
 export interface MemoryAllocator {
     reserve(bytes: number, options?: ReserveOptions): ByteLease | null;
     release(lease: ByteLease): void;
@@ -181,6 +183,16 @@ function activityValid(activity: CacheActivity): void {
     }
 }
 
+/** One recovery step up. A level within float noise of full is full: a pane's ceiling is the square root of its pixel share
+ * (0.7999999 for a 0.8 grant), and divided back up it came to 0.99999998, so the plan granted the request less one pixel, the
+ * surface was 1871x1455 for 1872x1456, no frame was ever at quality 1 and a WebGL2 PDF's editing cover, which waits for a sharp
+ * frame, never lifted (measured at DPR 2; each retry for the missing pixel needed a full-size bridge that the pool refused, and
+ * quality fell back to 0.8). */
+function raisedQuality(value: number): number {
+    const next = value / POLICY.qualityReductionFactor;
+    return next >= 1 - 1e-6 ? 1 : next;
+}
+
 /** Need-capped weighted water filling (§6.3:640–641); integer remainders use stable ids. */
 function waterFill(items: readonly Share[], capacity: number): Map<string, number> {
     const grants = new Map(items.map(item => [item.id, 0]));
@@ -276,6 +288,12 @@ export class MemoryGovernor {
     private wake: number | null = null;
     private levelSince = Number.NEGATIVE_INFINITY;
     private pressureHoldUntil = Number.NEGATIVE_INFINITY;
+    // The charge each pool held when its last pressure trim ran, or -1 when the pool has been under its soft line since. A trim
+    // asks every reclaimable cache for bytes; asked again at the same charge it can only take what the owners rebuilt from the
+    // last ask, so it runs again only once the pool has grown past that charge (or its target moved). Measured, canvas2d DPR 2
+    // annotated PDF: the CPU pool sat at 30.3 MB over its 30.2 MB line, every tick evicted 3.5 MB of tiles the plan still
+    // wanted, the next frame rebuilt them (133 evictions in 4.4 s) and the board's new shapes never presented.
+    private readonly trimmedAt: Record<MemoryPool, number> = { gpu: -1, cpu: -1 };
     private now = 0;
     private workerHeapBytes = 0;
     private readonly workerHeaps = new Map<object, number>();
@@ -319,6 +337,8 @@ export class MemoryGovernor {
                 updateActivity: activity => {
                     activityValid(activity);
                     if (cache.closed) return;
+                    // A cache that was hidden or shown changes what a trim may take at the same charge (trimPool asks by visibility).
+                    if (activity.hiddenAt !== cache.activity.hiddenAt) { this.trimmedAt.gpu = -1; this.trimmedAt.cpu = -1; }
                     cache.activity = { ...activity };
                     this.bumpCapacity();
                     this.trimHiddenMirrors();
@@ -372,11 +392,13 @@ export class MemoryGovernor {
                 POLICY.gpuGrantBaseBytes + POLICY.gpuGrantPerVisiblePaneBytes * visible + POLICY.gpuGrantPerVisiblePixelBytes * pixels));
             this.target.cpu = Math.min(this.ceilings.cpuRasterBytes, Math.max(POLICY.cpuGrantMinBytes,
                 POLICY.cpuGrantPerVisiblePaneBytes * visible + POLICY.cpuGrantPerVisiblePixelBytes * pixels));
+            this.trimmedAt.gpu = -1;
+            this.trimmedAt.cpu = -1;
             this.replan();
         }
         this.trimHiddenMirrors();
         for (const pool of ['gpu', 'cpu'] as const) {
-            if (this.charged[pool] > this.target[pool]) this.trimPool(pool, this.target[pool]);
+            if (this.charged[pool] > this.target[pool]) this.pressureTrim(pool, this.target[pool]);
         }
     }
 
@@ -501,11 +523,8 @@ export class MemoryGovernor {
         for (const pool of ['gpu', 'cpu'] as const) {
             if (this.charged[pool] > this.target[pool] * POLICY.memorySoftPressureRatio) {
                 this.state = 'trimming';
-                unmet = this.trimFailed(pool, Math.floor(this.target[pool] * POLICY.memoryTrimTargetRatio)) || unmet;
-            } else if (this.charged[pool] > this.target[pool]) {
-                this.state = 'trimming';
-                unmet = this.trimFailed(pool, this.target[pool]) || unmet;
-            }
+                unmet = this.pressureTrim(pool, Math.floor(this.target[pool] * POLICY.memoryTrimTargetRatio)) || unmet;
+            } else this.trimmedAt[pool] = -1;
         }
         // Over budget steps down unless a resume holds pressure: the rebuild after a return is charged at once, and stepping on it stacked
         // the quality down (1.0 -> 0.8 -> 0.64), which the recovery window then held for five seconds.
@@ -515,8 +534,8 @@ export class MemoryGovernor {
         if (!cool) this.belowRecoverySince = null;
         else if (this.belowRecoverySince === null) this.belowRecoverySince = now;
         else if (now - this.belowRecoverySince >= POLICY.memoryRecoveryDelayMs && !this.raiseRefused(now)) {
-            this.qualityLimit = Math.min(1, this.qualityLimit / POLICY.qualityReductionFactor);
-            for (const [id, value] of this.paneCeiling) this.paneCeiling.set(id, Math.min(1, value / POLICY.qualityReductionFactor));
+            this.qualityLimit = raisedQuality(this.qualityLimit);
+            for (const [id, value] of this.paneCeiling) this.paneCeiling.set(id, raisedQuality(value));
             this.levelSince = now;
             this.state = this.qualityLimit < 1 ? 'degraded' : 'normal';
             if (this.state === 'normal') this.lastTrouble = null;
@@ -692,12 +711,29 @@ export class MemoryGovernor {
         // That is not pressure: nothing is trimmed and no quality is stepped. The refused work waits, and the replan that
         // grants the pane's demand wakes it. Seen: a new arrow's first 64 KB working buffer degraded a near-empty canvas2d pane.
         if (!allowed() && !this.overPool(pool, bytes) && !this.hasDemand(cache)) return null;
-        if (options?.prefetch && !allowed()) { auditCount('governor', `prefetch-refused:${pool}`, 1, { bytes }); return null; }
+        // Work ahead of need also stops at the soft-pressure line: the pressure trim takes the pool back below it, so prefetch admitted
+        // above it is evicted again. Measured (canvas2d, DPR 2 annotated PDF): prefetch filled the CPU pool to its target, every mirror
+        // crop or board buffer after it was refused, its refusal trimmed the pool to 80% (4.3 MB of prefetch), the prefetch was rastered
+        // again into the room, 733 times in 30 s, and no shape the board made ever presented.
+        if (options?.prefetch && (!allowed() || this.charged[pool] + bytes > this.target[pool] * POLICY.memorySoftPressureRatio)) {
+            auditCount('governor', `prefetch-refused:${pool}`, 1, { bytes });
+            return null;
+        }
         // A pane's GPU surface replaces its 2D picture: the 2D working canvases of the same pane are that picture's scratch, and they
         // are dropped before the pane's new backing is refused for want of room they hold (measured, DPR 2: a 2D fallback held 44 MB of
         // working canvases beside its 33 MB display, so the GPU scratch of the same pane was refused and quality stepped down).
         const paneOf = cache.registration.paneId;
-        if (kind === 'surface-scratch' && paneOf !== undefined) {
+        // The same holds while the pane's GPU surface is staged beside its 2D picture (its surface scratch is charged): any GPU
+        // reservation of that pane may take the 2D working canvases, since the outgoing picture is on its own display canvas.
+        // Measured (WebGL2, DPR 2 PDF open): 2D display 32.7 + working 43.6 + GPU scratch 32.7 + context 4.2 MB left no room for
+        // the first 1.1 MB page tile, its refusal degraded the app to 0.8 at 1.3 s, and every view stayed soft until the 5 s
+        // recovery (an annotate toggle then took 3.2 s, canvas2d 0.9 s).
+        // Only a request the pool cannot hold looks (the scan below is per reservation otherwise).
+        const staging = pool === 'gpu' && paneOf !== undefined && this.charged[pool] > this.target[pool] - bytes &&
+            kind !== 'canvas-working' && kind !== 'surface' && kind !== 'context' &&
+            (kind === 'surface-scratch' || [...this.caches.values()].some(other => other.registration.paneId === paneOf &&
+                other.registration.kind === 'surface-scratch' && other.bytes > 0));
+        if (staging) {
             // The 2D working canvases are only worth giving up when that makes the scratch fit: a scratch still refused after their
             // eviction left them rebuilt by the next 2D frame for nothing (review3, gpu-h2). The pool is the only check that they
             // can change: the scratch's own limit counts no canvas.
@@ -806,15 +842,22 @@ export class MemoryGovernor {
 
     /** The bytes a pane's grant counts against a new cache of this kind: its visible, non-surface residency. */
     private paneUsed(paneId: string, pool: MemoryPool, kind: MemoryKind): number {
-        return [...this.caches.values()].filter(other => other.registration.paneId === paneId &&
-            other.registration.pool === pool && other.activity.hiddenAt === null && (kind === 'surface' ? other.registration.kind === 'surface' :
-                kind === 'surface-scratch' ? other.registration.kind === 'surface-scratch' :
+        // A loop, not filter/reduce: this runs on every admission check (each tile, route set and uniform slot), and the array it
+        // built, with a kind list per cache, was garbage made per reservation.
+        let used = 0;
+        for (const other of this.caches.values()) {
+            const { registration } = other;
+            if (registration.paneId !== paneId || registration.pool !== pool || other.activity.hiddenAt !== null) continue;
+            const counted = kind === 'surface' ? registration.kind === 'surface'
+                : kind === 'surface-scratch' ? registration.kind === 'surface-scratch'
                 // The 2D compositor's working set and the GPU layer caches are counted apart: a resize bridges through a
                 // detached 2D picture while the kept GPU caches stay charged, and one shared limit refused every bridge
                 // image forever (measured: 3,484 refusals, no frame after a PDF's quality returned to 1).
-                kind === 'canvas-working' ? other.registration.kind === 'canvas-working' :
-                !['surface', 'program', 'context', 'live-input', 'canvas-working', 'surface-scratch'].includes(other.registration.kind)))
-            .reduce((sum, other) => sum + other.bytes, 0);
+                : kind === 'canvas-working' ? registration.kind === 'canvas-working'
+                : !PANE_APART_KINDS.has(registration.kind);
+            if (counted) used += other.bytes;
+        }
+        return used;
     }
 
     /** A pane's GPU layer caches above its grant give back what they can rebuild, off view first, now: a grant that shrank
@@ -989,9 +1032,17 @@ export class MemoryGovernor {
         } finally { this.trimming = false; }
     }
 
-    /** A trim that ran out of candidates while the pool is still over its target: the only pressure a degradation answers. A trim
-     * aimed below target (the soft trim) that stops short of its aim, but reached the target, has not failed. */
-    private trimFailed(pool: MemoryPool, aim: number): boolean {
+    /** The trim pressure runs, at most once per growth of the pool (see trimmedAt). Returns whether it failed: it ran out of candidates
+     * while the pool is still over its target, the only pressure a degradation answers. A trim aimed below target (the soft trim) that
+     * stops short of its aim, but reached the target, has not failed. A skipped trim fails while the pool is over its target: the trim
+     * at this charge already found nothing more to give. */
+    private pressureTrim(pool: MemoryPool, aim: number): boolean {
+        if (this.trimming) return false;
+        if (this.trimmedAt[pool] >= 0 && this.charged[pool] <= this.trimmedAt[pool]) {
+            auditCount('governor', `trim-skip:${pool}`);
+            return this.charged[pool] > this.target[pool];
+        }
+        this.trimmedAt[pool] = this.charged[pool];
         return this.trimPool(pool, aim) > 0 && this.charged[pool] > this.target[pool];
     }
 

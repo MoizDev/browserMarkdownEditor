@@ -302,6 +302,11 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
                 }
                 if (use.resident || budget.shouldYield()) continue;
                 if (!use.lease) use.lease = this.reserveGpu(use.bytes);
+                // Refused: the residency only the last published frame holds goes first. That frame's pixels are on the display
+                // already, and its sources stay pinned for a retry, so only the accounting of their upload is given back; a later draw of
+                // one is admitted again. Measured (canvas2d, DPR 2 annotated PDF, a pen stroke): the published frame held 16.9 MB of
+                // tile images this frame did not draw, the next tile was refused, so no frame ever published to release them.
+                if (!use.lease && this.releaseStaleUses()) use.lease = this.reserveGpu(use.bytes);
                 if (use.lease && budget.claimUpload(use.bytes)) use.admission = budget;
             }
         } finally { this.busy--; }
@@ -1086,6 +1091,20 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         for (const buffer of this.buffers.values()) for (const [source, use] of buffer.images) if (!pinned(source)) {
             this.releaseGpuLease(use.lease); buffer.images.delete(source);
         }
+    }
+    /** Gives back the upload residency of images the frame being built does not draw and no unconsumed encoding holds. Returns whether
+     * any was given back. */
+    private releaseStaleUses(): boolean {
+        let released = false;
+        for (const buffer of this.buffers.values()) for (const [source, use] of buffer.images) {
+            if (!use.lease || this.pendingSources.has(source)) continue;
+            let encoded = false;
+            for (const sources of this.encodedSources) if (sources.has(source)) { encoded = true; break; }
+            if (encoded) continue;
+            this.releaseGpuLease(use.lease); buffer.images.delete(source); released = true;
+        }
+        if (released) auditCount('2d', 'stale-uses-released');
+        return released;
     }
     private closeSource(state: ImageSourceState): void {
         for (const crop of state.crops.values()) this.closeCrop(crop);

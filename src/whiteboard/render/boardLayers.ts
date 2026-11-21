@@ -185,15 +185,6 @@ function sameOmission(a: ReadonlySet<string> | null, b: ReadonlySet<string> | nu
     for (const id of a) if (!b.has(id)) return false;
     return true;
 }
-/** The same live nodes, by members: each paint frame brings its own (equal) set, and an identity compare named every new frame a
- * changed picture (measured: 31 of 31 redundant presents at rest on LARGE=11, unchanged-miss:live). Absent and empty are the same. */
-function sameLive(a: ReadonlySet<string> | undefined, b: ReadonlySet<string> | undefined): boolean {
-    if (a === b) return true;
-    let count = 0;
-    if (a) for (const id of a) { if (!b?.has(id)) return false; count++; }
-    if (b) for (const _id of b) if (--count < 0) return false;
-    return count === 0;
-}
 function addBytes(state: Estimate, bytes: number): void {
     const next = state.bytes + bytes;
     if (!Number.isSafeInteger(next) || next < 0) throw new RangeError('Board paint working set exceeds safe accounting');
@@ -241,6 +232,8 @@ export interface BoardLayerPair extends Readonly<[PlatformLayerDefinition, Platf
     drawnInkNodeIds(): ReadonlySet<string>;
     /** The live-only nodes the board's GPU tiles drew in the last composite, both bands: a live overlay hands a node over only after this. */
     drawnLiveNodeIds(): ReadonlySet<string>;
+    /** The live-only nodes this frame's prepare laid for the GPU composite, both bands (empty before the prepare and on canvas2d). */
+    plannedLiveNodeIds(): ReadonlySet<string>;
     /** Whether the board draws on a device (its GPU composer), so the owner may ask for whole-scene frames. */
     onDevice(): boolean;
     /** The owning band's CPU bytes now (the direct charge, the dense plan, the device scratch): the measured cost a request's size is judged by. */
@@ -302,10 +295,18 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     // A live-only overlay admits its parts at the view they are drawn at (its live runs are baked at prepare, and only tiles take
     // the draw-time shift), so its offset is applied here as well as at draw; the draw keeps the same shift, so both agree.
     // False only when the composer proves its draw list unchanged; a missing composer or an unknown answer is changed.
+    // The omission the last GPU prepare applied, by frame: the draw records it, as what it drew. Read again at each band's draw, it
+    // changed inside one frame (a committed preview's coverage counts the nodes its underlay drew before the base's content band
+    // drew), so the two bands never agreed, no frame was acknowledged again, and the committed preview kept its gesture hold for
+    // good: every edit command disabled and the camera 'moving' forever (measured: ack:reset:omit on 182 of 182 band
+    // acknowledgements after the first drag; a PDF then stayed on its motion tiles at rest).
+    let preparedOmit: { frame: PaintSource; omit: ReadonlySet<string> | null } | null = null;
     const prepareGpu = (view: ViewState, budget: FrameBudget, frame: PaintSource): boolean => {
         const shift = options.liveOverlay ? options.drawOffset?.(frame) : null;
         const at = shift && (shift.x !== 0 || shift.y !== 0) ? shiftedView(view, shift) : view;
-        return gpu?.prepare(at, withFirstUnit(budget), options.omitNodes?.(frame) ?? undefined) !== false;
+        const omit = options.omitNodes?.(frame) ?? null;
+        preparedOmit = { frame, omit };
+        return gpu?.prepare(at, withFirstUnit(budget), omit ?? undefined) !== false;
     };
     const liveSets = new WeakMap<PaintSource, { omit: ReadonlySet<string> | null | undefined; wet: ReadonlySet<string> | undefined; live: ReadonlySet<string> }>();
     const liveFor = (frame: PaintSource): ReadonlySet<string> | undefined => {
@@ -333,8 +334,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     // The first prepare after a hide drops the session bitmaps the returned view cannot draw, before it plans.
     let returnedFromHide = false;
     const replacementAsked = new WeakSet<PaintSource>();
-    let presented: PaintSource | null = null, presentedOmit: ReadonlySet<string> | null = null, presentedInk: ReadonlySet<string> | null = null;
-    let ackFrame: PaintSource | null = null, ackOmit: ReadonlySet<string> | null = null, ackInk: ReadonlySet<string> | null = null, ackMask = 0;
+    let presented: PaintSource | null = null, presentedInk: ReadonlySet<string> | null = null;
+    let ackFrame: PaintSource | null = null, ackInk: ReadonlySet<string> | null = null, ackMask = 0;
     let ackToken: RenderToken | null = null, ackContext: ViewerPaintPresentation | null = null;
     let presentedContext: ViewerPaintPresentation | null = null;
     // 'Unchanged' compares the adapter's content version (gpu-h2's contentKey) at the last draw, never the frame object: a new frame
@@ -343,7 +344,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     // it, not with the acknowledged picture, which arrives only when the GPU completes the frame: while a frame was in flight the next
     // identical one compared with the older picture and presented again (measured: 12 of 12 remaining redundant zoom presents on
     // LARGE=11, present-kept:ack). A draw whose frame does not submit keeps the scheduler's full-repaint mark, so the next frame presents.
-    let lastDrawn: { context: ViewerPaintPresentation; content: number; live: ReadonlySet<string> | undefined; drawVersion: number } | null = null;
+    let lastDrawn: { context: ViewerPaintPresentation; content: number; drawVersion: number; revision: number } | null = null;
     // The layer's answer for the frame it prepared: true only when every input to the draw matches the presented frame.
     let prepareUnchanged = false;
     // The source whose reference paths the device route built last: a camera-only frame of it builds nothing.
@@ -372,7 +373,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         if (!bands) { bands = new Map(); drawTokens.set(prepareToken, bands); }
         bands.set(band, value);
         const underlay = bands.get('underlay'), content = bands.get('content');
-        if (!underlay || !content || underlay.frame !== content.frame || underlay.omit !== content.omit || underlay.ink !== content.ink
+        if (!underlay || !content || underlay.frame !== content.frame || underlay.ink !== content.ink
             || underlay.context.frameId !== content.context.frameId || !sameView(underlay.context.view, content.context.view)
             || !sameTransform(underlay.context.paneTransform, content.context.paneTransform) || !sameOmission(underlay.context.omittedNodeIds, content.context.omittedNodeIds)) return;
         const old = announced.get(prepareToken);
@@ -565,7 +566,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     // The presented picture lives on a device or tile set that is being released; forget it and every input its unchanged answer
     // compares, so the next prepare answers changed until a new picture is presented.
     const forgetPresented = (): void => {
-        presented = null; presentedOmit = null; presentedInk = null; presentedContext = null;
+        presented = null; presentedInk = null; presentedContext = null;
         lastDrawn = null;
         refreshProgress();
     };
@@ -578,8 +579,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         direct?.release(reason === 'context-lost' ? 'pressure' : reason);
         dense?.release(reason);
         for (const frame of [...reservations.keys()]) releaseFrame(frame);
-        estimate = null; denied = false; deniedDirectSegments = null; lastPrepareFrame = null; drawn.clear(); drawTokens = new WeakMap(); announced = new WeakMap(); drawSource = null; prepareToken = null; prepareFrameId = -1;
-        ackFrame = null; ackOmit = null; ackInk = null; ackMask = 0; ackToken = null; ackContext = null; presentedInk = null;
+        estimate = null; denied = false; deniedDirectSegments = null; lastPrepareFrame = null; preparedOmit = null; drawn.clear(); drawTokens = new WeakMap(); announced = new WeakMap(); drawSource = null; prepareToken = null; prepareFrameId = -1;
+        ackFrame = null; ackInk = null; ackMask = 0; ackToken = null; ackContext = null; presentedInk = null;
         if (reason === 'hidden') {
             const wasDense = useDense;
             deferredClear = true; collectRetired(); presented = null; presentedContext = null; refreshProgress();
@@ -678,6 +679,11 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         // The picture is compared by content: the adapter's version at the presented draw against its version now. A new frame object
         // with the same content is the same picture, so the frame's identity and scene revision are not compared.
         if (!drawn || !gpu || drawn.content !== gpu.contentKey()) return miss('content');
+        // A new scene revision presents once even when its picture is the same: its acknowledgement is what the session waits on. A drag's
+        // commit can draw exactly what its last move drew (the moved nodes stay omitted until the commit is presented); skipped, it would
+        // never be acknowledged, and the preview would keep its commit hold (the gesture) until some other change presented. A
+        // same-revision frame (a whole-scene re-request) is still compared by content.
+        if (frame.sceneRevision !== drawn.revision) return miss('revision');
         if (!options.frames.isCurrent(frame)) return miss('not-current');
         if (frame.theme !== options.requestedTheme()) return miss('theme');
         // The camera and viewport, not the epoch: the board draws the same picture whatever the moving flag says.
@@ -687,7 +693,10 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         const offset = options.drawOffset?.(frame);
         if (offset && (offset.x !== 0 || offset.y !== 0)) return miss('offset');
         if ((options.drawVersion?.() ?? 0) !== drawn.drawVersion) return miss('draw-version');
-        if (!sameLive(liveFor(frame), drawn.live)) return miss('live');
+        // The view's live set (wet ink, selection, sensitive nodes) is not compared: on the GPU it feeds no draw of this layer (the
+        // composer reads its own live nodes, and its draw-list answer covers them; the set serves the canvas2d dense path, which never
+        // answers unchanged). Compared, every pen-up's hand-over (the wet layer letting go of the stroke) presented the same picture
+        // two to three more times per stroke (measured: unchanged-miss:live on 3 of 6 redundant draw presents, drawing and notebook).
         return true;
     };
     // gh14 audit: every silent path that answers changed names itself, so a redundant present is traced to its branch.
@@ -884,29 +893,30 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         finally { refreshProgress(); }
     };
     const acknowledge = (band: PaintBand, revision: number, token: RenderToken) => {
-        const drawnBand = drawTokens.get(token)?.get(band), frame = drawnBand?.frame, omit = drawnBand?.omit ?? null, ink = drawnBand?.ink;
+        const drawnBand = drawTokens.get(token)?.get(band), frame = drawnBand?.frame, ink = drawnBand?.ink;
         if (!drawnBand || !frame || !ink || frame.sceneRevision !== revision || !sameToken(frame.token, token)) return;
         const context = drawnBand.context;
-        if (ackFrame !== frame || ackOmit !== omit || ackInk !== ink || ackToken !== token || ackContext?.frameId !== context.frameId
+        // The bands' omissions are compared by members (the context's): equal sets built by two calls are one omission.
+        if (ackFrame !== frame || ackInk !== ink || ackToken !== token || ackContext?.frameId !== context.frameId
             || !sameView(ackContext?.view, context.view) || !sameTransform(ackContext?.paneTransform, context.paneTransform)
             || !sameOmission(ackContext?.omittedNodeIds ?? null, context.omittedNodeIds)) {
-            ackFrame = frame; ackOmit = omit; ackInk = ink; ackToken = token; ackContext = context; ackMask = 0;
+            ackFrame = frame; ackInk = ink; ackToken = token; ackContext = context; ackMask = 0;
         }
         ackMask |= band === 'underlay' ? 1 : 2;
         if (ackMask !== 3) return;
-        if (presented === frame && presentedOmit === omit && presentedInk === ink && presentedContext?.frameId === context.frameId
+        if (presented === frame && presentedInk === ink && presentedContext?.frameId === context.frameId
             && sameView(presentedContext?.view, context.view) && sameTransform(presentedContext?.paneTransform, context.paneTransform)
             && sameOmission(presentedContext?.omittedNodeIds ?? null, context.omittedNodeIds)) {
-            ackFrame = null; ackOmit = null; ackInk = null; ackMask = 0; ackToken = null; ackContext = null; drawTokens.delete(token); return;
+            ackFrame = null; ackInk = null; ackMask = 0; ackToken = null; ackContext = null; drawTokens.delete(token); return;
         }
         try {
             options.frames.presented(frame);
             acceptHolds([...(drawTokens.get(token)?.values() ?? [])].map(drawn => drawn.hold));
-            const previous = presented; presented = frame; presentedOmit = omit; presentedInk = ink; presentedContext = context;
+            const previous = presented; presented = frame; presentedInk = ink; presentedContext = context;
 
             // A completed presentation is the only event that clears a real error.
             lastError = null; refreshProgress();
-            ackFrame = null; ackOmit = null; ackInk = null; ackMask = 0; ackToken = null; ackContext = null; drawTokens.delete(token);
+            ackFrame = null; ackInk = null; ackMask = 0; ackToken = null; ackContext = null; drawTokens.delete(token);
             if (previous && previous !== frame && !retainedByDense().has(previous)) {
                 options.frames.retire(previous); releaseFrame(previous); known.delete(previous);
             }
@@ -1040,7 +1050,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     drawn2d[band] = NO_INK;
                     const frame = gpu?.readyFrame();
                     if (!frame || !drawable(frame)) return;
-                    const omit = options.omitNodes?.(frame) ?? null;
+                    const omit = preparedOmit?.frame === frame ? preparedOmit.omit : options.omitNodes?.(frame) ?? null;
                     const shift = drawnOffset(frame, useDense); if (shift === undefined) return;
                     const ink = gpu!.readyInkNodeIds() ?? frame.inkNodeIds;
                     if (!prepareToken) return;
@@ -1053,7 +1063,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                         paneTransform: host.paneTransform(actualView, prepareFrameId),
                         token: Object.freeze({ ...prepareToken }), omittedNodeIds: omittedOf(omit),
                         retain: () => options.frames.retain(frame), retainImages: () => leaseOf(hold) });
-                    lastDrawn = { context, content, live: liveFor(frame), drawVersion: options.drawVersion?.() ?? 0 };
+                    lastDrawn = { context, content, drawVersion: options.drawVersion?.() ?? 0, revision: frame.sceneRevision };
                     recordDraw(band, { frame, omit, ink, context, hold });
                 },
                 evictGpu(bytes, frameId) {
@@ -1186,6 +1196,11 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         // One set (the usual case): it is returned, with no allocation per read (a preview's coverage reads it every frame).
         if (sets.length <= 1) return sets[0] ?? NO_INK;
         return new Set(sets.flatMap(set => [...set]));
+    };
+    pair.plannedLiveNodeIds = () => {
+        const under = gpu?.plannedLiveNodeIds('underlay') ?? NO_INK, content = gpu?.plannedLiveNodeIds('content') ?? NO_INK;
+        if (!under.size || !content.size) return under.size ? under : content;
+        return new Set([...under, ...content]);
     };
     pair.onDevice = () => !!activeHost()?.device();
     pair.cpuMandatoryBytes = cpuMandatory;

@@ -134,6 +134,10 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
     let deferred: StartArgs | null = null, driving = false, resuming = false;
     // One overlay is in flight at a time: a newer request is held (latest wins) until the layer presents the last one.
     let inFlight = false, inFlightSeq = -1, queued: StartArgs | null = null;
+    // A request made while a commit awaits presentation (a new note's text editor asking for its paint) waits for that presentation,
+    // latest wins. It threw before: measured on WebGL2 at DPR 2, a note's first frame came after the commit's, the editor's request
+    // was reported as 'A committed preview is awaiting presentation' to the person, and the note showed late (1 in 6 notes).
+    let afterCommit: StartArgs | null = null;
     // A translation's picture is built once, at its committed place, and moved at draw time. A build's `baked` offset is
     // what its picture already includes; a frame is drawn at its build's `offset - baked`. Each build keeps its own offset,
     // so a superseded picture stays where it was last shown until its replacement presents.
@@ -170,7 +174,7 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
         } catch (error) { deferred = null; settle(error ?? interrupted()); clear(); report(error); } finally { driving = false; }
     };
     const clearNow = () => {
-        deferred = null; queued = null; inFlight = false; inFlightSeq = -1; translation = null; metaBySeq.clear();
+        deferred = null; queued = null; afterCommit = null; inFlight = false; inFlightSeq = -1; translation = null; metaBySeq.clear();
         generation++; if (!resuming) settle(interrupted()); controller?.abort(); controller = null; controllerHandedOff = false; pendingRelease?.(); pendingRelease = null;
         const releaseCommit = commitRelease; commitRelease = null; commitRevision = null;
         const oldFrames = frames; frames = null; pair = null; requestedIds = null;
@@ -252,7 +256,11 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
             if (frame && ids && assembler.isCurrent(frame)) {
                 if (frameGenerations.get(frame) === generation) settle();
                 // The base omits a node only from the frame after the overlay drew it: the overlay declares just the nodes it drew.
-                const drawn = layers.drawnLiveNodeIds(), declared = new Set<string>();
+                // The nodes the overlay drew last. A committed overlay (frozen, drawn before) reads the nodes its prepare laid when the drawn
+                // set is empty between that prepare and its draw: a coverage check at encode counted it as drawing nothing. A live drag keeps
+                // the strict rule (the base omits a node only from the frame after the overlay drew it).
+                const lastDrawn = layers.drawnLiveNodeIds();
+                const drawn = lastDrawn.size || commitRevision === null ? lastDrawn : layers.plannedLiveNodeIds(), declared = new Set<string>();
                 for (const id of ids) if (drawn.has(id)) declared.add(id);
                 // Committed, the overlay is frozen: what it drew is the commit's content, reported at the commit revision.
                 if (!declared.size && renderAuditEnabled()) auditTape(`preview-coverage:none:undrawn${commitRevision !== null ? ':committed' : ''}`);
@@ -266,7 +274,7 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
         paper?: Readonly<import('../../utils/paper').NotebookPaper>, meta: TranslationMeta | null = null) => {
         if (disposed) throw new Error('Preview is disposed');
         if (!changes.size) { clear(); return; }
-        if (commitRevision !== null) throw new Error('A committed preview is awaiting presentation');
+        if (commitRevision !== null) { afterCommit = [changes, textOverlay, paper, meta]; return; }
         if (!options.current() || !engine.getView().visible) throw new Error('Preview view is not current and visible');
         const live = runtime.session.doc, scene = runtime.scene;
         for (const node of changes.values()) {
@@ -532,9 +540,12 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
         showOps(ops, live = false) {
             try {
                 const shift = translationOf(ops);
-                // A later move of the translation in hand needs no re-check: its nodes and their attachments did not change.
-                if (shift && live && ((translation && sameMovedIds(ops, translation.ids)) || translatable(ops))) { moveTranslation(ops, shift); return; }
-                // Anything else is built for its ops; a translation's commit is built at its moved place, shown unshifted.
+                // A later move of the translation in hand needs no re-check: its nodes and their attachments did not change. Its commit
+                // (the same nodes, not live) moves it too: the moved picture is the commit's content. Rebuilt at the commit, the overlay
+                // had no frame and then an undrawn one while the base had already moved on, so the base showed its stale picture for
+                // 1 to 3 frames at every release (measured: preview-coverage:none:no-frame:committed, then undrawn:committed).
+                if (shift && ((translation && sameMovedIds(ops, translation.ids)) || (live && translatable(ops)))) { moveTranslation(ops, shift); return; }
+                // Anything else is built for its ops; a commit of anything but the translation in hand is built at its moved place, shown unshifted.
                 translation = null;
                 const projected = operationNodes(runtime.session.doc, ops);
                 start(projected.changes, undefined, projected.paper, shift ? { baked: shift, offset: shift } : null);
@@ -578,7 +589,11 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
                 || token.bytesGeneration !== expected.bytesGeneration || token.session !== expected.session
                 || actual.vaultEpoch !== expected.vaultEpoch || actual.documentId !== expected.documentId
                 || actual.bytesGeneration !== expected.bytesGeneration || actual.session !== expected.session) return;
+            const held = afterCommit;
             clearNow();
+            if (held && !disposed) {
+                try { start(...held); } catch (error) { clear(); report(error); }
+            }
         },
         showTextPaint(node, paint, faces, localToWorld) {
             try { const copy = copyNode(node); start(new Map([[copy.id, copy]]), { node: copy.id, paint, faces, localToWorld: [...localToWorld] as unknown as Affine }); }

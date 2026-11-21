@@ -3,6 +3,7 @@ import type { LayerHost } from '../../../platform/render/compositor.types';
 import type { BufferHandle, ByteLease, DrawCommand, GfxDevice, GpuPass, PipelineHandle, RectI, SamplerHandle, ShaderModule, TextureHandle, UniformSlice } from '../../../platform/render/gfx/api';
 import type { FrameBudget, OffscreenPasses } from '../../../platform/render/types';
 import { auditCount } from '../../../platform/render/renderAudit';
+import { isTileView } from '../../../platform/render/tileTarget';
 import type { FontKey } from '../../text/fonts';
 import { RENDER_CONSTANTS } from '../../../platform/render/constants';
 import type { PaintItem, PaintTextItem } from '../paintStream';
@@ -69,14 +70,18 @@ const ATTRIBUTES: ShaderModule['layout']['attributes'] = [
 // textureLod take float operands; the loops have constant bounds; the block is one vec4, matching the 16-byte ring slice.
 const VERTEX = `#version 300 es
 precision highp float;
-layout(std140) uniform GfxUniforms0 { vec4 viewport; };
-layout(location=0) in vec4 instanceRect;
-layout(location=1) in vec4 instanceUv;
+layout(std140) uniform GfxUniforms0 { vec4 viewport; vec4 transform; };
+layout(location=0) in vec4 rect;
+layout(location=1) in vec4 uvRect;
 layout(location=2) in vec4 instanceColour;
 out vec2 pixel; out vec2 uv;
 flat out vec4 edges; flat out vec4 colour; flat out float shape;
 flat out vec2 origin; flat out vec2 axisU; flat out vec2 axisV;
 void main() {
+    // transform: the run's device space to this frame's, x the scale ratio and yz the offset (identity for a tile or a fresh run).
+    // A parallelogram's second edge (uv.yz when uv.x = -2) scales with it; texture coordinates do not.
+    vec4 instanceRect = vec4(rect.xy * transform.x + transform.yz, rect.zw * transform.x);
+    vec4 instanceUv = vec4(uvRect.x, uvRect.yz * mix(1.0, transform.x, step(uvRect.x, -1.5)), uvRect.w);
     vec2 corner = vec2(float(gl_VertexID & 1), float((gl_VertexID >> 1) & 1));
     // uv.x = -2 marks a parallelogram: rect.xy is its origin, rect.zw the first edge, uv.yz the second. uv.x = -1 an axis-aligned solid.
     float isRotated = step(instanceUv.x, -1.5);
@@ -167,7 +172,7 @@ function pipelineIndex(mode: Mode, blend: Blend): number { return (mode === 'mon
 function shaderFor(variant: Variant): ShaderModule {
     const mode = variant.startsWith('mono') ? 'mono' : 'colour';
     return { id: `board-text-${variant}`, revision: 1,
-        layout: { uniforms: [{ binding: 0, byteSize: 16 }], textures: [{ binding: 0, format: mode === 'mono' ? 'r8' : 'rgba8' }], attributes: ATTRIBUTES },
+        layout: { uniforms: [{ binding: 0, byteSize: 32 }], textures: [{ binding: 0, format: mode === 'mono' ? 'r8' : 'rgba8' }], attributes: ATTRIBUTES },
         glsl: { vertex: VERTEX, fragment: HEADER + BODY[variant] } };
 }
 function convertShader(): ShaderModule {
@@ -207,11 +212,30 @@ interface TextRun extends PreparedRun {
     readonly pinEntries: readonly AtlasEntry[];
     readonly viewW: number;
     readonly viewH: number;
+    /** The commands' scissor: the run's bounds, or for a live run its bounds moved to this frame's view (rewritten per draw). */
     readonly scissor: RectI;
     readonly bytes: number;
     /** A stand-in was drawn into the run: not exact until its tile recomposes. */
     readonly inexact: boolean;
+    /** A live run (one item drawn at a pane's view, not into a tile) is kept across frames while the view stays near the one it was
+     * built for: its glyphs are in that view's device space, and a uniform moves them to the frame's (text:live-reuse). */
+    readonly liveItem: PaintTextItem | null;
+    readonly refX: number; readonly refY: number; readonly refScale: number;
+    /** The area, in the run's device space, whose glyphs it holds: its view and one viewport each side for a live run. */
+    readonly cull: RectI;
+    /** The run's own bounds in its device space, unclamped: the scissor moved and clipped per draw for a live run. */
+    readonly bounds: RectI;
+    /** Admissions not yet retired; when the run was last admitted (the live-run sweep's clock). */
+    refs: number; used: number;
+    /** This frame's placement: its viewport and the run space's ratio and offset to it. */
+    curW: number; curH: number; k: number; ox: number; oy: number;
 }
+/** The scale ratios a live run is reused over (half an octave each way): its masks are drawn at most that far from the size they
+ * were placed at, as the zoom's scaled stand-ins already are. A quarter octave missed every step of a wheel (x1.22 to x1.35 per
+ * event at deltas 20-30, camera.zoomWheel), so the run was rebuilt every frame; a trackpad pinch moves a few percent per frame. */
+const LIVE_REUSE_MIN = 2 ** -0.5, LIVE_REUSE_MAX = 2 ** 0.5;
+/** How long a live run no frame admits is kept: a few frames, so a gesture's next frame finds it and a rest lets it go. */
+const LIVE_KEEP_MS = 100;
 type Stop = Exclude<Admission<PreparedRun>, { status: 'ready' }>;
 /** The run under construction. Its arrays and batch objects are reused by every composition; a finished run takes its own copies. */
 interface Build {
@@ -246,6 +270,10 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
     /** The idle release: a timer, armed when a conversion ends and cancelled when one begins. A timer asks for no frame, so an
      * idle board stays idle; deleting a texture needs no pass, so it runs outside the frame. */
     let stageTimer: ReturnType<typeof setTimeout> | null = null;
+    /** Set while a cell is being staged: the conversion buffer and the atlas page it reserves can make the governor call this route's
+     * own evictTextures, which released the staging texture between its spot and its write (pendingCount was still 0), and the
+     * write then failed invalid-resource and demoted the pane to canvas2d (textzoom kit, pinch zoom, about one run in two). */
+    let stageHeld = false;
     /** The composer's zoom flag, set once per frame before its admits. */
     let zooming = false;
     /** The conversion's instance buffer and its CPU twin: grown to the pending count, never shrunk. */
@@ -256,6 +284,13 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
     const pageRuns: PageRun[] = [];
     let pageRunCount = 0;
     const live = new Set<TextRun>();
+    /** The live run of each item key, kept while it is admitted frame after frame (see TextRun.liveItem). One per key: an item whose
+     * content or place changed is a new object under the same key, and its new run replaces (and retires) the old one at once. */
+    const liveCache = new Map<string, TextRun>();
+    /** The idle sweep: a board at rest prepares no frame, so a timer lets its last live runs (buffers and atlas pins) go. */
+    let liveTimer: ReturnType<typeof setTimeout> | null = null;
+    /** The device area a composition keeps glyphs of: the view, or for a live run the view and one viewport each side. */
+    let cullX0 = 0, cullY0 = 0, cullX1 = 0, cullY1 = 0;
     /** The latest single-cell mask of each identity, ignoring the font epoch: the stand-in for motion, and for a face that is
      * still loading. Keys are numeric and compared exactly. */
     const standIns = new IdentityIndex<StandIn>();
@@ -281,8 +316,20 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         raster.release();
     };
     /** Every GPU resource of the current device. Runs go first, so their pins drop before the atlases are disposed. */
+    /** Retires every kept live run no frame has admitted for `keepMs`; true when some are still kept. */
+    const sweepLive = (keepMs: number): boolean => {
+        const now = performance.now();
+        for (const [key, run] of liveCache) if (run.refs === 0 && now - run.used >= keepMs) { liveCache.delete(key); retireRun(run); }
+        return liveCache.size > 0;
+    };
+    const armLiveSweep = (): void => {
+        if (liveTimer !== null) return;
+        liveTimer = setTimeout(() => { liveTimer = null; if (sweepLive(LIVE_KEEP_MS)) armLiveSweep(); }, LIVE_KEEP_MS);
+    };
     const releaseGpu = (): void => {
         incarnation++;
+        if (liveTimer !== null) { clearTimeout(liveTimer); liveTimer = null; }
+        liveCache.clear();
         for (const run of [...live]) retireRun(run);
         const owner = device;
         if (owner) {
@@ -367,9 +414,9 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
 
     const ensureUniformData = (): boolean => {
         if (uniformData) return true;
-        uniformLease = host.allocator.cpu.reserve(16);
+        uniformLease = host.allocator.cpu.reserve(32);
         if (!uniformLease) return false;
-        uniformData = new Float32Array(4);
+        uniformData = new Float32Array(8);
         return true;
     };
     /** Grows the leased instance scratch to hold `floats`, keeping what this run has written. False when the pool refuses. */
@@ -483,7 +530,7 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
 
     /** A solid rect in device px: analytic coverage in the shader, so its edges match the canvas's fill. False only on refusal. */
     const solidRect = (x0: number, y0: number, x1: number, y1: number, colourOf: Rgba, viewW: number, viewH: number): boolean => {
-        if (!(x1 > x0 && y1 > y0) || x1 <= 0 || y1 <= 0 || x0 >= viewW || y0 >= viewH) return true;
+        if (!(x1 > x0 && y1 > y0) || x1 <= cullX0 || y1 <= cullY0 || x0 >= cullX1 || y0 >= cullY1) return true;
         if (!put('mono', white!, x0, y0, x1 - x0, y1 - y0, SOLID_UV, SOLID_UV, SOLID_UV, SOLID_UV, colourOf)) return false;
         widen(x0, y0, x1, y1);
         return true;
@@ -500,7 +547,7 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         const e1x = A[0] * rw, e1y = A[1] * rw, e2x = A[2] * rh, e2y = A[3] * rh;
         const x0 = Math.min(ox, ox + e1x, ox + e2x, ox + e1x + e2x), x1 = Math.max(ox, ox + e1x, ox + e2x, ox + e1x + e2x);
         const y0 = Math.min(oy, oy + e1y, oy + e2y, oy + e1y + e2y), y1 = Math.max(oy, oy + e1y, oy + e2y, oy + e1y + e2y);
-        if (x1 <= 0 || y1 <= 0 || x0 >= viewW || y0 >= viewH) return true;
+        if (x1 <= cullX0 || y1 <= cullY0 || x0 >= cullX1 || y0 >= cullY1) return true;
         if (!put('mono', white!, ox, oy, e1x, e1y, PARALLELOGRAM_UV, e2x, e2y, 0, colourOf)) return false;
         widen(x0, y0, x1, y1);
         return true;
@@ -606,6 +653,10 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
     /** A mono cell: its bitmap is written into the staging texture, and the conversion puts its alpha into the R8 page at the end
      * of the frame. The page entry is placed now, so the frame's draws see it once the conversion has been encoded. */
     const stageMono = (req: MaskRequest, label: string, geometry: MaskGeometry, cellIndex: number, frame: number, budget: FrameBudget): Stop | null => {
+        stageHeld = true;
+        try { return stageMonoHeld(req, label, geometry, cellIndex, frame, budget); } finally { stageHeld = false; }
+    };
+    const stageMonoHeld = (req: MaskRequest, label: string, geometry: MaskGeometry, cellIndex: number, frame: number, budget: FrameBudget): Stop | null => {
         const at = sliceCell(geometry, cellIndex, cell);
         const bytes = at.w * at.h * 4;
         // Storage before budget: a claim spent on a refused reservation starved the next cell of this frame's allowance. The
@@ -671,7 +722,7 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
     const drawSlot = (colourOf: Rgba, viewW: number, viewH: number, recomposes: boolean): Stop | null => {
         const e = slot.entry!;
         const x = slot.x, y = slot.y, w = slot.w, h = slot.h;
-        if (x + w <= 0 || y + h <= 0 || x >= viewW || y >= viewH) return null;
+        if (x + w <= cullX0 || y + h <= cullY0 || x >= cullX1 || y >= cullY1) return null;
         const u0 = e.x / ATLAS_PAGE, v0 = 1 - e.y / ATLAS_PAGE, u1 = (e.x + e.w) / ATLAS_PAGE, v1 = 1 - (e.y + e.h) / ATLAS_PAGE;
         // A colour run is tinted by nothing: its own colour is in the texels, so the instance carries white.
         if (!put(slot.rgba ? 'colour' : 'mono', e.page.texture, x, y, w, h, u0, v0, u1, v1, slot.rgba ? WHITE : colourOf)) return denied();
@@ -753,6 +804,26 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         return run;
     };
 
+    /** Whether a live run can draw this frame: same device and blend, the view inside the area it holds, the scale within half an
+     * octave, and at rest only where the reuse is pixel-identical to a new build (ratio 1, whole-pixel offset, exact masks). Places it. */
+    const reusable = (run: TextRun, owner: GfxDevice, blend: Blend, view: { camera: { x: number; y: number }; moving: boolean },
+        viewW: number, viewH: number, scale: number): boolean => {
+        if (!live.has(run) || run.device !== owner || run.blend !== blend) return false;
+        const k = scale / run.refScale;
+        if (!(k >= LIVE_REUSE_MIN && k <= LIVE_REUSE_MAX)) return false;
+        let ox = (run.refX - view.camera.x) * scale, oy = (run.refY - view.camera.y) * scale;
+        const c = run.cull;
+        if (-ox / k < c.x || -oy / k < c.y || (viewW - ox) / k > c.x + c.width || (viewH - oy) / k > c.y + c.height) return false;
+        if (k === 1) {
+            const rx = Math.round(ox), ry = Math.round(oy);
+            // At rest a reuse must equal a new build: its glyphs sit on whole pixels, so only a whole-pixel move keeps them there.
+            if (!zooming && !view.moving && (run.inexact || Math.abs(ox - rx) > 1e-6 || Math.abs(oy - ry) > 1e-6)) return false;
+            ox = rx; oy = ry;
+        } else if (!zooming && !view.moving) return false;
+        run.k = k; run.ox = ox; run.oy = oy; run.curW = viewW; run.curH = viewH;
+        return true;
+    };
+
     return {
         id: 'text',
         accepts(candidate: PaintItem): candidate is PaintTextItem { return candidate.kind === 'text'; },
@@ -767,7 +838,18 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
             const dpr = view.viewport.dpr;
             const viewW = Math.round(view.viewport.width * dpr), viewH = Math.round(view.viewport.height * dpr);
             const scale = view.camera.z * dpr;
-            if (!ensureUniformData()) return refused('cpu', 16);
+            const liveItem = items.length === 1 && !isTileView(view) ? items[0] : null;
+            if (liveItem) {
+                const cached = liveCache.get(liveItem.key);
+                if (cached && cached.liveItem === liveItem && reusable(cached, owner, blend, view, viewW, viewH, scale)) {
+                    cached.refs++; cached.used = performance.now();
+                    auditCount(audit, 'text:live-reuse');
+                    return { status: 'ready', value: cached };
+                }
+            }
+            if (!ensureUniformData()) return refused('cpu', 32);
+            const margin = liveItem ? 1 : 0;
+            cullX0 = -margin * viewW; cullY0 = -margin * viewH; cullX1 = (1 + margin) * viewW; cullY1 = (1 + margin) * viewH;
             build.count = 0; build.batchCount = 0; build.inexact = false;
             build.pinAtlas.length = 0; build.pinEntry.length = 0;
             build.x0 = Infinity; build.y0 = Infinity; build.x1 = -Infinity; build.y1 = -Infinity;
@@ -777,9 +859,10 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
                 if (stop) return stop;
             }
             if (build.count === 0) return { status: 'empty' };
-            const x0 = Math.max(0, Math.floor(build.x0)), y0 = Math.max(0, Math.floor(build.y0));
-            const x1 = Math.min(viewW, Math.ceil(build.x1)), y1 = Math.min(viewH, Math.ceil(build.y1));
+            const x0 = Math.max(cullX0, Math.floor(build.x0)), y0 = Math.max(cullY0, Math.floor(build.y0));
+            const x1 = Math.min(cullX1, Math.ceil(build.x1)), y1 = Math.min(cullY1, Math.ceil(build.y1));
             if (x1 <= x0 || y1 <= y0) return { status: 'empty' };
+            const bounds: RectI = { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
             const bytes = build.count * INSTANCE_BYTES;
             // Every object the run needs is checked before any budget or storage is spent: a missing one throws with nothing
             // allocated, where it used to throw after the buffer was created and its lease left unpinned.
@@ -803,7 +886,8 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
                 throw error;
             }
             // The run keeps its own batches, commands and pins: the build's objects are reused by the next composition.
-            const scissor: RectI = { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+            const scissor: RectI = { x: Math.max(0, x0), y: Math.max(0, y0), width: Math.max(0, Math.min(viewW, x1) - Math.max(0, x0)),
+                height: Math.max(0, Math.min(viewH, y1) - Math.max(0, y0)) };
             const batches: Batch[] = new Array<Batch>(build.batchCount);
             for (let i = 0; i < build.batchCount; i++) {
                 const b = build.batches[i];
@@ -819,8 +903,17 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
             const pinAtlases = build.pinAtlas.slice(), pinEntries = build.pinEntry.slice();
             for (let i = 0; i < pinEntries.length; i++) pinAtlases[i].pin(pinEntries[i]);
             const run: TextRun = { route: 'text', blend, device: owner, buffer, bufferLease: lease,
-                batches, pinAtlases, pinEntries, viewW, viewH, scissor, bytes, inexact: build.inexact };
+                batches, pinAtlases, pinEntries, viewW, viewH, scissor, bytes, inexact: build.inexact,
+                liveItem, refX: view.camera.x, refY: view.camera.y, refScale: scale,
+                cull: { x: cullX0, y: cullY0, width: cullX1 - cullX0, height: cullY1 - cullY0 }, bounds,
+                refs: 1, used: performance.now(), curW: viewW, curH: viewH, k: 1, ox: 0, oy: 0 };
             live.add(run);
+            if (liveItem) {
+                const old = liveCache.get(liveItem.key);
+                liveCache.set(liveItem.key, run);
+                // A replaced run still admitted this frame is retired by its last retire (it is no longer the cached one).
+                if (old && old !== run && old.refs === 0) retireRun(old);
+            }
             auditCount(audit, 'route:text');
             return { status: 'ready', value: run };
         },
@@ -834,7 +927,16 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
             }
             // The uniform block is packed into the encoder's ring at this call, so one leased scratch serves every run.
             const data = uniformData!;
-            data[0] = run.viewW; data[1] = run.viewH; data[2] = 0; data[3] = 0;
+            data[0] = run.curW; data[1] = run.curH; data[2] = 0; data[3] = 0;
+            data[4] = run.k; data[5] = run.ox; data[6] = run.oy; data[7] = 0;
+            if (run.liveItem) {
+                // The run's bounds at this frame's placement, clipped to the frame's view: the scissor every batch command shares.
+                const b = run.bounds, sc = run.scissor as Writable<RectI>;
+                const x0 = Math.max(0, Math.floor(b.x * run.k + run.ox)), y0 = Math.max(0, Math.floor(b.y * run.k + run.oy));
+                const x1 = Math.min(run.curW, Math.ceil((b.x + b.width) * run.k + run.ox)), y1 = Math.min(run.curH, Math.ceil((b.y + b.height) * run.k + run.oy));
+                if (x1 <= x0 || y1 <= y0) return;
+                sc.x = x0; sc.y = y0; sc.width = x1 - x0; sc.height = y1 - y0;
+            }
             const uniforms = host.uniforms(data);
             for (const batch of run.batches) {
                 batch.uniform.slice = uniforms;
@@ -888,13 +990,28 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
             pendingCount = 0; pageRunCount = 0;
             armStageIdle();
         },
-        retire(prepared: PreparedRun): void { retireRun(prepared as TextRun); },
+        retire(prepared: PreparedRun): void {
+            const run = prepared as TextRun;
+            if (run.refs > 0) run.refs--;
+            if (run.refs > 0) return;
+            // The item's live run stays for the next frame's admission; the sweep retires it once a frame passes without one.
+            if (run.liveItem && liveCache.get(run.liveItem.key) === run) { armLiveSweep(); return; }
+            retireRun(run);
+        },
         release(): void { releaseGpu(); },
-        setZoom(value: boolean): void { zooming = value; },
-        exact(prepared: PreparedRun): boolean { return !(prepared as TextRun).inexact; },
+        setZoom(value: boolean): void {
+            zooming = value;
+            // Each composer prepare: a live run no frame has admitted for LIVE_KEEP_MS goes, with its pins and buffer. By time, not by
+            // calls: the composer calls this more than once a frame, and a call count retired every run before its next frame.
+            if (liveCache.size) sweepLive(LIVE_KEEP_MS);
+        },
+        // A kept live run drawn at another scale is its masks scaled, a stand-in like the zoom's scaled masks: not exact.
+        exact(prepared: PreparedRun): boolean { const run = prepared as TextRun; return !run.inexact && run.k === 1; },
         evictTextures(bytes: number, frameId: number): number {
             // The staging texture goes first, and only when no conversion is pending in it: nothing it holds is drawn in this frame.
-            const freedStage = stage && pendingCount === 0 && bytes > 0 ? stage.lease.bytes : 0;
+            // Kept live runs no frame is drawing go before anything: their pins would keep atlas pages from being evicted.
+            if (bytes > 0 && liveCache.size) sweepLive(0);
+            const freedStage = stage && pendingCount === 0 && !stageHeld && bytes > 0 ? stage.lease.bytes : 0;
             if (freedStage > 0) releaseStage();
             // Mono pages next: they hold most of the bytes. A page pinned or drawn this frame is never freed.
             const left = Math.max(0, bytes - freedStage);

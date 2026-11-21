@@ -68,6 +68,8 @@ export type AdmitClips = (clips: readonly PaintClip[], view: ViewState, budget: 
  * the points of a curve; the cells grow with the rows an edge crosses, not with its points, so the cost is the flattening alone,
  * done once per band (areaContours). */
 const AREA_FLATTEN_DEVICE_PX = 0.02;
+/** The largest device box (px) an area keeps on the exact-area route while a zoom is live: a quarter of a 516 px tile. */
+const AREA_ZOOM_MAX_PX = 258 * 258;
 /** Path-local contours kept per content and band for the exact-area route, in CPU bytes (the outline cache's rules). */
 const AREA_CACHE_BYTES = 8 * 2 ** 20;
 /** One path item's admitted work, in draw order: clip masks, then the fill and stroke inside the pushed clips. */
@@ -88,7 +90,9 @@ interface AreaOutline {
     readonly edges: Float32Array | null; readonly origin: Origin; readonly box: Bounds; readonly why: string | null; readonly bytes: number;
     readonly lease: ByteLease | null; usedFrame: number }
 /** A run of path items sharing one blend, prepared for one view. */
-interface PathRun extends PreparedRun { readonly route: 'path'; readonly items: readonly PreparedPathItem[] }
+interface PathRun extends PreparedRun { readonly route: 'path'; readonly items: readonly PreparedPathItem[];
+    /** Some item took the coverage route only because a zoom was live: the run's tile recomposes on exact area at rest. */
+    readonly inexact: boolean }
 type ItemAdmission = { readonly status: 'ready'; readonly value: PreparedPathItem } | Stop;
 
 /** Half-octave band of a device scale: band b holds scales in [2^(b/2), 2^((b+1)/2)). Geometry is flattened to the band's
@@ -349,6 +353,12 @@ export function createPath(host: LayerHost, audit: string): {
         array => { if (!cachedArrays.has(array)) releaseLease(array); });
     /** The exact-area kit of the same host: the fills and strokes whose contours the exact sum takes (see areaOutlines.ts). */
     const areaKit: AreaKit = createAreaKit();
+    /** The composer's zoom flag (setZoom). A zoom recomposes every visible tile every frame, and exact area's fragments grow faster than
+     * its box (each edge's strip runs to its region's side) while the coverage route's grow with the box. Measured, saturated zoom, GPU
+     * ms per frame: 1,024 small shapes, exact area 6.2 against coverage 9.3-10.3; the notebook's page-sized paper, exact area 19-27
+     * against coverage 14. So while zooming an area larger than AREA_ZOOM_MAX_PX takes the coverage route, and its tile recomposes on
+     * exact area once the camera rests (as text's stand-ins do); a smaller one stays exact throughout. */
+    let zooming = false, buildInexact = false;
     /** Takes an outline out of the cache. Its lease goes now unless the kit still holds the array; if it does, the kit's
      * release (onFreed) returns the lease. Returns the bytes given back now. */
     const dropFromCache = (key: string, old: Outline): number => {
@@ -452,7 +462,7 @@ export function createPath(host: LayerHost, audit: string): {
         if (areaSets.length) {
             const shape = areaBox(areaSets, lead.localToWorld, view, viewport);
             if (shape.kind === 'empty') return { status: 'empty' };
-            if (shape.kind === 'area') {
+            if (shape.kind === 'area' && !zoomCoverage(shape)) {
                 const admitted = admitParts(shape, lead.material.fill!, cover, viewport, budget, acquired);
                 if (admitted && isStop(admitted)) return admitted;
                 if (admitted) {
@@ -460,7 +470,7 @@ export function createPath(host: LayerHost, audit: string): {
                     auditCount(audit, 'area:exact:group');
                     return { status: 'ready', value: { clips: noClips, fill: null, stroke: null, fillArea: admitted, strokeArea: null } };
                 }
-            } else auditCount(audit, `area:fallback:${shape.why}`);
+            } else if (shape.kind === 'coverage') auditCount(audit, `area:fallback:${shape.why}`);
         }
         const outlines: Outline[] = [];
         for (const member of members) {
@@ -623,6 +633,12 @@ export function createPath(host: LayerHost, audit: string): {
         });
         return { kind: 'area', parts, bounds: { x: x0, y: y0, width: x1 - x0, height: y1 - y0 } };
     };
+    /** Whether a live zoom sends this area to the coverage route (counted; the run is then inexact and recomposes at rest). */
+    const zoomCoverage = (shape: Extract<AreaShape, { kind: 'area' }>): boolean => {
+        if (!zooming || shape.bounds.width * shape.bounds.height <= AREA_ZOOM_MAX_PX) return false;
+        buildInexact = true; auditCount(audit, 'area:zoom-coverage');
+        return true;
+    };
     /** Admits an area on the kit. Null when the kit cannot take it (no float targets: counted) and the coverage route must. */
     const admitParts = (shape: Extract<AreaShape, { kind: 'area' }>, colour: Rgba, cover: CoverBlend, viewport: Viewport, budget: FrameBudget,
         acquired: Acquired[]): AreaItem | Stop | null => {
@@ -644,6 +660,7 @@ export function createPath(host: LayerHost, audit: string): {
         const shape = areaBox([outline], item.localToWorld, view, viewport);
         if (shape.kind === 'coverage') { auditCount(audit, `area:fallback:${shape.why}`); return null; }
         if (shape.kind === 'empty') return { status: 'empty' };
+        if (zoomCoverage(shape)) return null;
         const colour = which === 'fill' ? item.material.fill! : item.material.stroke!.color;
         const admitted = admitParts(shape, colour, cover, viewport, budget, acquired);
         if (admitted && !isStop(admitted)) auditCount(audit, `area:exact:${which}`);
@@ -710,13 +727,45 @@ export function createPath(host: LayerHost, audit: string): {
      * the next frame requested, and the frame reported incomplete through drawRefusedThisFrame. */
     let areaRefusedFrame = -1;
     /** One exact-area draw. Only the out-of-budget refusal is caught here; anything else propagates. */
+    /** A uniform-ring refusal at an area's accumulation or composite: the area is skipped, counted, the next frame requested, and the
+     * frame reported incomplete through drawRefusedThisFrame. Anything else propagates. */
+    const areaRefused = (error: unknown): void => {
+        if (!(error instanceof ArenaError) || error.code !== 'out-of-budget') throw error;
+        areaRefusedFrame = frame;
+        auditCount(audit, 'area:draw-refused');
+        host.invalidate('path-coverage-refused');
+    };
     const drawArea = (pass: GpuPass, area: AreaItem): void => {
-        try { areaKit.draw(host, pass, area.prepared, area.output); }
-        catch (error) {
-            if (!(error instanceof ArenaError) || error.code !== 'out-of-budget') throw error;
-            areaRefusedFrame = frame;
-            auditCount(audit, 'area:draw-refused');
-            host.invalidate('path-coverage-refused');
+        try { if (!areaKit.composite(pass, area.prepared, area.output)) { areaRefusedFrame = frame; auditCount(audit, 'area:not-placed'); } }
+        catch (error) { areaRefused(error); }
+    };
+    /** One item's areas, for placing in a batch: reused per item. */
+    const itemAreas: PreparedArea[] = [];
+    /** Draws a run's items in paint order. Their areas are accumulated first, as many consecutive items' as the scratch holds, in one
+     * pass (areaCoverage.ts); then those items draw, each area a composite from its region under the item's clips. */
+    const drawRun = (pass: GpuPass, items: readonly PreparedPathItem[]): void => {
+        let i = 0;
+        while (i < items.length) {
+            let j = i;
+            areaKit.beginBatch(host);
+            try {
+                for (; j < items.length; j++) {
+                    const item = items[j];
+                    itemAreas.length = 0;
+                    if (item.fillArea) itemAreas.push(item.fillArea.prepared);
+                    if (item.strokeArea) itemAreas.push(item.strokeArea.prepared);
+                    if (itemAreas.length && !areaKit.place(host, pass, itemAreas)) break;
+                }
+            } catch (error) {
+                // A refused accumulation leaves the rest unplaced: they draw without their areas (counted), and the frame asks again.
+                areaRefused(error);
+                j = items.length;
+            } finally { areaKit.endBatch(pass); }
+            // The scratch is at least the viewport and an area is cut to it, so an empty batch always takes the first item; were it
+            // ever not to, the item draws without its areas rather than stalling the run.
+            if (j === i) j = i + 1;
+            for (let k = i; k < j; k++) drawItem(pass, items[k]);
+            i = j;
         }
     };
     const drawInside = (): void => {
@@ -732,8 +781,10 @@ export function createPath(host: LayerHost, audit: string): {
         finally { drawPass = null; drawingItem = null; }
     };
 
-    const route: ItemRoute<PaintPathItem> & { drawRefusedThisFrame(): boolean } = {
+    const route: ItemRoute<PaintPathItem> & { drawRefusedThisFrame(): boolean; setZoom(value: boolean): void; exact(run: PreparedRun): boolean } = {
         id: 'path',
+        setZoom(value: boolean): void { zooming = value; },
+        exact(run: PreparedRun): boolean { return run.route !== 'path' || !(run as PathRun).inexact; },
         // The kit caught a uniform-ring refusal at one of this frame's draws: the frame's coverage is incomplete there (gpu-h4's kit).
         drawRefusedThisFrame: (): boolean => kit.drawRefusedThisFrame() || areaRefusedFrame === frame,
         accepts: (item): item is PaintPathItem => item.kind === 'path',
@@ -741,6 +792,7 @@ export function createPath(host: LayerHost, audit: string): {
             const cover: CoverBlend = blend === 'modulate' ? 'modulate' : 'normal';
             const viewport = viewportOf(view);
             const acquired: Acquired[] = [], prepared: PreparedPathItem[] = [];
+            buildInexact = false;
             // Consecutive items that can share a coverage pass wait in `group` (with their device boxes); the first item that cannot
             // join ends the group, so the draw order of every item is kept.
             const group: PaintPathItem[] = [], boxes: DeviceBox[] = [];
@@ -789,12 +841,12 @@ export function createPath(host: LayerHost, audit: string): {
             if (ended) return stopWith(ended);
             if (!prepared.length) return { status: 'empty' };
             auditCount(audit, 'route:path', prepared.length);
-            const run: PathRun = { route: 'path', blend, items: prepared };
+            const run: PathRun = { route: 'path', blend, items: prepared, inexact: buildInexact };
             return { status: 'ready', value: run };
         },
         draw(pass: GpuPass, run: PreparedRun): void {
             if (run.route !== 'path') throw new Error('Path route drew a run of another route');
-            for (const item of (run as PathRun).items) drawItem(pass, item);
+            drawRun(pass, (run as PathRun).items);
         },
         retire(run: PreparedRun): void {
             if (run.route !== 'path') throw new Error('Path route retired a run of another route');

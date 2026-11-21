@@ -315,11 +315,14 @@ export interface GpuPass {
     // 'composite' blends the resolved coverage into the current colour target with the clip active
     // at begin; 'mask' leaves it untouched as an R-channel clip mask for createClip (rendering §5.1).
     endCoverage(token: CoverageToken, output: CoverageOutput): void;
-    // Exact-area coverage (union ink). The target is an r32f texture without stencil. beginArea clears the target under
-    // `bounds` (its origin is the target origin); span draws then add into it (add, min or max pipelines). endArea
-    // composites min(1, |acc|) with the paint output, exactly as endCoverage composites a grid target.
-    beginArea(target: AreaTarget, bounds: RectI): CoverageToken;
-    endArea(token: CoverageToken, output: AreaOutput): void;
+    // Exact-area coverage. The target is an r32f texture without stencil. beginArea opens one accumulation over the whole target
+    // (loaded, not cleared: the caller clears each region it draws into); draws then add into it. endArea closes it and composites
+    // nothing. compositeArea, in the scope that is current after endArea, paints min(1, |acc|) of the target's rectangle at `at`
+    // (bounds-sized) into the device rectangle `bounds` with the paint output and the active clip. One accumulation holds many areas
+    // in separate regions, so a run of shapes costs one pass on the target instead of one per shape.
+    beginArea(target: AreaTarget): CoverageToken;
+    endArea(token: CoverageToken): void;
+    compositeArea(target: AreaTarget, at: Readonly<{ x: number; y: number }>, bounds: RectI, output: AreaOutput): void;
     end(): void;
 }
 

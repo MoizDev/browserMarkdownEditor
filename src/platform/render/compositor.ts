@@ -118,10 +118,13 @@ class ScopedPass implements GpuPass {
         this.#check(); const token = this.raw.beginCoverage(target, bounds); this.#scopes.push({ kind: 'coverage', token }); return token;
     }
     endCoverage(token: CoverageToken, output: CoverageOutput): void { this.#pop('coverage', token); this.raw.endCoverage(token, output); }
-    beginArea(target: AreaTarget, bounds: RectI): CoverageToken {
-        this.#check(); const token = this.raw.beginArea(target, bounds); this.#scopes.push({ kind: 'area', token }); return token;
+    beginArea(target: AreaTarget): CoverageToken {
+        this.#check(); const token = this.raw.beginArea(target); this.#scopes.push({ kind: 'area', token }); return token;
     }
-    endArea(token: CoverageToken, output: AreaOutput): void { this.#pop('area', token); this.raw.endArea(token, output); }
+    endArea(token: CoverageToken): void { this.#pop('area', token); this.raw.endArea(token); }
+    compositeArea(target: AreaTarget, at: Readonly<{ x: number; y: number }>, bounds: RectI, output: AreaOutput): void {
+        this.#check(); this.raw.compositeArea(target, at, bounds, output);
+    }
     composite(source: TextureHandle, bounds: RectI, options: CompositeOptions): void { this.#check(); this.raw.composite(source, bounds, options); }
     end(): void {
         if (!this.onEnd) { this.#check(); throw new ArenaError('invalid-input'); }
@@ -137,6 +140,8 @@ class ScopedPass implements GpuPass {
             const top = this.#scopes.pop()!;
             if (top.kind === 'clip') quietly(() => this.raw.popClip(top.token));
             else if (top.kind === 'group') quietly(() => this.raw.endGroup(top.token));
+            // An area scope composites nothing when it ends, so an abandoned one is closed like a group.
+            else if (top.kind === 'area') quietly(() => this.raw.endArea(top.token));
         }
     }
 }

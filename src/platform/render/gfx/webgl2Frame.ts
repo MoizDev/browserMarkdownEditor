@@ -656,18 +656,19 @@ class DeviceFrame implements ControlledFrame {
     }
     /** Composites an area target: each device px is min(1, |acc|) of its accumulator texel, painted with the paint output. */
     compositeArea(scope: Scope, clip: RectI, source: FrameTexture, bounds: RectI,
-        output: { blend: 'normal' | 'modulate'; rgb: readonly [number, number, number]; alpha: number }): void {
+        output: { blend: 'normal' | 'modulate'; rgb: readonly [number, number, number]; alpha: number }, at: Readonly<{ x: number; y: number }>): void {
         if (scope.scale !== 1 || !output.rgb.every(value => Number.isFinite(value) && value >= 0 && value <= 1) ||
             !Number.isFinite(output.alpha) || output.alpha < 0 || output.alpha > 1) throw new ArenaError('invalid-input');
         const area = intersect(intersect(bounds, clip), scope.bounds);
         if (scope.empty || !area.width || !area.height || output.alpha === 0) return;
-        if (source.texture === scope.target.color?.texture || source.width < bounds.width || source.height < bounds.height) {
+        if (source.texture === scope.target.color?.texture || source.width < at.x + bounds.width || source.height < at.y + bounds.height) {
             throw new ArenaError('invalid-resource');
         }
         const data = blockScratch;
         setVec4(data, 0, scope.viewport.x, scope.viewport.y, scope.viewport.width, scope.viewport.height);
         setVec4(data, 4, area.x, area.y, area.width, area.height);
-        setVec4(data, 8, bounds.x, bounds.y, 1, 0);
+        // The texel of device pixel p is p - origin: origin = bounds - at puts the region at `at` under the device rectangle.
+        setVec4(data, 8, bounds.x - at.x, bounds.y - at.y, 1, 0);
         setVec4(data, 12, source.width, source.height, 1, 0);
         setVec4(data, 16, output.rgb[0], output.rgb[1], output.rgb[2], output.alpha);
         setVec4(data, 28, output.blend === 'modulate' ? 1 : 0, 0, 0, 0);
@@ -978,7 +979,7 @@ class DevicePass implements GpuPass {
             this.#clip = entry.previous;
         });
     }
-    beginArea(target: AreaTarget, bounds: RectI): CoverageToken {
+    beginArea(target: AreaTarget): CoverageToken {
         this.#frame.markBarrier();
         return this.#guard(() => {
             // One borrowed target is one open scope at a time: a nested borrow would overwrite what the enclosing scope is
@@ -986,56 +987,52 @@ class DevicePass implements GpuPass {
             if (this.#groups.some(entry => entry.kind !== 'group')) throw new ArenaError('invalid-input');
             const native = this.#backend.target(target.target), texture = this.#backend.texture(target.texture);
             const parent = this.#scope;
-            // The area accumulates in its own texel space: the GL viewport is the target itself, so band-local px map to its texels.
-            // (Starting it on the device viewport put every row outside a band-sized target.)
+            // The accumulation is in the target's own texel space: the GL viewport is the target itself, and each area draws into
+            // its own region of it (the caller places the regions and clears each before drawing into it).
             const local: RectI = { x: 0, y: 0, width: target.width, height: target.height };
             // An area target is one r32f texel per device px with no stencil and no MSAA; anything else is refused.
             if (native.stencil || native.samples !== 1 || native.format !== 'r32f' || native.width !== target.width ||
-                native.height !== target.height || !texture.uses.includes('sample') || texture.texture === parent.target.color?.texture ||
-                [bounds.x, bounds.y, bounds.width, bounds.height].some(value => !Number.isSafeInteger(value)) ||
-                bounds.width <= 0 || bounds.height <= 0 || bounds.width > target.width || bounds.height > target.height) throw new ArenaError('invalid-input');
+                native.height !== target.height || !texture.uses.includes('sample') || texture.texture === parent.target.color?.texture) throw new ArenaError('invalid-input');
             const token = Object.freeze({ id: this.#frame.token() });
             const previous = this.#clip;
-            const area = intersect(intersect(bounds, previous), parent.bounds);
-            const empty = parent.empty || !area.width || !area.height;
+            const empty = parent.empty;
             const options = { opacity: 1, blend: 'normal', colourEffect: 'none' } as const;
-            if (!empty) {
-                // Loaded, not cleared: the scratch is shared, and a whole-target clear costs the target for every stroke. The area's first
-                // draw clears its own band to zero (the kit's clear pass), so no span sees a previous area's value.
-                this.#frame.start(native, { target: target.target, viewport: local,
-                    load: { kind: 'load' }, store: 'store' });
-            }
-            // Inside the area the scope is the target itself: its bounds and clip are target-local, so a draw's scissor (target px) is
-            // intersected with the rectangle it is in. Its device rectangle is kept for the composite alone (see #closeArea). Measured:
-            // with device-space bounds every span and clear was intersected with the band's device position and clipped away.
+            // Loaded, not cleared: a whole-target clear would cost the target again for every run; each region is cleared by its draw.
+            // One pass holds every area of a run: a pass per shape loaded and stored the whole r32f target per shape (measured on the
+            // notebook's paper: 18.9 ms of GPU per saturated zoom frame against the MSAA route's 13.9).
+            if (!empty) this.#frame.start(native, { target: target.target, viewport: local, load: { kind: 'load' }, store: 'store' });
             const child: Scope = { ...parent, target: native, viewport: local, bounds: local, originX: 0, originY: 0, scale: 1, empty, coverage: parent.coverage };
-            const isolation: Isolation = { parent, child, lease: null, mask: null, options, device: bounds };
+            const isolation: Isolation = { parent, child, lease: null, mask: null, options };
             this.#groups.push({ kind: 'area', token, previous, clipDepth: this.#clips.length, isolation });
             this.#scope = child;
             this.#clip = local;
             return token;
         });
     }
-    endArea(token: CoverageToken, output: AreaOutput): void {
+    endArea(token: CoverageToken): void {
         this.#frame.markBarrier();
         this.#guard(() => {
             const entry = this.#groups.at(-1);
             if (!entry || entry.kind !== 'area' || entry.token !== token || entry.clipDepth !== this.#clips.length) throw new ArenaError('invalid-input');
-            if (output.kind !== 'area' || !['normal', 'modulate'].includes(output.blend)) throw new ArenaError('invalid-input');
             this.#groups.pop();
-            this.#closeArea(entry.isolation, entry.previous, output);
+            const { isolation } = entry;
+            if (this.#scope !== isolation.child) throw new ArenaError('invalid-input');
+            this.#scope = isolation.parent;
+            const child = isolation.child;
+            if (!child.empty) this.#frame.end(child.target, { target: child.target.handle, viewport: child.viewport, load: { kind: 'load' }, store: 'store' });
             this.#clip = entry.previous;
         });
     }
-    #closeArea(isolation: Isolation, clip: RectI, output: AreaOutput): void {
-        if (this.#scope !== isolation.child) throw new ArenaError('invalid-input');
-        this.#scope = isolation.parent;
-        const child = isolation.child;
-        if (child.empty) return;
-        this.#frame.end(child.target, { target: child.target.handle, viewport: child.viewport, load: { kind: 'load' }, store: 'store' });
-        const texture = child.target.color;
-        if (!texture) throw new ArenaError('invalid-resource');
-        this.#frame.compositeArea(this.#scope, clip, texture, isolation.device ?? child.bounds, output);
+    compositeArea(target: AreaTarget, at: Readonly<{ x: number; y: number }>, bounds: RectI, output: AreaOutput): void {
+        this.#frame.markBarrier();
+        this.#guard(() => {
+            if (this.#groups.some(entry => entry.kind === 'area')) throw new ArenaError('invalid-input');
+            if (output.kind !== 'area' || !['normal', 'modulate'].includes(output.blend)) throw new ArenaError('invalid-input');
+            if ([at.x, at.y, bounds.x, bounds.y, bounds.width, bounds.height].some(value => !Number.isSafeInteger(value)) || at.x < 0 || at.y < 0 ||
+                bounds.width <= 0 || bounds.height <= 0 || at.x + bounds.width > target.width || at.y + bounds.height > target.height) throw new ArenaError('invalid-input');
+            const texture = this.#backend.texture(target.texture);
+            this.#frame.compositeArea(this.#scope, this.#clip, texture, bounds, output, at);
+        });
     }
     #closeCoverage(isolation: Isolation, clip: RectI, output: CoverageOutput): void {
         if (this.#scope !== isolation.child) throw new ArenaError('invalid-input');

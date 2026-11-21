@@ -185,15 +185,6 @@ function sameOmission(a: ReadonlySet<string> | null, b: ReadonlySet<string> | nu
     for (const id of a) if (!b.has(id)) return false;
     return true;
 }
-/** The same live nodes, by members: each paint frame brings its own (equal) set, and an identity compare named every new frame a
- * changed picture (measured: 31 of 31 redundant presents at rest on LARGE=11, unchanged-miss:live). Absent and empty are the same. */
-function sameLive(a: ReadonlySet<string> | undefined, b: ReadonlySet<string> | undefined): boolean {
-    if (a === b) return true;
-    let count = 0;
-    if (a) for (const id of a) { if (!b?.has(id)) return false; count++; }
-    if (b) for (const _id of b) if (--count < 0) return false;
-    return count === 0;
-}
 function addBytes(state: Estimate, bytes: number): void {
     const next = state.bytes + bytes;
     if (!Number.isSafeInteger(next) || next < 0) throw new RangeError('Board paint working set exceeds safe accounting');
@@ -353,7 +344,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     // it, not with the acknowledged picture, which arrives only when the GPU completes the frame: while a frame was in flight the next
     // identical one compared with the older picture and presented again (measured: 12 of 12 remaining redundant zoom presents on
     // LARGE=11, present-kept:ack). A draw whose frame does not submit keeps the scheduler's full-repaint mark, so the next frame presents.
-    let lastDrawn: { context: ViewerPaintPresentation; content: number; live: ReadonlySet<string> | undefined; drawVersion: number; revision: number } | null = null;
+    let lastDrawn: { context: ViewerPaintPresentation; content: number; drawVersion: number; revision: number } | null = null;
     // The layer's answer for the frame it prepared: true only when every input to the draw matches the presented frame.
     let prepareUnchanged = false;
     // The source whose reference paths the device route built last: a camera-only frame of it builds nothing.
@@ -702,7 +693,10 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         const offset = options.drawOffset?.(frame);
         if (offset && (offset.x !== 0 || offset.y !== 0)) return miss('offset');
         if ((options.drawVersion?.() ?? 0) !== drawn.drawVersion) return miss('draw-version');
-        if (!sameLive(liveFor(frame), drawn.live)) return miss('live');
+        // The view's live set (wet ink, selection, sensitive nodes) is not compared: on the GPU it feeds no draw of this layer (the
+        // composer reads its own live nodes, and its draw-list answer covers them; the set serves the canvas2d dense path, which never
+        // answers unchanged). Compared, every pen-up's hand-over (the wet layer letting go of the stroke) presented the same picture
+        // two to three more times per stroke (measured: unchanged-miss:live on 3 of 6 redundant draw presents, drawing and notebook).
         return true;
     };
     // gh14 audit: every silent path that answers changed names itself, so a redundant present is traced to its branch.
@@ -1069,7 +1063,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                         paneTransform: host.paneTransform(actualView, prepareFrameId),
                         token: Object.freeze({ ...prepareToken }), omittedNodeIds: omittedOf(omit),
                         retain: () => options.frames.retain(frame), retainImages: () => leaseOf(hold) });
-                    lastDrawn = { context, content, live: liveFor(frame), drawVersion: options.drawVersion?.() ?? 0, revision: frame.sceneRevision };
+                    lastDrawn = { context, content, drawVersion: options.drawVersion?.() ?? 0, revision: frame.sceneRevision };
                     recordDraw(band, { frame, omit, ink, context, hold });
                 },
                 evictGpu(bytes, frameId) {

@@ -10,9 +10,9 @@ import { auditCount } from '../../../platform/render/renderAudit';
 import { createPathCoverageKit, type PathCoverageAdmission, type PathCoverageShapes, type PreparedPathCoverage } from '../../../platform/render/pathCoverage';
 import { PATH_FILL_MAX_EDGES, flattenContours, pathFillTriangles } from '../pathFillTriangles';
 import { flattenPolylines, pathStrokeTriangles } from '../pathStrokeTriangles';
-import { createAreaKit, type AreaAdmission, type AreaKit, type AreaPending, type AreaSpans, type PreparedArea } from '../../../platform/render/areaCoverage';
+import { createAreaKit, type AreaAdmission, type AreaKit, type AreaPart, type PreparedArea } from '../../../platform/render/areaCoverage';
 import { fillContours, strokeContours, type Contour } from './areaOutlines';
-import { areaNestingExact, createAreaCellBuilder } from '../inkAreaCells';
+import { areaNestingExact } from '../inkAreaCells';
 import type { AreaOutput } from '../../../platform/render/gfx/api';
 import { ArenaError } from '../../../platform/render/resourceArena';
 import type { PaintClip, PaintPathItem } from '../paintStream';
@@ -25,6 +25,7 @@ const FLATTEN_DEVICE_PX = 0.1;
 const GEOMETRY_CACHE_BYTES = 16 * 2 ** 20;
 const NO_TRIANGLES = new Float64Array(0);
 const ORIGIN = Object.freeze({ x: 0, y: 0 });
+const EMPTY_BOX = Object.freeze({ x0: 0, y0: 0, x1: 0, y1: 0 });
 const WHITE = Object.freeze([1, 1, 1, 1] as const);
 /** Most items one grouped coverage pass takes. A group is one admission with one set per member, so the bound keeps one
  * admission's set list and its per-tile buffer count bounded on a long run. */
@@ -77,11 +78,14 @@ interface PreparedPathItem { readonly clips: PreparedClips; readonly fill: Prepa
 /** Whatever an admission acquired from a kit: retired together when the admission stops. */
 type Acquired = PreparedPathCoverage | PreparedArea;
 /** A fill or stroke as cells of its band, or why the coverage route takes it instead (counted), or nothing to draw. */
-type AreaShape = { readonly kind: 'area'; readonly spans: AreaSpans; readonly bounds: RectI } | { readonly kind: 'coverage'; readonly why: string }
+type AreaShape = { readonly kind: 'area'; readonly parts: readonly AreaPart[]; readonly bounds: RectI } | { readonly kind: 'coverage'; readonly why: string }
     | { readonly kind: 'empty' };
 /** A fill's or stroke's exact-area contours for one band, path-local, with their CPU lease; or, with null contours, why the
  * coverage route takes it (kept, so the refusal is decided once per band). */
-interface AreaOutline { readonly contours: readonly Contour[] | null; readonly why: string | null; readonly bytes: number;
+interface AreaOutline {
+    /** The contours as edges (x0, y0, x1, y1), path-local and relative to `origin` (float32 near the shape, not near the world origin);
+     * null when the coverage route takes the shape, with `why`. */
+    readonly edges: Float32Array | null; readonly origin: Origin; readonly box: Bounds; readonly why: string | null; readonly bytes: number;
     readonly lease: ByteLease | null; usedFrame: number }
 /** A run of path items sharing one blend, prepared for one view. */
 interface PathRun extends PreparedRun { readonly route: 'path'; readonly items: readonly PreparedPathItem[] }
@@ -409,16 +413,15 @@ export function createPath(host: LayerHost, audit: string): {
         return { status: 'unsupported', why: 'coverage kit' };
     };
     /** The area kit's result, as `take` takes the coverage kit's. A deferral is discarded here: the next frame admits the shape again. */
-    const takeArea = (pending: AreaPending, result: AreaAdmission, acquired: Acquired[]): PreparedArea | Stop => {
+    const takeArea = (result: AreaAdmission, acquired: Acquired[]): PreparedArea | Stop => {
         if (result.status === 'ready') { acquired.push(result.value); return result.value; }
         if (result.status === 'denied') return { status: 'denied', pool: result.pool, bytes: result.bytes };
-        if (result.status === 'deferred') { areaKit.discard(pending); return { status: 'deferred' }; }
+        // A deferral keeps the uploaded pieces on the kit's edge set: the next frame resumes them.
+        if (result.status === 'deferred') return { status: 'deferred' };
         if (result.status === 'empty') return { status: 'empty' };
-        // A stale admission was discarded by the kit: it is admitted again on the next frame.
-        if (result.status === 'stale') return { status: 'deferred' };
         return { status: 'unsupported', why: result.why };
     };
-    const retireAcquired = (held: Acquired): void => { if ('pieces' in held) areaKit.retire(held); else kit.retire(held); };
+    const retireAcquired = (held: Acquired): void => { if ('affines' in held) areaKit.retire(held); else kit.retire(held); };
     const makeClips = (scissors: RectI[], masks: PreparedPathCoverage[]): PreparedClips => ({
         scissors: Object.freeze(scissors),
         masks: Object.freeze(masks),
@@ -439,18 +442,18 @@ export function createPath(host: LayerHost, audit: string): {
         if (band === null) return null;
         // On the exact-area route the group is one area: its members share a transform and their device boxes are apart, so the
         // sum of their contours is exact. One member the route refuses sends the whole group to the coverage pass below.
-        const areaSets: (readonly Contour[])[] = [];
+        const areaSets: AreaOutline[] = [];
         for (const member of members) {
             const outline = areaContours(member, 'fill', band);
             if ('refused' in outline) return { status: 'denied', bytes: outline.refused, pool: 'cpu' };
-            if (!outline.contours) { auditCount(audit, `area:fallback:${outline.why}`); areaSets.length = 0; break; }
-            areaSets.push(outline.contours);
+            if (!outline.edges) { auditCount(audit, `area:fallback:${outline.why}`); areaSets.length = 0; break; }
+            if (outline.edges.length) areaSets.push(outline);
         }
         if (areaSets.length) {
-            const shape = areaCells(areaSets, lead.localToWorld, view, viewport);
+            const shape = areaBox(areaSets, lead.localToWorld, view, viewport);
             if (shape.kind === 'empty') return { status: 'empty' };
             if (shape.kind === 'area') {
-                const admitted = admitCells(shape, lead.material.fill!, cover, viewport, budget, acquired);
+                const admitted = admitParts(shape, lead.material.fill!, cover, viewport, budget, acquired);
                 if (admitted && isStop(admitted)) return admitted;
                 if (admitted) {
                     auditCount(audit, 'route:path-group', members.length);
@@ -513,14 +516,15 @@ export function createPath(host: LayerHost, audit: string): {
         return makeClips(scissors, masks);
     };
 
-    /** Path-local contours of a fill or stroke on the exact-area route, by content and band, most recently used last; or why the
-     * coverage route takes it. The flattening and both exactness checks (a simple contour, nesting of opposite signs only) run
-     * once per band: they are invariant under the item's affine, so a pan or a zoom inside the band only maps and cuts cells. A
-     * refusal is kept as well, so a refused shape is not flattened again on every frame it is composed. */
+    /** A fill's or stroke's exact-area edges, by content and band, most recently used last; or why the coverage route takes it. The
+     * flattening and both exactness checks (a simple contour, nesting of opposite signs only) run once per band: they are invariant
+     * under the item's affine, and the kit transforms the edges on the GPU, so a pan or a zoom inside the band computes and uploads
+     * nothing. A refusal is kept as well, so a refused shape is not flattened again on every frame it is composed. */
     const areaOutlines = new Map<string, AreaOutline>();
     let areaBytes = 0;
     const dropArea = (key: string, old: AreaOutline): number => {
         areaOutlines.delete(key);
+        if (old.edges) areaKit.forget(old.edges);
         if (!old.lease) return 0;
         areaBytes -= old.bytes; host.allocator.cpu.release(old.lease);
         return old.bytes;
@@ -554,13 +558,30 @@ export function createPath(host: LayerHost, audit: string): {
         // The exact sum needs contours that cross and touch nothing, and nest only with opposite signs (areaNestingExact).
         if (!why && contours!.length && !areaNestingExact(contours!)) why = 'nesting';
         let outline: AreaOutline;
-        if (why) outline = { contours: null, why, bytes: 0, lease: null, usedFrame: frame };
+        if (why) outline = { edges: null, origin: ORIGIN, box: EMPTY_BOX, why, bytes: 0, lease: null, usedFrame: frame };
         else {
-            let bytes = 0;
-            for (const contour of contours!) bytes += contour.byteLength;
+            // The edges are rebased on the contours' lower-left corner in double precision before they become float32.
+            let ox = Infinity, oy = Infinity, mx = -Infinity, my = -Infinity, count = 0;
+            for (const contour of contours!) {
+                count += contour.length >> 1;
+                for (let i = 0; i < contour.length; i += 2) {
+                    ox = Math.min(ox, contour[i]); mx = Math.max(mx, contour[i]); oy = Math.min(oy, contour[i + 1]); my = Math.max(my, contour[i + 1]);
+                }
+            }
+            const edges = new Float32Array(4 * count);
+            let at = 0;
+            for (const contour of contours!) {
+                const n = contour.length >> 1;
+                for (let i = 0; i < n; i++) {
+                    const j = (i + 1) % n;
+                    edges[at++] = contour[2 * i] - ox; edges[at++] = contour[2 * i + 1] - oy; edges[at++] = contour[2 * j] - ox; edges[at++] = contour[2 * j + 1] - oy;
+                }
+            }
+            const bytes = edges.byteLength;
             const lease = bytes ? leaseBytes(bytes) : null;
             if (bytes && !lease) { auditCount(audit, 'area:geom-refused'); return { refused: bytes }; }
-            outline = { contours: contours!, why: null, bytes, lease, usedFrame: frame };
+            outline = { edges, origin: count ? { x: ox, y: oy } : ORIGIN, box: count ? { x0: 0, y0: 0, x1: mx - ox, y1: my - oy } : EMPTY_BOX,
+                why: null, bytes, lease, usedFrame: frame };
             areaBytes += bytes;
         }
         areaOutlines.set(full, outline);
@@ -573,18 +594,18 @@ export function createPath(host: LayerHost, audit: string): {
         }
         return outline;
     };
-    /** Cells of path-local contours under one item transform, over the device box they cover cut to the viewport (the kit's scratch
-     * is viewport-sized; cells outside it are dropped, those left of it carried per row). Per admission: this is what a new view
-     * costs on the route, a map of the contour points and one pass of the cell builder. */
-    const areaCells = (sets: readonly (readonly Contour[])[], localToWorld: Affine, view: ViewState, viewport: Viewport): AreaShape => {
-        // The contours are in path-local coordinates: the zero origin maps them through the item's full device affine.
-        const affine = deviceAffine(localToWorld, ORIGIN, view);
-        if (!affine) return { kind: 'coverage', why: 'transform' };
-        const [A, B, C, D, E, F] = affine;
+    /** The parts of an area (outlines under one item transform) and the device box they cover, cut to the viewport (the kit's scratch
+     * is viewport-sized; edges left of it count for every pixel to their right, those outside it otherwise draw nothing). Per
+     * admission this is all a new view costs on the CPU: four corners per outline and an affine. */
+    const areaBox = (outlines: readonly AreaOutline[], localToWorld: Affine, view: ViewState, viewport: Viewport): AreaShape => {
         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-        for (const contours of sets) for (const contour of contours) {
-            for (let i = 0; i < contour.length; i += 2) {
-                const x = contour[i], y = contour[i + 1];
+        const affines: Affine[] = [];
+        for (const outline of outlines) {
+            const affine = deviceAffine(localToWorld, outline.origin, view);
+            if (!affine) return { kind: 'coverage', why: 'transform' };
+            affines.push(affine);
+            const [A, B, C, D, E, F] = affine, { x0, y0, x1, y1 } = outline.box;
+            for (const [x, y] of [[x0, y0], [x1, y0], [x0, y1], [x1, y1]] as const) {
                 const X = A * x + C * y + E, Y = B * x + D * y + F;
                 if (X < minX) minX = X;
                 if (X > maxX) maxX = X;
@@ -595,31 +616,17 @@ export function createPath(host: LayerHost, audit: string): {
         const x0 = Math.max(0, Math.floor(minX)), y0 = Math.max(0, Math.floor(minY));
         const x1 = Math.min(viewport.width, Math.ceil(maxX) + 1), y1 = Math.min(viewport.height, Math.ceil(maxY) + 1);
         if (!(x1 > x0 && y1 > y0)) return { kind: 'empty' };
-        const width = x1 - x0, height = y1 - y0;
-        const builder = createAreaCellBuilder(width, height);
-        for (const contours of sets) for (const contour of contours) {
-            const points = areaScratch(contour.length);
-            for (let i = 0; i < contour.length; i += 2) {
-                const x = contour[i], y = contour[i + 1];
-                points[i] = A * x + C * y + E - x0; points[i + 1] = B * x + D * y + F - y0;
-            }
-            builder.addContour(points.subarray(0, contour.length));
-        }
-        const cells = builder.result();
-        if (cells.count === 0) return { kind: 'empty' };
-        return { kind: 'area', spans: { cells: cells.cells, count: cells.count }, bounds: { x: x0, y: y0, width, height } };
+        // Band-local: the box's corner is the scratch's origin.
+        const parts = outlines.map((outline, i): AreaPart => {
+            const [A, B, C, D, E, F] = affines[i];
+            return { edges: outline.edges!, affine: [A, B, C, D, E - x0, F - y0] };
+        });
+        return { kind: 'area', parts, bounds: { x: x0, y: y0, width: x1 - x0, height: y1 - y0 } };
     };
-    /** One reused buffer for a contour's device points: the cell builder reads them during addContour only. */
-    let areaPoints = new Float64Array(256);
-    const areaScratch = (length: number): Float64Array => {
-        if (areaPoints.length < length) areaPoints = new Float64Array(Math.max(length, areaPoints.length * 2));
-        return areaPoints;
-    };
-    /** Admits cells on the area kit. Null when the kit cannot take them (no float targets: counted) and the coverage route must. */
-    const admitCells = (shape: Extract<AreaShape, { kind: 'area' }>, colour: Rgba, cover: CoverBlend, viewport: Viewport, budget: FrameBudget,
+    /** Admits an area on the kit. Null when the kit cannot take it (no float targets: counted) and the coverage route must. */
+    const admitParts = (shape: Extract<AreaShape, { kind: 'area' }>, colour: Rgba, cover: CoverBlend, viewport: Viewport, budget: FrameBudget,
         acquired: Acquired[]): AreaItem | Stop | null => {
-        const pending = areaKit.begin(shape.spans, shape.bounds);
-        const taken = takeArea(pending, areaKit.admit(host, pending, budget, viewport), acquired);
+        const taken = takeArea(areaKit.admit(host, shape.parts, shape.bounds, budget, viewport), acquired);
         if (isStop(taken)) {
             if (taken.status === 'unsupported') { auditCount(audit, 'area:fallback:unsupported'); return null; }
             return taken;
@@ -632,13 +639,13 @@ export function createPath(host: LayerHost, audit: string): {
         budget: FrameBudget, acquired: Acquired[]): AreaItem | Stop | null => {
         const outline = areaContours(item, which, band);
         if ('refused' in outline) return { status: 'denied', pool: 'cpu', bytes: outline.refused };
-        if (!outline.contours) { auditCount(audit, `area:fallback:${outline.why}`); return null; }
-        if (!outline.contours.length) return { status: 'empty' };
-        const shape = areaCells([outline.contours], item.localToWorld, view, viewport);
+        if (!outline.edges) { auditCount(audit, `area:fallback:${outline.why}`); return null; }
+        if (!outline.edges.length) return { status: 'empty' };
+        const shape = areaBox([outline], item.localToWorld, view, viewport);
         if (shape.kind === 'coverage') { auditCount(audit, `area:fallback:${shape.why}`); return null; }
         if (shape.kind === 'empty') return { status: 'empty' };
         const colour = which === 'fill' ? item.material.fill! : item.material.stroke!.color;
-        const admitted = admitCells(shape, colour, cover, viewport, budget, acquired);
+        const admitted = admitParts(shape, colour, cover, viewport, budget, acquired);
         if (admitted && !isStop(admitted)) auditCount(audit, `area:exact:${which}`);
         return admitted;
     };
@@ -825,7 +832,7 @@ export function createPath(host: LayerHost, audit: string): {
     /** Marks the frame for both caches: a triangle set or outline used in this frame is never reclaimed. The adapter advances the
      * frame through `coverage` (it holds only the kit), so `coverage` advances this route's frame too: a route frame left at 0 gave
      * every outline usedFrame 0, and the outline cache never reclaimed one (review R1). */
-    const beginFrameBoth = (next: number): void => { frame = next; kit.beginFrame(next); };
+    const beginFrameBoth = (next: number): void => { frame = next; kit.beginFrame(next); areaKit.beginFrame(next); };
     return {
         route, admitClips, coverage: { ...kit, beginFrame: beginFrameBoth },
         beginFrame: beginFrameBoth,

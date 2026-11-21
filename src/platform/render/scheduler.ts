@@ -1220,7 +1220,12 @@ export class FrameScheduler {
             // passed over, so the saturated draw's last input frames presented the same picture unanswered (measured: 1 of 91 inputs and
             // 3 of 5 redundant presents on every document; canvas2d 91 of 91 and 2).
             const layerCritical = meta !== null && phase === 'single' ? item.entry.pane.isCritical(meta.layer, item.frame.view) : critical;
-            const shouldYield = () => !this.valid(item.entry, item.frame.token) || performance.now() >= limit || layerCritical !== critical;
+            // Only a layer in the critical pass that became optional yields for its class (the optional pass still prepares it). One that
+            // became critical after the critical pass ran is prepared here: yielding sent it to a pass already over, so it was passed over
+            // and the frame presented its last picture again (measured, doc12 saturated draw: the wet layer, class-now-critical, 1 of 1
+            // redundant presents of its kind).
+            const classYield = critical && !layerCritical;
+            const shouldYield = () => !this.valid(item.entry, item.frame.token) || performance.now() >= limit || classYield;
             // remainingBytes includes the explicit one-tile progress grant, not a disguised larger cap.
             // The nominal cap stays in the frame meter and any use beyond it is reported as an overrun.
             const availableBytes = () => {
@@ -1252,7 +1257,7 @@ export class FrameScheduler {
                         if (renderAuditEnabled()) auditCount('scheduler', `claim-refused:${why}:${meta ? item.entry.pane.layerId?.(meta.layer) ?? 'unnamed' : 'platform'}`);
                         return false;
                     };
-                    if (shouldYield()) return refused(!this.valid(item.entry, item.frame.token) ? 'yield-invalid' : layerCritical !== critical ? 'yield-class' : 'yield-time');
+                    if (shouldYield()) return refused(!this.valid(item.entry, item.frame.token) ? 'yield-invalid' : classYield ? 'yield-class' : 'yield-time');
                     if (performance.now() >= meter.deadline) return refused('deadline');
                     const remaining = meter.allowance - Math.max(meter.admittedBytes, meter.reportedBytes);
                     if (!critical && bytes > item.entry.optionalBytes) return refused('optional');

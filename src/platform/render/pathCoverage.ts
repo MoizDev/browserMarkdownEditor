@@ -758,7 +758,14 @@ export function createPathCoverageKit(host: LayerHost, report: (error: unknown) 
         // One rect serves every band: a scope keeps its bounds only until its endCoverage, and the next band rewrites the rect after that.
         const band = bandRect;
         band.x = whole.x; band.y = whole.y; band.width = whole.width; band.height = 0;
-        for (let y = whole.y; y < whole.y + whole.height; y += target.height) {
+        // Bands the current clip misses are skipped: each is a pass and a resolve that would draw nothing. An item is admitted for the
+        // view, and drawn under a tile position's or a cut piece's clip, so every band of its whole bounds ran under every clip
+        // (measured, a drag's end: 422 resolves and 2,072 render-target switches in one frame).
+        const clip = pass.clipRect();
+        if (clip.width <= 0 || clip.height <= 0 || clip.x >= whole.x + whole.width || clip.x + clip.width <= whole.x) { auditCount(audit, 'kit:clipped-out'); return; }
+        const first = whole.y + Math.max(0, Math.floor((clip.y - whole.y) / target.height)) * target.height;
+        const last = Math.min(whole.y + whole.height, clip.y + clip.height);
+        for (let y = first; y < last; y += target.height) {
             band.y = y; band.height = Math.min(target.height, whole.y + whole.height - y);
             const coverUniforms = coverSlice(viewport, band, coverColour, 1);
             const token = pass.beginCoverage(target, band);

@@ -1028,6 +1028,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         this.#dropOffscreen();
         const texture = gl.createTexture();
         const framebuffer = gl.createFramebuffer();
+        if (renderAuditEnabled()) auditCount('gpu', 'create:target');
         if (!texture || !framebuffer) {
             if (texture) gl.deleteTexture(texture);
             if (framebuffer) gl.deleteFramebuffer(framebuffer);
@@ -2441,6 +2442,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             case 'buffer': {
                 const desc = descriptor as BufferDesc;
                 const buffer = gl.createBuffer();
+                if (renderAuditEnabled()) auditCount('gpu', 'create:buffer', 1, { bytes: desc.bytes });
                 if (!buffer) throw new ArenaError('allocation');
                 let indexLease: ByteLease | null = null;
                 try {
@@ -2467,6 +2469,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                     break;
                 }
                 const texture = gl.createTexture();
+                if (renderAuditEnabled()) auditCount('gpu', 'create:texture', 1, { px: desc.width * desc.height });
                 if (!texture) throw new ArenaError('allocation');
                 try {
                     gl.bindTexture(gl.TEXTURE_2D, texture);
@@ -2535,6 +2538,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         }
         this.#targetBytes(texture, desc.samples, desc.stencil);
         const framebuffer = gl.createFramebuffer();
+        if (renderAuditEnabled()) auditCount('gpu', 'create:target');
         if (!framebuffer) throw new ArenaError('allocation');
         const coverage = __BME_BENCH__ && desc.coverage ? this.#arena.validate(desc.coverage, 'texture') : null;
         const target: NativeTarget = { color: desc.color, samples: desc.samples, stencil: desc.stencil,
@@ -2603,6 +2607,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             gl.attachShader(program, native.vertex);
             gl.attachShader(program, native.fragment);
             gl.linkProgram(program);
+            if (renderAuditEnabled()) auditCount('gpu', 'create:program');
             return native;
         } catch (error) {
             if (!gl.isContextLost()) { this.#dropShaders(native); gl.deleteProgram(program); }

@@ -1,5 +1,5 @@
 import { RENDER_CONSTANTS } from '../constants';
-import { auditStage, renderAuditEnabled } from '../renderAudit';
+import { auditFrameRecord, auditFrameTime, auditStage, renderAuditEnabled, type FrameRecord } from '../renderAudit';
 
 type TimerExtension = { readonly TIME_ELAPSED_EXT: number; readonly GPU_DISJOINT_EXT: number };
 
@@ -11,6 +11,8 @@ export class Webgl2Timer {
     readonly #extension: TimerExtension | null;
     readonly #report: ((p95Ms: number, samples: number, disjoint: boolean) => void) | undefined;
     readonly #pending: WebGLQuery[] = [];
+    /** Each pending query's frame record (audit only, else null): a slow result names the frame's work. */
+    readonly #records: (FrameRecord | null)[] = [];
     readonly #samples: number[] = [];
     /** Reused for the p95 over a full window, so each report sorts in place rather than copying the window. */
     readonly #sorted = new Float64Array(RENDER_CONSTANTS.slowGpuSampleCount);
@@ -36,6 +38,7 @@ export class Webgl2Timer {
         if (!this.#active || !this.#extension) return;
         this.#gl.endQuery(this.#extension.TIME_ELAPSED_EXT);
         this.#pending.push(this.#active);
+        this.#records.push(auditFrameRecord());
         this.#active = null;
     }
 
@@ -52,17 +55,18 @@ export class Webgl2Timer {
             disjoint ??= gl.getParameter(ext.GPU_DISJOINT_EXT) === true;
             if (disjoint) {
                 for (const query of this.#pending) gl.deleteQuery(query);
-                this.#pending.length = 0;
+                this.#pending.length = 0; this.#records.length = 0;
                 this.#samples.length = 0;
                 this.#report?.(0, 0, true);
                 return;
             }
             const query = this.#pending.shift()!;
+            const record = this.#records.shift() ?? null;
             const nanos: unknown = gl.getQueryParameter(query, gl.QUERY_RESULT);
             gl.deleteQuery(query);
             if (typeof nanos !== 'number' || !Number.isFinite(nanos) || nanos < 0) continue;
             const ms = nanos / 1_000_000;
-            if (renderAuditEnabled()) auditStage('gpu', 'gpu-time', ms);
+            if (renderAuditEnabled()) { auditStage('gpu', 'gpu-time', ms); auditFrameTime(ms, record); }
             this.#samples.push(ms);
             if (this.#samples.length > RENDER_CONSTANTS.slowGpuSampleCount) this.#samples.shift();
             if (this.#samples.length === RENDER_CONSTANTS.slowGpuSampleCount) {
@@ -81,7 +85,7 @@ export class Webgl2Timer {
             for (const query of this.#pending) this.#gl.deleteQuery(query);
         }
         this.#active = null;
-        this.#pending.length = 0;
+        this.#pending.length = 0; this.#records.length = 0;
         this.#samples.length = 0;
     }
 }

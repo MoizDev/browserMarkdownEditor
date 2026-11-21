@@ -110,6 +110,7 @@ class ScopedPass implements GpuPass {
         this.#check(); const token = this.raw.pushClip(clip); this.#scopes.push({ kind: 'clip', token }); return token;
     }
     popClip(token: ClipToken): void { this.#pop('clip', token); this.raw.popClip(token); }
+    clipRect(): Readonly<RectI> { this.#check(); return this.raw.clipRect(); }
     beginGroup(bounds: RectI, options: GroupOptions): GroupToken {
         this.#check(); const token = this.raw.beginGroup(bounds, options); this.#scopes.push({ kind: 'group', token }); return token;
     }

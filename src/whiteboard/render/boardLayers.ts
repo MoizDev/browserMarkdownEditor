@@ -241,6 +241,8 @@ export interface BoardLayerPair extends Readonly<[PlatformLayerDefinition, Platf
     drawnInkNodeIds(): ReadonlySet<string>;
     /** The live-only nodes the board's GPU tiles drew in the last composite, both bands: a live overlay hands a node over only after this. */
     drawnLiveNodeIds(): ReadonlySet<string>;
+    /** The live-only nodes this frame's prepare laid for the GPU composite, both bands (empty before the prepare and on canvas2d). */
+    plannedLiveNodeIds(): ReadonlySet<string>;
     /** Whether the board draws on a device (its GPU composer), so the owner may ask for whole-scene frames. */
     onDevice(): boolean;
     /** The owning band's CPU bytes now (the direct charge, the dense plan, the device scratch): the measured cost a request's size is judged by. */
@@ -1186,6 +1188,11 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         // One set (the usual case): it is returned, with no allocation per read (a preview's coverage reads it every frame).
         if (sets.length <= 1) return sets[0] ?? NO_INK;
         return new Set(sets.flatMap(set => [...set]));
+    };
+    pair.plannedLiveNodeIds = () => {
+        const under = gpu?.plannedLiveNodeIds('underlay') ?? NO_INK, content = gpu?.plannedLiveNodeIds('content') ?? NO_INK;
+        if (!under.size || !content.size) return under.size ? under : content;
+        return new Set([...under, ...content]);
     };
     pair.onDevice = () => !!activeHost()?.device();
     pair.cpuMandatoryBytes = cpuMandatory;

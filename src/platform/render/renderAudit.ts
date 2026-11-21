@@ -16,9 +16,9 @@ export interface RenderAuditSnapshot {
     readonly enabled: boolean;
     readonly since: number;
     readonly counters: Readonly<Record<string, number>>;
-    readonly frames: Readonly<Record<string, { count: number; totalMs: number; maxMs: number; over16: number }>>;
-    /** Keyed `surface:stage`; `sum` and `max` are milliseconds, `count` the timed calls. */
-    readonly stages: Readonly<Record<string, { sum: number; count: number; max: number }>>;
+    readonly frames: Readonly<Record<string, { count: number; totalMs: number; maxMs: number; over16: number; over8: number }>>;
+    /** Keyed `surface:stage`; `sum` and `max` are milliseconds, `count` the timed calls, `over8` the calls over a 120 Hz frame. */
+    readonly stages: Readonly<Record<string, { sum: number; count: number; max: number; over8: number }>>;
 }
 
 /** The phases a GPU frame's main-thread time is split into; one name per stage keeps the table comparable across surfaces. */
@@ -29,8 +29,10 @@ let enabled = false;
 try { enabled = typeof localStorage !== 'undefined' && localStorage.getItem('bme.renderAudit') === '1'; } catch { enabled = false; }
 let since = typeof performance !== 'undefined' ? performance.now() : 0;
 let counters = new Map<string, number>();
-let frames = new Map<string, { count: number; totalMs: number; maxMs: number; over16: number }>();
-let stages = new Map<string, { sum: number; count: number; max: number }>();
+let frames = new Map<string, { count: number; totalMs: number; maxMs: number; over16: number; over8: number }>();
+let stages = new Map<string, { sum: number; count: number; max: number; over8: number }>();
+// A 120 Hz display's frame (the owner's ProMotion screen): a sum and a max cannot say how many frames missed it.
+const FRAME_120HZ_MS = 1000 / 120;
 
 export function renderAuditEnabled(): boolean { return enabled; }
 
@@ -38,8 +40,9 @@ export function renderAuditEnabled(): boolean { return enabled; }
 export function auditStage(surface: string, stage: AuditStage, ms: number): void {
     if (!enabled || !Number.isFinite(ms)) return;
     const key = `${surface}:${stage}`;
-    const entry = stages.get(key) ?? { sum: 0, count: 0, max: 0 };
+    const entry = stages.get(key) ?? { sum: 0, count: 0, max: 0, over8: 0 };
     entry.sum += ms; entry.count++; entry.max = Math.max(entry.max, ms);
+    if (ms > FRAME_120HZ_MS) entry.over8++;
     stages.set(key, entry);
 }
 
@@ -58,9 +61,10 @@ export function auditCount(surface: string, event: string, amount = 1, extra?: R
 /** One presented frame of a pane on a backend, with the main-thread time the frame took. */
 export function auditFrame(backend: string, ms: number): void {
     if (!enabled || !Number.isFinite(ms)) return;
-    const entry = frames.get(backend) ?? { count: 0, totalMs: 0, maxMs: 0, over16: 0 };
+    const entry = frames.get(backend) ?? { count: 0, totalMs: 0, maxMs: 0, over16: 0, over8: 0 };
     entry.count++; entry.totalMs += ms; entry.maxMs = Math.max(entry.maxMs, ms);
     if (ms > 16.7) entry.over16++;
+    if (ms > FRAME_120HZ_MS) entry.over8++;
     frames.set(backend, entry);
 }
 

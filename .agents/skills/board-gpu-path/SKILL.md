@@ -23,10 +23,13 @@ Shared rules (layers, frames, the governor) are in `rendering-platform`. This fi
   the draw never takes an omit set.
 - Routes: `routePath` (clips admitted through its coverage kit), `routeInk` (analytic and union), `routeImage`, `routeText`
   (with text masks), and `cpu`. A run no GPU route takes is counted `fallback:item-cpu:<kind>:<why>`.
-- `routePath` draws a fill or stroke by EXACT AREA (`areaCoverage.ts`, cells from `areaOutlines.ts`) when its outline is exact
+- `routePath` draws a fill or stroke by EXACT AREA (`areaCoverage.ts`, contours from `areaOutlines.ts`) when its outline is exact
   (simple contours, nesting only with opposite signs; groups of separated opaque fills as one area), else by the 4x MSAA
   coverage kit, counted `area:fallback:<why>` (dash, non-simple outline, nesting). The bar for shapes and ink is the exact
   coverage of the item's own geometry, not canvas2d (which is the inexact one: measured 44-96 levels off on diagonals).
+  Edges are cached per content and band and moved by a uniform (a pan or zoom inside a band uploads nothing); a run's areas
+  share one accumulation pass, then composite from their scratch regions. While a zoom is live an area over a quarter tile takes
+  the coverage route and its run reports inexact (`exact()`), so its tile recomposes exact at rest, as text stand-ins do.
 - Fidelity evidence: with `bme.renderAudit=1`, `__bmeRenderAudit.scenes()` gives each board's last presented items and pane
   matrix (`sceneAudit.ts`): the fidelity kit rasterises the exact coverage of those items and scores the shot against it.
 - A change marks the positions under its bounds dirty (`tileParts.ts` parts index). A dirty position is recomposed into the

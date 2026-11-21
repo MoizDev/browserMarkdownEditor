@@ -241,8 +241,7 @@ const ZERO_ORIGIN: Readonly<{ x: number; y: number }> = Object.freeze({ x: 0, y:
 export type InkStrokeSetsResult = InkStrokeSets | null | { readonly denied: number };
 export interface InkGeometry {
     /** The stroke's sets at one band; `null` when a chunk is refused; `{ denied }` when the pool refuses the bytes even after eviction. */
-    /** `moving`: the view is in motion, so a chunk's held outline one band coarser is good enough (see place). */
-    strokeSets(item: PaintInkItem, band: number, moving?: boolean): InkStrokeSetsResult;
+    strokeSets(item: PaintInkItem, band: number): InkStrokeSetsResult;
     memory(): { readonly cpuBytes: number };
     /** Frees up to `wanted` bytes of idle chunks, least recently used first: never the current publication's chunks, nor any in `keep`
      * (the chunks a shown run still maps). Returns the bytes freed. */
@@ -280,21 +279,21 @@ export function createInkGeometry(memory: MemoryAllocator, audit: string): InkGe
         entry.leases.push(lease); entry.bytes += size; bytes += size;
         return true;
     };
-    /** Whether an outline built for band `held` serves band `band`. A finer one (up to an octave above) is more precise at every
-     * lower scale (see inkToleranceBand), so it always serves; a coarser one (down to an octave below) holds at most twice the
-     * error, which only a moving view may show. One band per chunk was rebuilt at each half-octave a zoom crossed, and a zoom
-     * wavering across one rebuilt every chunk on every frame (measured, LARGE=11 board, WebGL2, DPR 2: the outlines were 75% of
-     * the board's prepare, 388 of 521 ms on a paced zoom, 923 builds). */
-    const serves = (held: number, band: number, moving: boolean): boolean =>
-        held === band || (held > band && held <= 2 * band) || (moving && held < band && 2 * held >= band);
-    const place = (chunk: InkCoverage, band: number, origin: Readonly<{ x: number; y: number }>, moving: boolean): Placed => {
+    /** Whether an outline built for band `held` serves band `band`: a finer one (up to an octave above) is more precise at every
+     * lower scale (see inkToleranceBand), so it serves. One band per chunk was rebuilt at each half-octave a zoom crossed, and a
+     * zoom wavering across one rebuilt every chunk on every frame (measured, LARGE=11 board, WebGL2, DPR 2: the outlines were 75%
+     * of the board's prepare, 388 of 521 ms on a paced zoom, 923 builds); held finer, a wavering zoom rebuilds once. A coarser one
+     * is never served: served while the view moved, it stayed on screen at rest when the board rested on its last live picture
+     * (f4's fidelity kit, DPR 2 at 332%: the drawn outline a half-octave coarser than the scene's, a 0.04 px edge offset). */
+    const serves = (held: number, band: number): boolean => held === band || (held > band && held <= 2 * band);
+    const place = (chunk: InkCoverage, band: number, origin: Readonly<{ x: number; y: number }>): Placed => {
         const old = held.get(chunk);
-        if (old && serves(old.band, band, moving) && old.px === origin.x && old.py === origin.y) {
+        if (old && serves(old.band, band) && old.px === origin.x && old.py === origin.y) {
             held.delete(chunk); held.set(chunk, old); old.use = epoch; auditCount(audit, old.band === band ? 'geom:hit' : 'geom:hit:near-band');
             return old.placed;
         }
         // The local build survives a change of origin (a copy, not a re-tessellation); a change of band rebuilds it.
-        const kept = old && serves(old.band, band, moving) ? old.local : undefined;
+        const kept = old && serves(old.band, band) ? old.local : undefined;
         if (old) { free(old); held.delete(chunk); }
         const local = kept !== undefined ? (auditCount(audit, 'geom:hit'), kept) : buildLocal(chunk, band, audit);
         const entry: Held = { band: kept !== undefined && old ? old.band : band, px: origin.x, py: origin.y, local, placed: null, leases: [], bytes: 0, use: epoch };
@@ -307,7 +306,7 @@ export function createInkGeometry(memory: MemoryAllocator, audit: string): InkGe
         return placed;
     };
     return {
-        strokeSets(item: PaintInkItem, band: number, moving = false): InkStrokeSetsResult {
+        strokeSets(item: PaintInkItem, band: number): InkStrokeSetsResult {
             epoch++;
             const chunks = inkCoverageChunks(item.coverage);
             if (!chunks.length) return { origin: ZERO_ORIGIN, sets: [], shapes: [] };
@@ -315,7 +314,7 @@ export function createInkGeometry(memory: MemoryAllocator, audit: string): InkGe
             const origin = { x: chunks[0].boundsLocal.x, y: chunks[0].boundsLocal.y };
             const sets: InkTriangles[] = [];
             for (const chunk of chunks) {
-                const placed = place(chunk, band, origin, moving);
+                const placed = place(chunk, band, origin);
                 if (placed && 'denied' in placed) return placed;
                 if (!placed) return null;
                 if (placed.triangles.length) sets.push(placed);

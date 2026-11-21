@@ -81,9 +81,7 @@ export const createInkRoutes: CreateInkRoutes = (host: LayerHost, audit: string)
                 // One set per chunk, all under one affine and one stencil cover: a publication uploads only the chunks it adds.
                 // Timed under the audit (gpu-h4's split of a zoom frame): the tessellation and placement of the item's chunks, in hundredths of a ms.
                 const timed = renderAuditEnabled() ? performance.now() : 0;
-                // A moving view may draw a chunk's outline one band coarser than its scale asks (inkGeometry.place); a tile composed
-                // at rest has a still view, so it is drawn exact.
-                const stroke = geometry.strokeSets(item, inkToleranceBand(deviceScale), view.moving);
+                const stroke = geometry.strokeSets(item, inkToleranceBand(deviceScale));
                 if (timed) { auditCount(audit, 'ink:strokesets-calls'); auditCount(audit, 'ink:strokesets-hundredths-ms', Math.round((performance.now() - timed) * 100)); }
                 if (stroke && 'denied' in stroke) { retireAll(); return { status: 'denied', pool: 'cpu', bytes: stroke.denied }; }
                 if (!stroke) { retireAll(); return { status: 'unsupported', why: 'outline-refused' }; }

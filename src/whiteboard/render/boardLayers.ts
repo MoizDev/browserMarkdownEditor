@@ -164,6 +164,14 @@ function sameView(a: ViewState | null | undefined, b: ViewState): boolean {
     return !!a && a.epoch === b.epoch && a.camera.x === b.camera.x && a.camera.y === b.camera.y && a.camera.z === b.camera.z
         && a.viewport.width === b.viewport.width && a.viewport.height === b.viewport.height && a.viewport.dpr === b.viewport.dpr;
 }
+/** The same picture's view: camera and viewport, not the epoch. The epoch also moves when the moving flag flips at a gesture's end with
+ * the camera still, and the scheduler skips that frame as unchanged (no layer presents it): compared by epoch, the board never saw its
+ * view presented and showed 'Updating' at rest for good (measured, kinds sweep: hand-pan, lasso, marquee, lock, rotate, resize on WebGL2,
+ * board pending on showsView alone). */
+function samePictureView(a: ViewState | null | undefined, b: ViewState): boolean {
+    return !!a && a.camera.x === b.camera.x && a.camera.y === b.camera.y && a.camera.z === b.camera.z
+        && a.viewport.width === b.viewport.width && a.viewport.height === b.viewport.height && a.viewport.dpr === b.viewport.dpr;
+}
 class OmittedSnapshot implements ReadonlySet<string> {
     readonly [Symbol.toStringTag] = 'OmittedSnapshot';
     private readonly valuesSet: Set<string>;
@@ -447,7 +455,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         const working = !!options.frames.needsFrame() || (!!estimate && !estimate.done) || (!idleOnly && !!adapter?.needsFrame())
             || (!!activeHost()?.device() && !!gpu?.needsFrame()) || !!dense?.pending();
         // The frame still drawn may be the previous zoom's, re-drawn at the new view, while its replacement is staged.
-        const showsView = !!presentedContext && !!preparedView && sameView(presentedContext.view, preparedView) && !options.frames.replacing?.();
+        const showsView = !!presentedContext && !!preparedView && samePictureView(presentedContext.view, preparedView) && !options.frames.replacing?.();
         if (!blocked && !working && presented && presented.sceneRevision === options.requestedRevision() && options.frames.isCurrent(presented) && showsView) return { kind: 'current' };
         const drawn = !!presented && presented.sceneRevision === options.requestedRevision() && options.frames.isCurrent(presented);
         return { kind: 'pending', reason: blocked ? 'waiting-memory' : 'building', drawn };

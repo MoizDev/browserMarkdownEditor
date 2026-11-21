@@ -7,8 +7,10 @@
  * the CPU. Measured before this design (CPU-cut cells, one upload per admission): 1,024 shapes in a saturated zoom took 0.94 ms
  * of board prepare per frame against the MSAA route's 0.21.
  *
- * Drawing accumulates into one SCRATCH r32f target per device, shared by every kit there: each area clears its band, then every
- * edge instance covers the strip from its leftmost pixel to the band's right edge of each row it crosses, and the fragment adds
+ * Drawing accumulates into one SCRATCH r32f target per device, shared by every kit there. A batch packs a run's areas into regions
+ * of the scratch (shelf packing) and accumulates them all in ONE pass; then each area is composited from its region in paint order.
+ * In a region, the area clears it, then every edge instance covers the strip from its leftmost pixel to the region's right side of
+ * each row it crosses, and the fragment adds
  * the exact signed area that the edge leaves to its right inside that pixel (font-rs's accumulation, integrated per pixel rather
  * than prefix-summed). Summed, |acc| clamped to 1 is the outline's nonzero coverage, exact where the contours cross and touch
  * nothing and nest with opposite signs (the caller's areaNestingExact). The composite paints min(1, |acc|) with the output.
@@ -65,7 +67,15 @@ export type AreaAdmission =
 export interface AreaKit {
     /** Admits the parts (each an edge array the caller keeps alive and unchanged, and its affine to band-local px) over `bounds`. */
     admit(host: LayerHost, parts: readonly AreaPart[], bounds: RectI, budget: FrameBudget, viewport: { readonly width: number; readonly height: number }): AreaAdmission;
-    draw(host: LayerHost, pass: GpuPass, prepared: PreparedArea, output: AreaOutput): void;
+    /** Starts a batch: the areas placed until endBatch share one accumulation pass on the scratch, each in its own region. */
+    beginBatch(host: LayerHost): void;
+    /** Places and accumulates these areas (one item's fill and stroke) in the open batch, all or none: false when they do not all fit
+     * in what is left of the scratch (end the batch, composite what it holds, and start another). Throws an out-of-budget ArenaError
+     * from the uniform ring after closing nothing: the caller ends the batch. */
+    place(host: LayerHost, pass: GpuPass, areas: readonly PreparedArea[]): boolean;
+    endBatch(pass: GpuPass): void;
+    /** Paints a placed area's coverage with the output, in the current scope (after endBatch). False when it was not placed. */
+    composite(pass: GpuPass, prepared: PreparedArea, output: AreaOutput): boolean;
     retire(prepared: PreparedArea): void;
     /** The caller no longer keeps this edge array: its buffer goes once no admission holds it. */
     forget(edges: Float32Array): void;
@@ -85,7 +95,7 @@ const UNIFORM_BYTES = 64;
 
 /** One instance per edge: a strip from its leftmost pixel to the band's right edge over the rows it crosses. */
 const EDGE_SHADER: ShaderModule = {
-    id: 'platform-area-edge', revision: 2,
+    id: 'platform-area-edge', revision: 3,
     layout: {
         uniforms: [{ binding: 0, byteSize: UNIFORM_BYTES }],
         textures: [],
@@ -102,9 +112,10 @@ void main() {
     vec2 b = vec2(matrix.x * edge.z + matrix.z * edge.w, matrix.y * edge.z + matrix.w * edge.w) + translation.xy;
     ends = vec4(a, b);
     vec2 corner = vec2(float(gl_VertexID & 1), float((gl_VertexID >> 1) & 1));
-    float left = clamp(floor(min(a.x, b.x)), 0.0, band.x);
-    float top = clamp(floor(min(a.y, b.y)), 0.0, band.y), bottom = clamp(ceil(max(a.y, b.y)), 0.0, band.y);
-    vec2 pixel = vec2(mix(left, band.x, corner.x), mix(top, bottom, corner.y));
+    // band is the area's region of the scratch, (x0, y0, x1, y1): the strip runs from the edge to the region's right side.
+    float left = clamp(floor(min(a.x, b.x)), band.x, band.z);
+    float top = clamp(floor(min(a.y, b.y)), band.y, band.w), bottom = clamp(ceil(max(a.y, b.y)), band.y, band.w);
+    vec2 pixel = vec2(mix(left, band.z, corner.x), mix(top, bottom, corner.y));
     vec2 unit = pixel / viewport.xy;
     gl_Position = vec4(unit.x * 2.0 - 1.0, 1.0 - unit.y * 2.0, 0.0, 1.0);
 }`,
@@ -134,7 +145,7 @@ void main() {
 
 /** The band's clear pass: a band-sized quad written with zero, so the area starts from nothing without clearing the scratch. */
 const CLEAR_SHADER: ShaderModule = {
-    id: 'platform-area-clear', revision: 2,
+    id: 'platform-area-clear', revision: 3,
     layout: { uniforms: [{ binding: 0, byteSize: UNIFORM_BYTES }], textures: [], attributes: [] },
     glsl: {
         vertex: `#version 300 es
@@ -142,7 +153,7 @@ precision highp float;
 layout(std140) uniform GfxUniforms0 { vec4 viewport; vec4 band; vec4 matrix; vec4 translation; };
 void main() {
     vec2 corner = vec2(float(gl_VertexID & 1), float((gl_VertexID >> 1) & 1));
-    vec2 unit = (corner * band.xy) / viewport.xy;
+    vec2 unit = mix(band.xy, band.zw, corner) / viewport.xy;
     gl_Position = vec4(unit.x * 2.0 - 1.0, 1.0 - unit.y * 2.0, 0.0, 1.0);
 }`,
         fragment: `#version 300 es
@@ -170,6 +181,24 @@ export function createAreaKit(): AreaKit {
     let holding = false;
     let setBytes = 0, idleBytes = 0;
     const uniformScratch = new Float32Array(UNIFORM_BYTES / 4);
+    /** The open batch: its scratch, its accumulation token (opened by the first placement), the shelf cursor, and where each placed
+     * area sits. Reused across batches: nothing is allocated per frame once the map has grown. */
+    let batchScratch: Scratch | null = null, batchToken: ReturnType<GpuPass['beginArea']> | null = null;
+    let shelfX = 0, shelfY = 0, shelfH = 0;
+    const placed = new Map<PreparedArea, { x: number; y: number }>();
+    const spare: { x: number; y: number }[] = [];
+    const tentative: { x: number; y: number }[] = [{ x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }];
+    /** The scissor of every accumulation draw: the whole scratch (each draw stays inside its region by its own geometry). */
+    const whole = { x: 0, y: 0, width: 0, height: 0 };
+    /** One draw's uniforms: the scratch size, the region (x0, y0, x1, y1), and the item-local to scratch affine (null for the clear). */
+    const regionUniforms = (host: LayerHost, W: number, H: number, at: { x: number; y: number }, bounds: RectI, affine: Affine | null) => {
+        uniformScratch[0] = W; uniformScratch[1] = H; uniformScratch[2] = 0; uniformScratch[3] = 0;
+        uniformScratch[4] = at.x; uniformScratch[5] = at.y; uniformScratch[6] = at.x + bounds.width; uniformScratch[7] = at.y + bounds.height;
+        uniformScratch[8] = affine ? affine[0] : 0; uniformScratch[9] = affine ? affine[1] : 0;
+        uniformScratch[10] = affine ? affine[2] : 0; uniformScratch[11] = affine ? affine[3] : 0;
+        uniformScratch[12] = affine ? affine[4] + at.x : 0; uniformScratch[13] = affine ? affine[5] + at.y : 0; uniformScratch[14] = 0; uniformScratch[15] = 0;
+        return host.uniforms(uniformScratch);
+    };
     /** This kit's identity as a scratch holder. */
     const kitToken = {};
 
@@ -270,6 +299,7 @@ export function createAreaKit(): AreaKit {
         return true;
     };
     function release(): void {
+        placed.clear(); batchScratch = null; batchToken = null;
         for (const prepared of [...live]) retire(prepared);
         for (const set of [...sets.values()]) { set.refs = 0; destroySet(set); }
         idleBytes = 0; setBytes = 0;
@@ -329,31 +359,58 @@ export function createAreaKit(): AreaKit {
             live.add(prepared);
             return { status: 'ready', value: prepared };
         },
-        draw(host, pass, prepared, output): void {
-            const scratch = prepared.device === host.device() && host.generation === prepared.generation ? scratchOf.get(prepared.device) : undefined;
-            if (!live.has(prepared) || !scratch || !edgePipeline || !clear) throw new Error('Stale area');
-            const token = pass.beginArea(scratch.target, prepared.bounds);
-            const { bounds } = prepared;
-            const whole = { x: 0, y: 0, width: scratch.target.width, height: scratch.target.height };
-            const write = (affine: Affine | null) => {
-                uniformScratch[0] = scratch.target.width; uniformScratch[1] = scratch.target.height; uniformScratch[2] = 0; uniformScratch[3] = 0;
-                uniformScratch[4] = bounds.width; uniformScratch[5] = bounds.height; uniformScratch[6] = 0; uniformScratch[7] = 0;
-                uniformScratch[8] = affine ? affine[0] : 0; uniformScratch[9] = affine ? affine[1] : 0;
-                uniformScratch[10] = affine ? affine[2] : 0; uniformScratch[11] = affine ? affine[3] : 0;
-                uniformScratch[12] = affine ? affine[4] : 0; uniformScratch[13] = affine ? affine[5] : 0; uniformScratch[14] = 0; uniformScratch[15] = 0;
-                return host.uniforms(uniformScratch);
-            };
-            // The band's own clear first: the area accumulates from zero, and nothing outside the band is touched.
-            pass.draw({ pipeline: clear, bindings: { uniforms: [{ binding: 0, slice: write(null) }], textures: [] }, vertices: [], first: 0, count: 4,
-                instances: 1, scissor: whole });
-            for (let s = 0; s < prepared.sets.length; s++) {
-                const slice = write(prepared.affines[s]);
-                for (const piece of prepared.sets[s].pieces) {
-                    pass.draw({ pipeline: edgePipeline, bindings: { uniforms: [{ binding: 0, slice }], textures: [] },
-                        vertices: [{ buffer: piece.buffer, offset: 0, bytes: piece.bytes }], first: 0, count: 4, instances: piece.count, scissor: whole });
-                }
+        beginBatch(host): void {
+            for (const at of placed.values()) spare.push(at);
+            placed.clear();
+            batchToken = null; shelfX = 0; shelfY = 0; shelfH = 0;
+            batchScratch = device && device === host.device() ? scratchOf.get(device) ?? null : null;
+        },
+        place(host, pass, areas): boolean {
+            const scratch = batchScratch;
+            if (!scratch || !edgePipeline || !clear) throw new Error('Stale area');
+            const W = scratch.target.width, H = scratch.target.height;
+            // Shelf packing, decided for every area before any is drawn: an item's fill and stroke go into one batch or the next.
+            let x = shelfX, y = shelfY, h = shelfH;
+            for (let i = 0; i < areas.length; i++) {
+                const prepared = areas[i];
+                if (!live.has(prepared) || prepared.device !== host.device() || prepared.generation !== host.generation) throw new Error('Stale area');
+                const { width, height } = prepared.bounds;
+                if (x + width > W) { y += h; x = 0; h = 0; }
+                if (y + height > H || width > W) return false;
+                const at = tentative[i] ?? (tentative[i] = { x: 0, y: 0 });
+                at.x = x; at.y = y;
+                x += width; h = Math.max(h, height);
             }
-            pass.endArea(token, output);
+            shelfX = x; shelfY = y; shelfH = h;
+            if (!batchToken) batchToken = pass.beginArea(scratch.target);
+            whole.width = W; whole.height = H;
+            for (let i = 0; i < areas.length; i++) {
+                const prepared = areas[i], { bounds } = prepared, at = tentative[i];
+                // The region's own clear first: the area accumulates from zero, and no other region is touched.
+                pass.draw({ pipeline: clear, bindings: { uniforms: [{ binding: 0, slice: regionUniforms(host, W, H, at, bounds, null) }], textures: [] },
+                    vertices: [], first: 0, count: 4, instances: 1, scissor: whole });
+                for (let s = 0; s < prepared.sets.length; s++) {
+                    const slice = regionUniforms(host, W, H, at, bounds, prepared.affines[s]);
+                    for (const piece of prepared.sets[s].pieces) {
+                        pass.draw({ pipeline: edgePipeline, bindings: { uniforms: [{ binding: 0, slice }], textures: [] },
+                            vertices: [{ buffer: piece.buffer, offset: 0, bytes: piece.bytes }], first: 0, count: 4, instances: piece.count, scissor: whole });
+                    }
+                }
+                const kept = spare.pop() ?? { x: 0, y: 0 };
+                kept.x = at.x; kept.y = at.y;
+                placed.set(prepared, kept);
+            }
+            return true;
+        },
+        endBatch(pass): void {
+            if (batchToken) pass.endArea(batchToken);
+            batchToken = null;
+        },
+        composite(pass, prepared, output): boolean {
+            const at = placed.get(prepared);
+            if (!at || !batchScratch) return false;
+            pass.compositeArea(batchScratch.target, at, prepared.bounds, output);
+            return true;
         },
         retire,
         forget(edges): void {

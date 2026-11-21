@@ -167,7 +167,7 @@ interface LiveAdmission { readonly route: ItemRoute; readonly run: PreparedRun }
 
 /** The item routes a composer draws through. `cpu` takes what a GPU route refuses; its own counters name that raster. */
 export interface TileRoutes {
-    readonly path: ItemRoute;
+    readonly path: ItemRoute & Partial<ZoomRoute>;
     readonly inkAnalytic: ItemRoute<PaintInkItem>;
     readonly inkUnion: ItemRoute<PaintInkItem>;
     /** Absent until the route is built: its items are then rastered by `cpu`, counted as a fallback. */
@@ -637,6 +637,9 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
 
     /** The routes that draw geometry: paths and ink. Every other route's content is raster (the text masks and decoded images, which
      * the GPU draws from rastered or decoded pixels, and the CPU raster), which a zoom does not re-raster (gpu's ruling). */
+    /** False for a run a zoom-aware route marked inexact (a text stand-in, a path composed on its zoom route): its tile recomposes at rest. */
+    const exactRun = (route: ItemRoute, run: PreparedRun): boolean =>
+        route === routes.text ? routes.text.exact(run) : route === routes.path && routes.path.exact ? routes.path.exact(run) : true;
     const isGeometryRoute = (route: ItemRoute): boolean => route === routes.path || route === routes.inkAnalytic || route === routes.inkUnion;
     /** The GPU route for an item, or the CPU route with the reason no GPU route takes it. */
     /** A paint a live-only overlay draws without tiles: every part a plain unclipped 'over' item on a route that draws over the
@@ -1427,8 +1430,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     firstOrder: position.slices.map(part => part.firstOrder), live: position.live,
                     geometry: slice.admitted.some(admitted => isGeometryRoute(admitted.route)),
                     cpu: slice.admitted.some(admitted => admitted.route === routes.cpu) });
-                const text = routes.text;
-                if (text && slice.admitted.some(admitted => admitted.route === text && !text.exact(admitted.run))) inexactPending.add(entry);
+                if (slice.admitted.some(admitted => !exactRun(admitted.route, admitted.run))) inexactPending.add(entry);
                 store.touch(entry, frame);
             }
             for (const { route, run, clips } of slice.admitted) { route.retire(run); clips?.retire(); }
@@ -1520,7 +1522,11 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             zoomingFrame = zooming;
             // The text route draws a missing exact mask from its stand-in while the zoom is live; the flag is set before its admits.
             routes.text?.setZoom(zooming);
-            if (zooming) inexactPending.clear();
+            // The path route composes a zoom's frames on its coverage route and its rest on exact area (routePath.ts, setZoom).
+            routes.path.setZoom?.(zooming);
+            // The inexact entries are kept through the whole zoom, not cleared each zoom frame: a zoom that returns to a scale reuses the
+            // tiles it composed there earlier, and an entry dropped from the set then stayed inexact at rest (a saturated zoom alternates
+            // between two scales). At rest only the entries of the resting scale are marked; the others go with their scale.
             const exact = exactScale(demand);
             // Compose targets the exact scale every frame, visible positions first (exact-first zoom, gpu).
             target = exact;

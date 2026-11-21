@@ -107,10 +107,11 @@ function layerPass(pass: GpuPass): { pass: GpuPass; finish(): void; abandon(): v
                 check(); const token = pass.beginCoverage(target, bounds); scopes.push({ kind: 'coverage', token }); return token;
             },
             endCoverage: (token, output) => { pop('coverage', token); pass.endCoverage(token, output); },
-            beginArea: (target, bounds) => {
-                check(); const token = pass.beginArea(target, bounds); scopes.push({ kind: 'area', token }); return token;
+            beginArea: target => {
+                check(); const token = pass.beginArea(target); scopes.push({ kind: 'area', token }); return token;
             },
-            endArea: (token, output) => { pop('area', token); pass.endArea(token, output); },
+            endArea: token => { pop('area', token); pass.endArea(token); },
+            compositeArea: (target, at, bounds, output) => { check(); pass.compositeArea(target, at, bounds, output); },
             composite: (source, bounds, options) => { check(); pass.composite(source, bounds, options); },
             end: () => { check(); throw new ArenaError('invalid-input'); },
         },
@@ -124,6 +125,8 @@ function layerPass(pass: GpuPass): { pass: GpuPass; finish(): void; abandon(): v
                 const top = scopes.pop()!;
                 if (top.kind === 'clip') quietly(() => pass.popClip(top.token));
                 else if (top.kind === 'group') quietly(() => pass.endGroup(top.token));
+                // An area scope composites nothing when it ends, so an abandoned one is closed like a group.
+                else if (top.kind === 'area') quietly(() => pass.endArea(top.token));
             }
         },
     };

@@ -301,6 +301,12 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     // good: every edit command disabled and the camera 'moving' forever (measured: ack:reset:omit on 182 of 182 band
     // acknowledgements after the first drag; a PDF then stayed on its motion tiles at rest).
     let preparedOmit: { frame: PaintSource; omit: ReadonlySet<string> | null } | null = null;
+    // The canvas2d draw's omission, read once per frame for both bands, as preparedOmit is for the GPU draw. Read at each band's draw,
+    // it changed between the underlay and content bands of a commit's frame, so their acknowledgements never paired and the commit
+    // hold never ended: a canvas2d rotate (Shift+.) left 'Updating…' and every edit command disabled at rest (measured: revision 7
+    // drawn and onPresented in both bands, preview never presented; feat/in-house-engines d9dff027 clean on the same case).
+    // Keyed by the encode: the underlay band, drawn first, reads it; the content band right after it, for the same frame and view, reuses it.
+    let drawnOmit2d: { view: ViewState; frame: PaintSource; omit: ReadonlySet<string> | null } | null = null;
     const prepareGpu = (view: ViewState, budget: FrameBudget, frame: PaintSource): boolean => {
         const shift = options.liveOverlay ? options.drawOffset?.(frame) : null;
         const at = shift && (shift.x !== 0 || shift.y !== 0) ? shiftedView(view, shift) : view;
@@ -579,7 +585,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         direct?.release(reason === 'context-lost' ? 'pressure' : reason);
         dense?.release(reason);
         for (const frame of [...reservations.keys()]) releaseFrame(frame);
-        estimate = null; denied = false; deniedDirectSegments = null; lastPrepareFrame = null; preparedOmit = null; drawn.clear(); drawTokens = new WeakMap(); announced = new WeakMap(); drawSource = null; prepareToken = null; prepareFrameId = -1;
+        estimate = null; denied = false; deniedDirectSegments = null; lastPrepareFrame = null; preparedOmit = null; drawnOmit2d = null; drawn.clear(); drawTokens = new WeakMap(); announced = new WeakMap(); drawSource = null; prepareToken = null; prepareFrameId = -1;
         ackFrame = null; ackInk = null; ackMask = 0; ackToken = null; ackContext = null; presentedInk = null;
         if (reason === 'hidden') {
             const wasDense = useDense;
@@ -1093,7 +1099,9 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     lastDrawn = null;
                     const frame = adapter?.readyFrame();
                     if (!frame || !drawable(frame)) return;
-                    const omit = options.omitNodes?.(frame) ?? null;
+                    const reuse = band === 'content' && drawnOmit2d?.view === view && drawnOmit2d.frame === frame;
+                    const omit = reuse ? drawnOmit2d!.omit : options.omitNodes?.(frame) ?? null;
+                    drawnOmit2d = band === 'underlay' ? { view, frame, omit } : null;
                     const shift = drawnOffset(frame, useDense); if (shift === undefined) return;
                     const ink = adapter!.borrowPrepared()?.root.inkNodeIds ?? frame.inkNodeIds;
                     if (!prepareToken) return;

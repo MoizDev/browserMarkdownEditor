@@ -175,9 +175,12 @@ export class PdfTileLayer implements Layer {
     private settledOrder: Entry[] | null = null;
     private readonly drawScratch: Entry[] = [];
     // The view, settled set, backend and scale drawScratch was selected for, and the per-page boxes of the current scale it used.
-    private drawMemo: { view: ViewState; order: Entry[] | null; device: GfxDevice | null; rasterScale: number; revision: number; version: number; exactLast: boolean } | null = null;
+    private drawMemo: { view: ViewState; order: Entry[] | null; device: GfxDevice | null; rasterScale: number; revision: number; version: number; exactLast: boolean;
+        /** canvas2d: a tile was left out or drawn before its upload was admitted, so the next ask selects again. */
+        unready: boolean } | null = null;
     private readonly coverScratch = new Map<number, Rect[]>();
     private readonly hiddenScratch: boolean[] = [];
+    private readonly readyScratch: boolean[] = [];
     private readonly pageScratch: number[] = [];
     private readonly retiring = new Set<Entry>();
     private readonly texturePool: PdfTexturePool;
@@ -1304,7 +1307,7 @@ export class PdfTileLayer implements Layer {
         // Prepare and draw ask for the same view in one frame: the selection is built once per view, settled set and backend.
         const memo = this.drawMemo;
         if (memo && memo.view === view && memo.order === this.settledOrder && memo.device === device && memo.rasterScale === rasterScale &&
-            memo.revision === this.contentRevision && memo.version === this.drawVersion && memo.exactLast === exactLast) return out;
+            memo.revision === this.contentRevision && memo.version === this.drawVersion && memo.exactLast === exactLast && !memo.unready) return out;
         out.length = 0;
         const viewport = { x: view.camera.x, y: view.camera.y, width: view.viewport.width / view.camera.z, height: view.viewport.height / view.camera.z };
         // Sorted by scale only, and only when the settled set changes: same-scale tiles are disjoint cells, so their order is free.
@@ -1330,28 +1333,49 @@ export class PdfTileLayer implements Layer {
             }
         }
         // Back to front: a tile whose part on the view lies wholly under tiles drawn after it is dropped. Page tiles are opaque raster
-        // and a later tile covers its whole cell, so the picture is unchanged; only the drawn pixels this backend holds cover.
+        // and a later tile covers its whole cell, so the picture is unchanged; only the drawn pixels this backend can draw this frame
+        // cover: a texture on the device, or on canvas2d a bitmap the compositor holds or has admitted (imageReady).
+        const hidden = this.hiddenScratch;
+        hidden.length = out.length;
+        hidden.fill(false);
+        const ready = this.readyScratch;
+        ready.length = out.length;
+        let unready = false;
+        const drawableNow = (entry: Entry): boolean => device ? entry.texture?.device === device : !!entry.bitmap && this.host.imageReady(entry.bitmap);
         if (!travelling && out.length > 1) {
             const cover = this.coverScratch;
             cover.clear();
-            const hidden = this.hiddenScratch;
-            hidden.length = out.length;
-            let kept = out.length;
             for (let i = out.length - 1; i >= 0; i--) {
                 const entry = out[i], box = rect(entry.request), boxes = cover.get(entry.request.page);
                 const area = clipped(box, viewport);
                 hidden[i] = !!area && !!boxes && covers(area, boxes);
-                if (hidden[i]) { kept--; auditCount('pdf-page', 'draw-culled'); continue; }
-                if (!(device ? entry.texture?.device === device : !!entry.bitmap)) continue;
+                if (hidden[i]) { auditCount('pdf-page', 'draw-culled'); continue; }
+                ready[i] = drawableNow(entry);
+                if (!ready[i]) continue;
                 if (boxes) boxes.push(box); else cover.set(entry.request.page, [box]);
             }
-            if (kept !== out.length) {
-                let j = 0;
-                for (let i = 0; i < out.length; i++) if (!hidden[i]) out[j++] = out[i];
-                out.length = j;
+        } else for (let i = 0; i < out.length; i++) ready[i] = drawableNow(out[i]);
+        // canvas2d: a frame that draws an image whose upload it has not admitted is not presented at all, so a tile not ready yet is
+        // left out where ready tiles beneath it (its stand-ins) cover it; they show until it is admitted, a later frame. Measured
+        // (canvas2d doc12 paced zoom, exact tiles drawn last): each step's new exact tiles missed their uploads, and the zoom
+        // presented 0 pictures in 2 s, against 37-39 on feat/in-house-engines and on impl/gpu before exact-last.
+        if (!device) {
+            const below = this.coverScratch;
+            below.clear();
+            for (let i = 0; i < out.length; i++) {
+                if (hidden[i]) continue;
+                const entry = out[i], box = rect(entry.request), boxes = below.get(entry.request.page);
+                if (ready[i]) { if (boxes) boxes.push(box); else below.set(entry.request.page, [box]); continue; }
+                if (!entry.bitmap) continue;
+                unready = true;
+                const area = clipped(box, viewport);
+                if (area && boxes && covers(area, boxes)) { hidden[i] = true; auditCount('pdf-page', 'draw-unready-covered'); }
             }
         }
-        this.drawMemo = { view, order: this.settledOrder, device, rasterScale, revision: this.contentRevision, version: this.drawVersion, exactLast };
+        let j = 0;
+        for (let i = 0; i < out.length; i++) if (!hidden[i]) out[j++] = out[i];
+        out.length = j;
+        this.drawMemo = { view, order: this.settledOrder, device, rasterScale, revision: this.contentRevision, version: this.drawVersion, exactLast, unready };
         return out;
     }
 

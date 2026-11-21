@@ -111,6 +111,7 @@ export function createLayerHost(bindings: LayerHostBindings): LayerHost {
         uniformsInto: (bytes: ArrayBufferView, into: UniformSlice): void => resources().uniformsInto(bytes, into),
         drawTexturedQuad,
         drawTexturedQuads,
+        imageReady: image => bindings.compositor()?.resources.imageReady?.(image) ?? true,
         trouble: () => bindings.trouble?.() ?? 'none',
     };
 }

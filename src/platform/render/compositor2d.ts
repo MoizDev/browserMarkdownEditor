@@ -198,7 +198,8 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             uniformsInto: () => { throw new Error('Uniforms require an active GPU draw scope'); },
             markIncomplete: () => undefined,
             drawTexturedQuad: this.quad.bind(this) as PaneCompositor['resources']['drawTexturedQuad'],
-            drawTexturedQuads: this.quads.bind(this) as PaneCompositor['resources']['drawTexturedQuads'] });
+            drawTexturedQuads: this.quads.bind(this) as PaneCompositor['resources']['drawTexturedQuads'],
+            imageReady: (image: DrawableImage) => this.imageReady(image) });
     }
 
     get surfaceGeneration(): number { return this.generation; }
@@ -1011,6 +1012,28 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             if (!crop.image) { this.missing = true; continue; }
             this.drawImage(buffer, crop.image, { x: left - crop.rect.x, y: top - crop.rect.y, width: right - left, height: bottom - top }, dest);
         }
+    }
+    /** See CompositorResources.imageReady. The image's use in the back buffer is made and pinned here, so the next preparation leases
+     * and admits it (no frame would otherwise: a use is made only by a draw, and a draw that misses its upload drops the frame). Measured
+     * (canvas2d, doc12 paced zoom, impl/gpu 0ea94215): once a PDF drew its exact tiles over their stand-ins, every zoom step's new tiles
+     * missed their 1.1 MB uploads, at about one admitted per frame, and no frame was presented for the whole 2 s zoom (0 of 119 ticks). */
+    private imageReady(image: DrawableImage): boolean {
+        const back = this.buffers.get('back');
+        if (!back || !(image instanceof ImageBitmap)) return !!back;
+        // A larger image is drawn in crops, which have their own preparation.
+        if (image.width * image.height > maxImagePixels) return true;
+        this.pendingSources.add(image);
+        let use = back.images.get(image);
+        const made = !use;
+        if (!use) {
+            use = { source: image, version: '', bytes: image.width * image.height * 4, resident: false, lease: null, admission: null };
+            back.images.set(image, use);
+        }
+        if (use.resident || use.admission !== null && use.admission.frameId === this.budget?.frameId) return true;
+        // A new use, or one whose upload the frame's allowance refused, is admitted by a later frame; one refused its residency waits
+        // for the next frame something else asks for (retrying it every frame would spin rAF on a full pool).
+        if (made || use.lease) this.options.invalidate('2d-image-admission');
+        return false;
     }
     private mayUpload(admission: FrameBudget): boolean {
         return !this.nativeUploadUsed || performance.now() < admission.upload.deadline;

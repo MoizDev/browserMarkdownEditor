@@ -118,8 +118,10 @@ const TILE_EDGE = 514;
 const ZOOM_GESTURE_GAP_MS = 150;
 /** A gesture's covered tiles wait this many of its own step intervals after its last step before they raster. Started sooner,
  * the next step replanned the scale before they landed: measured on doc12's paced GPU zoom (a step every ~56 ms), 113 of 124
- * rasters were thrown away unused (fallback:raster-unused) and the last step's tiles queued behind them in the worker pool. */
-const ZOOM_GESTURE_HOLD = 1.25;
+ * rasters were thrown away unused (fallback:raster-unused) and the last step's tiles queued behind them in the worker pool.
+ * One interval: the first frame a full interval after the last step with no new one shows the gesture has ended. At 1.25 a
+ * saturated zoom (a step every frame) held its first quiet frame too, and sharpened a frame later than it could. */
+const ZOOM_GESTURE_HOLD = 1;
 /** The hold's bound (t21): three frames, so a slow notched wheel's tiles never wait longer. */
 const ZOOM_GESTURE_HOLD_MAX_MS = 48;
 /** The step of a gesture its hold starts at (t21): a notch or a short zoom of two steps holds nothing and starts its tiles at once,

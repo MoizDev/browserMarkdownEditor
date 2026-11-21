@@ -1081,6 +1081,14 @@ export class MemoryGovernor {
         return this.trimPool(pool, aim) > 0 && this.charged[pool] > this.target[pool];
     }
 
+    /** Audit only (auditTrimHook): asks every reclaimable cache of the pool to give back all it can, as a pressure trim to zero would.
+     * Returns the bytes the caches reported freed; the charge falls as their owners release. */
+    trimForAudit(pool: MemoryPool): number {
+        const before = this.charged[pool];
+        const left = this.trimPool(pool, 0);
+        return Math.max(0, before - left);
+    }
+
     /** Evicts from the pool's reclaimable caches until its charge is at `target`. Returns the bytes still over target when
      * every candidate has been asked: 0 when the trim met its target, or when another trim is already running. */
     private trimPool(pool: MemoryPool, target: number): number {

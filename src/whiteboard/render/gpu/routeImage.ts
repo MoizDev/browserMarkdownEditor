@@ -3,7 +3,7 @@
 // not land on whole pixels (b39411ce, measured against the canvas2d control). Design: PLAN §4 gpu-h7, §3.2.
 import type { ViewState } from '../../../platform/types';
 import type { LayerHost } from '../../../platform/render/compositor.types';
-import type { Bindings, DrawableImage, DrawCommand, GfxDevice, GpuPass, PipelineHandle, RectI, SamplerHandle, ShaderModule } from '../../../platform/render/gfx/api';
+import type { ByteLease, DrawableImage, DrawCommand, GfxDevice, GpuPass, PipelineHandle, RectI, SamplerHandle, ShaderModule, TextureHandle } from '../../../platform/render/gfx/api';
 import { auditCount } from '../../../platform/render/renderAudit';
 import type { FrameBudget } from '../../../platform/render/types';
 import type { PaintImageItem } from '../paintStream';
@@ -21,13 +21,17 @@ export interface ImageRoute extends ItemRoute<PaintImageItem> {
     evictTextures(bytes: number, frameId: number): number;
 }
 
-/** One draw: a picture's texture over its device rect, its uniforms packed for the shader below. */
+/** One draw: a picture's texture over its device rect, its uniforms packed for the shader below. A pooled record, rewritten by
+ * each admission that takes it: live parts (a playing video, a held picture during a drag) are admitted every frame, and each made
+ * its own uniform block, texture binding, scissor and arrays (frame-path review). Its uniform block is leased with the CPU pool. */
 interface ImageDraw {
-    /** Built once at admit: the texture binding is fixed for the draw, so `draw` allocates none of it. */
-    readonly textures: Bindings['textures'];
-    readonly scissor: RectI;
-    readonly uniforms: Float32Array;
+    texture: TextureHandle | null;
+    readonly scissor: { x: number; y: number; width: number; height: number };
+    readonly uniforms: Float32Array<ArrayBuffer>;
+    readonly lease: ByteLease;
 }
+/** A run's draws and holds, pooled with its arrays; the run handle itself is made per admission, so a retired one stays refused. */
+interface RunBody { readonly calls: ImageDraw[]; readonly holds: string[] }
 /** The vertex list of every picture draw: the quad comes from the vertex index, so there is nothing to bind. */
 const NO_VERTICES: readonly never[] = [];
 
@@ -35,10 +39,8 @@ interface ImageRun extends PreparedRun {
     readonly route: 'image';
     readonly blend: Blend;
     readonly device: GfxDevice;
-    readonly calls: readonly ImageDraw[];
-    /** Image keys whose textures this run holds; retire releases them once. */
-    readonly holds: readonly string[];
-    retired: boolean;
+    /** Its draws and the image keys whose textures it holds; retire releases them once and returns the body (null after). */
+    body: RunBody | null;
 }
 
 const UNIFORM_BYTES = 64;
@@ -111,19 +113,54 @@ void main() {
 
 const unsupported = (why: string) => ({ status: 'unsupported' as const, why });
 
+/** A device's picture pipelines and sampler, shared by every image route on it: the board's, and the drag preview's, which is made
+ * when a drag starts. Compiled per route, the preview's first admission of a dragged picture waited for its own compile (the board's
+ * were ready on the same device): a frame without the picture at every drag start. Kept while any route on the device uses them. */
+interface DevicePipelines {
+    over: PipelineHandle | null;
+    modulate: PipelineHandle | null;
+    readonly sampler: SamplerHandle;
+    users: number;
+    pending: number;
+    failed: boolean;
+    /** Each user's wake, called when a compile settles: any of them may be waiting for it. */
+    readonly wakes: Set<(why: string) => void>;
+}
+const devicePipelines = new WeakMap<GfxDevice, DevicePipelines>();
+
 export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
     const textures: ImageTextures = createImageTextures(host, audit);
     let resources: PaintResources2d | null = null;
-    let device: GfxDevice | null = null, sampler: SamplerHandle | null = null;
-    // One pipeline per blend: 'over' is premultiplied source-over; 'modulate' is the multiply slice's fixed-function dst · src.
-    let overPipeline: PipelineHandle | null = null, modulatePipeline: PipelineHandle | null = null;
-    let pending = 0, failed = false, incarnation = 0;
+    let device: GfxDevice | null = null;
+    // One pipeline per blend: 'over' is premultiplied source-over; 'modulate' is the multiply slice's fixed-function dst · src. The
+    // device's, shared with its other image routes (DevicePipelines); null until this route first meets the device.
+    let shared: DevicePipelines | null = null;
+    const wake = (why: string): void => host.invalidate(why);
     // The paint's hold on picture bitmaps, when its resources carry one (the reference adapter's do; a dense plan's spread keeps it).
     let hold: PaintImageHold | null = null;
     // Pictures some item of THIS frame was refused for: their CPU draw needs the bitmap, so it is not released this frame.
     // Scoped to the frame: a picture refused once and then gone from the board kept its bitmap held for the whole session.
     const cpuKeys = new Set<string>();
     let cpuFrame = -1;
+    // The pools: draw records and run bodies a retired run returned, taken again by the next admission. Never shrunk but on release.
+    const freeDraws: ImageDraw[] = [], freeBodies: RunBody[] = [];
+    const takeDraw = (): ImageDraw | null => {
+        const pooled = freeDraws.pop();
+        if (pooled) return pooled;
+        const lease = host.allocator.cpu.reserve(UNIFORM_BYTES);
+        if (!lease) return null;
+        return { texture: null, scissor: { x: 0, y: 0, width: 0, height: 0 }, uniforms: new Float32Array(UNIFORM_BYTES / 4), lease };
+    };
+    const returnBody = (body: RunBody): void => {
+        for (const call of body.calls) { call.texture = null; freeDraws.push(call); }
+        body.calls.length = 0; body.holds.length = 0;
+        freeBodies.push(body);
+    };
+    // The draw's one command, rewritten per picture: draw copies what it records, and uniformsInto rewrites the slice in place.
+    const textureBinding: { binding: number; texture: TextureHandle; sampler: SamplerHandle } = { binding: 0, texture: null as unknown as TextureHandle, sampler: null as unknown as SamplerHandle };
+    const uniformBinding: { binding: number; slice: ReturnType<LayerHost['uniforms']> } = { binding: 0, slice: null as unknown as ReturnType<LayerHost['uniforms']> };
+    const command: { -readonly [K in keyof DrawCommand]: DrawCommand[K] } = { pipeline: null as unknown as PipelineHandle, vertices: NO_VERTICES, first: 0, count: 4, instances: 1,
+        scissor: { x: 0, y: 0, width: 0, height: 0 }, bindings: { uniforms: [uniformBinding], textures: [textureBinding] } };
     /** A run refused before its items were admitted: every picture of it is a CPU draw candidate. */
     const refuseAll = (items: readonly PaintImageItem[], admission: Exclude<Admission<PreparedRun>, { status: 'ready' }>): Admission<PreparedRun> => {
         let waiting = false;
@@ -135,41 +172,58 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
     };
 
     const release = (): void => {
-        incarnation++;
         cpuKeys.clear(); cpuFrame = -1;
         textures.release();
-        if (device) {
-            if (overPipeline) device.destroy(overPipeline);
-            if (modulatePipeline) device.destroy(modulatePipeline);
-            if (sampler) device.destroy(sampler);
+        for (const call of freeDraws) host.allocator.cpu.release(call.lease);
+        freeDraws.length = 0; freeBodies.length = 0;
+        const own = shared, owner = device;
+        shared = null;
+        if (own && owner) {
+            own.wakes.delete(wake);
+            // The last route on the device takes the pipelines and sampler with it; a compile still in flight is destroyed on arrival.
+            if (--own.users === 0) {
+                devicePipelines.delete(owner);
+                if (own.over) owner.destroy(own.over);
+                if (own.modulate) owner.destroy(own.modulate);
+                owner.destroy(own.sampler);
+                own.over = null; own.modulate = null;
+            }
         }
-        device = null; overPipeline = null; modulatePipeline = null; sampler = null; pending = 0; failed = false;
+        device = null;
     };
 
     // Pipelines compile asynchronously; a run is admitted only once both exist. A generation change drops everything.
-    const warm = (current: GfxDevice): void => {
+    const warm = (current: GfxDevice): DevicePipelines => {
         if (device !== current) { release(); device = current; }
-        if (failed || pending > 0 || (overPipeline && modulatePipeline)) return;
-        sampler ??= current.createSampler(IMAGE_FILTER);
-        const serial = ++incarnation;
+        if (shared) return shared;
+        let entry = devicePipelines.get(current);
+        if (!entry) {
+            entry = { over: null, modulate: null, sampler: current.createSampler(IMAGE_FILTER), users: 0, pending: 0, failed: false, wakes: new Set() };
+            devicePipelines.set(current, entry);
+        }
+        entry.users++; entry.wakes.add(wake); shared = entry;
+        if (entry.failed || entry.pending > 0 || (entry.over && entry.modulate)) return entry;
+        const target = entry;
         const compile = (blend: Blend, onReady: (handle: PipelineHandle) => void) => {
-            pending++;
+            target.pending++;
             current.createPipeline({ shader: IMAGE_SHADER, topology: 'triangle-strip', colorFormat: 'rgba8', samples: 1,
                 blend: blend === 'modulate' ? 'modulate' : 'source-over', alphaToCoverage: false,
                 colorWrite: [true, true, true, true], stencil: { enabled: false } })
                 .then(value => {
-                    if (incarnation !== serial || device !== current) { current.destroy(value); return; }
-                    pending--; onReady(value);
-                    host.invalidate('image-pipeline-ready');
+                    target.pending--;
+                    // Every user left (or the device was released) while it compiled: nobody will draw with it.
+                    if (target.users === 0) { current.destroy(value); return; }
+                    onReady(value);
+                    for (const notify of target.wakes) notify('image-pipeline-ready');
                 }, () => {
-                    if (incarnation !== serial) return;
-                    pending--; failed = true;
+                    target.pending--; target.failed = true;
                     auditCount(audit, 'image:pipeline-failed');
-                    host.invalidate('image-pipeline-failed');
+                    for (const notify of target.wakes) notify('image-pipeline-failed');
                 });
         };
-        if (!overPipeline) compile('over', handle => { overPipeline = handle; });
-        if (!modulatePipeline) compile('modulate', handle => { modulatePipeline = handle; });
+        if (!entry.over) compile('over', handle => { target.over = handle; });
+        if (!entry.modulate) compile('modulate', handle => { target.modulate = handle; });
+        return entry;
     };
 
     return {
@@ -181,17 +235,19 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
             if (!current) return refuseAll(items, unsupported('no-device'));
             if (current.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration) return { status: 'deferred' };
             if (!resources) throw new Error('The image route has no paint resources: useResources must run before admit');
-            warm(current);
-            if (failed) return refuseAll(items, unsupported('pipeline-failed'));
-            if (!overPipeline || !modulatePipeline || !sampler) return { status: 'deferred' };
+            const pipes = warm(current);
+            if (pipes.failed) return refuseAll(items, unsupported('pipeline-failed'));
+            if (!pipes.over || !pipes.modulate) return { status: 'deferred' };
             const multiply = blend === 'modulate' ? 1 : 0;
 
             const scale = view.camera.z * view.viewport.dpr;
             const targetWidth = Math.round(view.viewport.width * view.viewport.dpr), targetHeight = Math.round(view.viewport.height * view.viewport.dpr);
-            const calls: ImageDraw[] = [], holds: string[] = [];
+            const body = freeBodies.pop() ?? { calls: [], holds: [] };
+            const { calls, holds } = body;
             // All or nothing: a refused picture takes the whole run to the composer, so the holds taken so far are returned.
             const reject = (admission: Exclude<Admission<PreparedRun>, { status: 'ready' }>): Admission<PreparedRun> => {
                 for (const key of holds) textures.unhold(key);
+                returnBody(body);
                 return admission;
             };
             // A refusal is a CPU draw of the picture, and the CPU draws it from its bitmap: a released bitmap is asked for again
@@ -247,44 +303,53 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
                 if (right <= left || bottom <= top) continue;
                 // The crop in source pixels, as texels of the texture (which is smaller only when the source was downscaled).
                 const kx = tex.width / tex.sourceWidth, ky = tex.height / tex.sourceHeight;
-                const uniforms = new Float32Array(UNIFORM_BYTES / 4);
-                uniforms.set([targetWidth, targetHeight, multiply, 0, x0, y0, x1, y1,
-                    src.x * kx, src.y * ky, (src.x + src.width) * kx, (src.y + src.height) * ky,
-                    tex.width, tex.height, item.opacity, item.inverted ? 1 : 0]);
-                calls.push({ textures: [{ binding: 0, texture: tex.texture, sampler }],
-                    scissor: { x: left, y: top, width: right - left, height: bottom - top }, uniforms });
+                const call = takeDraw();
+                if (!call) return reject({ status: 'denied', pool: 'cpu', bytes: UNIFORM_BYTES });
+                calls.push(call);
+                const u = call.uniforms;
+                u[0] = targetWidth; u[1] = targetHeight; u[2] = multiply; u[3] = 0;
+                u[4] = x0; u[5] = y0; u[6] = x1; u[7] = y1;
+                u[8] = src.x * kx; u[9] = src.y * ky; u[10] = (src.x + src.width) * kx; u[11] = (src.y + src.height) * ky;
+                u[12] = tex.width; u[13] = tex.height; u[14] = item.opacity; u[15] = item.inverted ? 1 : 0;
+                call.texture = tex.texture;
+                call.scissor.x = left; call.scissor.y = top; call.scissor.width = right - left; call.scissor.height = bottom - top;
             }
             if (calls.length === 0) {
                 for (const key of holds) textures.unhold(key);
+                returnBody(body);
                 return { status: 'empty' };
             }
-            const run: ImageRun = { route: 'image', blend, device: current, calls, holds, retired: false };
+            const run: ImageRun = { route: 'image', blend, device: current, body };
             return { status: 'ready', value: run };
         },
         draw(pass: GpuPass, run: PreparedRun): void {
             const own = run as ImageRun;
-            const drawPipeline = own.blend === 'modulate' ? modulatePipeline : overPipeline, drawSampler = sampler;
-            if (!drawPipeline || !drawSampler || device !== own.device || own.retired) throw new Error('Stale image run');
-            // One command for the run, rewritten per draw: draw copies what it records, and uniformsInto rewrites the uniform
-            // slice in place, so a run of N pictures allocates one command instead of N.
-            const head = own.calls[0];
+            const drawPipeline = own.blend === 'modulate' ? shared?.modulate : shared?.over, drawSampler = shared?.sampler;
+            const body = own.body;
+            if (!drawPipeline || !drawSampler || device !== own.device || !body) throw new Error('Stale image run');
+            // The route's one command, rewritten per draw: draw copies what it records, and uniformsInto rewrites the uniform slice
+            // in place, so a run of N pictures takes one uniform slice and allocates no command.
+            const head = body.calls[0];
             if (!head) return;
-            const cmd: DrawCommand = { pipeline: drawPipeline, vertices: NO_VERTICES, first: 0, count: 4, instances: 1, scissor: head.scissor,
-                bindings: { uniforms: [{ binding: 0, slice: host.uniforms(head.uniforms) }],
-                    textures: [{ binding: 0, texture: head.textures[0].texture, sampler: drawSampler }] } };
-            for (const call of own.calls) {
-                host.uniformsInto(call.uniforms, cmd.bindings.uniforms[0].slice);
-                cmd.bindings.textures[0].texture = call.textures[0].texture;
+            const cmd = command;
+            cmd.pipeline = drawPipeline;
+            uniformBinding.slice = host.uniforms(head.uniforms);
+            textureBinding.sampler = drawSampler;
+            for (const call of body.calls) {
+                if (call !== head) host.uniformsInto(call.uniforms, uniformBinding.slice);
+                textureBinding.texture = call.texture!;
                 cmd.scissor = call.scissor;
                 pass.draw(cmd);
             }
-            auditCount(audit, 'route:image', own.calls.length);
+            auditCount(audit, 'route:image', body.calls.length);
         },
         retire(run: PreparedRun): void {
             const own = run as ImageRun;
-            if (own.retired) return;
-            own.retired = true;
-            for (const key of own.holds) textures.unhold(key);
+            const body = own.body;
+            if (!body) return;
+            own.body = null;
+            for (const key of body.holds) textures.unhold(key);
+            returnBody(body);
         },
         release,
         memory(): { gpuBytes: number; cpuBytes: number } { return textures.memory(); },

@@ -183,6 +183,16 @@ function activityValid(activity: CacheActivity): void {
     }
 }
 
+/** One recovery step up. A level within float noise of full is full: a pane's ceiling is the square root of its pixel share
+ * (0.7999999 for a 0.8 grant), and divided back up it came to 0.99999998, so the plan granted the request less one pixel, the
+ * surface was 1871x1455 for 1872x1456, no frame was ever at quality 1 and a WebGL2 PDF's editing cover, which waits for a sharp
+ * frame, never lifted (measured at DPR 2; each retry for the missing pixel needed a full-size bridge that the pool refused, and
+ * quality fell back to 0.8). */
+function raisedQuality(value: number): number {
+    const next = value / POLICY.qualityReductionFactor;
+    return next >= 1 - 1e-6 ? 1 : next;
+}
+
 /** Need-capped weighted water filling (§6.3:640–641); integer remainders use stable ids. */
 function waterFill(items: readonly Share[], capacity: number): Map<string, number> {
     const grants = new Map(items.map(item => [item.id, 0]));
@@ -524,8 +534,8 @@ export class MemoryGovernor {
         if (!cool) this.belowRecoverySince = null;
         else if (this.belowRecoverySince === null) this.belowRecoverySince = now;
         else if (now - this.belowRecoverySince >= POLICY.memoryRecoveryDelayMs && !this.raiseRefused(now)) {
-            this.qualityLimit = Math.min(1, this.qualityLimit / POLICY.qualityReductionFactor);
-            for (const [id, value] of this.paneCeiling) this.paneCeiling.set(id, Math.min(1, value / POLICY.qualityReductionFactor));
+            this.qualityLimit = raisedQuality(this.qualityLimit);
+            for (const [id, value] of this.paneCeiling) this.paneCeiling.set(id, raisedQuality(value));
             this.levelSince = now;
             this.state = this.qualityLimit < 1 ? 'degraded' : 'normal';
             if (this.state === 'normal') this.lastTrouble = null;
@@ -713,7 +723,17 @@ export class MemoryGovernor {
         // are dropped before the pane's new backing is refused for want of room they hold (measured, DPR 2: a 2D fallback held 44 MB of
         // working canvases beside its 33 MB display, so the GPU scratch of the same pane was refused and quality stepped down).
         const paneOf = cache.registration.paneId;
-        if (kind === 'surface-scratch' && paneOf !== undefined) {
+        // The same holds while the pane's GPU surface is staged beside its 2D picture (its surface scratch is charged): any GPU
+        // reservation of that pane may take the 2D working canvases, since the outgoing picture is on its own display canvas.
+        // Measured (WebGL2, DPR 2 PDF open): 2D display 32.7 + working 43.6 + GPU scratch 32.7 + context 4.2 MB left no room for
+        // the first 1.1 MB page tile, its refusal degraded the app to 0.8 at 1.3 s, and every view stayed soft until the 5 s
+        // recovery (an annotate toggle then took 3.2 s, canvas2d 0.9 s).
+        // Only a request the pool cannot hold looks (the scan below is per reservation otherwise).
+        const staging = pool === 'gpu' && paneOf !== undefined && this.charged[pool] > this.target[pool] - bytes &&
+            kind !== 'canvas-working' && kind !== 'surface' && kind !== 'context' &&
+            (kind === 'surface-scratch' || [...this.caches.values()].some(other => other.registration.paneId === paneOf &&
+                other.registration.kind === 'surface-scratch' && other.bytes > 0));
+        if (staging) {
             // The 2D working canvases are only worth giving up when that makes the scratch fit: a scratch still refused after their
             // eviction left them rebuilt by the next 2D frame for nothing (review3, gpu-h2). The pool is the only check that they
             // can change: the scratch's own limit counts no canvas.

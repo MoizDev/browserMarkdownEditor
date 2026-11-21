@@ -182,6 +182,20 @@ const COVER_CANVAS2D: LayerCoverage = { complete: true, sharp: true };
 function sameFrameToken(a: FrameToken, b: FrameToken): boolean {
     return sameToken(a, b) && a.viewLease === b.viewLease && a.deviceGeneration === b.deviceGeneration;
 }
+// The wet bands' picture key is mixed from numbers into two independent 32-bit hashes, kept as one 53-bit number: no string is joined
+// per band per frame (the frame-path allocation rule; two keys a frame, each one string per run plus the join). One 32-bit hash alone
+// would let a collision answer an unchanged picture and skip a present that draws ink.
+const keyBits = new Float64Array(1), keyWords = new Uint32Array(keyBits.buffer);
+let keyA = 0, keyB = 0;
+function keyStart(): void { keyA = 0x811c9dc5; keyB = 0x9747b28c; }
+function keyInt(value: number): void {
+    keyA = Math.imul(keyA ^ (value | 0), 0x01000193);
+    keyB = Math.imul(keyB ^ (value | 0), 0x5bd1e995); keyB ^= keyB >>> 13;
+}
+function keyNumber(value: number): void { keyBits[0] = value; keyInt(keyWords[0]); keyInt(keyWords[1]); }
+function keyString(value: string): void { keyInt(value.length); for (let i = 0; i < value.length; i++) keyInt(value.charCodeAt(i)); }
+function keyEnd(): number { return (keyA >>> 0) * 0x200000 + ((keyB >>> 0) & 0x1fffff); }
+const SLOT_STATES = { pending: 1, ready: 2, empty: 3, denied: 4 } as const;
 function viewKeyOf(view: ViewState): string {
     return `${view.camera.x},${view.camera.y},${view.camera.z},${view.viewport.width},${view.viewport.height},${view.viewport.dpr}`;
 }
@@ -660,15 +674,26 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         if (id === undefined) shownIds.set(shown, id = ++nextShownId);
         return id;
     };
-    const fingerprintOf = (view: ViewState): string => {
-        const drawn = options.boardDrawnInk(), parts: string[] = [viewKeyOf(view), options.current() ? 'c' : 'x', disposed ? 'd' : 'l'];
-        for (const snapshot of handover?.pendingSnapshots() ?? []) parts.push(`s${snapshot.identity.gestureSequence}:${snapshot.dry && drawn.has(snapshot.identity.nodeId) ? 1 : 0}`);
-        for (const [key, slot] of runs) {
-            parts.push(`${key}:${slot.state}:${slot.serial}:${slot.scale}:${slot.viewBound ? slot.viewKey : '-'}:${slot.token.viewLease}:${slot.token.deviceGeneration}:${shownIdOf(slot.shown)}`);
-        }
-        return parts.join('|');
+    const fingerprintOf = (view: ViewState): number => {
+        const drawn = options.boardDrawnInk();
+        keyStart();
+        keyNumber(view.camera.x); keyNumber(view.camera.y); keyNumber(view.camera.z);
+        keyNumber(view.viewport.width); keyNumber(view.viewport.height); keyNumber(view.viewport.dpr);
+        keyInt(options.current() ? 1 : 0); keyInt(disposed ? 1 : 0);
+        const pending = handover?.pendingSnapshots() ?? [];
+        keyInt(pending.length);
+        for (const snapshot of pending) { keyNumber(snapshot.identity.gestureSequence); keyInt(snapshot.dry && drawn.has(snapshot.identity.nodeId) ? 1 : 0); }
+        keyInt(runs.size);
+        runs.forEach(keyRun);
+        return keyEnd();
     };
-    const drawnKey: Partial<Record<WetBand, string>> = {};
+    // One callback for the layer's life: a Map's entry iteration may allocate a pair per run.
+    const keyRun = (slot: WetRunSlot, key: number): void => {
+        keyNumber(key); keyInt(SLOT_STATES[slot.state]); keyNumber(slot.serial); keyNumber(slot.scale);
+        if (slot.viewBound) keyString(slot.viewKey); else keyInt(-1);
+        keyNumber(slot.token.viewLease); keyNumber(slot.token.deviceGeneration); keyNumber(shownIdOf(slot.shown));
+    };
+    const drawnKey: Partial<Record<WetBand, number>> = {};
     // Whether the band's last draw drew nothing (no shown run). An empty band stays unchanged whatever the view does: its fingerprint folds
     // the camera in, so without this a camera move answered changed for a band with no ink (measured: every zoom frame).
     const drawnEmpty: Partial<Record<WetBand, boolean>> = {};

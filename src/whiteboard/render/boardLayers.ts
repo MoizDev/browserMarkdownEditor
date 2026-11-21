@@ -780,11 +780,17 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 // and the composer still prepares, at the new camera, from them, so the previous band keeps drawing under the live
                 // camera until the new one is built (the wake). Without this the composer did not prepare, and the draw-list guard
                 // drew nothing for the frame.
+                // A source's build is finished only when the reference presents it: a picture's lease resolves after the call that asked
+                // for it, and a build longer than one budget yields, and either completes only in a later prepare. Built once per
+                // source, a dropped picture's frame never completed on a device: the board drew its previous picture and showed
+                // 'Updating…' for good, the picture never drawn (canvas2d, which prepares every frame, drew it). So a source the
+                // reference has not yet presented is prepared again on each frame; a presented one returns at once.
                 if (directBuiltFor !== frame && !memoryGate.closed()) {
                     adapter.prepare(view, budget);
                     directBuiltFor = frame;
                 } else if (directBuiltFor !== frame) auditCount(options.auditSurface ?? 'board', 'direct:build-held');
-                if (directBuiltFor !== frame) prepareUnchanged = false;
+                else if (adapter.readyFrame() !== frame) { adapter.prepare(view, budget); auditCount(options.auditSurface ?? 'board', 'direct:build-resumed'); }
+                if (directBuiltFor !== frame || adapter.readyFrame() !== frame) prepareUnchanged = false;
                 const composerChanged = prepareGpu(view, budget, frame);
                 if (composerChanged && renderAuditEnabled()) auditCount(options.auditSurface ?? 'board', 'unchanged-miss:composer');
                 if (budget.phase === 'foreground') { pendingFrame = frame; foregroundFrame = budget.frameId; return; }

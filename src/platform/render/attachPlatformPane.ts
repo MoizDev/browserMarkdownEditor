@@ -14,6 +14,12 @@ import { GPU_RETRY_QUIET_MS, GpuPaneCandidate } from './gpuPaneCandidate';
 
 /** How long a fresh view keeps its previous picture while its layers first draw complete and sharp. A bound, not a target. */
 const FRESH_VIEW_COVER_MS = 3000;
+/** How long a WebGL2 pane's resize waits on its 2D bridge before it rebuilds without one. A raise never waits on a frame that cannot
+ * present: a WebGL2 PDF holding a 4000x3000 picture at 400% (DPR 2) raised its quality, the bridge's 2D frame could not fit the 41 MB CPU
+ * pool (its mirror trimmed, 'mirror-unpresented'), the GPU rebuild waited on it, and nothing asked again: 'Updating' for good, about half
+ * of gpu-f2's runs. A bridge that presents does so within a few frames; past this the GPU is resized directly and draws from the
+ * textures it kept, the last picture standing in until the exact one lands. */
+const BRIDGE_WAIT_MS = 300;
 import type { QualifiedGpuPane } from './gpuPaneCandidate';
 import type { CameraConstraint } from './camera';
 import type { CompositorBackend, CompositorLayer, Compositor2DOptions, CreatedCompositor2D, PaneCompositor } from './compositor.types';
@@ -88,6 +94,9 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     let gpu: QualifiedGpuPane | null = null;
     let cpuPresented = false;
     let gpuRequested = false;
+    /** The 2D bridge of a GPU resize: when it began (null when none is pending), whether this resize skipped it, and its wake. */
+    let bridgeSince: number | null = null, bridgeSkipped = false, bridgeTimer: ReturnType<typeof setTimeout> | null = null;
+    const endBridge = (): void => { bridgeSince = null; if (bridgeTimer !== null) { clearTimeout(bridgeTimer); bridgeTimer = null; } };
     const drawCompositor = (): PaneCompositor | null => gpu && cpuPresented ? gpu.bundle.compositor : compositorRef.current;
     const activeMetrics = (): SurfaceMetricsCommitter => gpu && cpuPresented ? gpuMetrics : cpuMetrics;
 
@@ -432,6 +441,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                         auditCount('pane', `fallback:pane-2d:${reason}`);
                         gpu = null;
                         cpuPresented = false;
+                        endBridge(); bridgeSkipped = false;
                         surfaceHost.clearStaged();
                         lastReport = null; options.onPresentation(null);
                         // Every fallback, a GPU error included, needs a frame now: the GPU frame that failed may have cleared the
@@ -451,15 +461,28 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                         const size = observer.readForFrame(frameId);
                         const grant = runtime.governor.grant(options.paneId);
                         if (!size || !grant) return null;
+                        // A bridge that has not presented within BRIDGE_WAIT_MS is skipped: the GPU, still displayed, is resized below.
+                        if (!cpuPresented && gpu && bridgeSince !== null && performance.now() - bridgeSince >= BRIDGE_WAIT_MS) {
+                            auditCount('pane', 'fallback:2d-bridge-skipped');
+                            endBridge();
+                            bridgeSkipped = true;
+                            cpuPresented = true;
+                        }
                         let drawing = drawCompositor();
                         if (!drawing) return null;
                         let planned = computeSurfaceMetrics(size.physical, size.nominalDpr, drawing.target.limits, grant.pixelGrant);
-                        if (drawing !== compositor && surfaceHost.current === drawing && planned.kind === 'ready' &&
+                        if (!bridgeSkipped && drawing !== compositor && surfaceHost.current === drawing && planned.kind === 'ready' &&
                             (drawing.surface.width !== planned.backingWidth || drawing.surface.height !== planned.backingHeight)) {
                             // Resizing a displayed GL canvas destroys its last complete pixels before
                             // layers can prepare the new viewport. Build the normal CPU bridge detached,
                             // then resize/rebuild this SAME kept GPU behind that complete picture.
                             cpuPresented = false;
+                            if (bridgeSince === null) {
+                                bridgeSince = performance.now();
+                                // Nothing else asks for a frame while a bridge that cannot present waits: this wake does.
+                                bridgeTimer = setTimeout(() => { bridgeTimer = null; if (!disposed && bridgeSince !== null) lifecycle?.invalidate('bridge-wait'); },
+                                    BRIDGE_WAIT_MS + 1);
+                            }
                             // The bridge is board content rastered on the CPU while the device exists: counted with its pixels.
                             auditCount('pane', 'fallback:2d-bridge', 1, { px: size.physical.width * size.physical.height });
                             const shown = drawing.surface.width * drawing.surface.height;
@@ -596,6 +619,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                                 if (drawing === compositor) {
                                     lifecycle?.note2DPresented(frame.token, revision);
                                     cpuPresented = true;
+                                    endBridge();
                                 } else if (surfaceHost.current !== drawing) {
                                     const view = mirrorView();
                                     if (!view || !gpu || !lifecycle?.presentGpu(gpu.grant, frame.token, view, revision, complete)) {
@@ -616,7 +640,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                                 auditFrame(drawing.backend, performance.now() - encodeStart);
                                 touchedFrame = frame.frameId;
                                 if (qualityScale < 1) auditCount('pane', 'quality-below-1');
-                                if (drawing !== compositor) candidate.presented(frame.token.deviceGeneration);
+                                if (drawing !== compositor) { candidate.presented(frame.token.deviceGeneration); bridgeSkipped = false; }
                                 lastReport = { revision, backend: drawing.backend, complete, sharp, staleVersion,
                                     camera: { x: liveCamera.x, y: liveCamera.y, z: liveCamera.z },
                                     drawn: { x: frame.view.camera.x, y: frame.view.camera.y, z: frame.view.camera.z }, geometry: geometry?.generation };
@@ -707,6 +731,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         visible = next;
         if (!next) {
             cpuPresented = false; gpuRequested = false; lastReport = null; options.onPresentation(null);
+            endBridge(); bridgeSkipped = false;
             lifecycle?.hidePane();
             surfaceHost.clearStaged();
             gpu = null;
@@ -796,6 +821,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             setVisible(false);
             disposed = true;
             if (freshTimer !== null) { clearTimeout(freshTimer); freshTimer = null; }
+            endBridge();
             lastReport = null; options.onPresentation(null);
             candidate.dispose();
             observer.dispose();

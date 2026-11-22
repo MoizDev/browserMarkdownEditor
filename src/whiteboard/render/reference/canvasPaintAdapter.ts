@@ -20,6 +20,12 @@ export interface CanvasPaintAdapter {
      * moved on. Null when nothing is presented. */
     retainPrepared(): PreparedRetain | null;
     draw2d(ctx: CanvasRenderingContext2D, view: ViewState, band: PaintBand, omitNodes?: ReadonlySet<string>): void;
+    /** True when the presented paint holds every picture its items draw. A picture the GPU side released (it draws from its texture) or
+     * one being decoded again cannot be drawn on the CPU; a canvas2d pane releases nothing, so there it is true once presented. */
+    drawable2d(): boolean;
+    /** Asks again for every picture the GPU side released from the presented paint, because a 2D frame (a WebGL2 pane's resize
+     * bridge) is about to draw it; each settlement invalidates the frame. Returns how many it asked for. */
+    reacquireReleased(): number;
     release(reason: GpuReleaseReason): void;
     needsFrame(): boolean;
     memory(): { gpuBytes: number; cpuBytes: number };
@@ -88,6 +94,9 @@ type Snapshot = {
     images: Map<string, PaintImageLease | null>;
     /** Pictures whose bitmap the GPU side gave up (imageState 'released'); reacquired by requestImage. */
     released: Set<string>;
+    /** The pictures this paint's own items draw. The GPU route also requests finer tiles into the snapshot (reacquireImage) that
+     * no 2D draw reads: a 2D frame waits on, and asks again for, only these. */
+    drawn: Set<string>;
     /** Built once, on first borrow, so every borrow of this snapshot is the same identity. */
     prepared: PreparedPaint2d | null;
     /** Open retainPrepared borrows; a release that arrives meanwhile is applied when the last one ends. */
@@ -173,7 +182,7 @@ export function createCanvasPaintAdapter(
         const windows = windowsOfSource(frame);
         // A full frame's window list duplicates its band arrays, so it is charged; a live frame's list is the frame's own.
         return { frame, scale, windows, window: 0, finished: false, index: 0, clipIndex: 0, paths: new WeakMap(), prepared: null,
-            clips: new Map(), geometry: new Map(), images: new Map(), released: new Set(), borrows: 0, closing: false, abort: new AbortController(),
+            clips: new Map(), geometry: new Map(), images: new Map(), released: new Set(), drawn: new Set(), borrows: 0, closing: false, abort: new AbortController(),
             pending: 0, failed: false, failure: undefined, complete: false, disposed: false,
             bytes: frame.liveOnly ? 0 : refBytesOf(windows), job: null };
     }
@@ -233,6 +242,7 @@ export function createCanvasPaintAdapter(
             return;
         }
         if (item.kind === 'image') {
+            s.drawn.add(item.imageKey);
             requestImage(s, item.imageKey);
         } else if (item.kind !== 'text') {
             const itemScale = scaleFor(item, s.scale);
@@ -292,6 +302,13 @@ export function createCanvasPaintAdapter(
         } };
         return s.prepared;
     }
+    // The presented paint holds every picture its items draw (see CanvasPaintAdapter.drawable2d).
+    function holdsDrawn(): boolean {
+        const s = presented;
+        if (disposed || !s || s.closing) return false;
+        for (const key of s.drawn) if (s.released.has(key) || s.images.get(key) === null) return false;
+        return true;
+    }
     function borrowPrepared(): PreparedPaint2d | null {
         const s = presented;
         if (disposed || !s || s.closing) return null;
@@ -341,7 +358,20 @@ export function createCanvasPaintAdapter(
             if (disposed || !s || s.closing) return null;
             return borrowSnapshot(s);
         },
+        drawable2d: holdsDrawn,
+        reacquireReleased() {
+            const s = presented;
+            if (disposed || !s || s.closing || !s.released.size) return 0;
+            // Only the pictures the 2D paint draws: re-decoding every GPU-planned finer tile (tens of MB at 400%) into the CPU pool
+            // when the bridge is short of it refused the bridge's own frame again (gpu-f2's review).
+            let asked = 0;
+            for (const key of s.drawn) if (s.released.delete(key)) { requestImage(s, key); asked++; }
+            return asked;
+        },
         draw2d(ctx, view, band, omitNodes) {
+            // A picture released to the GPU threw out of paintItem2d and failed the pane ('Could not continue: Released prepared
+            // image'): the scheduler unregistered it and the board stayed 'Updating' for good. Its caller reports such a paint incomplete.
+            if (!holdsDrawn()) return;
             const prepared = borrowPrepared();
             if (!prepared) return;
             project(ctx, view, () => {

@@ -1321,6 +1321,12 @@ export class FrameScheduler {
                 }
             } else if (meta) {
                 if (renderAuditEnabled() && cameraMoved(meta.layer, item.frame.view)) auditCount('scheduler', 'camera-yielded:' + phase);
+                // A two-phase layer whose foreground call ran this frame prepared, and draws, at this camera even when its background call
+                // is passed over: the camera is recorded here, as that background call would have. Left at the camera before, the next
+                // frame's calls read a move that was already drawn and overrode the layer's own unchanged answer (measured, img8 pan start:
+                // the deferred background frame after it, camera-unchanged:foreground and :background, presented the same picture again).
+                if (phase === 'background' && item.foreground.has(meta.layer))
+                    lastPreparedCamera.set(meta.layer, { x: item.frame.view.camera.x, y: item.frame.view.camera.y, z: item.frame.view.camera.z });
                 this.passedOver(item, meta);
             }
             overshoot = Math.max(0, performance.now() - deadline);

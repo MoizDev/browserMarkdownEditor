@@ -546,6 +546,10 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     // generation, hashed): untagged the frame after the swap, its draws signed in full moved the signature over the same picture (the
     // next present after each swap was redundant). A recompose changes the hash and ends the tag; a position not drawn loses it.
     let swappedTiles = new Map<number, number>(), spareSwapped = new Map<number, number>();
+    // A live draw refused on the surface (an unplanned isolation target, a full ring) left that frame's cover without the part: the
+    // next prepare answers changed so its cover is presented. Signed by position alone, the refused cover stood, and so did every swap
+    // after it (kinds arrow-label, WebGL2 light DPR 1: the arrow's body missing for good, its label clip's first live draw refused).
+    let liveRefusedSerial = 0, liveRefusedSigned = 0;
     // Two-phase frames (budget.phase): the foreground call of frame `foregroundFrame` leaves its target, span, zoom and edit count for the
     // background call of the same frame. `frameComposed` counts this frame's composes across both calls, so the limit stays per frame.
     let foregroundFrame = -1;
@@ -1017,7 +1021,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         let position = building.get(key);
                         if (!position) {
                             const status = statusAt(band, target, x, y);
-                            if (status !== 'dirty' && !(status === 'missing' && !finishedAt(band, target, x, y))) continue;
+                            if (status !== 'dirty' && status !== 'missing' || finishedAt(band, target, x, y)) continue;
                             const started = begin(band, target, x, y, view);
                             if (!started) continue;
                             position = started;
@@ -1054,6 +1058,10 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         if (!position) {
                             const status = statusAt(band, target, x, y);
                             if (pass === 'dirty' ? status !== 'dirty' : status !== 'missing') continue;
+                            // Composed earlier this frame (the held pass takes the positions under a held node first) and still dirty until
+                            // its encode: begun again it composed twice per frame (rotate, WebGL2 DPR 2 dark: every position under the
+                            // rotated rectangle composed twice in the change frame and the next).
+                            if (finishedAt(band, target, x, y)) { auditCount(audit, 'compose:finished-this-frame'); continue; }
                             // A visible position a stand-in already shows is not the foreground's: it waits for the background call.
                             if (only === 'foreground' && pass === 'missing' && standInsOf(band, target, x, y).length) continue;
                             // While zooming, content a stand-in can show is not composed again at this scale: its raster is scaled.
@@ -1864,6 +1872,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             else { exactAtX = Number.NaN; exactAtY = Number.NaN; exactAtZ = Number.NaN; }
             // Changed unless the frame drew what the last one drew: no edit, the same draw list, and a settled index.
             let signature = hashMix(liveNow ? 1 : 0, coverSignature);
+            const afterRefusal = liveRefusedSigned !== liveRefusedSerial;
+            liveRefusedSigned = liveRefusedSerial;
             for (let i = 0; i < drawCount; i++) {
                 const draw = draws[i];
                 // A cover's live parts change only with an edit, which presents through its scene revision: re-laid unchanged, they are the
@@ -1892,11 +1902,12 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             // A quiet switch with no change on the board draws the picture the settling frame drew: it answers unchanged.
             const quiet = quietSwitch && !invalidatedNow && !settleInexact;
             if (quiet && sigChanged) auditCount(audit, 'settle:switch:quiet');
-            const changed = indexing || (sigChanged && !quiet) || settleInexact;
+            const changed = indexing || (sigChanged && !quiet) || settleInexact || afterRefusal;
             drawSignature = signature;
             // Why it answered changed, as audit counters (gh14): a prepare names every condition that held.
             if (changed && renderAuditEnabled()) {
                 if (indexing) auditCount(audit, 'prepare:changed:indexing');
+                if (afterRefusal) auditCount(audit, 'prepare:changed:after-refused-draw');
                 if (settleInexact) auditCount(audit, 'prepare:changed:settle-inexact');
                 if (editBits & EDIT_SUPERSEDED) auditCount(audit, 'prepare:changed:superseded');
                 if (editBits & EDIT_EMPTY) auditCount(audit, 'prepare:changed:empty');
@@ -1954,7 +1965,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         catch (error) {
                             // A budget refusal is counted and the frame asks again; any other error is reported and thrown.
                             if (!isBudgetRefusal(error)) { auditGpuError(audit, 'live-clip', error); throw error; }
-                            auditCount(audit, 'draw:refused'); noteShortfall(error); wantFrame = true; host.markIncomplete('live-draw-refused');
+                            auditCount(audit, 'draw:refused'); noteShortfall(error); wantFrame = true; liveRefusedSerial++; host.markIncomplete('live-draw-refused');
                         }
                         finally { pass.popClip(clip); }
                     }

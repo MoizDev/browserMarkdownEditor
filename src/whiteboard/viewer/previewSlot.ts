@@ -47,11 +47,16 @@ export function createPreviewSlot(id: string, base: PlatformLayerDefinition): Pr
         inner: Layer | null = null;
         innerDef: PlatformLayerDefinition | null = null;
         innerEpoch = 0;
+        // A swap (a new preview, or a clear) not yet reported by a prepare. The definition's revision, critical, coverage and working
+        // set hooks sync too, and the scheduler reads them before it prepares: reported by the epoch alone, the swap was consumed
+        // there, the prepare after a clear answered unchanged, and the cleared preview's last picture stayed on screen over the
+        // board's (kinds rotate, WebGL2 DPR 2 dark: the rotated rectangle drawn twice, by the board and the stale preview, for good).
+        swapUnreported = false;
         constructor(private readonly host: Parameters<PlatformLayerDefinition['create']>[0]) {}
         sync(): Layer | null {
             if (this.innerEpoch === epoch) return this.inner;
             const old = this.inner;
-            this.inner = null; this.innerDef = null; this.innerEpoch = epoch;
+            this.inner = null; this.innerDef = null; this.innerEpoch = epoch; this.swapUnreported = true;
             try { old?.dispose(); } finally {
                 if (target) { this.inner = target.create(this.host); this.innerDef = target; }
             }
@@ -61,14 +66,14 @@ export function createPreviewSlot(id: string, base: PlatformLayerDefinition): Pr
         // was presented from the replaced layer, so that frame reports changed. Once cleared, the slot draws nothing, and a frame
         // that finds nothing to draw leaves nothing that differs from the cleared picture, so it reports unchanged.
         prepare(...args: Parameters<Layer['prepare']>): boolean | void {
-            const swapped = this.innerEpoch !== epoch;
-            const inner = this.sync();
+            const inner = this.sync(), swapped = this.swapUnreported;
+            this.swapUnreported = false;
             if (!inner) return swapped ? undefined : false;
             const answer = inner.prepare(...args);
             return swapped ? undefined : answer;
         }
         // A cleared slot draws nothing: nothing it shows moves with the camera.
-        idle(): boolean { return this.innerEpoch === epoch && this.inner === null; }
+        idle(): boolean { return this.innerEpoch === epoch && this.inner === null && !this.swapUnreported; }
         drawGpu(...args: Parameters<Layer['drawGpu']>) { this.sync()?.drawGpu(...args); }
         // Without this the compositor skips the preview's offscreen tiles entirely: nothing it composes is ever drawn.
         encodeOffscreen(...args: Parameters<NonNullable<Layer['encodeOffscreen']>>) { this.sync()?.encodeOffscreen?.(...args); }
@@ -89,7 +94,7 @@ export function createPreviewSlot(id: string, base: PlatformLayerDefinition): Pr
         }
         protectFrame(frameId: number, view: ViewState) { this.inner?.protectFrame?.(frameId, view); }
         memory() { return this.inner?.memory() ?? { gpuBytes: 0, cpuBytes: 0 }; }
-        needsFrame() { return this.innerEpoch !== epoch || (this.inner?.needsFrame() ?? false); }
+        needsFrame() { return this.innerEpoch !== epoch || this.swapUnreported || (this.inner?.needsFrame() ?? false); }
         // The revision the slot reports carries its epoch; the inner layer acknowledges the revision it reported itself.
         // Forwarding the packed value never matched (measured: acknowledged 4294967299 against a revision of 3), so no
         // overlay presentation completed. An acknowledgement from an earlier epoch belongs to the replaced preview.

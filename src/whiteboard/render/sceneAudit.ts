@@ -11,7 +11,10 @@ import { inkCoverageChunks, type PaintItem, type PaintSource } from './paintStre
 interface Presented { readonly frame: PaintSource; readonly view: ViewState; readonly paneTransform: Affine | null }
 
 function describe(item: PaintItem): unknown {
-    const base = { kind: item.kind, node: item.nodeId, m: item.localToWorld, clips: item.clips.length };
+    // `clips` stays the count (judges read it as a flag); each clip's own geometry is in `clipPaths`, outermost first, so the truth
+    // can intersect a clipped item (a frame's child) instead of leaving it to canvas2d's weaker bar.
+    const base = { kind: item.kind, node: item.nodeId, m: item.localToWorld, clips: item.clips.length,
+        ...(item.clips.length ? { clipPaths: item.clips.map(clip => ({ d: clip.d, fillRule: clip.fillRule, m: clip.localToWorld })) } : {}) };
     if (item.kind === 'path') {
         const { fill, stroke, blend } = item.material;
         return { ...base, d: item.d, fillRule: item.fillRule, fill: fill ?? null, blend,

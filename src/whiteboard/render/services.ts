@@ -516,7 +516,8 @@ export function createBoardRenderServices(options: {
                     : node.kind === 'connector' ? paintConnector(node, geometry.connector!, context, palette, text.faces)
                     : await paintVectorNode(node, geometry.vector!, context, palette, text.faces,
                         { signal: itemSignal, cooperate: options.cooperate, media: node.kind === 'picture' || node.kind === 'clip' ? doc.media.get(node.media!) : undefined,
-                            preview: previewMediaOf(doc, node), tiles: { deviceScale: request.deviceScale, world: pictureTileWorld(request) } });
+                            preview: previewMediaOf(doc, node), tiles: { deviceScale: request.deviceScale, world: pictureTileWorld(request),
+                                ...(request.exactScale !== undefined ? { exactScale: request.exactScale } : {}) } });
                 const resolved = withAllocation(paint, geometry, context);
                 if (reuse) reuse.cache.set(reuse.variant, node.id, context.sensitive, resolved);
                 return resolved;

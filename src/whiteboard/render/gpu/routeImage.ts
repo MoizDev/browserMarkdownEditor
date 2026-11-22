@@ -59,6 +59,9 @@ interface ImageRun extends PreparedRun {
 const UNIFORM_BYTES = 64;
 /** The placeholder's 1×1 texture, charged at a small floor (it is a real allocation, however small). */
 const BLANK_BYTES = 64;
+/** Finer tile keys remembered as drawn (drawnTiles), a few dozen per large picture: past it the oldest is forgotten, and a live
+ * draw that meets that tile again writes it whole on its first upload (firstPaint) instead of over the frame's allowance. */
+const DRAWN_TILES_MAX = 4096;
 
 /** Four vec4 uniforms, 16 floats: viewport (target px w, h, multiply flag, placeholder flag), destination (device rect x0, y0, x1, y1),
  * sourceRect (texel rect u0, v0, u1, v1), params (texture w, h, opacity, invert). The quad covers whole device pixels; every edge pixel is
@@ -180,6 +183,9 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
     let screen: Rect | null = null;
     // Finer tiles left out while their texture is written (admit); pump advances them each frame until they are up.
     const uploading = new Set<string>();
+    // Finer tiles drawn from their texture at least once since the device came up, oldest first: only such a tile can be in a composed
+    // tile beneath a live draw. Bounded (DRAWN_TILES_MAX, the oldest dropped), as a key here only decides an upload's pace.
+    const drawnTiles = new Set<string>();
     const screenRing: Rect = { x: 0, y: 0, width: 0, height: 0 };
     // The pools: draw records and run bodies a retired run returned, taken again by the next admission. Never shrunk but on release.
     const freeDraws: ImageDraw[] = [], freeBodies: RunBody[] = [];
@@ -221,7 +227,7 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
         return blank.texture;
     };
     const release = (): void => {
-        cpuKeys.clear(); cpuFrame = -1; uploading.clear();
+        cpuKeys.clear(); cpuFrame = -1; uploading.clear(); drawnTiles.clear();
         if (blank && device) { device.destroy(blank.texture); host.allocator.gpu.release(blank.lease); }
         blank = null;
         textures.release();
@@ -379,8 +385,14 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
                         }
                     } else {
                         if (hold && state !== 'ready' && textures.needsSource(key)) { hold.reacquireImage(key); return reject({ status: 'deferred' }); }
-                        // The picture itself (not a finer tile over its stand-in, nor an underlaid one): nothing shows without it.
-                        admitted = textures.acquire(key, state === 'ready' ? paint.image(key) : null, budget, !tile && !item.underlaid);
+                        // Written whole on its first upload: the picture itself (not a finer tile over its stand-in, nor an underlaid
+                        // one), since nothing shows without it; and in a live draw a finer tile never drawn, since a live run is drawn
+                        // all or none, so its upload held the whole picture back. An inserted picture is drawn live over the positions it
+                        // made dirty, and its finer tiles' uploads share the frame's allowance with the paper's and the page's (measured,
+                        // a 4000x3000 insert at DPR 2: notebook 1124 vs canvas2d 1006 ms, PDF 1012 vs 844; written whole, notebook 957
+                        // vs 945). A tile drawn before keeps the allowance: the composed tiles beneath the live draw show it meanwhile.
+                        const firstPaint = tile ? !isTileView(view) && !drawnTiles.has(key) : !item.underlaid;
+                        admitted = textures.acquire(key, state === 'ready' ? paint.image(key) : null, budget, firstPaint);
                     }
                 }
                 if (admitted.status === 'empty') return null;
@@ -392,7 +404,7 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
                     // a 4000x3000 insert at DPR 2: the picture showed 170 ms after its stand-in's texture, 1054 ms vs canvas2d's 972).
                     // A live draw (a selected picture over its own composed tiles) still defers: drawn now it laid the stand-in over
                     // the sharp tiles beneath it until its own textures were up (the 8000x6000 grid flat in 2 of 4 runs), whereas
-                    // dropped for the frame it lets those tiles show.
+                    // dropped for the frame it lets those tiles show. Its first textures are written whole (firstPaint, above).
                     if (tile && admitted.status === 'deferred' && isTileView(view) && hold?.imageState(key) === 'ready') {
                         uploading.add(key); waits.push(key);
                         auditCount(audit, 'image:tile:upload-wait');
@@ -407,6 +419,10 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
                     return reject(admitted);
                 }
                 holds.push(key);
+                if (tile && !drawnTiles.has(key)) {
+                    drawnTiles.add(key);
+                    if (drawnTiles.size > DRAWN_TILES_MAX) drawnTiles.delete(drawnTiles.values().next().value!);
+                }
                 // The texture holds the pixels now, so the bitmap is no longer needed. A picture some item of it was refused
                 // for stays held: its CPU draw needs the bitmap.
                 if (!video && hold && !cpuKeys.has(key) && hold.imageState(key) === 'ready') hold.releaseImage(key);

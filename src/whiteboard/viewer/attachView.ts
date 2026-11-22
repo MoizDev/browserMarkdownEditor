@@ -398,6 +398,8 @@ export const attachView: AttachView = options => {
         if (band !== null && liveBand !== null && band !== liveBand && moving) carriedBand = liveBand;
         liveBand = band;
         const previousDeviceScale = moving && carriedBand !== null ? carriedBand : undefined;
+        // The view's own scale beside its band's top: pictures the GPU route draws plan their tiles at it (PictureTileRequest.exactScale).
+        const exact = band !== null && current ? { exactScale: current.camera.z * current.viewport.dpr } : {};
         // The viewport is consumed as a bounded ordered stream: no whole-sheet node array is ever built.
         const open = pin.paintStream;
         if (!open) { pin.release(); report(new Error('Board scene has no bounded paint stream')); return; }
@@ -415,12 +417,12 @@ export const attachView: AttachView = options => {
         // Tile streams reopened by the frame share this request's identity (precision, sensitivity), not its world.
         // On a device, the view stage realises its strokes at the whole-scene stage's precision (scenePrecision): the two stages
         // then share one realisation per stroke, and a stage switch re-keys nothing. Canvas2d keeps its request.
-        const identity = { sheetId: selectedSheet, theme: view.theme, sensitiveNodes,
+        const identity = { sheetId: selectedSheet, theme: view.theme, sensitiveNodes, ...exact,
             ...(deviceScale ? { deviceScale, allowInkLod: true } : {}), ...(onDevice ? { scenePrecision: true } : {}),
             ...(previousDeviceScale !== undefined ? { previousDeviceScale } : {}) };
         // The whole-scene stage: asked once per key on a device, after the view frame it follows is up. No world, so the pin
         // does not cull by the camera, so the scene's items do not change with the zoom; only its strokes' band does (at a crossing).
-        const sceneShape = { sheetId: selectedSheet, theme: view.theme, sensitiveNodes,
+        const sceneShape = { sheetId: selectedSheet, theme: view.theme, sensitiveNodes, ...exact,
             ...(deviceScale !== undefined ? { deviceScale } : {}), ...(previousDeviceScale !== undefined ? { previousDeviceScale } : {}) };
         // The on-screen rect: picture tiles are decoded for it and a ring, not for the frame's whole margin (the large-picture fix).
         const screenWorld: Rect | undefined = current ? { x: current.camera.x, y: current.camera.y,

@@ -1,3 +1,4 @@
+import { RENDER_CONSTANTS } from '../../platform/render/constants';
 import type { MediaId } from '../model/media';
 
 export interface MediaTile {
@@ -14,7 +15,7 @@ export interface MediaRasterGeometry {
     readonly interiorWidth: number; readonly interiorHeight: number;
     readonly mipX: number; readonly mipY: number;
 }
-const TILE = 1024;
+const TILE = RENDER_CONSTANTS.mediaTileInteriorPixels;
 
 export function mediaTileKey(tile: MediaTile): string {
     if (!/^sha256:[0-9a-f]{64}$/.test(tile.id) || !Number.isSafeInteger(tile.frame) || tile.frame < 0

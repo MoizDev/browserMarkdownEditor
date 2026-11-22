@@ -90,6 +90,11 @@ const noMirror: MirrorPresentation = Object.freeze({ presented: false, complete:
 const tileSize = POLICY.tileInteriorPixels;
 const gutter = POLICY.tileGutterTexels;
 const maxImagePixels = (tileSize + 2 * gutter) ** 2;
+/** A bitmap up to a board picture tile (its interior and gutter) is drawn whole, one upload. Cut into platform-tile crops it was
+ * copied while the board still held it: on the feature build an 8000x6000 picture's six level-0 tiles took ~25 MB decoded plus
+ * ~25 MB of crops, the crops were refused about halfway in a 41 MB pool and the picture never showed past its stand-in (canvas2d,
+ * DPR 2: grid contrast 0.000; drawn whole 0.781 from 2 s after the insert, no frame over 8.33 ms on the insert or on doc12). */
+const wholeImagePixels = (POLICY.mediaTileInteriorPixels + 2 * gutter) ** 2;
 
 function sameToken(a: FrameToken | null, b: FrameToken): boolean {
     return !!a && a.vaultEpoch === b.vaultEpoch && a.documentId === b.documentId && a.bytesGeneration === b.bytesGeneration &&
@@ -699,6 +704,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
     }
     /** The CPU bytes this canvas's working cache holds: charged to the pane, so the pane's demand must declare them. */
     cpuWorkingBytes(): number { return this.cpuBytes; }
+    progressUploadBytes(): number { return wholeImagePixels * POLICY.decodedRgbaBytesPerPixel; }
     private reserveGpu(bytes: number): ByteLease | null {
         const lease = this.working?.reserve(bytes) ?? null;
         if (lease) { this.gpuLeases.add(lease); this.gpuBytes += lease.bytes; }
@@ -987,7 +993,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             !this.intersectsBuffer(buffer, dst)) return;
         this.pendingSources.add(source);
         const extent = imageExtent(source);
-        if (extent.width * extent.height <= maxImagePixels) {
+        if (extent.width * extent.height <= wholeImagePixels) {
             this.drawImage(buffer, source, src, dst);
             return;
         }
@@ -1025,7 +1031,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         const back = this.buffers.get('back');
         if (!back || !(image instanceof ImageBitmap)) return !!back;
         // A larger image is drawn in crops, which have their own preparation.
-        if (image.width * image.height > maxImagePixels) return true;
+        if (image.width * image.height > wholeImagePixels) return true;
         this.pendingSources.add(image);
         let use = back.images.get(image);
         const made = !use;

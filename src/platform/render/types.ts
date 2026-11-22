@@ -142,6 +142,8 @@ export interface RenderConstants {
     readonly hiddenCpuMirrorLimitBytes: 67108864;
     readonly tileInteriorPixels: 512;
     readonly tileGutterTexels: 1;
+    /** A board picture tile's interior: the GPU route and canvas2d draw the same levels and keys (whiteboard/media/mips.ts). */
+    readonly mediaTileInteriorPixels: 1024;
     /** Half-octave moving levels; the settled scale remains exact. PDFium bleed is not a gutter. */
     readonly movingTileLevelsPerOctave: 2;
     /** Motion-level hysteresis, not a current-pixel validity exception (design §5.2:500). */

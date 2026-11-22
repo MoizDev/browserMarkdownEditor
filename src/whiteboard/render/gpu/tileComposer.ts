@@ -403,6 +403,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     // Entries composed while finer picture tiles they cover were still decoding, with those tiles (PictureRoute). Never a reason for
     // a frame: recomposing a tile whose decode is still in flight drew the same pixels again each vsync (gpu-f1).
     const awaitingDecode = new Map<TileEntry, readonly string[]>();
+    // The screen named to the image route each frame, rewritten in place (the route copies what it keeps).
+    const screenScratch: Rect = { x: 0, y: 0, width: 0, height: 0 };
     // Positions being admitted, by key. A finished position waits in `finished` for its band's encode.
     const building = new TileKeyMap<Position>();
     const staleScratch: Position[] = [];
@@ -1658,7 +1660,9 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             // The path route composes a zoom's frames on its coverage route and its rest on exact area (routePath.ts, setZoom).
             routes.path.setZoom?.(zooming);
             // The image route takes a picture's byte share from the screen, whichever tile it composes (PictureRoute).
-            routes.image?.setScreen?.({ x: view.camera.x, y: view.camera.y, width: view.viewport.width / view.camera.z, height: view.viewport.height / view.camera.z });
+            screenScratch.x = view.camera.x; screenScratch.y = view.camera.y;
+            screenScratch.width = view.viewport.width / view.camera.z; screenScratch.height = view.viewport.height / view.camera.z;
+            routes.image?.setScreen?.(screenScratch);
             // The inexact entries are kept through the whole zoom, not cleared each zoom frame: a zoom that returns to a scale reuses the
             // tiles it composed there earlier, and an entry dropped from the set then stayed inexact at rest (a saturated zoom alternates
             // between two scales). At rest only the entries of the resting scale are marked; the others go with their scale.

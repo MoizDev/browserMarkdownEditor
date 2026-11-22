@@ -11,6 +11,10 @@ import type { Admission } from './contracts';
  * so a chunk of this size is claimable on an otherwise idle frame. Smaller chunks would mean a decode round trip per band:
  * a 4000-px-wide picture would take about 16 times as many frames to arrive. */
 export const IMAGE_CHUNK_BYTES = 1024 * 1024;
+/** The bytes a frame may write past its upload allowance for pictures that would otherwise be a hole (acquire's firstPaint): one
+ * whole decode's worth (WHOLE_MIP_BYTES). Banded over the allowance, a 4000x3000 picture's 3 MB stand-in took four frames to show after
+ * its decode, where canvas2d draws the bitmap at once (measured, insert at DPR 2: WebGL2 1097 ms median vs canvas2d 1000). */
+const FIRST_PAINT_FRAME_BYTES = 16 * 1024 * 1024;
 
 /** Mip levels stay off. IMAGE_SAMPLING_PROFILE is bilinear without mip levels, canvas2d samples that way, and the
  * parity row (pictures within 3 levels of canvas2d) is measured against it; mips would smooth minified pictures away
@@ -54,7 +58,9 @@ export interface ImageTextures {
     /** `ready` holds the texture until `unhold` (a route pairs them per prepared run). `deferred` while staging or
      * uploading; `denied` when the GPU pool refuses the lease; `unsupported` for a source this path cannot draw. `image` is
      * null once the picture's bitmap was released: a ready texture still draws; anything else must wait for the bitmap. */
-    acquire(key: string, image: CanvasImageSource | null, budget: FrameBudget): Admission<ImageTexture>;
+    /** `firstPaint`: nothing of this picture is drawn without this texture (it is the picture itself, not a finer tile over its stand-in):
+     * its first upload is written whole in this frame, past the upload allowance, within FIRST_PAINT_FRAME_BYTES a frame. */
+    acquire(key: string, image: CanvasImageSource | null, budget: FrameBudget, firstPaint?: boolean): Admission<ImageTexture>;
     /** One texture per video node, rewritten in place when its version moves and never mipped. A version the texture already
      * holds costs no upload; a new one is decoded, then written whole once its claim is granted. Until then the texture keeps
      * the version it has, so a node is never drawn half-written. */
@@ -188,13 +194,27 @@ export function createImageTextures(host: LayerHost, audit: string): ImageTextur
     };
 
     // One step toward `ready`. Returns true when the texture is complete this call.
-    const advance = (slot: Slot, device: GfxDevice, image: ImageBitmap, budget: FrameBudget): boolean => {
+    // The first-paint grant left in the current frame (see FIRST_PAINT_FRAME_BYTES).
+    let firstPaintFrame = -1, firstPaintLeft = 0;
+    const advance = (slot: Slot, device: GfxDevice, image: ImageBitmap, budget: FrameBudget, firstPaint: boolean): boolean => {
         const { width, height, sourceWidth, sourceHeight } = slot.view;
         if (!slot.scaled && (width !== sourceWidth || height !== sourceHeight)) {
             if (!slot.busy) startResize(slot, image);
             return false;
         }
         const source = slot.scaled ? slot.scaled.bitmap : image;
+        // A hole otherwise: written whole now, from its own bitmap, as canvas2d would draw it.
+        if (firstPaint && slot.uploaded === 0 && !slot.band && !slot.busy) {
+            if (budget.frameId !== firstPaintFrame) { firstPaintFrame = budget.frameId; firstPaintLeft = FIRST_PAINT_FRAME_BYTES; }
+            const bytes = width * height * 4;
+            if (bytes <= firstPaintLeft) {
+                firstPaintLeft -= bytes;
+                writeRows(slot, device, { x: 0, y: 0, width, height }, source);
+                finish(slot, device);
+                auditCount(audit, 'upload:image:first-paint', 1, { bytes });
+                return true;
+            }
+        }
         // A picture that fits one chunk is written whole, from its own bitmap, once its claim is granted.
         if (slot.uploaded === 0 && !slot.band && width * height * 4 <= IMAGE_CHUNK_BYTES) {
             if (budget.claimUpload(width * height * 4)) {
@@ -217,7 +237,7 @@ export function createImageTextures(host: LayerHost, audit: string): ImageTextur
     };
 
     return {
-        acquire(key, image, budget) {
+        acquire(key, image, budget, firstPaint = false) {
             const device = host.device();
             if (!device) return { status: 'unsupported', why: 'no-device' };
             if (device.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration) return { status: 'deferred' };
@@ -251,7 +271,7 @@ export function createImageTextures(host: LayerHost, audit: string): ImageTextur
                 slots.set(key, slot); gpuBytes += bytes;
             }
             slot.usedFrame = budget.frameId;
-            if (!slot.ready && !advance(slot, device, image, budget)) return { status: 'deferred' };
+            if (!slot.ready && !advance(slot, device, image, budget, firstPaint)) return { status: 'deferred' };
             slot.refs++;
             return { status: 'ready', value: slot.view };
         },

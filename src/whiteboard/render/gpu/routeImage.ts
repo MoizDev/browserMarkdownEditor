@@ -372,7 +372,8 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
                         }
                     } else {
                         if (hold && state !== 'ready' && textures.needsSource(key)) { hold.reacquireImage(key); return reject({ status: 'deferred' }); }
-                        admitted = textures.acquire(key, state === 'ready' ? paint.image(key) : null, budget);
+                        // The picture itself (not a finer tile over its stand-in, nor an underlaid one): nothing shows without it.
+                        admitted = textures.acquire(key, state === 'ready' ? paint.image(key) : null, budget, !tile && !item.underlaid);
                     }
                 }
                 if (admitted.status === 'empty') return null;

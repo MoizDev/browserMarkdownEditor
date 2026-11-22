@@ -250,6 +250,7 @@ export interface GpuPaintAdapter {
     /** The nodes whose live parts this adapter laid for one band in the current composite (cleared at the next prepare). The board
      * counts a changed node as drawn only when it is here, so a live part the composer deferred or denied is not counted. */
     drawnLiveNodeIds(band: PaintBand): ReadonlySet<string>;
+    drewNothing(band: PaintBand): boolean;
     /** The nodes whose live parts this prepare planned for one band, valid once prepare returns (cleared at the next prepare). */
     plannedLiveNodeIds(band: PaintBand): ReadonlySet<string>;
     dispose(): void;
@@ -439,6 +440,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         memoryBlocked(): boolean { return !disposed && composer.memoryBlocked(); },
         drawnInkNodeIds(): ReadonlySet<string> { return disposed ? NO_INK : composer.drawnInkNodeIds(); },
         drawnLiveNodeIds(band: PaintBand): ReadonlySet<string> { return disposed ? NO_INK : composer.drawnLiveNodeIds(band); },
+        drewNothing(band: PaintBand): boolean { return disposed || composer.drewNothing(band); },
         plannedLiveNodeIds(band: PaintBand): ReadonlySet<string> { return disposed ? NO_INK : composer.plannedLiveNodeIds(band); },
         contentKey(): number { return disposed ? -1 : composer.contentKey(); },
         listInvalid(view: ViewState): boolean { return !disposed && composer.listInvalid(view); },

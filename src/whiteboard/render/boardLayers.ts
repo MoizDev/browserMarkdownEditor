@@ -265,6 +265,8 @@ type OffscreenEncoder = { encodeOffscreen?(passes: OffscreenPasses, view: ViewSt
  * until impl/gpu merges: an absent method frees nothing. */
 type GpuEvicting = { evictGpu?(bytes: number, frameId: number): number };
 type LayerEvicting = { evictGpu?(bytes: number, frameId: number): number };
+/** The preview slot reads it before replacing the layer (previewSlot.ts): a layer whose last draw laid nothing leaves no picture. */
+type EmptyReporting = { drewNothing(): boolean };
 type GpuProtecting = { protectFrame?(frameId: number, view: ViewState): void };
 /** The adapter's CPU reclaim (h2, `evictCpu` on impl/lane/gpu-h2): typeof-guarded until it merges, so an absent method frees nothing. */
 type CpuEvicting = { evictCpu?(bytes: number): number };
@@ -296,6 +298,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     let useDense = false, deferredClear = false;
     // The route the last prepare took: true while the pane has a device (the GPU composer draws the direct paint).
     let onDeviceRoute = false;
+    const drewNothing: Record<PaintBand, boolean> = { underlay: false, content: false };
     // The composer's adapter options (PLAN §3.3). Built as a value, not a literal: the adapter's option type gains
     // `opaqueWorld` in wave 2, and until then today's adapter ignores it.
     const gpuOptions = () => ({ audit: options.auditSurface ?? 'board', ...(options.liveOverlay ? { liveOverlay: true } : {}),
@@ -1151,7 +1154,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             auditCount(options.auditSurface ?? 'board', `host:attach:${band}:${gpu ? (gpuBoundHost === host ? 'same' : 'rebound-needed') : 'first'}`);
             hosts.set(band, host); ensureAdapter(host);
             let ended = false;
-            const layer: Layer & LayerEvicting = {
+            const layer: Layer & LayerEvicting & EmptyReporting = {
                 // false only when the composer and the draw inputs all match the presented frame (see unchangedSincePresented). The
                 // foreground call answers false: the frame's answer is the background call's.
                 twoPhase: true,
@@ -1161,6 +1164,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 },
                 drawGpu(pass, view) {
                     drawn2d[band] = NO_INK; drawing2d.delete(band); shown2d.delete(band);
+                    drewNothing[band] = true;
                     const frame = gpu?.readyFrame();
                     if (!frame || !drawable(frame)) return;
                     const omit = preparedOmit?.frame === frame ? preparedOmit.omit : options.omitNodes?.(frame) ?? null;
@@ -1169,6 +1173,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     if (!prepareToken) return;
                     const actualView = copyView(view);
                     gpu!.drawGpu(pass, shift ? shiftedView(view, shift) : view, band);
+                    drewNothing[band] = gpu!.drewNothing(band);
                     const content = gpu!.contentKey();
                     // Borrowed right after the draw read its snapshot, before anything else can move the adapter on.
                     const hold = captureDraw(frame, omit);
@@ -1194,8 +1199,10 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     const encoder = gpu as OffscreenEncoder | null;
                     if (typeof encoder?.encodeOffscreen === 'function') encoder.encodeOffscreen(passes, view, band);
                 },
+                // The band's last draw laid nothing: on the GPU, by the composer's draw list; a canvas2d draw is not known empty.
+                drewNothing: () => drewNothing[band],
                 draw2d(ctx, view) {
-                    drawn2d[band] = NO_INK; drawnInk2d[band] = NO_INK;
+                    drawn2d[band] = NO_INK; drawnInk2d[band] = NO_INK; drewNothing[band] = false;
                     // A 2D picture replaces the last GPU draw on screen: the next GPU frame is not known to match it.
                     lastDrawn = null;
                     // Read before the draw, from the inputs it reads. A band that draws nothing has nothing to acknowledge: its empty

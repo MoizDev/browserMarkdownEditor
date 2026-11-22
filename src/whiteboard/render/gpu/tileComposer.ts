@@ -515,6 +515,9 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     const pendingRegions: Rect[] = [];
     // The positions whose dirty tiles this frame's live parts cover (positionKey): their picture is current, not stale.
     const coveredPositions = new Set<number>();
+    // The dirty positions under a pending region whose cover this frame's draws could not lay (its node no longer drawn live: a card
+    // deselected, an embed the overlay draws): they show stale until composed, so the next compose does not defer them.
+    const uncoveredPositions = new Set<number>();
     // Last frame's, read when this frame's draws are built: a position covered then and composed since shows the same picture.
     let lastCovered = new Set<number>(), spareCovered = new Set<number>();
     // The draw-list signature of the covered positions (and those whose tile replaced their cover this frame): each as its position and
@@ -1000,9 +1003,11 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         const key = positionKey(band, target, x, y);
                         let position = building.get(key);
                         if (!position && pass === 'dirty' && statusAt(band, target, x, y) === 'dirty' && !frameDirtyCovered.has(key)
-                            && pendingRegionsIn(band, target, x, y).length) {
-                            // Its changed pixels are laid live this frame (the region cover), so its compose can wait: at most
-                            // DIRTY_COVERED_PER_FRAME of these per frame. A position no region reaches would show stale: not bounded here.
+                            && !uncoveredPositions.has(key) && pendingRegionsIn(band, target, x, y).length) {
+                            // Its changed pixels are laid live (the region cover), so its compose can wait: at most DIRTY_COVERED_PER_FRAME
+                            // of these per frame. One the last draw could not cover shows stale, so it is not bounded: deferred on its
+                            // region alone, a bookmark card's outline stayed missing at rest (gpu-f1, gpu-f2's media kit, WebGL2 DPR 2: 300
+                            // deferrals). A region new this frame has not been tried yet and still defers: its commit frame composes one.
                             if (frameDirtyCovered.size >= DIRTY_COVERED_PER_FRAME) { auditCount(audit, 'compose:dirty-covered-deferred'); continue; }
                             frameDirtyCovered.add(key);
                         }
@@ -1332,7 +1337,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         const swap = lastCovered; lastCovered = spareCovered; spareCovered = swap;
         const swapped = swappedTiles; swappedTiles = spareSwapped; spareSwapped = swapped; swappedTiles.clear();
         lastCovered.clear(); for (const key of coveredPositions) lastCovered.add(key);
-        coveredPositions.clear();
+        coveredPositions.clear(); uncoveredPositions.clear();
         coverSignature = 0;
         if (liveNow) { buildLiveDraws(view, budget); return; }
         const span = spanAt(view, target);
@@ -1389,7 +1394,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         if (covered) {
                             liveScratch.sort((a, b) => a.order - b.order);
                             coveredPositions.add(positionKey(band, target, x, y));
-                        }
+                        } else if (regions.length) uncoveredPositions.add(positionKey(band, target, x, y));
                         const clip = withLive || covered ? clipAt(x, y) : null;
                         const coverKey = positionKey(band, target, x, y);
                         const coverFrom = drawCount;

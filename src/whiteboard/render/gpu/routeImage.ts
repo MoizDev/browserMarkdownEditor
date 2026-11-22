@@ -5,7 +5,7 @@ import type { Rect, ViewState } from '../../../platform/types';
 import type { LayerHost } from '../../../platform/render/compositor.types';
 import { isTileView } from '../../../platform/render/tileTarget';
 import type { ByteLease, DrawableImage, DrawCommand, GfxDevice, GpuPass, PipelineHandle, RectI, SamplerHandle, ShaderModule, TextureHandle } from '../../../platform/render/gfx/api';
-import { auditCount } from '../../../platform/render/renderAudit';
+import { auditCount, PerDeviceMap } from '../../../platform/render/renderAudit';
 import type { FrameBudget } from '../../../platform/render/types';
 import type { PaintImageItem } from '../paintStream';
 import type { PaintResources2d } from '../reference/paint2d';
@@ -157,7 +157,9 @@ interface DevicePipelines {
     /** Each user's wake, called when a compile settles: any of them may be waiting for it. */
     readonly wakes: Set<(why: string) => void>;
 }
-const devicePipelines = new WeakMap<GfxDevice, DevicePipelines>();
+// Keyed on the device behind a layer's audit view (PerDeviceMap): with the audit on, every layer host compiled its own set, which the
+// product (one set per device) never does.
+const devicePipelines = new PerDeviceMap<GfxDevice, DevicePipelines>();
 
 export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
     const textures: ImageTextures = createImageTextures(host, audit);

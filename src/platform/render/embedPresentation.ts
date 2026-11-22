@@ -118,8 +118,13 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
         slot.containment = null; clearClip(slot); slot.node = null; hide(slot); slot.root.remove();
         slot.allocator.release(slot.base); slots.delete(slot.id); slot.listeners.clear();
     };
+    // The packet places the nodes for the camera its draw was made at. The view epoch also moves when the moving flag flips at a gesture's
+    // end with the camera unchanged, and no new board draw (so no new packet) follows a board answering unchanged: compared by epoch, the
+    // last packet stayed one epoch behind and a loaded embed was hidden for good after a pan or a zoom (measured on both backends, and on
+    // the canvas2d feature build after a pan). The same camera and viewport place every node the same, whatever the epoch.
     const validFrame = (view: ViewState, token: FrameToken): boolean => !!packet && visible && !disposed &&
-        sameToken(packet.presentation.token, token) && packet.presentation.viewEpoch === view.epoch &&
+        sameToken(packet.presentation.token, token) && (packet.presentation.viewEpoch === view.epoch ||
+            packet.camera.x === view.camera.x && packet.camera.y === view.camera.y && packet.camera.z === view.camera.z) &&
         packet.viewport.width === view.viewport.width && packet.viewport.height === view.viewport.height;
     const createSlot = (request: Request, node: EmbedPresentedNode, base: ByteLease): Slot => {
         const root = document.createElement('div'), plane = document.createElement('div'), container = document.createElement('div'), chrome = document.createElement('div');
@@ -199,7 +204,14 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
                 if (slot.job) {
                     while (!budget.shouldYield()) {
                         const step = slot.job.next();
-                        if (step.done) { slot.job = null; slot.clips = step.value; slot.root.prepend(step.value.definitions); slot.root.append(step.value.shield); break; }
+                        if (step.done) {
+                            slot.job = null; slot.clips = step.value; slot.root.prepend(step.value.definitions); slot.root.append(step.value.shield);
+                            // The embed is now inline-eligible (inlineNodeIds), so the board omits its poster. The board prepared before this
+                            // layer in this frame and saw no omission; without a frame asked for it, a board answering unchanged kept
+                            // drawing the poster and the live frame stayed hidden (measured, WebGL2 DPR 2: 'slot-hidden:poster-painted' for good).
+                            requestsChanged();
+                            break;
+                        }
                     }
                 }
             } catch (error) { clearClip(slot); slot.blocked = true; report(error); }

@@ -33,6 +33,9 @@ export interface ScenePaintRequest {
     readonly sheetId: SheetId;
     readonly page?: number;
     readonly world?: Readonly<Rect>;
+    /** The part of `world` on screen. Picture tiles are decoded for it and a ring around it, not for the frame's whole margin
+     * (a 4000x3000 picture's twelve level-0 tiles, 48 MB, for a view that shows four); a camera change re-plans the frame. */
+    readonly viewWorld?: Readonly<Rect>;
     readonly theme: 'light' | 'dark';
     readonly includeWet?: boolean;
     /** Frozen world-to-device scale; absent for non-raster callers without a capture scale. */

@@ -86,6 +86,10 @@ const noMirror: MirrorPresentation = Object.freeze({ presented: false, complete:
 const tileSize = POLICY.tileInteriorPixels;
 const gutter = POLICY.tileGutterTexels;
 const maxImagePixels = (tileSize + 2 * gutter) ** 2;
+/** A bitmap up to a board picture tile (its interior and gutter) is drawn whole, one upload. Cut into platform-tile crops it was
+ * copied while the board still held it: an 8000x6000 picture's six level-0 tiles took ~25 MB decoded plus ~25 MB of crops, the
+ * crops were refused about halfway in a 41 MB pool and the picture never showed past its stand-in (canvas2d, DPR 2). */
+const wholeImagePixels = (POLICY.mediaTileInteriorPixels + 2 * gutter) ** 2;
 
 function sameToken(a: FrameToken | null, b: FrameToken): boolean {
     return !!a && a.vaultEpoch === b.vaultEpoch && a.documentId === b.documentId && a.bytesGeneration === b.bytesGeneration &&
@@ -134,6 +138,10 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
     private readonly encodedSources = new Set<Set<CanvasImageSource>>();
     private retainedCrops = new Set<Crop>();
     private pendingCrops = new Set<Crop>();
+    /** The crops the previous attempt asked for, pinned across one key change as priorAttempt pins its sources. Without it a frame
+     * whose key moved between attempts pruned the crops still being cut for it, every attempt: a 4000x3000 picture at 400% on a
+     * canvas2d PDF cut its last two 514 px crops 180 times in 2 s and threw each away on arrival ('Updating' for good). */
+    private priorCrops = new Set<Crop>();
     private readonly encodedCrops = new Set<Set<Crop>>();
     private sourceKey = '';
     private readonly contexts = new WeakMap<CanvasRenderingContext2D, Buffer2D>();
@@ -641,6 +649,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
     }
     /** The CPU bytes this canvas's working cache holds: charged to the pane, so the pane's demand must declare them. */
     cpuWorkingBytes(): number { return this.cpuBytes; }
+    progressUploadBytes(): number { return wholeImagePixels * 4; }
     private reserveGpu(bytes: number): ByteLease | null {
         const lease = this.working?.reserve(bytes) ?? null;
         if (lease) { this.gpuLeases.add(lease); this.gpuBytes += lease.bytes; }
@@ -909,7 +918,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             !this.intersectsBuffer(buffer, dst)) return;
         this.pendingSources.add(source);
         const extent = imageExtent(source);
-        if (extent.width * extent.height <= maxImagePixels) {
+        if (extent.width * extent.height <= wholeImagePixels) {
             this.drawImage(buffer, source, src, dst);
             return;
         }
@@ -994,7 +1003,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
     private beginSources(key: string): void {
         if (this.sourceKey === key) return;
         this.sourceKey = key;
-        this.priorAttempt = this.pendingSources;
+        this.priorAttempt = this.pendingSources; this.priorCrops = this.pendingCrops;
         this.pendingSources = new Set(); this.pendingCrops = new Set();
         this.pruneSources();
     }
@@ -1005,7 +1014,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             return false;
         };
         const cropPinned = (crop: Crop) => {
-            if (this.retainedCrops.has(crop) || this.pendingCrops.has(crop)) return true;
+            if (this.retainedCrops.has(crop) || this.pendingCrops.has(crop) || this.priorCrops.has(crop)) return true;
             for (const crops of this.encodedCrops) if (crops.has(crop)) return true;
             return false;
         };
@@ -1037,7 +1046,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         for (const [key, buffer] of this.buffers) this.closeBuffer(key, buffer);
         for (const source of this.sources.values()) this.closeSource(source);
         this.sources.clear(); this.requests.clear(); this.budget = null; this.presentedKey = ''; this.shortfall = null;
-        this.retained.clear(); this.pendingSources.clear(); this.priorAttempt.clear(); this.retainedCrops.clear(); this.pendingCrops.clear(); this.sourceKey = '';
+        this.retained.clear(); this.pendingSources.clear(); this.priorAttempt.clear(); this.retainedCrops.clear(); this.pendingCrops.clear(); this.priorCrops.clear(); this.sourceKey = '';
     }
 }
 

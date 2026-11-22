@@ -49,6 +49,8 @@ export interface PaintImageItem extends PaintBase {
     readonly imageKey: string; // Hash/frame revision key; preparation acquires its decoded lease.
     /** A borrowed 516×516 dense-tile bitmap, with a two-texel world-aligned apron. */
     readonly retainedTile?: true;
+    /** A picture tile over the picture's coarse stand-in: if it cannot be shown now it is left out, never a placeholder. */
+    readonly underlaid?: true;
     readonly rect: Readonly<Rect>;
     readonly sourceRect?: Readonly<Rect>; // Crop in SOURCE IMAGE PIXELS, not normalised UV.
     readonly opacity: number; // Final inherited alpha, once; source pixels retain their alpha.

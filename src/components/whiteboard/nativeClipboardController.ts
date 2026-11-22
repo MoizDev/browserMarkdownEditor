@@ -133,6 +133,7 @@ export function createNativeClipboardController(options: NativeClipboardControll
             const privatePng = imageRead ? (await imageRead)?.privatePng ?? null : null; check();
             const pasteInput: ClipboardInput = privatePng && capturedInput.files.length && !capturedInput.privatePng
                 ? { ...capturedInput, privatePng } : capturedInput;
+            let refusedNoticed = false;
             const html = createClipboardHtmlFrameHost({ memory: options.memory, identity: workerIdentity, isCurrent: workerCurrent });
             const pasteHost = createBoardClipboardPasteHost({ runtime, memory: options.memory, token: runtime.paintToken, zMax: BOARD_Z_MAX,
                 classifier: { appOrigin: location.origin, markers: html.markers, jsonKind: (text, innerSignal) => classifyClipboardJson({
@@ -140,11 +141,13 @@ export function createNativeClipboardController(options: NativeClipboardControll
                 html, ingestor: options.ingestor, receivingBoardId: identity.documentId, cameraZoom: zoom,
                 embedEnvironment: { appOrigin: location.origin }, embedManifest: host.embeds.manifest,
                 current: targetCurrent, readBlob: options.readMedia, storeMedia: options.storeMedia,
-                notice: options.notice, noticeRefused: items => options.notice(items.map(item => `${item.name}: ${item.reason}`).join('; ')),
+                notice: options.notice, noticeRefused: items => { refusedNoticed = true; options.notice(items.map(item => `${item.name}: ${item.reason}`).join('; ')); },
                 isCurrent: workerCurrent });
             const placed = await pasteBoardClipboardInJob(pasteHost, pasteInput, target, intent, context, pin ?? undefined);
-            // A paste that places nothing and says nothing is indistinguishable from a broken one: name it.
-            if (!placed.length && !duplicate) options.notice('Nothing was pasted from the clipboard.');
+            // A paste that places nothing and says nothing is indistinguishable from a broken one: name it. A refusal already named
+            // the file and its reason; announcing 'nothing was pasted' after it replaced that notice in the same toast (measured: a
+            // refused 4000x3000 picture showed only 'Nothing was pasted from the clipboard.'). A chosen or dropped file is inserted.
+            if (!placed.length && !duplicate && !refusedNoticed) options.notice(intent === 'drop' ? 'Nothing was inserted.' : 'Nothing was pasted from the clipboard.');
         }, { signal, deadlineMs: 120_000 });
         return work.finally(() => {
             try { stop(); } finally {

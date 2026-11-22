@@ -251,7 +251,9 @@ export const attachView: AttachView = options => {
         // Tile streams reopened by the frame share this request's identity (precision, sensitivity), not its world.
         const identity = { sheetId: selectedSheet, theme: view.theme, sensitiveNodes,
             ...(deviceScale ? { deviceScale, allowInkLod: true } : {}) };
-        const shape = dense ? { ...identity, only: liveSet! } : { ...identity, ...(world ? { world } : {}) };
+        const viewWorld: Rect | undefined = current ? { x: current.camera.x, y: current.camera.y,
+            width: current.viewport.width / current.camera.z, height: current.viewport.height / current.camera.z } : undefined;
+        const shape = dense ? { ...identity, only: liveSet! } : { ...identity, ...(world ? { world } : {}), ...(viewWorld ? { viewWorld } : {}) };
         void open.call(pin, shape, controller.signal).then(stream => {
             if (disposed || !view.visible || controller.signal.aborted || sequence !== request) {
                 void stream.release().catch(report).finally(() => pin.release());

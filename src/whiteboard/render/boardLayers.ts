@@ -14,10 +14,10 @@ import { inkCoverageChunks, type PaintItem, type PaintSource } from './paintStre
 import { presentedScene } from './sceneAudit';
 import { paintItemsOf } from './paintWindows';
 import type { PaintImageProvider } from './resources';
-import { createCanvasPaintAdapter, type CanvasPaintAdapter, type PreparedRetain } from './reference/canvasPaintAdapter';
+import { createCanvasPaintAdapter, type CanvasPaintAdapter, type PreparedPaint2d, type PreparedRetain } from './reference/canvasPaintAdapter';
 import { createGpuPaintAdapter } from './gpuPaintAdapter';
 import type { GeometryPins } from './gpu/tileComposer';
-import { auditCount, auditDrawn, renderAuditEnabled } from '../../platform/render/renderAudit';
+import { auditCount, auditDrawn, auditTape, renderAuditEnabled } from '../../platform/render/renderAudit';
 import { createDensePaintAdapter } from './densePlan';
 import { MEMORY_RETRY_MIN_MS, MemoryRetryGate } from './memoryRetryGate';
 import { DensityController, type DensityMode } from './density';
@@ -272,6 +272,7 @@ type CpuEvicting = { evictCpu?(bytes: number): number };
 const DIRECT_CHUNK = 64 * 1024;
 /** The coverage a layer reports while it cannot draw the frame: shared, so the per-frame check allocates nothing. */
 const INCOMPLETE: LayerCoverage = Object.freeze({ complete: false, sharp: false });
+const COMPLETE: LayerCoverage = Object.freeze({ complete: true, sharp: true });
 const NO_INK: ReadonlySet<string> = Object.freeze(new Set<string>());
 /** The GPU adapter's report of the ink its tiles drew (h2 adds it to the adapter). Until then nothing is reported drawn,
  * so the live stroke keeps drawing itself, as it does today. */
@@ -362,6 +363,14 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     // identical one compared with the older picture and presented again (measured: 12 of 12 remaining redundant zoom presents on
     // LARGE=11, present-kept:ack). A draw whose frame does not submit keeps the scheduler's full-repaint mark, so the next frame presents.
     let lastDrawn: { context: ViewerPaintPresentation; content: number; drawVersion: number; revision: number } | null = null;
+    /** A canvas2d band's picture: what its draw2d reads, and the coverage it reported (see unchanged2d). */
+    type Picture2d = { frameId: number; prepared: PreparedPaint2d | null; frame: PaintSource | null; view: ViewState; transform: Affine | null;
+        omit: ReadonlySet<string> | null; offset: Readonly<{ x: number; y: number }> | null; drawVersion: number; current: boolean; holds: boolean;
+        requested: boolean; coverage: LayerCoverage | null };
+    /** Drawn this frame and not yet known presented, then (once the board's acknowledgement confirms it, see promote2d) on screen. */
+    const drawing2d = new Map<PaintBand, Picture2d>(), shown2d = new Map<PaintBand, Picture2d>();
+    /** The coverage each band reported to the canvas2d compositor, by frame: it reads coverage before the layers draw. */
+    const read2d = new Map<PaintBand, { frameId: number; read: LayerCoverage }>();
     // The layer's answer for the frame it prepared: true only when every input to the draw matches the presented frame.
     let prepareUnchanged = false;
     // The source whose reference paths the device route built last: a camera-only frame of it builds nothing.
@@ -590,7 +599,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     // compares, so the next prepare answers changed until a new picture is presented.
     const forgetPresented = (): void => {
         presented = null; presentedInk = null; presentedContext = null;
-        lastDrawn = null;
+        lastDrawn = null; drawing2d.clear(); shown2d.clear(); read2d.clear();
         refreshProgress();
     };
     const clearResources = (reason: GpuReleaseReason) => {
@@ -736,16 +745,24 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         const frame = pendingFrame;
         pendingFrame = null;
         if (!frame && answeredFrame === budget.frameId) { prepareUnchanged = answeredUnchanged; return; }
-        if (!frame || foregroundFrame !== budget.frameId || !adapter || disposed) { missAnswer(!frame ? 'bg-no-pending' : 'bg-no-foreground'); prepareUnchanged = false; return; }
+        if (!frame || foregroundFrame !== budget.frameId || !adapter || disposed) {
+            // On canvas2d a frame whose foreground built nothing new still draws the snapshot on screen: its picture answers.
+            if (adapter && !disposed && !allocatorHost?.device()) {
+                answeredFrame = budget.frameId;
+                prepareUnchanged = answeredUnchanged = unchanged2d(view, budget);
+                return;
+            }
+            missAnswer(!frame ? 'bg-no-pending' : 'bg-no-foreground'); prepareUnchanged = false; return;
+        }
         foregroundFrame = -1;
         answeredFrame = budget.frameId;
         try {
             const composerChanged = prepareGpu(view, budget, frame);
-            if (composerChanged && renderAuditEnabled()) auditCount(options.auditSurface ?? 'board', 'unchanged-miss:composer');
             if (onDeviceRoute) {
+                if (composerChanged && renderAuditEnabled()) auditCount(options.auditSurface ?? 'board', 'unchanged-miss:composer');
                 const charged = chargeDirect(frame);
                 prepareUnchanged = charged && !composerChanged && unchangedSincePresented(view, budget, frame);
-            } else prepareUnchanged = false;
+            } else prepareUnchanged = unchanged2d(view, budget);
             prune(frame, adapter.readyFrame());
             options.onPrepared?.();
         } catch (error) { prepareUnchanged = false; report(error); }
@@ -944,12 +961,14 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         if (presented === frame && presentedInk === ink && presentedContext?.frameId === context.frameId
             && sameView(presentedContext?.view, context.view) && sameTransform(presentedContext?.paneTransform, context.paneTransform)
             && sameOmission(presentedContext?.omittedNodeIds ?? null, context.omittedNodeIds)) {
+            promote2d(context.frameId);
             ackFrame = null; ackInk = null; ackMask = 0; ackToken = null; ackContext = null; drawTokens.delete(token); return;
         }
         try {
             options.frames.presented(frame);
             acceptHolds([...(drawTokens.get(token)?.values() ?? [])].map(drawn => drawn.hold));
             const previous = presented; presented = frame; presentedInk = ink; presentedContext = context;
+            promote2d(context.frameId);
 
             // A completed presentation is the only event that clears a real error.
             lastError = null; refreshProgress();
@@ -1011,7 +1030,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         if (renderAuditEnabled()) auditCount('board', `coverage-not:${why}`);
         return result;
     };
-    const coverageOf = (band: PaintBand, frame: ScheduledFrame, backend: CompositorBackend): LayerCoverage => {
+    const coverageOf = (band: PaintBand, frame: Pick<ScheduledFrame, 'view' | 'token'>, backend: CompositorBackend): LayerCoverage => {
         const gpuCoverage = backend !== 'canvas2d' ? gpu?.coverage(frame.view) : null;
         const ready = backend === 'canvas2d' ? adapter?.readyFrame() : gpu?.readyFrame();
         const denseCoverage = useDense && ready ? dense?.coverage(frame.view, liveFor(ready)) : null;
@@ -1029,6 +1048,62 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         if (ready.theme !== options.requestedTheme()) return coverageNot(STALE, `theme-${band}`);
         if (!options.frames.isCurrent(ready)) return coverageNot(STALE, `not-current-${band}`);
         return { complete: true, sharp: (gpuCoverage?.sharp ?? true) && (denseCoverage?.sharp ?? true) };
+    };
+    // What the platform reads for a band: an optional layer with no request has nothing to draw and reads complete.
+    const bandCoverage = (band: PaintBand, frame: Pick<ScheduledFrame, 'view' | 'token'>, backend: CompositorBackend): { actual: LayerCoverage; read: LayerCoverage } => {
+        if (options.optional && options.requested && !options.requested()) return { actual: COMPLETE, read: COMPLETE };
+        const actual = coverageOf(band, frame, backend);
+        return { actual, read: options.optional && !actual.complete ? COMPLETE : actual };
+    };
+    // A canvas2d band's picture: every input its draw2d reads. Keyed on the drawn snapshot's identity and the view, never on a revision
+    // or a value: a canvas2d 'unchanged' judged by revision and value hid the growing creation preview and broke shape creation
+    // (978b8717). Selection, the wet stroke and the gesture previews are layers of their own and answer for themselves.
+    const picture2d = (band: PaintBand, view: ViewState, frameId: number): Picture2d | null => {
+        const host = hosts.get(band);
+        if (useDense || !adapter || !host) return null;
+        const frame = adapter.readyFrame();
+        const shown = !!frame && drawable(frame);
+        return { frameId, prepared: shown ? adapter.borrowPrepared() : null, frame: shown ? frame : null, view: copyView(view),
+            transform: host.paneTransform(view, frameId), omit: shown ? omittedOf(options.omitNodes?.(frame!) ?? null) : null,
+            offset: shown ? options.drawOffset?.(frame!) ?? null : null, drawVersion: options.drawVersion?.() ?? 0,
+            current: shown && options.frames.isCurrent(frame!), holds: adapter.drawable2d(), requested: options.requested?.() ?? true, coverage: null };
+    };
+    // The first input that differs between two pictures, or null when they are the same picture with the same coverage report.
+    const differs2d = (a: Picture2d, b: Picture2d): string | null => {
+        if (a.prepared !== b.prepared || a.frame !== b.frame) return 'content';
+        if (!sameCameraView(a.view, b.view)) return 'view';
+        if (!sameTransform(a.transform, b.transform)) return 'transform';
+        if (!sameOmission(a.omit, b.omit)) return 'omission';
+        if ((a.offset?.x ?? 0) !== (b.offset?.x ?? 0) || (a.offset?.y ?? 0) !== (b.offset?.y ?? 0)) return 'offset';
+        if (a.drawVersion !== b.drawVersion) return 'draw-version';
+        if (a.current !== b.current) return 'current';
+        if (a.holds !== b.holds) return 'images';
+        if (a.requested !== b.requested) return 'requested';
+        if (!a.coverage || !b.coverage || a.coverage.complete !== b.coverage.complete || a.coverage.sharp !== b.coverage.sharp
+            || a.coverage.staleVersion !== b.coverage.staleVersion) return 'coverage';
+        return null;
+    };
+    // A picture drawn in frame frameId is on screen once the board's acknowledgement of that frame arrives.
+    const promote2d = (frameId: number): void => {
+        for (const [band, picture] of drawing2d) if (picture.frameId === frameId) { shown2d.set(band, picture); drawing2d.delete(band); }
+    };
+    // The canvas2d answer: every band would draw the picture on screen and report the coverage it reported. Without it every
+    // asynchronous board step presented the same picture again: per pan step a new paint frame (demand published, old snapshot drawn)
+    // and often its unfinished build (round 8: 1-2 redundant presents per step; after a drag 7 presents in 3 s against the GPU's 3).
+    const unchanged2d = (view: ViewState, budget: FrameBudget): boolean => {
+        // Counted and taped, so a redundant canvas2d present names the input that made it.
+        const miss = (why: string): false => { if (renderAuditEnabled()) { auditCount(options.auditSurface ?? 'board', `unchanged2d-miss:${why}`); auditTape(`${options.auditSurface ?? 'board'}:u2d-miss:${why}`); } return false; };
+        if (!hosts.size) return miss('no-host');
+        for (const band of hosts.keys()) {
+            const shown = shown2d.get(band);
+            if (!shown) return miss(drawing2d.has(band) ? 'unconfirmed' : 'no-picture');
+            const now = picture2d(band, view, budget.frameId);
+            if (!now) return miss(useDense ? 'dense' : 'no-input');
+            now.coverage = bandCoverage(band, { view, token: budget.token }, 'canvas2d').read;
+            const why = differs2d(shown, now);
+            if (why) return miss(why);
+        }
+        return true;
     };
     // The GPU working set a band reports: only the band that owns the adapter reports it, so one adapter is counted once for the
     // pair (the rule evictGpu follows). A spread, not a literal member, until the platform type carries gpuWorkingSet (h9).
@@ -1085,7 +1160,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     return budget.phase === 'foreground' || prepareUnchanged ? false : true;
                 },
                 drawGpu(pass, view) {
-                    drawn2d[band] = NO_INK;
+                    drawn2d[band] = NO_INK; drawing2d.delete(band); shown2d.delete(band);
                     const frame = gpu?.readyFrame();
                     if (!frame || !drawable(frame)) return;
                     const omit = preparedOmit?.frame === frame ? preparedOmit.omit : options.omitNodes?.(frame) ?? null;
@@ -1123,6 +1198,13 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     drawn2d[band] = NO_INK; drawnInk2d[band] = NO_INK;
                     // A 2D picture replaces the last GPU draw on screen: the next GPU frame is not known to match it.
                     lastDrawn = null;
+                    // Read before the draw, from the inputs it reads. A band that draws nothing has nothing to acknowledge: its empty
+                    // picture is on screen as drawn (it differs from any non-empty one, so leaving a picture still presents).
+                    const picture = picture2d(band, view, prepareFrameId);
+                    const reported = read2d.get(band);
+                    if (picture && reported?.frameId === prepareFrameId) picture.coverage = reported.read;
+                    drawing2d.delete(band); shown2d.delete(band);
+                    if (picture && !picture.frame) shown2d.set(band, picture);
                     const frame = adapter?.readyFrame();
                     if (!frame || !drawable(frame)) return;
                     const reuse = band === 'content' && drawnOmit2d?.view === view && drawnOmit2d.frame === frame;
@@ -1133,6 +1215,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                     if (!prepareToken) return;
                     const actualView = copyView(view);
                     adapter!.draw2d(ctx, shift ? shiftedView(view, shift) : view, band, omit ?? undefined);
+                    if (picture?.frame) drawing2d.set(band, picture);
                     drawn2d[band] = liveDrawn(frame);
                     // Only the source's current frame: an older one can hold an earlier revision of a node the wet layer is still drawing.
                     drawnInk2d[band] = !options.frames.isCurrent(frame) ? NO_INK : omit?.size ? inkLess(ink, omit) : ink;
@@ -1210,13 +1293,18 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         critical(_layer, view) { return (presented === null && !adapter?.readyFrame() && !gpu?.readyFrame() && !gpu?.memoryBlocked()) || !!gpu?.listInvalid(view); },
         coverage(layer, frame, backend) {
             // An optional layer with no request has nothing to draw: the platform reads it complete, and so does the audit.
-            if (options.optional && options.requested && !options.requested()) return { complete: true, sharp: true };
-            const actual = coverageOf(band, frame, backend);
+            const { actual, read } = bandCoverage(band, frame, backend);
+            if (backend === 'canvas2d') {
+                read2d.set(band, { frameId: frame.frameId, read });
+                const picture = drawing2d.get(band) ?? shown2d.get(band);
+                if (picture?.frameId === frame.frameId) picture.coverage = read;
+            }
+            if (options.optional && options.requested && !options.requested()) return read;
             // What the board draws besides the current picture, for the present audit: a previous frame or a scaled tile is a
             // stand-in; nothing drawable at all is a hole. Both bands read the same composer and adapter, so their coverage is one
             // state: it is reported once per frame, from the underlay band, not once per band.
             if (band === 'underlay' && (!actual.complete || !actual.sharp)) auditDrawn(!actual.complete && presented === null ? 'hole' : 'stand-in', 1, 'geometry', !actual.complete ? 'board-incomplete' : 'board-unsharp');
-            return options.optional && !actual.complete ? { complete: true, sharp: true } : actual;
+            return read;
         },
     });
     const pair = [definition('underlay'), definition('content')] as unknown as BoardLayerPair;

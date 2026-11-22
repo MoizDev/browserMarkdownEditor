@@ -141,6 +141,8 @@ class NotebookPaperLayer implements Layer {
     /** Whether any page has been drawn since the GPU route was last released. Unlike `drawn` (this revision's rects), it
      * survives a new revision: the previous pictures are what stands in while the new ones compose. */
     private drawnOnce = false;
+    /** What the last canvas2d draw drew from: the ready paper, the view and the revision the paper read (see prepare). */
+    private drawn2d: { ready: Ready | null; x: number; y: number; z: number; w: number; h: number; dpr: number; revision: number } | null = null;
     private claim: { readonly ready: Ready; readonly rects: readonly Rect[] } | null = null;
     private readonly gpuReference: CanvasPaintAdapter = {
         prepare: () => {}, readyFrame: () => this.gpuPrepared?.sourceFrame ?? null,
@@ -269,7 +271,16 @@ class NotebookPaperLayer implements Layer {
         const readyBefore = this.ready;
         // One page step is always admitted: under a zero slice the staging never advances, and needsFrame keeps asking.
         this.preparePaper(withFirstUnit(budget));
-        if (this.disposed || !this.host.device()) return true;
+        if (this.disposed) return true;
+        // canvas2d: the paper draws the same picture from the same ready paper at the same view. Answered changed on every frame, it
+        // kept a notebook pane presenting whatever else had nothing new (round 8: prepare-changed:notebook-paper on 178 of 178 pan
+        // frames; after a drag the board's own unchanged frames still presented). A new revision or a camera or geometry change
+        // presents anyway (the pane compares those itself).
+        if (!this.host.device()) {
+            const last = this.drawn2d, cam = view.camera, vp = view.viewport;
+            return !last || last.ready !== this.ready || last.x !== cam.x || last.y !== cam.y || last.z !== cam.z || last.w !== vp.width
+                || last.h !== vp.height || last.dpr !== vp.dpr || last.revision !== this.options.read().revision;
+        }
         if (this.prepareProcedural(view, budget.token)) {
             const key = this.proceduralKey, ready = this.ready!, cam = view.camera, vp = view.viewport;
             const same = !!key && key.ready === ready && key.x === cam.x && key.y === cam.y && key.z === cam.z && key.w === vp.width && key.h === vp.height && key.dpr === vp.dpr;
@@ -346,6 +357,8 @@ class NotebookPaperLayer implements Layer {
         return paper;
     }
     drawGpu(pass: GpuPass, view: ViewState): void {
+        // A GPU picture replaces the last canvas2d one: back on canvas2d, the first frame draws again.
+        this.drawn2d = null;
         const ready = this.ready;
         if (this.proceduralOn && ready) {
             const pages = this.procedural.draw(pass, view, ready.paper, ready.stack);
@@ -397,7 +410,8 @@ class NotebookPaperLayer implements Layer {
         if (!this.disposed && typeof encoder.encodeOffscreen === 'function') encoder.encodeOffscreen(passes, view, 'content');
     }
     draw2d(ctx: CanvasRenderingContext2D, view: ViewState): void {
-        const ready = this.ready;
+        const ready = this.ready, cam = view.camera, vp = view.viewport;
+        this.drawn2d = { ready, x: cam.x, y: cam.y, z: cam.z, w: vp.width, h: vp.height, dpr: vp.dpr, revision: this.options.read().revision };
         if (!ready || this.disposed) return;
         const { stack } = ready;
         if (!stack.rects.length || !Number.isFinite(view.camera.z) || view.camera.z <= 0) return;
@@ -421,7 +435,7 @@ class NotebookPaperLayer implements Layer {
     releaseGpu(reason: GpuReleaseReason): void {
         this.gpu.release(reason);
         // The pipeline is device state: a pressure release keeps it (it holds no budgeted bytes); any other release drops it.
-        if (reason !== 'pressure') { this.procedural.release(); this.proceduralOn = false; this.proceduralKey = null; } this.gpuPrepared = null; this.gpuSource = null; this.drawn = new WeakSet(); this.drawnOnce = false; this.claim = null;
+        if (reason !== 'pressure') { this.procedural.release(); this.proceduralOn = false; this.proceduralKey = null; } this.gpuPrepared = null; this.gpuSource = null; this.drawn = new WeakSet(); this.drawnOnce = false; this.claim = null; this.drawn2d = null;
         // Pressure takes GPU memory only. The CPU paths stay: dropping them made every pressure release a
         // full rebuild (measured: 788 rebuilds in one notebook stroke), and the rebuild asked for the same tiles again.
         if (reason === 'pressure') return;

@@ -80,6 +80,8 @@ const idOfObject = (object: object | null): number => {
     return id;
 };
 const hashMix = (hash: number, value: number): number => Math.imul(hash ^ value, 16777619);
+/** The routes whose live part draws a pure function of its item and the view: path (exact area or coverage) and ink. */
+const EXACT_LIVE_ROUTES: ReadonlySet<string> = new Set(['path', 'ink-analytic', 'ink-union']);
 /** A route that can report its kit's draw refusal for the frame (the path route, gpu-h4's kit). Not on ItemRoute: contracts.ts is not edited. */
 type RouteWithRefusal = { drawRefusedThisFrame?(): boolean };
 /** The compose passes in order: the foreground takes visible missing positions first, the background dirty ones first. */
@@ -164,6 +166,8 @@ interface Draw {
     /** A live part's admitted run and the route that admitted it, drawn under the clip; null for a tile draw. */
     live: PreparedRun | null;
     liveRoute: ItemRoute | null;
+    /** The paint item a live part draws (its identity, for the draw signature); null for a tile draw. */
+    liveItem: object | null;
     /** The node a live part belongs to, added to the band's drawn-live set when the part is laid. */
     node: string;
     /** Drawn for a covered position, or one whose tile replaced its cover this frame: signed as its position (coverSignature). */
@@ -454,7 +458,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     // A live part dropped this frame (denied, unsupported, or no route) draws nothing for it: the frame is not complete for it.
     let liveHoleNow = false;
     // A part of a cut is drawn inside its pieces only (pixel-disjoint from the tile pieces beside them); any other part, inside the clip.
-    const liveScratch: { order: number; run: PreparedRun; route: ItemRoute; nodeId: string; pieces?: readonly Rect[] }[] = [];
+    const liveScratch: { order: number; run: PreparedRun; route: ItemRoute; nodeId: string; item: object; pieces?: readonly Rect[] }[] = [];
     const standScratch: { order: number; entry: TileEntry; slot: Slot }[] = [];
     // Batch scratch: the quads of one call, reused. The pool holds spec objects for the composer's life.
     const quadPool: { sourceRect: Rect; destRect: Rect }[] = [];
@@ -1131,7 +1135,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         const world = tileWorld(entry.key);
         let draw = draws[drawCount];
         if (!draw) {
-            draw = { band, texture: target.texture, mode: slot.mode, gen: 0, x: 0, y: 0, w: 0, h: 0, clipOn: false, cx: 0, cy: 0, cw: 0, ch: 0, ink: NO_IDS, live: null, liveRoute: null, node: '', cover: false };
+            draw = { band, texture: target.texture, mode: slot.mode, gen: 0, x: 0, y: 0, w: 0, h: 0, clipOn: false, cx: 0, cy: 0, cw: 0, ch: 0, ink: NO_IDS, live: null, liveRoute: null, liveItem: null, node: '', cover: false };
             draws.push(draw);
         }
         drawCount++;
@@ -1139,7 +1143,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         draw.x = world.x; draw.y = world.y; draw.w = world.width; draw.h = world.height;
         draw.clipOn = clip !== null;
         draw.ink = slot.inkNodes;
-        draw.live = null; draw.liveRoute = null; draw.cover = false;
+        draw.live = null; draw.liveRoute = null; draw.liveItem = null; draw.cover = false;
         if (clip) { draw.cx = clip.x; draw.cy = clip.y; draw.cw = clip.width; draw.ch = clip.height; }
         if (draw.mode === 'isolated') auditCount(audit, 'isolation:copy');
         store.touch(entry, frame);
@@ -1255,7 +1259,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 auditCount(audit, 'live:region:uncovered'); auditCount(audit, `live:region:uncovered:${budget.phase}`);
                 return false;
             }
-            liveScratch.push({ order: part.order, run: admitted.run, route: admitted.route, nodeId: part.nodeId, pieces });
+            liveScratch.push({ order: part.order, run: admitted.run, route: admitted.route, nodeId: part.nodeId, item: part.item, pieces });
         }
         auditCount(audit, 'live:region:covered');
         return true;
@@ -1309,21 +1313,21 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             const video = isLivePart(part.item);
             if (video ? !wanted : !(stand && heldLive(part.nodeId, stand))) continue;
             const admitted = admitLive(part.item, part.blend, view, budget);
-            if (admitted) liveScratch.push({ order: part.order, run: admitted.run, route: admitted.route, nodeId: part.nodeId });
+            if (admitted) liveScratch.push({ order: part.order, run: admitted.run, route: admitted.route, nodeId: part.nodeId, item: part.item });
         }
     };
 
     /** A live draw: its run under `clip`, in the draw order of the position it shows. */
-    const addLiveDraw = (band: PaintBand, run: PreparedRun, route: ItemRoute, clip: Rect, nodeId: string): void => {
+    const addLiveDraw = (band: PaintBand, run: PreparedRun, route: ItemRoute, clip: Rect, nodeId: string, item: object): void => {
         let draw = draws[drawCount];
         if (!draw) {
-            draw = { band, texture: null, mode: 'over', gen: 0, x: 0, y: 0, w: 0, h: 0, clipOn: true, cx: 0, cy: 0, cw: 0, ch: 0, ink: NO_IDS, live: null, liveRoute: null, node: '', cover: false };
+            draw = { band, texture: null, mode: 'over', gen: 0, x: 0, y: 0, w: 0, h: 0, clipOn: true, cx: 0, cy: 0, cw: 0, ch: 0, ink: NO_IDS, live: null, liveRoute: null, liveItem: null, node: '', cover: false };
             draws.push(draw);
         }
         drawCount++;
         draw.band = band; draw.texture = null; draw.mode = 'over'; draw.gen = 0; draw.clipOn = true;
         draw.cx = clip.x; draw.cy = clip.y; draw.cw = clip.width; draw.ch = clip.height;
-        draw.ink = NO_IDS; draw.live = run; draw.liveRoute = route; draw.node = nodeId; draw.cover = false;
+        draw.ink = NO_IDS; draw.live = run; draw.liveRoute = route; draw.liveItem = item; draw.node = nodeId; draw.cover = false;
         plannedLive[band].add(nodeId);
         auditCount(audit, 'tile:live-part');
     };
@@ -1333,8 +1337,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         let li = from;
         for (; li < liveScratch.length && liveScratch[li].order < order; li++) {
             const live = liveScratch[li];
-            if (live.pieces) { for (const piece of live.pieces) addLiveDraw(band, live.run, live.route, piece, live.nodeId); }
-            else if (clip) addLiveDraw(band, live.run, live.route, clip, live.nodeId);
+            if (live.pieces) { for (const piece of live.pieces) addLiveDraw(band, live.run, live.route, piece, live.nodeId, live.item); }
+            else if (clip) addLiveDraw(band, live.run, live.route, clip, live.nodeId, live.item);
         }
         return li;
     };
@@ -1362,7 +1366,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             if (part.item.kind === 'path') auditCount(audit, 'live:path-commands', part.item.d.length);
             auditCount(audit, 'live:items');
             const admitted = admitLive(part.item, part.blend, view, budget);
-            if (admitted) liveScratch.push({ order: part.order, run: admitted.run, route: admitted.route, nodeId: part.nodeId });
+            if (admitted) liveScratch.push({ order: part.order, run: admitted.run, route: admitted.route, nodeId: part.nodeId, item: part.item });
             if (part.item.kind === 'ink') {
                 if (!admitted) { liveInkDropped.add(part.nodeId); drawnInk.delete(part.nodeId); }
                 else if (!liveInkDropped.has(part.nodeId)) drawnInk.add(part.nodeId);
@@ -1885,7 +1889,12 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 const draw = draws[i];
                 // A cover's live parts change only with an edit, which presents through its scene revision: re-laid unchanged, they are the
                 // same picture (counted, every staggered compose frame presented the cover again: gpu-f1's doc12 tape).
-                if (draw.live && !settleRepeat && !draw.cover) contentVersion++;
+                // A path or ink part draws a pure function of its item and the view (the board compares the view, offset and draw version
+                // itself): it is signed by its item, so the same item laid again is the same picture. Counted as a change on every live
+                // frame, a drag preview at rest under the pointer presented its unchanged picture again (round 10 bar, 3c250bf5: large drag
+                // 618, img8 585, doc12 521). Image and text parts keep the count: a tile or a glyph mask can land under the same item.
+                const pure = draw.live && EXACT_LIVE_ROUTES.has(draw.liveRoute?.id ?? '');
+                if (draw.live && !pure && !settleRepeat && !draw.cover) contentVersion++;
                 // Sequential mixing keeps the order; a covered position's draws (which change in number when its tile replaces the cover)
                 // are left out, so the draws after it sign the same.
                 if (draw.cover) continue;
@@ -1897,6 +1906,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 signature = hashMix(signature, idOfObject(draw.texture));
                 signature = hashMix(signature, draw.gen);
                 signature = hashMix(signature, draw.live ? 1 + idOfObject(draw.liveRoute) : 0);
+                if (pure) signature = hashMix(signature, idOfObject(draw.liveItem));
                 if (draw.ink.length) signature = hashMix(signature, hashText(draw.ink.join('\u0001')));
             }
             const sigChanged = signature !== drawSignature;

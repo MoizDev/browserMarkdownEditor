@@ -1151,8 +1151,13 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 // pass is not work the board waits on, and the composer's needs belong to the active host alone.
                 needsFrame() {
                     const idleOnly = useDense && !!dense?.idleOnly();
-                    return !disposed && !ended && (options.frames.needsFrame() || (!denied && (!!estimate && !estimate.done || density.pending()
+                    const needed = !disposed && !ended && (options.frames.needsFrame() || (!denied && (!!estimate && !estimate.done || density.pending()
                         || (!idleOnly && !!adapter?.needsFrame()) || !!activeHost()?.device() && !!gpu?.needsFrame())));
+                    // The scheduler's last question after the board's work ends: progress was read at the last prepare, before that frame's
+                    // encode composed the last positions, and with no frame to come nothing read it again ('Updating' for good: round 8,
+                    // a dropped 4000x3000 JPEG on WebGL2, the composer settled 12 ms after the board's last progress read).
+                    if (!needed && !disposed && !ended && lastProgress?.kind === 'pending') refreshProgress();
+                    return needed;
                 },
                 onFramePresented(revision, token) { acknowledge(band, revision, token); },
                 dispose() {

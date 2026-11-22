@@ -517,6 +517,9 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
      * the next settling frame at the same camera draws it exact, so it is not a repeat and presents. Measured (notebook, 40% after a
      * zoom step): without it the zoom's last coverage picture stayed up at rest, paper ruled lines 11 levels off the exact picture. */
     let liveInexact = false, settleInexact = false;
+    // The last live draw left finer picture tiles out (decoding or uploading): its runs are not the picture to repeat. Unlike an
+    // inexact run it asks for no frame: the decode's settlement brings the next one, which admits the parts afresh (PictureRoute).
+    let liveStale = false;
     let settleCamX = Number.NaN, settleCamY = Number.NaN, settleCamZ = Number.NaN;
     let device: GfxDevice | null = null;
     let frame = 0, validRevision = 0;
@@ -1158,6 +1161,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             if (outcome.status === 'ready') {
                 admitted = { route, run: outcome.value }; liveRuns.push(admitted);
                 if (!exactRun(route, outcome.value)) liveInexact = true;
+                if (route === routes.image && routes.image.waits?.(outcome.value)) liveStale = true;
             }
             else if (outcome.status === 'unsupported') { liveHoleNow = true; auditCount(audit, `live:dropped:${outcome.why}`); }
             else if (outcome.status === 'deferred') {
@@ -1700,6 +1704,10 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             settleInexact = settleRepeat && liveInexact;
             if (settleInexact) { settleRepeat = false; auditCount(audit, 'settle:fresh:inexact'); }
             liveInexact = false;
+            // Repeated, the live run of a picture that left its finer tiles out kept the stand-in for good once they landed (round 8:
+            // a dropped 4000x3000 JPEG drawn live on a WebGL2 notebook, a 28 px soft edge at rest; one live plan in the whole case).
+            if (settleRepeat && liveStale) { settleRepeat = false; auditCount(audit, 'settle:fresh:image-waits'); }
+            liveStale = false;
             // A repeated settling frame draws the parts the last frame admitted, at the same camera: their runs are kept, not retired and
             // admitted again. Admitted afresh, every frame after a zoom re-tessellated and re-uploaded the whole visible board (measured,
             // gpu-f4: notebook paced drag 2.0 -> 13.0 ms GPU per frame). A deferred part (admitted as null) is asked again.

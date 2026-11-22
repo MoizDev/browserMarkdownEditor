@@ -27,6 +27,7 @@ import type { AreaOutput, AreaTarget, BufferHandle, GfxDevice, GpuPass, Pipeline
 import type { LayerHost } from './compositor.types';
 import type { FrameBudget } from './types';
 import { ArenaError } from './resourceArena';
+import { auditCount } from './renderAudit';
 
 /** One uploaded piece of an edge set: a vertex buffer of `count` edges (16 bytes each). */
 interface EdgePiece { readonly buffer: BufferHandle; readonly count: number; readonly bytes: number }
@@ -92,6 +93,8 @@ const INSTANCE_BYTES = 16;
 const IDLE_EDGE_BYTES = 8 * 2 ** 20;
 /** viewport, band, matrix, translation: four vec4. */
 const UNIFORM_BYTES = 64;
+
+interface Placed { x: number; y: number; readonly rect: { x: number; y: number; width: number; height: number } }
 
 /** One instance per edge: a strip from its leftmost pixel to the band's right edge over the rows it crosses. */
 const EDGE_SHADER: ShaderModule = {
@@ -191,18 +194,21 @@ export function createAreaKit(): AreaKit {
      * area sits. Reused across batches: nothing is allocated per frame once the map has grown. */
     let batchScratch: Scratch | null = null, batchToken: ReturnType<GpuPass['beginArea']> | null = null;
     let shelfX = 0, shelfY = 0, shelfH = 0;
-    const placed = new Map<PreparedArea, { x: number; y: number }>();
-    const spare: { x: number; y: number }[] = [];
-    const tentative: { x: number; y: number }[] = [{ x: 0, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 0 }];
+    const placed = new Map<PreparedArea, Placed>();
+    const spare: Placed[] = [];
+    const tentative: Placed[] = [];
     /** The scissor of every accumulation draw: the whole scratch (each draw stays inside its region by its own geometry). */
     const whole = { x: 0, y: 0, width: 0, height: 0 };
     /** One draw's uniforms: the scratch size, the region (x0, y0, x1, y1), and the item-local to scratch affine (null for the clear). */
-    const regionUniforms = (host: LayerHost, W: number, H: number, at: { x: number; y: number }, bounds: RectI, affine: Affine | null) => {
+    /** A placed region: `at` in the scratch, `rect` the part of the area's bounds it accumulates (on the pass, device px). */
+    const regionUniforms = (host: LayerHost, W: number, H: number, at: Placed, bounds: RectI, affine: Affine | null) => {
+        // The affine maps to bounds-local px; the region starts `rect - bounds` into them.
+        const sx = at.x - (at.rect.x - bounds.x), sy = at.y - (at.rect.y - bounds.y);
         uniformScratch[0] = W; uniformScratch[1] = H; uniformScratch[2] = 0; uniformScratch[3] = 0;
-        uniformScratch[4] = at.x; uniformScratch[5] = at.y; uniformScratch[6] = at.x + bounds.width; uniformScratch[7] = at.y + bounds.height;
+        uniformScratch[4] = at.x; uniformScratch[5] = at.y; uniformScratch[6] = at.x + at.rect.width; uniformScratch[7] = at.y + at.rect.height;
         uniformScratch[8] = affine ? affine[0] : 0; uniformScratch[9] = affine ? affine[1] : 0;
         uniformScratch[10] = affine ? affine[2] : 0; uniformScratch[11] = affine ? affine[3] : 0;
-        uniformScratch[12] = affine ? affine[4] + at.x : 0; uniformScratch[13] = affine ? affine[5] + at.y : 0; uniformScratch[14] = 0; uniformScratch[15] = 0;
+        uniformScratch[12] = affine ? affine[4] + sx : 0; uniformScratch[13] = affine ? affine[5] + sy : 0; uniformScratch[14] = 0; uniformScratch[15] = 0;
         return host.uniforms(uniformScratch);
     };
     /** This kit's identity as a scratch holder. */
@@ -375,15 +381,25 @@ export function createAreaKit(): AreaKit {
             const scratch = batchScratch;
             if (!scratch || !edgePipeline || !clear) throw new Error('Stale area');
             const W = scratch.target.width, H = scratch.target.height;
+            // Only the part of an area the pass's clip reaches is accumulated (read before the batch's own target is bound): an area is
+            // admitted for its whole view and drawn under a tile position's or a cut piece's clip, and accumulated whole under each it
+            // filled its full box every time (measured, LARGE=11 drag's commit: a 25.6 ms frame). Edges left of the cut still count, as
+            // the edge shader clamps them to the region's left side, so the cut's coverage is exact.
+            const clip = pass.clipRect();
             // Shelf packing, decided for every area before any is drawn: an item's fill and stroke go into one batch or the next.
             let x = shelfX, y = shelfY, h = shelfH;
             for (let i = 0; i < areas.length; i++) {
                 const prepared = areas[i];
                 if (!live.has(prepared) || prepared.device !== host.device() || prepared.generation !== host.generation) throw new Error('Stale area');
-                const { width, height } = prepared.bounds;
+                const at = tentative[i] ?? (tentative[i] = { x: 0, y: 0, rect: { x: 0, y: 0, width: 0, height: 0 } });
+                const b = prepared.bounds;
+                const x0 = Math.max(b.x, clip.x), y0 = Math.max(b.y, clip.y);
+                const x1 = Math.min(b.x + b.width, clip.x + clip.width), y1 = Math.min(b.y + b.height, clip.y + clip.height);
+                at.rect.x = x0; at.rect.y = y0; at.rect.width = Math.max(0, x1 - x0); at.rect.height = Math.max(0, y1 - y0);
+                const { width, height } = at.rect;
+                if (!width || !height) { at.x = 0; at.y = 0; continue; }
                 if (x + width > W) { y += h; x = 0; h = 0; }
                 if (y + height > H || width > W) return false;
-                const at = tentative[i] ?? (tentative[i] = { x: 0, y: 0 });
                 at.x = x; at.y = y;
                 x += width; h = Math.max(h, height);
             }
@@ -392,6 +408,10 @@ export function createAreaKit(): AreaKit {
             whole.width = W; whole.height = H;
             for (let i = 0; i < areas.length; i++) {
                 const prepared = areas[i], { bounds } = prepared, at = tentative[i];
+                const kept = spare.pop() ?? { x: 0, y: 0, rect: { x: 0, y: 0, width: 0, height: 0 } };
+                kept.x = at.x; kept.y = at.y; kept.rect.x = at.rect.x; kept.rect.y = at.rect.y; kept.rect.width = at.rect.width; kept.rect.height = at.rect.height;
+                placed.set(prepared, kept);
+                if (!at.rect.width || !at.rect.height) { auditCount('area', 'clipped-out'); continue; }
                 // The region's own clear first: the area accumulates from zero, and no other region is touched.
                 pass.draw({ pipeline: clear, bindings: { uniforms: [{ binding: 0, slice: regionUniforms(host, W, H, at, bounds, null) }], textures: [] },
                     vertices: [], first: 0, count: 4, instances: 1, scissor: whole });
@@ -402,9 +422,6 @@ export function createAreaKit(): AreaKit {
                             vertices: [{ buffer: piece.buffer, offset: 0, bytes: piece.bytes }], first: 0, count: 4, instances: piece.count, scissor: whole });
                     }
                 }
-                const kept = spare.pop() ?? { x: 0, y: 0 };
-                kept.x = at.x; kept.y = at.y;
-                placed.set(prepared, kept);
             }
             return true;
         },
@@ -415,7 +432,8 @@ export function createAreaKit(): AreaKit {
         composite(pass, prepared, output): boolean {
             const at = placed.get(prepared);
             if (!at || !batchScratch) return false;
-            pass.compositeArea(batchScratch.target, at, prepared.bounds, output);
+            // A cut the clip misses entirely draws nothing there: it is placed (not a refusal) with an empty rect.
+            if (at.rect.width && at.rect.height) pass.compositeArea(batchScratch.target, at, at.rect, output);
             return true;
         },
         retire,

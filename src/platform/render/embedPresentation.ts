@@ -1,7 +1,7 @@
 import type { Rect, ViewState } from '../types';
 import { isEmbedContainmentApproved } from '../embedContainment';
 import { RENDER_CONSTANTS } from './constants';
-import { auditCount } from './renderAudit';
+import { auditCount, renderAuditEnabled } from './renderAudit';
 import type { EmbedContainment } from '../embedContainment.types';
 import type { ByteLease } from './gfx/api';
 import type { FrameBudget, FrameToken, Layer } from './types';
@@ -162,8 +162,13 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
         slot.containment = null; clearClip(slot); slot.node = null; hide(slot); slot.root.remove();
         slot.allocator.release(slot.base); slots.delete(slot.id); slot.listeners.clear();
     };
+    // The packet places the nodes for the camera its draw was made at. The view epoch also moves when the moving flag flips at a gesture's
+    // end with the camera unchanged, and no new board draw (so no new packet) follows a board answering unchanged: compared by epoch, the
+    // last packet stayed one epoch behind and a loaded embed was hidden for good after a pan or a zoom (measured on both backends, and on
+    // the canvas2d feature build after a pan). The same camera and viewport place every node the same, whatever the epoch.
     const validFrame = (view: ViewState, token: FrameToken): boolean => !!packet && visible && !disposed &&
-        sameToken(packet.presentation.token, token) && packet.presentation.viewEpoch === view.epoch &&
+        sameToken(packet.presentation.token, token) && (packet.presentation.viewEpoch === view.epoch ||
+            packet.camera.x === view.camera.x && packet.camera.y === view.camera.y && packet.camera.z === view.camera.z) &&
         packet.viewport.width === view.viewport.width && packet.viewport.height === view.viewport.height;
     const createSlot = (request: Request, node: EmbedPresentedNode, base: ByteLease): Slot => {
         const root = document.createElement('div'), plane = document.createElement('div'), container = document.createElement('div'), chrome = document.createElement('div');
@@ -217,6 +222,8 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
         const yielded = (): boolean => { if (budget.shouldYield()) { whole = false; return true; } return false; };
         const answer = (): boolean => !(whole && mutations === drawnAt && sameDrawnView(view, drawnView, slots.size > 0));
         if (!host || !validFrame(view, budget.token)) {
+            if ((slots.size || requests.size) && renderAuditEnabled()) auditCount('embed', 'prepare-invalid:' + (!host ? 'host' : !packet ? 'no-packet' : !visible ? 'hidden' : !sameToken(packet.presentation.token, budget.token) ? 'token'
+                : packet.presentation.viewEpoch !== view.epoch ? 'view-epoch' : 'viewport'));
             for (const slot of slots.values()) hide(slot);
             // Requests wait for a packet that names their node; present() wakes only for that packet.
             for (const request of requests) request.waitingForFacts = true;
@@ -269,7 +276,14 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
                     while (!yielded()) {
                         touch();
                         const step = slot.job.next();
-                        if (step.done) { slot.job = null; slot.clips = step.value; slot.root.prepend(step.value.definitions); slot.root.append(step.value.shield); break; }
+                        if (step.done) {
+                            slot.job = null; slot.clips = step.value; slot.root.prepend(step.value.definitions); slot.root.append(step.value.shield);
+                            // The embed is now inline-eligible (inlineNodeIds), so the board omits its poster. The board prepared before this
+                            // layer in this frame and saw no omission; without a frame asked for it, a board answering unchanged kept
+                            // drawing the poster and the live frame stayed hidden (measured, WebGL2 DPR 2: 'slot-hidden:poster-painted' for good).
+                            requestsChanged();
+                            break;
+                        }
                     }
                 }
             } catch (error) { clearClip(slot); slot.blocked = true; report(error); }
@@ -277,19 +291,21 @@ export function createEmbedPresentationPort(options: EmbedPresentationOptions): 
         return answer();
     };
     const paintOverlay = (view: ViewState) => {
-        if (!prepared || !validFrame(view, prepared.token) || prepared.epoch !== view.epoch || !witness ||
-            !sameToken(witness.token, prepared.token) || witness.frameId !== prepared.frameId || witness.cameraEpoch !== prepared.cameraEpoch ||
-            witness.sceneRevision !== packet!.sceneRevision) { for (const slot of slots.values()) hide(slot); return; }
+        // Each reason is counted (audit only): a hidden live frame names the check that hid it.
+        const stale = !prepared ? 'unprepared' : !validFrame(view, prepared.token) ? 'invalid-frame' : prepared.epoch !== view.epoch ? 'view-epoch'
+            : !witness ? 'no-witness' : !sameToken(witness.token, prepared.token) ? 'witness-token' : witness.frameId !== prepared.frameId ? 'witness-frame'
+            : witness.cameraEpoch !== prepared.cameraEpoch ? 'witness-camera' : witness.sceneRevision !== packet!.sceneRevision ? 'witness-revision' : null;
+        if (stale || !witness) { if (slots.size && renderAuditEnabled()) auditCount('embed', 'overlay-hidden:' + (stale ?? 'no-witness')); for (const slot of slots.values()) hide(slot); return; }
         for (const slot of slots.values()) {
             const node = slot.node, cap = slot.containment;
-            if (!node || !cap || !isEmbedContainmentApproved(cap) || !slot.clips) { hide(slot); continue; }
+            if (!node || !cap || !isEmbedContainmentApproved(cap) || !slot.clips) { if (renderAuditEnabled()) auditCount('embed', 'slot-hidden:' + (!node ? 'no-node' : !cap ? 'no-containment' : !slot.clips ? 'no-clips' : 'unapproved')); hide(slot); continue; }
             // Owner adopted the plan's translucent-above interaction exception; its old extra confirmation step is cut.
             // Unknown facts never show live content: the true-order poster stands, and nothing is claimed.
-            if (node.laterPaint.some(item => item.opacity === 'unknown')) { hide(slot); continue; }
+            if (node.laterPaint.some(item => item.opacity === 'unknown')) { if (renderAuditEnabled()) auditCount('embed', 'slot-hidden:unknown-later'); hide(slot); continue; }
             const interaction = node.laterPaint.some(item => item.opacity === 'translucent');
             const omitted = witness.omittedNodeIds?.has(slot.id) ?? false;
             const shown = interaction ? node.poster === 'painted' && !omitted && !!slot.interaction : node.poster === 'omitted' && omitted;
-            if (!shown) { hide(slot); continue; }
+            if (!shown) { if (renderAuditEnabled()) auditCount('embed', 'slot-hidden:' + (interaction ? 'interaction' : node.poster !== 'omitted' ? 'poster-' + node.poster : 'not-omitted')); hide(slot); continue; }
             slot.root.style.zIndex = String(node.order);
             slot.plane.style.clipPath = interaction ? '' : slot.clips.clipUrl ?? '';
             slot.plane.style.mask = interaction ? '' : slot.clips.maskUrl;

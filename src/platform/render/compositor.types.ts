@@ -228,6 +228,9 @@ export interface PaneCompositor {
     /** The layers' offscreen passes of a frame whose picture is unchanged, with no surface pass: nothing is presented. Null when no
      * layer has offscreen work or the frame cannot be encoded. Absent on a backend with no offscreen work (canvas2d). */
     encodeOffscreen?(frame: ScheduledFrame): ScheduledEncoding | null;
+    /** Whether a real present of this prepared frame would now report complete and sharp: every layer's coverage, read as the encode
+     * reads it. Absent on a backend whose frames are never skipped for offscreen work (canvas2d). */
+    nowSharp?(frame: ScheduledFrame): boolean;
     coverage(frame: ScheduledFrame): CompositorCoverage;
     page(view: ViewState, index: number): CompositorPage | null;
     paneTransform(view: ViewState, frameId: number): Affine | null;

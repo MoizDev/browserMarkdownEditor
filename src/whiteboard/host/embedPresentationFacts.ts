@@ -2,7 +2,7 @@ import type { PlatformPresentation } from '../../platform/render/attachPlatformP
 import type { EmbedClippedCoverage, EmbedCoveragePath, EmbedLaterPaint, EmbedPresentationFrame, EmbedPresentationPort,
     EmbedPresentedNode } from '../../platform/render/embedPresentation.types';
 import type { ByteLease } from '../../platform/render/gfx/api';
-import { auditCount } from '../../platform/render/renderAudit';
+import { auditCount, renderAuditEnabled } from '../../platform/render/renderAudit';
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { FrameToken, RenderToken } from '../../platform/render/types';
 import type { Affine, PathCommand, Rect } from '../../platform/types';
@@ -56,6 +56,9 @@ interface Pending {
 interface Building {
     readonly pending: Pending;
     readonly controller: AbortController;
+    /** What it builds: a later draw with the same key is the same packet, and leaves this build running. */
+    readonly key: BuildKey;
+    readonly presentation: PlatformPresentation;
 }
 
 /** Budgets chosen, not measured. A trace result is at most this many rectangles per selection. */
@@ -500,6 +503,16 @@ function frameSource(frame: PaintSource, live: () => boolean): PaintNodeSource {
  * they served has physically retired. A draw whose backings cannot be proven presents nothing, so the
  * cards keep their true-order poster.
  */
+/** The frame whose draw a presentation shows: a frame skipped as unchanged shows the last real present's draw (drawnFrameId). */
+function drawnFrameOf(presentation: PlatformPresentation): number { return presentation.drawnFrameId ?? presentation.frameId; }
+/** Whether a presentation shows the draw made in `frameId` at `epoch`. A frame skipped as unchanged repeats that draw at the same drawn
+ * camera, possibly under a newer view epoch (the moving flag flips at a gesture's end without a camera change): its draw is that draw.
+ * Pairing on the presentation's own frame never matched a draw after a skipped frame, so a loaded embed stayed hidden on WebGL2 (measured,
+ * DPR 2 drawing: the draw's acknowledgement arrived after the skipped frames' presentations, 'draw-older'). */
+function showsDraw(presentation: PlatformPresentation, frameId: number, epoch: number): boolean {
+    if (drawnFrameOf(presentation) !== frameId) return false;
+    return presentation.frameId !== frameId || presentation.viewEpoch === epoch;
+}
 export function createNativeEmbedPresentationProducer(options: NativeEmbedPresentationOptions): NativeEmbedPresentationProducer {
     let pending: Pending | null = null, building: Building | null = null, accepted: PlatformPresentation | null = null, disposed = false;
     /** What the port holds now: the key of the last packet handed to it, cleared when the pane lets its packet go. */
@@ -526,7 +539,7 @@ export function createNativeEmbedPresentationProducer(options: NativeEmbedPresen
             if (!doc) throw new Error('Embed presentation needs the pinned source document of the presented frame');
             const pane = context.paneTransform;
             if (!pane) throw new Error('Embed presentation needs the pane transform of the retained draw');
-            if (!drawn) { releaseHeld(); return; }
+            if (!drawn) { releaseHeld(); if (renderAuditEnabled()) auditCount('embed', 'facts:no-drawn'); return; }
             const drawnFrame = drawn.frame, dpr = context.view.viewport.dpr;
             const deviceScale = context.view.camera.z * dpr;
             const source = frameSource(drawnFrame, () => !signal.aborted && !disposed);
@@ -537,6 +550,7 @@ export function createNativeEmbedPresentationProducer(options: NativeEmbedPresen
             signal.throwIfAborted();
             const packet: EmbedPresentationFrame = { presentation, sceneRevision: frame.sceneRevision,
                 viewport: Object.freeze({ width: context.view.viewport.width, height: context.view.viewport.height }),
+                camera: Object.freeze({ x: context.view.camera.x, y: context.view.camera.y, z: context.view.camera.z }),
                 nodes: presentedEmbeds(doc, drawnFrame, context.omittedNodeIds, pane, later), release: releaseHeld };
             handed = true;
             handedKey = key;
@@ -544,6 +558,7 @@ export function createNativeEmbedPresentationProducer(options: NativeEmbedPresen
         } catch (error) {
             if (!handed) {
                 releaseHeld();
+                if (renderAuditEnabled()) auditCount('embed', 'facts:failed:' + (signal.aborted ? 'aborted' : String((error as Error)?.message ?? error).slice(0, 50)));
                 if (!signal.aborted) options.onError(error);
             }
         } finally {
@@ -552,14 +567,18 @@ export function createNativeEmbedPresentationProducer(options: NativeEmbedPresen
     };
     const pair = () => {
         const value = pending, presentation = accepted;
-        if (!presentation || !value || disposed || presentation.frameId !== value.context.frameId
-            || presentation.viewEpoch !== value.context.view.epoch || !sameRender(presentation.token, value.token)) return;
+        if (!presentation || !value || disposed || !showsDraw(presentation, value.context.frameId, value.context.view.epoch) || !sameRender(presentation.token, value.token)) {
+            if (renderAuditEnabled()) auditCount('embed', 'facts:unpaired:' + (!presentation ? 'no-presentation' : !value ? 'no-draw' : disposed ? 'disposed'
+                : drawnFrameOf(presentation) < value.context.frameId ? 'presentation-older' : drawnFrameOf(presentation) > value.context.frameId ? 'draw-older'
+                : !showsDraw(presentation, value.context.frameId, value.context.view.epoch) ? 'epoch' : 'token'));
+            return;
+        }
         pending = null;
         const key = buildKeyOf(value, presentation);
         // The port already holds a packet built from exactly this content: nothing is copied, read back or traced again.
         if (handedKey && sameBuild(handedKey, key)) { releaseQuietly(value); auditCount('embed', 'facts:reuse'); return; }
         const controller = new AbortController();
-        building = { pending: value, controller };
+        building = { pending: value, controller, key, presentation };
         // The build runs in a task of its own. Its copies and readbacks are not part of the frame that presented the draw.
         setTimeout(() => {
             if (controller.signal.aborted) {
@@ -576,8 +595,16 @@ export function createNativeEmbedPresentationProducer(options: NativeEmbedPresen
             // Both borrows are taken at the draw itself: a later draw can replace the presented backings at any time.
             const releaseRaw = context.retain();
             const drawn = context.retainImages();
-            if (frame.sceneRevision !== revision || !sameRender(frame.token, token)) { releaseRaw(); drawn?.release(); return; }
+            if (frame.sceneRevision !== revision || !sameRender(frame.token, token)) {
+                releaseRaw(); drawn?.release(); return;
+            }
             const next: Pending = { revision, token, frame, context, releaseRaw, drawn };
+            // A draw the build in flight already describes (same source, revision, camera, omission and drawn backings) changes nothing:
+            // the build keeps running. Aborted for every such draw, a pane presenting each tick at rest never finished one, so a loaded
+            // embed stayed hidden and asked for frames for good (measured, canvas2d DPR 2 after a zoom: a draw and an abort per tick).
+            if (building && !building.controller.signal.aborted && sameBuild(building.key, buildKeyOf(next, building.presentation))) {
+                releaseQuietly(next); if (renderAuditEnabled()) auditCount('embed', 'facts:same-as-building'); return;
+            }
             if (pending) releaseQuietly(pending);
             pending = next;
             building?.controller.abort();
@@ -594,8 +621,9 @@ export function createNativeEmbedPresentationProducer(options: NativeEmbedPresen
                 building?.controller.abort();
                 return;
             }
-            if (building && (building.pending.context.frameId !== presentation.frameId
-                || building.pending.context.view.epoch !== presentation.viewEpoch || !sameRender(building.pending.token, presentation.token))) {
+            // Only another render (token) supersedes a build: a newer frame of the same render still shows its camera's placements, which the
+            // port checks against the view (camera and viewport) when the packet arrives; a later different draw aborts it in presented().
+            if (building && !sameRender(building.pending.token, presentation.token)) {
                 building.controller.abort();
             }
             pair();

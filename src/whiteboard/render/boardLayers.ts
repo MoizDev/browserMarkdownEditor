@@ -540,7 +540,13 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                             if (item.kind !== 'image' || omit?.has(item.nodeId)) continue;
                             // A standin draws a crop with no quad to classify: it gets no facts, so the embed keeps its poster.
                             if (prepared.resources.imageCrop?.(item.imageKey)) continue;
-                            const bitmap = prepared.resources.image(item.imageKey);
+                            // A picture whose decoded copy the reference has released (the GPU draws it from its texture) has no readback
+                            // either: it is left out like a video frame, so only an embed it lies above keeps its poster (its facts stay
+                            // unknown). Thrown out of the walk, it refused the whole draw: with any picture on a WebGL2 board no embed facts
+                            // were ever built from a draw, and a loaded embed stayed hidden ('Released prepared image', measured DPR 2).
+                            let bitmap: ReturnType<typeof prepared.resources.image>;
+                            try { bitmap = prepared.resources.image(item.imageKey); }
+                            catch { if (renderAuditEnabled()) auditCount('embed', 'hold:image-released'); continue; }
                             // A video frame draws like a bitmap (drawImage takes both) but has no readback for the image facts: it
                             // is drawn without an entry, so its facts stay unknown (embedPresentationFacts) while the draw stays usable.
                             if (bitmap instanceof VideoFrame) continue;

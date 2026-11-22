@@ -74,7 +74,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     let lastView: ViewState = { camera: { ...camera.camera }, viewport: { ...camera.viewport }, epoch: 0, moving: false };
     let lastQuality: number | null = null;
     /** What the last real present reported, for the frames that skip it (see presentUnchanged). Cleared whenever the pane stops presenting. */
-    let lastReport: { revision: string; backend: PaneCompositor['backend']; complete: boolean; sharp: boolean;
+    let lastReport: { frameId: number; revision: string; backend: PaneCompositor['backend']; complete: boolean; sharp: boolean;
         staleVersion: boolean | undefined; camera: { x: number; y: number; z: number }; drawn: { x: number; y: number; z: number };
         geometry: number | undefined } | null = null;
     // Audit only: the camera scale of the previous mirrored present, for the present's zooming flag.
@@ -616,12 +616,12 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                                 touchedFrame = frame.frameId;
                                 if (qualityScale < 1) auditCount('pane', 'quality-below-1');
                                 if (drawing !== compositor) candidate.presented(frame.token.deviceGeneration);
-                                lastReport = { revision, backend: drawing.backend, complete, sharp, staleVersion,
+                                lastReport = { frameId: frame.frameId, revision, backend: drawing.backend, complete, sharp, staleVersion,
                                     camera: { x: liveCamera.x, y: liveCamera.y, z: liveCamera.z },
                                     drawn: { x: frame.view.camera.x, y: frame.view.camera.y, z: frame.view.camera.z }, geometry: geometry?.generation };
                                 options.onPresentation({ frameId: frame.frameId, token: frame.token, backend: drawing.backend,
                                     complete, sharp, staleVersion,
-                                    viewEpoch: frame.view.epoch, revision });
+                                    viewEpoch: frame.view.epoch, revision, drawnFrameId: frame.frameId });
                                 if (lastQuality !== qualityScale) {
                                     lastQuality = qualityScale;
                                     reportRenderQuality(options.paneId, qualityScale);
@@ -651,14 +651,23 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                         // screen (measured, doc12 paced pan: 1 redundant present, unchanged-refused:camera with every layer unchanged).
                         const liveCamera = options.readCamera();
                         if (liveCamera.x !== last.camera.x || liveCamera.y !== last.camera.y || liveCamera.z !== last.camera.z) return true;
+                        // The picture on screen was reported unsharp, and the layers have since finished it off screen (tiles composed in a
+                        // skipped frame): present it for real, once, so its sharp report reaches the presentation's consumers. Repeating the
+                        // unsharp report kept a loaded embed hidden for good (an embed is shown only on a sharp presentation; measured,
+                        // WebGL2 DPR 2 drawing: 25 skipped frames after Load, each reporting the last real present's dirty tiles).
+                        if (!last.sharp && drawing.nowSharp?.(frame)) { if (renderAuditEnabled()) auditCount('pane', 'present-kept:sharpened'); return false; }
                         options.onPresentation({ frameId: frame.frameId, token: frame.token, backend: last.backend, complete: last.complete,
-                            sharp: last.sharp, staleVersion: last.staleVersion, viewEpoch: frame.view.epoch, revision: last.revision });
+                            sharp: last.sharp, staleVersion: last.staleVersion, viewEpoch: frame.view.epoch, revision: last.revision, drawnFrameId: last.frameId });
                         return true;
                     },
                     // Only the GPU compositor has offscreen passes; a 2D or bridge frame has none.
                     encodeOffscreen: (frame: ScheduledFrame) => {
                         const drawing = drawCompositor();
-                        return drawing && drawing !== compositor ? drawing.encodeOffscreen?.(frame) ?? null : null;
+                        const offscreen = drawing && drawing !== compositor ? drawing.encodeOffscreen?.(frame) ?? null : null;
+                        // Off-screen work under an unsharp report may be what finishes the picture: one more frame asks (presentUnchanged)
+                        // whether it now presents sharp. Bounded by the work itself: with no offscreen work left, no frame is asked for.
+                        if (offscreen && lastReport && !lastReport.sharp) lifecycle?.invalidate('offscreen-sharpen');
+                        return offscreen;
                     },
                     writeOverlays: options.writeOverlays,
                     ...(__BME_BENCH__ ? { benchmarkMemory: () => {

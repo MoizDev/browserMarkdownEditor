@@ -510,6 +510,9 @@ export function createNativeViewLease(options: {
                 // stays until a frame is presented. Only a presentation this lease refuses clears it (hiding clears it in setView).
                 if (presentation && presentedFrame === null) presentedView = null;
                 navigation.onPresentation(presentation);
+                // Audit only: why a presentation the embeds and backdrop act on was refused.
+                if (presentation && renderAuditEnabled() && !certifyPresentation(presentation)) auditCount('embed', 'uncertified:' + (!presentation.complete ? 'incomplete'
+                    : !presentation.sharp ? 'not-sharp' : presentation.staleVersion ? 'stale' : 'identity'));
                 viewer.presentationAccepted(presentation && certifyPresentation(presentation) ? presentation : null);
                 if (presentation && certifyPresentation(presentation)) backdrop?.notePresentation?.();
                 if (presentation && certifyPresentation(presentation)) recordBoardPresentation(performance.now(), presentation.backend);

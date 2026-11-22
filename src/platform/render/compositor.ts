@@ -422,7 +422,7 @@ export class GpuCompositor implements PaneCompositor {
             for (let i = 0; i < snapshot.layers.length; i++) {
                 const layer = snapshot.layers[i];
                 const verdict = layer.coverage(frame, this.backend);
-                if (!verdict.sharp || verdict.staleVersion) allSharp = false;
+                if (!verdict.sharp || verdict.staleVersion) { allSharp = false; if (renderAuditEnabled()) auditCount(layer.id, verdict.staleVersion ? 'coverage:stale' : 'coverage:not-sharp'); }
                 if (verdict.staleVersion) anyStale = true;
                 if (verdict.complete) continue;
                 allComplete = false;
@@ -549,6 +549,7 @@ export class GpuCompositor implements PaneCompositor {
                         this.#retryPending = false;
                         this.#shortfalls = [];
                         const layersComplete = !deferred && allComplete;
+                        if (snapshot.metrics!.qualityScale !== 1 && renderAuditEnabled()) auditCount('compositor', 'coverage:quality-' + snapshot.metrics!.qualityScale.toFixed(2));
                         this.#report = Object.freeze({ frameId: frame.frameId, token: Object.freeze({ ...frame.token }), presented: true,
                             complete: true, sharp: snapshot.metrics!.qualityScale === 1 && allSharp,
                             staleVersion: anyStale, layersComplete,
@@ -651,6 +652,17 @@ export class GpuCompositor implements PaneCompositor {
             this.#failure(error);
             return null;
         }
+    }
+
+    nowSharp(frame: ScheduledFrame): boolean {
+        const prepared = this.#prepared, snapshot = this.#snapshot;
+        if (!prepared || !snapshot?.metrics || prepared.snapshot !== snapshot || snapshot.view !== frame.view || prepared.frameId !== frame.frameId ||
+            !sameToken(prepared.token, frame.token) || snapshot.metrics.qualityScale !== 1) return false;
+        for (let i = 0; i < snapshot.layers.length; i++) {
+            const verdict = snapshot.layers[i].coverage(frame, this.backend);
+            if (!verdict.complete || !verdict.sharp || verdict.staleVersion) return false;
+        }
+        return true;
     }
 
     coverage(frame: ScheduledFrame): CompositorCoverage {

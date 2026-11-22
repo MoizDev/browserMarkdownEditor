@@ -42,6 +42,8 @@ interface ImageUse {
     lease: ByteLease | null;
     resident: boolean;
     admission: FrameBudget | null;
+    /** The frame this use was last admitted in: admissions go to the least recently admitted first (prepareFrame). */
+    admittedFrame?: number;
 }
 interface Crop {
     readonly rect: Rect;
@@ -302,6 +304,12 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             if (job?.stage === 'ready' && !budget.shouldYield() && budget.claimUpload(job.band.canvas.width * job.band.canvas.height * 4)) {
                 job.admission = budget;
             }
+            // The least recently admitted first. A use admitted in a frame that then did not draw it (a tile the layer left out as covered)
+            // stays unuploaded; first in the map's order, it took the frame's allowance in every attempt, and the images the frame did
+            // draw were refused for good: a PDF board with an embed repainted every tick at rest after a zoom and never presented the
+            // zoomed-back view (canvas2d DPR 2: one 1 MB tile admitted per frame, 36 claims refused per frame, 4 of 4 runs). In this order
+            // each frame admits an image not tried most recently, and a drawn image stays uploaded, so the frame completes.
+            const waiting: Array<[Buffer2D, ImageUse]> = [];
             for (const buffer of this.buffers.values()) for (let use of buffer.images.values()) {
                 // A canvas source is versioned by the frame key, which changes with every wet-ink revision. Admit it under
                 // the key this frame will encode with: admitting the previous key's use let encode re-version it without an
@@ -310,14 +318,18 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
                     use = { ...use, version: key, resident: false, admission: null };
                     buffer.images.set(use.source, use);
                 }
-                if (use.resident || budget.shouldYield()) continue;
+                if (!use.resident) waiting.push([buffer, use]);
+            }
+            waiting.sort((a, b) => (a[1].admittedFrame ?? -1) - (b[1].admittedFrame ?? -1));
+            for (const [, use] of waiting) {
+                if (budget.shouldYield()) break;
                 if (!use.lease) use.lease = this.reserveGpu(use.bytes);
                 // Refused: the residency only the last published frame holds goes first. That frame's pixels are on the display
                 // already, and its sources stay pinned for a retry, so only the accounting of their upload is given back; a later draw of
                 // one is admitted again. Measured (canvas2d, DPR 2 annotated PDF, a pen stroke): the published frame held 16.9 MB of
                 // tile images this frame did not draw, the next tile was refused, so no frame ever published to release them.
                 if (!use.lease && this.releaseStaleUses()) use.lease = this.reserveGpu(use.bytes);
-                if (use.lease && budget.claimUpload(use.bytes)) use.admission = budget;
+                if (use.lease && budget.claimUpload(use.bytes)) { use.admission = budget; use.admittedFrame = budget.frameId; }
             }
         } finally { this.busy--; }
     }

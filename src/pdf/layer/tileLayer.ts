@@ -47,6 +47,8 @@ interface Entry {
     texture?: PooledTexture;
     /** The last prepared frame that drew this tile: its pixels are never a trim's to take while that frame is the last one. */
     drawnFrame?: number;
+    /** Audit only: the last frame either backend drew this tile in (tapeFinerReplaced). drawnFrame is the GPU trim's, not this. */
+    auditDrawnAt?: number;
     used: number;
 }
 
@@ -81,6 +83,9 @@ function identityOf(value: object | string): number {
     return id;
 }
 function scaleDiffers(scale: number, frame: number): boolean { return Math.abs(scale / frame - 1) > 1e-6; }
+/** The audit's stand-in: a raster coarser than the frame's scale. A finer one (the motion scale left from a zoom) is at least as sharp
+ * as the plan, so it is complete: counted as a stand-in, doc12's canvas2d draw-sat read 2 of 91 complete with every input answered. */
+function coarserThan(scale: number, frame: number): boolean { return scale / frame < 1 - 1e-6; }
 
 /** One quad of the frame in device pixels: whether it is a stand-in. Collected only while the render audit is on. */
 interface QuadMark { readonly x: number; readonly y: number; readonly width: number; readonly height: number; readonly stand: boolean }
@@ -116,6 +121,12 @@ const TILE_EDGE = 514;
 
 /** Two scale steps this close are one zoom gesture (a wheel or pinch stream). */
 const ZOOM_GESTURE_GAP_MS = 150;
+/** A moving view plans motion tiles only while its camera changed this recently. The scheduler marks a view moving for any contact,
+ * and a pen stroke leaves the camera still: planned as motion, every stroke on a PDF switched the page to the next motion scale
+ * (doc12 at DPR 2: 2.876 -> 4.0, 18 tiles) and every lift back to exact (27 tiles), the pool held one set, so each switch evicted
+ * the other and rastered it again (canvas2d draw phase: 52 MB evicted, 53 rasters, a x0.17 page preview on screen 1-4 frames each
+ * lift). A pan or zoom changes the camera every step; a pause inside one longer than this settles to exact tiles. */
+const CAMERA_STILL_MS = 150;
 /** A gesture's covered tiles wait this many of its own step intervals after its last step before they raster. Started sooner,
  * the next step replanned the scale before they landed: measured on doc12's paced GPU zoom (a step every ~56 ms), 113 of 124
  * rasters were thrown away unused (fallback:raster-unused) and the last step's tiles queued behind them in the worker pool.
@@ -211,6 +222,8 @@ export class PdfTileLayer implements Layer {
     private framePlan: { readonly view: ViewState; readonly exactKeys: readonly string[] } | null = null;
     /** The frame id this layer last prepared: `evictGpu` may act only for it. */
     private preparedFrame = -1;
+    /** Audit only: the frame tapeFinerReplaced last looked at. */
+    private auditFrame: number | undefined;
     private sequence = 0;
     private contentRevision = 0;
     private pendingFrame = false;
@@ -266,9 +279,28 @@ export class PdfTileLayer implements Layer {
      * scanned every entry and built a fresh array per tile, so one frame cost tiles × entries (by reading: a zoom step
      * plans hundreds of tiles). Dropped wherever an entry's drawability changes; a new unsettled entry is never drawable. */
     private coverCache: { readonly device: GfxDevice | null; readonly boxes: ReadonlyMap<number, readonly Readonly<Rect>[]> } | null = null;
+    /** The camera prepare last saw, and when it last differed from the one before (CAMERA_STILL_MS). */
+    private seenCamera: Readonly<{ x: number; y: number; z: number }> | null = null;
+    private cameraMovedAt = -Infinity;
+
+    /** The view's demand, moving only while its camera is (CAMERA_STILL_MS): every reader of it agrees within one frame. */
+    private demand(view: ViewState): Omit<PdfDemandInput, 'covered' | 'previousMotionScale'> {
+        const input = this.viewDemand(view);
+        if (!input.moving || performance.now() - this.cameraMovedAt < CAMERA_STILL_MS) return input;
+        const seen = this.seenCamera, camera = view.camera;
+        if (!seen || seen.x !== camera.x || seen.y !== camera.y || seen.z !== camera.z) return input;
+        return { ...input, moving: false };
+    }
+    /** Prepare records camera changes before it reads the demand; the draws of the same frame only read them. */
+    private noteCamera(view: ViewState): void {
+        const seen = this.seenCamera, camera = view.camera;
+        if (seen && seen.x === camera.x && seen.y === camera.y && seen.z === camera.z) return;
+        if (seen) this.cameraMovedAt = performance.now();
+        this.seenCamera = { x: camera.x, y: camera.y, z: camera.z };
+    }
 
     constructor(private readonly host: LayerHost, private readonly producer: PdfTileProducer,
-        private readonly demand: (view: ViewState) => Omit<PdfDemandInput, 'covered' | 'previousMotionScale'>,
+        private readonly viewDemand: (view: ViewState) => Omit<PdfDemandInput, 'covered' | 'previousMotionScale'>,
         private readonly isCurrent: () => boolean,
         private readonly onError: (error: unknown, request: PdfTileRequest | null) => void,
         private readonly mirror?: PdfLayerMirror, private readonly bridge?: PdfVersionBridge | null) {
@@ -304,6 +336,7 @@ export class PdfTileLayer implements Layer {
         }
         // Pages of another device hold tiles no backend can draw: they go, and their owners are re-uploaded.
         if (device) this.dropForeignTiles(device);
+        this.noteCamera(view);
         const input = this.demand(view);
         this.latestDemand = input;
         this.latestView = view;
@@ -629,13 +662,14 @@ export class PdfTileLayer implements Layer {
             const snapshot = this.mirror?.view(view);
             if (!texture || texture.device !== this.host.device() || !snapshot) continue;
             const quad = this.mirror!.store.mirrorQuad(item, snapshot);
-            this.markQuad(quad.destRect, scaleDiffers(item.pixels.source.width / item.pixels.world.width, rasterScale));
+            this.markQuad(quad.destRect, coarserThan(item.pixels.source.width / item.pixels.world.width, rasterScale));
             this.host.drawTexturedQuad(pass, texture.handle, quad.sourceRect, quad.destRect, { opacity: 1, sampling: 'linear',
                 ...(__BME_BENCH__ ? { coverage: 'standin' as const, standInRatio: item.pixels.source.width / item.pixels.world.width / rasterScale } : {}) });
         }
         const device = this.host.device();
         const tiles = this.drawable(view, current, device, rasterScale, true);
         for (const entry of tiles) entry.drawnFrame = this.preparedFrame;
+        this.tapeFinerReplaced(tiles, rasterScale);
         // Scale order is kept between groups, since different scales overlap; same-scale tiles are batched by page.
         let start = 0;
         while (start < tiles.length) {
@@ -654,13 +688,36 @@ export class PdfTileLayer implements Layer {
         return !!demand && intersects(rect(request), demand.viewport);
     }
 
+    /** Audit only. A tile of the frame's own scale drawn for the first time where a FINER tile was drawn the frame before (a zoom's
+     * motion tiles settling to exact) replaces pixels that were already as sharp, so the present may be pixel-identical to the last
+     * one with no coarser stand-in to explain it: the judge accepts it by this marker, 'pdf:finer-replaced' (lead and gpu-f1). */
+    private tapeFinerReplaced(tiles: readonly Entry[], rasterScale: number): void {
+        if (!renderAuditEnabled()) return;
+        const frame = this.preparedFrame, previous = this.auditFrame;
+        if (frame === previous) return;
+        this.auditFrame = frame;
+        let fresh: Entry[] | null = null;
+        for (const entry of tiles) if (entry.auditDrawnAt === undefined && !scaleDiffers(entry.request.scale.scale, rasterScale)) (fresh ??= []).push(entry);
+        if (fresh && previous !== undefined) {
+            const drawn = new Set(tiles);
+            for (const [, entry] of this.entries) {
+                if (entry.auditDrawnAt !== previous || drawn.has(entry) || !(entry.request.scale.scale / rasterScale > 1 + 1e-6)) continue;
+                if (fresh.some(tile => tile.request.page === entry.request.page && intersects(rect(tile.request), rect(entry.request)))) {
+                    auditTape('pdf:finer-replaced');
+                    break;
+                }
+            }
+        }
+        for (const entry of tiles) entry.auditDrawnAt = frame;
+    }
+
     /** Records one drawn quad for the stand-in count. A no-op unless the audit is on. */
     private markQuad(destination: Readonly<Rect>, stand: boolean): void {
         this.standInMarks?.push({ x: destination.x, y: destination.y, width: destination.width, height: destination.height, stand });
     }
 
-    /** Counts the frame's stand-ins that no exact tile covers: one drawn beneath a whole exact tile is invisible, so it is not in the
-     * picture. Every stand-in here is drawn from another scale's raster, so it is counted under that origin. */
+    /** Counts the frame's stand-ins (coarser than the plan, coarserThan) that no other tile covers: one drawn beneath a whole exact or
+     * finer tile is invisible, so it is not in the picture. Every stand-in here is another scale's raster, counted under that origin. */
     private countStandIns(view: ViewState): void {
         const marks = this.standInMarks;
         this.standInMarks = null;
@@ -684,7 +741,7 @@ export class PdfTileLayer implements Layer {
             const { source, destination } = this.quad(entry.request, stack.rects[entry.request.page], view);
             const stand = scaleDiffers(entry.request.scale.scale, rasterScale);
             if (stand && renderAuditEnabled()) auditTape(`pdf-standin-ratio:${(entry.request.scale.scale / rasterScale).toPrecision(9)}`);
-            this.markQuad(destination, stand);
+            this.markQuad(destination, coarserThan(entry.request.scale.scale, rasterScale));
             this.host.drawTexturedQuad(pass, texture.handle, source, destination, { opacity: 1, sampling: 'linear',
                 ...(__BME_BENCH__ ? {
                     coverage: stand ? 'standin' as const : 'current' as const,
@@ -710,14 +767,16 @@ export class PdfTileLayer implements Layer {
             const snapshot = this.mirror?.view(view);
             if (!snapshot || !this.bridgeReady.has(item.entry.id)) continue;
             const quad = this.mirror!.store.mirrorQuad(item, snapshot);
-            this.markQuad(quad.destRect, scaleDiffers(item.pixels.source.width / item.pixels.world.width, rasterScale));
+            this.markQuad(quad.destRect, coarserThan(item.pixels.source.width / item.pixels.world.width, rasterScale));
             this.host.drawTexturedQuad(ctx, item.pixels.bitmap, quad.sourceRect, quad.destRect, { opacity: 1, sampling: 'linear',
                 ...(__BME_BENCH__ ? { coverage: 'standin' as const, standInRatio: item.pixels.source.width / item.pixels.world.width / rasterScale } : {}) });
         }
-        for (const entry of this.drawable(view, current, null, rasterScale, true)) {
+        const tiles = this.drawable(view, current, null, rasterScale, true);
+        this.tapeFinerReplaced(tiles, rasterScale);
+        for (const entry of tiles) {
             if (!entry.bitmap) continue;
             const { source, destination } = this.quad(entry.request, stack.rects[entry.request.page], view);
-            this.markQuad(destination, scaleDiffers(entry.request.scale.scale, rasterScale));
+            this.markQuad(destination, coarserThan(entry.request.scale.scale, rasterScale));
             this.host.drawTexturedQuad(ctx, entry.bitmap, source, destination,
                 { opacity: 1, sampling: 'linear', ...(__BME_BENCH__ ? {
                     coverage: scaleDiffers(entry.request.scale.scale, rasterScale) ? 'standin' as const : 'current' as const,

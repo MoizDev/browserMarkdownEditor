@@ -28,6 +28,7 @@ export const RENDER_CONSTANTS: RenderConstants = Object.freeze({
     hiddenCpuMirrorLimitBytes: 67108864,
     tileInteriorPixels: 512,
     tileGutterTexels: 1,
+    mediaTileInteriorPixels: 1024,
     movingTileLevelsPerOctave: 2,
     // Bounded tile motion, low coverage and request demand (rendering-design.md §5.1–5.7).
     motionLevelKeepMinDivisor: 1.15,

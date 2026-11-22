@@ -526,6 +526,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                     },
                     sceneRevision: (layer: Layer) => layerSet.definition(layer)?.revision(layer) ?? 0,
                     isCritical: (layer: Layer, view: ViewState) => layerSet.definition(layer)?.critical(layer, view) ?? false,
+                    progressUploadBytes: () => drawCompositor()?.progressUploadBytes?.() ?? 0,
                     prepareFrame: (frame: ScheduledFrame, budget: Parameters<PaneCompositor['prepareFrame']>[1]) => {
                         touchedFrame = frame.frameId;
                         // What this frame shows is stamped before any layer prepares, so the frame's own partial relief leaves it.

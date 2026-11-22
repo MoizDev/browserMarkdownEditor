@@ -58,8 +58,8 @@ export interface ImageTextures {
     /** `ready` holds the texture until `unhold` (a route pairs them per prepared run). `deferred` while staging or
      * uploading; `denied` when the GPU pool refuses the lease; `unsupported` for a source this path cannot draw. `image` is
      * null once the picture's bitmap was released: a ready texture still draws; anything else must wait for the bitmap. */
-    /** `firstPaint`: nothing of this picture is drawn without this texture (it is the picture itself, not a finer tile over its stand-in):
-     * its first upload is written whole in this frame, past the upload allowance, within FIRST_PAINT_FRAME_BYTES a frame. */
+    /** `firstPaint`: nothing of this picture is drawn without this texture (the picture itself, or a finer tile of a live run, which is
+     * drawn all or none): its first upload is written whole in this frame, past the upload allowance, within FIRST_PAINT_FRAME_BYTES a frame. */
     acquire(key: string, image: CanvasImageSource | null, budget: FrameBudget, firstPaint?: boolean): Admission<ImageTexture>;
     /** One texture per video node, rewritten in place when its version moves and never mipped. A version the texture already
      * holds costs no upload; a new one is decoded, then written whole once its claim is granted. Until then the texture keeps

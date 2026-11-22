@@ -40,7 +40,12 @@ export function createBoardHostImages(options: {
     const cache = getPlatformRuntime().governor.register({ id: `whiteboard-images:${token.documentId}:${token.session}:${++serial}`,
         owner: { vaultEpoch: token.vaultEpoch, documentId: token.documentId, session: token.session }, pool: 'cpu', kind: 'working',
         class: 'scene-cache', hiddenAt: null, lastVisibleAt: now, lastUsedAt: now,
-        memory: () => ({ live, retiring: 0 }), evict: () => { /* No unleased warm entries are retained. */ } });
+        memory: () => ({ live, retiring: 0 }),
+        // The tile residency keeps decoded tiles no paint holds while the view still names them (a warm cache): the governor may
+        // take those back. Unreclaimable, they held 11 MB of a 41 MB CPU pool on a WebGL2 PDF with a large picture (whose GPU
+        // draws from its textures, not these), and the 2D bridge of the quality raise never had room for its mirror: 'Updating' for
+        // good. A tile a paint still holds is never dropped; one taken back is decoded again if a frame asks for it.
+        evict: bytes => { residency?.evict(bytes); } });
     const memory: MemoryAllocator = {
         reserve(bytes) { if (disposed) return null; const lease = cache.reserve(bytes); if (lease) live += lease.bytes; return lease; },
         release(lease) { cache.release(lease); live -= lease.bytes; },

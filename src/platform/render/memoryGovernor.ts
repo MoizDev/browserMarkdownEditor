@@ -280,6 +280,12 @@ export class MemoryGovernor {
     private state: Exclude<MemoryPressureState, 'cpu-pinned'> = 'normal';
     private lastTrouble: MemoryTrouble | null = null;
     private qualityLimit = 1;
+    /** The GPU charge at the last recovery trim (advance): asked again only once the charge has changed. */
+    private recoveryTrimmedAt = -1;
+    /** The governor trimmed since the last step down: a cool window after that is the room it made (memoryMadeRoomRecoveryDelayMs). */
+    private madeRoom = false;
+    /** When the quality last stepped up: a refusal soon after is that level failing; later, it is a budget step (recordFailedLevel). */
+    private raisedAt = Number.NEGATIVE_INFINITY;
     private belowRecoverySince: number | null = null;
     private degradedAt = Number.NEGATIVE_INFINITY;
     /** The governor clock at the last slow GPU window: timing evidence for the layers, never a trim or a quality step. */
@@ -543,10 +549,15 @@ export class MemoryGovernor {
         // the quality down (1.0 -> 0.8 -> 0.64), which the recovery window then held for five seconds.
         if (unmet && now >= this.pressureHoldUntil) this.degrade();
         this.trimPanesOverGrant();
+        if (!liveGesture) this.recoverRoom();
         const cool = this.cool() && !liveGesture;
         if (!cool) this.belowRecoverySince = null;
         else if (this.belowRecoverySince === null) this.belowRecoverySince = now;
-        else if (now - this.belowRecoverySince >= POLICY.memoryRecoveryDelayMs && !this.raiseRefused(now)) {
+        else if (now - this.belowRecoverySince >= this.recoveryDelay() && !this.raiseRefused(now)) {
+            // Only a step that raises something starts a level's trial: at full quality this branch runs every cool window, and
+            // counted as a raise it made each refusal at 1 a failed level (measured: the back-off doubled to 60 s within 50 ms).
+            if (this.belowFull()) this.raisedAt = now;
+            this.madeRoom = false;
             this.qualityLimit = raisedQuality(this.qualityLimit);
             for (const [id, value] of this.paneCeiling) this.paneCeiling.set(id, raisedQuality(value));
             this.levelSince = now;
@@ -557,7 +568,7 @@ export class MemoryGovernor {
         }
         // Pressure is over once the cool window has held, whether or not the raise is allowed: the label then follows the quality
         // (degraded while it is lowered). Measured: a raise refused at 1.0 left 'trimming' for the whole run at 0.8.
-        if (this.state === 'trimming' && cool && this.belowRecoverySince !== null && now - this.belowRecoverySince >= POLICY.memoryRecoveryDelayMs) {
+        if (this.state === 'trimming' && cool && this.belowRecoverySince !== null && now - this.belowRecoverySince >= this.recoveryDelay()) {
             this.state = this.qualityLimit < 1 ? 'degraded' : 'normal';
         }
         if (this.failedQuality !== null && now - this.levelSince >= POLICY.qualityFailureResetMs) {
@@ -572,8 +583,11 @@ export class MemoryGovernor {
     private nextWake(now: number, cool: boolean, unmet: boolean): number | null {
         const hold = unmet && now < this.pressureHoldUntil ? this.pressureHoldUntil : null;
         let recovery: number | null = null;
+        // A lowered quality over the GPU's cool line with a charge the recovery trim has not asked about is not waited out: no
+        // event may come (measured: 46 s at 215.0 MB against a 214.7 MB line with no advance), so one advance is armed to ask.
+        if (this.recoveryDue()) recovery = now + POLICY.qualityStepSettleMs;
         if (this.state !== 'normal' && cool && this.belowRecoverySince !== null) {
-            let due = this.belowRecoverySince + POLICY.memoryRecoveryDelayMs;
+            let due = this.belowRecoverySince + this.recoveryDelay();
             if (this.failedQuality !== null) due = Math.max(due, this.failedUntil);
             recovery = Math.max(due, now);
         }
@@ -588,7 +602,8 @@ export class MemoryGovernor {
         this.lastTrouble = reason;
         this.state = 'trimming';
         this.belowRecoverySince = null;
-        this.recordFailedLevel();
+        // A device limit fails its level whenever it comes; a budget shortage ('allocation') only when it follows a raise to the level.
+        if (reason !== 'allocation' || this.levelJustRaised()) this.recordFailedLevel();
         for (const pool of ['gpu', 'cpu'] as const) {
             this.trimPool(pool, Math.floor(this.target[pool] * POLICY.memoryTrimTargetRatio));
         }
@@ -731,7 +746,10 @@ export class MemoryGovernor {
         // Nor while a cache of the same pane waits for room it needs: the room an eviction gives back is that cache's, and a ring
         // refilled first took it (measured: doc12 with a picture, WebGL2, at rest: the board's ring refilled what its evictions freed and
         // the PDF's visible exact tiles were refused for good, the page on stand-ins).
-        if (options?.prefetch && (!allowed() || this.charged[pool] + bytes > this.target[pool] * POLICY.memorySoftPressureRatio ||
+        // While the quality is down, GPU prefetch stops at the line the step back up needs (cool, under the trim target): admitted to
+        // the soft line, a board's ring held the pool between the two and the pane at 0.8 (recoverRoom).
+        const prefetchLine = pool === 'gpu' && this.belowFull() ? POLICY.memoryTrimTargetRatio : POLICY.memorySoftPressureRatio;
+        if (options?.prefetch && (!allowed() || this.charged[pool] + bytes > this.target[pool] * prefetchLine ||
             this.paneNeedWaiting(cache, pool))) {
             auditCount('governor', `prefetch-refused:${pool}`, 1, { bytes });
             return null;
@@ -972,7 +990,7 @@ export class MemoryGovernor {
         if (this.refusing[pool]) return;
         this.refusing[pool] = true;
         this.lastTrouble = 'allocation';
-        this.recordFailedLevel();
+        if (this.levelJustRaised()) this.recordFailedLevel();
         this.degrade();
         this.onPressureChange?.();
     }
@@ -1078,6 +1096,7 @@ export class MemoryGovernor {
             return this.charged[pool] > this.target[pool];
         }
         this.trimmedAt[pool] = this.charged[pool];
+        this.madeRoom = true;
         return this.trimPool(pool, aim) > 0 && this.charged[pool] > this.target[pool];
     }
 
@@ -1139,6 +1158,45 @@ export class MemoryGovernor {
     cool(): boolean {
         return this.charged.gpu < this.target.gpu * POLICY.memoryTrimTargetRatio &&
             this.charged.cpu < this.target.cpu * POLICY.memorySoftPressureRatio;
+    }
+
+    /** Whether any quality is below 1: the app's limit or a pane's ceiling. */
+    private belowFull(): boolean {
+        if (this.qualityLimit < 1) return true;
+        for (const value of this.paneCeiling.values()) if (value < 1) return true;
+        return false;
+    }
+
+    /** At rest with the quality down and the GPU over its cool line, what no frame draws (other scales, rings, prefetch: each owner
+     * keeps what its last frame drew) is given back to just under the line, so the quality can rise. Nothing trimmed there before:
+     * the pressure trim starts above the soft line, and a pool left a hair over the cool line by it held a WebGL2 PDF with a large
+     * picture at 0.8, 'Updating', with no advance for 46 s (measured: 215.0 MB against a 214.7 MB line). Asked once per charge:
+     * the releases it causes advance again (onPressureChange), and a charge that does not move asks nothing more. */
+    private recoverRoom(): void {
+        if (this.trimming || !this.recoveryDue()) return;
+        const line = Math.floor(this.target.gpu * POLICY.memoryTrimTargetRatio);
+        this.recoveryTrimmedAt = this.charged.gpu;
+        this.madeRoom = true;
+        const before = this.charged.gpu;
+        this.trimPool('gpu', line - 1);
+        auditCount('governor', 'recovery-trim:gpu', 1, { bytes: Math.max(0, before - this.charged.gpu) });
+    }
+
+    /** A recovery trim is owed: quality down, the GPU between its cool and soft lines, at a charge not yet asked about. */
+    private recoveryDue(): boolean {
+        const charged = this.charged.gpu;
+        return this.belowFull() && charged >= Math.floor(this.target.gpu * POLICY.memoryTrimTargetRatio)
+            && charged <= this.target.gpu * POLICY.memorySoftPressureRatio && charged !== this.recoveryTrimmedAt;
+    }
+
+    /** The cool window a raise waits for: short when the governor made the room itself (see memoryMadeRoomRecoveryDelayMs). */
+    private recoveryDelay(): number {
+        return this.madeRoom && this.belowFull() ? POLICY.memoryMadeRoomRecoveryDelayMs : POLICY.memoryRecoveryDelayMs;
+    }
+
+    /** A shortage soon after the quality rose to this level is the level failing; one at a level long held is a budget step. */
+    private levelJustRaised(): boolean {
+        return this.now - this.raisedAt < POLICY.qualityFailureResetMs;
     }
 
     /** The level being left failed under trouble: a raise back to it waits out the back-off, which doubles on repeat failures of

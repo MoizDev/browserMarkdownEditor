@@ -204,6 +204,7 @@ export interface RenderConstants {
     readonly qualityReductionFactor: 0.8;
     readonly minInteractiveQualityScale: 0.5;
     readonly memoryRecoveryDelayMs: 5000;
+    readonly memoryMadeRoomRecoveryDelayMs: 1000;
     /** Over budget takes one quality step per settle window: the step re-plans the grants, and the charge settles after it. */
     readonly qualityStepSettleMs: 300;
     /** A level that failed under pressure is not retried until this back-off passes; the back-off doubles on each repeat failure. */

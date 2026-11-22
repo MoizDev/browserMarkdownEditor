@@ -35,13 +35,13 @@ import type { PaintPalette } from './colour';
 import { retainPaintNodeResources } from './resourceLeases';
 import { localGeometrySignature, sameGeometrySignature } from './retainedKeys';
 import { createScenePaintNodeStream, prepareScenePaintSource, prepareScenePaintSourceNow, type ScenePaintPorts, type SceneResolveContext } from './sceneSource';
-import { chooseTileScale } from './tileHierarchy';
 import { createBoardTextGeometry, type PreparedBoardText } from './textGeometry';
 import type { BoardFonts } from '../text/fonts';
 import { prepareBoardVectorGeometry, prepareBoardVectorGeometryNow, prepareOpaqueGeometry, type BoardVectorGeometry } from './vectorGeometry';
 import { connectorBytes, inkChunkBytes, vectorBytes } from './residentBytes';
 import { ResolvedNodeCache } from './resolvedNodeCache';
 import { auditCount } from '../../platform/render/renderAudit';
+import { inkRealisationScale, pictureTileWorld } from './paintRequestScope';
 /** The audit surface of the board's paint services: every counter below is `board-paint:<event>`. */
 const AUDIT = 'board-paint';
 /** A link card's stored preview picture and favicon, as the document holds them; other nodes have none. */
@@ -140,14 +140,6 @@ function connectorPrepared(key: string, node: Readonly<Node> & { kind: 'connecto
 
 /** One session service resolves the same local geometry for Scene, paint and
  * export. Pinned read-side documents are passed explicitly after every await. */
-/** Picture tiles cover what is on screen and an eighth of the view around it; without a view rect, the frame's world. */
-function pictureTileWorld(request: ScenePaintRequest): Readonly<Rect> | undefined {
-    const v = request.viewWorld;
-    if (!v) return request.world;
-    const mx = v.width / 8, my = v.height / 8;
-    return { x: v.x - mx, y: v.y - my, width: v.width + 2 * mx, height: v.height + 2 * my };
-}
-
 export function createBoardRenderServices(options: {
     readonly doc: BoardDoc;
     readonly samples: SampleStoreReader;
@@ -335,8 +327,7 @@ export function createBoardRenderServices(options: {
     };
     const inkPrecision = (context?: Partial<Pick<SceneResolveContext, 'deviceScale' | 'sensitive' | 'allowInkLod'>>) => {
         const raw = context?.deviceScale ?? options.deviceScale ?? 3;
-        const effective = raw * (context?.sensitive ? 2.5 : 1);
-        const scale = chooseTileScale(effective).scale;
+        const scale = inkRealisationScale(raw, !!context?.sensitive);
         const lod = !!context?.allowInkLod && context.deviceScale !== undefined && !context.sensitive;
         return { scale, lod, key: `${scale}:${lod ? 'lod' : 'fine'}` };
     };

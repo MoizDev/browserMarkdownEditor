@@ -227,6 +227,7 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
         preflight(transaction: Transaction) { guard(); return applyController.preflight(transaction); },
         begin(origin: TransactionOrigin, label: string) { guard(); return applyController.begin(origin, label); },
         enqueueAfterGesture<T>(signal: AbortSignal, task: () => T) { return queue.enqueueAfterGesture(signal, task); },
+        subscribeGesture(listener: () => void) { return queue.subscribeGesture(listener); },
         beginGesture() {
             guard();
             const release = queue.beginGesture();

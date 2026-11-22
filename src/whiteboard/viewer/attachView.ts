@@ -15,6 +15,7 @@ import { auditCount, auditGauge, auditTape, renderAuditEnabled } from '../../pla
 import { RENDER_CONSTANTS } from '../../platform/render/constants';
 import type { DensityMode } from '../render/density';
 import { createPaintFrameAssembler } from '../render/frameAssembler';
+import { inkRealisationNear, pictureTileWorld } from '../render/paintRequestScope';
 import { LiveNodeUnion } from '../render/nodeSets';
 import { DEFAULT_BOARD_PALETTES } from '../render/palette';
 import { BoundsQuality } from '../scene/bounds';
@@ -80,6 +81,13 @@ export const attachView: AttachView = options => {
     let wholeCount: { readonly revision: number; readonly sheet: string; readonly count: number } | null = null;
     // The view request in force: its key, its device scale and the world it covers (1.5 viewports each side).
     let viewWorld: { key: SceneKey; world: Rect } | null = null;
+    /** canvas2d's standing view request (see requestPaint): its key, its world, the world its picture tiles cover and its exact scale. */
+    let view2d: { key: SceneKey; world: Rect; tiles: Readonly<Rect>; scale: number } | null = null;
+    // canvas2d's zoom settling (see requestPaint): the last device scale seen, when it was first seen, and the wake that asks for the
+    // exact ink band once it has held for ZOOM_SETTLE_MS.
+    let zoom2d: { scale: number; at: number } | null = null, settle2d: ReturnType<typeof setTimeout> | null = null;
+    const ZOOM_SETTLE_MS = 250;
+    const cancelSettle2d = () => { if (settle2d !== null) { clearTimeout(settle2d); settle2d = null; } };
     const unions = new WeakMap<ReadonlySet<string>, WeakMap<ReadonlySet<string>, ReadonlySet<string>>>();
     const union = (a: ReadonlySet<string> | null | undefined, b: ReadonlySet<string> | null | undefined): ReadonlySet<string> | null => {
         if (!a) return b ?? null;
@@ -337,6 +345,29 @@ export const attachView: AttachView = options => {
         // A view request whose world still holds the viewport, at the same key (band), stands: a pan or a zoom inside the band asks nothing new.
         if (onDevice && !sceneDue && densityMode !== 'dense' && viewNow && viewWorld && sameSceneKey(viewWorld.key, key)
             && containsRect(viewWorld.world, viewportOf(viewNow))) return;
+        // canvas2d: a request stands while a new one would open the same stream. The 2D adapter flattens the frame's paths at the exact
+        // scale itself; the stream reads the scale only for its strokes' realisation band and its pictures' tiles (decoded for the screen
+        // and an eighth around it, pictureTileWorld). So a pan inside the world asks nothing new, nor, on a board without pictures, a zoom
+        // inside the ink bands. A zoom one band across keeps the request too while the zoom is still going (moving, or a new scale in
+        // the last ZOOM_SETTLE_MS: a wheel's steps are discrete and never mark the camera moving), as the GPU route carries its band
+        // for a move; the exact band is asked for once the scale has held that long.
+        // Asked anew on every step, each step built a new frame over two compositor frames and presented the same picture twice, once
+        // from the old frame at the new camera, once rebuilt, whichever of the two the step's camera reached first (drawing, forced
+        // canvas2d: pan 52 of 113 presents redundant, zoom 39 of 79, its 100%-122% wheel steps crossing a band at 100%; LARGE: 56-59
+        // of 60 pan steps).
+        if (!onDevice && !sceneDue && densityMode !== 'dense' && viewNow && view2d && sameSceneKey(view2d.key, key)) {
+            const scale = viewNow.camera.z * viewNow.viewport.dpr, screen = viewportOf(viewNow), now = performance.now();
+            if (zoom2d?.scale !== scale) zoom2d = { scale, at: now };
+            const pictures = runtime.session.doc.mediaRefs.size > 0;
+            if (containsRect(view2d.world, screen) && (pictures ? scale === view2d.scale && containsRect(view2d.tiles, screen)
+                : inkRealisationNear(scale, view2d.scale, 0))) return;
+            if (!pictures && containsRect(view2d.world, screen) && (moving || now - zoom2d.at < ZOOM_SETTLE_MS) && inkRealisationNear(scale, view2d.scale, 1)) {
+                cancelSettle2d();
+                settle2d = setTimeout(() => { settle2d = null; requestPaint(); }, Math.max(0, zoom2d.at + ZOOM_SETTLE_MS - now) + 1);
+                return;
+            }
+        }
+        cancelSettle2d();
         // The whole scene, once per key, and only when its estimated cost fits (sceneFits). A count not known yet waits: a fresh
         // pin counts nothing until its first stream opens, so the stage stays due. A refusal is latched on this key.
         let scene = onDevice && sceneDue && sameSceneKey(viewAsked, key);
@@ -400,6 +431,8 @@ export const attachView: AttachView = options => {
         if (onDevice) { if (scene) sceneAsked = key; else viewAsked = key; }
         // The world this view request asks for, kept until the camera leaves it (the skip at the top of requestPaint).
         viewWorld = onDevice && !scene && !dense && world && deviceScale !== undefined ? { key, world } : null;
+        const tiles = screenWorld ? pictureTileWorld({ viewWorld: screenWorld }) : undefined;
+        view2d = !onDevice && !scene && !dense && world && tiles && current ? { key, world, tiles, scale: current.camera.z * current.viewport.dpr } : null;
         sceneDue = false;
         void open.call(pin, shape, controller.signal).then(stream => {
             if (disposed || !view.visible || controller.signal.aborted || sequence !== request) {
@@ -415,7 +448,7 @@ export const attachView: AttachView = options => {
             frames.requestStream({ stream, isCurrent: () => pin.isCurrent(), release: () => pin.release(), ...(dense ? { liveOnly: true as const } : {}),
                 open: (apron, signal, resolved) => open.call(pin, { ...identity, world: apron }, signal, resolved) });
             paintJob = null; publish('paint');
-        }, error => { pin.release(); if (!controller.signal.aborted) { viewWorld = null; report(error); } });
+        }, error => { pin.release(); if (!controller.signal.aborted) { viewWorld = null; view2d = null; report(error); } });
     }
     const cancelReveal = () => { const job = revealJob; revealJob = null; job?.abort(); };
     const reveal = (ids: ReadonlySet<NodeId>) => {
@@ -444,7 +477,9 @@ export const attachView: AttachView = options => {
     let stopScene: (() => void) | undefined;
     void runtime.ready.then(ready => {
         if (disposed) return;
-        stopScene = ready.subscribe(() => { publish(); requestPaint(); });
+        // A published scene can change what a stream resolves at the same revision (a font that loaded re-lays every text node), so
+        // canvas2d's standing request ends here (measured: a new frame's title stayed laid out in the fallback font, 2 px narrower).
+        stopScene = ready.subscribe(() => { publish(); view2d = null; requestPaint(); });
         publish(); requestPaint(); layers.invalidate('board-scene-ready');
     }, report);
     let previousSheet = sheet();
@@ -468,6 +503,7 @@ export const attachView: AttachView = options => {
         const oldProducer = embedProducer; embedProducer = null; oldProducer?.dispose();
         const oldEmbed = embedPort; embedPort = null;
         if (oldEmbed) { oldEmbed.setVisible(false); void oldEmbed.dispose().catch(report); }
+        cancelSettle2d();
         disposed = true; previewUnderlay.dispose(); previewContent.dispose(); paintJob?.abort(); cancelReveal(); interaction?.finishGesture(); interaction?.finishComposition();
         unbind(); stopScene?.(); stopSelection(); stopSession(); accessibility.dispose(); frames.dispose(); listeners.clear(); interaction = null;
         options.signal?.removeEventListener('abort', dispose);
@@ -487,7 +523,7 @@ export const attachView: AttachView = options => {
             if (view.visible && (old.theme !== view.theme || old.sheetId !== view.sheetId)) clearPreview?.();
             // A hidden pane's frames and stream are gone, and its camera may change before it is shown again (a resize, a restored
             // position): the request state that assumes the old stream and camera is dropped, so a show always asks for the current one.
-            if (!view.visible) { clearPreview?.(); paintJob?.abort(); cancelReveal(); frames.clear(); drawnFrame = null; viewWorld = null; viewAsked = null; sceneAsked = null; liveBand = null; carriedBand = null; interaction?.finishGesture(); interaction?.finishComposition(); }
+            if (!view.visible) { clearPreview?.(); paintJob?.abort(); cancelReveal(); frames.clear(); drawnFrame = null; viewWorld = null; view2d = null; zoom2d = null; cancelSettle2d(); viewAsked = null; sceneAsked = null; liveBand = null; carriedBand = null; interaction?.finishGesture(); interaction?.finishComposition(); }
             publish();
             if (view.visible && (!old.visible || view.theme !== old.theme || view.sheetId !== old.sheetId)) requestPaint();
             layers.invalidate('board-view');

@@ -12,6 +12,8 @@ export interface SessionGestureQueue {
     enqueueAfterGesture<T>(signal: AbortSignal, task: () => T): Promise<T>;
     /** Pointer gesture/IME start. Release on EVERY end/cancel/flush path, idempotently. */
     beginGesture(): () => void;
+    /** Called when isGestureActive changes: commands disabled during a gesture re-read their state at its start and end. */
+    subscribeGesture(listener: () => void): () => void;
     dispose(): void;
 }
 interface Pending {
@@ -29,6 +31,12 @@ export function createSessionGestureQueue(options: SessionGestureQueueOptions): 
     const owner = Object.freeze({ documentId: options.owner.documentId, session: options.owner.session });
     let first: Pending | null = null, last: Pending | null = null;
     let holds = 0, disposed = false, scheduled = false;
+    const gestureListeners = new Set<() => void>();
+    const gestureChanged = () => {
+        for (const listener of [...gestureListeners]) {
+            try { listener(); } catch (error) { queueMicrotask(() => { throw error; }); }
+        }
+    };
     const schedule = () => {
         if (!disposed && !holds && !scheduled && first) {
             scheduled = true;
@@ -102,15 +110,23 @@ export function createSessionGestureQueue(options: SessionGestureQueueOptions): 
             const release = () => {
                 if (!active) return;
                 active = false;
-                if (!disposed) { holds--; schedule(); }
+                if (!disposed) { holds--; schedule(); if (!holds) gestureChanged(); }
             };
             holds++;
+            if (holds === 1) gestureChanged();
             return release;
+        },
+        subscribeGesture(listener) {
+            gestureListeners.add(listener);
+            return () => { gestureListeners.delete(listener); };
         },
         dispose() {
             if (disposed) return;
+            const wasActive = holds > 0;
             disposed = true;
             while (first) first.cancel(new ApplyFailed('stale-session', 'The board session has ended'));
+            if (wasActive) gestureChanged();
+            gestureListeners.clear();
         },
     };
 }
@@ -139,6 +155,7 @@ export class GestureMutationQueue implements SessionGestureQueue {
     }
     get isGestureActive(): boolean { return this.queue.isGestureActive; }
     beginGesture(): () => void { return this.queue.beginGesture(); }
+    subscribeGesture(listener: () => void): () => void { return this.queue.subscribeGesture(listener); }
     enqueueAfterGesture<T>(signal: AbortSignal, task: () => T): Promise<T> { return this.queue.enqueueAfterGesture(signal, task); }
     afterGesture<T>(task: () => T, signal: AbortSignal = uncancelled): Promise<T> { return this.enqueueAfterGesture(signal, task); }
     enqueue<T>(signal: AbortSignal, task: () => T): Promise<T> { return this.enqueueAfterGesture(signal, task); }

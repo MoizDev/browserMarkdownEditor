@@ -124,6 +124,11 @@ function reversed(points: readonly number[]): number[] {
     return out;
 }
 
+/** Whether (px, py), on the line through a and b, lies within the segment's box (its ends included). */
+function onSegment(ax: number, ay: number, bx: number, by: number, px: number, py: number): boolean {
+    return px >= Math.min(ax, bx) && px <= Math.max(ax, bx) && py >= Math.min(ay, by) && py <= Math.max(ay, by);
+}
+
 /** Whether the closed contour does not cross or touch itself (non-adjacent edges apart, no zero-area spike). */
 export function simpleContour(points: ArrayLike<number>): boolean {
     const n = points.length / 2;
@@ -137,7 +142,12 @@ export function simpleContour(points: ArrayLike<number>): boolean {
             const d1 = orient(cx, cy, dx, dy, ax, ay), d2 = orient(cx, cy, dx, dy, bx, by);
             const d3 = orient(ax, ay, bx, by, cx, cy), d4 = orient(ax, ay, bx, by, dx, dy);
             if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) return false;
-            if (d1 === 0 || d2 === 0 || d3 === 0 || d4 === 0) return false;
+            // A zero orientation is a touch only where the point lies on the other edge: two edges on one line that do not meet
+            // (a star's two arms on the line through its shoulders, an up arrow's two shoulders) are apart. Counted as touching, the
+            // outline of every such shape went to the 4x coverage kit: its edges in quarter steps (the star 1349 edge px past the truth
+            // bar, max 64; gpu-f1's truth check, DPR 2 dark).
+            if (d1 === 0 && onSegment(cx, cy, dx, dy, ax, ay) || d2 === 0 && onSegment(cx, cy, dx, dy, bx, by)
+                || d3 === 0 && onSegment(ax, ay, bx, by, cx, cy) || d4 === 0 && onSegment(ax, ay, bx, by, dx, dy)) return false;
         }
     }
     return true;

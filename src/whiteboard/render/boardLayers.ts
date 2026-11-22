@@ -365,7 +365,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
     // it, not with the acknowledged picture, which arrives only when the GPU completes the frame: while a frame was in flight the next
     // identical one compared with the older picture and presented again (measured: 12 of 12 remaining redundant zoom presents on
     // LARGE=11, present-kept:ack). A draw whose frame does not submit keeps the scheduler's full-repaint mark, so the next frame presents.
-    let lastDrawn: { context: ViewerPaintPresentation; content: number; drawVersion: number; revision: number } | null = null;
+    let lastDrawn: { context: ViewerPaintPresentation; content: number; drawVersion: number; revision: number; offset: Readonly<{ x: number; y: number }> | null } | null = null;
     /** A canvas2d band's picture: what its draw2d reads, and the coverage it reported (see unchanged2d). */
     type Picture2d = { frameId: number; prepared: PreparedPaint2d | null; frame: PaintSource | null; view: ViewState; transform: Affine | null;
         omit: ReadonlySet<string> | null; offset: Readonly<{ x: number; y: number }> | null; drawVersion: number; current: boolean; holds: boolean;
@@ -727,8 +727,12 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         if (!sameCameraView(context.view, view)) return miss('view');
         if (!sameTransform(context.paneTransform, host.paneTransform(view, budget.frameId))) return miss('transform');
         if (!sameOmission(context.omittedNodeIds, omittedOf(options.omitNodes?.(frame) ?? null))) return miss('omission');
+        // The drag offset the presented picture was drawn at, against the one now: a drag preview held still under the pointer draws
+        // its picture at the same offset. Any non-zero offset answered changed, and every such frame presented the same picture again
+        // (round 10 bar, 3c250bf5: large drag 618, img8 585, doc12 521, once their content key held).
         const offset = options.drawOffset?.(frame);
-        if (offset && (offset.x !== 0 || offset.y !== 0)) return miss('offset');
+        const ox = offset?.x ?? 0, oy = offset?.y ?? 0;
+        if (ox !== (drawn.offset?.x ?? 0) || oy !== (drawn.offset?.y ?? 0)) return miss('offset');
         if ((options.drawVersion?.() ?? 0) !== drawn.drawVersion) return miss('draw-version');
         // The view's live set (wet ink, selection, sensitive nodes) is not compared: on the GPU it feeds no draw of this layer (the
         // composer reads its own live nodes, and its draw-list answer covers them; the set serves the canvas2d dense path, which never
@@ -1181,7 +1185,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                         paneTransform: host.paneTransform(actualView, prepareFrameId),
                         token: Object.freeze({ ...prepareToken }), omittedNodeIds: omittedOf(omit),
                         retain: () => options.frames.retain(frame), retainImages: () => leaseOf(hold) });
-                    lastDrawn = { context, content, drawVersion: options.drawVersion?.() ?? 0, revision: frame.sceneRevision };
+                    lastDrawn = { context, content, drawVersion: options.drawVersion?.() ?? 0, revision: frame.sceneRevision, offset: shift ? { x: shift.x, y: shift.y } : null };
                     recordDraw(band, { frame, omit, ink, context, hold });
                 },
                 evictGpu(bytes, frameId) {

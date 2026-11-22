@@ -33,6 +33,8 @@ Shared rules (layers, frames, the governor) are in `rendering-platform`. This fi
   A LIVE draw that admitted an inexact run owes the next frame: the composer invalidates `live-inexact`, and that settling
   frame is not a repeat and answers changed (the paper reads only prepare's answer, never `contentKey`). Else the zoom's last
   step stays on screen at rest.
+  A live path or ink part is signed by its item (`EXACT_LIVE_ROUTES`), not counted as new content each frame; image and text
+  parts still are (a tile or glyph mask lands under the same item). The board compares the drag offset it presented, not any offset.
 - **Cost on a tiled GPU is render-target switches** (`gpu:target-switch`, audit): each loads and stores an attachment. Lined,
   grid and blank notebook paper is ONE procedural pass (`host/proceduralPaper.ts`, exact box coverage per item; dotted keeps the
   composed route, counted `procedural:off:<why>`); a live frame draws each part once over the view, never per tile position; the

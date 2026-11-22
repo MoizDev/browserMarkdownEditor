@@ -7,6 +7,7 @@
  * or a contour that overlaps itself (an inner offset of a tight bend). The caller then takes the coverage route and counts why.
  *
  * Coordinates are path-local (the units the path is flattened in); a caller maps them to device px. */
+import type { Affine, PathCommand } from '../../../platform/types';
 import type { Vec2 } from '../../geom/path';
 
 /** A flattened subpath: its points, and whether it is closed. */
@@ -213,5 +214,96 @@ function openOutline(p: readonly Vec2[], d: readonly Dir[], h: number, style: Ou
     const back = { x: -sf.x, y: -sf.y };
     if (style.cap === 'square') out.push(start.x + sr.x + back.x * h, start.y + sr.y + back.y * h, start.x + sl.x + back.x * h, start.y + sl.y + back.y * h);
     else if (style.cap === 'round') arc(start, sr, sl, back, h, tol, out);
+    return out;
+}
+
+/** An evenodd clip shaped as one convex outer polygon minus convex holes inside it, disjoint (a connector's body cut around its label):
+ * its polygons mapped by `toLocal` into the clipped item's own units, or null for any other clip. Straight segments only. */
+export interface CutClip { readonly outer: Contour; readonly holes: readonly Contour[] }
+export function cutClipOf(d: readonly PathCommand[], fillRule: 'nonzero' | 'evenodd', toLocal: Affine): CutClip | null {
+    if (fillRule !== 'evenodd') return null;
+    const polys: number[][] = [];
+    let cur: number[] | null = null;
+    const [a, b, c, e, f, g] = toLocal;
+    for (const cmd of d) {
+        if (cmd[0] === 'M') { cur = [a * cmd[1] + c * cmd[2] + f, b * cmd[1] + e * cmd[2] + g]; polys.push(cur); }
+        else if (cmd[0] === 'L' && cur) cur.push(a * cmd[1] + c * cmd[2] + f, b * cmd[1] + e * cmd[2] + g);
+        else if (cmd[0] === 'Z') cur = null;
+        else return null;
+    }
+    if (polys.length < 2) return null;
+    const flats: Contour[] = [];
+    for (const raw of polys) {
+        const pts = distinct(Array.from({ length: raw.length / 2 }, (_, i) => ({ x: raw[2 * i], y: raw[2 * i + 1] })), true);
+        if (!pts || !convex(pts)) return null;
+        flats.push(Float64Array.from(pts.flatMap(p => [p.x, p.y])));
+    }
+    const [outer, ...holes] = flats;
+    const boxes = holes.map(boxOf);
+    for (let i = 0; i < holes.length; i++) {
+        for (let k = 0; k < holes[i].length; k += 2) if (!insideConvex(outer, holes[i][k], holes[i][k + 1])) return null;
+        for (let j = 0; j < i; j++) if (boxes[i][0] < boxes[j][2] && boxes[j][0] < boxes[i][2] && boxes[i][1] < boxes[j][3] && boxes[j][1] < boxes[i][3]) return null;
+    }
+    return { outer, holes };
+}
+
+/** The exact-area contours of `contours` (exact by themselves: simple, nesting with opposite signs) under `cut`: each contour's part
+ * inside the outer polygon, and its part inside each hole reversed, so the signed sum is the item inside the clip, nothing masked. The
+ * parts may run back and forth along a clip edge; those runs cancel in the sum, which is all the exact-area kit takes. */
+export function cutContours(contours: readonly Contour[], cut: CutClip): Contour[] {
+    const out: Contour[] = [];
+    for (const contour of contours) {
+        const inside = clipConvex(contour, cut.outer);
+        if (inside.length < 6) continue;
+        out.push(flat(inside));
+        for (const hole of cut.holes) {
+            const removed = clipConvex(Float64Array.from(inside), hole);
+            if (removed.length >= 6) out.push(flat(reversed(removed)));
+        }
+    }
+    return out;
+}
+
+function convex(pts: readonly Vec2[]): boolean {
+    let sign = 0;
+    for (let i = 0; i < pts.length; i++) {
+        const p = pts[i], q = pts[(i + 1) % pts.length], r = pts[(i + 2) % pts.length];
+        const z = (q.x - p.x) * (r.y - q.y) - (q.y - p.y) * (r.x - q.x);
+        if (z === 0) continue;
+        if (sign === 0) sign = Math.sign(z); else if (Math.sign(z) !== sign) return false;
+    }
+    return sign !== 0;
+}
+function boxOf(poly: Contour): [number, number, number, number] {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (let i = 0; i < poly.length; i += 2) { x0 = Math.min(x0, poly[i]); x1 = Math.max(x1, poly[i]); y0 = Math.min(y0, poly[i + 1]); y1 = Math.max(y1, poly[i + 1]); }
+    return [x0, y0, x1, y1];
+}
+/** Inside or on a convex polygon of either orientation. */
+function insideConvex(poly: Contour, x: number, y: number): boolean {
+    const n = poly.length / 2, sign = Math.sign(signedArea2(poly));
+    for (let i = 0; i < n; i++) {
+        const ax = poly[2 * i], ay = poly[2 * i + 1], bx = poly[2 * ((i + 1) % n)], by = poly[2 * ((i + 1) % n) + 1];
+        if (((bx - ax) * (y - ay) - (by - ay) * (x - ax)) * sign < 0) return false;
+    }
+    return true;
+}
+/** Sutherland-Hodgman: the part of `subject` inside the convex `clipper`. For a non-convex subject the result may run along the
+ * clipper's edges in both directions; those runs cancel in a signed area sum, which is all the exact-area kit takes. */
+function clipConvex(subject: Contour, clipper: Contour): number[] {
+    let out: number[] = Array.from(subject);
+    const n = clipper.length / 2, sign = Math.sign(signedArea2(clipper));
+    for (let i = 0; i < n && out.length >= 6; i++) {
+        const ax = clipper[2 * i], ay = clipper[2 * i + 1], bx = clipper[2 * ((i + 1) % n)], by = clipper[2 * ((i + 1) % n) + 1];
+        const side = (x: number, y: number) => ((bx - ax) * (y - ay) - (by - ay) * (x - ax)) * sign;
+        const input = out; out = [];
+        const m = input.length / 2;
+        for (let k = 0; k < m; k++) {
+            const px = input[2 * k], py = input[2 * k + 1], qx = input[2 * ((k + 1) % m)], qy = input[2 * ((k + 1) % m) + 1];
+            const sp = side(px, py), sq = side(qx, qy);
+            if (sp >= 0) out.push(px, py);
+            if ((sp >= 0) !== (sq >= 0)) { const t = sp / (sp - sq); out.push(px + t * (qx - px), py + t * (qy - py)); }
+        }
+    }
     return out;
 }

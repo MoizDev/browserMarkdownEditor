@@ -21,7 +21,7 @@ Shared rules (layers, frames, the governor) are in `rendering-platform`. This fi
   `encodeOffscreen` (per band), then drawn.
 - `prepare(view, budget, prepared, omit?)`: `omit` is the nodes a drag previews elsewhere. Their tiles are composed without them;
   the draw never takes an omit set.
-- Routes: `routePath` (clips admitted through its coverage kit), `routeInk` (analytic and union), `routeImage`, `routeText`
+- Routes: `routePath` (clips admitted through its coverage kit, except a stroke under one evenodd cut clip — convex outer minus convex holes, a connector around its label — which is cut exactly on the area kit: `cutClipOf`), `routeInk` (analytic and union), `routeImage`, `routeText`
   (with text masks), and `cpu`. A run no GPU route takes is counted `fallback:item-cpu:<kind>:<why>`.
 - `routePath` draws a fill or stroke by EXACT AREA (`areaCoverage.ts`, contours from `areaOutlines.ts`) when its outline is exact
   (simple contours, nesting only with opposite signs; groups of separated opaque fills as one area), else by the 4x MSAA

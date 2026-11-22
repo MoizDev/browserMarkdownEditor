@@ -11,7 +11,8 @@ import { createPathCoverageKit, type PathCoverageAdmission, type PathCoverageSha
 import { PATH_FILL_MAX_EDGES, flattenContours, pathFillTriangles } from '../pathFillTriangles';
 import { flattenPolylines, pathStrokeTriangles } from '../pathStrokeTriangles';
 import { createAreaKit, type AreaAdmission, type AreaKit, type AreaPart, type PreparedArea } from '../../../platform/render/areaCoverage';
-import { fillContours, strokeContours, type Contour } from './areaOutlines';
+import { cutClipOf, cutContours, fillContours, strokeContours, type Contour, type CutClip } from './areaOutlines';
+import { compose, inverse } from '../../geom/affine';
 import { areaNestingExact } from '../inkAreaCells';
 import type { AreaOutput } from '../../../platform/render/gfx/api';
 import { ArenaError } from '../../../platform/render/resourceArena';
@@ -94,6 +95,27 @@ interface PathRun extends PreparedRun { readonly route: 'path'; readonly items: 
     /** Some item took the coverage route only because a zoom was live: the run's tile recomposes on exact area at rest. */
     readonly inexact: boolean }
 type ItemAdmission = { readonly status: 'ready'; readonly value: PreparedPathItem } | Stop;
+
+/** A stroke's one clip as an exact cut (`cutClipOf`), in the item's own units; `key` names the clip and its placement for the outline
+ * cache. */
+interface ItemCut { readonly key: string; readonly shape: CutClip }
+// Per item, which the scene keeps while its node is unchanged: the clip is parsed once, not per frame.
+const itemCuts = new WeakMap<PaintPathItem, ItemCut | null>();
+function cutOf(item: PaintPathItem): ItemCut | null {
+    const known = itemCuts.get(item);
+    if (known !== undefined) return known;
+    let cut: ItemCut | null = null;
+    const style = item.material.stroke;
+    if (item.clips.length === 1 && !item.material.fill && style && style.width > 0 && !style.dash) {
+        const clip = item.clips[0];
+        const local = inverse(item.localToWorld, 1e6);
+        const toLocal = local && compose(local, clip.localToWorld);
+        const shape = toLocal && cutClipOf(clip.d, clip.fillRule, toLocal);
+        if (shape) cut = { key: `${clip.key}|${toLocal!.join(',')}`, shape };
+    }
+    itemCuts.set(item, cut);
+    return cut;
+}
 
 /** Half-octave band of a device scale: band b holds scales in [2^(b/2), 2^((b+1)/2)). Geometry is flattened to the band's
  * upper scale, so its error is ≤ 0.1 device px at every scale the band holds (a finer scale only shrinks it). */
@@ -454,7 +476,7 @@ export function createPath(host: LayerHost, audit: string): {
         // sum of their contours is exact. One member the route refuses sends the whole group to the coverage pass below.
         const areaSets: AreaOutline[] = [];
         for (const member of members) {
-            const outline = areaContours(member, 'fill', band);
+            const outline = areaContours(member, 'fill', band, null);
             if ('refused' in outline) return { status: 'denied', bytes: outline.refused, pool: 'cpu' };
             if (!outline.edges) { auditCount(audit, `area:fallback:${outline.why}`); areaSets.length = 0; break; }
             if (outline.edges.length) areaSets.push(outline);
@@ -547,11 +569,11 @@ export function createPath(host: LayerHost, audit: string): {
         }
         return freed;
     };
-    const areaContours = (item: PaintPathItem, which: 'fill' | 'stroke', band: number): AreaOutline | Refused => {
+    const areaContours = (item: PaintPathItem, which: 'fill' | 'stroke', band: number, cut: ItemCut | null): AreaOutline | Refused => {
         const style = item.material.stroke;
         const key = which === 'fill' ? `${commandKey(item.d)}|${band}|${item.fillRule}`
             : `${commandKey(item.d)}|${band}|${style!.width}|${style!.cap}|${style!.join}|${style!.miterLimit}|${style!.dash ? 'dash' : ''}`;
-        const full = `${which}|${key}`;
+        const full = cut ? `${which}|${key}|cut|${cut.key}` : `${which}|${key}`;
         const cached = areaOutlines.get(full);
         if (cached) { areaOutlines.delete(full); areaOutlines.set(full, cached); cached.usedFrame = frame; return cached; }
         const tolerance = AREA_FLATTEN_DEVICE_PX / Math.pow(2, (band + 1) / 2);
@@ -567,6 +589,7 @@ export function createPath(host: LayerHost, audit: string): {
         if (!why && !contours) why = `${which}-outline`;
         // The exact sum needs contours that cross and touch nothing, and nest only with opposite signs (areaNestingExact).
         if (!why && contours!.length && !areaNestingExact(contours!)) why = 'nesting';
+        if (!why && cut) contours = cutContours(contours!, cut.shape);
         let outline: AreaOutline;
         if (why) outline = { edges: null, origin: ORIGIN, box: EMPTY_BOX, why, bytes: 0, lease: null, usedFrame: frame };
         else {
@@ -652,8 +675,8 @@ export function createPath(host: LayerHost, audit: string): {
     /** The exact-area route for one fill or stroke: its cells admitted on the area kit, or null when the coverage route takes it (the
      * reason is counted). A kit refusal stops the item as the coverage kit's does. */
     const admitArea = (item: PaintPathItem, which: 'fill' | 'stroke', view: ViewState, viewport: Viewport, band: number, cover: CoverBlend,
-        budget: FrameBudget, acquired: Acquired[]): AreaItem | Stop | null => {
-        const outline = areaContours(item, which, band);
+        budget: FrameBudget, acquired: Acquired[], cut: ItemCut | null = null): AreaItem | Stop | null => {
+        const outline = areaContours(item, which, band, cut);
         if ('refused' in outline) return { status: 'denied', pool: 'cpu', bytes: outline.refused };
         if (!outline.edges) { auditCount(audit, `area:fallback:${outline.why}`); return null; }
         if (!outline.edges.length) return { status: 'empty' };
@@ -671,6 +694,20 @@ export function createPath(host: LayerHost, audit: string): {
      * exact, and the coverage route otherwise (counted). */
     const admitItem = (item: PaintPathItem, view: ViewState, viewport: Viewport, cover: CoverBlend, budget: FrameBudget,
         acquired: Acquired[]): ItemAdmission => {
+        // A stroke-only item under one cut clip (a connector's body around its label) is cut exactly, as area: masked, its cut ends
+        // took the coverage kit's 4x mask, 10-20 px past the truth bar at max 11-23 levels (kinds arrow-label, WebGL2 light d1, dark d2).
+        const cut = cutOf(item);
+        let stroke: PreparedPathCoverage | null = null, strokeArea: AreaItem | null = null;
+        if (cut) {
+            const band = bandOf(item.localToWorld, view);
+            if (band === null) return { status: 'unsupported', why: 'path transform' };
+            const area = admitArea(item, 'stroke', view, viewport, band, cover, budget, acquired, cut);
+            if (area && isStop(area)) return area;
+            if (area) {
+                auditCount(audit, 'area:exact:cut');
+                return { status: 'ready', value: { clips: noClips, fill: null, stroke: null, fillArea: null, strokeArea: area } };
+            }
+        }
         const clips = admitClipList(item.clips, view, viewport, budget, acquired);
         if (isStop(clips)) return clips;
         let fill: PreparedPathCoverage | null = null, fillArea: AreaItem | null = null;
@@ -692,7 +729,6 @@ export function createPath(host: LayerHost, audit: string): {
                 else fill = taken;
             }
         }
-        let stroke: PreparedPathCoverage | null = null, strokeArea: AreaItem | null = null;
         const style = item.material.stroke;
         if (style && style.width > 0) {
             const band = bandOf(item.localToWorld, view);

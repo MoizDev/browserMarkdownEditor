@@ -73,13 +73,14 @@ function* vectorNodePaint(node: Readonly<Node>, geometry: BoardVectorGeometry,
         let clips = context.clips;
         if (crop?.circle && geometry.attachments) clips = [...clips, { key: `${geometry.key}:crop`,
             d: [...pathCommands(geometry.attachments.outline)], fillRule: 'nonzero', localToWorld: context.world }];
-        const tiles = node.kind === 'picture' && !crop && options.tiles ? planPictureTiles(node, { id: node.media, w: media.w, h: media.h,
-            mime: media.mime, animated: media.animated }, imageWorld, options.tiles) : null;
+        // A cropped picture tiles too: untiled, a large one was one whole-image decode however small its crop or its view.
+        const tiles = node.kind === 'picture' && options.tiles ? planPictureTiles(node, { id: node.media, w: media.w, h: media.h,
+            mime: media.mime, animated: media.animated }, imageWorld, options.tiles, crop) : null;
         if (tiles) {
             // Each tile is its own image item, keyed by its tile key, so the paint pipeline acquires exactly the tiles it draws.
             for (const tile of tiles) content.push({ ...base, kind: 'image', key: `${node.id}:tile:${tile.key}`, imageKey: tile.key,
                 localToWorld: imageWorld, clips, rect: tile.rect, sourceRect: tile.sourceRect,
-                opacity: context.opacity, blend: 'normal', inverted: node.kind === 'picture' && node.inverted });
+                opacity: context.opacity, blend: 'normal', inverted: node.kind === 'picture' && node.inverted, ...(tile.underlaid ? { underlaid: true as const } : {}) });
         } else {
             const image: PaintImageItem = { ...base, kind: 'image', key: `${node.id}:image:${node.media}`, imageKey: node.media,
                 localToWorld: imageWorld, clips, rect: { x: 0, y: 0, width: node.w, height: node.h },

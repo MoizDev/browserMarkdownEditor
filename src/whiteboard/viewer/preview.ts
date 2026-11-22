@@ -1,4 +1,4 @@
-import type { Affine, PathCommand } from '../../platform/types';
+import type { Affine, Camera, PathCommand, Rect, Viewport } from '../../platform/types';
 import { yieldToHost } from '../text/cooperative';
 import { worldPose } from '../change/coordinates';
 import type { Op } from '../change/ops';
@@ -26,6 +26,9 @@ export interface BoardPreviewOptions {
     readonly images: PaintImageProvider;
     readonly current: () => boolean;
     readonly onError: (error: unknown) => void;
+    /** The view's camera and viewport: a previewed picture is planned at the view's device scale like the view's own frame.
+     * Without them a selected 8000x6000 picture asked for one 12 MB whole decode, was refused, and its placeholder covered it. */
+    readonly view?: () => { readonly camera: Readonly<Camera>; readonly viewport: Readonly<Viewport> };
 }
 export interface BoardPreview {
     show(nodes: readonly Node[]): void;
@@ -97,6 +100,14 @@ function operationNodes(doc: BoardDoc, ops: readonly Op[]): { changes: Map<NodeI
 const SYNC_OVERLAY_NODES = 16;
 
 export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
+    // The view's device scale, frame world (the view and one view around it) and the on-screen rect, as the view's own request.
+    const viewScale = (): { deviceScale?: number; world?: Rect; viewWorld?: Rect } => {
+        const current = options.view?.();
+        if (!current || !(current.camera.z > 0) || !(current.viewport.dpr > 0)) return {};
+        const { camera, viewport } = current, width = viewport.width / camera.z, height = viewport.height / camera.z;
+        return { deviceScale: camera.z * viewport.dpr, viewWorld: { x: camera.x, y: camera.y, width, height },
+            world: { x: camera.x - width, y: camera.y - height, width: 3 * width, height: 3 * height } };
+    };
     const { runtime, engine, render } = options;
     if (engine.session !== runtime.session) throw new Error('Preview needs the existing board session');
     let disposed = false, generation = 0, pin: SceneSnapshot | null = null, document: Promise<BoardDoc> | null = null;
@@ -395,7 +406,7 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
                     }
                     [ids, scratch] = [scratch, ids];
                 }
-                const overlayRequest = { sheetId: sheet, theme: view.theme, sensitiveNodes: new Set(ids) };
+                const overlayRequest = { sheetId: sheet, theme: view.theme, sensitiveNodes: new Set(ids), ...viewScale() };
                 // A few nodes are built synchronously, so the hand-off follows the pointer-down with no worker round trip: the first
                 // frame's prepare finds the overlay built. A larger overlay keeps the async build (it yields between its items).
                 // Ink and media are not built synchronously: one stroke of thousands of points would hold the input task for frames.

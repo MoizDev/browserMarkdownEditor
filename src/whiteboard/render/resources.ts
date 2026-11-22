@@ -26,4 +26,8 @@ export interface PaintLayerResources {
     readonly images: PaintImageProvider;
     /** The existing LayerHost/scheduler invalidation, not another requestAnimationFrame loop. */
     invalidate(): void;
+    /** The host's delayed wake (LayerHost.wakeAt), for work that must come back later without a frame loop. */
+    wakeAt?(deadlineMs: number | null): void;
+    /** Asks for a new frame from the scene (a new plan), for a picture whose tile level the pool refused. */
+    replan?(): void;
 }

@@ -16,6 +16,13 @@ export interface MediaRasterGeometry {
     readonly mipX: number; readonly mipY: number;
 }
 const TILE = RENDER_CONSTANTS.mediaTileInteriorPixels;
+/** A whole mip is decoded in one piece only while its RGBA fits half of the smallest CPU pool (POLICY.cpuGrantMinBytes, 32 MiB); above
+ * that it is tiles. By side alone (4096) a 4000x3000 picture decoded whole was 48 MB against a 32 MB pool, refused outright: the picture
+ * never showed and the board failed to open (measured on the feature branch, canvas2d, every board kind). */
+export const WHOLE_MIP_BYTES = 16 * 1024 * 1024;
+export function wholeMip(mipWidth: number, mipHeight: number): boolean {
+    return mipWidth <= 4096 && mipHeight <= 4096 && 4 * mipWidth * mipHeight <= WHOLE_MIP_BYTES;
+}
 
 export function mediaTileKey(tile: MediaTile): string {
     if (!/^sha256:[0-9a-f]{64}$/.test(tile.id) || !Number.isSafeInteger(tile.frame) || tile.frame < 0
@@ -59,7 +66,7 @@ export function visibleMediaTiles(id: MediaId, frame: number, level: number, sou
     if (left >= right || top >= bottom) return [];
     const factor = 2 ** level;
     const mipWidth = Math.ceil(sourceWidth / factor), mipHeight = Math.ceil(sourceHeight / factor);
-    if (mipWidth <= 4096 && mipHeight <= 4096) return [base];
+    if (wholeMip(mipWidth, mipHeight)) return [base];
     const firstColumn = Math.floor(left / factor / TILE), lastColumn = Math.ceil(right / factor / TILE) - 1;
     const firstRow = Math.floor(top / factor / TILE), lastRow = Math.ceil(bottom / factor / TILE) - 1;
     const result: MediaTile[] = [];
@@ -76,7 +83,7 @@ export function mediaRasterGeometry(tile: MediaTile, sourceWidth: number, source
     const factor = 2 ** tile.level;
     const mipWidth = Math.ceil(sourceWidth / factor), mipHeight = Math.ceil(sourceHeight / factor);
     const tiled = tile.column !== -1;
-    if (!tiled && (mipWidth > 4096 || mipHeight > 4096)) throw new RangeError('Large mip requires tiles');
+    if (!tiled && !wholeMip(mipWidth, mipHeight)) throw new RangeError('Large mip requires tiles');
     const left = tiled ? tile.column * TILE : 0, top = tiled ? tile.row * TILE : 0;
     if (!Number.isSafeInteger(left) || !Number.isSafeInteger(top) || left >= mipWidth || top >= mipHeight) throw new RangeError('Media tile is outside its mip');
     const interiorWidth = Math.min(tiled ? TILE : mipWidth, mipWidth - left);

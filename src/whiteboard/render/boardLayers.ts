@@ -625,7 +625,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
             allocatorHost = host;
             options.frames.bindMemory?.(host.allocator.cpu);
             const resources = { frames: options.frames, images: options.images,
-                invalidate: () => { collectRetired(); activeHost()?.invalidate('board-resource'); } };
+                invalidate: () => { collectRetired(); activeHost()?.invalidate('board-resource'); },
+                wakeAt: (deadlineMs: number | null) => activeHost()?.wakeAt(deadlineMs), replan: () => options.requestFrame?.() };
             direct = createCanvasPaintAdapter(resources,
                 (ctx, view, paint) => { const owner = activeHost(); if (!owner) throw new Error('Board layer is detached'); owner.paintWorld(ctx, view, paint); }, report);
             denseResources = resources;

@@ -1,4 +1,7 @@
 import type { PathCommand, ViewState } from '../../../platform/types';
+import { pictureLevelRefused } from '../../media/levelFloor';
+import { isTransientPictureFailure } from '../../media/transientFailure';
+import { isMediaTileKey, parseMediaTileKey } from '../../media/mips';
 import type { FrameBudget, GpuReleaseReason } from '../../../platform/render/types';
 import type { PaintBand } from '../material';
 import type { PaintItem, PaintSource } from '../paintStream';
@@ -88,6 +91,8 @@ type Snapshot = {
     images: Map<string, PaintImageLease | null>;
     /** Pictures whose bitmap the GPU side gave up (imageState 'released'); reacquired by requestImage. */
     released: Set<string>;
+    /** Images a memory refusal skipped in this snapshot: drawn as placeholders now, asked for again by the next snapshot. */
+    skipped: Set<string>;
     /** Built once, on first borrow, so every borrow of this snapshot is the same identity. */
     prepared: PreparedPaint2d | null;
     /** Open retainPrepared borrows; a release that arrives meanwhile is applied when the last one ends. */
@@ -139,12 +144,21 @@ function finishSnapshot(s: Snapshot): void {
 }
 
 /** Both bands share a snapshot and become visible together, never by separate commits. */
+/** Pacing of the retry of pictures a memory refusal skipped: a shortage clears as tiles retire, not within a frame. */
+const RETRY_SKIPPED_MS = 400;
+
 export function createCanvasPaintAdapter(
     resources: PaintLayerResources, project: PaintProjection2d, onError: (error: unknown) => void,
     /** Items this adapter prepares; an excluded item is skipped in place, so a frame never needs a filtered copy. */
     include?: (item: PaintItem) => boolean,
 ): CanvasPaintAdapter {
     let staged: Snapshot | null = null, presented: Snapshot | null = null;
+    // Pictures whose decode failed (refused memory, unreadable bytes): drawn as a placeholder, never failing the frame, and not asked
+    // for again while this adapter lives. One failed picture used to fail the snapshot and, through onError, the whole board
+    // ('Could not open canvas: Insufficient memory for full-frame image', measured on a 4000x3000 picture). The image provider
+    // reports the failure to the person as the app's own notice.
+    const broken = new Set<string>();
+    let retryAt = 0;
     // Path geometry by job key (geometry key, item key, scale), least recently used first, up to GEOMETRY_CACHE_BYTES. A key is minted
     // only when a node's geometry is rebuilt and a move keeps it, so a new revision re-uses each path it did not change, and two
     // precisions alternating frame to frame both stay (presentation must not prune the other one: that re-tessellated it every frame).
@@ -173,12 +187,12 @@ export function createCanvasPaintAdapter(
         const windows = windowsOfSource(frame);
         // A full frame's window list duplicates its band arrays, so it is charged; a live frame's list is the frame's own.
         return { frame, scale, windows, window: 0, finished: false, index: 0, clipIndex: 0, paths: new WeakMap(), prepared: null,
-            clips: new Map(), geometry: new Map(), images: new Map(), released: new Set(), borrows: 0, closing: false, abort: new AbortController(),
+            clips: new Map(), geometry: new Map(), images: new Map(), released: new Set(), skipped: new Set(), borrows: 0, closing: false, abort: new AbortController(),
             pending: 0, failed: false, failure: undefined, complete: false, disposed: false,
             bytes: frame.liveOnly ? 0 : refBytesOf(windows), job: null };
     }
     function requestImage(s: Snapshot, key: string): void {
-        if (s.images.has(key)) return;
+        if (s.images.has(key) || broken.has(key) || s.skipped.has(key)) return;
         s.images.set(key, null);
         s.pending++;
         let promise: Promise<PaintImageLease>;
@@ -195,7 +209,21 @@ export function createCanvasPaintAdapter(
             resources.invalidate();
         }, error => {
             s.pending--;
-            if (!s.disposed && !s.abort.signal.aborted) { s.failed = true; s.failure = error; releaseSnapshot(s); onError(error); }
+            // A memory refusal, or a request the residency retired (stale tile, cancelled decode) while this snapshot still lives, is a
+            // shortage of this moment: the picture is skipped in this frame (placeholder) and asked for again by the next. Left as it
+            // was, a retired request ended this snapshot with no image and painting it failed the board ('Could not open canvas:
+            // Missing prepared image', measured on an 8000x6000 JPEG at DPR 2). Any other failure (unreadable bytes) is the
+            // picture's own: it stays a placeholder while this adapter lives.
+            if (!s.disposed && !s.abort.signal.aborted) {
+                const transient = isTransientPictureFailure(error);
+                if (transient) s.skipped.add(key); else broken.add(key);
+                // A picture tile refused for memory: the next plan of that picture at this zoom takes a coarser level.
+                if (error instanceof Error && /memory/i.test(error.message) && isMediaTileKey(key)) {
+                    const tile = parseMediaTileKey(key);
+                    if (pictureLevelRefused(tile.id, tile.level)) resources.replan?.();
+                }
+                s.images.delete(key);
+            }
             resources.invalidate();
         });
     }
@@ -284,6 +312,7 @@ export function createCanvasPaintAdapter(
             path: item => { const path = s.paths.get(item); if (!path) throw new Error('Missing prepared path'); return path; },
             clip: key => { const path = s.clips.get(key); if (!path) throw new Error('Missing prepared clip'); return path; },
             image: key => {
+                if (broken.has(key) || s.skipped.has(key)) return null; // a placeholder; see the requestImage failure path
                 const image = s.images.get(key);
                 if (image) return image.source;
                 throw new Error(s.released.has(key) ? 'Released prepared image' : 'Missing prepared image');
@@ -319,7 +348,13 @@ export function createCanvasPaintAdapter(
             }
             if (presented && !sameToken(presented.frame, frame)) { releaseSnapshot(presented); presented = null; }
             if (staged && (staged.frame !== frame || staged.scale !== scale)) { releaseSnapshot(staged); staged = null; }
-            if (!staged && (!presented || presented.frame !== frame || presented.scale !== scale)) staged = start(frame, scale);
+            // A presented snapshot that skipped pictures for want of memory is redone, paced, until they draw: nothing else would ask
+            // again while the frame and scale stay the same, and the placeholder stayed for good (measured: 8000x6000 at DPR 2).
+            const retry = !staged && !!presented && presented.frame === frame && presented.scale === scale && presented.skipped.size > 0;
+            if (retry && performance.now() < retryAt) { resources.wakeAt?.(retryAt); return; }
+            if (!staged && (retry || !presented || presented.frame !== frame || presented.scale !== scale)) {
+                staged = start(frame, scale);
+            }
             const s = staged;
             if (!s || s.complete || s.failed) return;
             try {
@@ -331,6 +366,7 @@ export function createCanvasPaintAdapter(
                 if (s.complete && resources.frames.isCurrent(s.frame)) {
                     if (presented) releaseSnapshot(presented);
                     presented = s; staged = null;
+                    if (s.skipped.size) { retryAt = performance.now() + RETRY_SKIPPED_MS; resources.wakeAt?.(retryAt); }
                 }
             } catch (error) { s.failed = true; s.failure = error; releaseSnapshot(s); onError(error); }
         },
@@ -362,7 +398,7 @@ export function createCanvasPaintAdapter(
             const frame = resources.frames.readFrame();
             if (!frame || !resources.frames.isCurrent(frame)) return false;
             if (staged && staged.frame === frame) return !staged.complete && !staged.failed && !(!staged.job && staged.finished && staged.pending > 0);
-            return !presented || presented.frame !== frame;
+            return !presented || presented.frame !== frame || (presented.skipped.size > 0 && performance.now() >= retryAt);
         },
         memory() {
             let cpuBytes = (staged?.bytes ?? 0) + (presented?.bytes ?? 0);

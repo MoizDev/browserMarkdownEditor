@@ -18,6 +18,10 @@ import { isCanvasFile, isMarkdownFile } from '../utils/fileTypes';
 import { getPdfRenderData } from '../utils/pdfRenderCache';
 import { canRebuildAnnotatedPdf } from '../utils/pdfRole';
 import { PdfBuildRefused, pdfSnapshotRefusal } from '../utils/pdfBuildRefusal';
+
+/** A save a newer revision overtook while it ran (the person kept drawing): not a failure, the newer change saves next. Told as
+ *  'not saved' it raised 'Could not continue' on every stroke drawn during a converted notebook's first save (round 8 matrix). */
+class SaveSuperseded extends Error {}
 import { anyPending, checkpointSessions, drain, drainAll, subscribePending } from '../utils/unloadCoordinator';
 import { perfRoot, reportVault } from '../utils/perfHooks';
 import type { Notify, Tell } from './useAppDialogs';
@@ -365,12 +369,12 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
                 const latest = sessionAtCall.adapter.checkpoint();
                 return !sourceIsNewer(latest, bufferedSource);
               };
-              if (!stillCurrent()) throw new Error('The conversion source changed; retry saving.');
+              if (!stillCurrent()) throw new SaveSuperseded('The conversion source changed');
               const signal = new AbortController().signal;
               const original = await nativeCanvasHost.acquireBytes(conversionIdentity, signal);
-              if (!stillCurrent()) throw new Error('The conversion source changed; retry saving.');
+              if (!stillCurrent()) throw new SaveSuperseded('The conversion source changed');
               await nativeCanvasHost.keepConversionBackup(conversionIdentity, original, conversionDigest, signal);
-              if (!stillCurrent()) throw new Error('The conversion source changed; retry saving.');
+              if (!stillCurrent()) throw new SaveSuperseded('The conversion source changed');
             } finally { if (!trashOwned) trashInFlightRef.current = false; }
           }
         }
@@ -484,6 +488,7 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
         return 'written';
       } catch (err) {
         if (err instanceof PdfBuildRefused) { setSaveStatus('Not saved'); notifyRef.current(err.message); return 'skipped'; }
+        if (err instanceof SaveSuperseded) return 'failed';
         console.error('Auto-save failed:', err);
         // Never silent, for any document: the person is told it was not saved and why; the tab stays dirty, so the next edit's
         // save tries again. A drawing or notebook used to fail into the console alone.
@@ -491,8 +496,9 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
         setSaveStatus('Not saved');
         if (!saveFailureToldRef.current.has(id)) {
           saveFailureToldRef.current.add(id);
-          notifyRef.current(isPdf ? `The PDF was not saved: ${describeReadError(err)}. Your next change tries again.`
-            : `“${path.split('/').pop()}” was not saved: ${describeReadError(err)}. Your next change tries again.`);
+          const why = describeReadError(err).replace(/[.\s]+$/, '');
+          notifyRef.current(isPdf ? `The PDF was not saved: ${why}. Your next change tries again.`
+            : `“${path.split('/').pop()}” was not saved: ${why}. Your next change tries again.`);
         }
         return 'failed';
       }

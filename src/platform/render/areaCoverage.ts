@@ -80,6 +80,10 @@ export interface AreaKit {
     retire(prepared: PreparedArea): void;
     /** The caller no longer keeps this edge array: its buffer goes once no admission holds it. */
     forget(edges: Float32Array): void;
+    /** Starts compiling the device's shared pipelines (at the route's creation), so the first area admitted on this device does not
+     * wait a frame for them: the first drag's preview did (its ink-union route is the first area user, as the board draws ink by the
+     * analytic route). */
+    warm(host: LayerHost): void;
     beginFrame(frame: number): void;
     release(): void;
     memory(): { readonly gpuBytes: number };
@@ -178,11 +182,43 @@ const NO_STENCIL = { enabled: false } as const;
 interface Scratch { readonly target: AreaTarget; readonly bytes: number; users: number; holder: object | null }
 const scratchOf = new WeakMap<GfxDevice, Scratch>();
 
+/** One edge + clear pipeline pair per device incarnation, shared by every area kit on it (no per-kit parameter) and kept while the device
+ * lives: two programs, no governed bytes. Each kit compiled its own and destroyed it with the kit, and the drag preview's kits are made
+ * per drag, so every drag's first preview frame waited on the compile and drew the dragged stroke nowhere (measured, round 8 e41e02d2,
+ * every doc: ink-union live:dropped:deferred 2 in each drag with the path-coverage set already shared-ready; the input went unanswered
+ * where canvas2d answered it). pathCoverage.ts shares its set the same way. A restored context compiles a new pair; the old one is
+ * destroyed once its last kit lets go. */
+interface SharedAreaPipelines { users: number; edge: PipelineHandle | null; clear: PipelineHandle | null; failed: boolean; dead: boolean; readonly generation: number }
+const areaPipelinesOn = new WeakMap<GfxDevice, SharedAreaPipelines>();
+function acquireAreaPipelines(owner: GfxDevice): SharedAreaPipelines {
+    const known = areaPipelinesOn.get(owner);
+    if (known && known.generation === owner.generation) { known.users++; return known; }
+    if (known) { known.dead = true; if (known.users === 0) destroyAreaPipelines(owner, known); }
+    const entry: SharedAreaPipelines = { users: 1, edge: null, clear: null, failed: false, dead: false, generation: owner.generation };
+    areaPipelinesOn.set(owner, entry);
+    const make = (shader: ShaderModule, blend: 'add' | 'replace') => owner.createPipeline({ shader, topology: 'triangle-strip',
+        colorFormat: 'r32f', samples: 1, blend, alphaToCoverage: false, colorWrite: [true, true, true, true], stencil: NO_STENCIL });
+    Promise.all([make(EDGE_SHADER, 'add'), make(CLEAR_SHADER, 'replace')]).then(([edge, clear]) => {
+        entry.edge = edge; entry.clear = clear;
+        if (entry.dead && entry.users === 0) destroyAreaPipelines(owner, entry);
+    }, () => { entry.failed = true; if (areaPipelinesOn.get(owner) === entry) areaPipelinesOn.delete(owner); });
+    return entry;
+}
+function destroyAreaPipelines(owner: GfxDevice, entry: SharedAreaPipelines): void {
+    if (entry.edge) owner.destroy(entry.edge);
+    if (entry.clear) owner.destroy(entry.clear);
+    entry.edge = null; entry.clear = null;
+}
+/** A kit lets go of its pair: the current incarnation's stays for the next kit; a superseded one goes with its last user. */
+function releaseAreaPipelines(owner: GfxDevice, entry: SharedAreaPipelines): void {
+    if (--entry.users === 0 && entry.dead) destroyAreaPipelines(owner, entry);
+}
+
 export function createAreaKit(): AreaKit {
     let device: GfxDevice | null = null;
     let edgePipeline: PipelineHandle | null = null;
     let clear: PipelineHandle | null = null;
-    let pending = false, failed = false, serial = 0, frame = 0;
+    let pipelineSet: SharedAreaPipelines | null = null, frame = 0;
     /** Every edge set on the device, by its edge array; idle ones (refs 0) are the least recently used first. */
     const sets = new Map<Float32Array, EdgeSet>();
     const live = new Set<PreparedArea>();
@@ -219,18 +255,11 @@ export function createAreaKit(): AreaKit {
     const ensurePipelines = (owner: GfxDevice): boolean | 'failed' => {
         if (edgePipeline && clear && device === owner) return true;
         if (device !== owner) { release(); device = owner; }
-        if (failed) return 'failed';
-        if (pending) return false;
-        pending = true;
-        const mine = ++serial;
-        const make = (shader: ShaderModule, blend: 'add' | 'replace') => owner.createPipeline({ shader, topology: 'triangle-strip',
-            colorFormat: 'r32f', samples: 1, blend, alphaToCoverage: false, colorWrite: [true, true, true, true], stencil: NO_STENCIL });
-        Promise.all([make(EDGE_SHADER, 'add'), make(CLEAR_SHADER, 'replace')]).then(([edgeHandle, clearHandle]) => {
-            pending = false;
-            if (device === owner && mine === serial) { edgePipeline = edgeHandle; clear = clearHandle; }
-            else { owner.destroy(edgeHandle); owner.destroy(clearHandle); }
-        }, () => { pending = false; failed = true; });
-        return false;
+        pipelineSet ??= acquireAreaPipelines(owner);
+        if (pipelineSet.failed) return 'failed';
+        if (!pipelineSet.edge || !pipelineSet.clear) return false;
+        edgePipeline = pipelineSet.edge; clear = pipelineSet.clear;
+        return true;
     };
 
     /** The device's scratch, large enough for `viewport`: created at its size on first use, and grown to the larger of each side when a
@@ -323,9 +352,8 @@ export function createAreaKit(): AreaKit {
             } else if (scratch && scratch.holder === kitToken) scratch.holder = null;
         }
         holding = false;
-        if (edgePipeline && device) device.destroy(edgePipeline);
-        if (clear && device) device.destroy(clear);
-        edgePipeline = null; clear = null; pending = false; failed = false; device = null;
+        if (pipelineSet && device) releaseAreaPipelines(device, pipelineSet);
+        pipelineSet = null; edgePipeline = null; clear = null; device = null;
     }
     function retire(prepared: PreparedArea): void {
         if (!live.delete(prepared)) return;
@@ -352,7 +380,7 @@ export function createAreaKit(): AreaKit {
                 set.usedFrame = frame;
                 // The upload resumes where it stopped: pieces already written stay on the set, whatever this admission does next.
                 const uploaded = upload(host, set, budget);
-                if (uploaded === 'deferred') return { status: 'deferred' };
+                if (uploaded === 'deferred') { auditCount('area', 'deferred:upload'); return { status: 'deferred' }; }
                 if (uploaded === 'unsupported') return { status: 'unsupported', why: 'vertex-buffer' };
                 if (uploaded !== true) return { status: 'denied', pool: 'gpu', bytes: uploaded.denied };
                 held.push(set);
@@ -361,7 +389,7 @@ export function createAreaKit(): AreaKit {
             // The pipelines and the scratch come after the edges: a deferral here keeps every piece already uploaded.
             const pipelines = ensurePipelines(owner);
             if (pipelines === 'failed') return { status: 'unsupported', why: 'pipeline' };
-            if (!pipelines) return { status: 'deferred' };
+            if (!pipelines) { auditCount('area', pipelineSet && pipelineSet.users > 1 ? 'deferred:compiling:shared' : 'deferred:compiling'); return { status: 'deferred' }; }
             const scratch = acquireScratch(host, owner, viewport);
             if (scratch === 'denied') return { status: 'denied', pool: 'gpu', bytes: viewport.width * viewport.height * 4 };
             if (!holding) { scratch.users++; holding = true; }
@@ -437,6 +465,10 @@ export function createAreaKit(): AreaKit {
             return true;
         },
         retire,
+        warm(host): void {
+            const owner = host.device();
+            if (owner?.areaTargets) ensurePipelines(owner);
+        },
         forget(edges): void {
             const set = sets.get(edges);
             if (!set) return;

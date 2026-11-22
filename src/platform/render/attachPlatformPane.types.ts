@@ -46,6 +46,9 @@ export interface PlatformPresentation extends LayerCoverage {
     readonly backend: CompositorBackend;
     readonly viewEpoch: number;
     readonly revision: string;
+    /** The frame whose draw is on screen: this frame for a real present; for a frame skipped as unchanged (presentUnchanged), the last
+     * real present, whose picture it shows at the same drawn camera. A consumer pairing a layer's draw with its presentation pairs on this. */
+    readonly drawnFrameId?: number;
 }
 
 /** All callbacks are current snapshots, not closures over the view that first mounted the pane. */

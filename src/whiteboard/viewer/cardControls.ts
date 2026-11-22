@@ -37,6 +37,8 @@ interface PlacedChip extends Chip { readonly x: number; readonly y: number; read
 
 // Screen pixels, not world units: a card's chips keep their size at any zoom, and a chip is a touch target as well as a label.
 const INSET = 12, HEIGHT = 26, GAP = 6, CHARACTER = 7.2, CHIP_PAD = 20;
+/** Above any embed slot (stacked by node order, a small number) in the board overlay. */
+const CHIP_LAYER = 2_147_483_000;
 const SVG_NS = 'http://www.w3.org/2000/svg';
 // A signal that is never aborted: the picking geometry is read as the current revision, not cancelled.
 const NEVER = new AbortController().signal;
@@ -179,7 +181,9 @@ export function createCardControls(options: CardControlOptions) {
             presented.present(frame.timestamp, { ...frame.view.camera });
             if (!svg) {
                 svg = document.createElementNS(SVG_NS, 'svg'); svg.setAttribute('aria-hidden', 'true');
-                svg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible';
+                // Above the live embed frames (embedPresentation stacks each by its node order): under them, a loaded embed's frame
+                // covered its own Stop chip and took the press, so a person could stop it only from the context menu.
+                svg.style.cssText = `position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible;z-index:${CHIP_LAYER}`;
                 options.overlay.append(svg);
             }
             svg.replaceChildren();
@@ -210,6 +214,9 @@ export function createCardControls(options: CardControlOptions) {
                 for (const chip of layout(node, actions, frame.view.camera)) {
                     const group = document.createElementNS(SVG_NS, 'g');
                     group.setAttribute('opacity', chip.action === null ? '0.55' : '1');
+                    // A chip nothing covers takes its own press, so a live frame beneath cannot: the press bubbles to the board's input
+                    // root, whose select tool asks `begin` as for any chip press. A masked chip (a node above its card) stays see-through.
+                    if (host === svg && chip.action !== null) group.style.pointerEvents = 'auto';
                     const rect = document.createElementNS(SVG_NS, 'rect');
                     rect.setAttribute('x', String(chip.x)); rect.setAttribute('y', String(chip.y));
                     rect.setAttribute('width', String(chip.w)); rect.setAttribute('height', String(chip.h));

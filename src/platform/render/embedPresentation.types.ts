@@ -50,6 +50,8 @@ export interface EmbedPresentationFrame {
     readonly presentation: PlatformPresentation;
     readonly sceneRevision: number;
     readonly viewport: Readonly<{ width: number; height: number }>;
+    /** The camera the board drew these nodes' placements at: a later view epoch at this camera and viewport places them the same. */
+    readonly camera: Readonly<{ x: number; y: number; z: number }>;
     readonly nodes: readonly EmbedPresentedNode[];
     release(): void | Promise<void>;
 }

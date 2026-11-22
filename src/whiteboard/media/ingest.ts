@@ -57,6 +57,9 @@ export interface MediaIngestOptions {
     readonly origin: TransactionOrigin;
     readonly signal?: AbortSignal;
     readonly placement: MediaPlacement;
+    /** Where this call's refusals are named, in place of the ingestor's own notice: the caller then knows a refusal was shown and
+     * does not cover it with 'Nothing was inserted.' (measured: a refused 10.5 MB picture showed only that line). */
+    readonly noticeRefused?: (files: readonly { readonly name: string; readonly reason: string }[]) => void;
 }
 
 const EXTENSIONS: Record<MediaMime, string> = {
@@ -248,7 +251,7 @@ export class MediaIngestor {
                 }
             }
             current();
-            if (refused.length) this.host.noticeRefused(refused);
+            if (refused.length) (options.noticeRefused ?? this.host.noticeRefused.bind(this.host))(refused);
             if (!staged.length) return [];
             const { parent, page, x, y } = options.placement;
             if (!Number.isFinite(x) || !Number.isFinite(y)) throw new RangeError('Invalid placement');

@@ -761,19 +761,45 @@ export function createPath(host: LayerHost, audit: string): {
                 areaRefused(error);
                 j = items.length;
             } finally { areaKit.endBatch(pass); }
-            // The scratch is at least the viewport and an area is cut to it, so an empty batch always takes the first item; were it
-            // ever not to, the item draws without its areas rather than stalling the run.
-            if (j === i) j = i + 1;
+            // An empty batch that cannot take the first item: its fill and stroke areas do not fit the scratch together (a box over most
+            // of a tile: each nearly the scratch's height, 362 + 364 rows of 516). It draws area by area, each in a batch of its own, in
+            // paint order. Drawn without its areas, the box lost its fill and outline in that tile for good, the tile counted composed
+            // (measured, gpu-f2 media kit, WebGL2 DPR 2: a link card's outline missing left of a tile boundary until a pan).
+            if (j === i) { drawItemByArea(pass, items[i]); i++; continue; }
             for (let k = i; k < j; k++) drawItem(pass, items[k]);
             i = j;
         }
     };
+    // Which half of an item drawInside lays: both, or (drawItemByArea) only its fill or only its stroke.
+    let drawHalf: 'both' | 'fill' | 'stroke' = 'both';
     const drawInside = (): void => {
         const pass = drawPass!, item = drawingItem!;
-        if (item.fill) kit.draw(pass, item.fill);
-        if (item.fillArea) drawArea(pass, item.fillArea);
-        if (item.stroke) kit.draw(pass, item.stroke);
-        if (item.strokeArea) drawArea(pass, item.strokeArea);
+        if (drawHalf !== 'stroke') {
+            if (item.fill) kit.draw(pass, item.fill);
+            if (item.fillArea) drawArea(pass, item.fillArea);
+        }
+        if (drawHalf !== 'fill') {
+            if (item.stroke) kit.draw(pass, item.stroke);
+            if (item.strokeArea) drawArea(pass, item.strokeArea);
+        }
+    };
+    /** One item whose areas do not fit one batch: its fill (with its area placed alone), then its stroke (likewise). An area that does not
+     * fit even alone draws without it, counted not-placed, as before. */
+    const drawItemByArea = (pass: GpuPass, item: PreparedPathItem): void => {
+        for (const half of ['fill', 'stroke'] as const) {
+            const area = half === 'fill' ? item.fillArea : item.strokeArea;
+            const plain = half === 'fill' ? item.fill : item.stroke;
+            if (!area && !plain) continue;
+            if (area) {
+                areaKit.beginBatch(host);
+                try { itemAreas.length = 0; itemAreas.push(area.prepared); areaKit.place(host, pass, itemAreas); }
+                catch (error) { areaRefused(error); }
+                finally { areaKit.endBatch(pass); }
+            }
+            drawHalf = half;
+            try { drawItem(pass, item); } finally { drawHalf = 'both'; }
+        }
+        auditCount(audit, 'area:by-area');
     };
     const drawItem = (pass: GpuPass, item: PreparedPathItem): void => {
         drawPass = pass; drawingItem = item;

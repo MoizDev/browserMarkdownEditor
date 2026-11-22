@@ -106,18 +106,24 @@ export async function inspectMedia(blob: Blob, options: { signal?: AbortSignal; 
         || !Number.isSafeInteger(result.decodePixels) || result.decodePixels < result.width * result.height || result.decodePixels > 2 ** 26) {
         throw new Error('Invalid media worker reply');
     }
-    const lease = options.memory.reserve(4 * result.decodePixels);
-    if (!lease) throw new Error('Not enough memory to decode this media');
-    try {
+    // The probe below decodes the whole picture once, inside the media worker, only to verify it, and drops it: worker-transient
+    // memory, not a raster this board keeps, so it is not charged to the board's CPU raster pool. Charged there, every picture
+    // over the pool's whole target (32 MB minimum, so about 8.4 MP) was refused outright, while the media limits admit 2^26 px
+    // (measured: a 4000x3000 PNG or JPEG inserted, dropped or pasted placed nothing on any board, both backends). The pixel and
+    // byte limits still bound it (decodePixels <= 2^26 checked above, 10 MiB files). A video's probe frame and transfer copy come
+    // back to this thread, so those stay charged.
+    {
         let duration: number | null = null;
         if (result.mime.startsWith('video/')) {
+            const frame = options.memory.reserve(4 * result.decodePixels);
+            if (!frame) throw new Error('Not enough memory to decode this media');
             const transport = options.memory.reserve(blob.size * 3);
-            if (!transport) throw new Error('Not enough memory for contained video transfer');
+            if (!transport) { options.memory.release(frame); throw new Error('Not enough memory for contained video transfer'); }
             try {
                 const probed = await videoFrameInProfile(blob, result, options.identity, options.isCurrent, signal, 'probe');
                 if (typeof probed !== 'number') { if (probed instanceof ImageBitmap) probed.close(); throw new Error('Invalid contained video probe'); }
                 duration = probed;
-            } finally { options.memory.release(transport); }
+            } finally { options.memory.release(transport); options.memory.release(frame); }
         }
         if (duration === null) {
             try {
@@ -130,5 +136,5 @@ export async function inspectMedia(blob: Blob, options: { signal?: AbortSignal; 
         }
         signal.throwIfAborted();
         return attest({ id: result.id, mime: result.mime, width: result.width, height: result.height, animated: result.animated, duration });
-    } finally { options.memory.release(lease); }
+    }
 }

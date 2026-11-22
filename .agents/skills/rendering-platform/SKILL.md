@@ -115,6 +115,9 @@ The platform is a shared, demand-driven compositor, not a document engine or ano
 
 ## Frame-path rules (WebGL2)
 
+- **A frame survives only two refusals**: a full uniform ring and an isolation shortfall (`guardIsolation`: a clip or group whose
+  target was not planned opens nothing, its caller defers that draw). Any other throw inside a pass cancels the whole frame, and
+  every pass recorded before it is lost: a route that recorded state-changing work (an atlas conversion) must not count it done.
 - **No synchronous GL read on the frame path.** `getError`, `checkFramebufferStatus`, `getParameter`, `readPixels`,
   `getBufferSubData` and a blocking `clientWaitSync` are round trips to the GPU process: a frame behind a deep queue waits for all
   of it (measured: `checkFramebufferStatus` per resize, 17-24 ms at each LARGE=11 drag's start and release). They belong at device

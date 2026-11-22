@@ -1,4 +1,5 @@
 import { getBoardPreferences, mouseZoomInverted } from '../../utils/boardPreferences';
+import { isTransientPictureFailure } from '../../whiteboard/media/transientFailure';
 import { recordBoardPresentation } from './debugStats';
 import { encodeTiledPngInWorker } from '../../whiteboard/export/pngWorkerClient';
 import type { PlatformLayerDefinition, PlatformPane, PlatformPresentation } from '../../platform/render/attachPlatformPane.types';
@@ -268,7 +269,12 @@ export function createNativeViewLease(options: {
             const found = await host.readMedia(identity, { hash: id.slice(7), preferredName: runtime.media.currentFile(id) ?? entry.file }, signal);
             if (!found) throw new Error(`Missing board media: ${id}`);
             return found.blob;
-        }, invalidate: hintFrom('media'), onError: options.onError });
+        }, invalidate: hintFrom('media'),
+        // A picture that cannot be decoded is drawn as a placeholder and named in the app's notice; it is never the board's failure
+        // (it was: 'Could not open canvas: Insufficient memory for full-frame image', on every reopen of a board holding the picture).
+        // A transient failure (a cancelled or retired decode, a deadline, a memory refusal) is retried by the painter and is not the
+        // person's news: naming it said 'could not be shown' over a picture that appeared a moment later.
+        onError: error => { if (!isTransientPictureFailure(error)) options.onNotice(`A picture could not be shown: ${error instanceof Error ? error.message : String(error)}`); } });
     // This view's own playback: it stops when the view hides and when the view is torn down, and it closes its presented frames
     // before the source it came from is released.
     const video = new BoardVideoPlayback({ memory: images.memory, frames: images.frames,
@@ -510,6 +516,9 @@ export function createNativeViewLease(options: {
                 // stays until a frame is presented. Only a presentation this lease refuses clears it (hiding clears it in setView).
                 if (presentation && presentedFrame === null) presentedView = null;
                 navigation.onPresentation(presentation);
+                // Audit only: why a presentation the embeds and backdrop act on was refused.
+                if (presentation && renderAuditEnabled() && !certifyPresentation(presentation)) auditCount('embed', 'uncertified:' + (!presentation.complete ? 'incomplete'
+                    : !presentation.sharp ? 'not-sharp' : presentation.staleVersion ? 'stale' : 'identity'));
                 viewer.presentationAccepted(presentation && certifyPresentation(presentation) ? presentation : null);
                 if (presentation && certifyPresentation(presentation)) backdrop?.notePresentation?.();
                 if (presentation && certifyPresentation(presentation)) recordBoardPresentation(performance.now(), presentation.backend);

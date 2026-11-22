@@ -1,7 +1,7 @@
 // The picture route: one quad per picture, sampled from the picture's own texture (imageTextures.ts). The shader does
 // what the 2D canvas does to a picture: the crop, the invert, the opacity, and the antialiased edge of a rect that does
 // not land on whole pixels (b39411ce, measured against the canvas2d control). Design: PLAN §4 gpu-h7, §3.2.
-import type { ViewState } from '../../../platform/types';
+import type { Rect, ViewState } from '../../../platform/types';
 import type { LayerHost } from '../../../platform/render/compositor.types';
 import type { ByteLease, DrawableImage, DrawCommand, GfxDevice, GpuPass, PipelineHandle, RectI, SamplerHandle, ShaderModule, TextureHandle } from '../../../platform/render/gfx/api';
 import { auditCount } from '../../../platform/render/renderAudit';
@@ -12,11 +12,20 @@ import type { Admission, Blend, CreateImageRoute, ItemRoute, PreparedRun } from 
 import { createImageTextures, IMAGE_FILTER, type ImageTexture, type ImageTextures } from './imageTextures';
 import { VIDEO_FRAME_PREFIX } from '../../media/videoFrames';
 import type { PaintImageHold } from '../reference/canvasPaintAdapter';
+import { planPictureTiles, type PictureTileItem } from '../../media/tilePlan';
+import { parseMediaTileKey } from '../../media/mips';
+import { pictureLevelRefused } from '../../media/levelFloor';
 
 /** The picture route as the composer sees it. `useResources` gives it the paint's image lookup for the revision being
  * composed: the ItemRoute contract has no place for it (see the report to gpu), so the composer binds it. */
 export interface ImageRoute extends ItemRoute<PaintImageItem> {
     useResources(resources: PaintResources2d): void;
+    /** The pane's screen this frame (tileComposer PictureRoute): a picture's finer tiles take their byte share from it. */
+    setScreen(world: Rect | null): void;
+    /** The finer picture tiles a run left out while their decode may still come; null when none. */
+    waits(run: PreparedRun): readonly string[] | null;
+    /** True while any of these tiles may still come (in flight, or skipped by this snapshot). */
+    waiting(keys: readonly string[]): boolean;
     /** Frees picture textures nobody holds, least recently used first; returns bytes freed. For the governor (h9). */
     evictTextures(bytes: number, frameId: number): number;
 }
@@ -31,7 +40,8 @@ interface ImageDraw {
     readonly lease: ByteLease;
 }
 /** A run's draws and holds, pooled with its arrays; the run handle itself is made per admission, so a retired one stays refused. */
-interface RunBody { readonly calls: ImageDraw[]; readonly holds: string[] }
+/** `waits`: the finer picture tiles the run left out because their decode may still come (the composer recomposes once it has). */
+interface RunBody { readonly calls: ImageDraw[]; readonly holds: string[]; readonly waits: string[] }
 /** The vertex list of every picture draw: the quad comes from the vertex index, so there is nothing to bind. */
 const NO_VERTICES: readonly never[] = [];
 
@@ -44,12 +54,16 @@ interface ImageRun extends PreparedRun {
 }
 
 const UNIFORM_BYTES = 64;
+/** The placeholder's 1×1 texture, charged at a small floor (it is a real allocation, however small). */
+const BLANK_BYTES = 64;
 
-/** Four vec4 uniforms, 16 floats: viewport (target px w, h, multiply flag), destination (device rect x0, y0, x1, y1), sourceRect (texel
- * rect u0, v0, u1, v1), params (texture w, h, opacity, invert). The quad covers whole device pixels; every edge pixel is
- * measured against the rect in the fragment, so the vertices need no antialiasing of their own. */
+/** Four vec4 uniforms, 16 floats: viewport (target px w, h, multiply flag, placeholder flag), destination (device rect x0, y0, x1, y1),
+ * sourceRect (texel rect u0, v0, u1, v1), params (texture w, h, opacity, invert). The quad covers whole device pixels; every edge pixel is
+ * measured against the rect in the fragment, so the vertices need no antialiasing of their own.
+ * A placeholder (a picture the painter holds nothing for) samples no texture: destination is the box grown by half its frame,
+ * sourceRect the picture's own device rect and params.x half the frame's width. */
 const IMAGE_SHADER: ShaderModule = {
-    id: 'board-image-quad', revision: 1,
+    id: 'board-image-quad', revision: 2,
     layout: { uniforms: [{ binding: 0, byteSize: UNIFORM_BYTES }], textures: [{ binding: 0, format: 'rgba8' }], attributes: [] },
     glsl: {
         vertex: `#version 300 es
@@ -78,7 +92,21 @@ layout(std140) uniform GfxUniforms0 {
 uniform sampler2D gfxTexture0;
 in vec2 pixel;
 layout(location=0) out vec4 gfxColour;
+float inside(vec4 r) {
+    vec2 c = clamp(min(pixel + 0.5, r.zw) - max(pixel - 0.5, r.xy), 0.0, 1.0);
+    return c.x * c.y;
+}
 void main() {
+    if (viewport.w > 0.5) {
+        // canvas2d's placeholder (paint2d): a grey fill at 0.18 over the box and a grey frame at 0.7 centred on its edge, as exact
+        // areas of the pixel: inside the inner box fill only, in the frame inside the box frame over fill, outside it frame only.
+        float outer = inside(destination), box = inside(sourceRect);
+        float core = inside(vec4(sourceRect.xy + params.x, sourceRect.zw - params.x));
+        float alpha = core * 0.18 + (box - core) * (0.7 + 0.18 * 0.3) + (outer - box) * 0.7;
+        float grey = 128.0 / 255.0;
+        gfxColour = viewport.z > 0.5 ? vec4(vec3(1.0 - alpha * (1.0 - grey)), 1.0) : vec4(vec3(grey * alpha), alpha);
+        return;
+    }
     // The pixel's footprint is [pixel - 0.5, pixel + 0.5]. Its area inside the rect is the coverage; a corner takes the
     // smaller of its two edge coverages, not their product (b39411ce, the 0.55-scale corner).
     vec2 lo = max(pixel - 0.5, destination.xy);
@@ -142,6 +170,10 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
     // Scoped to the frame: a picture refused once and then gone from the board kept its bitmap held for the whole session.
     const cpuKeys = new Set<string>();
     let cpuFrame = -1;
+    // The pane's screen and an eighth of it each side (services.ts pictureTileWorld, canvas2d's picture world): the world whose tiles
+    // set a picture's byte share, whatever tile is being composed. Null until the composer names it.
+    let screen: Rect | null = null;
+    const screenRing: Rect = { x: 0, y: 0, width: 0, height: 0 };
     // The pools: draw records and run bodies a retired run returned, taken again by the next admission. Never shrunk but on release.
     const freeDraws: ImageDraw[] = [], freeBodies: RunBody[] = [];
     const takeDraw = (): ImageDraw | null => {
@@ -153,7 +185,7 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
     };
     const returnBody = (body: RunBody): void => {
         for (const call of body.calls) { call.texture = null; freeDraws.push(call); }
-        body.calls.length = 0; body.holds.length = 0;
+        body.calls.length = 0; body.holds.length = 0; body.waits.length = 0;
         freeBodies.push(body);
     };
     // The draw's one command, rewritten per picture: draw copies what it records, and uniformsInto rewrites the slice in place.
@@ -171,8 +203,20 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
         return waiting ? { status: 'deferred' } : admission;
     };
 
+    // A 1×1 texture bound by placeholder draws, whose shader branch samples nothing: a draw binds a texture whatever it reads.
+    let blank: { readonly texture: TextureHandle; readonly lease: ByteLease } | null = null;
+    const blankTexture = (current: GfxDevice): TextureHandle | null => {
+        if (blank) return blank.texture;
+        const lease = host.allocator.gpu.reserve(BLANK_BYTES);
+        if (!lease) return null;
+        try { blank = { texture: current.createTexture(1, 1, 'rgba8', ['sample'], lease), lease }; }
+        catch (error) { host.allocator.gpu.release(lease); throw error; }
+        return blank.texture;
+    };
     const release = (): void => {
         cpuKeys.clear(); cpuFrame = -1;
+        if (blank && device) { device.destroy(blank.texture); host.allocator.gpu.release(blank.lease); }
+        blank = null;
         textures.release();
         for (const call of freeDraws) host.allocator.cpu.release(call.lease);
         freeDraws.length = 0; freeBodies.length = 0;
@@ -235,6 +279,7 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
             if (!current) return refuseAll(items, unsupported('no-device'));
             if (current.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration) return { status: 'deferred' };
             if (!resources) throw new Error('The image route has no paint resources: useResources must run before admit');
+            const paint = resources;
             const pipes = warm(current);
             if (pipes.failed) return refuseAll(items, unsupported('pipeline-failed'));
             if (!pipes.over || !pipes.modulate) return { status: 'deferred' };
@@ -242,8 +287,8 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
 
             const scale = view.camera.z * view.viewport.dpr;
             const targetWidth = Math.round(view.viewport.width * view.viewport.dpr), targetHeight = Math.round(view.viewport.height * view.viewport.dpr);
-            const body = freeBodies.pop() ?? { calls: [], holds: [] };
-            const { calls, holds } = body;
+            const body = freeBodies.pop() ?? { calls: [], holds: [], waits: [] };
+            const { calls, holds, waits } = body;
             // All or nothing: a refused picture takes the whole run to the composer, so the holds taken so far are returned.
             const reject = (admission: Exclude<Admission<PreparedRun>, { status: 'ready' }>): Admission<PreparedRun> => {
                 for (const key of holds) textures.unhold(key);
@@ -257,15 +302,36 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
                 if (hold && hold.imageState(key) !== 'ready') { hold.reacquireImage(key); return reject({ status: 'deferred' }); }
                 return reject(admission);
             };
-            for (const item of items) {
-                const { rect } = item;
-                if (!(rect.width > 0 && rect.height > 0) || !(item.opacity > 0)) continue;
-                const [a, b, c, d, e, f] = item.localToWorld;
-                // Axis-aligned and unflipped: the device rect is the affine's scale and translation applied to the rect.
-                if (b !== 0 || c !== 0 || !(a > 0) || !(d > 0)) return refuse(item.imageKey, unsupported('transform'));
-                // Routes never clip (gpu's rule): the composer applies the item's clips around this draw.
-                if (item.retainedTile) return refuse(item.imageKey, unsupported('retained'));
-                const key = item.imageKey;
+            /** canvas2d's placeholder for a picture held as nothing: the box where it sits and a hairline frame, drawn without the
+             * picture's opacity or invert (paint2d). The frame is a 400th of the box's larger side, centred on its edge. */
+            const placeholder = (item: PaintImageItem, onDevice: GfxDevice): 'drawn' | 'outside' | 'denied' | 'no-draw' => {
+                const [a, , , d, e, f] = item.localToWorld, rect = item.rect;
+                const x0 = (e + a * rect.x - view.camera.x) * scale, y0 = (f + d * rect.y - view.camera.y) * scale;
+                const x1 = x0 + a * rect.width * scale, y1 = y0 + d * rect.height * scale;
+                const half = Math.max(x1 - x0, y1 - y0) / 800;
+                const left = Math.max(0, Math.floor(x0 - half)), top = Math.max(0, Math.floor(y0 - half));
+                const right = Math.min(targetWidth, Math.ceil(x1 + half)), bottom = Math.min(targetHeight, Math.ceil(y1 + half));
+                if (right <= left || bottom <= top) return 'outside';
+                const texture = blankTexture(onDevice);
+                if (!texture) return 'denied';
+                const call = takeDraw();
+                if (!call) return 'no-draw';
+                calls.push(call);
+                const u = call.uniforms;
+                u[0] = targetWidth; u[1] = targetHeight; u[2] = multiply; u[3] = 1;
+                u[4] = x0 - half; u[5] = y0 - half; u[6] = x1 + half; u[7] = y1 + half;
+                u[8] = x0; u[9] = y0; u[10] = x1; u[11] = y1;
+                u[12] = half; u[13] = 0; u[14] = 1; u[15] = 0;
+                call.texture = texture;
+                call.scissor.x = left; call.scissor.y = top; call.scissor.width = right - left; call.scissor.height = bottom - top;
+                auditCount(audit, 'image:placeholder');
+                return 'drawn';
+            };
+            /** One picture drawn: the item's own (`tile` absent), or a finer tile the route planned over it. Null when it drew or was
+             * left out; else the admission the run ends with. */
+            const place = (item: PaintImageItem, tile: PictureTileItem | null): Admission<PreparedRun> | null => {
+                const rect = tile ? tile.rect : item.rect, key = tile ? tile.key : item.imageKey;
+                const [a, , , d, e, f] = item.localToWorld;
                 // A video node is one live picture: its key is stable and its lease names the frame it shows now. The node's
                 // texture is the picture, re-uploaded only when that version moves; the frame is the registry's, never released here.
                 const video = key.startsWith(VIDEO_FRAME_PREFIX);
@@ -274,24 +340,59 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
                     const fact = hold ? hold.imageFact(key) : null;
                     if (hold && !fact) { hold.reacquireImage(key); return reject({ status: 'deferred' }); }
                     if (!fact) return refuse(key, unsupported('video-without-hold'));
-                    const source = resources.image(key);
-                    if (!isDrawable(source)) return refuse(key, unsupported('video-source'));
+                    const source = paint.image(key);
+                    // Null: the painter holds no picture for the key (a broken or memory-skipped picture, canvasPaintAdapter).
+                    if (!source || !isDrawable(source)) return refuse(key, unsupported('video-source'));
                     admitted = textures.acquireVideo(key, { version: fact.version, source, width: fact.width, height: fact.height }, budget);
                 } else {
                     const state = hold ? hold.imageState(key) : 'ready';
-                    if (hold && state !== 'ready' && textures.needsSource(key)) { hold.reacquireImage(key); return reject({ status: 'deferred' }); }
-                    admitted = textures.acquire(key, state === 'ready' ? resources.image(key) : null, budget);
+                    if (tile && state !== 'ready' && textures.needsSource(key)) {
+                        // A finer tile still decoding (or skipped for memory this snapshot) is left out, the item under it shows, and
+                        // the composer recomposes this tile once the decode has settled (waits). Holding the run for it held the
+                        // picture's whole tile, stand-in and all, for every decode.
+                        hold?.reacquireImage(key);
+                        if (hold?.imageWaiting(key)) waits.push(key);
+                        auditCount(audit, 'image:tile:waiting');
+                        return null;
+                    }
+                    if (state !== 'ready' && hold?.imageBroken(key)) {
+                        // The painter will never hold this picture (its bytes could not be decoded), so asking again changes nothing:
+                        // waiting for it left a hole for good, and held every picture of the run with it. A texture it drew before still
+                        // draws; else a tile over the picture's stand-in is left out (the stand-in shows), and a whole picture gets
+                        // canvas2d's placeholder. A picture skipped for memory keeps waiting: the next snapshot asks for it again (and
+                        // a refused tile level is planned coarser), so a placeholder composed into its tile would stay there.
+                        const kept = textures.acquire(key, null, budget);
+                        if (kept.status === 'ready') admitted = kept;
+                        else if (tile || item.underlaid) { auditCount(audit, 'image:underlaid-absent'); return null; }
+                        else {
+                            const placed = placeholder(item, current);
+                            if (placed === 'denied') return reject({ status: 'denied', pool: 'gpu', bytes: BLANK_BYTES });
+                            if (placed === 'no-draw') return reject({ status: 'denied', pool: 'cpu', bytes: UNIFORM_BYTES });
+                            return null;
+                        }
+                    } else {
+                        if (hold && state !== 'ready' && textures.needsSource(key)) { hold.reacquireImage(key); return reject({ status: 'deferred' }); }
+                        admitted = textures.acquire(key, state === 'ready' ? paint.image(key) : null, budget);
+                    }
                 }
-                if (admitted.status === 'empty') continue;
+                if (admitted.status === 'empty') return null;
                 if (admitted.status === 'unsupported') return refuse(key, admitted);
-                if (admitted.status !== 'ready') return reject(admitted);
+                if (admitted.status !== 'ready') {
+                    // The GPU pool refused a finer tile: the next plan of the picture at this zoom takes a coarser level, as the CPU
+                    // pool's refusal does (canvasPaintAdapter), so the picture sharpens as far as the GPU pool allows.
+                    if (tile && admitted.status === 'denied' && admitted.pool === 'gpu') {
+                        const parsed = parseMediaTileKey(key);
+                        if (pictureLevelRefused(parsed.id, parsed.level)) auditCount(audit, 'image:tile:level-refused');
+                    }
+                    return reject(admitted);
+                }
                 holds.push(key);
                 // The texture holds the pixels now, so the bitmap is no longer needed. A picture some item of it was refused
                 // for stays held: its CPU draw needs the bitmap.
                 if (!video && hold && !cpuKeys.has(key) && hold.imageState(key) === 'ready') hold.releaseImage(key);
                 const tex = admitted.value;
 
-                const src = item.sourceRect ?? { x: 0, y: 0, width: tex.sourceWidth, height: tex.sourceHeight };
+                const src = (tile ? tile.sourceRect : item.sourceRect) ?? { x: 0, y: 0, width: tex.sourceWidth, height: tex.sourceHeight };
                 if (!(src.width > 0 && src.height > 0) || src.x < 0 || src.y < 0 || src.x + src.width > tex.sourceWidth || src.y + src.height > tex.sourceHeight) {
                     return refuse(key, unsupported('crop'));
                 }
@@ -300,7 +401,7 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
                 const x1 = x0 + a * rect.width * scale, y1 = y0 + d * rect.height * scale;
                 const left = Math.max(0, Math.floor(x0)), top = Math.max(0, Math.floor(y0));
                 const right = Math.min(targetWidth, Math.ceil(x1)), bottom = Math.min(targetHeight, Math.ceil(y1));
-                if (right <= left || bottom <= top) continue;
+                if (right <= left || bottom <= top) return null;
                 // The crop in source pixels, as texels of the texture (which is smaller only when the source was downscaled).
                 const kx = tex.width / tex.sourceWidth, ky = tex.height / tex.sourceHeight;
                 const call = takeDraw();
@@ -313,6 +414,35 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
                 u[12] = tex.width; u[13] = tex.height; u[14] = item.opacity; u[15] = item.inverted ? 1 : 0;
                 call.texture = tex.texture;
                 call.scissor.x = left; call.scissor.y = top; call.scissor.width = right - left; call.scissor.height = bottom - top;
+                return null;
+            };
+            for (const item of items) {
+                const { rect } = item;
+                if (!(rect.width > 0 && rect.height > 0) || !(item.opacity > 0)) continue;
+                const [a, b, c, d] = item.localToWorld;
+                // Axis-aligned and unflipped: the device rect is the affine's scale and translation applied to the rect.
+                if (b !== 0 || c !== 0 || !(a > 0) || !(d > 0)) return refuse(item.imageKey, unsupported('transform'));
+                // Routes never clip (gpu's rule): the composer applies the item's clips around this draw.
+                if (item.retainedTile) return refuse(item.imageKey, unsupported('retained'));
+                // The stream's own finer tiles (planned for its request's world, which a pan inside it outlives) are left to the
+                // picture's item, which plans this view's tiles itself (below): an underlaid tile always follows its stand-in.
+                if (item.underlaid && hold) { auditCount(audit, 'image:underlaid-replanned'); continue; }
+                const ended = place(item, null);
+                if (ended) return ended;
+                const facts = item.picture;
+                if (!facts || !hold) continue;
+                // The picture's finer tiles for this view (a composed tile's world, or the pane's for a live draw), planned as canvas2d
+                // plans its screen: the same function, level, byte share (the screen's) and tile keys, so both share one residency.
+                const world: Rect = { x: view.camera.x, y: view.camera.y, width: view.viewport.width / view.camera.z, height: view.viewport.height / view.camera.z };
+                const planned = planPictureTiles(facts.box, facts.media, item.localToWorld, { deviceScale: scale, world,
+                    ...(screen ? { shareWorld: screen } : {}) }, facts.crop);
+                if (!planned) continue;
+                for (const tile of planned) {
+                    // Only tiles finer than the item itself: the plan's own stand-in is this item or coarser.
+                    if (parseMediaTileKey(tile.key).level >= facts.level) continue;
+                    const tileEnded = place(item, tile);
+                    if (tileEnded) return tileEnded;
+                }
             }
             if (calls.length === 0) {
                 for (const key of holds) textures.unhold(key);
@@ -354,6 +484,22 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
         release,
         memory(): { gpuBytes: number; cpuBytes: number } { return textures.memory(); },
         useResources(next: PaintResources2d): void { resources = next; hold = imageHoldOf(next); },
+        setScreen(world: Rect | null): void {
+            if (!world) { screen = null; return; }
+            // Copied into the route's own rect: the composer rewrites the one it names every frame.
+            const mx = world.width / 8, my = world.height / 8;
+            screenRing.x = world.x - mx; screenRing.y = world.y - my; screenRing.width = world.width + 2 * mx; screenRing.height = world.height + 2 * my;
+            screen = screenRing;
+        },
+        waits(run: PreparedRun): readonly string[] | null {
+            const body = (run as ImageRun).body;
+            return body && body.waits.length ? body.waits : null;
+        },
+        waiting(keys: readonly string[]): boolean {
+            // No hold (no resources this paint) cannot tell: still waiting, or the entry would recompose on its stand-in for nothing.
+            const current = hold;
+            return current === null || keys.some(key => current.imageWaiting(key));
+        },
         evictTextures(bytes: number, frameId: number): number { return textures.evict(bytes, frameId); },
     };
 }
@@ -362,7 +508,8 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
 function imageHoldOf(resources: PaintResources2d): PaintImageHold | null {
     const candidate = resources as Partial<PaintImageHold>;
     return typeof candidate.imageState === 'function' && typeof candidate.releaseImage === 'function' && typeof candidate.reacquireImage === 'function'
-        && typeof candidate.imageFact === 'function' ? candidate as PaintImageHold : null;
+        && typeof candidate.imageFact === 'function' && typeof candidate.imageBroken === 'function' && typeof candidate.imageWaiting === 'function'
+        ? candidate as PaintImageHold : null;
 }
 
 /** A source the device reads directly: a bitmap, or a video frame. */

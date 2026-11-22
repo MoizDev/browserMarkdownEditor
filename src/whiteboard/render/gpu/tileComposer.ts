@@ -3,7 +3,9 @@
 // planning/60-implementation/gpu-handoff/PLAN.md §3.1 (scale policy, slices, compose limit, dirty, stand-ins).
 // The routes, the tile store and the parts index are injected, so this module imports no route and no store.
 import type { Rect, ViewState } from '../../../platform/types';
-import type { LayerHost, TexturedQuadSpec } from '../../../platform/render/compositor.types';
+import type { IsolationReservation, LayerHost, TexturedQuadSpec } from '../../../platform/render/compositor.types';
+import { IsolationShortfall } from '../../../platform/render/gfx/webgl2Isolation';
+import { ArenaError } from '../../../platform/render/resourceArena';
 import type { GfxDevice, GpuPass, GroupToken, RectI, RgbaP, TextureHandle } from '../../../platform/render/gfx/api';
 import type { FrameBudget, GpuReleaseReason, OffscreenPasses } from '../../../platform/render/types';
 import { tileTargetBytes, tileView } from '../../../platform/render/tileTarget';
@@ -177,13 +179,21 @@ export interface TileRoutes {
     readonly inkAnalytic: ItemRoute<PaintInkItem>;
     readonly inkUnion: ItemRoute<PaintInkItem>;
     /** Absent until the route is built: its items are then rastered by `cpu`, counted as a fallback. */
-    readonly image?: ItemRoute;
+    readonly image?: ItemRoute & Partial<PictureRoute>;
     readonly text?: ItemRoute & ZoomRoute;
     readonly cpu: ItemRoute;
 }
 /** The text route's zoom hooks (gpu-h8). `setZoom` is called once per frame before the admits: while it is true a missing exact mask is
  * drawn from its cached stand-in, never rastered. `exact` is false for a run that drew one: its tile recomposes exact once the camera rests. */
 export interface ZoomRoute { setZoom(zooming: boolean): void; exact(run: PreparedRun): boolean }
+/** The image route's picture hooks: it plans a large picture's finer tiles per composed tile, with the byte share of the screen named
+ * once per frame (`setScreen`). A run that left out tiles still decoding names them (`waits`); its entry is kept aside without asking
+ * frames, and is marked dirty once none is `waiting` (the decode's settlement invalidates the frame that finds it so). */
+export interface PictureRoute {
+    setScreen(world: Rect | null): void;
+    waits(run: PreparedRun): readonly string[] | null;
+    waiting(keys: readonly string[]): boolean;
+}
 /** A route that needs the paint's resources (decoded images, path and clip geometry); called once per paint, before admit. */
 export interface ResourcedRoute { useResources?(resources: PaintResources2d): void }
 /** Lays a composed texture on the current surface. `modulate` multiplies the surface by it; `dest` is in device pixels. */
@@ -390,6 +400,11 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     // Entries encoded with a run that drew a stand-in (the text route's zoom). They recompose exact once the camera rests: the last
     // zoom frame's entries are the ones at the scale the camera rests on, so the set is cleared at the start of each zoom frame.
     const inexactPending = new Set<TileEntry>();
+    // Entries composed while finer picture tiles they cover were still decoding, with those tiles (PictureRoute). Never a reason for
+    // a frame: recomposing a tile whose decode is still in flight drew the same pixels again each vsync (gpu-f1).
+    const awaitingDecode = new Map<TileEntry, readonly string[]>();
+    // The screen named to the image route each frame, rewritten in place (the route copies what it keeps).
+    const screenScratch: Rect = { x: 0, y: 0, width: 0, height: 0 };
     // Positions being admitted, by key. A finished position waits in `finished` for its band's encode.
     const building = new TileKeyMap<Position>();
     const staleScratch: Position[] = [];
@@ -515,6 +530,9 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     const pendingRegions: Rect[] = [];
     // The positions whose dirty tiles this frame's live parts cover (positionKey): their picture is current, not stale.
     const coveredPositions = new Set<number>();
+    // The dirty positions under a pending region whose cover this frame's draws could not lay (its node no longer drawn live: a card
+    // deselected, an embed the overlay draws): they show stale until composed, so the next compose does not defer them.
+    const uncoveredPositions = new Set<number>();
     // Last frame's, read when this frame's draws are built: a position covered then and composed since shows the same picture.
     let lastCovered = new Set<number>(), spareCovered = new Set<number>();
     // The draw-list signature of the covered positions (and those whose tile replaced their cover this frame): each as its position and
@@ -533,6 +551,28 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     let frameComposed = 0;
     // Dirty positions under a pending region driven this frame (see DIRTY_COVERED_PER_FRAME), keyed by position: a resumed one counts once.
     const frameDirtyCovered = new Set<number>();
+    // The group targets this layer's mask clips need (an arrow's body cut around its label: an evenodd clip), learnt from the first
+    // draw the isolation pool refused, and reserved at every prepare that encodes tiles or draws live parts. The compositor plans a
+    // shortfall only when one reaches its own catch; the composer catches it as a budget refusal, so unreserved the tile was refused
+    // every frame for good (kinds kit arrow-label, WebGL2 DPR 2 dark: 369 refused encodes, the label never shown, 470 textures in 6 s).
+    let isolationNeed: IsolationReservation | null = null;
+    /** Declares the learnt need for a frame that encodes tiles or draws live parts; a frame of composed tiles alone needs none. A frame
+     * whose compositor refused its own prepare has no plan to declare into (invalid-input), and it encodes and draws nothing either. */
+    const reserveIsolationNeed = (need: IsolationReservation): void => {
+        let live = finished.length > 0;
+        for (let i = 0; !live && i < drawCount; i++) if (draws[i].liveRoute) live = true;
+        if (!live) return;
+        try { host.reserveIsolation(need); auditCount(audit, 'isolation:reserved'); }
+        catch (error) { if (!(error instanceof ArenaError)) throw error; auditCount(audit, 'isolation:unplanned'); }
+    };
+    const noteShortfall = (error: unknown): void => {
+        if (!(error instanceof IsolationShortfall)) return;
+        const { request } = error, bounds = isolationNeed?.bounds;
+        isolationNeed = { depth: 0, maskDepth: Math.max(isolationNeed?.maskDepth ?? 0, error.simultaneous),
+            bounds: { x: 0, y: 0, width: Math.max(bounds?.width ?? 0, request.width), height: Math.max(bounds?.height ?? 0, request.height) },
+            format: request.format ?? 'rgba8', samples: request.samples, stencil: request.stencil };
+        auditCount(audit, 'isolation:shortfall');
+    };
     // The frame each tile entry was last encoded (its content's frame), read against heldNodes.
     const composedAt = new WeakMap<TileEntry, number>();
     let lastZoom: number | undefined;
@@ -1000,9 +1040,11 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         const key = positionKey(band, target, x, y);
                         let position = building.get(key);
                         if (!position && pass === 'dirty' && statusAt(band, target, x, y) === 'dirty' && !frameDirtyCovered.has(key)
-                            && pendingRegionsIn(band, target, x, y).length) {
-                            // Its changed pixels are laid live this frame (the region cover), so its compose can wait: at most
-                            // DIRTY_COVERED_PER_FRAME of these per frame. A position no region reaches would show stale: not bounded here.
+                            && !uncoveredPositions.has(key) && pendingRegionsIn(band, target, x, y).length) {
+                            // Its changed pixels are laid live (the region cover), so its compose can wait: at most DIRTY_COVERED_PER_FRAME
+                            // of these per frame. One the last draw could not cover shows stale, so it is not bounded: deferred on its
+                            // region alone, a bookmark card's outline stayed missing at rest (gpu-f1, gpu-f2's media kit, WebGL2 DPR 2: 300
+                            // deferrals). A region new this frame has not been tried yet and still defers: its commit frame composes one.
                             if (frameDirtyCovered.size >= DIRTY_COVERED_PER_FRAME) { auditCount(audit, 'compose:dirty-covered-deferred'); continue; }
                             frameDirtyCovered.add(key);
                         }
@@ -1332,7 +1374,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         const swap = lastCovered; lastCovered = spareCovered; spareCovered = swap;
         const swapped = swappedTiles; swappedTiles = spareSwapped; spareSwapped = swapped; swappedTiles.clear();
         lastCovered.clear(); for (const key of coveredPositions) lastCovered.add(key);
-        coveredPositions.clear();
+        coveredPositions.clear(); uncoveredPositions.clear();
         coverSignature = 0;
         if (liveNow) { buildLiveDraws(view, budget); return; }
         const span = spanAt(view, target);
@@ -1389,7 +1431,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         if (covered) {
                             liveScratch.sort((a, b) => a.order - b.order);
                             coveredPositions.add(positionKey(band, target, x, y));
-                        }
+                        } else if (regions.length) uncoveredPositions.add(positionKey(band, target, x, y));
                         const clip = withLive || covered ? clipAt(x, y) : null;
                         const coverKey = positionKey(band, target, x, y);
                         const coverFrom = drawCount;
@@ -1499,6 +1541,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     if (!isBudgetRefusal(error)) throw error;
                     refused = true;
                     auditCount(audit, 'encode:refused');
+                    noteShortfall(error);
                 } finally {
                     encodeDraw.pass = null; encodeDraw.route = null; encodeDraw.run = null;
                 }
@@ -1511,6 +1554,16 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     geometry: slice.admitted.some(admitted => isGeometryRoute(admitted.route)),
                     cpu: slice.admitted.some(admitted => admitted.route === routes.cpu) });
                 if (slice.admitted.some(admitted => !exactRun(admitted.route, admitted.run))) { inexactPending.add(entry); auditCount(audit, 'zoom:inexact:composed'); }
+                const image = routes.image;
+                if (image?.waits) {
+                    let keys: string[] | null = null;
+                    for (const admitted of slice.admitted) {
+                        const waits = admitted.route === image ? image.waits(admitted.run) : null;
+                        if (waits) (keys ??= []).push(...waits);
+                    }
+                    if (keys) { awaitingDecode.set(entry, keys); auditCount(audit, 'image:await:composed'); }
+                    else awaitingDecode.delete(entry);
+                }
                 store.touch(entry, frame);
             }
             for (const { route, run, clips } of slice.admitted) { route.retire(run); clips?.retire(); }
@@ -1523,6 +1576,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         for (const position of building.values()) cancel(position);
         building.clear();
         inexactPending.clear();
+        awaitingDecode.clear();
         scaleIndexes.clear();
         for (const position of finished) cancel(position);
         finished = [];
@@ -1605,6 +1659,10 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             routes.text?.setZoom(zooming);
             // The path route composes a zoom's frames on its coverage route and its rest on exact area (routePath.ts, setZoom).
             routes.path.setZoom?.(zooming);
+            // The image route takes a picture's byte share from the screen, whichever tile it composes (PictureRoute).
+            screenScratch.x = view.camera.x; screenScratch.y = view.camera.y;
+            screenScratch.width = view.viewport.width / view.camera.z; screenScratch.height = view.viewport.height / view.camera.z;
+            routes.image?.setScreen?.(screenScratch);
             // The inexact entries are kept through the whole zoom, not cleared each zoom frame: a zoom that returns to a scale reuses the
             // tiles it composed there earlier, and an entry dropped from the set then stayed inexact at rest (a saturated zoom alternates
             // between two scales). At rest only the entries of the resting scale are marked; the others go with their scale.
@@ -1739,6 +1797,14 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     }
                     inexactPending.clear();
                 }
+                // At rest, an entry whose finer picture tiles have all settled (landed, or refused and replanned) recomposes, once.
+                if (!zooming && awaitingDecode.size && routes.image?.waiting) {
+                    for (const [entry, keys] of awaitingDecode) {
+                        if (routes.image.waiting(keys)) continue;
+                        awaitingDecode.delete(entry);
+                        if (entry.target && entry.key.scale === target) { entry.dirty = true; auditCount(audit, 'image:await:recompose'); }
+                    }
+                }
                 // The armed retry is due and the refused position still waits on the GPU: it is advanced again this frame, after the
                 // governor has been asked (the admission reserves). A refusal that persists arms the next retry.
                 if (waiting && blockedOnGpu && retryAt !== 0 && performance.now() >= retryAt) {
@@ -1780,6 +1846,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             // waits for the compose: a zoom shows what exists (gpu's ruling: geometry exact, raster scaled).
             drawnTarget = target;
             buildDraws(view, target, zooming, budget);
+            if (isolationNeed) reserveIsolationNeed(isolationNeed);
             // A settling frame is drawn live but owes its tiles: it is settled only once they are exact, so the composer keeps asking.
             const exact = allExact(view, target);
             // Settled with nothing in flight too: a visible position that composes nothing (empty) or waits on the governor must not keep
@@ -1879,7 +1946,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         catch (error) {
                             // A budget refusal is counted and the frame asks again; any other error is reported and thrown.
                             if (!isBudgetRefusal(error)) { auditGpuError(audit, 'live-clip', error); throw error; }
-                            auditCount(audit, 'draw:refused'); wantFrame = true; host.markIncomplete('live-draw-refused');
+                            auditCount(audit, 'draw:refused'); noteShortfall(error); wantFrame = true; host.markIncomplete('live-draw-refused');
                         }
                         finally { pass.popClip(clip); }
                     }

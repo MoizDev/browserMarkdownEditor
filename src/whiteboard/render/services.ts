@@ -140,6 +140,14 @@ function connectorPrepared(key: string, node: Readonly<Node> & { kind: 'connecto
 
 /** One session service resolves the same local geometry for Scene, paint and
  * export. Pinned read-side documents are passed explicitly after every await. */
+/** Picture tiles cover what is on screen and an eighth of the view around it; without a view rect, the frame's world. */
+function pictureTileWorld(request: ScenePaintRequest): Readonly<Rect> | undefined {
+    const v = request.viewWorld;
+    if (!v) return request.world;
+    const mx = v.width / 8, my = v.height / 8;
+    return { x: v.x - mx, y: v.y - my, width: v.width + 2 * mx, height: v.height + 2 * my };
+}
+
 export function createBoardRenderServices(options: {
     readonly doc: BoardDoc;
     readonly samples: SampleStoreReader;
@@ -517,7 +525,7 @@ export function createBoardRenderServices(options: {
                     : node.kind === 'connector' ? paintConnector(node, geometry.connector!, context, palette, text.faces)
                     : await paintVectorNode(node, geometry.vector!, context, palette, text.faces,
                         { signal: itemSignal, cooperate: options.cooperate, media: node.kind === 'picture' || node.kind === 'clip' ? doc.media.get(node.media!) : undefined,
-                            preview: previewMediaOf(doc, node), tiles: { deviceScale: request.deviceScale, world: request.world } });
+                            preview: previewMediaOf(doc, node), tiles: { deviceScale: request.deviceScale, world: pictureTileWorld(request) } });
                 const resolved = withAllocation(paint, geometry, context);
                 if (reuse) reuse.cache.set(reuse.variant, node.id, context.sensitive, resolved);
                 return resolved;
@@ -660,17 +668,7 @@ export function createBoardRenderServices(options: {
                         queue.push(end.attach.target);
                     }
                 }
-                const label = text.prepareNow(node, { revision: `warm:${id}`, anchor: { x: 0, y: 0 }, connectorLength: 1 });
-                if (label) {
-                    const keys = new Map<string, { family: typeof label.request.style.font; bold: boolean; italic: boolean }>();
-                    const base = { family: label.request.style.font, bold: false, italic: false };
-                    keys.set(JSON.stringify(base), base);
-                    for (const line of label.paint.lines) for (const fragment of line.fragments) {
-                        const key = text.faces.faces[fragment.face].key;
-                        keys.set(JSON.stringify(key), key);
-                    }
-                    for (const key of keys.values()) { if (!await text.fonts.load(key)) throw new Error('Required board font could not be loaded'); stable(); }
-                }
+                await text.loadFaces(node, stable);
                 const value = await prepare(node, doc, signal);
                 stable(); nodeStable(node); scope?.set(id, value);
             }

@@ -12,7 +12,8 @@ export interface PreparedPath2d {
 export interface PaintResources2d {
     path(item: PaintItem): PreparedPath2d;
     clip(key: string): PreparedPath2d;
-    image(key: string): CanvasImageSource;
+    /** Null: the picture could not be decoded; it is drawn as a placeholder (the provider has told the person why). */
+    image(key: string): CanvasImageSource | null;
     /** A standin's crop of its bitmap: such a draw has no quad, so its facts are not classified. Absent otherwise. */
     imageCrop?(key: string): Readonly<Rect> | null;
 }
@@ -46,6 +47,16 @@ export function paintItem2d(ctx: PaintContext2d, item: PaintItem, resources: Pai
             ctx.globalAlpha = item.opacity;
             ctx.filter = item.inverted ? 'invert(1) hue-rotate(180deg)' : 'none';
             const image = resources.image(item.imageKey), dst = item.rect, src = item.sourceRect;
+            if (!image && item.underlaid) return; // the stand-in under it shows
+            if (!image) {
+                // A picture that could not be decoded: a neutral box with a hairline frame where it sits, so the board stays usable
+                // and the picture can still be selected, moved or deleted. Drawn without the image's filter or opacity.
+                ctx.globalAlpha = 1; ctx.filter = 'none';
+                ctx.fillStyle = 'rgba(128, 128, 128, 0.18)'; ctx.fillRect(dst.x, dst.y, dst.width, dst.height);
+                ctx.strokeStyle = 'rgba(128, 128, 128, 0.7)'; ctx.lineWidth = Math.max(dst.width, dst.height) / 400;
+                ctx.strokeRect(dst.x, dst.y, dst.width, dst.height);
+                return;
+            }
             // The declared sampling profile (imageSampling.ts): bilinear, no mips, on the same texels the GPU reads.
             ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = IMAGE_SAMPLING_PROFILE.quality;
             if (isGutterQuadDraw(item, image)) {

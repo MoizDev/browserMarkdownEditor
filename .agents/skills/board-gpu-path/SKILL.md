@@ -43,8 +43,12 @@ Shared rules (layers, frames, the governor) are in `rendering-platform`. This fi
   a FINER band's outline, never a coarser one (the board rests on its last live picture). Measured, real DPR 2: notebook draw
   13.2 -> 1.3 ms per frame. The area shader's per-column share is taken from the run's own width (`tb = ta + d`): two separate
   differences of pixel-sized coordinates streaked rows on Apple's GPU.
+- **Mask clips need planned isolation targets.** The composer learns a shortfall from a refused encode or live draw
+  (`noteShortfall`) and reserves it (`reserveIsolation`) at each prepare that encodes or draws live: unplanned, an arrow's
+  label cut was refused every frame and the label never drew.
 - **Hitches are named by the slow-frame log** (`__bmeRenderAudit.slowFrames()`: each frame over 1000/120 ms GPU with its tape and
-  counter deltas). A frame composes at most one dirty tile a pending region covers (`DIRTY_COVERED_PER_FRAME`); a covered position,
+  counter deltas). A frame composes at most one dirty tile a pending region covers (`DIRTY_COVERED_PER_FRAME`), except one the last draw
+  failed to cover (stale: its node is no longer live); deferring only what the last draw covered brings back the commit hitch. A covered position,
   and one whose tile replaced its cover, signs as its position (`coverSignature`), so the swap presents nothing.
 - The wet layer lets go of a stroke when the board reports its node in `drawnInkNodeIds`, which the wet layer reads in its own
   prepare. A node goes in only once every live part of it was admitted this frame: reported before admission, a deferred
@@ -52,6 +56,10 @@ Shared rules (layers, frames, the governor) are in `rendering-platform`. This fi
   `evictGpu`-able (16.8 MB): a layer the frame has touched is never released whole, so without it the governor's trim fell short.
 - Fidelity evidence: with `bme.renderAudit=1`, `__bmeRenderAudit.scenes()` gives each board's last presented items and pane
   matrix (`sceneAudit.ts`): the fidelity kit rasterises the exact coverage of those items and scores the shot against it.
+- **Large pictures** (`media/tilePlan.ts`): a tiled picture's whole-mip item carries `picture` facts; the image route plans the
+  finer tiles of each tile it composes itself (`planPictureTiles`, the screen's byte share via `setScreen`, canvas2d's keys) and
+  skips the stream's `underlaid` tiles. A tile still decoding is left out (the stand-in shows); its entry waits in `awaitingDecode`
+  asking no frames, and recomposes once the decode settles. The tile demand never aborts an acquire someone still waits for.
 - A change marks the positions under its bounds dirty (`tileParts.ts` parts index). A dirty position is recomposed into the
   target it already has.
 - Coverage (`coverage(view)`): a position is `ok`, `dirty` or `missing`. A position with any picture (its tile, a dirty one, a

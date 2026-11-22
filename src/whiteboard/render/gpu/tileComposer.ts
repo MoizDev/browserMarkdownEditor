@@ -263,6 +263,8 @@ export interface TileComposer {
     /** The nodes whose live parts this composite lays in one band (a live part deferred or denied this frame is absent). Filled in
      * drawGpu, cleared in prepare, one set per band for the composer's life. */
     drawnLiveNodeIds(band: PaintBand): ReadonlySet<string>;
+    /** The band's last draw laid nothing on the surface (an empty draw list, or none of its draws in the band). */
+    drewNothing(band: PaintBand): boolean;
     /** The nodes whose live parts this prepare planned to lay in one band: the draw list's live draws, known once prepare returns, before
      * any draw. Cleared at the next prepare. The board reads it for coverage, which runs before the composite's own draw. */
     plannedLiveNodeIds(band: PaintBand): ReadonlySet<string>;
@@ -436,6 +438,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     // The same nodes as the prepare planned them: filled as buildDraws adds each live draw, cleared at the next prepare. A deferred or
     // denied part never reaches a draw, so it is absent here too. drawnLive stays the truth check for what the composite laid.
     const plannedLive: Record<PaintBand, Set<string>> = { underlay: new Set<string>(), content: new Set<string>() };
+    // Whether the band's last drawGpu laid any draw: a cleared overlay that drew nothing leaves the picture as it was.
+    const drewAny: Record<PaintBand, boolean> = { underlay: false, content: false };
     // Live parts: admitted each frame through the image route, released at the next prepare. Scratch holds the ones of the
     // position being drawn, in paint order.
     const liveRuns: LiveAdmission[] = [];
@@ -1941,6 +1945,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         },
         drawGpu(pass: GpuPass, view: ViewState, band: PaintBand): void {
             if (drawnInkFrame !== frame) { drawnInkFrame = frame; drawnInk.clear(); }
+            drewAny[band] = false;
             if (!drawCount) return;
             if (!listUsable(view)) { auditCount(audit, 'draw:stale-list'); wantFrame = true; return; }
             const cam = view.camera, scale = cam.z * view.viewport.dpr;
@@ -1953,6 +1958,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             while (i < drawCount) {
                 const draw = draws[i];
                 if (draw.band !== band) { i++; continue; }
+                drewAny[band] = true;
                 if (draw.live) {
                     // A live part: drawn through the image route under its position's clip, in paint order; never batched.
                     if (draw.clipOn) {
@@ -2059,6 +2065,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         },
         drawnInkNodeIds(): ReadonlySet<string> { return drawnInk; },
         drawnLiveNodeIds(band: PaintBand): ReadonlySet<string> { return drawnLive[band]; },
+        drewNothing(band: PaintBand): boolean { return !drewAny[band]; },
         plannedLiveNodeIds(band: PaintBand): ReadonlySet<string> { return plannedLive[band]; },
         mandatoryBytes(width: number, height: number): number {
             if (disposed || !presenting) return 0;

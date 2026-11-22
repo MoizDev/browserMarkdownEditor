@@ -1211,6 +1211,11 @@ export class FrameScheduler {
                 item.skipped = true;
                 // Which pass ran out of window: foreground ran out of its budget, background out of what foreground left.
                 if (renderAuditEnabled()) auditCount('scheduler', 'skip:' + phase);
+                // As below for a yielded background call: its foreground call ran this frame and draws at this camera. Not recorded here,
+                // the next frame's calls read the move the layer had drawn and presented the same picture again (round 9 info timing,
+                // doc12 pan: invalidate:preparation-deferred after a skipped background call, board-content alone changed).
+                if (meta && phase === 'background' && item.foreground.has(meta.layer))
+                    lastPreparedCamera.set(meta.layer, { x: item.frame.view.camera.x, y: item.frame.view.camera.y, z: item.frame.view.camera.z });
                 if (meta) this.passedOver(item, meta);
                 return;
             }

@@ -2,6 +2,9 @@ import type { PlatformLayerDefinition } from '../../platform/render/attachPlatfo
 import type { Layer } from '../../platform/render/types';
 import type { ViewState } from '../../platform/types';
 
+/** A board layer's report that its last draw laid nothing (boardLayers' `drewNothing`); absent on other layers. */
+type EmptyReporter = { drewNothing(): boolean };
+
 /**
  * A permanent place in the pane's layer topology for the live creation preview.
  *
@@ -56,7 +59,11 @@ export function createPreviewSlot(id: string, base: PlatformLayerDefinition): Pr
         sync(): Layer | null {
             if (this.innerEpoch === epoch) return this.inner;
             const old = this.inner;
-            this.inner = null; this.innerDef = null; this.innerEpoch = epoch; this.swapUnreported = true;
+            // A replaced layer whose last draw laid nothing leaves the picture as it was: a drag's overlay once its commit is drawn by
+            // the board (its nodes then omitted from it). Reported, its clear presented the same picture again (round 9 info timing,
+            // drawing and large drag: the drag's last present, adapter-release:board-preview, the preview layers alone changed).
+            this.innerEpoch = epoch; this.swapUnreported = !!old && (old as Partial<EmptyReporter>).drewNothing?.() !== true;
+            this.inner = null; this.innerDef = null;
             try { old?.dispose(); } finally {
                 if (target) { this.inner = target.create(this.host); this.innerDef = target; }
             }

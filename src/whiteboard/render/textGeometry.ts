@@ -3,7 +3,7 @@ import { figureLabelRequest, frameTitleRequest } from '../geom/providers';
 import { urlPoster } from '../media/urlPoster';
 import type { EmbedNode, LinkcardNode, Node } from '../model/nodes';
 import { editableTextRequest } from '../text/edit/request';
-import { BoardFonts } from '../text/fonts';
+import { BoardFonts, type FontKey } from '../text/fonts';
 import { BoardTextLayout } from '../text/layout';
 import { ReferenceMeasurer } from '../text/measure';
 import type { FaceTable, InkRef, TextLayoutRequest, TextPaint } from '../text/paint';
@@ -31,6 +31,9 @@ export interface BoardTextGeometry {
     readonly faces: FaceTable;
     prepareNow(node: Readonly<Node>, options: BoardTextGeometryOptions): PreparedBoardText | null;
     prepare(node: Readonly<Node>, options: BoardTextGeometryOptions, signal: AbortSignal): Promise<PreparedBoardText | null>;
+    /** Loads every face a node's text uses (its style's regular face and each fragment's), calling `after` once each load settles: a
+     * fence on the font epoch taken after it holds while the node's geometry is prepared. Throws when a face cannot be loaded. */
+    loadFaces(node: Readonly<Node>, after: () => void): Promise<void>;
     dispose(): void;
 }
 /** The poster's inset, in world units: 12 screen pixels at any zoom, as the frame title's size is kept. */
@@ -143,6 +146,20 @@ export function createBoardTextGeometry(options: { fonts?: BoardFonts; onFontEpo
             check(signal);
             // Font loads can finish during the wait; use their actual current epoch and faces.
             return prepareNow(node, requestOptions);
+        },
+        async loadFaces(node, after) {
+            // Faces do not depend on where a connector's label sits or how long its body is: any finite anchor and length lay it out.
+            const label = prepareNow(node, { revision: `faces:${node.id}`, anchor: { x: 0, y: 0 }, connectorLength: 1 });
+            if (!label) return;
+            const keys = new Map<string, FontKey>();
+            const base: FontKey = { family: label.request.style.font, bold: false, italic: false };
+            keys.set(JSON.stringify(base), base);
+            const table = getLayout().faceTable;
+            for (const line of label.paint.lines) for (const fragment of line.fragments) {
+                const face = table.faces[fragment.face]; if (!face) throw new Error('Board text face is unavailable');
+                keys.set(JSON.stringify(face.key), face.key);
+            }
+            for (const key of keys.values()) { if (!await getFonts().load(key)) throw new Error('Required board font could not be loaded'); after(); }
         },
         dispose() { if (!disposed) { disposed = true; unsubscribe?.(); unsubscribe = undefined; measurer?.clear(); } },
     };

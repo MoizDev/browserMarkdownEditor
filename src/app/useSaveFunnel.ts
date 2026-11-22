@@ -119,6 +119,8 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
    * must check against the version the first wrote, not race it.
    */
   const flushChainsRef = useRef(new Map<string, Promise<unknown>>());
+  // Documents whose failed save the person was already told about: told once, until a save of it succeeds again.
+  const saveFailureToldRef = useRef(new Set<string>());
   const guardedRef = useRef(false);
   const beforeUnload = useCallback((event: BeforeUnloadEvent) => {
     event.preventDefault();
@@ -478,11 +480,20 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
         if (current && graphAtCall && graphAtCall === indexGraphRef.current) void graphAtCall.client.dropOverlay(path).catch(() => {});
         notifySearchChanges();
         bumpSaveEpoch();
+        saveFailureToldRef.current.delete(id);
         return 'written';
       } catch (err) {
         if (err instanceof PdfBuildRefused) { setSaveStatus('Not saved'); notifyRef.current(err.message); return 'skipped'; }
         console.error('Auto-save failed:', err);
-        if (isPdf) notifyRef.current(`The PDF was not saved: ${describeReadError(err)}`);
+        // Never silent, for any document: the person is told it was not saved and why; the tab stays dirty, so the next edit's
+        // save tries again. A drawing or notebook used to fail into the console alone.
+        // Once per document until a save succeeds: every keystroke's retry raising the dialog again would bury the editor.
+        setSaveStatus('Not saved');
+        if (!saveFailureToldRef.current.has(id)) {
+          saveFailureToldRef.current.add(id);
+          notifyRef.current(isPdf ? `The PDF was not saved: ${describeReadError(err)}. Your next change tries again.`
+            : `“${path.split('/').pop()}” was not saved: ${describeReadError(err)}. Your next change tries again.`);
+        }
         return 'failed';
       }
     };

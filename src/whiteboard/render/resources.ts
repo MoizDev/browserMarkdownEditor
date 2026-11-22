@@ -15,6 +15,9 @@ export interface PaintImageProvider {
      * Abort/rejection publishes nothing. A late fulfilled lease must still be released.
      */
     acquire(imageKey: string, token: RenderToken, signal: AbortSignal): Promise<PaintImageLease>;
+    /** A still picture's media id and full size from its media entry, for a whole-picture key ('sha256:<hash>' or 'media:<hash>:0');
+     * null for anything else. Lets an export embed a picture's original bytes without decoding it. */
+    mediaSize?(imageKey: string): { readonly id: string; readonly mime: string; readonly width: number; readonly height: number } | null;
 }
 export interface PaintFrameSource {
     /** O(1), complete immutable frame only. Null means no publishable frame yet. */

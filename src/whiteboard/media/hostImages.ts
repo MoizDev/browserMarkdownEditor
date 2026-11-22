@@ -103,6 +103,12 @@ export function createBoardHostImages(options: {
                 throw error;
             }
         },
+        mediaSize(key: string) {
+            const match = /^(?:sha256:([0-9a-f]{64})(?::0)?|media:([0-9a-f]{64}):0)$/.exec(key);
+            if (!match) return null;
+            const id = `sha256:${match[1] ?? match[2]}` as MediaId, entry = options.entry(id);
+            return entry && Number.isSafeInteger(entry.w) && Number.isSafeInteger(entry.h) && entry.w > 0 && entry.h > 0 ? { id, mime: entry.mime, width: entry.w, height: entry.h } : null;
+        },
         /** The tile keys the view last drew. Tile rasters outside them are released; a view that draws none never creates a residency. */
         setDemand(keys: ReadonlySet<string>) {
             if (disposed || (!residency && keys.size === 0)) return;

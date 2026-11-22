@@ -3,6 +3,7 @@
 // not land on whole pixels (b39411ce, measured against the canvas2d control). Design: PLAN §4 gpu-h7, §3.2.
 import type { Rect, ViewState } from '../../../platform/types';
 import type { LayerHost } from '../../../platform/render/compositor.types';
+import { isTileView } from '../../../platform/render/tileTarget';
 import type { ByteLease, DrawableImage, DrawCommand, GfxDevice, GpuPass, PipelineHandle, RectI, SamplerHandle, ShaderModule, TextureHandle } from '../../../platform/render/gfx/api';
 import { auditCount } from '../../../platform/render/renderAudit';
 import type { FrameBudget } from '../../../platform/render/types';
@@ -20,6 +21,8 @@ import { pictureLevelRefused } from '../../media/levelFloor';
  * composed: the ItemRoute contract has no place for it (see the report to gpu), so the composer binds it. */
 export interface ImageRoute extends ItemRoute<PaintImageItem> {
     useResources(resources: PaintResources2d): void;
+    /** Advances the uploads of finer tiles admit left out (once per frame, before the admits; tileComposer PictureRoute). */
+    pump(budget: FrameBudget): void;
     /** The pane's screen this frame (tileComposer PictureRoute): a picture's finer tiles take their byte share from it. */
     setScreen(world: Rect | null): void;
     /** The finer picture tiles a run left out while their decode may still come; null when none. */
@@ -173,6 +176,8 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
     // The pane's screen and an eighth of it each side (services.ts pictureTileWorld, canvas2d's picture world): the world whose tiles
     // set a picture's byte share, whatever tile is being composed. Null until the composer names it.
     let screen: Rect | null = null;
+    // Finer tiles left out while their texture is written (admit); pump advances them each frame until they are up.
+    const uploading = new Set<string>();
     const screenRing: Rect = { x: 0, y: 0, width: 0, height: 0 };
     // The pools: draw records and run bodies a retired run returned, taken again by the next admission. Never shrunk but on release.
     const freeDraws: ImageDraw[] = [], freeBodies: RunBody[] = [];
@@ -214,7 +219,7 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
         return blank.texture;
     };
     const release = (): void => {
-        cpuKeys.clear(); cpuFrame = -1;
+        cpuKeys.clear(); cpuFrame = -1; uploading.clear();
         if (blank && device) { device.destroy(blank.texture); host.allocator.gpu.release(blank.lease); }
         blank = null;
         textures.release();
@@ -379,6 +384,18 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
                 if (admitted.status === 'empty') return null;
                 if (admitted.status === 'unsupported') return refuse(key, admitted);
                 if (admitted.status !== 'ready') {
+                    // A composed tile leaves a finer tile whose texture is still being written out: the picture under it draws now,
+                    // and the route finishes the upload itself (pump), after which the composer recomposes the tile once (waits).
+                    // Deferring the run for it held the whole picture back, stand-in and all, until every finer tile was up (measured,
+                    // a 4000x3000 insert at DPR 2: the picture showed 170 ms after its stand-in's texture, 1054 ms vs canvas2d's 972).
+                    // A live draw (a selected picture over its own composed tiles) still defers: drawn now it laid the stand-in over
+                    // the sharp tiles beneath it until its own textures were up (the 8000x6000 grid flat in 2 of 4 runs), whereas
+                    // dropped for the frame it lets those tiles show.
+                    if (tile && admitted.status === 'deferred' && isTileView(view) && hold?.imageState(key) === 'ready') {
+                        uploading.add(key); waits.push(key);
+                        auditCount(audit, 'image:tile:upload-wait');
+                        return null;
+                    }
                     // The GPU pool refused a finer tile: the next plan of the picture at this zoom takes a coarser level, as the CPU
                     // pool's refusal does (canvasPaintAdapter), so the picture sharpens as far as the GPU pool allows.
                     if (tile && admitted.status === 'denied' && admitted.pool === 'gpu') {
@@ -484,7 +501,33 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
         },
         release,
         memory(): { gpuBytes: number; cpuBytes: number } { return textures.memory(); },
-        useResources(next: PaintResources2d): void { resources = next; hold = imageHoldOf(next); },
+        useResources(next: PaintResources2d): void {
+            resources = next; hold = imageHoldOf(next);
+            // The pipelines compile before the first picture is admitted: compiled at its first admission (the frame its decode
+            // lands, on a board that had none), they held an inserted picture back two to three frames behind canvas2d (measured, a
+            // 4000x3000 insert at DPR 2: image-pipeline-ready 42 ms after the decode's frame). Shared by the device's image routes.
+            const current = host.device();
+            if (current && current.generation === host.generation) warm(current);
+        },
+        pump(budget: FrameBudget): void {
+            if (!uploading.size) return;
+            const current = host.device(), paint = resources, own = hold;
+            if (!current || !paint || !own || current.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration) return;
+            for (const key of uploading) {
+                // A tile whose bitmap is gone (released, or a new snapshot) is asked for again by the next compose that plans it.
+                if (own.imageState(key) !== 'ready') { uploading.delete(key); continue; }
+                const admitted = textures.acquire(key, paint.image(key), budget);
+                if (admitted.status === 'deferred') continue;
+                uploading.delete(key);
+                if (admitted.status === 'ready') {
+                    textures.unhold(key);
+                    if (!cpuKeys.has(key)) own.releaseImage(key);
+                    auditCount(audit, 'image:tile:upload-done');
+                }
+            }
+            // An upload in progress is work done each frame, not a wait: it asks for the next one until it is up.
+            if (uploading.size) host.invalidate('image-tile-upload');
+        },
         setScreen(world: Rect | null): void {
             if (!world) { screen = null; return; }
             // Copied into the route's own rect: the composer rewrites the one it names every frame.
@@ -499,7 +542,7 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
         waiting(keys: readonly string[]): boolean {
             // No hold (no resources this paint) cannot tell: still waiting, or the entry would recompose on its stand-in for nothing.
             const current = hold;
-            return current === null || keys.some(key => current.imageWaiting(key));
+            return current === null || keys.some(key => uploading.has(key) || current.imageWaiting(key));
         },
         evictTextures(bytes: number, frameId: number): number { return textures.evict(bytes, frameId); },
     };

@@ -191,6 +191,7 @@ export interface ZoomRoute { setZoom(zooming: boolean): void; exact(run: Prepare
  * frames, and is marked dirty once none is `waiting` (the decode's settlement invalidates the frame that finds it so). */
 export interface PictureRoute {
     setScreen(world: Rect | null): void;
+    pump(budget: FrameBudget): void;
     waits(run: PreparedRun): readonly string[] | null;
     waiting(keys: readonly string[]): boolean;
 }
@@ -1667,6 +1668,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             screenScratch.x = view.camera.x; screenScratch.y = view.camera.y;
             screenScratch.width = view.viewport.width / view.camera.z; screenScratch.height = view.viewport.height / view.camera.z;
             routes.image?.setScreen?.(screenScratch);
+            // Finer picture tiles the last admits left out while their textures were written are advanced first (PictureRoute.pump).
+            routes.image?.pump?.(budget);
             // The inexact entries are kept through the whole zoom, not cleared each zoom frame: a zoom that returns to a scale reuses the
             // tiles it composed there earlier, and an entry dropped from the set then stayed inexact at rest (a saturated zoom alternates
             // between two scales). At rest only the entries of the resting scale are marked; the others go with their scale.

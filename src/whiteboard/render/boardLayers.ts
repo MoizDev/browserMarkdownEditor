@@ -640,6 +640,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 readyFrame: () => current().readyFrame(), borrowPrepared: () => current().borrowPrepared(),
                 retainPrepared: () => current().retainPrepared(),
                 draw2d: (ctx, view, band, omit) => current().draw2d(ctx, view, band, omit),
+                drawable2d: () => current().drawable2d(), reacquireReleased: () => current().reacquireReleased(),
                 release: reason => { directBuiltFor = null; direct!.release(reason); dense?.release(reason); },
                 needsFrame: () => current().needsFrame(), memory: () => current().memory(),
                 dispose: () => { direct!.dispose(); dense?.dispose(); },
@@ -824,6 +825,12 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 prepareUnchanged = charged && !composerChanged && unchangedSincePresented(view, budget, frame);
                 options.onPrepared?.();
                 return;
+            }
+            // The 2D route draws every picture from its decoded copy, which the GPU route gives up once a texture holds it. Back on 2D
+            // (a WebGL2 pane's resize bridge) they are asked for again, and the band stays incomplete until they land (coverageOf).
+            if (!adapter.drawable2d()) {
+                const asked = adapter.reacquireReleased();
+                if (asked) auditCount(options.auditSurface ?? 'board', 'image:reacquire-2d', asked);
             }
             // A live-only frame holds no other items, so it can never serve direct drawing; a direct frame
             // cannot serve dense drawing either. The owner's request for the other kind is already in flight.
@@ -1012,6 +1019,7 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
         if (backend !== 'canvas2d' && !gpuCoverage?.complete) return coverageNot(INCOMPLETE, `gpu-${band}`);
         if (!ready) return coverageNot(INCOMPLETE, `no-ready-frame-${band}`);
         if (!sameToken(ready.token, frame.token)) return coverageNot(INCOMPLETE, `token-${band}`);
+        if (backend === 'canvas2d' && !adapter?.drawable2d()) return coverageNot(INCOMPLETE, `image-away-${band}`);
         const latest = options.requestedRevision();
         // The picture drawn is current at the latest revision, whatever revision this layer's frame was scheduled for (a preview
         // band's scheduled frame lags the drag's moves while its picture is already the latest: measured 62 of 62 as stale).

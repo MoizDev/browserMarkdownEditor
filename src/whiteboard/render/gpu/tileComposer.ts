@@ -3,7 +3,9 @@
 // planning/60-implementation/gpu-handoff/PLAN.md §3.1 (scale policy, slices, compose limit, dirty, stand-ins).
 // The routes, the tile store and the parts index are injected, so this module imports no route and no store.
 import type { Rect, ViewState } from '../../../platform/types';
-import type { LayerHost, TexturedQuadSpec } from '../../../platform/render/compositor.types';
+import type { IsolationReservation, LayerHost, TexturedQuadSpec } from '../../../platform/render/compositor.types';
+import { IsolationShortfall } from '../../../platform/render/gfx/webgl2Isolation';
+import { ArenaError } from '../../../platform/render/resourceArena';
 import type { GfxDevice, GpuPass, GroupToken, RectI, RgbaP, TextureHandle } from '../../../platform/render/gfx/api';
 import type { FrameBudget, GpuReleaseReason, OffscreenPasses } from '../../../platform/render/types';
 import { tileTargetBytes, tileView } from '../../../platform/render/tileTarget';
@@ -536,6 +538,28 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     let frameComposed = 0;
     // Dirty positions under a pending region driven this frame (see DIRTY_COVERED_PER_FRAME), keyed by position: a resumed one counts once.
     const frameDirtyCovered = new Set<number>();
+    // The group targets this layer's mask clips need (an arrow's body cut around its label: an evenodd clip), learnt from the first
+    // draw the isolation pool refused, and reserved at every prepare that encodes tiles or draws live parts. The compositor plans a
+    // shortfall only when one reaches its own catch; the composer catches it as a budget refusal, so unreserved the tile was refused
+    // every frame for good (kinds kit arrow-label, WebGL2 DPR 2 dark: 369 refused encodes, the label never shown, 470 textures in 6 s).
+    let isolationNeed: IsolationReservation | null = null;
+    /** Declares the learnt need for a frame that encodes tiles or draws live parts; a frame of composed tiles alone needs none. A frame
+     * whose compositor refused its own prepare has no plan to declare into (invalid-input), and it encodes and draws nothing either. */
+    const reserveIsolationNeed = (need: IsolationReservation): void => {
+        let live = finished.length > 0;
+        for (let i = 0; !live && i < drawCount; i++) if (draws[i].liveRoute) live = true;
+        if (!live) return;
+        try { host.reserveIsolation(need); auditCount(audit, 'isolation:reserved'); }
+        catch (error) { if (!(error instanceof ArenaError)) throw error; auditCount(audit, 'isolation:unplanned'); }
+    };
+    const noteShortfall = (error: unknown): void => {
+        if (!(error instanceof IsolationShortfall)) return;
+        const { request } = error, bounds = isolationNeed?.bounds;
+        isolationNeed = { depth: 0, maskDepth: Math.max(isolationNeed?.maskDepth ?? 0, error.simultaneous),
+            bounds: { x: 0, y: 0, width: Math.max(bounds?.width ?? 0, request.width), height: Math.max(bounds?.height ?? 0, request.height) },
+            format: request.format ?? 'rgba8', samples: request.samples, stencil: request.stencil };
+        auditCount(audit, 'isolation:shortfall');
+    };
     // The frame each tile entry was last encoded (its content's frame), read against heldNodes.
     const composedAt = new WeakMap<TileEntry, number>();
     let lastZoom: number | undefined;
@@ -1504,6 +1528,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     if (!isBudgetRefusal(error)) throw error;
                     refused = true;
                     auditCount(audit, 'encode:refused');
+                    noteShortfall(error);
                 } finally {
                     encodeDraw.pass = null; encodeDraw.route = null; encodeDraw.run = null;
                 }
@@ -1785,6 +1810,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             // waits for the compose: a zoom shows what exists (gpu's ruling: geometry exact, raster scaled).
             drawnTarget = target;
             buildDraws(view, target, zooming, budget);
+            if (isolationNeed) reserveIsolationNeed(isolationNeed);
             // A settling frame is drawn live but owes its tiles: it is settled only once they are exact, so the composer keeps asking.
             const exact = allExact(view, target);
             // Settled with nothing in flight too: a visible position that composes nothing (empty) or waits on the governor must not keep
@@ -1884,7 +1910,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         catch (error) {
                             // A budget refusal is counted and the frame asks again; any other error is reported and thrown.
                             if (!isBudgetRefusal(error)) { auditGpuError(audit, 'live-clip', error); throw error; }
-                            auditCount(audit, 'draw:refused'); wantFrame = true; host.markIncomplete('live-draw-refused');
+                            auditCount(audit, 'draw:refused'); noteShortfall(error); wantFrame = true; host.markIncomplete('live-draw-refused');
                         }
                         finally { pass.popClip(clip); }
                     }

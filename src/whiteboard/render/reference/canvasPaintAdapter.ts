@@ -64,6 +64,9 @@ export interface PaintImageHold {
     /** True for a picture this adapter will never hold (its bytes could not be decoded): asking again changes nothing, so the GPU side
      * draws canvas2d's placeholder for it. A picture a memory refusal skipped is not broken: the next snapshot asks for it again. */
     imageBroken(key: string): boolean;
+    /** True while a picture this snapshot asked for may still come: its decode is in flight, or a memory refusal skipped it here (the
+     * next snapshot asks again). The GPU composer recomposes a tile that left such a picture out once this turns false. */
+    imageWaiting(key: string): boolean;
 }
 
 export interface PreparedRetain {
@@ -302,6 +305,7 @@ export function createCanvasPaintAdapter(
                 return true;
             },
             imageBroken(key) { return broken.has(key); },
+            imageWaiting(key) { return s.images.get(key) === null || s.skipped.has(key); },
             reacquireImage(key) {
                 if (s.disposed || s.abort.signal.aborted || s.images.has(key)) return;
                 s.released.delete(key);

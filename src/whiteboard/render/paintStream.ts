@@ -9,6 +9,7 @@ import type { BoardDoc } from '../model/doc';
 import type { SessionDenseRasters } from './sessionDenseRasters';
 import type { ScenePaintNodeStream } from './scenePaintStream';
 import type { ResolvedNodeCache } from './resolvedNodeCache';
+import type { PictureTileCrop, PictureTileSource } from '../media/tilePlan';
 
 export type FillRule = 'nonzero' | 'evenodd';
 export interface PaintClip {
@@ -44,6 +45,14 @@ export interface PaintInkItem extends PaintBase {
     readonly coverage: PaintInkCoverage;
     readonly material: InkMaterial;
 }
+/** A whole picture's media facts, as planPictureTiles takes them: the source, the node's box, its crop and the mip level shown. */
+export interface PaintPictureFacts {
+    readonly media: PictureTileSource;
+    readonly box: Readonly<{ w: number; h: number }>;
+    readonly crop: PictureTileCrop | null;
+    /** The mip level of the item's own picture (its image key's level). */
+    readonly level: number;
+}
 export interface PaintImageItem extends PaintBase {
     readonly kind: 'image';
     readonly imageKey: string; // Hash/frame revision key; preparation acquires its decoded lease.
@@ -51,6 +60,9 @@ export interface PaintImageItem extends PaintBase {
     readonly retainedTile?: true;
     /** A picture tile over the picture's coarse stand-in: if it cannot be shown now it is left out, never a placeholder. */
     readonly underlaid?: true;
+    /** The picture this item shows whole at one mip, for a route that plans its finer tiles itself (the GPU composer, per tile it
+     * composes, at that tile's scale); exports and captures ignore it. */
+    readonly picture?: PaintPictureFacts;
     readonly rect: Readonly<Rect>;
     readonly sourceRect?: Readonly<Rect>; // Crop in SOURCE IMAGE PIXELS, not normalised UV.
     readonly opacity: number; // Final inherited alpha, once; source pixels retain their alpha.

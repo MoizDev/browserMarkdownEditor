@@ -21,7 +21,13 @@ export interface PictureTileItem {
 }
 
 /** Tiles of one paint request: the frozen device scale and the visible world rectangle (absent for whole-board capture). */
-export interface PictureTileRequest { readonly deviceScale: number | undefined; readonly world: Readonly<Rect> | undefined }
+export interface PictureTileRequest {
+    readonly deviceScale: number | undefined;
+    readonly world: Readonly<Rect> | undefined;
+    /** The world whose tiles set the level's byte share, when it is not `world`: the GPU composer plans each tile it composes for
+     * that tile's world, with the share of the screen canvas2d plans for, so both backends choose the same level. */
+    readonly shareWorld?: Readonly<Rect>;
+}
 
 
 function worldBounds(rect: Rect, m: Affine): Rect {
@@ -68,7 +74,7 @@ export interface PictureTileCrop { readonly x0: number; readonly y0: number; rea
  */
 export function planPictureTiles(node: { readonly w: number; readonly h: number }, media: PictureTileSource,
     imageWorld: Affine, request: PictureTileRequest, crop: PictureTileCrop | null = null): PictureTileItem[] | null {
-    const { deviceScale, world } = request;
+    const { deviceScale, world } = request, shareWorld = request.shareWorld ?? world;
     if (media.animated || !media.mime.startsWith('image/') || media.mime === 'image/svg+xml') return null;
     if (deviceScale === undefined || !Number.isFinite(deviceScale) || deviceScale <= 0) {
         // No device scale (a mirror or a capture without one): the picture whole, at the finest mip one decode can hold. Asking for
@@ -92,8 +98,8 @@ export function planPictureTiles(node: { readonly w: number; readonly h: number 
     // The share: one RGBA copy of the tile world's device pixels (the pool grants it per visible pixel), and half again for tile
     // rounding. Twice was more than the pool holds beside a DPR 2 board: an 8000x6000 picture at 100% chose level 0, every tile
     // was refused, and the view showed only the placeholder (measured, 17 s). Tiles the pool still refuses leave the stand-in.
-    const share = world ? Math.max(PICTURE_VIEW_MIN_BYTES, 1.5 * 4 * world.width * world.height * deviceScale * deviceScale) : PICTURE_VIEW_MIN_BYTES;
-    while (level < 26 && visibleTileBytes(media, level, winX, winY, winW, winH, world, imageWorld, node) > share) level++;
+    const share = shareWorld ? Math.max(PICTURE_VIEW_MIN_BYTES, 1.5 * 4 * shareWorld.width * shareWorld.height * deviceScale * deviceScale) : PICTURE_VIEW_MIN_BYTES;
+    while (level < 26 && visibleTileBytes(media, level, winX, winY, winW, winH, shareWorld, imageWorld, node) > share) level++;
     const factor = 2 ** level;
     const tiled = !wholeMip(Math.ceil(media.w / factor), Math.ceil(media.h / factor));
     if (level === 0 && !tiled) return null;

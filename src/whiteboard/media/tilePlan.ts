@@ -76,12 +76,10 @@ export function planPictureTiles(node: { readonly w: number; readonly h: number 
     imageWorld: Affine, request: PictureTileRequest, crop: PictureTileCrop | null = null): PictureTileItem[] | null {
     const { deviceScale, world } = request, shareWorld = request.shareWorld ?? world;
     if (media.animated || !media.mime.startsWith('image/') || media.mime === 'image/svg+xml') return null;
-    if (deviceScale === undefined || !Number.isFinite(deviceScale) || deviceScale <= 0) {
-        // No device scale (a mirror or a capture without one): the picture whole, at the finest mip one decode can hold. Asking for
-        // the full-resolution picture refused anything over 16 MiB of RGBA and left a placeholder where the view itself drew it.
-        if (wholeMip(media.w, media.h)) return null;
-        return [wholeMipItem(node, media, coarsestWholeLevel(media, WHOLE_MIP_BYTES), crop)];
-    }
+    // No device scale: a capture or an export (the PDF writer, recovery, image export) wants the picture itself under its media id,
+    // which it resolves to the original bytes. A tile key there failed every save of a PDF board holding a large picture ('The PDF
+    // was not saved: Invalid captured board image key'). Every view request carries a device scale (the selection preview too).
+    if (deviceScale === undefined || !Number.isFinite(deviceScale) || deviceScale <= 0) return null;
     if (!(node.w > 0) || !(node.h > 0)) return null;
     // The source window the box shows: the whole picture, or its crop.
     const winX = crop ? crop.x0 * media.w : 0, winY = crop ? crop.y0 * media.h : 0;

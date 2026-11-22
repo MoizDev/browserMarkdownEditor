@@ -1,5 +1,5 @@
 /** The board's presented scene for the fidelity kit (audit only, `bme.renderAudit=1`): the paint items of the last presented
- * frame, in paint order, with the view and the exact world-to-pane matrix they were drawn at. The kit rasterises the exact
+ * frame, in paint order, with the view and the exact world-to-pane matrix they were drawn at (text items with their boxes). The kit rasterises the exact
  * coverage of this geometry as its reference (FAULT-GPU.md: the truth yardstick, not canvas2d), so it describes the item's own
  * geometry, never a backend's flattening: ink as its capsule hulls and discs, paths as their commands and stroke style.
  * Off, `presentedScene` returns a no-op and keeps nothing. On, a pane's last frame stays referenced until it presents again or
@@ -25,6 +25,18 @@ function describe(item: PaintItem): unknown {
             for (const v of chunk.discs) discs.push(v);
         }
         return { ...base, color: item.material.color, blend: item.material.blend, segments, discs };
+    }
+    // A text item's layout box, conservative ink bounds and each line's glyph extent (its fragments' span, top to bottom), in its own
+    // units (`m` maps them to world): the kinds judge holds its canvas2d rule for text to the lines, so a body fault both backends
+    // share is not taken for text. A sticky's box is the whole note; its lines are where the glyphs are.
+    if (item.kind === 'text') {
+        const { box, ink } = item.paint;
+        const lines = item.paint.lines.filter(line => line.fragments.length).map(line => {
+            let x0 = Infinity, x1 = -Infinity;
+            for (const fragment of line.fragments) { x0 = Math.min(x0, fragment.x); x1 = Math.max(x1, fragment.x + fragment.width); }
+            return { x0, x1, top: line.top, bottom: line.bottom };
+        });
+        return { ...base, box: { w: box.w, h: box.h }, ink: { x: ink.x, y: ink.y, width: ink.width, height: ink.height }, lines };
     }
     return base;
 }

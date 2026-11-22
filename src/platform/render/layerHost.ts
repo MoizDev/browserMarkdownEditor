@@ -4,7 +4,7 @@ import type { CompositorResources, LayerAllocators, LayerHost, PaneCompositor, T
 import type { LayerTrouble } from './types';
 import type { DrawableImage, GpuPass, TextureHandle, UniformSlice } from './gfx/api';
 import { paintCanvasIsolation } from './canvas2dContext';
-import { auditCount, auditStage, renderAuditEnabled } from './renderAudit';
+import { auditCount, auditStage, registerAuditView, renderAuditEnabled } from './renderAudit';
 import type { GfxDevice } from './gfx/api';
 
 export interface LayerHostBindings {
@@ -84,7 +84,7 @@ export function createLayerHost(bindings: LayerHostBindings): LayerHost {
                 }
                 return (value as (...args: unknown[]) => unknown).bind(target);
             } }) as GfxDevice;
-            audited.set(device, view);
+            audited.set(device, view); registerAuditView(view, device);
         }
         return view;
     };

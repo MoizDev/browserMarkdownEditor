@@ -105,6 +105,7 @@ export const createInkRoutes: CreateInkRoutes = (host: LayerHost, audit: string)
     // Union ink by exact area (areaCoverage.ts): one accumulation pass per run, one texel per device pixel. Measured, per stroke on the
     // grid: a pass and a resolve per 15-to-60-row band at 144 B per pixel, the hitches of a drag's end and a commit.
     const areaKit = createAreaKit();
+    areaKit.warm(host);
     const areas = new Map<object, InkArea>();
     let areaBytes = 0, areaFrame = -1;
     const pinned = new Set<object>();

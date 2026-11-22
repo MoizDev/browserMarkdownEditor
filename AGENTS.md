@@ -124,7 +124,7 @@ exception:** when the user EXPLICITLY asks for a code-based test, write it — o
 - **The app's user documentation is a file in this repo** — `utils/helpDoc.ts`, one exported string
   opened as a read-mode tab: a user-facing change is not finished until it describes the gestures it
   adds. Its pseudo-path is a **bare name**, so tab-closing code gates its equality branch to files.
-- **A CPU fallback on a rendering path is counted as `fallback:…`; a silent one is a fault (`board-gpu-path`).**
+- **A pane draws on WebGL2 or its own canvas2d, both must work; every fallback is counted (`fallback:…`).**
 
 ## Conventions & gotchas
 

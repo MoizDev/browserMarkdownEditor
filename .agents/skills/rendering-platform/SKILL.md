@@ -1,6 +1,6 @@
 ---
 name: rendering-platform
-description: Shared rendering platform and layer contracts. Load before changing src/platform/render or implementing a PDF, notebook or whiteboard rendering layer.
+description: Shared rendering platform and layer contracts, the WebGL2 backend and its frame-path rules, and the render audit. Load before changing src/platform/render (gfx/webgl2.ts included), implementing a PDF, notebook or whiteboard rendering layer, or writing a browser kit that measures rendering.
 ---
 
 # Rendering platform
@@ -96,6 +96,49 @@ The platform is a shared, demand-driven compositor, not a document engine or ano
   is not raster. Preserve custom `benchmarkDomain` callbacks when freezing compositor bindings.
   Vector current waits for its completed authoritative pass; optional witness failure never skips
   mandatory colour submission. Dev esbuild must bind the false constant BEFORE DCE/import analysis.
+
+## The WebGL2 backend
+
+- **Chosen** for a pane with `backendPreference` `'auto'` when the device can make any WebGL2 context (`deviceHasWebGL2` in
+  `surfaceBroker.ts`, only success cached), the broker grants it one of `maxVisiblePaneContexts` (5) slots, and the device
+  qualifies once (`#qualify` in `gfx/webgl2.ts`: a capability shader and a 2x2 readback). A device with no WebGL2 is a fallback,
+  never memory pressure: reported as pressure, every quality raise dropped quality again (gpu-h13).
+- **Falls back** per pane, never per document, to that pane's own `draw2d`: a GPU error demotes it (`fallback:pane-2d:gpu-error:
+  <code>`), retried once after `GPU_RETRY_QUIET_MS` of quiet; the second error of the attach latches canvas2d. Three context losses
+  in 60 s pin the pane on canvas2d (`cpu-pinned`). A resized GL canvas is bridged by a CPU picture while it rebuilds
+  (`fallback:2d-bridge`). Each is counted; canvas2d never changes what it draws because the GPU exists.
+- **GPU target** (`memoryGovernor.ts`, `updatePanes`): base + per visible pane + 24 B per device pixel, floor 64 MB; the fixed terms
+  scale by the largest visible `min(DPR, 2)²`, inside the device class's ceiling (128/256/512 MB). Unscaled, a small DPR 2 pane sat
+  at the floor, a saturated zoom filled it, the trim found nothing more, the surface rebuild was refused every frame and the pane
+  never drew again (doc12 and LARGE=11 draw-sat 0/91). A cache filling that budget is not a leak: it must plateau, stay under the
+  target, and give back everything above the view and its ring on a forced trim (`__bmeRenderAudit.trim('gpu')`).
+
+## Frame-path rules (WebGL2)
+
+- **No synchronous GL read on the frame path.** `getError`, `checkFramebufferStatus`, `getParameter`, `readPixels`,
+  `getBufferSubData` and a blocking `clientWaitSync` are round trips to the GPU process: a frame behind a deep queue waits for all
+  of it (measured: `checkFramebufferStatus` per resize, 17-24 ms at each LARGE=11 drag's start and release). They belong at device
+  creation, once per device or per kind of target, in capture/export, or behind `__BME_BENCH__`. Query and fence polls stay
+  non-blocking (`QUERY_RESULT_AVAILABLE`, `clientWaitSync(fence, 0, 0)`).
+- **Nothing unchanged is redone, nothing per frame is allocated:** no re-raster, re-tessellation or re-upload of unchanged
+  content, no per-frame string keys or snapshot arrays; every GPU byte is a governor lease; every CPU fallback is counted.
+- **A frame presents only a changed picture.** A frame whose layers all answer unchanged is skipped (`presentUnchanged`). So an
+  answer compares what the layer draws (camera, viewport, a picture key), never the view epoch: the epoch also moves when the
+  moving flag flips at a gesture's start and end with the camera still. Keyed on it, the PDF answered changed over the same
+  picture, and the board never saw its view presented and showed 'Updating…' at rest for good.
+- A passed-over layer counts as changed (it proved nothing). A layer's class is read once as its prepare starts; one that turned
+  critical after the critical pass ran is prepared in the optional pass, not sent to a pass that is over.
+- Ask for a frame only for a cause; the scheduler names each present `present:<cause>`, and `none` is a fault.
+
+## Audit and kits
+
+- `localStorage['bme.renderAudit'] = '1'` turns on `window.__bmeRenderAudit`: `snapshot()` (counters `surface:event`, frames,
+  stages with `sum/count/max/over8`, over8 = samples over a 120 Hz frame, 8.33 ms), `presents()` (each present with `why`, the
+  tape of why every layer answered as it did), `gauges()`, `scenes()`, `trim(pool)`. The audit costs nothing off.
+- Kit traps, each measured: headless Chrome ticks a synthetic 60 Hz whatever the flags (the 120 Hz bar is per-frame cost against
+  8.33 ms, not cadence); DPR > 1 needs a REAL scale (`--force-device-scale-factor`, `viewport: null`): on an emulated
+  `deviceScaleFactor` raw CDP `Input.dispatch*` lands at half scale; a screenshot is in device pixels, so a point picked from one is
+  `clip.x + x / scale` in CSS. Time questions (GPU/CPU ms, hitches) run with nothing else on the machine; everything else is proved by counters.
 
 ## Boundaries
 

@@ -170,6 +170,8 @@ export interface PaneCompositor {
     readonly resources: CompositorResources;
     /** CPU bytes of this compositor's working cache, which the pane's grant covers. */
     cpuWorkingBytes?(): number;
+    /** The largest single upload this compositor needs one frame's progress grant to admit; one platform tile when absent. */
+    progressUploadBytes?(): number;
     readonly surfaceGeneration: number;
     /** A detached CPU resize bridge is working scratch until the old GPU display is zeroed. */
     promoteSurface?(): boolean;

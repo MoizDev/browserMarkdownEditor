@@ -81,7 +81,7 @@ export async function pasteClipboardMediaInJob(options: ClipboardMediaPasteOptio
     if (!sources.length) return [];
     const placement = externalMediaPlacement(doc, target, options.intent);
     check();
-    return options.ingestor.ingestInJob(sources, { origin: 'paste', placement, signal: context.signal }, context);
+    return options.ingestor.ingestInJob(sources, { origin: 'paste', placement, signal: context.signal, noticeRefused: options.noticeRefused }, context);
 }
 export function pasteClipboardMedia(options: ClipboardMediaPasteOptions, signal?: AbortSignal): Promise<readonly NodeId[]> {
     return options.runtime.jobs.run(context => pasteClipboardMediaInJob(options, context), { signal, deadlineMs: 120_000 });

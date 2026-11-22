@@ -73,6 +73,8 @@ export interface ScheduledPane {
     isCritical(layer: Layer, view: ViewState): boolean;
     /** Platform target/ring admission once per frame, before any layer prepares; never draws. */
     prepareFrame(frame: ScheduledFrame, budget: FrameBudget): void;
+    /** The largest single upload one frame's progress grant must admit for this pane (PaneCompositor.progressUploadBytes). */
+    progressUploadBytes?(): number;
     finishPrepareFrame?(frame: ScheduledFrame, budget: FrameBudget): void;
     encode(frame: ScheduledFrame): ScheduledEncoding | null;
     writeOverlays(frame: ScheduledFrame): void;
@@ -767,10 +769,13 @@ export class FrameScheduler {
                 (meta !== null && item.entry.pane.isCritical(meta.layer, item.frame.view) !== critical);
             // remainingBytes includes the explicit one-tile progress grant, not a disguised larger cap.
             // The nominal cap stays in the frame meter and any use beyond it is reported as an overrun.
+            // A canvas2d pane draws a board picture tile whole, larger than a platform tile: its progress grant is that tile, or a
+            // picture whose tiles never fit one frame's allowance never draws (the GPU compositor asks nothing more).
+            const progressBytes = Math.max(progressTileBytes, item.entry.pane.progressUploadBytes?.() ?? 0);
             const availableBytes = () => {
                 let remaining = Math.max(0, meter.allowance - Math.max(meter.admittedBytes, meter.reportedBytes));
                 if (!meter.progressUsed && meter.admittedBytes === 0 && meter.reportedBytes === 0 && (critical || !criticalPending())) {
-                    remaining = Math.max(remaining, progressTileBytes);
+                    remaining = Math.max(remaining, progressBytes);
                 }
                 return Math.floor(critical ? remaining : Math.min(remaining, item.entry.optionalBytes));
             };
@@ -786,7 +791,7 @@ export class FrameScheduler {
                     // §5.6 progress guarantee, vr-lead: optional too after all critical work drains.
                     // At 240Hz ~1MiB is smaller than a 1,056,784-byte tile; DRR alone cannot fix that.
                     const progress = bytes > remaining && !meter.progressUsed && meter.admittedBytes === 0 && meter.reportedBytes === 0 &&
-                        bytes <= progressTileBytes && (critical || !criticalPending());
+                        bytes <= progressBytes && (critical || !criticalPending());
                     if (bytes > remaining && !progress) return false;
                     meter.progressUsed ||= progress;
                     meter.admittedBytes += bytes;

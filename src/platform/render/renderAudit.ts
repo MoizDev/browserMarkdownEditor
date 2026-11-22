@@ -47,6 +47,13 @@ export function auditStage(surface: string, stage: AuditStage, ms: number): void
 }
 
 /** Counts one event of a surface; `amount` adds to the `surface:event` count, `extra` to `surface:event:<key>`. */
+/** A layer's audit view of a shared object (layerHost's per-layer device Proxy), mapped to the object it views. State shared per device is
+ * keyed on the device itself: keyed on the view, the audit split it per layer, so a measured run did not behave as the product does
+ * (measured: the exact-area pipelines shared per device compiled again for every drag preview's layer under the audit, gpu-f1). */
+const auditViews = new WeakMap<object, object>();
+export function registerAuditView(view: object, target: object): void { auditViews.set(view, target); }
+export function auditViewTarget<T extends object>(value: T): T { return (auditViews.get(value) as T | undefined) ?? value; }
+
 export function auditCount(surface: string, event: string, amount = 1, extra?: Readonly<Record<string, number>>): void {
     if (!enabled) return;
     const key = `${surface}:${event}`;

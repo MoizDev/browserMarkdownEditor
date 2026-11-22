@@ -353,6 +353,7 @@ export function createPath(host: LayerHost, audit: string): {
         array => { if (!cachedArrays.has(array)) releaseLease(array); });
     /** The exact-area kit of the same host: the fills and strokes whose contours the exact sum takes (see areaOutlines.ts). */
     const areaKit: AreaKit = createAreaKit();
+    areaKit.warm(host);
     /** The composer's zoom flag (setZoom). A zoom recomposes every visible tile every frame, and exact area's fragments grow faster than
      * its box (each edge's strip runs to its region's side) while the coverage route's grow with the box. Measured, saturated zoom, GPU
      * ms per frame: 1,024 small shapes, exact area 6.2 against coverage 9.3-10.3; the notebook's page-sized paper, exact area 19-27
@@ -809,7 +810,10 @@ export function createPath(host: LayerHost, audit: string): {
 
     const route: ItemRoute<PaintPathItem> & { drawRefusedThisFrame(): boolean; setZoom(value: boolean): void; exact(run: PreparedRun): boolean } = {
         id: 'path',
-        setZoom(value: boolean): void { zooming = value; },
+        // Called once per frame: it also warms the device's shared area pipelines, as a route made before the pane had a device (the
+        // notebook's) warmed nothing at creation, and the first drag's preview then waited a frame on the compile (measured, notebook DPR 2
+        // dark: ink-union live:dropped:deferred 2 in the first drag; a no-op once compiled).
+        setZoom(value: boolean): void { zooming = value; areaKit.warm(host); },
         exact(run: PreparedRun): boolean { return run.route !== 'path' || !(run as PathRun).inexact; },
         // The kit caught a uniform-ring refusal at one of this frame's draws: the frame's coverage is incomplete there (gpu-h4's kit).
         drawRefusedThisFrame: (): boolean => kit.drawRefusedThisFrame() || areaRefusedFrame === frame,

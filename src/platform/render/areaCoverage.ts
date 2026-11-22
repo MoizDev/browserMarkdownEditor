@@ -27,7 +27,7 @@ import type { AreaOutput, AreaTarget, BufferHandle, GfxDevice, GpuPass, Pipeline
 import type { LayerHost } from './compositor.types';
 import type { FrameBudget } from './types';
 import { ArenaError } from './resourceArena';
-import { auditCount, auditViewTarget } from './renderAudit';
+import { auditCount, PerDeviceMap } from './renderAudit';
 
 /** One uploaded piece of an edge set: a vertex buffer of `count` edges (16 bytes each). */
 interface EdgePiece { readonly buffer: BufferHandle; readonly count: number; readonly bytes: number }
@@ -180,7 +180,7 @@ const NO_STENCIL = { enabled: false } as const;
 /** The shared scratch of one device: one r32f target at least as large as every viewport an area kit there has drawn into, used by
  * every area kit on the device. `holder` is the kit that reports its bytes (one report, however many kits draw with it). */
 interface Scratch { readonly target: AreaTarget; readonly bytes: number; users: number; holder: object | null }
-const scratchOf = new WeakMap<GfxDevice, Scratch>();
+const scratchOf = new PerDeviceMap<GfxDevice, Scratch>();
 
 /** One edge + clear pipeline pair per device incarnation, shared by every area kit on it (no per-kit parameter) and kept while the device
  * lives: two programs, no governed bytes. Each kit compiled its own and destroyed it with the kit, and the drag preview's kits are made
@@ -189,10 +189,8 @@ const scratchOf = new WeakMap<GfxDevice, Scratch>();
  * where canvas2d answered it). pathCoverage.ts shares its set the same way. A restored context compiles a new pair; the old one is
  * destroyed once its last kit lets go. */
 interface SharedAreaPipelines { users: number; edge: PipelineHandle | null; clear: PipelineHandle | null; failed: boolean; dead: boolean; readonly generation: number }
-const areaPipelinesOn = new WeakMap<GfxDevice, SharedAreaPipelines>();
-function acquireAreaPipelines(view: GfxDevice): SharedAreaPipelines {
-    // Keyed on the device, not a layer's audit view of it: the pair is shared by every layer on the device, with the audit on or off.
-    const owner = auditViewTarget(view);
+const areaPipelinesOn = new PerDeviceMap<GfxDevice, SharedAreaPipelines>();
+function acquireAreaPipelines(owner: GfxDevice): SharedAreaPipelines {
     const known = areaPipelinesOn.get(owner);
     if (known && known.generation === owner.generation) { known.users++; return known; }
     if (known) { known.dead = true; if (known.users === 0) destroyAreaPipelines(owner, known); }

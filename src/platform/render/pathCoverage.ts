@@ -1,4 +1,4 @@
-import { auditCount, auditStage, renderAuditEnabled } from './renderAudit';
+import { auditCount, auditStage, PerDeviceMap, renderAuditEnabled } from './renderAudit';
 import type { Affine, Rgba } from '../types';
 import type { LayerHost } from './compositor.types';
 import type { MemoryAllocator } from './memoryGovernor';
@@ -71,7 +71,7 @@ function copyShifted(src: Float64Array, dst: Float64Array, at: number, dx: numbe
 }
 /** The kits alive on each device, each with the GPU allocator it reserves from. A device's scratch exists while one of them lives: the
  * scratch is only dropped, not per-admission, by the last kit leaving the device (or the governor's evict when nothing is in flight). */
-const kitsOnDevice = new WeakMap<GfxDevice, Map<object, MemoryAllocator>>();
+const kitsOnDevice = new PerDeviceMap<GfxDevice, Map<object, MemoryAllocator>>();
 /** Where a scratch's bytes are charged: the GPU allocator of the kit that holds the charge, and the lease it holds there. The
  * scratch's own lease (`targetLease`) is attached to its target and only returned when the target is destroyed. */
 interface ScratchCharge { readonly holder: object; readonly gpu: MemoryAllocator; readonly lease: ByteLease }
@@ -90,9 +90,9 @@ const PATH_COVERAGE_SCRATCH_IDLE_FRAMES = 3;
 type CompositeGrid = 1 | 4;
 /** The widest composite band a kit has asked for on a device, per grid. It outlives the scratch, so the next scratch is made at
  * this width and no kit grows it again (a notebook's paper, board and wet ink ask for different widths). */
-const scratchTables: Record<'1' | '4', { readonly targets: WeakMap<GfxDevice, SharedScratch>; readonly widths: WeakMap<GfxDevice, number> }> = {
-    '1': { targets: new WeakMap(), widths: new WeakMap() },
-    '4': { targets: new WeakMap(), widths: new WeakMap() },
+const scratchTables: Record<'1' | '4', { readonly targets: PerDeviceMap<GfxDevice, SharedScratch>; readonly widths: PerDeviceMap<GfxDevice, number> }> = {
+    '1': { targets: new PerDeviceMap(), widths: new PerDeviceMap() },
+    '4': { targets: new PerDeviceMap(), widths: new PerDeviceMap() },
 };
 
 /** Origin-relative triangles, six values per triangle. `positive` adds +1 winding and `negative`
@@ -313,7 +313,7 @@ interface Pipelines {
  * drag start, path-coverage:deferred:compiling 8 in the saturated drag; canvas2d answered that input). A restored context's
  * incarnation compiles a new set; the old one is destroyed once its last kit has let go. */
 interface SharedPipelines { users: number; value: Pipelines | null; dead: boolean; readonly generation: number; readonly promise: Promise<Pipelines> }
-const pipelinesOnDevice = new WeakMap<GfxDevice, SharedPipelines>();
+const pipelinesOnDevice = new PerDeviceMap<GfxDevice, SharedPipelines>();
 function destroyPipelines(owner: GfxDevice, set: Pipelines): void { for (const handle of Object.values(set)) owner.destroy(handle); }
 function acquirePipelines(owner: GfxDevice, create: () => Promise<Pipelines>): SharedPipelines {
     // A set compiled for an earlier incarnation of the device (a restored context) is not reused: its users let go of it as they rebind.

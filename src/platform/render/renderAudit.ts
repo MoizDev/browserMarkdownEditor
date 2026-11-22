@@ -53,6 +53,16 @@ export function auditStage(surface: string, stage: AuditStage, ms: number): void
 const auditViews = new WeakMap<object, object>();
 export function registerAuditView(view: object, target: object): void { auditViews.set(view, target); }
 export function auditViewTarget<T extends object>(value: T): T { return (auditViews.get(value) as T | undefined) ?? value; }
+/** A weak map keyed on what a layer's view stands for (auditViewTarget): state kept per device is one per device with the audit on, as with
+ * it off. Keyed on the view itself, the audit made per-layer copies the product never has (pipelines compiled per drag preview, a scratch
+ * per layer), so a measured run did not measure the product. */
+export class PerDeviceMap<K extends object, V> {
+    private readonly map = new WeakMap<object, V>();
+    get(key: K): V | undefined { return this.map.get(auditViewTarget(key)); }
+    has(key: K): boolean { return this.map.has(auditViewTarget(key)); }
+    set(key: K, value: V): this { this.map.set(auditViewTarget(key), value); return this; }
+    delete(key: K): boolean { return this.map.delete(auditViewTarget(key)); }
+}
 
 export function auditCount(surface: string, event: string, amount = 1, extra?: Readonly<Record<string, number>>): void {
     if (!enabled) return;

@@ -44,12 +44,16 @@ interface ImageRun extends PreparedRun {
 }
 
 const UNIFORM_BYTES = 64;
+/** The placeholder's 1×1 texture, charged at a small floor (it is a real allocation, however small). */
+const BLANK_BYTES = 64;
 
-/** Four vec4 uniforms, 16 floats: viewport (target px w, h, multiply flag), destination (device rect x0, y0, x1, y1), sourceRect (texel
- * rect u0, v0, u1, v1), params (texture w, h, opacity, invert). The quad covers whole device pixels; every edge pixel is
- * measured against the rect in the fragment, so the vertices need no antialiasing of their own. */
+/** Four vec4 uniforms, 16 floats: viewport (target px w, h, multiply flag, placeholder flag), destination (device rect x0, y0, x1, y1),
+ * sourceRect (texel rect u0, v0, u1, v1), params (texture w, h, opacity, invert). The quad covers whole device pixels; every edge pixel is
+ * measured against the rect in the fragment, so the vertices need no antialiasing of their own.
+ * A placeholder (a picture the painter holds nothing for) samples no texture: destination is the box grown by half its frame,
+ * sourceRect the picture's own device rect and params.x half the frame's width. */
 const IMAGE_SHADER: ShaderModule = {
-    id: 'board-image-quad', revision: 1,
+    id: 'board-image-quad', revision: 2,
     layout: { uniforms: [{ binding: 0, byteSize: UNIFORM_BYTES }], textures: [{ binding: 0, format: 'rgba8' }], attributes: [] },
     glsl: {
         vertex: `#version 300 es
@@ -78,7 +82,21 @@ layout(std140) uniform GfxUniforms0 {
 uniform sampler2D gfxTexture0;
 in vec2 pixel;
 layout(location=0) out vec4 gfxColour;
+float inside(vec4 r) {
+    vec2 c = clamp(min(pixel + 0.5, r.zw) - max(pixel - 0.5, r.xy), 0.0, 1.0);
+    return c.x * c.y;
+}
 void main() {
+    if (viewport.w > 0.5) {
+        // canvas2d's placeholder (paint2d): a grey fill at 0.18 over the box and a grey frame at 0.7 centred on its edge, as exact
+        // areas of the pixel: inside the inner box fill only, in the frame inside the box frame over fill, outside it frame only.
+        float outer = inside(destination), box = inside(sourceRect);
+        float core = inside(vec4(sourceRect.xy + params.x, sourceRect.zw - params.x));
+        float alpha = core * 0.18 + (box - core) * (0.7 + 0.18 * 0.3) + (outer - box) * 0.7;
+        float grey = 128.0 / 255.0;
+        gfxColour = viewport.z > 0.5 ? vec4(vec3(1.0 - alpha * (1.0 - grey)), 1.0) : vec4(vec3(grey * alpha), alpha);
+        return;
+    }
     // The pixel's footprint is [pixel - 0.5, pixel + 0.5]. Its area inside the rect is the coverage; a corner takes the
     // smaller of its two edge coverages, not their product (b39411ce, the 0.55-scale corner).
     vec2 lo = max(pixel - 0.5, destination.xy);
@@ -171,8 +189,20 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
         return waiting ? { status: 'deferred' } : admission;
     };
 
+    // A 1×1 texture bound by placeholder draws, whose shader branch samples nothing: a draw binds a texture whatever it reads.
+    let blank: { readonly texture: TextureHandle; readonly lease: ByteLease } | null = null;
+    const blankTexture = (current: GfxDevice): TextureHandle | null => {
+        if (blank) return blank.texture;
+        const lease = host.allocator.gpu.reserve(BLANK_BYTES);
+        if (!lease) return null;
+        try { blank = { texture: current.createTexture(1, 1, 'rgba8', ['sample'], lease), lease }; }
+        catch (error) { host.allocator.gpu.release(lease); throw error; }
+        return blank.texture;
+    };
     const release = (): void => {
         cpuKeys.clear(); cpuFrame = -1;
+        if (blank && device) { device.destroy(blank.texture); host.allocator.gpu.release(blank.lease); }
+        blank = null;
         textures.release();
         for (const call of freeDraws) host.allocator.cpu.release(call.lease);
         freeDraws.length = 0; freeBodies.length = 0;
@@ -257,6 +287,31 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
                 if (hold && hold.imageState(key) !== 'ready') { hold.reacquireImage(key); return reject({ status: 'deferred' }); }
                 return reject(admission);
             };
+            /** canvas2d's placeholder for a picture held as nothing: the box where it sits and a hairline frame, drawn without the
+             * picture's opacity or invert (paint2d). The frame is a 400th of the box's larger side, centred on its edge. */
+            const placeholder = (item: PaintImageItem, onDevice: GfxDevice): 'drawn' | 'outside' | 'denied' | 'no-draw' => {
+                const [a, , , d, e, f] = item.localToWorld, rect = item.rect;
+                const x0 = (e + a * rect.x - view.camera.x) * scale, y0 = (f + d * rect.y - view.camera.y) * scale;
+                const x1 = x0 + a * rect.width * scale, y1 = y0 + d * rect.height * scale;
+                const half = Math.max(x1 - x0, y1 - y0) / 800;
+                const left = Math.max(0, Math.floor(x0 - half)), top = Math.max(0, Math.floor(y0 - half));
+                const right = Math.min(targetWidth, Math.ceil(x1 + half)), bottom = Math.min(targetHeight, Math.ceil(y1 + half));
+                if (right <= left || bottom <= top) return 'outside';
+                const texture = blankTexture(onDevice);
+                if (!texture) return 'denied';
+                const call = takeDraw();
+                if (!call) return 'no-draw';
+                calls.push(call);
+                const u = call.uniforms;
+                u[0] = targetWidth; u[1] = targetHeight; u[2] = multiply; u[3] = 1;
+                u[4] = x0 - half; u[5] = y0 - half; u[6] = x1 + half; u[7] = y1 + half;
+                u[8] = x0; u[9] = y0; u[10] = x1; u[11] = y1;
+                u[12] = half; u[13] = 0; u[14] = 1; u[15] = 0;
+                call.texture = texture;
+                call.scissor.x = left; call.scissor.y = top; call.scissor.width = right - left; call.scissor.height = bottom - top;
+                auditCount(audit, 'image:placeholder');
+                return 'drawn';
+            };
             for (const item of items) {
                 const { rect } = item;
                 if (!(rect.width > 0 && rect.height > 0) || !(item.opacity > 0)) continue;
@@ -280,8 +335,25 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
                     admitted = textures.acquireVideo(key, { version: fact.version, source, width: fact.width, height: fact.height }, budget);
                 } else {
                     const state = hold ? hold.imageState(key) : 'ready';
-                    if (hold && state !== 'ready' && textures.needsSource(key)) { hold.reacquireImage(key); return reject({ status: 'deferred' }); }
-                    admitted = textures.acquire(key, state === 'ready' ? resources.image(key) : null, budget);
+                    if (state !== 'ready' && hold?.imageBroken(key)) {
+                        // The painter will never hold this picture (its bytes could not be decoded), so asking again changes nothing:
+                        // waiting for it left a hole for good, and held every picture of the run with it. A texture it drew before still
+                        // draws; else a tile over the picture's stand-in is left out (the stand-in shows), and a whole picture gets
+                        // canvas2d's placeholder. A picture skipped for memory keeps waiting: the next snapshot asks for it again (and
+                        // a refused tile level is planned coarser), so a placeholder composed into its tile would stay there.
+                        const kept = textures.acquire(key, null, budget);
+                        if (kept.status === 'ready') admitted = kept;
+                        else if (item.underlaid) { auditCount(audit, 'image:underlaid-absent'); continue; }
+                        else {
+                            const placed = placeholder(item, current);
+                            if (placed === 'denied') return reject({ status: 'denied', pool: 'gpu', bytes: BLANK_BYTES });
+                            if (placed === 'no-draw') return reject({ status: 'denied', pool: 'cpu', bytes: UNIFORM_BYTES });
+                            continue;
+                        }
+                    } else {
+                        if (hold && state !== 'ready' && textures.needsSource(key)) { hold.reacquireImage(key); return reject({ status: 'deferred' }); }
+                        admitted = textures.acquire(key, state === 'ready' ? resources.image(key) : null, budget);
+                    }
                 }
                 if (admitted.status === 'empty') continue;
                 if (admitted.status === 'unsupported') return refuse(key, admitted);
@@ -363,7 +435,7 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
 function imageHoldOf(resources: PaintResources2d): PaintImageHold | null {
     const candidate = resources as Partial<PaintImageHold>;
     return typeof candidate.imageState === 'function' && typeof candidate.releaseImage === 'function' && typeof candidate.reacquireImage === 'function'
-        && typeof candidate.imageFact === 'function' ? candidate as PaintImageHold : null;
+        && typeof candidate.imageFact === 'function' && typeof candidate.imageBroken === 'function' ? candidate as PaintImageHold : null;
 }
 
 /** A source the device reads directly: a bitmap, or a video frame. */

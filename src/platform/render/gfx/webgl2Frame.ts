@@ -5,6 +5,7 @@ import type {
 } from './api';
 import { ArenaError } from '../resourceArena';
 import { auditCount } from '../renderAudit';
+import { IsolationShortfall } from './webgl2Isolation';
 
 // Module-private implementation seam. Only webgl2.ts constructs this capability object;
 // a layer receives FrameEncoder/GpuPass and never the GL context or these native records.
@@ -288,6 +289,23 @@ class DeviceFrame implements ControlledFrame {
         catch (error) {
             if (error instanceof ArenaError && error.code === 'out-of-budget' && !this.#closed && !this.#backend.signal.aborted) {
                 auditCount('gpu', 'uniform-deferred');
+                throw error;
+            }
+            let failure = error;
+            try { this.cancel(); } catch (cleanup) { failure = cleanup; }
+            throw this.#backend.failure(failure);
+        }
+    }
+    /** An isolation target the frame did not plan (IsolationShortfall) is a refusal the frame survives too: the clip or group that
+     * asked for it opens nothing (its borrow is the first thing that can fail), and its caller defers that one draw. Cancelled, the
+     * frame lost every pass recorded before it: a text atlas conversion among them, whose route kept its cells as converted (the
+     * label of an arrow on a board never drawn) and its fresh page as stored (the next load of it refused, invalid-input: the pane
+     * fell back to canvas2d; kinds kit arrow-label, WebGL2 DPR 2 dark). Any other failure cancels the frame, as guard does. */
+    guardIsolation<T>(operation: () => T): T {
+        try { this.check(); return operation(); }
+        catch (error) {
+            if (error instanceof IsolationShortfall && !this.#closed && !this.#backend.signal.aborted) {
+                auditCount('gpu', 'isolation-deferred');
                 throw error;
             }
             let failure = error;
@@ -778,6 +796,13 @@ class DevicePass implements GpuPass {
             return operation();
         });
     }
+    /** As #guard, for an operation that may borrow an isolation target: a shortfall leaves the frame and this pass intact. */
+    #guardIsolation<T>(operation: () => T): T {
+        return this.#frame.guardIsolation(() => {
+            if (this.#closed) throw new ArenaError('invalid-input');
+            return operation();
+        });
+    }
     draw(cmd: DrawCommand): void {
         this.#guard(() => {
             const pipeline = this.#backend.pipeline(cmd.pipeline), desc = pipeline.descriptor;
@@ -864,7 +889,7 @@ class DevicePass implements GpuPass {
     }
     pushClip(value: RectI | ClipHandle): ClipToken {
         this.#frame.markBarrier();
-        return this.#guard(() => {
+        return this.#guardIsolation(() => {
             if (this.#clips.length >= 64) throw new ArenaError('invalid-input');
             const depth = this.#clips.length + 1;
             const token = this.#clipTokens[depth - 1] ??= Object.freeze({ depth });
@@ -903,7 +928,7 @@ class DevicePass implements GpuPass {
     }
     beginGroup(bounds: RectI, options: { opacity: number; blend: 'normal' | 'multiply' | 'modulate'; colourEffect: 'none' | 'page-invert' }): GroupToken {
         this.#frame.markBarrier();
-        return this.#guard(() => {
+        return this.#guardIsolation(() => {
             const token = Object.freeze({ id: this.#frame.token() });
             const isolation = this.#isolate(intersect(rect(bounds), this.#clip), { ...options }, null);
             this.#groups.push({ kind: 'group', token, previous: this.#clip, clipDepth: this.#clips.length, isolation });

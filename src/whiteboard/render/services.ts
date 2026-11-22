@@ -660,17 +660,7 @@ export function createBoardRenderServices(options: {
                         queue.push(end.attach.target);
                     }
                 }
-                const label = text.prepareNow(node, { revision: `warm:${id}`, anchor: { x: 0, y: 0 }, connectorLength: 1 });
-                if (label) {
-                    const keys = new Map<string, { family: typeof label.request.style.font; bold: boolean; italic: boolean }>();
-                    const base = { family: label.request.style.font, bold: false, italic: false };
-                    keys.set(JSON.stringify(base), base);
-                    for (const line of label.paint.lines) for (const fragment of line.fragments) {
-                        const key = text.faces.faces[fragment.face].key;
-                        keys.set(JSON.stringify(key), key);
-                    }
-                    for (const key of keys.values()) { if (!await text.fonts.load(key)) throw new Error('Required board font could not be loaded'); stable(); }
-                }
+                await text.loadFaces(node, stable);
                 const value = await prepare(node, doc, signal);
                 stable(); nodeStable(node); scope?.set(id, value);
             }

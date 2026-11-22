@@ -60,15 +60,7 @@ function loadedText(runtime: BoardRuntime, value: PreparedBoardText): boolean {
         && value.paint.lines.every(line => line.fragments.every(fragment => !!text.faces.faces[fragment.face]?.loaded));
 }
 async function loadText(runtime: BoardRuntime, node: FigureNode, signal: AbortSignal, check: () => void): Promise<void> {
-    const text = runtime.render.text, first = text.prepareNow(node, { revision: `resize-load:${node.id}` });
-    if (!first) return;
-    const keys = new Map<string, { family: typeof first.request.style.font; bold: boolean; italic: boolean }>();
-    const base = { family: first.request.style.font, bold: false, italic: false }; keys.set(JSON.stringify(base), base);
-    for (const line of first.paint.lines) for (const fragment of line.fragments) {
-        const face = text.faces.faces[fragment.face]; if (!face) throw new Error('Figure text face is unavailable');
-        keys.set(JSON.stringify(face.key), face.key);
-    }
-    for (const key of keys.values()) { if (!await text.fonts.load(key)) throw new Error('Required figure font could not be loaded'); check(); }
+    await runtime.render.text.loadFaces(node, check);
 }
 
 /** Real leaf resize and placement; the returned geometry lease is caller-owned. */

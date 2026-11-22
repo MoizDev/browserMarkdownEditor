@@ -61,6 +61,9 @@ export interface PaintImageHold {
     imageFact(key: string): { readonly width: number; readonly height: number; readonly version: number } | null;
     /** Requests a released or absent picture again; its settlement invalidates the frame. A request already in flight is kept. */
     reacquireImage(key: string): void;
+    /** True for a picture this adapter will never hold (its bytes could not be decoded): asking again changes nothing, so the GPU side
+     * draws canvas2d's placeholder for it. A picture a memory refusal skipped is not broken: the next snapshot asks for it again. */
+    imageBroken(key: string): boolean;
 }
 
 export interface PreparedRetain {
@@ -298,6 +301,7 @@ export function createCanvasPaintAdapter(
                 lease.release();
                 return true;
             },
+            imageBroken(key) { return broken.has(key); },
             reacquireImage(key) {
                 if (s.disposed || s.abort.signal.aborted || s.images.has(key)) return;
                 s.released.delete(key);

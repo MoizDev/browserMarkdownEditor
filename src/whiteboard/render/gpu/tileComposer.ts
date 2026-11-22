@@ -179,13 +179,21 @@ export interface TileRoutes {
     readonly inkAnalytic: ItemRoute<PaintInkItem>;
     readonly inkUnion: ItemRoute<PaintInkItem>;
     /** Absent until the route is built: its items are then rastered by `cpu`, counted as a fallback. */
-    readonly image?: ItemRoute;
+    readonly image?: ItemRoute & Partial<PictureRoute>;
     readonly text?: ItemRoute & ZoomRoute;
     readonly cpu: ItemRoute;
 }
 /** The text route's zoom hooks (gpu-h8). `setZoom` is called once per frame before the admits: while it is true a missing exact mask is
  * drawn from its cached stand-in, never rastered. `exact` is false for a run that drew one: its tile recomposes exact once the camera rests. */
 export interface ZoomRoute { setZoom(zooming: boolean): void; exact(run: PreparedRun): boolean }
+/** The image route's picture hooks: it plans a large picture's finer tiles per composed tile, with the byte share of the screen named
+ * once per frame (`setScreen`). A run that left out tiles still decoding names them (`waits`); its entry is kept aside without asking
+ * frames, and is marked dirty once none is `waiting` (the decode's settlement invalidates the frame that finds it so). */
+export interface PictureRoute {
+    setScreen(world: Rect | null): void;
+    waits(run: PreparedRun): readonly string[] | null;
+    waiting(keys: readonly string[]): boolean;
+}
 /** A route that needs the paint's resources (decoded images, path and clip geometry); called once per paint, before admit. */
 export interface ResourcedRoute { useResources?(resources: PaintResources2d): void }
 /** Lays a composed texture on the current surface. `modulate` multiplies the surface by it; `dest` is in device pixels. */
@@ -392,6 +400,9 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     // Entries encoded with a run that drew a stand-in (the text route's zoom). They recompose exact once the camera rests: the last
     // zoom frame's entries are the ones at the scale the camera rests on, so the set is cleared at the start of each zoom frame.
     const inexactPending = new Set<TileEntry>();
+    // Entries composed while finer picture tiles they cover were still decoding, with those tiles (PictureRoute). Never a reason for
+    // a frame: recomposing a tile whose decode is still in flight drew the same pixels again each vsync (gpu-f1).
+    const awaitingDecode = new Map<TileEntry, readonly string[]>();
     // Positions being admitted, by key. A finished position waits in `finished` for its band's encode.
     const building = new TileKeyMap<Position>();
     const staleScratch: Position[] = [];
@@ -1541,6 +1552,16 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     geometry: slice.admitted.some(admitted => isGeometryRoute(admitted.route)),
                     cpu: slice.admitted.some(admitted => admitted.route === routes.cpu) });
                 if (slice.admitted.some(admitted => !exactRun(admitted.route, admitted.run))) { inexactPending.add(entry); auditCount(audit, 'zoom:inexact:composed'); }
+                const image = routes.image;
+                if (image?.waits) {
+                    let keys: string[] | null = null;
+                    for (const admitted of slice.admitted) {
+                        const waits = admitted.route === image ? image.waits(admitted.run) : null;
+                        if (waits) (keys ??= []).push(...waits);
+                    }
+                    if (keys) { awaitingDecode.set(entry, keys); auditCount(audit, 'image:await:composed'); }
+                    else awaitingDecode.delete(entry);
+                }
                 store.touch(entry, frame);
             }
             for (const { route, run, clips } of slice.admitted) { route.retire(run); clips?.retire(); }
@@ -1553,6 +1574,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         for (const position of building.values()) cancel(position);
         building.clear();
         inexactPending.clear();
+        awaitingDecode.clear();
         scaleIndexes.clear();
         for (const position of finished) cancel(position);
         finished = [];
@@ -1635,6 +1657,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             routes.text?.setZoom(zooming);
             // The path route composes a zoom's frames on its coverage route and its rest on exact area (routePath.ts, setZoom).
             routes.path.setZoom?.(zooming);
+            // The image route takes a picture's byte share from the screen, whichever tile it composes (PictureRoute).
+            routes.image?.setScreen?.({ x: view.camera.x, y: view.camera.y, width: view.viewport.width / view.camera.z, height: view.viewport.height / view.camera.z });
             // The inexact entries are kept through the whole zoom, not cleared each zoom frame: a zoom that returns to a scale reuses the
             // tiles it composed there earlier, and an entry dropped from the set then stayed inexact at rest (a saturated zoom alternates
             // between two scales). At rest only the entries of the resting scale are marked; the others go with their scale.
@@ -1768,6 +1792,14 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         else auditCount(audit, 'zoom:inexact:other-scale');
                     }
                     inexactPending.clear();
+                }
+                // At rest, an entry whose finer picture tiles have all settled (landed, or refused and replanned) recomposes, once.
+                if (!zooming && awaitingDecode.size && routes.image?.waiting) {
+                    for (const [entry, keys] of awaitingDecode) {
+                        if (routes.image.waiting(keys)) continue;
+                        awaitingDecode.delete(entry);
+                        if (entry.target && entry.key.scale === target) { entry.dirty = true; auditCount(audit, 'image:await:recompose'); }
+                    }
                 }
                 // The armed retry is due and the refused position still waits on the GPU: it is advanced again this frame, after the
                 // governor has been asked (the admission reserves). A refusal that persists arms the next retry.

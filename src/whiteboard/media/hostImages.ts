@@ -70,6 +70,8 @@ export function createBoardHostImages(options: {
     // Tile rasters are created on the first tile key, not per view: the residency recycles the shared decode worker
     // when it tears down mid-job, so a view that never paints a tile (every export path) must never own one.
     let residency: MediaResidency | undefined, visible = true;
+    // Tile keys with an acquire still waiting, by count: the demand keeps them (setDemand).
+    const kept = new Map<string, number>();
     const tileResidency = (): MediaResidency => {
         if (disposed) throw new DOMException('Board images disposed', 'AbortError');
         if (residency) return residency;
@@ -91,6 +93,8 @@ export function createBoardHostImages(options: {
     if (options.signal?.aborted) dispose();
     return {
         async acquire(key, value, signal) {
+            const keep = isMediaTileKey(key);
+            if (keep) kept.set(key, (kept.get(key) ?? 0) + 1);
             try {
                 if (key.startsWith(VIDEO_FRAME_PREFIX)) return await frames.lease(key, signal);
                 if (isMediaTileKey(key)) return await tileResidency().acquire(key, value, signal);
@@ -101,12 +105,20 @@ export function createBoardHostImages(options: {
                 const retired = error instanceof DOMException && error.name === 'AbortError';
                 if (!disposed && !signal.aborted && !retired) { try { options.onError(error); } catch { /* Keep the decoder error. */ } }
                 throw error;
+            } finally {
+                if (keep) { const left = (kept.get(key) ?? 1) - 1; if (left > 0) kept.set(key, left); else kept.delete(key); }
             }
         },
         /** The tile keys the view last drew. Tile rasters outside them are released; a view that draws none never creates a residency. */
         setDemand(keys: ReadonlySet<string>) {
-            if (disposed || (!residency && keys.size === 0)) return;
-            tileResidency().setDemand(keys, new Set());
+            if (disposed || (!residency && keys.size === 0 && kept.size === 0)) return;
+            // A tile some paint still waits for stays wanted, as near work: the demand names the tiles of the frame the view last drew,
+            // and aborting the rest aborted every tile another paint of these images had asked for and not yet drawn (the selection
+            // preview's, the GPU composer's own, a staged snapshot's), each then skipped and retried, measured as a preview redone at
+            // 24 Hz for good on a selected 4000x3000 picture (WebGL2). A waiter that leaves aborts its acquire, which drops it here.
+            const near = new Set<string>();
+            for (const key of kept.keys()) if (!keys.has(key)) near.add(key);
+            tileResidency().setDemand(keys, near);
         },
         /** The view's one visibility signal for picture memory: a hidden pane releases tile rasters and stops their decodes. */
         setVisible(next: boolean) {

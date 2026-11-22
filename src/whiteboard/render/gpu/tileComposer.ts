@@ -533,16 +533,11 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     // The dirty positions under a pending region whose cover this frame's draws could not lay (its node no longer drawn live: a card
     // deselected, an embed the overlay draws): they show stale until composed, so the next compose does not defer them.
     const uncoveredPositions = new Set<number>();
-    // Last frame's, read when this frame's draws are built: a position covered then and composed since shows the same picture.
-    let lastCovered = new Set<number>(), spareCovered = new Set<number>();
-    // The draw-list signature of the covered positions (and those whose tile replaced their cover this frame): each as its position and
-    // clip only, not its textures or live parts. Swapping a cover for its fresh tile changes no pixel, and counted as a change it
-    // presented once per staggered tile (gpu-f1's doc12 tape: 2 redundant presents per stroke at pen-up, 4 in a paced draw).
+    // The draw-list signature of the covered positions: each as its position and clip only, not its textures or live parts, so a cover
+    // redrawn over the same tiles presents nothing. The swap to the fresh tile is a change: it presents. Signed as unchanged too (the
+    // cover's picture taken to equal its tile's), a cover that drew the node twice stayed on screen for good: a rotated rectangle's
+    // stroke at double weight, 2024 edge px past the truth bar, max 53 (kinds rotate, WebGL2 DPR 2 dark; with the swap presented: 0, 2).
     let coverSignature = 0;
-    // A position whose tile replaced its cover keeps signing as its position while it draws the tiles it swapped to (their texture and
-    // generation, hashed): untagged the frame after the swap, its draws signed in full moved the signature over the same picture (the
-    // next present after each swap was redundant). A recompose changes the hash and ends the tag; a position not drawn loses it.
-    let swappedTiles = new Map<number, number>(), spareSwapped = new Map<number, number>();
     // Two-phase frames (budget.phase): the foreground call of frame `foregroundFrame` leaves its target, span, zoom and edit count for the
     // background call of the same frame. `frameComposed` counts this frame's composes across both calls, so the limit stays per frame.
     let foregroundFrame = -1;
@@ -1014,7 +1009,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         let position = building.get(key);
                         if (!position) {
                             const status = statusAt(band, target, x, y);
-                            if (status !== 'dirty' && !(status === 'missing' && !finishedAt(band, target, x, y))) continue;
+                            if (status !== 'dirty' && status !== 'missing' || finishedAt(band, target, x, y)) continue;
                             const started = begin(band, target, x, y, view);
                             if (!started) continue;
                             position = started;
@@ -1051,6 +1046,10 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                         if (!position) {
                             const status = statusAt(band, target, x, y);
                             if (pass === 'dirty' ? status !== 'dirty' : status !== 'missing') continue;
+                            // Composed earlier this frame (the held pass takes the positions under a held node first) and still dirty until
+                            // its encode: begun again it composed twice per frame (rotate, WebGL2 DPR 2 dark: every position under the
+                            // rotated rectangle composed twice in the change frame and the next).
+                            if (finishedAt(band, target, x, y)) { auditCount(audit, 'compose:finished-this-frame'); continue; }
                             // A visible position a stand-in already shows is not the foreground's: it waits for the background call.
                             if (only === 'foreground' && pass === 'missing' && standInsOf(band, target, x, y).length) continue;
                             // While zooming, content a stand-in can show is not composed again at this scale: its raster is scaled.
@@ -1371,9 +1370,6 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         drawsEpoch = evictEpoch; drawsFrame = frame;
         drawsCam.x = view.camera.x; drawsCam.y = view.camera.y; drawsCam.z = view.camera.z;
         drawsCam.w = view.viewport.width; drawsCam.h = view.viewport.height; drawsCam.dpr = view.viewport.dpr;
-        const swap = lastCovered; lastCovered = spareCovered; spareCovered = swap;
-        const swapped = swappedTiles; swappedTiles = spareSwapped; spareSwapped = swapped; swappedTiles.clear();
-        lastCovered.clear(); for (const key of coveredPositions) lastCovered.add(key);
         coveredPositions.clear(); uncoveredPositions.clear();
         coverSignature = 0;
         if (liveNow) { buildLiveDraws(view, budget); return; }
@@ -1447,14 +1443,8 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                             }
                         }
                         liveBefore(band, Infinity, li, clip);
-                        let tiles = 0;
-                        if (!covered && status === 'ok') for (let d = coverFrom; d < drawCount; d++) tiles = hashMix(hashMix(tiles, idOfObject(draws[d].texture)), draws[d].gen);
-                        const held = spareSwapped.get(coverKey);
-                        const swappedNow = !covered && status === 'ok' && lastCovered.has(coverKey);
-                        const signAsCover = covered || swappedNow || (status === 'ok' && held === tiles);
-                        if (!covered && status === 'ok' && (swappedNow || held === tiles)) swappedTiles.set(coverKey, tiles);
-                        if (signAsCover) {
-                            auditCount(audit, covered ? 'cover:signed' : swappedNow ? 'cover:swapped' : 'cover:held');
+                        if (covered) {
+                            auditCount(audit, 'cover:signed');
                             for (let d = coverFrom; d < drawCount; d++) draws[d].cover = true;
                             const at = clipAt(x, y);
                             coverSignature = hashMix(coverSignature, coverKey);

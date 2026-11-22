@@ -173,6 +173,7 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
     // The pane's screen and an eighth of it each side (services.ts pictureTileWorld, canvas2d's picture world): the world whose tiles
     // set a picture's byte share, whatever tile is being composed. Null until the composer names it.
     let screen: Rect | null = null;
+    const screenRing: Rect = { x: 0, y: 0, width: 0, height: 0 };
     // The pools: draw records and run bodies a retired run returned, taken again by the next admission. Never shrunk but on release.
     const freeDraws: ImageDraw[] = [], freeBodies: RunBody[] = [];
     const takeDraw = (): ImageDraw | null => {
@@ -485,16 +486,19 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
         useResources(next: PaintResources2d): void { resources = next; hold = imageHoldOf(next); },
         setScreen(world: Rect | null): void {
             if (!world) { screen = null; return; }
+            // Copied into the route's own rect: the composer rewrites the one it names every frame.
             const mx = world.width / 8, my = world.height / 8;
-            screen = { x: world.x - mx, y: world.y - my, width: world.width + 2 * mx, height: world.height + 2 * my };
+            screenRing.x = world.x - mx; screenRing.y = world.y - my; screenRing.width = world.width + 2 * mx; screenRing.height = world.height + 2 * my;
+            screen = screenRing;
         },
         waits(run: PreparedRun): readonly string[] | null {
             const body = (run as ImageRun).body;
             return body && body.waits.length ? body.waits : null;
         },
         waiting(keys: readonly string[]): boolean {
+            // No hold (no resources this paint) cannot tell: still waiting, or the entry would recompose on its stand-in for nothing.
             const current = hold;
-            return current !== null && keys.some(key => current.imageWaiting(key));
+            return current === null || keys.some(key => current.imageWaiting(key));
         },
         evictTextures(bytes: number, frameId: number): number { return textures.evict(bytes, frameId); },
     };

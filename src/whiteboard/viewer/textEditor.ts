@@ -97,6 +97,8 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
     let currentWorld: Affine | null = null, handles = false, scroll: { x: number; y: number } | null = null;
     let editingEpoch = 0, ownBaseRevision = -1;
     const metrics = new Map<NodeId, { revision: number; font: number; value: ConnectorMetrics }>();
+    // The stale metrics a refresh is already preparing (id:revision:font), so a frame that reads one again starts no second prepare.
+    const refreshing = new Set<string>();
     let svg: SVGSVGElement | null = null, toolbar: HTMLElement | null = null, lastZoom = camera.camera.z;
     let spell: BoardSpellClient | null = null, spellLoad: Promise<BoardSpellClient> | null = null;
     let misspellings: readonly Misspelling[] = [], spellGeneration = 0;
@@ -191,7 +193,15 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
             && entry.font === render.text.fonts.epoch) {
             entry = { ...entry, revision: doc.rev }; metrics.set(node.id, entry); ownBaseRevision = -1;
         }
-        if (!entry || entry.revision !== doc.rev || entry.font !== render.text.fonts.epoch) throw new Error('Connector text geometry is not ready');
+        if (!entry) throw new Error('Connector text geometry is not ready');
+        // Behind the document or the fonts (the label's first character loads its face: the font epoch moves, and the frame that load
+        // asks for can come before the refresh it started): the last metrics serve until the refresh lands and lays the label out again.
+        // Thrown here, the editor's overlay write failed inside the frame and the board closed ('Could not open canvas'; on WebGL2
+        // earlier, the pane fell back to canvas2d on the compositor's invalid-input): kinds kit arrow-label, DPR 2 dark, 2 of 6 runs.
+        if (entry.revision !== doc.rev || entry.font !== render.text.fonts.epoch) {
+            const key = `${node.id}:${doc.rev}:${render.text.fonts.epoch}`;
+            if (!refreshing.has(key)) { refreshing.add(key); refreshConnector(node.id, () => refreshing.delete(key)); }
+        }
         return entry.value;
     };
     const request = (node: Readonly<Node>, text: RichText, serial: number): TextLayoutRequest => {
@@ -372,10 +382,10 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
             return true;
         },
     };
-    const refreshConnector = (id: NodeId) => {
+    const refreshConnector = (id: NodeId, settled?: () => void) => {
         void prepareMetric(id, controller.signal).then(() => {
             if (current() && active === id && manager.current) { manager.refresh(); requestFrame(); }
-        }, error => { if (!(error instanceof DOMException && error.name === 'AbortError')) report(error); });
+        }, error => { if (!(error instanceof DOMException && error.name === 'AbortError')) report(error); }).finally(settled);
     };
     const stopFonts = render.text.fonts.subscribe(() => {
         if (!active || !manager.current) return;

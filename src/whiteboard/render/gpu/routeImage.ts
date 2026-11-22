@@ -542,7 +542,18 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
         waiting(keys: readonly string[]): boolean {
             // No hold (no resources this paint) cannot tell: still waiting, or the entry would recompose on its stand-in for nothing.
             const current = hold;
-            return current === null || keys.some(key => uploading.has(key) || current.imageWaiting(key));
+            if (current === null) return true;
+            // A key whose decode landed after its tile composed has no texture yet: its upload starts here (pump), so the tile
+            // recomposes once, when its textures are up. Answered ready instead, the recompose found the texture still waiting on
+            // the frame's upload allowance and recomposed again after it (gpu-f1: 16 recomposes for 27 waits, a dropped 8000x6000).
+            // Only a start asks for a frame here: pump asks for the rest while its uploads progress.
+            let waits = false, started = false;
+            for (const key of keys) {
+                if (uploading.has(key) || current.imageWaiting(key)) waits = true;
+                else if (current.imageState(key) === 'ready' && textures.needsSource(key)) { uploading.add(key); waits = started = true; }
+            }
+            if (started) host.invalidate('image-tile-upload');
+            return waits;
         },
         evictTextures(bytes: number, frameId: number): number { return textures.evict(bytes, frameId); },
     };

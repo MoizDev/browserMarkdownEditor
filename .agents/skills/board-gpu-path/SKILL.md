@@ -44,7 +44,8 @@ Shared rules (layers, frames, the governor) are in `rendering-platform`. This fi
   13.2 -> 1.3 ms per frame. The area shader's per-column share is taken from the run's own width (`tb = ta + d`): two separate
   differences of pixel-sized coordinates streaked rows on Apple's GPU.
 - **Hitches are named by the slow-frame log** (`__bmeRenderAudit.slowFrames()`: each frame over 1000/120 ms GPU with its tape and
-  counter deltas). A frame composes at most one dirty tile a pending region covers (`DIRTY_COVERED_PER_FRAME`); a covered position,
+  counter deltas). A frame composes at most one dirty tile a pending region covers (`DIRTY_COVERED_PER_FRAME`), except one the last draw
+  failed to cover (stale: its node is no longer live); deferring only what the last draw covered brings back the commit hitch. A covered position,
   and one whose tile replaced its cover, signs as its position (`coverSignature`), so the swap presents nothing.
 - The wet layer lets go of a stroke when the board reports its node in `drawnInkNodeIds`, which the wet layer reads in its own
   prepare. A node goes in only once every live part of it was admitted this frame: reported before admission, a deferred

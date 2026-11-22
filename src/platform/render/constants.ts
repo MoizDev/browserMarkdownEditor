@@ -62,7 +62,10 @@ export const RENDER_CONSTANTS: RenderConstants = Object.freeze({
     gpuGrantMaxDpr: 2,
     cpuGrantMinBytes: 33554432,
     cpuGrantPerVisiblePaneBytes: 8388608,
-    cpuGrantPerVisiblePixelBytes: 8,
+    // 8 B per visible device pixel held the board's working canvases and nothing for a picture shown across the view: at DPR 2 a
+    // 4000x3000 picture's view tiles were refused beside them and quality stepped down forever with the picture never drawn
+    // (measured, canvas2d, 1872x1456 device px). 4 B more per pixel is one RGBA copy of the view for picture tiles.
+    cpuGrantPerVisiblePixelBytes: 12,
     // Governor policy from rendering-design.md §6.1–6.4; no thresholds are inferred from hardware.
     deviceMemoryLowGiB: 4,
     deviceMemoryMiddleGiB: 8,

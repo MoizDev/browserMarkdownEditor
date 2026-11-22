@@ -185,7 +185,7 @@ export interface RenderConstants {
     /** C = min(Cmax, max(min, perPane*N + perPixel*P)). */
     readonly cpuGrantMinBytes: 33554432;
     readonly cpuGrantPerVisiblePaneBytes: 8388608;
-    readonly cpuGrantPerVisiblePixelBytes: 8;
+    readonly cpuGrantPerVisiblePixelBytes: 12;
     /** Coarsened navigator.deviceMemory classes, not inferred installed RAM (design §6.2:607). */
     readonly deviceMemoryLowGiB: 4;
     readonly deviceMemoryMiddleGiB: 8;

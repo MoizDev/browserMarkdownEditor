@@ -113,7 +113,8 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         fontEpoch: () => runtime.render.text.fonts.epoch, current, onError: ui.error });
     const region = createBoardRegionQuery({ runtime, geometry: runtime.render, camera: options.view,
         fontEpoch: () => runtime.render.text.fonts.epoch, current: t => current() && options.current(t), onError: ui.error });
-    const preview = createBoardPreview({ runtime, engine, render: runtime.render, images: options.images, current, onError: ui.error });
+    const preview = createBoardPreview({ runtime, engine, render: runtime.render, images: options.images, current, onError: ui.error,
+        view: () => ({ camera: camera.camera, viewport: options.viewport() }) });
     // Editing activation: the overlay's kits compile now, not at the first drag's request.
     preview.warm();
     const select = createBoardSelectServices({ runtime, render: runtime.render, camera: options.view, cameraController: camera,

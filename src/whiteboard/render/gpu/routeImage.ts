@@ -275,7 +275,8 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
                     if (hold && !fact) { hold.reacquireImage(key); return reject({ status: 'deferred' }); }
                     if (!fact) return refuse(key, unsupported('video-without-hold'));
                     const source = resources.image(key);
-                    if (!isDrawable(source)) return refuse(key, unsupported('video-source'));
+                    // Null: the painter holds no picture for the key (a broken or memory-skipped picture, canvasPaintAdapter).
+                    if (!source || !isDrawable(source)) return refuse(key, unsupported('video-source'));
                     admitted = textures.acquireVideo(key, { version: fact.version, source, width: fact.width, height: fact.height }, budget);
                 } else {
                     const state = hold ? hold.imageState(key) : 'ready';

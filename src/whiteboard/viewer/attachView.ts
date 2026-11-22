@@ -391,7 +391,11 @@ export const attachView: AttachView = options => {
         // does not cull by the camera, so the scene's items do not change with the zoom; only its strokes' band does (at a crossing).
         const sceneShape = { sheetId: selectedSheet, theme: view.theme, sensitiveNodes,
             ...(deviceScale !== undefined ? { deviceScale } : {}), ...(previousDeviceScale !== undefined ? { previousDeviceScale } : {}) };
-        const shape = scene ? sceneShape : dense ? { ...identity, only: liveSet! } : { ...identity, ...(world ? { world } : {}) };
+        // The on-screen rect: picture tiles are decoded for it and a ring, not for the frame's whole margin (the large-picture fix).
+        const screenWorld: Rect | undefined = current ? { x: current.camera.x, y: current.camera.y,
+            width: current.viewport.width / current.camera.z, height: current.viewport.height / current.camera.z } : undefined;
+        const shape = scene ? sceneShape : dense ? { ...identity, only: liveSet! }
+            : { ...identity, ...(world ? { world } : {}), ...(screenWorld ? { viewWorld: screenWorld } : {}) };
         auditCount('board', scene ? 'request:scene' : 'request:view');
         if (onDevice) { if (scene) sceneAsked = key; else viewAsked = key; }
         // The world this view request asks for, kept until the camera leaves it (the skip at the top of requestPaint).

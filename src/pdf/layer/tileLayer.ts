@@ -10,7 +10,7 @@ import { planPdfTileDemand } from './tileDemand';
 import type { PdfDemandInput, PdfTileRequest } from './tileDemand';
 import { getPdfFontEpoch, pdfMirrorProfilePrefix, pdfVariantRevision } from '../fonts/profiles';
 import { pdfDocKey } from '../worker/protocol';
-import { consumePdfTileArrival, forgetPdfTileArrival } from '../pool/arrivalWindow';
+import { consumePdfTileArrival, forgetPdfTileArrival, isPdfTileUniform } from '../pool/arrivalWindow';
 import { auditCount, auditDrawn, auditTape, renderAuditEnabled } from '../../platform/render/renderAudit';
 import { QuadList } from './quadList';
 
@@ -49,6 +49,8 @@ interface Entry {
     drawnFrame?: number;
     /** Audit only: the last frame either backend drew this tile in (tapeFinerReplaced). drawnFrame is the GPU trim's, not this. */
     auditDrawnAt?: number;
+    /** Audit only: every pixel of the raster is one colour (isPdfTileUniform, read when it settles: the bitmap may go at upload). */
+    auditUniform?: boolean;
     used: number;
 }
 
@@ -507,6 +509,7 @@ export class PdfTileLayer implements Layer {
                 }
                 entry.bitmap = bitmap;
                 entry.settled = true;
+                if (renderAuditEnabled()) entry.auditUniform = isPdfTileUniform(bitmap);
                 this.drawVersion++;
                 this.settledOrder = null;
                 this.coverCache = null;
@@ -690,7 +693,11 @@ export class PdfTileLayer implements Layer {
 
     /** Audit only. A tile of the frame's own scale drawn for the first time where a FINER tile was drawn the frame before (a zoom's
      * motion tiles settling to exact) replaces pixels that were already as sharp, so the present may be pixel-identical to the last
-     * one with no coarser stand-in to explain it: the judge accepts it by this marker, 'pdf:finer-replaced' (lead and gpu-f1). */
+     * one with no coarser stand-in to explain it: the judge accepts it by this marker, 'pdf:finer-replaced' (lead and gpu-f1).
+     * Likewise 'pdf:uniform-replaced': every tile of the frame's own scale drawn for the first time is one colour (blank page), so
+     * where the stand-in beneath shows the same colour the present is pixel-identical, and the layer cannot know that without reading
+     * the stand-in back (measured on doc12, WebGL2 DPR 2: each same-pixels tile-slot present drew only page-white tiles, 2 of 2 such
+     * presents identical; presents with a tile of any content changed the screen, 71 of 72). */
     private tapeFinerReplaced(tiles: readonly Entry[], rasterScale: number): void {
         if (!renderAuditEnabled()) return;
         const frame = this.preparedFrame, previous = this.auditFrame;
@@ -698,6 +705,7 @@ export class PdfTileLayer implements Layer {
         this.auditFrame = frame;
         let fresh: Entry[] | null = null;
         for (const entry of tiles) if (entry.auditDrawnAt === undefined && !scaleDiffers(entry.request.scale.scale, rasterScale)) (fresh ??= []).push(entry);
+        if (fresh && fresh.every(entry => entry.auditUniform)) auditTape('pdf:uniform-replaced');
         if (fresh && previous !== undefined) {
             const drawn = new Set(tiles);
             for (const [, entry] of this.entries) {

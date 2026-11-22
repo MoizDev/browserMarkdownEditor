@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { availableBoardLocales, translateBoard, type BoardLanguageState } from '../../whiteboard/chrome/language';
 import type { BoardPreferenceState } from '../../whiteboard/chrome/preferences';
 import { createBoardStyleControls } from '../../whiteboard/host/styleControls';
@@ -46,6 +46,13 @@ function AttachedNativeBoardChrome({ runtime, language, preferences, mac, onRead
     const lang = useSyncExternalStore(language.subscribe, language.getSnapshot, language.getSnapshot);
     const local = useSyncExternalStore(preferences.subscribe, preferences.getSnapshot, preferences.getSnapshot);
     const panel = useSyncExternalStore(styles.subscribe, styles.getSnapshot, styles.getSnapshot);
+    // The commands a gesture holds (undo, redo, delete, …) are read as the chrome renders, so it renders when a gesture starts and
+    // ends. Without this they showed whatever the last unrelated render saw: Undo stayed lit through a shape's creation drag on
+    // canvas2d once a pan or a press stopped asking for a new paint (and with it the view's re-render).
+    const session = runtime.session;
+    const subscribeGesture = useCallback((listener: () => void) => session.subscribeGesture(listener), [session]);
+    const gestureActive = useCallback(() => session.isGestureActive, [session]);
+    useSyncExternalStore(subscribeGesture, gestureActive, gestureActive);
     useLayoutEffect(() => { if (!props.isVisible) { onReady(false); return; }
         onReady(true); return () => onReady(false); }, [onReady, styles, props.isVisible]);
     useEffect(() => { styles.refresh(); }, [props.readOnly, styles]);

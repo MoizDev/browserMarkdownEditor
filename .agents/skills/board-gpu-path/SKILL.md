@@ -14,6 +14,10 @@ Shared rules (layers, frames, the governor) are in `rendering-platform`. This fi
   device never builds one. A route change resets the other route's state.
 - The reference CPU adapter (`direct`) stays on a device: the composer borrows its prepared paths and clips.
 - A board hidden while dense reports `direct` through `onDensityMode`; otherwise the owner keeps asking for live-only frames.
+- A view request (`attachView` `requestPaint`) stands while a new one would open the same stream: on a device, while its world
+  holds the viewport at the same band; on canvas2d, while it holds the viewport at the same ink realisation (`paintRequestScope.ts`),
+  one band across while a zoom is still going (`ZOOM_SETTLE_MS`), and at the exact scale only on a board with pictures (their tiles
+  read it). Asked per step, every pan and zoom step presented twice: the old frame at the new camera, then the same picture rebuilt.
 
 ## Tiles (`src/whiteboard/render/gpu/`)
 - `tileComposer.ts`: per visible position, one tile per blend-coherent slice (a slice ends where the blend changes or a live

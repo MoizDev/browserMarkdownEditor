@@ -5,8 +5,6 @@
     z-index: 100;
     width: 280px;
     max-width: calc(100vw - 16px);
-    max-height: min(70vh, 480px);
-    overflow: auto;
     padding: 4px;
     border: 1px solid var(--background-modifier-border);
     border-radius: 8px;
@@ -26,7 +24,40 @@
     font-size: var(--nav-item-size);
 }
 
+.board-sheet-list {
+    /* The rows scroll inside a pinned or auto-fit list, so the create button and the grip stay in view. */
+    max-height: min(56vh, 800px);
+    overflow: auto;
+}
+
 .board-sheet-row { display: flex; align-items: center; gap: 2px; }
+.board-sheet-row[data-dragging='true'] { opacity: 0.5; }
+.board-sheet-row[data-drop='before'] { box-shadow: inset 0 2px 0 var(--interactive-accent); }
+.board-sheet-row[data-drop='after'] { box-shadow: inset 0 -2px 0 var(--interactive-accent); }
+
+/* The grip is a thin strip under the list; its bar lights up once the list has a pinned height. */
+.board-sheet-grip {
+    position: relative;
+    height: 8px;
+    cursor: row-resize;
+}
+
+.board-sheet-grip::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 3px;
+    width: 32px;
+    height: 2px;
+    border-radius: 1px;
+    transform: translateX(-50%);
+    background: var(--background-modifier-border);
+}
+
+.board-sheet-grip[data-pinned='true']::after,
+.board-sheet-grip:hover::after {
+    background: var(--text-muted);
+}
 
 .board-sheet-select,
 .board-sheet-create {

@@ -16,11 +16,16 @@ export interface BoardPreferences {
     isZoomDirectionInverted: boolean;
     locale: string;
     colorScheme: 'light' | 'dark' | 'system';
+    /** The sheet menu's list height once the person has dragged its grip; null follows the content. */
+    sheetListHeight: number | null;
 }
+/** Bounds of the sheet list's pinned height: one row at least, and the page menu's auto-fit cap (800px). */
+export const SHEET_LIST_MIN_HEIGHT = 36;
+export const SHEET_LIST_MAX_HEIGHT = 800;
 const defaults: BoardPreferences = {
     version: 1, isSnapMode: false, isWrapMode: false, isDynamicResizeMode: false,
     animationSpeed: 1, areKeyboardShortcutsEnabled: true, enhancedA11yMode: false,
-    inputMode: null, isZoomDirectionInverted: false, locale: 'en', colorScheme: 'system',
+    inputMode: null, isZoomDirectionInverted: false, locale: 'en', colorScheme: 'system', sheetListHeight: null,
 };
 // Until the user chooses, motion follows the OS: a reduced-motion request starts at speed 0 (camera.md F-A11Y-005).
 function osAnimationSpeed(): number {
@@ -45,6 +50,8 @@ function clamp(value: unknown): BoardPreferences {
         isZoomDirectionInverted: flag('isZoomDirectionInverted', defaults.isZoomDirectionInverted),
         locale,
         colorScheme: input.colorScheme === 'light' || input.colorScheme === 'dark' || input.colorScheme === 'system' ? input.colorScheme : defaults.colorScheme,
+        sheetListHeight: typeof input.sheetListHeight === 'number' && Number.isFinite(input.sheetListHeight)
+            ? Math.max(SHEET_LIST_MIN_HEIGHT, Math.min(SHEET_LIST_MAX_HEIGHT, input.sheetListHeight)) : null,
     };
 }
 let current: BoardPreferences | undefined;
@@ -67,6 +74,10 @@ export function getBoardPreferences(): BoardPreferences {
 export function mouseZoomInverted(): boolean {
     const preferences = getBoardPreferences();
     return preferences.inputMode === 'mouse' && preferences.isZoomDirectionInverted;
+}
+/** Under the Mouse input device a plain wheel turn zooms and Ctrl/Cmd+wheel pans (catalogue I§3); Auto and Trackpad pan. */
+export function mouseWheelZooms(): boolean {
+    return getBoardPreferences().inputMode === 'mouse';
 }
 export function updateBoardPreferences(patch: Partial<BoardPreferences>): BoardPreferences {
     const next = clamp({ ...getBoardPreferences(), ...patch });

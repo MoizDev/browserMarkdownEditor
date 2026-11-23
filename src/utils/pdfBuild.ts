@@ -255,7 +255,7 @@ export async function buildAnnotatedPdf(
 
 /** Ruled paper, as PDF drawing colours. Kept in step with paper.ts's SVG by
  *  hand: that file is imported by the main bundle and must stay free of
- *  pdf-lib's `rgb`, so the two cannot share a constant. */
+ *  pdf-lib's `rgb`, so the two cannot share a constant. Change both when the rule changes. */
 const RULE_RGB = rgb(0.765, 0.827, 0.910);      // #c3d3e8
 const MARGIN_RGB = rgb(0.914, 0.722, 0.741);    // #e9b8bd
 const RULE_WIDTH = 0.75;

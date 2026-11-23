@@ -58,6 +58,8 @@ export const RENDER_CONSTANTS: RenderConstants = Object.freeze({
     gpuGrantBaseBytes: 33554432,
     gpuGrantPerVisiblePaneBytes: 16777216,
     gpuGrantPerVisiblePixelBytes: 24,
+    /** The DPR the GPU target's fixed terms scale to at most (by its square): a desktop's 2; a higher ratio adds only its pixels. */
+    gpuGrantMaxDpr: 2,
     cpuGrantMinBytes: 33554432,
     cpuGrantPerVisiblePaneBytes: 8388608,
     // 8 B per visible device pixel held the board's working canvases and nothing for a picture shown across the view: at DPR 2 a
@@ -75,10 +77,14 @@ export const RENDER_CONSTANTS: RenderConstants = Object.freeze({
     decodedRgbaBytesPerPixel: 4,
     memorySoftPressureRatio: 0.9,
     memoryTrimTargetRatio: 0.8,
+    /** Most of the GPU pool a live gesture's working set (wet ink) may hold; it is never trimmed while held. */
+    liveInputGpuFraction: 0.25,
     qualityReductionFactor: 0.8,
     minInteractiveQualityScale: 0.5,
-    memoryRecoveryRatio: 0.6,
     memoryRecoveryDelayMs: 5000,
+    // The cool window after the governor made the room itself (it trimmed what no frame draws): the rest is already there, and the
+    // full window held a WebGL2 PDF at 0.8, its editing cover up, for 5 s after every such step (t21: back to 1 within 3 s).
+    memoryMadeRoomRecoveryDelayMs: 1000,
     qualityStepSettleMs: 300,
     // A real trouble at a level (a device limit, an allocation refusal) re-fires whenever the level is retried at once, a raise/drop
     // cycle every ~5 s. The back-off spaces the retries 5, 10, 20, 40, 60 s and forgets them once the level holds 30 s. Measured with

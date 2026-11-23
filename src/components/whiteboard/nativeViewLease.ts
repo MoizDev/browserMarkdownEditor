@@ -12,6 +12,7 @@ import type { CaptureRequest, CaptureSnapshot } from '../../platform/render/capt
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
 import { recordPdfNavigation } from '../../utils/pdfViewState';
+import { auditCount, renderAuditEnabled } from '../../platform/render/renderAudit';
 import { getBoardRuntime, type BoardRuntime } from '../../whiteboard/host/runtime';
 import { createBoardViewCamera } from '../../whiteboard/host/viewCamera';
 import { resetZoomTarget, zoomStepTarget } from '../../whiteboard/host/zoomSteps';
@@ -32,7 +33,7 @@ import type { MediaId } from '../../whiteboard/model/media';
 import type { ComposedBoardSession } from '../../whiteboard/session/factoryTypes';
 import { attachView } from '../../whiteboard/viewer/attachView';
 import { createBoardNavigationHost } from '../../whiteboard/viewer/navigationHost';
-import type { ViewerEngine, ViewerViewParams } from '../../whiteboard/viewer/types';
+import type { ViewerEngine, ViewerSnapshot, ViewerViewParams } from '../../whiteboard/viewer/types';
 import { paintKey, type BoardViewLease, type BoardViewParameters, type BoardViewSnapshot } from './boardHostRuntime';
 import { createNativeViewPlatform } from './nativeViewPlatform';
 import { createNativeEditingLease, type NativeEditingToolOptions, type NativeEmbedInfrastructure } from './nativeEditingLease';
@@ -200,9 +201,41 @@ export function createNativeViewLease(options: {
     // The viewer's 'paint' (paint progress) reaches this lease's listeners, and the board's own listener, but it does not redraw
     // the native pane: the pane's picture did not change.
     const publish = (change?: string) => { if (!disposed) for (const listener of [...listeners]) listener(change); };
-    const invalidate = (change?: string) => { if (change !== 'paint') platformPane?.invalidate('native-view'); publish(change); };
+    // What the platform pane last drew, as the viewer snapshot it was drawn from. A viewer 'state' publish repaints the pane only
+    // when a field the pane draws from has moved since then (layers, scene revision, layout, palette, appearance, readiness,
+    // backend, paint progress). Selection, accessibility and the read-only reason are state-only: the picture of a selection
+    // is drawn by the interaction layers, which invalidate themselves, so a selection publish here repaints nothing new.
+    // The viewer is attached below; until then no snapshot exists and every invalidation is taken as a change.
+    let snapshotNow: () => ViewerSnapshot | null = () => null;
+    let drawn: ViewerSnapshot | null = null;
+    const invalidatePane = () => { drawn = snapshotNow(); platformPane?.invalidate('native-view'); };
+    const drawsChanged = (): boolean => {
+        const next = snapshotNow();
+        if (!next || !drawn) { if (renderAuditEnabled()) auditCount('native', `draws-changed:${!next ? 'no-snapshot' : 'no-drawn'}`); return true; }
+        // gh14 audit: each field that the pane draws from, counted when it is the reason a publish repaints (draws-changed:<field>).
+        const fields: Array<[string, boolean]> = [
+            ['state', drawn.state !== next.state], ['scene-revision', drawn.sceneRevision !== next.sceneRevision],
+            ['layout', drawn.layout !== next.layout], ['palette', drawn.palette !== next.palette],
+            ['background', drawn.appearance.background !== next.appearance.background], ['inverted', drawn.appearance.inverted !== next.appearance.inverted],
+            ['layers', drawn.layers !== next.layers], ['backend', drawn.backendPreference !== next.backendPreference],
+            ['paint-key', paintKey(drawn.state, drawn.paint) !== paintKey(next.state, next.paint)],
+        ];
+        let changed = false;
+        for (const [name, differs] of fields) {
+            if (!differs) continue;
+            changed = true;
+            if (renderAuditEnabled()) auditCount('native', `draws-changed:${name}`);
+        }
+        if (!changed && renderAuditEnabled()) auditCount('native', 'draws-unchanged');
+        return changed;
+    };
+    // Direct callers (navigation, camera, the lease's own refreshes) always repaint; only the viewer's state publishes are filtered.
+    const invalidate = (change?: string) => { if (change !== 'paint') invalidatePane(); publish(change); };
+    const viewerChanged = (change?: string) => { if (change !== 'paint' && drawsChanged()) { if (renderAuditEnabled()) auditCount('native', 'hint:viewer'); invalidatePane(); } publish(change); };
+    // gh14 audit: each caller of the unconditional invalidate is named (hint:<source>), so a native-view present is traced to its caller.
+    const hintFrom = (source: string) => () => { if (renderAuditEnabled()) auditCount('native', `hint:${source}`); invalidate(); };
     const cameraPorts: CameraPorts = { currentPath: () => current() ? host.identity(identity.documentId)?.path : undefined,
-        invalidate, onError: options.onError };
+        invalidate: hintFrom('camera'), onError: options.onError };
     const cameraClaim = options.cameraHandoff ? claimCamera(options.cameraHandoff, runtime, limits, insets, cameraPorts) : null;
     const cameraOwner = cameraClaim?.owner ?? createBoardViewCamera({ runtime, ...cameraPorts,
         limits, insets, initialViewport: { width: 0, height: 0, dpr: window.devicePixelRatio || 1 } });
@@ -236,7 +269,7 @@ export function createNativeViewLease(options: {
             const found = await host.readMedia(identity, { hash: id.slice(7), preferredName: runtime.media.currentFile(id) ?? entry.file }, signal);
             if (!found) throw new Error(`Missing board media: ${id}`);
             return found.blob;
-        }, invalidate: () => invalidate(),
+        }, invalidate: hintFrom('media'),
         // A picture that cannot be decoded is drawn as a placeholder and named in the app's notice; it is never the board's failure
         // (it was: 'Could not open canvas: Insufficient memory for full-frame image', on every reopen of a board holding the picture).
         // A transient failure (a cancelled or retired decode, a deadline, a memory refusal) is retried by the painter and is not the
@@ -252,7 +285,7 @@ export function createNativeViewLease(options: {
             return entry && bytes && entry.mime.startsWith('video/') ? { entry, blob: new Blob([bytes], { type: entry.mime }) } : null;
         },
         current: () => current() && parameters.visible,
-        invalidate: () => invalidate(),
+        invalidate: hintFrom('video'),
         error: (_id, message) => options.onNotice(message) });
     // Animated pictures: the picture's own playing choice (its default follows the reduced-motion preference), and one clock
     // that decodes only the frame it is on. Their frames are presented through the same registry as a video's.
@@ -272,7 +305,7 @@ export function createNativeViewLease(options: {
                 ? { entry, blob: new Blob([bytes], { type: entry.mime }) } : null;
         },
         current: () => current() && parameters.visible,
-        invalidate: () => invalidate(),
+        invalidate: hintFrom('animation'),
         // The viewer exists once attachView returns; a deadline set before that has no layer to wake yet, and the first paint re-arms it.
         wakeAt: deadline => { if (viewer) viewer.wakeAt(deadline); },
         error: (_id, message) => options.onNotice(message) });
@@ -323,6 +356,7 @@ export function createNativeViewLease(options: {
         // attachView owns the notebook's actual paper layer; adding another one
         // here gives the compositor two definitions with the same layer id.
         ...(backdrop ? { backdrops: backdrop.layers, pages: backdrop.pages } : {}) });
+    const paneId = `native-${identity.documentId}-${viewLease}`;
     let viewer: ReturnType<typeof attachView>;
     const reveal = (rect: Rect) => { camera.bringIntoView(rect, 24); cameraOwner.changed(); };
     try {
@@ -330,8 +364,9 @@ export function createNativeViewLease(options: {
         images.setVisible(parameters.visible && current());
         video.setVisible(parameters.visible && current());
         animation.setVisible(parameters.visible && current(), performance.now());
-        viewer = attachView({ session: board, token, view: viewParameters(), images, liveFrames: videoFrameOverlay(images.frames, syncAnimation, keys => images.setDemand(keys)),
+        viewer = attachView({ session: board, token, view: viewParameters(), images, auditPane: paneId, liveFrames: videoFrameOverlay(images.frames, syncAnimation, keys => images.setDemand(keys)),
             reveal, onError: options.onError });
+        snapshotNow = () => viewer.getSnapshot();
     } catch (error) { animation.dispose(); video.dispose(); backdrop?.dispose(); images.dispose(); if (!cameraClaim) cameraOwner.dispose(); throw error; }
     let presentedView: ViewState | null = null, presentedFrame: number | null = null, qualityNotice: string | null = null,
         qualityTimer: ReturnType<typeof setTimeout> | null = null;
@@ -350,9 +385,9 @@ export function createNativeViewLease(options: {
             viewport: refreshViewport, current: candidate => current() && candidate.documentId === token.documentId &&
                 candidate.session === token.session && candidate.vaultEpoch === token.vaultEpoch && candidate.bytesGeneration === token.bytesGeneration,
             editable: () => inputPermitted && parameters.mode === 'edit' && edit.canMutate() && !board.isReadOnly && host.canWrite(identity), visible: () => parameters.visible, focused: () => parameters.focused,
-            interaction: { invalidate, cameraChanged: () => { markUserNavigation(); cameraOwner.changed(); } },
+            interaction: { invalidate: hintFrom('interaction'), cameraChanged: () => { markUserNavigation(); cameraOwner.changed(); } },
             platform: () => { if (!platformPane) throw new Error('The board platform is not attached'); return platformPane; },
-            ui: edit.ui, commands: edit.commands }, invalidate, onError: options.onError }) : null;
+            ui: edit.ui, commands: edit.commands }, invalidate: hintFrom('edit'), onError: options.onError }) : null;
         } catch (error) { viewer.dispose(); animation.dispose(); video.dispose(); images.dispose(); if (!cameraClaim) cameraOwner.dispose(); throw error; } })();
     const stopEditingReady = editing && edit ? editing.subscribeAttachment(edit.onAttachment) : undefined;
     if (editing && edit) edit.onAttachment(editing.isAttached());
@@ -360,7 +395,6 @@ export function createNativeViewLease(options: {
         visible: () => parameters.visible && !!platformPane, current,
         changed: () => cameraOwner.changed(), onUserNavigation: markUserNavigation, invalidate, onError: options.onError,
         mac: /Mac|iPhone|iPad/.test(navigator.platform), invertMouseZoom: mouseZoomInverted });
-    const paneId = `native-${identity.documentId}-${viewLease}`;
     const withCapturer = <T,>(run: (capturer: ReturnType<typeof createPlatformCapturer>) => Promise<T>): Promise<T> => {
         if (!current()) return Promise.reject(new Error('Native view capture is unavailable'));
         const sheetId = runtime.selection.getSnapshot().sheet;
@@ -482,6 +516,9 @@ export function createNativeViewLease(options: {
                 // stays until a frame is presented. Only a presentation this lease refuses clears it (hiding clears it in setView).
                 if (presentation && presentedFrame === null) presentedView = null;
                 navigation.onPresentation(presentation);
+                // Audit only: why a presentation the embeds and backdrop act on was refused.
+                if (presentation && renderAuditEnabled() && !certifyPresentation(presentation)) auditCount('embed', 'uncertified:' + (!presentation.complete ? 'incomplete'
+                    : !presentation.sharp ? 'not-sharp' : presentation.staleVersion ? 'stale' : 'identity'));
                 viewer.presentationAccepted(presentation && certifyPresentation(presentation) ? presentation : null);
                 if (presentation && certifyPresentation(presentation)) backdrop?.notePresentation?.();
                 if (presentation && certifyPresentation(presentation)) recordBoardPresentation(performance.now(), presentation.backend);
@@ -521,7 +558,7 @@ export function createNativeViewLease(options: {
         recordNativeAgentViewport(boardRuntime, { camera: camera.camera, viewport: camera.viewport, insets, focused: parameters.focused,
             inverted: parameters.inverted });
     }
-    const stopViewer = viewer.subscribe(invalidate);
+    const stopViewer = viewer.subscribe(viewerChanged);
     const stopSelection = runtime.selection.subscribe(() => { viewer.setView(viewParameters()); publish(); });
     let resize: ResizeObserver | undefined;
     const detachSurface = () => { resize?.disconnect(); resize = undefined; surface = null; };
@@ -542,7 +579,7 @@ export function createNativeViewLease(options: {
             try { lease.dispose(); return handoff; }
             catch (error) { handoff.dispose(); throw error; }
         },
-        refreshAuthority() { if (!disposed) { updateInput(); viewer.setView(viewParameters()); invalidate(); } },
+        refreshAuthority() { if (!disposed) { updateInput(); viewer.setView(viewParameters()); hintFrom('authority')(); } },
         captureRegion: (rect, maxSide, signal) => captureRegion(rect, maxSide, { signal, theme: 'light', inverted: false, layers: captureLayers() }),
         captureBlob: (rect, maxSide, signal) => captureBlob(rect, maxSide, { signal, theme: 'light', inverted: false, layers: captureLayers() }),
         replaceBackdrop(next) {
@@ -606,7 +643,7 @@ export function createNativeViewLease(options: {
                 if (!next) { recordViewport(); navigation.cancelViewWork('platform-detach'); }
                 platformPane = next;
                 updateInput();
-                if (next) next.invalidate('native-attachment');
+                if (next) { next.beginFreshView(); next.invalidate('native-attachment'); }
             },
             attachInput(interaction, overlay) {
                 detachSurface(); surface = interaction;

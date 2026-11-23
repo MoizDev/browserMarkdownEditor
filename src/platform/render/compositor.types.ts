@@ -1,7 +1,7 @@
 import type { Affine, Rect, Rgba, ViewState } from '../types';
 import type { PagePresentation } from './camera';
 import type { DamageRecord } from './damage';
-import type { Backend, GfxDevice, GpuPass, RectI, Samples, TextureFormat, TextureHandle, UniformSlice } from './gfx/api';
+import type { Backend, DrawableImage, GfxDevice, GpuPass, RectI, Samples, TextureFormat, TextureHandle, UniformSlice } from './gfx/api';
 import type { MemoryAllocator, MemoryGovernor } from './memoryGovernor';
 import type { BorrowedMirror, MirrorView } from './mirrorSet';
 import type { Pane2DPresenter } from './paneLifecycle';
@@ -9,7 +9,7 @@ import type { PageStack } from './pageStack';
 import type { ReadySurfaceMetrics, SurfaceCommitTarget } from './surfaceMetrics';
 import type { GpuGrant } from './surfaceBroker.types';
 import type { ScheduledEncoding, ScheduledFrame } from './scheduler';
-import type { FrameBudget, FrameToken, GpuReleaseReason, Layer } from './types';
+import type { FrameBudget, FrameToken, GpuReleaseReason, Layer, LayerTrouble } from './types';
 
 /** Both drawing paths implement one host boundary (contracts.md C4.2:492–507). */
 export type CompositorBackend = 'canvas2d' | Backend;
@@ -42,15 +42,27 @@ export interface CompositorLayer {
     /** Benchmark denominator only, in device pixels; never a declaration of painted coverage. */
     readonly benchmarkDomain?: (frame: ScheduledFrame) => readonly Readonly<Rect>[];
     coverage(frame: ScheduledFrame, backend: CompositorBackend): LayerCoverage;
+    /** Whether this layer's missing content may refuse the frame. Absent or true: the frame waits, as it always has. False:
+     * an incomplete layer presents with whatever it drew (its stand-in), as PLAN issue 3 requires for non-critical content. */
+    critical?(frame: ScheduledFrame): boolean;
 }
 
 /** Canonical allocators stay bound to one pool; never reconstruct a ByteLease by id. */
 export interface LayerAllocators {
     readonly cpu: MemoryAllocator;
     readonly gpu: MemoryAllocator;
+    /** The pane's current CPU grant in bytes: read-only, allocates nothing. Optional so a construction site that does not yet supply it
+     * still typechecks; absent, a layer reads 0 (no grant known). */
+    cpuGrantBytes?(): number;
 }
 
 /** Source is intrinsic texture/bitmap texels including its real gutter; destination is DEVICE pixels. */
+/** One quad of a batch, in the same units and gutter rules as drawTexturedQuad: the source rectangle in texels and the
+ * destination in device pixels. */
+export interface TexturedQuadSpec {
+    readonly sourceRect: Readonly<Rect>;
+    readonly destRect: Readonly<Rect>;
+}
 export interface TexturedQuadOptions {
     readonly opacity: number;
     readonly sampling: 'nearest' | 'linear';
@@ -96,6 +108,10 @@ export interface LayerHost {
     demandChanged?(): void;
     /** Re-collects this pane's demand now, for a refusal that the current grant may be the cause of. */
     refreshDemandNow?(): void;
+    /** A layer that refused part of its own encode (a tile, a path, an ink batch) says so during encode: the frame cannot claim
+     * the layer complete. A critical layer's frame is refused and the previous picture stays; a non-critical one presents with
+     * layersComplete false. A canvas2d frame draws each layer directly, so there it is a no-op. */
+    markIncomplete(reason: string): void;
     readonly allocator: LayerAllocators;
     reserveIsolation(reservation: IsolationReservation): void;
     paintIsolation(ctx: CanvasRenderingContext2D, bounds: Readonly<RectI>, options: IsolationPaintOptions, paint: (isolatedCtx: CanvasRenderingContext2D) => void): void;
@@ -105,8 +121,18 @@ export interface LayerHost {
     paneTransform(view: ViewState, frameId: number): Affine | null;
     /** DrawGpu-only packing into the active encoder's fenced ring, never a layer-owned ring. */
     uniforms(bytes: ArrayBufferView): UniformSlice;
+    /** As uniforms, but rewrites a caller-owned record in place: a batch keeps one DrawCommand and rewrites its slice per draw. */
+    uniformsInto(bytes: ArrayBufferView, into: UniformSlice): void;
+    /** Read-only governor state for this pane: a layer may shed work under 'slow-gpu' or 'pressure'. Allocates nothing. */
+    trouble(): LayerTrouble;
+    /** Routes a device-path error the layer hit to the pane's GPU error channel; the pane demotes or reports as it does for its own. */
+    reportGpuError(error: unknown): void;
     drawTexturedQuad(pass: GpuPass, texture: TextureHandle, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
-    drawTexturedQuad(ctx: CanvasRenderingContext2D, image: ImageBitmap, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
+    drawTexturedQuad(ctx: CanvasRenderingContext2D, image: DrawableImage, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
+    drawTexturedQuads(pass: GpuPass, texture: TextureHandle, quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void;
+    drawTexturedQuads(ctx: CanvasRenderingContext2D, image: DrawableImage, quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void;
+    /** canvas2d: whether this frame can draw the image (see CompositorResources.imageReady). Always true on the GPU path. */
+    imageReady(image: DrawableImage): boolean;
 }
 
 /** The attach actor forwards these capabilities into its stable LayerHost objects. */
@@ -117,8 +143,17 @@ export interface CompositorResources {
     paintIsolation(ctx: CanvasRenderingContext2D, bounds: Readonly<RectI>, options: IsolationPaintOptions, paint: (isolatedCtx: CanvasRenderingContext2D) => void): void;
     /** Throws outside active GPU encoding; never returns a fictitious slice. */
     uniforms(bytes: ArrayBufferView): UniformSlice;
+    /** The layer being encoded cannot complete its content this frame (see LayerHost.markIncomplete). */
+    markIncomplete(reason: string): void;
+    uniformsInto(bytes: ArrayBufferView, into: UniformSlice): void;
     drawTexturedQuad(pass: GpuPass, texture: TextureHandle, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
-    drawTexturedQuad(ctx: CanvasRenderingContext2D, image: ImageBitmap, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
+    drawTexturedQuad(ctx: CanvasRenderingContext2D, image: DrawableImage, sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void;
+    drawTexturedQuads(pass: GpuPass, texture: TextureHandle, quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void;
+    drawTexturedQuads(ctx: CanvasRenderingContext2D, image: DrawableImage, quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void;
+    /** canvas2d only: true when a draw of this image into the display needs no upload this frame has not admitted. A false answer
+     * asks a later frame's preparation to admit it, so a layer with another picture of the same place (a stand-in) draws that one
+     * meanwhile instead of making the frame miss an image: a canvas2d frame that misses one is not presented at all. */
+    imageReady?(image: DrawableImage): boolean;
 }
 
 /** Final clear is opaque; inversion applies once to composited document colour (C2.5). */
@@ -150,6 +185,9 @@ export interface CompositorCoverage extends LayerCoverage {
     readonly token: FrameToken;
     readonly presented: boolean;
     readonly qualityScale: number;
+    /** Every item drew complete: no hole, raster stand-ins allowed. The commit gate of a size change (`complete` keeps its meaning
+     * for presentation, where a non-critical layer may present its stand-in). A hole is layersComplete=false in the audit. */
+    readonly layersComplete: boolean;
 }
 
 /** An absent capture hook is unavailable, never a successful blank (design §4.6). */
@@ -170,7 +208,7 @@ export interface PaneCompositor {
     readonly resources: CompositorResources;
     /** CPU bytes of this compositor's working cache, which the pane's grant covers. */
     cpuWorkingBytes?(): number;
-    /** The largest single upload this compositor needs one frame's progress grant to admit; one platform tile when absent. */
+    /** The largest single upload this compositor needs one frame's progress grant to admit; the platform tile when absent. */
     progressUploadBytes?(): number;
     readonly surfaceGeneration: number;
     /** A detached CPU resize bridge is working scratch until the old GPU display is zeroed. */
@@ -188,7 +226,13 @@ export interface PaneCompositor {
     prepareFrame(frame: ScheduledFrame, budget: FrameBudget): void;
     /** Admit declared peak inventory after all Layer.prepare calls, under the SAME budget/deadline. */
     finishPrepareFrame?(frame: ScheduledFrame, budget: FrameBudget): void;
-    encode(frame: ScheduledFrame): ScheduledEncoding | null;
+    encode(frame: ScheduledFrame, changed: boolean): ScheduledEncoding | null;
+    /** The layers' offscreen passes of a frame whose picture is unchanged, with no surface pass: nothing is presented. Null when no
+     * layer has offscreen work or the frame cannot be encoded. Absent on a backend with no offscreen work (canvas2d). */
+    encodeOffscreen?(frame: ScheduledFrame): ScheduledEncoding | null;
+    /** Whether a real present of this prepared frame would now report complete and sharp: every layer's coverage, read as the encode
+     * reads it. Absent on a backend whose frames are never skipped for offscreen work (canvas2d). */
+    nowSharp?(frame: ScheduledFrame): boolean;
     coverage(frame: ScheduledFrame): CompositorCoverage;
     page(view: ViewState, index: number): CompositorPage | null;
     paneTransform(view: ViewState, frameId: number): Affine | null;

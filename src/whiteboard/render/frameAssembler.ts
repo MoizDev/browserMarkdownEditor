@@ -13,6 +13,9 @@ import type { PaintFrameAssembler, PinnedPaintSource, PinnedPaintStream } from '
 import type { SessionDenseRasters } from './sessionDenseRasters';
 import type { ScenePaintNodeStream } from './scenePaintStream';
 import type { ResolvedNodeCache } from './resolvedNodeCache';
+import { auditCount } from '../../platform/render/renderAudit';
+/** The audit surface of the frame assembler: `board-frame:<event>` counters for staging, publication and drops. */
+const AUDIT = 'board-frame';
 
 const BLOCK_BYTES = 64 * 1024;
 // Array capacity and Set bookkeeping are JS-engine dependent; retain conservative per-entry
@@ -36,6 +39,7 @@ interface Owner {
     readonly rasterVariant?: string;
     readonly sourceWorld?: Readonly<Rect>;
     readonly regionChangesSince?: (from: number) => RegionChanges;
+    readonly changedNodesSince?: (from: number) => ReadonlySet<string> | null;
     readonly sensitiveMayMeet?: (world: Readonly<Rect>, nodes: ReadonlySet<string>) => boolean;
     readonly mayPaint?: (world: Readonly<Rect>) => boolean;
     readonly occupiedRoot?: Readonly<Rect>;
@@ -133,6 +137,7 @@ function streamOwner(pin: PinnedPaintStream): Owner {
         get rasterVariant() { return stream.rasterVariant; },
         get sourceWorld() { return stream.sourceWorld; },
         get regionChangesSince() { return stream.regionChangesSince; },
+        get changedNodesSince() { return stream.changedNodesSince; },
         get sensitiveMayMeet() { return stream.sensitiveMayMeet; },
         get mayPaint() { return stream.mayPaint; },
         get occupiedRoot() { return stream.occupiedRoot; },
@@ -258,6 +263,7 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
     const dropStaging = () => {
         const work = staging; staging = null; blocked = false;
         if (!work) return;
+        auditCount(AUDIT, 'frame:dropped');
         try { work.feed.cancel(); } catch (error) { report(error); }
         releaseOwned(work.owner, work.blocks);
     };
@@ -300,7 +306,10 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
                 inkNodeIds.add(item.nodeId); work.used += INK_SET_ENTRY_BYTES;
             }
         };
-        work.feed = feed(add, () => !needsBlock(work));
+        // A feed that refuses its source (a malformed node count) throws before anything is staged: the owner it was given is
+        // released here, or its pin and leases would be held by a request that never lands.
+        try { work.feed = feed(add, () => !needsBlock(work)); }
+        catch (error) { releaseOwned(owner, blocks); throw error; }
         staging = work;
         schedule();
     };
@@ -311,7 +320,7 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
         const root = { token: o.token, sceneRevision: o.sceneRevision,
             theme: o.theme, sourceDoc: o.sourceDoc, sensitiveNodes: o.sensitiveNodes,
             sessionRasters: o.sessionRasters, rasterVariant: o.rasterVariant, sourceWorld: o.sourceWorld, openTile: o.openTile,
-            regionChangesSince: o.regionChangesSince, sensitiveMayMeet: o.sensitiveMayMeet, mayPaint: o.mayPaint, occupiedRoot: o.occupiedRoot,
+            regionChangesSince: o.regionChangesSince, changedNodesSince: o.changedNodesSince, sensitiveMayMeet: o.sensitiveMayMeet, mayPaint: o.mayPaint, occupiedRoot: o.occupiedRoot,
             inkNodeIds: work.inkNodeIds };
         const frame: PaintSource = staged.kind === 'windows'
             ? Object.freeze({ ...root, liveOnly: true as const, windows: Object.freeze([...staged.underlay.finish(), ...staged.content.finish()]) })
@@ -319,6 +328,7 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
         // An unchanged picture is not published: the presented frame stays, and no frame is requested for it.
         if (latest && sameFrame(latest.frame, frame)) { staging = null; releaseOwned(o, work.blocks); return; }
         const published: Published = { owner: o, frame, blocks: work.blocks, borrowers: 0, retired: false, releasing: false };
+        auditCount(AUDIT, 'frame:published', 1, { items: work.windowed || (staged.kind === 'arrays' ? staged.underlay.length + staged.content.length : 0) });
         retained.set(frame, published); latest = published; staging = null;
         options.onPublished?.(frame);
         invalidate();
@@ -333,7 +343,7 @@ export function createPaintFrameAssembler(invalidate: () => void, onError: (erro
                 if (needsBlock(work)) {
                     if (!allocator) { blocked = true; return 'idle'; }
                     const lease = allocator.reserve(BLOCK_BYTES);
-                    if (!lease) { blocked = true; allocator.whenAvailable?.(wakeStaged); return 'idle'; }
+                    if (!lease) { blocked = true; auditCount(AUDIT, 'frame:block-wait'); allocator.whenAvailable?.(wakeStaged); return 'idle'; }
                     work.blocks.push({ owner: allocator, lease }); heldBytes += lease.bytes;
                 }
                 const status = work.feed.step();

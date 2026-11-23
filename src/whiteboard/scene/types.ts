@@ -40,8 +40,17 @@ export interface ScenePaintRequest {
     readonly includeWet?: boolean;
     /** Frozen world-to-device scale; absent for non-raster callers without a capture scale. */
     readonly deviceScale?: number;
+    /** On a device, where `deviceScale` is the top of the view's band: the view's own scale at the request. An axis-aligned
+     * picture's tiles are planned at it, as the GPU composer plans them (picture tiles, tilePlan.ts). */
+    readonly exactScale?: number;
     readonly sensitiveNodes?: ReadonlySet<NodeId>;
     readonly allowInkLod?: boolean;
+    /** Strokes realise at the request's ink band (its device scale's band) with no level of detail: a view stage and the scene
+     * stage at one band key one stroke the same, so a stage switch re-keys nothing. The band moves only at a crossing. */
+    readonly scenePrecision?: boolean;
+    /** A band crossing during a live zoom: the device scale the view held before it. A stroke whose wanted band is not built draws
+     * its previous band's geometry (counted as a band miss) while the wanted band builds in the background. Absent at rest. */
+    readonly previousDeviceScale?: number;
     /** Only these nodes are resolved and emitted; a live-only frame carries no other geometry. */
     readonly only?: ReadonlySet<NodeId>;
 }

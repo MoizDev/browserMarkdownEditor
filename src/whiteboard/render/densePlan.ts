@@ -666,6 +666,9 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
             if (disposed || !p || !prepared || p.retired) return null;
             return borrowPlan(p, prepared);
         },
+        // Dense mode is the canvas2d route's: nothing it draws was released to a GPU texture.
+        drawable2d() { return !disposed && !!ready?.prepared; },
+        reacquireReleased() { return 0; },
         draw2d(ctx, view, band, omitNodes) {
             const p = ready, prepared = p?.prepared;
             if (!p || !prepared) return;

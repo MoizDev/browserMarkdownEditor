@@ -14,7 +14,7 @@ interface BoundLayer {
 export class PaneLayerSet {
     private bindings: readonly BoundLayer[] = [];
 
-    constructor(private readonly makeHost: (id: string, current: () => Layer | null) => LayerHost) {}
+    constructor(private readonly makeHost: (id: string, current: () => Layer | null, definition: PlatformLayerDefinition) => LayerHost) {}
 
     get layers(): readonly Layer[] { return this.bindings.map(binding => binding.layer); }
     get compositorLayers(): readonly CompositorLayer[] { return this.bindings.map(binding => binding.compositor); }
@@ -42,7 +42,7 @@ export class PaneLayerSet {
                 const retained = old.get(definition);
                 if (retained) { seen.add(retained.layer); next.push(retained); continue; }
                 let layer: Layer | null = null;
-                const host = this.makeHost(definition.id, () => layer);
+                const host = this.makeHost(definition.id, () => layer, definition);
                 layer = definition.create(host);
                 if (seen.has(layer) || previouslyOwned.has(layer)) throw new Error('A layer cannot be shared by definitions');
                 seen.add(layer);

@@ -132,3 +132,12 @@ missing-media guard, invent media receipts or fall back to folder `.Assets` for 
 - Existing legacy drawing/notebook panes remain separate lazy consumers of tldraw until their own cutover;
   give tldraw local asset URLs. No PDF reader or writer may depend on tldraw's CDN to draw a line.
 - Ruled paper has two active definitions, `utils/paper.ts` and `utils/pdfBuild.ts`; change both.
+
+## Per-tile GPU textures and board claims
+
+- A PDF tile owns its own pooled GPU texture (`texturePool.ts` reuses free textures); its CPU bitmap lease is released once the
+  tile is GPU-resident. `evictGpu` clears the free pool, then frees off-view and other-scale tiles, farthest first; a tile on
+  screen or drawn by the last prepared frame stays. `releaseGpu` releases every page texture now.
+- `drawnPageRects()` (PDF page layer, notebook paper) lists the pages painted at least once at the current source and layout.
+  A board claims those pages as opaque (C1) and no others: `board-gpu-path`.
+- A device never builds the board's dense tile adapter. Dense tiles are canvas2d's (`board-gpu-path`).

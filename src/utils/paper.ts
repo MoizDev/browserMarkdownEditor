@@ -79,6 +79,7 @@ export const DEFAULT_PAPER: NotebookPaper = {
  * not reproduce. The notebook canvas pins itself to tldraw's light scheme for
  * the same reason the PDF annotator does — see NotebookPane. */
 export const PAPER_WHITE = '#ffffff';
+// Ruled paper exists twice: pdfBuild.ts draws the same colours as PDF rgb. Change both when the rule changes.
 const RULE_COLOR = '#c3d3e8';
 const MARGIN_COLOR = '#e9b8bd';
 const EDGE_COLOR = '#e2e2e2';

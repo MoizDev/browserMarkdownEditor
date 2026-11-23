@@ -1,6 +1,6 @@
 import {
     createTileGrid, exactScale, intersectingTiles, lowCoveragePlan, makeTileKey,
-    movingScale, pageAt, renderTokenKey, tilePrefetchRegion,
+    movingScale, pageAt, renderTokenKey, tileKeyString, tilePrefetchRegion,
 } from '../../platform/render';
 import type {
     PageStack, RasterTile, Rect, RenderToken, TileContentIdentity, TileDemandClass, TileKey, TileScale,
@@ -10,6 +10,8 @@ import { pdfVariantRevision } from '../fonts/profiles';
 /** A request is geometry and identity only. The pool owns transport and cancellation. */
 export interface PdfTileRequest {
     readonly key: TileKey;
+    /** `tileKeyString(key)`, built once when the tile is planned: the cache, the plan's set and the mirror all index by it. */
+    readonly text: string;
     readonly page: number;
     readonly tile: RasterTile;
     readonly scale: TileScale;
@@ -62,7 +64,9 @@ export function planPdfTileDemand(input: PdfDemandInput): PdfDemandSet {
     const { stack, viewport } = input;
     if (!stack.rects.length || viewport.width <= 0 || viewport.height <= 0) return { requests: [] };
     const motionScale = input.moving ? input.motionScaleOverride ?? movingScale(input.rasterScale, input.previousMotionScale) : undefined;
-    const scale = motionScale ?? exactScale(input.rasterScale);
+    // The key encodes the scale's float bits, and one zoom recomputes it with noise (1.4379084967320261 vs ...255):
+    // each variant keyed a new tile and re-rastered identical pixels. Twelve significant digits is far below a texel.
+    const scale = motionScale ?? exactScale(Number(input.rasterScale.toPrecision(12)));
     const prefetch = tilePrefetchRegion(viewport, input.velocity, false, input.direction);
     const lowRegion = tilePrefetchRegion(viewport, input.velocity, true, input.direction);
     const documentToken = renderTokenKey(input.token);
@@ -92,7 +96,8 @@ export function planPdfTileDemand(input: PdfDemandInput): PdfDemandSet {
             const visible = intersection(worldTile, viewport);
             const priority: TileDemandClass = !visible ? 'prefetch' :
                 input.covered(page, visible) ? 'visible-exact' : 'visible-hole';
-            requests.push({ key: makeTileKey(content, grid, tile), page, tile, scale: levelScale, level, priority,
+            const key = makeTileKey(content, grid, tile);
+            requests.push({ key, text: tileKeyString(key), page, tile, scale: levelScale, level, priority,
                 distance: Math.hypot(worldTile.x + worldTile.width / 2 - centreX, worldTile.y + worldTile.height / 2 - centreY) });
         }
     };

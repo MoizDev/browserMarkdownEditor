@@ -234,7 +234,14 @@ class CreationGesture implements GestureOwner {
     private async enclosedFrameChildren(node: Extract<Node, { kind: 'frame' }>, pose: { x: number; y: number; rotation: number }): Promise<NodeId[]> {
         const { runtime } = this.context, doc = runtime.session.doc, signal = this.controller.signal;
         const scene = runtime.scene ?? await runtime.ready;
-        if (!this.valid() || !scene.ready || scene.revision !== this.revision) throw new DOMException('Frame containment source changed', 'AbortError');
+        // A scene still indexing is stepped to ready, as a frame drop and a point query do. Refused, the first frame drawn on a newly
+        // opened board was dropped silently: the scene was still catching up (gpu-f1's commitprobe, DPR 2 dark, both backends).
+        while (!scene.ready) {
+            signal.throwIfAborted(); if (!this.valid() || runtime.scene !== scene) throw new DOMException('Frame containment source changed', 'AbortError');
+            scene.step(64, performance.now() + 3);
+            await new Promise<void>(resolve => setTimeout(resolve, 0));
+        }
+        if (!this.valid() || scene.revision !== this.revision) throw new DOMException('Frame containment source changed', 'AbortError');
         const c = Math.cos(pose.rotation), s = Math.sin(pose.rotation), transform = [c, s, -s, c, pose.x, pose.y] as const;
         const back = inverse(transform, 1e12); if (!back) throw new RangeError('Frame transform is not invertible');
         const box = new Float64Array(4); transformBox(box, 0, [0, 0, node.w, node.h], 0, transform);
@@ -285,6 +292,10 @@ class CreationGesture implements GestureOwner {
             node = { ...node, start: { ...node.start, attach: start }, end: { ...node.end, attach: end } };
         }
         if ('font' in node && !await render.text.fonts.load({ family: node.font, bold: false, italic: false })) throw new Error('The creation font could not be loaded');
+        // Every face its text uses is loaded before the epoch is fixed: a frame has no font of its own, and its title's face loaded later,
+        // in the geometry scope, moved the epoch, failed valid() and dropped the first frame drawn on a board, silently (gpu-f1's
+        // commitprobe, impl/gpu, both backends, DPR 2 dark: the first frame never landed, the second did).
+        await render.text.loadFaces(node, () => signal.throwIfAborted());
         if (!this.valid()) throw new DOMException('Creation invalidated', 'AbortError');
         this.fontEpoch = render.text.fonts.epoch;
         const doc = runtime.session.doc, candidate = createAddedBoardDoc(doc, [node]);

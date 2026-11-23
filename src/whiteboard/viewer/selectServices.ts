@@ -1,3 +1,5 @@
+import { auditTimed } from '../../platform/render/renderAudit';
+import { cameraChanged, forgetCamera } from './cameraCache';
 import { worldToSurface, type CameraController } from '../../platform/render/camera';
 import type { ScheduledFrame } from '../../platform/render/scheduler';
 import type { RenderToken } from '../../platform/render/types';
@@ -62,7 +64,7 @@ export interface BoardSelectServicesOptions {
     current(token: RenderToken): boolean;
     /** The view's own editable gate. A read-only or non-editable view refuses document commands; navigation, camera and picking stay live. */
     canMutateView(): boolean;
-    readonly inputFrames: { schedule(callback: () => void): () => void };
+    readonly inputFrames: { schedule(callback: () => void, onDrop?: () => void): () => void };
     readonly editSticky: (id: NodeId) => void | Promise<void>;
     /** The embed and link-card chips' actions; absent, the cards draw no chips. */
     readonly cards?: BoardCardActions | null;
@@ -78,8 +80,9 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const token = Object.freeze({ ...options.token });
     const pending = new Set<() => void>(), controllers = new Set<AbortController>();
     let disposed = false, regionPreview: SelectRegion | null = null, previewIds = new Set<NodeId>();
-    let svg: SVGSVGElement | null = null, shape: SVGElement | null = null, guideSvg: SVGSVGElement | null = null;
-    let scribbleSource: readonly Vec2[] | null = null, scribbleCount = 0, scribbleCamera = '';
+    let svg: SVGSVGElement | null = null, shape: SVGElement | null = null, guideSvg: SVGSVGElement | null = null, scheduled: (() => void) | null = null;
+    let scribbleSource: readonly Vec2[] | null = null, scribbleCount = 0;
+    const scribbleCamera = new Float64Array(3).fill(Number.NaN);
     let scribbleTail: SVGPolylineElement | null = null, scribblePoints: string[] = [];
     let guides: readonly BoardSnapGuide[] = [];
     let nudgeEpoch = 0, nudgeTail: Promise<void> = Promise.resolve();
@@ -88,14 +91,11 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     // A refused document command is consumed, not declined: a declined key falls through to the host's global route, which can promote a document change.
     const viewRefused = () => current() && !mutable();
     const report = (error: unknown) => { try { options.onError(error); } catch { /* Preserve the original operation failure. */ } };
-    // The wake-up carries no state, and the input host drops pending callbacks when input is disabled (measured:
-    // setInputEnabled(false) dropped the one queued here, so a guard that only that callback clears stayed set and
-    // every later overlay request was skipped: a marquee never cleared, a selection's box and handles never drew).
-    // The host de-duplicates the same callback reference, so requesting again is cheap and never stale.
-    const wakeOverlays = () => {};
     const requestFrame = () => {
-        if (disposed) return;
-        options.inputFrames.schedule(wakeOverlays);
+        if (disposed || scheduled) return;
+        // Both paths clear the flag: a request the input host drops (disable, cancel) would otherwise swallow every later one.
+        const clear = () => { scheduled = null; };
+        scheduled = options.inputFrames.schedule(clear, clear);
     };
     const registerPending = (cancel: () => void) => {
         if (!mutable()) throw new DOMException('Board input is no longer current', 'AbortError');
@@ -122,8 +122,20 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         }
         return ops.length ? { x: dx, y: dy } : null;
     };
-    const showTransform = (ops: readonly Op[], live = false) => { transformPreview = true; transformOffset = translationOf(ops); options.preview.showOps(ops, live); requestFrame(); };
-    const clearTransform = () => { transformPreview = false; transformOffset = null; options.preview.clear(); requestFrame(); };
+    // The handles and guides are written by a presented frame (writeOverlays), so a drag whose board stops presenting froze
+    // them: a move that no frame wrote since the previous move is written here, with the live camera. A frame that did
+    // write them clears the flag, so a board that presents every move (canvas2d) never takes this path.
+    let overlaysFramed = true;
+    const followMove = () => {
+        const framed = overlaysFramed; overlaysFramed = false;
+        if (framed || !current()) return;
+        const view = options.camera();
+        selectionHandles.writeLive(view, transformPreview ? transformOffset ?? 'hidden' : null);
+        shapeHandles.writeLive(view, transformOffset); stickyHandles.writeLive(view, transformOffset);
+        writeGuides(view.camera);
+    };
+    const showTransform = (ops: readonly Op[], live = false) => { transformPreview = true; transformOffset = translationOf(ops); options.preview.showOps(ops, live); followMove(); requestFrame(); };
+    const clearTransform = () => { transformPreview = false; transformOffset = null; options.preview.clear(); followMove(); requestFrame(); };
     const toSurface = (point: Vec2) => worldToSurface(point, options.camera().camera);
     const physicalSurface = (sample: RealSample) => sampleSurface(sample, options.sampleToSurface);
     const attachments = createBoardAttachmentResolver({ runtime, render: runtime.render, point: options.point, camera: options.camera, current: mutable });
@@ -205,7 +217,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             return options.region.region({ kind: 'polygon', containment: region.containment, localToSurface: IDENTITY,
                 points: [{ x: a.x, y: a.y }, { x: b.x, y: a.y }, { x: b.x, y: b.y }, { x: a.x, y: b.y }] }, signal);
         },
-        preview(value) { regionPreview = value; if (!value) previewIds.clear(); requestFrame(); },
+        preview(value) { regionPreview = value; if (!value) previewIds.clear(); if ((!value || value.kind === 'marquee') && current()) writeRegion(options.camera().camera); requestFrame(); },
         beginTransform(sample, _hit, modifiers) {
             check(); const ids = runtime.selection.getSnapshot().selected, revision = doc.rev;
             return translationHandleGesture(sample, modifiers, { runtime, ids, current: () => mutable() && doc.rev === revision,
@@ -385,10 +397,12 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     };
     // Show grid is the lattice snapping uses (boardSnapGrid), drawn under the handles and guides. Its period doubles while one
     // cell is under 8 CSS px, so a zoomed-out board stays legible and the line count stays bounded at every zoom.
-    let gridSvg: SVGSVGElement | null = null, gridPath: SVGPathElement | null = null, gridKey = '';
+    let gridSvg: SVGSVGElement | null = null, gridPath: SVGPathElement | null = null;
+    // The grid's camera and viewport, as five numbers (x, y, z, width, height); NaN until drawn.
+    const gridCamera = new Float64Array(5).fill(Number.NaN);
     const drawGrid = (frame: ScheduledFrame) => {
         const lattice = boardSnapGrid(runtime.session.doc);
-        if (!lattice) { gridSvg?.remove(); gridSvg = null; gridPath = null; gridKey = ''; return; }
+        if (!lattice) { gridSvg?.remove(); gridSvg = null; gridPath = null; gridCamera.fill(Number.NaN); return; }
         const { camera, viewport } = frame.view;
         if (!(camera.z > 0) || !Number.isFinite(camera.z)) return;
         if (!gridSvg || !gridPath) {
@@ -398,11 +412,11 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             gridPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
             gridPath.setAttribute('fill', 'none'); gridPath.setAttribute('stroke', 'currentColor');
             gridPath.setAttribute('stroke-opacity', '0.14'); gridPath.setAttribute('shape-rendering', 'crispEdges');
-            gridSvg.append(gridPath); options.overlay.prepend(gridSvg); gridKey = '';
+            gridSvg.append(gridPath); options.overlay.prepend(gridSvg); gridCamera.fill(Number.NaN);
         }
-        const key = `${camera.x} ${camera.y} ${camera.z} ${viewport.width} ${viewport.height}`;
-        if (key === gridKey) return;
-        gridKey = key;
+        const seen = gridCamera;
+        if (seen[0] === camera.x && seen[1] === camera.y && seen[2] === camera.z && seen[3] === viewport.width && seen[4] === viewport.height) return;
+        seen[0] = camera.x; seen[1] = camera.y; seen[2] = camera.z; seen[3] = viewport.width; seen[4] = viewport.height;
         const z = camera.z;
         let period = lattice.step.x;
         while (period * z < 8) period *= 2;
@@ -416,28 +430,17 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         }
         gridPath.setAttribute('d', d);
     };
-    const writeOverlays = (frame: ScheduledFrame) => {
-        if (!current() || frame.token.vaultEpoch !== token.vaultEpoch || frame.token.documentId !== token.documentId
-            || frame.token.bytesGeneration !== token.bytesGeneration || frame.token.session !== token.session) return;
-        drawGrid(frame);
-        navigation.present(frame); selectionHandles.write(frame, transformPreview ? transformOffset ?? 'hidden' : null); shapeHandles.write(frame); stickyHandles.write(frame); cardControls.write(frame); backToContent.update(frame);
-        if (guides.length) {
-            if (!guideSvg) { guideSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-                guideSvg.setAttribute('aria-hidden', 'true'); guideSvg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible';
-                options.overlay.append(guideSvg); }
-            guideSvg.replaceChildren();
-            for (const guide of guides) {
-                const from = guide.axis === 'x' ? { x: guide.value, y: guide.from } : { x: guide.from, y: guide.value };
-                const to = guide.axis === 'x' ? { x: guide.value, y: guide.to } : { x: guide.to, y: guide.value };
-                const a = worldToSurface(from, frame.view.camera), b = worldToSurface(to, frame.view.camera);
-                const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-                line.setAttribute('x1', String(a.x)); line.setAttribute('y1', String(a.y)); line.setAttribute('x2', String(b.x)); line.setAttribute('y2', String(b.y));
-                line.setAttribute('stroke', '#f276bd'); line.setAttribute('stroke-width', '1'); guideSvg.append(line);
-            }
-        } else { guideSvg?.remove(); guideSvg = null; }
+    /** The region preview (marquee or scribble) in its own SVG. A marquee is written when its preview changes, with the live
+     * camera, so the wash follows the pointer even while the GPU frame is deferred (its overlays are otherwise written only
+     * with a submitted frame, and a stalled board froze the wash for the whole drag). A scribble is still written per frame. */
+    // The shape's attributes are written when their value changes, and its style once per kind. By reading: a frame used to
+    // re-set the stroke, fill, dash and width, and the marquee's four numbers, whether or not any had moved.
+    let shapeMode: 'rect' | 'g' | null = null, shapeStroke = '';
+    const shapeBox = new Float64Array(4).fill(Number.NaN);
+    const writeRegion = (camera: ViewState['camera']) => {
         if (!regionPreview) {
-            svg?.remove(); svg = null; shape = null; scribbleSource = null; scribbleCount = 0;
-            scribbleTail = null; scribblePoints = []; scribbleCamera = ''; return;
+            svg?.remove(); svg = null; shape = null; shapeMode = null; scribbleSource = null; scribbleCount = 0;
+            scribbleTail = null; scribblePoints = []; forgetCamera(scribbleCamera); return;
         }
         if (!svg) {
             svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -447,21 +450,31 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         const kind = regionPreview.kind === 'marquee' ? 'rect' : 'g';
         if (!shape || shape.localName !== kind) {
             shape?.remove(); shape = document.createElementNS('http://www.w3.org/2000/svg', kind); svg.append(shape);
-            scribbleSource = null; scribbleCount = 0; scribbleTail = null; scribblePoints = []; scribbleCamera = '';
+            shapeMode = null; shapeStroke = ''; shapeBox.fill(Number.NaN);
+            scribbleSource = null; scribbleCount = 0; scribbleTail = null; scribblePoints = []; forgetCamera(scribbleCamera);
         }
-        shape.setAttribute('stroke', previewIds.size ? '#75b7ff' : '#6a9fff'); shape.setAttribute('stroke-width', '1.5');
+        const stroke = previewIds.size ? '#75b7ff' : '#6a9fff';
+        if (shapeStroke !== stroke) { shapeStroke = stroke; shape.setAttribute('stroke', stroke); }
+        if (shapeMode !== kind) {
+            shapeMode = kind; shape.setAttribute('stroke-width', '1.5');
+            if (kind === 'rect') { shape.setAttribute('fill', 'rgba(106,159,255,0.12)'); shape.setAttribute('stroke-dasharray', '4 3'); }
+            else { shape.setAttribute('fill', 'none'); shape.removeAttribute('stroke-dasharray'); }
+        }
         if (regionPreview.kind === 'marquee') {
-            const a = worldToSurface(regionPreview.start, frame.view.camera), b = worldToSurface(regionPreview.end, frame.view.camera);
-            shape.setAttribute('x', String(Math.min(a.x, b.x))); shape.setAttribute('y', String(Math.min(a.y, b.y)));
-            shape.setAttribute('width', String(Math.abs(a.x - b.x))); shape.setAttribute('height', String(Math.abs(a.y - b.y)));
-            shape.setAttribute('fill', 'rgba(106,159,255,0.12)'); shape.setAttribute('stroke-dasharray', '4 3');
+            const a = worldToSurface(regionPreview.start, camera), b = worldToSurface(regionPreview.end, camera);
+            const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y), width = Math.abs(a.x - b.x), height = Math.abs(a.y - b.y);
+            if (shapeBox[0] !== x) { shapeBox[0] = x; shape.setAttribute('x', String(x)); }
+            if (shapeBox[1] !== y) { shapeBox[1] = y; shape.setAttribute('y', String(y)); }
+            if (shapeBox[2] !== width) { shapeBox[2] = width; shape.setAttribute('width', String(width)); }
+            if (shapeBox[3] !== height) { shapeBox[3] = height; shape.setAttribute('height', String(height)); }
         } else {
-            const source = regionPreview.points, camera = frame.view.camera, cameraKey = `${camera.x}:${camera.y}:${camera.z}`;
-            if (scribbleSource !== source || scribbleCamera !== cameraKey || scribbleCount > source.length) {
-                shape.replaceChildren(); scribbleSource = source; scribbleCamera = cameraKey; scribbleCount = 0;
+            const source = regionPreview.points;
+            // Checked first and unconditionally: the cache must track the camera even on a frame that rebuilds for another reason.
+            const cameraMoved = cameraChanged(scribbleCamera, camera);
+            if (scribbleSource !== source || cameraMoved || scribbleCount > source.length) {
+                shape.replaceChildren(); scribbleSource = source; scribbleCount = 0;
                 scribbleTail = null; scribblePoints = [];
             }
-            shape.setAttribute('fill', 'none'); shape.removeAttribute('stroke-dasharray');
             // Keep exact points, but bound DOM projection to four small chunks per shared frame.
             const limit = Math.min(source.length, scribbleCount + 1024);
             while (scribbleCount < limit) {
@@ -481,6 +494,44 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             }
             if (scribbleCount < source.length) requestFrame();
         }
+    };
+    const writeOverlays = (frame: ScheduledFrame) => {
+        if (!current() || frame.token.vaultEpoch !== token.vaultEpoch || frame.token.documentId !== token.documentId
+            || frame.token.bytesGeneration !== token.bytesGeneration || frame.token.session !== token.session) return;
+        overlaysFramed = true;
+        drawGrid(frame);
+        navigation.present(frame); selectionHandles.write(frame, transformPreview ? transformOffset ?? 'hidden' : null); shapeHandles.write(frame, transformOffset); stickyHandles.write(frame, transformOffset); cardControls.write(frame); backToContent.update(frame);
+        writeGuides(frame.view.camera);
+        writeRegion(frame.view.camera);
+    };
+    // One line per guide, kept and moved: a frame writes a line's ends only when they changed. By reading: the frame used to
+    // replace every line with a new element each time it was written, which is what the drag's guides did at every move.
+    let guideLines: { readonly line: SVGLineElement; readonly last: Float64Array }[] = [];
+    const writeGuides = (camera: ViewState['camera']) => {
+        if (!guides.length) { guideSvg?.remove(); guideSvg = null; guideLines = []; return; }
+        if (!guideSvg) {
+            guideSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            guideSvg.setAttribute('aria-hidden', 'true'); guideSvg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible';
+            options.overlay.append(guideSvg); guideLines = [];
+        }
+        for (let i = 0; i < guides.length; i++) {
+            const guide = guides[i];
+            const from = guide.axis === 'x' ? { x: guide.value, y: guide.from } : { x: guide.from, y: guide.value };
+            const to = guide.axis === 'x' ? { x: guide.value, y: guide.to } : { x: guide.to, y: guide.value };
+            const a = worldToSurface(from, camera), b = worldToSurface(to, camera);
+            let entry = guideLines[i];
+            if (!entry) {
+                const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+                line.setAttribute('stroke', '#f276bd'); line.setAttribute('stroke-width', '1'); guideSvg.append(line);
+                entry = { line, last: new Float64Array(4).fill(Number.NaN) }; guideLines.push(entry);
+            }
+            const v = entry.last;
+            if (v[0] !== a.x) { v[0] = a.x; entry.line.setAttribute('x1', String(a.x)); }
+            if (v[1] !== a.y) { v[1] = a.y; entry.line.setAttribute('y1', String(a.y)); }
+            if (v[2] !== b.x) { v[2] = b.x; entry.line.setAttribute('x2', String(b.x)); }
+            if (v[3] !== b.y) { v[3] = b.y; entry.line.setAttribute('y2', String(b.y)); }
+        }
+        while (guideLines.length > guides.length) guideLines.pop()!.line.remove();
     };
     const beginHandle = (sample: RealSample, modifiers: Modifiers): GestureOwner | null => {
         // A card's chips need no write right: consent to load an embed, and opening a link, change no document.
@@ -594,8 +645,8 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const tool = { id: boardSelectTool.id, begin(sample: RealSample, modifiers: Modifiers) {
         return boardSelectTool.begin(sample, modifiers, selectContext);
     } };
-    return { select, tool, eraser, beginHandle, doubleClickHandle, handleCommand, keyboardContextMenu, lockedAt, nudge, transform, navigate, command, stickyNeighbour, setGuides, navigation, writeOverlays, cancelPending,
-        dispose() { if (disposed) return; cancelPending(); disposed = true; keyboardContext?.dispose(); backToContent.dispose(); cameraCommands.dispose(); selectionCommands.dispose(); styleShortcuts.dispose(); navigation.dispose(); selectionHandles.dispose(); shapeHandles.dispose(); stickyHandles.dispose(); cardControls.dispose(); options.preview.clear(); svg?.remove(); guideSvg?.remove(); guideSvg = null; svg = null; shape = null;
+    return { select, tool, eraser, beginHandle, doubleClickHandle, handleCommand, keyboardContextMenu, lockedAt, nudge, transform, navigate, command, stickyNeighbour, setGuides, navigation, writeOverlays: (frame: ScheduledFrame) => auditTimed('select-overlay', () => writeOverlays(frame)), cancelPending,
+        dispose() { if (disposed) return; cancelPending(); disposed = true; keyboardContext?.dispose(); backToContent.dispose(); cameraCommands.dispose(); selectionCommands.dispose(); styleShortcuts.dispose(); navigation.dispose(); selectionHandles.dispose(); shapeHandles.dispose(); stickyHandles.dispose(); cardControls.dispose(); scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); guideSvg?.remove(); guideSvg = null; svg = null; shape = null;
             regionPreview = null; scribbleSource = null; scribbleTail = null; scribblePoints = []; scribbleCount = 0; },
     };
 }

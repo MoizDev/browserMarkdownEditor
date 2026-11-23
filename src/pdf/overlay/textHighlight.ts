@@ -2,6 +2,8 @@ import type { Rect, Rgba, ViewState } from '../../platform/types';
 import type { FrameBudget, GpuReleaseReason, Layer } from '../../platform/render/types';
 import type { LayerHost } from '../../platform/render/compositor.types';
 import type { ByteLease, GfxDevice, GpuPass, TextureHandle } from '../../platform/render/gfx/api';
+import { QuadList } from '../layer/quadList';
+import { auditCount } from '../../platform/render/renderAudit';
 
 export interface PdfHighlightRects {
     /** World-space rectangles, already clipped to their physical pages. */
@@ -15,10 +17,14 @@ export interface PdfHighlightPalette {
     readonly selection: Rgba;
 }
 
-function deviceRect(rect: Readonly<Rect>, view: ViewState): Rect {
+/** Writes the rect's device-pixel placement into `out`: a frame draws every highlight, so no object is made per rect. */
+function deviceRect(rect: Readonly<Rect>, view: ViewState, out: Rect): Rect {
     const scale = view.camera.z * view.viewport.dpr;
-    return { x: (rect.x - view.camera.x) * scale, y: (rect.y - view.camera.y) * scale,
-        width: rect.width * scale, height: rect.height * scale };
+    out.x = (rect.x - view.camera.x) * scale;
+    out.y = (rect.y - view.camera.y) * scale;
+    out.width = rect.width * scale;
+    out.height = rect.height * scale;
+    return out;
 }
 function visible(rect: Rect, view: ViewState): boolean {
     return rect.width > 0 && rect.height > 0 && rect.x < view.viewport.width * view.viewport.dpr &&
@@ -34,6 +40,13 @@ export class PdfTextHighlightLayer implements Layer {
     private disposed = false;
     private pending = false;
     private lease: ByteLease | null = null;
+    private readonly scratch: Rect = { x: 0, y: 0, width: 0, height: 0 };
+    /** Every highlight of a frame, in find, current, selection order, drawn as one batch from the palette texture. */
+    private readonly quads = new QuadList();
+    /** A palette the device refused: counted once, and drawn without highlights until the palette changes. */
+    private paletteRefused = false;
+    /** A governor waiter for the palette's 12 bytes is outstanding. */
+    private awaiting = false;
 
     constructor(private readonly host: LayerHost, private palette: PdfHighlightPalette) {}
 
@@ -49,20 +62,23 @@ export class PdfTextHighlightLayer implements Layer {
     }
     setPalette(palette: PdfHighlightPalette): void {
         this.palette = palette;
+        this.paletteRefused = false;
         this.releaseGpu('pressure');
         this.host.invalidate('pdf-text-highlight-colours');
     }
     prepare(_view: ViewState, budget: FrameBudget): void {
         this.pending = false;
         const device = this.host.device();
-        if (!device || this.disposed || this.texture?.device === device) return;
+        if (!device || this.disposed || this.texture?.device === device || this.paletteRefused) return;
         if (this.texture) this.releaseGpu('pressure');
-        if (budget.shouldYield() || !budget.claimUpload(12)) { this.pending = true; return; }
+        if (budget.shouldYield()) { this.pending = true; return; }
+        // Storage before budget: a claim spent on a refused reservation starves the next upload (see tileLayer uploadTile).
         const lease = this.host.allocator.gpu.reserve(12);
-        if (!lease) return;
+        if (!lease) { this.awaitCapacity(); return; }
+        if (!budget.claimUpload(12)) { this.host.allocator.gpu.release(lease); this.pending = true; return; }
         let handle: TextureHandle;
         try { handle = device.createTexture(3, 1, 'rgba8', ['sample', 'copy-dst'], lease); }
-        catch (error) { this.host.allocator.gpu.release(lease); throw error; }
+        catch { this.host.allocator.gpu.release(lease); this.refusePalette(); return; }
         const colors = [this.palette.find, this.palette.current, this.palette.selection];
         const pixels = new Uint8Array(12);
         colors.forEach((color, index) => {
@@ -76,32 +92,55 @@ export class PdfTextHighlightLayer implements Layer {
             device.writeTexture(handle, { x: 0, y: 0, width: 3, height: 1 },
                 { source: pixels, rowBytes: 12, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
             this.texture = { device, handle };
-        } catch (error) { device.destroy(handle); throw error; }
+        } catch { device.destroy(handle); this.refusePalette(); }
+    }
+    /** A refused or failed palette is counted and not retried per frame: the layer draws no highlights until setPalette. */
+    private refusePalette(): void {
+        this.paletteRefused = true;
+        auditCount('pdf-text-highlight', 'palette-refused');
+    }
+    /** A refused reservation wakes the layer when the governor would admit its 12 bytes. Without a waiter it retries each frame. */
+    private awaitCapacity(): void {
+        const allocator = this.host.allocator.gpu;
+        if (!allocator.whenAvailable) { this.pending = true; return; }
+        if (this.awaiting) return;
+        this.awaiting = true;
+        allocator.whenAvailable(() => { this.awaiting = false; this.host.invalidate('pdf-text-highlight-capacity'); }, 12);
     }
     drawGpu(pass: GpuPass, view: ViewState): void {
         const texture = this.texture;
         if (!texture || texture.device !== this.host.device() || this.disposed) return;
-        [this.rects.find, this.rects.current, this.rects.selection].forEach((rects, index) => {
-            for (const rect of rects) {
-                const destination = deviceRect(rect, view);
-                if (visible(destination, view)) this.host.drawTexturedQuad(pass, texture.handle,
-                    { x: index, y: 0, width: 1, height: 1 }, destination, { opacity: 1, sampling: 'nearest' });
-            }
-        });
+        // Each group samples its own texel of the 3×1 palette texture (find, current, selection).
+        const quads = this.quads;
+        quads.reset();
+        this.addGpuGroup(quads, view, this.rects.find, 0);
+        this.addGpuGroup(quads, view, this.rects.current, 1);
+        this.addGpuGroup(quads, view, this.rects.selection, 2);
+        quads.drawAll(batch => this.host.drawTexturedQuads(pass, texture.handle, batch, { opacity: 1, sampling: 'nearest' }));
     }
     draw2d(ctx: CanvasRenderingContext2D, view: ViewState): void {
         if (this.disposed) return;
-        const colors = [this.palette.find, this.palette.current, this.palette.selection];
         ctx.save();
         try {
-            [this.rects.find, this.rects.current, this.rects.selection].forEach((rects, index) => {
-                ctx.fillStyle = css(colors[index]);
-                for (const rect of rects) {
-                    const destination = deviceRect(rect, view);
-                    if (visible(destination, view)) ctx.fillRect(destination.x, destination.y, destination.width, destination.height);
-                }
-            });
+            this.draw2dGroup(ctx, view, this.rects.find, this.palette.find);
+            this.draw2dGroup(ctx, view, this.rects.current, this.palette.current);
+            this.draw2dGroup(ctx, view, this.rects.selection, this.palette.selection);
         } finally { ctx.restore(); }
+    }
+    /** Queues the visible rects of one group, each sampling its texel. One scratch rect serves every rect. */
+    private addGpuGroup(quads: QuadList, view: ViewState, rects: readonly Readonly<Rect>[], texel: number): void {
+        const source = { x: texel, y: 0, width: 1, height: 1 };
+        for (const rect of rects) {
+            deviceRect(rect, view, this.scratch);
+            if (visible(this.scratch, view)) quads.add(source, this.scratch);
+        }
+    }
+    private draw2dGroup(ctx: CanvasRenderingContext2D, view: ViewState, rects: readonly Readonly<Rect>[], color: Rgba): void {
+        ctx.fillStyle = css(color);
+        for (const rect of rects) {
+            deviceRect(rect, view, this.scratch);
+            if (visible(this.scratch, view)) ctx.fillRect(this.scratch.x, this.scratch.y, this.scratch.width, this.scratch.height);
+        }
     }
     releaseGpu(reason: GpuReleaseReason): void {
         if (this.texture && reason !== 'context-lost') this.texture.device.destroy(this.texture.handle);

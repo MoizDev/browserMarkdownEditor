@@ -25,6 +25,9 @@ export interface InkPresentation {
   readonly clips?: readonly PaintClip[]
 }
 
+/** A point the caller owns and reuses: the live stroke maps every pointer sample into one, so the mapping allocates nothing. */
+export interface LocalPoint { x: number; y: number }
+
 export interface LiveInkContext {
   readonly identity: InkIdentity
   readonly presentation: InkPresentation
@@ -32,7 +35,8 @@ export interface LiveInkContext {
   readonly captureDeviceScale: number
   // Capture style, target sheet and local transform at down; implementations write
   // through the session transaction and preserve the same id/lease for undo/redo.
-  toLocal(sample: RealSample): { readonly x: number; readonly y: number }
+  /** Writes the sample's local point into `out`. */
+  toLocal(sample: RealSample, out: LocalPoint): void
   clearRedoAtDown(): void
   invalidate(): void
   commit(builder: SampleBuilder, identity: InkIdentity, undoImmediately: boolean, closed: boolean): DryInkIdentity
@@ -50,28 +54,34 @@ export interface WetInkSnapshot {
 // of wet versus dry is made once per frame, not by independent layer callbacks.
 export class WetInkHandover {
   private readonly pending = new Map<number, WetInkSnapshot>()
+  // The pending list as one array, rebuilt only when a stroke is published, cleared or disposed: the wet layer reads it
+  // several times per frame, and a fresh array per read was per-frame allocation for an unchanged set.
+  private pendingList: readonly WetInkSnapshot[] | null = null
+  private listener: (() => void) | null = null
+  // The wet layer subscribes so a publication (the pen-up that seals the stroke tail included) asks for a frame.
+  onPublish(listener: (() => void) | null): void { this.listener = listener }
   publish(snapshot: WetInkSnapshot): void {
     const previous = this.pending.get(snapshot.identity.gestureSequence)
     if (previous?.dry && previous.dry !== snapshot.dry) previous.dry.release?.()
     this.pending.set(snapshot.identity.gestureSequence, snapshot)
+    this.pendingList = null
+    this.listener?.()
   }
   clear(identity: InkIdentity): void {
     const existing = this.pending.get(identity.gestureSequence)
     if (existing?.identity.nodeId === identity.nodeId) {
-      this.pending.delete(identity.gestureSequence)
+      this.pending.delete(identity.gestureSequence); this.pendingList = null
       existing.dry?.release?.()
     }
   }
   dispose(): void {
-    const pending = [...this.pending.values()]; this.pending.clear()
+    const pending = [...this.pending.values()]; this.pending.clear(); this.pendingList = null
     for (const entry of pending) entry.dry?.release?.()
   }
-  forFrame(dryAvailable: (identity: DryInkIdentity) => boolean): readonly WetInkSnapshot[] {
-    const visible: WetInkSnapshot[] = []
-    for (const pending of this.pending.values()) {
-      if (!pending.dry || !dryAvailable(pending.dry)) visible.push(pending)
-    }
-    return visible
+  /** Every stroke not yet acknowledged, drawn or not. Visibility is the acknowledgement's alone: a dry frame that merely
+   * lists the node does not end the wet stroke, because the board may not have composed its tiles yet. */
+  pendingSnapshots(): readonly WetInkSnapshot[] {
+    return this.pendingList ??= [...this.pending.values()]
   }
   // The compositor calls this only after the token-matched frame with both dry
   // bands was actually presented; dropped or stale frames retain the fallback.
@@ -90,16 +100,24 @@ export class LiveInk implements GestureOwner {
   private dirty = true
   private dry: DryInkIdentity | null = null
   private snapshot: CurvePublication | null = null
+  private readonly point: LocalPoint = { x: 0, y: 0 }
+  // The delegated bridge reads these once per input frame. One record is updated in place, so a read allocates nothing; the
+  // bridge copies the fields it keeps, and the identity and presentation it holds are stable references.
+  private readonly read: { identity: InkIdentity; presentation: InkPresentation; sample: RealSample; curveSequence: number }
   get delegatedState(): Readonly<{ identity: InkIdentity; presentation: InkPresentation; sample: RealSample }> | null {
-    return !this.ended && this.last ? { identity: this.context.identity, presentation: this.context.presentation, sample: this.last } : null
+    if (this.ended || !this.last) return null
+    this.read.sample = this.last
+    return this.read
   }
   get delegatedCandidate(): Readonly<{ identity: InkIdentity; presentation: InkPresentation; sample: RealSample; curveSequence: number }> | null {
-    return !this.ended && this.last && this.snapshot ? { identity: this.context.identity, presentation: this.context.presentation,
-      sample: this.last, curveSequence: this.snapshot.sequence } : null
+    if (this.ended || !this.last || !this.snapshot) return null
+    this.read.sample = this.last; this.read.curveSequence = this.snapshot.sequence
+    return this.read
   }
 
   constructor(first: RealSample, modifiers: Modifiers, private readonly context: LiveInkContext, private readonly handover: WetInkHandover) {
     this.pointerIds = new Set([first.pointerId])
+    this.read = { identity: context.identity, presentation: context.presentation, sample: first, curveSequence: -1 }
     this.builder = new StraightInkBuilder(new LocalCurveBuilder(context.builderOptions, context.captureDeviceScale, context.presentation.fairTol))
     this.append(first, modifiers)
     context.clearRedoAtDown()
@@ -163,7 +181,8 @@ export class LiveInk implements GestureOwner {
 
   private append(sample: RealSample, modifiers: Modifiers): void {
     if (this.last && sample.x === this.last.x && sample.y === this.last.y && (!this.context.builderOptions.pressure || sample.pressure === this.last.pressure)) return
-    const point = this.context.toLocal(sample)
+    const point = this.point
+    this.context.toLocal(sample, point)
     const pressure = sample.source === 'pen' && sample.buttons === 0 && sample.pressure === 0 && this.last ? this.last.pressure : sample.pressure
     this.builder.append(point.x, point.y, this.context.builderOptions.pressure ? pressure : undefined, modifiers.shift)
     this.last = sample

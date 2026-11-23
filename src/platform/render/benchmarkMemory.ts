@@ -8,8 +8,8 @@ const totals = new Map<string, { gpu: number; cpu: number }>();
 export function measurementAllocator(paneId: string, pool: Pool, source: MemoryAllocator): MemoryAllocator {
     const owned = new Set<ByteLease>();
     return {
-        reserve(bytes) {
-            const lease = source.reserve(bytes);
+        reserve(bytes, options) {
+            const lease = source.reserve(bytes, options);
             if (!lease) return null;
             owned.add(lease);
             const total = totals.get(paneId) ?? { gpu: 0, cpu: 0 };

@@ -22,6 +22,7 @@ export interface SceneResolveContext {
     readonly deviceScale: number | undefined;
     readonly sensitive: boolean;
     readonly allowInkLod: boolean;
+    readonly previousDeviceScale?: number;
 }
 interface ScenePaintFilters {
     readonly orderedIds?: PaintNodeOrder;
@@ -55,7 +56,8 @@ function* scenePaintSource(doc: BoardDoc, token: RenderToken, request: ScenePain
         || !Number.isSafeInteger(token.bytesGeneration) || token.bytesGeneration < 0 || !Number.isSafeInteger(token.session) || token.session < 0
         || typeof token.documentId !== 'string' || !token.documentId || !doc.sheets.has(request.sheetId)
         || (request.theme !== 'light' && request.theme !== 'dark')
-        || (request.deviceScale !== undefined && (!Number.isFinite(request.deviceScale) || request.deviceScale <= 0))) throw new TypeError('Invalid scene paint identity or request');
+        || (request.deviceScale !== undefined && (!Number.isFinite(request.deviceScale) || request.deviceScale <= 0))
+        || (request.exactScale !== undefined && (!Number.isFinite(request.exactScale) || request.exactScale <= 0))) throw new TypeError('Invalid scene paint identity or request');
     if (request.page !== undefined && (!Number.isSafeInteger(request.page) || request.page < 0 || !ports.intersectsPage)) throw new TypeError('Page-filtered paint requires an exact page intersection provider');
     const pinnedToken: RenderToken = Object.freeze({ ...token });
     const scope = { ...request, ...(request.world ? { world: { ...request.world } } : {}),
@@ -91,7 +93,9 @@ function* scenePaintSource(doc: BoardDoc, token: RenderToken, request: ScenePain
             const clips = parent?.childClips ?? [];
             const childClips = item.kind === 'frame' ? [...clips, frameClip(item, world)] : clips;
             parent = { world, clips, childClips, opacity: (parent?.opacity ?? 1) * item.opacity, page, theme: scope.theme,
-                deviceScale: scope.deviceScale, sensitive: scope.sensitiveNodes.has(item.id), allowInkLod: !!scope.allowInkLod };
+                // A scene-precision request resolves its strokes at its band with no level of detail (the band is the request's device scale).
+                deviceScale: scope.deviceScale, sensitive: scope.sensitiveNodes.has(item.id),
+                allowInkLod: !scope.scenePrecision && !!scope.allowInkLod, previousDeviceScale: scope.previousDeviceScale };
             contexts.set(item.id, parent);
             if (streaming && contexts.size > 256) contexts.delete(contexts.keys().next().value!);
         }

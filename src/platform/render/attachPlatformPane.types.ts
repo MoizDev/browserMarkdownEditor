@@ -23,8 +23,17 @@ export interface PlatformLayerDefinition {
         mandatoryBytes: number;
         prefetchBytes: number;
     }>;
+    /** GPU bytes the layer must hold for the physical viewport at its current scale: its visible positions, pinned against
+     * trimming while the pane is visible. Granted before the surface share and any other scale or off-view ring. */
+    gpuWorkingSet?(layer: Layer, viewport: Readonly<{ width: number; height: number }>): Readonly<{ mandatoryBytes: number }>;
     /** Gives back up to `bytes` of the layer's own redundant CPU residency when the pane grant refuses a reservation. */
     cpuEvict?(layer: Layer, bytes: number): void;
+    /** A live gesture's layer (wet ink): its GPU cache is bounded by the pool, not by the pane's cache grant, because it
+     * retires only once the pane's committed layers have presented, with memory from that same grant. */
+    readonly liveInput?: boolean;
+    /** A layer whose CPU reservations are what its frame shows (the board's direct build): admitted while the pool fits, whatever
+     * the pane's CPU share. Background work keeps its grant. */
+    readonly foregroundCpu?: boolean;
     critical(layer: Layer, view: ViewState): boolean;
     /** Optional raster document denominator; compiled out with its benchmark-only provider. */
     benchmarkDomain?(layer: Layer, frame: ScheduledFrame): readonly Readonly<Rect>[];
@@ -37,8 +46,8 @@ export interface PlatformPresentation extends LayerCoverage {
     readonly backend: CompositorBackend;
     readonly viewEpoch: number;
     readonly revision: string;
-    /** The frame whose draw is on screen when it is not this one (a frame skipped as unchanged); absent, this frame. A consumer pairing a
-     * layer's draw with its presentation pairs on this. */
+    /** The frame whose draw is on screen: this frame for a real present; for a frame skipped as unchanged (presentUnchanged), the last
+     * real present, whose picture it shows at the same drawn camera. A consumer pairing a layer's draw with its presentation pairs on this. */
     readonly drawnFrameId?: number;
 }
 
@@ -94,6 +103,8 @@ export interface PlatformPane {
     setFocused(focused: boolean): void;
     observeSize(): void;
     setLayers(layers: readonly PlatformLayerDefinition[]): void;
+    /** A view attached: its layers keep the picture on screen until each first draws complete and sharp. Layers added later do not hold. */
+    beginFreshView(): void;
     invalidate(reason: string, damage?: DamageRecord): void;
     startFling(samples: readonly TouchPanSample[]): void;
     animateZoom(targetZ: number, anchor?: Point): void;

@@ -1,479 +1,486 @@
-import type { Affine, PathCommand, Rect, ViewState } from '../../platform/types';
+// The board's GPU paint adapter: the surface the layers call, over the tile composer (gpu/tileComposer.ts). The composer
+// tiles the paint on the GPU; this file holds what only the device and the reference can supply: the tile laying (a
+// modulate slice is a modulate group), the CPU raster that takes the items no GPU route draws, and the route wiring.
+// Design: planning/60-implementation/gpu-handoff/PLAN.md §3.3.
+import type { Rect, ViewState } from '../../platform/types';
 import type { LayerHost } from '../../platform/render/compositor.types';
-import type { ByteLease, GfxDevice, GpuPass, TextureHandle } from '../../platform/render/gfx/api';
-import type { FrameBudget, FrameToken, GpuReleaseReason } from '../../platform/render/types';
-import { createPathCoverageKit, type PathCoverageAdmission, type PathCoverageRule, type PreparedPathCoverage } from '../../platform/render/pathCoverage';
-import { pathFillTriangles } from './pathFillTriangles';
-import { pathStrokeTriangles } from './pathStrokeTriangles';
+import type { ByteLease, GfxDevice, GpuPass, RectI, TextureHandle } from '../../platform/render/gfx/api';
+import type { FrameBudget, FrameToken, GpuReleaseReason, OffscreenPasses } from '../../platform/render/types';
+import { auditCount, auditStage, auditTape, renderAuditEnabled, type AuditStage } from '../../platform/render/renderAudit';
+import { filterWindows } from './paintWindows';
 import type { PaintBand } from './material';
-import { PaintBoundsJob } from './paintBounds';
-import { paintContributions } from './paintContributions';
-import { analyticInkPaint, type AnalyticInkPaint } from './analyticInk';
-import { isGutterQuadTile, texturedQuad, TILE_EDGE, TILE_GUTTER, TILE_SIZE } from './imageSampling';
-import { createAnalyticInkBatch, type PreparedAnalyticInkBatch } from './analyticInkBatch';
-import type { PaintSource, PaintItem, PaintPathItem } from './paintStream';
+import type { PaintItem, PaintSource } from './paintStream';
 import type { CanvasPaintAdapter, PreparedPaint2d } from './reference/canvasPaintAdapter';
-import { paintItem2d } from './reference/paint2d';
+import { paintItem2d, type PaintResources2d, type PreparedPath2d } from './reference/paint2d';
+import { InkCoverageUnionPath2dJob, Path2dJob, type PathOrigin2d } from './reference/coverage2d';
+import { isBudgetRefusal } from './budgetRefusal';
+import { TILE_SIZE } from './imageSampling';
+import type { Blend, ItemRoute, PreparedRun } from './gpu/contracts';
+import { createTileComposer, type GeometryPins, type ResourcedRoute, type TileLay, type TileRoutes } from './gpu/tileComposer';
+import { createTileParts } from './gpu/tileParts';
+import { createTileStore, tileWorld } from './gpu/tileStore';
+import { createPath, withPreparedClips } from './gpu/routePath';
+import { createInkRoutes, inkRouteFor } from './gpu/routeInk';
+import { createImageRoute } from './gpu/routeImage';
+import { createTextRoute, type TextRoute } from './gpu/routeText';
 
-const EDGE = TILE_EDGE, GUTTER = TILE_GUTTER, SIZE = TILE_SIZE;
-const GPU_BYTES = SIZE * SIZE * 4, CPU_BYTES = GPU_BYTES * 2;
-interface CachedTile { texture: TextureHandle; device: GfxDevice; refs: number; key: string; bytes: number }
-type Tile = { item: PaintItem; x: number; y: number; cached: CachedTile; multiply: boolean; worldRect?: Readonly<Rect>; analytic?: never; path?: never }
-    | { item: PaintItem; x: number; y: number; analytic: AnalyticInkPaint; cached?: never; path?: never }
-    | { item: PaintItem; x: number; y: number; path: PreparedPathItem; cached?: never; analytic?: never; multiply?: never; worldRect?: never };
-/** One path item's admitted stencil work, in draw order: clip masks, then fill, then stroke. */
-interface PreparedPathItem { readonly clips: readonly PreparedPathCoverage[]; readonly fill: PreparedPathCoverage | null; readonly stroke: PreparedPathCoverage | null }
-/** Device pixels of flattening error allowed for a stencil-covered path (design §5.1: ≤0.1 px). */
-const PATH_FLATTEN_DEVICE_PX = 0.1;
-/** A run of analytic ink commands inside one window; a group never crosses a window, so a window is drawn alone. */
-interface AnalyticGroup {
-    window: number; first: number; end: number; paints: AnalyticInkPaint[]; batch: PreparedAnalyticInkBatch | null;
-}
-/** The tile commands of one window, in its draw order, and the analytic groups that start inside it. */
-interface WindowTiles { readonly band: PaintBand; readonly tiles: Tile[]; readonly groupAt: Map<number, AnalyticGroup> }
-interface Plan {
-    prepared: PreparedPaint2d; sourceFrame: PaintSource; token: FrameToken; device: GfxDevice; projection: string; scale: number; sharp: boolean;
-    x0: number; y0: number; x1: number; y1: number;
-    /** The window and the item inside it that the build step has reached. */
-    window: number; item: number; x: number; y: number; out: WindowTiles[];
-    boundsJob: PaintBoundsJob | null; tileBounds: { x0: number; y0: number; x1: number; y1: number } | null; itemKey: string;
-    analyticReady: boolean;
-    parts: Generator<PaintItem> | null; part: PaintItem | null; partIndex: number; hasMultiply: boolean;
-    cpuLeases: ByteLease[]; cpuUsed: number;
-    groups: AnalyticGroup[];
-    scanWindow: number; scanIndex: number; scanned: boolean; groupIndex: number; waitingBatch: boolean;
-}
-function sameToken(a: FrameToken, b: FrameToken): boolean {
-    return a.vaultEpoch === b.vaultEpoch && a.documentId === b.documentId && a.bytesGeneration === b.bytesGeneration &&
-        a.session === b.session && a.viewLease === b.viewLease && a.deviceGeneration === b.deviceGeneration;
-}
-function projection(view: ViewState): string {
-    const { camera: c, viewport: v } = view;
-    return [c.x, c.y, c.z, v.width, v.height, v.dpr].join(':');
-}
+const SIZE = TILE_SIZE;
+const NO_INK: ReadonlySet<string> = new Set();
+const TILE_BYTES = SIZE * SIZE * 4;
+/** The quad that lays a composed tile: the whole texture onto its destination, linear, no coverage classification. */
+const QUAD = Object.freeze({ opacity: 1, sampling: 'linear', coverage: 'none' } as const);
+/** A modulate tile is laid as an isolated group composited by fixed-function modulate (dst·k, h10): no backdrop copy. The
+ * composer draws the other multiply slices, the ones not over opaque rects, through its own multiply group (counted). */
+const MODULATE_GROUP = Object.freeze({ opacity: 1, blend: 'modulate', colourEffect: 'none' } as const);
+
 type DocumentIdentity = Pick<FrameToken, 'vaultEpoch' | 'documentId' | 'bytesGeneration' | 'session'>;
 function documentMatches(source: { readonly token: DocumentIdentity }, token: FrameToken): boolean {
     const t = source.token;
     return t.vaultEpoch === token.vaultEpoch && t.documentId === token.documentId &&
         t.bytesGeneration === token.bytesGeneration && t.session === token.session;
 }
-
-const identities = new WeakMap<object, number>();
-let nextIdentity = 1;
-function identity(value: object): number {
-    let id = identities.get(value);
-    if (id === undefined) {
-        if (!Number.isSafeInteger(nextIdentity)) throw new RangeError('Paint identity exhausted');
-        id = nextIdentity++; identities.set(value, id);
-    }
-    return id;
+function sameOmit(a: ReadonlySet<string> | null | undefined, b: ReadonlySet<string> | null | undefined): boolean {
+    const x = a?.size ? a : null, y = b?.size ? b : null;
+    if (!x || !y) return x === y;
+    if (x.size !== y.size) return false;
+    for (const id of y) if (!x.has(id)) return false;
+    return true;
 }
-function contentKey(item: PaintItem): string {
-    const common = [item.kind, item.key, item.geometryKey, item.localToWorld,
-        item.clips.map(clip => [clip.key, clip.fillRule, clip.localToWorld, identity(clip.d)])];
-    if (item.kind === 'image') return JSON.stringify([common, item.imageKey, item.rect, item.sourceRect, item.opacity, item.blend, item.inverted]);
-    if (item.kind === 'text') return JSON.stringify([common, item.paint.key, item.paint.fontEpoch, identity(item.faces), item.material.blend,
-        identity(item.material.glyphs), identity(item.material.backgrounds), identity(item.material.decorations)]);
-    if (item.kind === 'path') {
-        const stroke = item.material.stroke;
-        return JSON.stringify([common, identity(item.d), item.fillRule, item.material.blend, item.material.fill,
-            stroke && [stroke.color, stroke.width, stroke.cap, stroke.join, stroke.miterLimit,
-                stroke.dash && [identity(stroke.dash.array), stroke.dash.phase]]]);
-    }
-    return JSON.stringify([common, item.material.blend, item.material.color]);
+function timed<T>(surface: string, stage: AuditStage, fn: () => T): T {
+    if (!renderAuditEnabled()) return fn();
+    const t0 = performance.now();
+    try { return fn(); } finally { auditStage(surface, stage, performance.now() - t0); }
 }
 
-/** Lower-left corner of the path's control points: local coordinates are rebased here in double
- * precision before any single-precision upload (a conservative bound: control points included). */
-function pathOrigin(commands: readonly PathCommand[]): { x: number; y: number } {
-    let x = Infinity, y = Infinity;
-    for (const command of commands) {
-        if (command[0] === 'Z') continue;
-        for (let i = 1; i + 1 < command.length; i += 2) {
-            x = Math.min(x, command[i] as number); y = Math.min(y, command[i + 1] as number);
+/** Lays a composed tile on the surface. A modulate tile is wrapped in a modulate group, so it multiplies what is under it. */
+function createLay(host: LayerHost): TileLay {
+    const bounds: RectI = { x: 0, y: 0, width: 0, height: 0 };
+    return (pass: GpuPass, texture: TextureHandle, source: Readonly<Rect>, dest: Readonly<Rect>, blend: Blend): void => {
+        if (blend !== 'modulate') { host.drawTexturedQuad(pass, texture, source, dest, QUAD); return; }
+        // The group's origin is never negative: a tile that starts left of or above the surface is grouped from 0 (the device
+        // refuses a negative origin); its part off the surface is clipped by the surface anyway.
+        bounds.x = Math.max(0, Math.floor(dest.x)); bounds.y = Math.max(0, Math.floor(dest.y));
+        bounds.width = Math.ceil(dest.x + dest.width) - bounds.x; bounds.height = Math.ceil(dest.y + dest.height) - bounds.y;
+        const group = pass.beginGroup(bounds, MODULATE_GROUP);
+        host.drawTexturedQuad(pass, texture, source, dest, QUAD);
+        pass.endGroup(group);
+    };
+}
+
+/** A route that keeps a cache the governor can reclaim (the text atlas pages, the image textures); absent when it keeps none. */
+interface EvictingRoute extends ItemRoute { evictTextures?(bytes: number, frameId: number): number }
+
+/** A run the CPU route rasters: one tile-sized texture, uploaded once. */
+interface CpuRun extends PreparedRun {
+    readonly route: 'cpu';
+    readonly texture: TextureHandle;
+    readonly device: GfxDevice;
+    /** The lease the texture was created on: its bytes are what this run reports, read from the lease, not from a count. */
+    readonly lease: ByteLease;
+    /** The device generation the lease was granted in. A new generation abandons the old one, and returns its leases. */
+    readonly generation: number;
+}
+type CpuRoute = ItemRoute & ResourcedRoute;
+
+/** The route for what no GPU route draws: each run is rastered on the CPU, once, into a tile-sized scrap and drawn as a quad.
+ * A modulate run is painted multiply over white, which is exactly the k the modulate cover produces; an over run is painted
+ * over transparency. The composer counts every such run as fallback:item-cpu, so this route counts only its raster and upload. */
+function createCpuRoute(host: LayerHost, surface: string, lay: TileLay): CpuRoute {
+    let resources: PaintResources2d | null = null;
+    let scratch: OffscreenCanvas | null = null;
+    // The scratch canvas is CPU memory the governor must see: it is leased on the layer's CPU pool, and only that lease is reported.
+    let scratchLease: ByteLease | null = null;
+    const live = new Set<CpuRun>();
+    // A run is held only while its device generation is the host's: a new generation (or a lost device) abandons the old
+    // one, and the arena returns every lease it granted, so a stale run's bytes are no longer reserved to this layer.
+    const current = (run: CpuRun): boolean => run.device === host.device() && run.generation === host.generation;
+    // Path geometry of a fragment or ink part, built once per item and device scale: the reference holds only its own items' paths.
+    const paths = new WeakMap<PaintItem, { scale: number; prepared: PreparedPath2d }>();
+    const pathOf = (item: PaintItem, scale: number, paint: PaintResources2d): PreparedPath2d => {
+        if (item.kind !== 'path' && item.kind !== 'ink') return paint.path(item);
+        const cached = paths.get(item);
+        if (cached && cached.scale === scale) return cached.prepared;
+        let prepared: PreparedPath2d;
+        if (item.kind === 'path') {
+            const first = item.d[0];
+            const origin: PathOrigin2d = first && first[0] !== 'Z' ? [first[1], first[2]] : [0, 0];
+            const job = new Path2dJob(item.d, origin);
+            while (job.step(4096) === 'pending') { /* bounded by the path's own commands */ }
+            const path = job.result;
+            if (!path) throw new Error('CPU raster: path construction was cancelled');
+            prepared = { path, origin: job.origin };
+        } else {
+            const [a, b, c, d] = item.localToWorld;
+            const job = new InkCoverageUnionPath2dJob(item.coverage, scale * Math.hypot(a, b, c, d));
+            while (job.step(4096) === 'pending') { /* bounded by the coverage's own chunks */ }
+            const path = job.result;
+            if (!path) throw new Error('CPU raster: ink outline construction was cancelled');
+            prepared = { path, origin: job.origin };
         }
-    }
-    return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : { x: 0, y: 0 };
-}
-
-/** Local to device-pixel affine: the item's world transform, camera and device scale applied once, with
- * the origin rebase folded in. Flattening tolerance is divided by the Frobenius norm of the linear
- * part (at least its spectral norm), so the device error bound holds in every direction. */
-function deviceAffine(localToWorld: Affine, origin: { x: number; y: number }, view: ViewState): { affine: Affine; scale: number; norm: number } | null {
-    const [a, b, c, d, e, f] = localToWorld;
-    const scale = view.camera.z * view.viewport.dpr;
-    const norm = Math.hypot(a, b, c, d);
-    if (!(norm > 0) || !Number.isFinite(scale) || scale <= 0) return null;
-    return { scale, norm, affine: [scale * a, scale * b, scale * c, scale * d,
-        scale * (a * origin.x + c * origin.y + e - view.camera.x), scale * (b * origin.x + d * origin.y + f - view.camera.y)] };
-}
-
-type PathAdmission = { status: 'ready'; value: PreparedPathItem } | { status: 'empty' | 'denied' | 'unsupported' };
-
-/** Admits one path item's clip masks, fill and stroke, all or nothing: a later refusal retires the
- * earlier admissions, and any unsupported part sends the whole item to the exact canonical raster. */
-function admitPathItem(item: PaintPathItem, view: ViewState, kit: ReturnType<typeof createPathCoverageKit>,
-    budget: FrameBudget): PathAdmission {
-    const viewport = { width: Math.round(view.viewport.width * view.viewport.dpr), height: Math.round(view.viewport.height * view.viewport.dpr) };
-    const acquired: PreparedPathCoverage[] = [];
-    const fail = (status: 'empty' | 'denied' | 'unsupported'): PathAdmission => {
-        for (const prepared of acquired) kit.retire(prepared);
-        return { status };
+        paths.set(item, { scale, prepared });
+        return prepared;
     };
-    const clips: PreparedPathCoverage[] = [];
-    const place = (result: PathCoverageAdmission): 'ok' | 'empty' | 'denied' | 'unsupported' => {
-        if (result.status === 'ready') { acquired.push(result.value); return 'ok'; }
-        return result.status;
-    };
-    for (const clip of item.clips) {
-        const origin = pathOrigin(clip.d);
-        const frame = deviceAffine(clip.localToWorld, origin, view);
-        if (!frame) return fail('unsupported');
-        const shapes = pathFillTriangles(clip.d, { tolerance: PATH_FLATTEN_DEVICE_PX / (frame.scale * frame.norm), origin: [origin.x, origin.y] });
-        if (!shapes) return fail('unsupported');
-        const outcome = place(kit.admit({ shapes, rule: clip.fillRule, affine: frame.affine, viewport, colour: [1, 1, 1, 1],
-            output: { kind: 'mask' } }, budget));
-        if (outcome === 'empty') return fail('empty');  // a clip that excludes the viewport hides the item
-        if (outcome !== 'ok') return fail(outcome as 'denied' | 'unsupported');
-        clips.push(acquired[acquired.length - 1]);
-    }
-    const blend = item.material.blend === 'multiply' ? 'multiply' : 'normal';
-    let fill: PreparedPathCoverage | null = null;
-    if (item.material.fill) {
-        const origin = pathOrigin(item.d);
-        const frame = deviceAffine(item.localToWorld, origin, view);
-        if (!frame) return fail('unsupported');
-        const shapes = pathFillTriangles(item.d, { tolerance: PATH_FLATTEN_DEVICE_PX / (frame.scale * frame.norm), origin: [origin.x, origin.y] });
-        if (!shapes) return fail('unsupported');
-        const outcome = place(kit.admit({ shapes: { positive: shapes.positive, negative: shapes.negative, edges: shapes.edges, bounds: shapes.bounds },
-            rule: item.fillRule, affine: frame.affine, viewport, colour: item.material.fill, output: { kind: 'composite', blend } }, budget));
-        if (outcome === 'ok') fill = acquired[acquired.length - 1];
-        else if (outcome !== 'empty') return fail(outcome as 'denied' | 'unsupported');
-    }
-    let stroke: PreparedPathCoverage | null = null;
-    const style = item.material.stroke;
-    if (style && style.width > 0) {
-        const origin = pathOrigin(item.d);
-        const frame = deviceAffine(item.localToWorld, origin, view);
-        if (!frame) return fail('unsupported');
-        const outline = pathStrokeTriangles(item.d, { width: style.width, cap: style.cap, join: style.join, miterLimit: style.miterLimit,
-            ...(style.dash ? { dash: style.dash } : {}), tolerance: PATH_FLATTEN_DEVICE_PX / (frame.scale * frame.norm),
-            origin: [origin.x, origin.y] });
-        if (!outline) return fail('unsupported');
-        const outcome = place(kit.admit({ shapes: { positive: outline.triangles, negative: new Float64Array(0), edges: 0, bounds: outline.bounds },
-            rule: 'union', affine: frame.affine, viewport, colour: style.color, output: { kind: 'composite', blend } }, budget));
-        if (outcome === 'ok') stroke = acquired[acquired.length - 1];
-        else if (outcome !== 'empty') return fail(outcome as 'denied' | 'unsupported');
-    }
-    if (!fill && !stroke) return fail('empty');
-    return { status: 'ready', value: { clips, fill, stroke } };
-}
+    const multiplied = (item: PaintItem): PaintItem => item.kind === 'image'
+        ? { ...item, blend: 'multiply' }
+        : { ...item, material: { ...item.material, blend: 'multiply' } } as PaintItem;
 
-/** Draw order inside one item: clip masks render first, then the item's coverage inside the pushed clips. */
-function drawPathItem(pass: GpuPass, item: PreparedPathItem, kit: ReturnType<typeof createPathCoverageKit>): void {
-    for (const clip of item.clips) kit.drawMask(pass, clip);
-    const tokens = item.clips.map(clip => pass.pushClip(clip.clip!));
-    try {
-        if (item.fill) kit.draw(pass, item.fill);
-        if (item.stroke) kit.draw(pass, item.stroke);
-    } finally {
-        for (let i = tokens.length - 1; i >= 0; i--) pass.popClip(tokens[i]);
-    }
-}
-
-/** Item-isolated raster tiles preserve ordering and permit exact node omission. The paint is consumed one
- * window at a time: each window's tile commands are built, scanned and drawn as their own bounded list. */
-export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: LayerHost, report: (error: unknown) => void) {
-    let staged: Plan | null = null, ready: Plan | null = null, disposed = false, denied = false;
-    let currentToken: FrameToken | null = null, lastFrame = -1, scratch = 0;
-    let movingScale = 0, tileBytes = 0;
-    const cache = new Map<string, CachedTile>();
-    const analytic = createAnalyticInkBatch(host, () => { /* optional pipeline failure keeps canonical coverage tiles */ });
-    const pathCoverage = createPathCoverageKit(host, report);
-    const retirePathItem = (item: PreparedPathItem) => {
-        for (const clip of item.clips) pathCoverage.retire(clip);
-        if (item.fill) pathCoverage.retire(item.fill);
-        if (item.stroke) pathCoverage.retire(item.stroke);
-    };
-    const drop = (plan: Plan | null) => {
-        if (!plan) return;
-        plan.parts?.return(undefined); plan.parts = null; plan.part = null;
-        for (const group of plan.groups) {
-            if (group.batch) analytic.retire(group.batch); else analytic.cancel(group.paints);
-        }
-        plan.groups.length = 0;
-        for (const out of plan.out) {
-            for (const tile of out.tiles) {
-                if (tile.analytic) continue;
-                if (tile.path) { retirePathItem(tile.path); continue; }
-                const entry = tile.cached;
-                if (--entry.refs === 0) { cache.delete(entry.key); tileBytes -= entry.bytes; entry.device.destroy(entry.texture); }
+    const route: CpuRoute = {
+        id: 'cpu',
+        accepts: (item): item is PaintItem => true,
+        useResources(next: PaintResources2d): void { resources = next; },
+        admit(items, view, blend, budget) {
+            const paint = resources;
+            const device = host.device();
+            if (!paint || !device) return { status: 'unsupported', why: 'no-paint-or-device' };
+            if (!scratch) {
+                const cpuLease = host.allocator.cpu.reserve(TILE_BYTES);
+                if (!cpuLease) return { status: 'denied', pool: 'cpu', bytes: TILE_BYTES };
+                scratchLease = cpuLease;
+                scratch = new OffscreenCanvas(SIZE, SIZE);
             }
-            out.tiles.length = 0; out.groupAt.clear();
-        }
-        plan.out.length = 0;
-        for (const lease of plan.cpuLeases) host.allocator.cpu.release(lease);
-        plan.cpuLeases.length = 0;
-    };
-    const validDevice = (plan: Plan) => !!currentToken && sameToken(plan.token, currentToken) &&
-        host.device() === plan.device && host.generation === plan.token.deviceGeneration;
-    const valid = (plan: Plan, view: ViewState, scale: number) => validDevice(plan) && projection(view) === plan.projection && plan.scale === scale;
-    const rasterScale = (view: ViewState, demand: number): number => {
-        if (!view.moving) { movingScale = 0; return demand; }
-        if (movingScale >= demand && movingScale <= demand * 1.2 * Math.SQRT2) return movingScale;
-        movingScale = Math.pow(Math.SQRT2, Math.ceil(Math.log(demand) / Math.log(Math.SQRT2)));
-        return movingScale;
-    };
-    const ensurePlanCapacity = (plan: Plan): boolean => {
-        if (plan.cpuUsed + 512 <= plan.cpuLeases.length * 65_536) return true;
-        const lease = host.allocator.cpu.reserve(65_536);
-        if (!lease) { denied = true; return false; }
-        plan.cpuLeases.push(lease); return true;
-    };
-    const reset = () => { drop(staged); drop(ready); staged = ready = null; };
-    return {
-        prepare(view: ViewState, budget: FrameBudget): void {
-            if (disposed || lastFrame === budget.frameId) return;
-            lastFrame = budget.frameId; currentToken = { ...budget.token };
-            analytic.warm();
-            const prepared = reference.borrowPrepared(), device = host.device(), demand = view.camera.z * view.viewport.dpr;
-            if (!prepared || !device || !documentMatches(prepared.root, budget.token) || !documentMatches(prepared.sourceFrame, budget.token) || device.generation !== budget.token.deviceGeneration ||
-                host.generation !== budget.token.deviceGeneration || !Number.isFinite(demand) || demand <= 0) { reset(); return; }
-            const sourceFrame = prepared.sourceFrame;
-            const scale = rasterScale(view, demand);
-            // One bounded source group and its independently leased real backdrop are reused
-            // sequentially; the node/group itself never becomes an isolated-opacity operation.
-            if (ready?.hasMultiply || staged?.hasMultiply) host.reserveIsolation({ depth: 1, maskDepth: 0,
-                bounds: { x: 0, y: 0, width: Math.min(Math.ceil(view.viewport.width * view.viewport.dpr), Math.ceil(EDGE * demand / scale) + 2),
-                    height: Math.min(Math.ceil(view.viewport.height * view.viewport.dpr), Math.ceil(EDGE * demand / scale) + 2) }, multiply: true });
-            // A denial suppresses polling via needsFrame(), but a real wake may bring a new grant.
-            denied = false;
-            if (ready && !validDevice(ready)) { drop(ready); ready = null; denied = false; }
-            if (staged && (!valid(staged, view, scale) || staged.prepared !== prepared || staged.analyticReady !== analytic.ready())) { drop(staged); staged = null; denied = false; }
-            if ((ready?.prepared === prepared && valid(ready, view, scale) && ready.analyticReady === analytic.ready()) || denied) return;
-            if (!staged) {
-                const x0 = Math.floor(view.camera.x * scale / EDGE), y0 = Math.floor(view.camera.y * scale / EDGE);
-                const x1 = Math.ceil((view.camera.x + view.viewport.width / view.camera.z) * scale / EDGE);
-                const y1 = Math.ceil((view.camera.y + view.viewport.height / view.camera.z) * scale / EDGE);
-                if (![x0, y0, x1, y1].every(Number.isSafeInteger)) throw new RangeError('Invalid board tile projection');
-                staged = { prepared, sourceFrame, token: { ...budget.token }, device, projection: projection(view), scale, sharp: prepared.sharp !== false,
-                    x0, y0, x1, y1, window: 0, item: 0, x: x0, y: y0, out: [], boundsJob: null, tileBounds: null, itemKey: '', analyticReady: analytic.ready(),
-                    parts: null, part: null, partIndex: 0, hasMultiply: false, cpuLeases: [], cpuUsed: 0,
-                    groups: [], scanWindow: 0, scanIndex: 0, scanned: false, groupIndex: 0, waitingBatch: false };
-            }
-            const p = staged;
+            const lease = host.allocator.gpu.reserve(TILE_BYTES);
+            if (!lease) return { status: 'denied', pool: 'gpu', bytes: TILE_BYTES };
+            // The claim comes after the reservations: a refused reservation spends no upload allowance.
+            if (!budget.claimUpload(TILE_BYTES)) { host.allocator.gpu.release(lease); return { status: 'deferred' }; }
+            let texture: TextureHandle | null = null;
+            let bitmap: ImageBitmap | null = null;
             try {
-                while (!budget.shouldYield()) {
-                    const win = prepared.windows[p.window];
-                    if (!win) {
-                        // Every window is built: scan each window's analytic runs, then prepare the batches.
-                        while (!p.scanned && !budget.shouldYield()) {
-                            if (p.scanWindow === p.out.length) { p.scanned = true; break; }
-                            const out = p.out[p.scanWindow];
-                            if (p.scanIndex === out.tiles.length) { p.scanWindow++; p.scanIndex = 0; continue; }
-                            const index = p.scanIndex++, command = out.tiles[index];
-                            if (!command.analytic) continue;
-                            let group = p.groups[p.groups.length - 1];
-                            if (!group || group.window !== p.scanWindow || group.end !== index) {
-                                group = { window: p.scanWindow, first: index, end: index, paints: [], batch: null };
-                                p.groups.push(group); out.groupAt.set(index, group);
-                            }
-                            group.paints.push(command.analytic); group.end++;
-                        }
-                        if (!p.scanned) return;
-                        while (p.groupIndex < p.groups.length && !budget.shouldYield()) {
-                            const group = p.groups[p.groupIndex];
-                            group.batch = analytic.prepare(group.paints, view, budget);
-                            p.waitingBatch = !group.batch;
-                            if (!group.batch) return;
-                            p.groupIndex++;
-                        }
-                        if (p.groupIndex !== p.groups.length) return;
-                        drop(ready); ready = p; staged = null; return;
-                    }
-                    if (p.item >= win.items.length) { p.window++; p.item = 0; continue; }
-                    if (p.out.length === p.window) p.out.push({ band: win.band, tiles: [], groupAt: new Map() });
-                    const out = p.out[p.window];
-                    const original = win.items[p.item];
-                    if (!p.parts) { p.parts = paintContributions(original); p.partIndex = 0; }
-                    if (!p.part) {
-                        const next = p.parts.next();
-                        if (next.done) { p.parts = null; p.item++; continue; }
-                        p.part = next.value; p.partIndex++;
-                    }
-                    const item = p.part;
-                    const multiply = (original.kind === 'image' ? original.blend : original.material.blend) === 'multiply';
-                    p.hasMultiply ||= multiply;
-                    if (item.kind === 'image' && !multiply && isGutterQuadTile(item)) {
-                        const image = prepared.resources.image(item.imageKey);
-                        if (typeof ImageBitmap !== 'undefined' && image instanceof ImageBitmap && image.width === SIZE && image.height === SIZE) {
-                            if (!ensurePlanCapacity(p)) return;
-                            const key = JSON.stringify(['retained', identity(p.sourceFrame), p.token.vaultEpoch, p.token.documentId,
-                                p.token.bytesGeneration, p.token.session, p.token.viewLease, p.token.deviceGeneration,
-                                EDGE / item.rect.width, identity(image), p.partIndex, contentKey(item)]);
-                            let cached = cache.get(key);
-                            if (cached) cached.refs++;
-                            else {
-                                const bytes = image.width * image.height * 4;
-                                const lease = host.allocator.gpu.reserve(bytes);
-                                if (!lease) { denied = true; return; }
-                                if (!budget.claimUpload(bytes)) { host.allocator.gpu.release(lease); return; }
-                                let texture: TextureHandle | null = null, attached = false;
-                                try {
-                                    texture = device.createTexture(image.width, image.height, 'rgba8', ['sample', 'copy-dst'], lease); attached = true;
-                                    device.writeTexture(texture, { x: 0, y: 0, width: image.width, height: image.height },
-                                        { source: image, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
-                                    cached = { texture, device, refs: 1, key, bytes };
-                                    cache.set(key, cached); tileBytes += bytes; texture = null;
-                                } finally {
-                                    if (texture) device.destroy(texture);
-                                    if (!attached) host.allocator.gpu.release(lease);
-                                }
-                            }
-                            out.tiles.push({ item: original, x: 0, y: 0, cached, multiply: false, worldRect: item.rect });
-                            p.cpuUsed += 512; p.part = null; return;
-                        }
-                    }
-                    if (item.kind === 'path') {
-                        if (!ensurePlanCapacity(p)) return;
-                        const admission = admitPathItem(item, view, pathCoverage, budget);
-                        if (admission.status === 'ready') { out.tiles.push({ item: original, x: 0, y: 0, path: admission.value }); p.cpuUsed += 512; p.part = null; continue; }
-                        if (admission.status === 'empty') { p.part = null; continue; }
-                        if (admission.status === 'denied') { denied = true; return; }
-                        // 'unsupported': the exact canonical raster route below draws this item.
-                    }
-                    if (p.analyticReady && !p.tileBounds && item.kind === 'ink' && !multiply) {
-                        if (!ensurePlanCapacity(p)) return;
-                        const paint = analyticInkPaint(item, view);
-                        if (paint) { out.tiles.push({ item: original, x: 0, y: 0, analytic: paint }); p.cpuUsed += 512; p.part = null; continue; }
-                    }
-                    if (!p.tileBounds) {
-                        p.boundsJob ??= new PaintBoundsJob(item);
-                        if (!p.boundsJob.step(1)) continue;
-                        const bounds = p.boundsJob.result; p.boundsJob = null;
-                        if (!bounds) { p.part = null; continue; }
-                        const x0 = Math.max(p.x0, Math.floor((bounds.x * scale - GUTTER) / EDGE));
-                        const y0 = Math.max(p.y0, Math.floor((bounds.y * scale - GUTTER) / EDGE));
-                        const x1 = Math.min(p.x1, Math.ceil(((bounds.x + bounds.width) * scale + GUTTER) / EDGE));
-                        const y1 = Math.min(p.y1, Math.ceil(((bounds.y + bounds.height) * scale + GUTTER) / EDGE));
-                        if (x0 >= x1 || y0 >= y1) { p.part = null; continue; }
-                        p.tileBounds = { x0, y0, x1, y1 }; p.x = x0; p.y = y0; p.itemKey = `${p.partIndex}:${contentKey(item)}`;
-                    }
-                    const tileKey = JSON.stringify([p.token.vaultEpoch, p.token.documentId, p.token.bytesGeneration, p.token.session,
-                        p.token.viewLease, p.token.deviceGeneration, p.scale, p.x, p.y, p.itemKey]);
-                    const existing = cache.get(tileKey);
-                    if (!ensurePlanCapacity(p)) return;
-                    if (existing) {
-                        existing.refs++; out.tiles.push({ item: original, x: p.x, y: p.y, cached: existing, multiply }); p.cpuUsed += 512;
-                        const bounds = p.tileBounds;
-                        if (++p.x >= bounds.x1) { p.x = bounds.x0; if (++p.y >= bounds.y1) { p.part = null; p.tileBounds = null; } }
-                        return;
-                    }
-                    const cpu = host.allocator.cpu.reserve(CPU_BYTES);
-                    if (!cpu) { denied = true; return; }
-                    scratch = cpu.bytes;
-                    const gpu = host.allocator.gpu.reserve(GPU_BYTES);
-                    if (!gpu) { host.allocator.cpu.release(cpu); scratch = 0; denied = true; return; }
-                    if (!budget.claimUpload(GPU_BYTES)) { host.allocator.gpu.release(gpu); host.allocator.cpu.release(cpu); scratch = 0; return; }
-                    let canvas: OffscreenCanvas | null = null, bitmap: ImageBitmap | null = null, texture: TextureHandle | null = null;
-                    let attached = false;
-                    try {
-                        canvas = new OffscreenCanvas(SIZE, SIZE);
-                        const ctx = canvas.getContext('2d');
-                        if (!ctx) throw new Error('Offscreen 2D canvas unavailable');
-                        ctx.setTransform(scale, 0, 0, scale, GUTTER - p.x * EDGE, GUTTER - p.y * EDGE);
-                        paintItem2d(ctx, item, { ...prepared.resources, path: () => prepared.resources.path(original) });
-                        bitmap = canvas.transferToImageBitmap();
-                        texture = device.createTexture(SIZE, SIZE, 'rgba8', ['sample', 'copy-dst'], gpu); attached = true;
-                        device.writeTexture(texture, { x: 0, y: 0, width: SIZE, height: SIZE },
-                            { source: bitmap, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
-                        const cached: CachedTile = { texture, device, refs: 1, key: tileKey, bytes: GPU_BYTES };
-                        cache.set(tileKey, cached); tileBytes += cached.bytes; out.tiles.push({ item: original, x: p.x, y: p.y, cached, multiply }); p.cpuUsed += 512; texture = null;
-                    } finally {
-                        bitmap?.close(); if (canvas) { canvas.width = 0; canvas.height = 0; }
-                        if (texture) device.destroy(texture);
-                        if (!attached) host.allocator.gpu.release(gpu);
-                        host.allocator.cpu.release(cpu); scratch = 0;
-                    }
-                    const bounds = p.tileBounds;
-                    if (++p.x >= bounds.x1) { p.x = bounds.x0; if (++p.y >= bounds.y1) { p.part = null; p.tileBounds = null; } }
-                    return;
-                }
-            } catch (error) { drop(staged); drop(ready); staged = ready = null; denied = true; report(error); throw error; }
-        },
-        readyFrame(): PaintSource | null { return disposed ? null : ready?.sourceFrame ?? null; },
-        /** The prepared paint the ready tiles were built from; consumers iterate its windows. */
-        readyPaint(): PreparedPaint2d | null { return disposed ? null : ready?.prepared ?? null; },
-        readyInkNodeIds(): ReadonlySet<string> | null { return disposed ? null : ready?.prepared.root.inkNodeIds ?? null; },
-        coverage(view: ViewState): { complete: boolean; sharp: boolean; staleVersion?: boolean } {
-            if (!ready || !validDevice(ready)) return { complete: false, sharp: false };
-            const complete = ready.projection === projection(view);
-            return { complete, sharp: complete && ready.sharp && ready.scale >= view.camera.z * view.viewport.dpr,
-                ...(ready.sourceFrame !== reference.readyFrame() ? { staleVersion: true } : {}) };
-        },
-        drawGpu(pass: GpuPass, view: ViewState, band: PaintBand, omitNodes?: ReadonlySet<string>): void {
-            if (!ready || !validDevice(ready)) return;
-            const factor = view.camera.z * view.viewport.dpr / ready.scale;
-            for (const out of ready.out) {
-                if (out.band !== band) continue;
-                for (let index = 0; index < out.tiles.length; index++) {
-                    const group = out.groupAt.get(index);
-                    if (group) {
-                        if (!group.batch) throw new Error('Analytic ink batch is not prepared');
-                        analytic.draw(pass, group.batch, view, omitNodes); index = group.end - 1; continue;
-                    }
-                    const tile = out.tiles[index];
-                    if (omitNodes?.has(tile.item.nodeId)) continue;
-                    if (tile.analytic) throw new Error('Unbatched analytic ink command');
-                    if (tile.path) { drawPathItem(pass, tile.path, pathCoverage); continue; }
-                    if (tile.worldRect) {
-                        const rect = tile.worldRect, scale = view.camera.z * view.viewport.dpr;
-                        const x = (rect.x - view.camera.x) * scale, y = (rect.y - view.camera.y) * scale;
-                        const width = rect.width * scale, height = rect.height * scale;
-                        const left = Math.max(0, Math.ceil(x - 0.5)), top = Math.max(0, Math.ceil(y - 0.5));
-                        const right = Math.min(Math.round(view.viewport.width * view.viewport.dpr), Math.ceil(x + width - 0.5));
-                        const bottom = Math.min(Math.round(view.viewport.height * view.viewport.dpr), Math.ceil(y + height - 0.5));
-                        if (right <= left || bottom <= top) continue;
-                        const clip = pass.pushClip({ x: left, y: top, width: right - left, height: bottom - top });
-                        try {
-                            // The same quad the presentation facts classify (imageSampling.texturedQuad), gutter included.
-                            const quad = texturedQuad({ x: x, y: y, width, height }, SIZE, { x: GUTTER, y: GUTTER, width: EDGE, height: EDGE });
-                            host.drawTexturedQuad(pass, tile.cached.texture, { x: 0, y: 0, width: SIZE, height: SIZE },
-                                { x: quad.x0, y: quad.y0, width: quad.x1 - quad.x0, height: quad.y1 - quad.y0 },
-                                { opacity: 1, sampling: 'linear', coverage: 'none' });
-                        } finally { pass.popClip(clip); }
-                        continue;
-                    }
-                    const source: Rect = { x: GUTTER, y: GUTTER, width: EDGE, height: EDGE };
-                    const dest: Rect = { x: (tile.x * EDGE - view.camera.x * ready.scale) * factor, y: (tile.y * EDGE - view.camera.y * ready.scale) * factor, width: EDGE * factor, height: EDGE * factor };
-                    const left = Math.max(0, Math.floor(dest.x)), top = Math.max(0, Math.floor(dest.y));
-                    const right = Math.min(Math.round(view.viewport.width * view.viewport.dpr), Math.ceil(dest.x + dest.width));
-                    const bottom = Math.min(Math.round(view.viewport.height * view.viewport.dpr), Math.ceil(dest.y + dest.height));
-                    if (right <= left || bottom <= top) continue;
-                    const isolated = tile.multiply ? pass.beginGroup({ x: left, y: top, width: right - left, height: bottom - top },
-                        { opacity: 1, blend: 'multiply', colourEffect: 'none' }) : null;
-                    host.drawTexturedQuad(pass, tile.cached.texture, source, dest, { opacity: 1, sampling: 'linear', coverage: 'none' });
-                    if (isolated) pass.endGroup(isolated);
-                }
+                const ctx = scratch.getContext('2d');
+                if (!ctx) throw new Error('Offscreen 2D canvas unavailable');
+                ctx.setTransform(1, 0, 0, 1, 0, 0);
+                ctx.globalCompositeOperation = 'source-over';
+                ctx.clearRect(0, 0, SIZE, SIZE);
+                if (blend === 'modulate') { ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, SIZE, SIZE); }
+                const s = view.camera.z;
+                ctx.setTransform(s, 0, 0, s, -view.camera.x * s, -view.camera.y * s);
+                const withPaths: PaintResources2d = { ...paint, path: item => pathOf(item, s, paint) };
+                for (const item of items) paintItem2d(ctx, blend === 'modulate' ? multiplied(item) : item, withPaths);
+                bitmap = scratch.transferToImageBitmap();
+                texture = device.createTexture(SIZE, SIZE, 'rgba8', ['sample', 'copy-dst'], lease);
+                device.writeTexture(texture, { x: 0, y: 0, width: SIZE, height: SIZE },
+                    { source: bitmap, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
+                // Counted once the raster has its texture: the composer counts the fallback with the same pixels.
+                auditCount(surface, 'cpu-raster', 1, { px: SIZE * SIZE });
+                const run: CpuRun = { route: 'cpu', blend, texture, device, lease, generation: host.generation };
+                live.add(run);
+                return { status: 'ready', value: run };
+            } catch (error) {
+                // A texture owns its lease: destroying it returns the bytes; without one, the lease goes back itself.
+                if (texture) device.destroy(texture); else host.allocator.gpu.release(lease);
+                if (isBudgetRefusal(error)) return { status: 'denied', pool: 'gpu', bytes: TILE_BYTES };
+                auditCount(surface, 'fallback:cpu-failed', 1, { px: SIZE * SIZE });
+                // A device's non-budget failure goes to the GPU error channel: the pane demotes to canvas2d instead of failing the open.
+                host.reportGpuError(error);
+                return { status: 'denied', pool: 'gpu', bytes: TILE_BYTES };
+            } finally {
+                bitmap?.close();
             }
         },
-        release(_reason: GpuReleaseReason): void { reset(); analytic.release(); pathCoverage.release(); denied = false; currentToken = null; lastFrame = -1; },
-        needsFrame(): boolean {
-            if (disposed || denied) return false;
-            if (staged?.waitingBatch) return analytic.needsFrame();
-            return !!staged || !ready || ready.sourceFrame !== reference.readyFrame() || ready.prepared !== reference.borrowPrepared();
+        draw(pass: GpuPass, run: PreparedRun): void {
+            if (run.route !== 'cpu') throw new Error('CPU route drew a run of another route');
+            const cpu = run as CpuRun;
+            const whole: Rect = { x: 0, y: 0, width: SIZE, height: SIZE };
+            lay(pass, cpu.texture, whole, whole, cpu.blend);
+        },
+        retire(run: PreparedRun): void {
+            if (run.route !== 'cpu') throw new Error('CPU route retired a run of another route');
+            const cpu = run as CpuRun;
+            if (!live.delete(cpu)) return;
+            if (current(cpu)) cpu.device.destroy(cpu.texture);
+        },
+        release(): void {
+            // Cleared before any destroy: a destroy that throws must not leave a run counted with its lease already returned.
+            const runs = [...live];
+            live.clear();
+            for (const run of runs) if (current(run)) run.device.destroy(run.texture);
+            if (scratchLease) host.allocator.cpu.release(scratchLease);
+            scratchLease = null;
+            scratch = null;
         },
         memory(): { gpuBytes: number; cpuBytes: number } {
-            const batches = analytic.memory();
-            return { gpuBytes: tileBytes + batches.gpuBytes + pathCoverage.memory().gpuBytes,
-                cpuBytes: scratch + batches.cpuBytes + ((staged?.cpuLeases.length ?? 0) + (ready?.cpuLeases.length ?? 0)) * 65_536 };
+            // The ledger is the leases the live runs hold on this generation's device: each run's own lease, never a count.
+            let gpuBytes = 0;
+            for (const run of live) if (current(run)) gpuBytes += run.lease.bytes;
+            return { gpuBytes, cpuBytes: scratchLease?.bytes ?? 0 };
+        },
+    };
+    return route;
+}
+
+export interface GpuPaintAdapter {
+    /** Indexes the reference's paint, composes what the view needs within the frame's limit. `omit` is the drag's omitted nodes.
+     * True when anything visible changed since the previous prepare (the composer's report); true when it could not tell. */
+    prepare(view: ViewState, budget: FrameBudget, omit?: ReadonlySet<string>): boolean;
+    /** The content of the paint this adapter last prepared, as one number: equal values draw the same picture. It is the same
+     * whether or not that paint was presented, and moves on every change that can alter the composite (an edit, an eviction, a
+     * live part drawn, a resource change, an index in progress). The board compares it with the value it presented. */
+    contentKey(): number;
+    /** True when the last draw list cannot be drawn for this view: the layer is incomplete, and critical until it prepares again. */
+    listInvalid(view: ViewState): boolean;
+    /** Indexes a paint to completion within `maxMs`, outside any frame (the same filter the frames apply, so the index matches). */
+    warm(prepared: PreparedPaint2d, maxMs: number): boolean;
+    /** The paint the composed tiles were built from, once a paint has been prepared. */
+    readyFrame(): PaintSource | null;
+    readyPaint(): PreparedPaint2d | null;
+    readyInkNodeIds(): ReadonlySet<string> | null;
+    /** Encodes the composed tiles of one band onto the frame's offscreen targets. */
+    encodeOffscreen(passes: OffscreenPasses, view: ViewState, band: PaintBand): void;
+    /** Lays one band's tiles. `omitNodes` is accepted for the callers that still pass it; the omission is applied in prepare. */
+    drawGpu(pass: GpuPass, view: ViewState, band: PaintBand, omitNodes?: ReadonlySet<string>): void;
+    coverage(view: ViewState): { complete: boolean; sharp: boolean; staleVersion?: boolean };
+    release(reason: GpuReleaseReason): void;
+    needsFrame(): boolean;
+    /** True while the layer waits on a refused GPU admission with nothing else to do (see the composer's memoryBlocked). */
+    memoryBlocked(): boolean;
+    memory(): { gpuBytes: number; cpuBytes: number };
+    cpuWorkingSet(): { mandatoryBytes: number; prefetchBytes: number };
+    /** The governor's GPU pressure: frees up to `bytes` of idle GPU memory, path coverage sets first, then composed tiles
+     * not used this frame. Returns the bytes freed. */
+    evictGpu(bytes: number, frameId: number): number;
+    /** Stamps what the view shows as used in `frameId`, before the frame's prepare: its partial relief leaves it (see Layer.protectFrame). */
+    protectFrame(frameId: number, view: ViewState): void;
+    /** The governor's CPU pressure: frees up to `bytes` of idle CPU memory (the path route's outline geometry, unused this
+     * frame). Returns the bytes freed. The board's cpuEvict hook forwards to it. */
+    evictCpu(bytes: number): number;
+    /** The GPU bytes the visible tiles at the current scale need, for a viewport of `width` by `height` (view units). */
+    gpuMandatoryBytes(viewport: { width: number; height: number }): number;
+    /** The ink node ids in the tiles this adapter drew in the current composite: filled in drawGpu, cleared at the next prepare.
+     * The wet layer skips these nodes in the same composite, so translucent ink never doubles at hand-over. */
+    drawnInkNodeIds(): ReadonlySet<string>;
+    /** The nodes whose live parts this adapter laid for one band in the current composite (cleared at the next prepare). The board
+     * counts a changed node as drawn only when it is here, so a live part the composer deferred or denied is not counted. */
+    drawnLiveNodeIds(band: PaintBand): ReadonlySet<string>;
+    drewNothing(band: PaintBand): boolean;
+    /** The nodes whose live parts this prepare planned for one band, valid once prepare returns (cleared at the next prepare). */
+    plannedLiveNodeIds(band: PaintBand): ReadonlySet<string>;
+    dispose(): void;
+}
+
+export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: LayerHost, report: (error: unknown) => void,
+    options: {
+        /** Accepted for the live-stroke layer's call site, which h6 removes. The composer redraws a stroke's dirty rects
+         * through the same path as any content, so this flag no longer changes what is drawn; it is counted. */
+        readonly streaming?: boolean;
+        readonly audit?: string;
+        /** Rects whose surface is opaque: a multiply slice inside one composes by modulate, elsewhere by isolation. */
+        readonly opaqueWorld?: () => readonly Rect[];
+        /** An overlay: its few plain parts are drawn live each frame, with no tile grant (see the composer's liveOverlay). */
+        readonly liveOverlay?: boolean;
+        /** Content whose live and tiled pictures are the same pixels (see the composer's liveMatchesTiles). */
+        readonly liveMatchesTiles?: boolean;
+        /** Whether the frame changes for input anyway (see the composer's inputActive). */
+        readonly inputActive?: () => boolean;
+        /** The geometry service's pins a live zoom holds (see GeometryPins in tileComposer.ts); absent holds none. */
+        readonly pins?: GeometryPins;
+        /** A live-only overlay's nodes (its gesture's): the composer indexes and draws only these items of the paint it is handed. */
+        readonly liveNodes?: ReadonlySet<string>;
+    } = {}): GpuPaintAdapter {
+    const surface = options.audit ?? 'board';
+    if (options.streaming) auditCount(surface, 'option:streaming-ignored');
+    let disposed = false;
+    let lastFrame = -1;
+    // The paint the composer is handed: an overlay's own nodes only, so its index never walks the rest of the paint it was built from.
+    // One filtered copy per source paint, reused by the foreground and background calls of its frame.
+    let filtered: { source: PreparedPaint2d; out: PreparedPaint2d } | null = null;
+    const forComposer = (prepared: PreparedPaint2d): PreparedPaint2d => {
+        const include = options.liveNodes;
+        if (!include) return prepared;
+        if (filtered?.source === prepared) return filtered.out;
+        const out: PreparedPaint2d = { ...prepared, windows: filterWindows(prepared.windows, item => include.has(item.nodeId)) };
+        filtered = { source: prepared, out };
+        return out;
+    };
+    // The paint a two-phase frame's foreground call prepared, for its background call (which the composer's prepare completes).
+    let pendingPrepared: PreparedPaint2d | null = null;
+    let presented: PreparedPaint2d | null = null;
+    // The device and generation the composer's leases were granted on, set when it last prepared. Once either changes the
+    // arena has returned those leases, so the composer's bytes are no longer reserved to this layer and are not reported.
+    let ledger: { device: GfxDevice; generation: number } | null = null;
+    let omitPrepared: ReadonlySet<string> | null = null;
+    // The view the composed tiles were last prepared for: the store keeps the tiles on it, so its eviction spares them.
+    let lastView: ViewState | null = null;
+    let inkMemo: { frame: number; paint: PreparedPaint2d; set: ReadonlySet<string> } | null = null;
+    const lay = createLay(host);
+    const cpu = createCpuRoute(host, surface, lay);
+    const ink = createInkRoutes(host, surface);
+    // One path route and its clip admission share one coverage kit: the composer admits every route's clips through it.
+    const pathRoute = createPath(host, surface);
+    // The layer has one wake slot, and the store (the free list's trim) and the composer (a refused position's retry) both arm
+    // deadlines on it. The slot takes the earliest armed one, so neither cancels the other (gpu). A slot is cleared by its owner:
+    // the store's on each frame before the trim, the composer's when its retry is handled or satisfied.
+    const wakes: Record<'store' | 'retry', number | null> = { store: null, retry: null };
+    const armWake = (slot: 'store' | 'retry', deadline: number | null): void => {
+        wakes[slot] = deadline;
+        let first: number | null = null;
+        for (const at of [wakes.store, wakes.retry]) if (at !== null && (first === null || at < first)) first = at;
+        host.wakeAt(first);
+    };
+    const withWake = (slot: 'store' | 'retry'): LayerHost => new Proxy(host, {
+        // The host's other members are read on the host itself, so its getters (the generation) stay live.
+        get: (target, key) => key === 'wakeAt' ? (deadline: number | null) => armWake(slot, deadline) : Reflect.get(target, key, target),
+    });
+    const store = createTileStore(withWake('store'), surface);
+    const imageRoute = createImageRoute(host, surface);
+    // The factory is typed as the generic item route; the text route's own type carries its zoom hooks (setZoom, exact).
+    const textRoute = createTextRoute(host, surface) as TextRoute;
+    const routes: TileRoutes = {
+        path: pathRoute.route,
+        inkAnalytic: ink.analytic,
+        inkUnion: ink.union,
+        image: imageRoute,
+        text: textRoute,
+        cpu,
+    };
+    const composer = createTileComposer({
+        host: withWake('retry'), audit: surface, parts: createTileParts(host, surface), store, routes,
+        tileWorld, inkRouteFor, lay, admitClips: pathRoute.admitClips, withPreparedClips,
+        layQuads: (pass, texture, quads) => host.drawTexturedQuads(pass, texture, quads, QUAD),
+        ...(options.opaqueWorld ? { opaqueWorld: options.opaqueWorld } : {}),
+        ...(options.liveOverlay ? { liveOverlay: true } : {}),
+        ...(options.liveMatchesTiles ? { liveMatchesTiles: true } : {}),
+        ...(options.inputActive ? { inputActive: options.inputActive } : {}),
+        ...(options.pins ? { pins: options.pins } : {}),
+        // The compose limit halves while the host reports a slow GPU, read each frame (PLAN 3.1).
+        slowGpu: () => host.trouble() === 'slow-gpu',
+    });
+
+    return {
+        warm(prepared: PreparedPaint2d, maxMs: number): boolean {
+            return composer.warm(forComposer(prepared), maxMs);
+        },
+        prepare(view: ViewState, budget: FrameBudget, omit?: ReadonlySet<string>): boolean {
+            // The background call of a two-phase frame: the composer completes the paint its foreground call prepared (no new frame).
+            if (budget.phase === 'background') {
+                const pending = pendingPrepared;
+                pendingPrepared = null;
+                if (disposed || !pending || lastFrame !== budget.frameId) return true;
+                try {
+                    return timed(surface, 'prepare', () => composer.prepare(view, budget, forComposer(pending), omit));
+                } catch (error) {
+                    if (isBudgetRefusal(error)) return true;
+                    host.reportGpuError(error);
+                    return true;
+                }
+            }
+            // Only this frame's background call reads the paint its foreground call left: a foreground call drops any earlier one.
+            pendingPrepared = null;
+            if (disposed || lastFrame === budget.frameId) return true;
+            lastFrame = budget.frameId;
+            pathRoute.beginFrame(budget.frameId); ink.beginFrame(budget.frameId);
+            const prepared = reference.borrowPrepared(), device = host.device();
+            if (!prepared || !device || !documentMatches(prepared.root, budget.token) || !documentMatches(prepared.sourceFrame, budget.token) ||
+                device.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration) {
+                if (renderAuditEnabled()) {
+                    auditCount(surface, !prepared ? 'prepare:hidden:no-paint' : !device ? 'prepare:hidden:no-device' : 'prepare:hidden:document');
+                    // Per frame, so a run's counters name the frames a present was hidden in (the release hole's correlation).
+                    if (!device) auditCount(surface, `prepare:hidden:no-device:f${budget.frameId}`);
+                }
+                composer.release('hidden');
+                // A device that is merely absent (the 2D bridge: the first CPU picture, a resize) keeps the presented picture: the
+                // device comes back for the same paint. Only a lost or released device, or a paint of another document, drops it.
+                const bridge = !device && !!prepared && documentMatches(prepared.root, budget.token) && documentMatches(prepared.sourceFrame, budget.token);
+                if (!bridge) presented = null;
+                omitPrepared = null; ledger = null;
+                return true;
+            }
+            omitPrepared = omit?.size ? omit : null;
+            ledger = { device, generation: host.generation };
+            // The frame has come: the store's deadline is handled (its trim runs in the composer's prepare, and re-arms if not due).
+            armWake('store', null);
+            let changed = true;
+            try {
+                changed = timed(surface, 'prepare', () => composer.prepare(view, budget, forComposer(prepared), omit));
+            } catch (error) {
+                if (isBudgetRefusal(error)) return true;
+                // Reported, not rethrown: a throw here aborted the board's frame on every prepare while the content stayed in view.
+                // On a device the error goes to the GPU channel, so the pane demotes to canvas2d instead of failing the open.
+                host.reportGpuError(error);
+                return true;
+            }
+            presented = prepared;
+            lastView = view;
+            // A two-phase frame's foreground call answers false: its background call (later this frame) gives the answer.
+            if (budget.phase === 'foreground') { pendingPrepared = prepared; return false; }
+            return changed;
+        },
+        readyFrame(): PaintSource | null { return disposed ? null : presented?.sourceFrame ?? null; },
+        readyPaint(): PreparedPaint2d | null { return disposed ? null : presented; },
+        readyInkNodeIds(): ReadonlySet<string> | null {
+            if (disposed || !presented) return null;
+            const nodes = presented.root.inkNodeIds;
+            if (!nodes.size) return nodes;
+            if (!lastView) return new Set();
+            // Memoized per prepare: the composer only changes in prepare, and the board asks several times a frame.
+            if (inkMemo && inkMemo.frame === lastFrame && inkMemo.paint === presented) return inkMemo.set;
+            const set = composer.inkComposed(lastView, nodes);
+            inkMemo = { frame: lastFrame, paint: presented, set };
+            return set;
+        },
+        encodeOffscreen(passes: OffscreenPasses, view: ViewState, band: PaintBand): void {
+            if (disposed) return;
+            timed(surface, 'encodeOffscreen', () => composer.encodeOffscreen(passes, view, band));
+        },
+        drawGpu(pass: GpuPass, view: ViewState, band: PaintBand, omitNodes?: ReadonlySet<string>): void {
+            if (disposed) return;
+            // A drag's omission that reaches the draw but not the prepare is drawn in the tiles: counted, so it cannot pass silently.
+            if (omitNodes?.size && !sameOmit(omitNodes, omitPrepared)) auditCount(surface, 'omit:draw-unapplied');
+            timed(surface, 'draw', () => composer.drawGpu(pass, view, band));
+        },
+        coverage(view: ViewState): { complete: boolean; sharp: boolean; staleVersion?: boolean } {
+            const base = composer.coverage(view);
+            return presented && reference.readyFrame() !== presented.sourceFrame ? { ...base, staleVersion: true } : base;
+        },
+        release(reason: GpuReleaseReason): void {
+            // Audit only: a released adapter has no picture to draw until it prepares again (a layer that loses its frame is traced).
+            if (renderAuditEnabled()) auditTape(`adapter-release:${surface}:${reason}`);
+            composer.release(reason);
+            presented = null; omitPrepared = null; lastFrame = -1; ledger = null;
+        },
+        needsFrame(): boolean { return !disposed && composer.needsFrame(); },
+        memoryBlocked(): boolean { return !disposed && composer.memoryBlocked(); },
+        drawnInkNodeIds(): ReadonlySet<string> { return disposed ? NO_INK : composer.drawnInkNodeIds(); },
+        drawnLiveNodeIds(band: PaintBand): ReadonlySet<string> { return disposed ? NO_INK : composer.drawnLiveNodeIds(band); },
+        drewNothing(band: PaintBand): boolean { return disposed || composer.drewNothing(band); },
+        plannedLiveNodeIds(band: PaintBand): ReadonlySet<string> { return disposed ? NO_INK : composer.plannedLiveNodeIds(band); },
+        contentKey(): number { return disposed ? -1 : composer.contentKey(); },
+        listInvalid(view: ViewState): boolean { return !disposed && composer.listInvalid(view); },
+        gpuMandatoryBytes(viewport: { width: number; height: number }): number {
+            return disposed || !presented ? 0 : composer.mandatoryBytes(viewport.width, viewport.height);
+        },
+        evictGpu(bytes: number, frameId: number): number {
+            if (disposed || !(bytes > 0)) return 0;
+            // Route caches first, then composed tiles: each frees only what this frame did not use. The sum is what was freed.
+            pathRoute.beginFrame(frameId); ink.beginFrame(frameId);
+            let freed = pathRoute.coverage.evict(bytes);
+            if (freed < bytes) freed += imageRoute.evictTextures(bytes - freed, frameId);
+            if (freed < bytes) freed += textRoute.evictTextures?.(bytes - freed, frameId) ?? 0;
+            // A composer drawing live draws no tile: its tiles go before anything the view shows is refused (store.evict).
+            if (freed < bytes && lastView) freed += store.evict(bytes - freed, frameId, lastView, composer.drawsLive());
+            if (freed > 0) composer.noteEvicted();
+            return freed;
+        },
+        protectFrame(frameId: number, view: ViewState): void {
+            if (!disposed) store.touchVisible(view, frameId);
+        },
+        evictCpu(bytes: number): number {
+            return disposed || !(bytes > 0) ? 0 : pathRoute.evictCpu(bytes);
+        },
+        // GPU bytes are the composer's: each is leased by its owner (the store, a route) on the layer's GPU pool, reported once.
+        // CPU bytes are this route's own leased scratch only: a route's CPU bytes that are not leased (the text scratch, the path
+        // geometry cache) are not reported, since the governor would refuse to admit bytes it has not reserved.
+        memory(): { gpuBytes: number; cpuBytes: number } {
+            // The composer's ledger (store targets and route leases, the CPU route's included) counts only while its device generation is current.
+            const held = ledger !== null && ledger.device === host.device() && ledger.generation === host.generation;
+            return { gpuBytes: held ? composer.memory().gpuBytes : 0, cpuBytes: cpu.memory().cpuBytes };
         },
         cpuWorkingSet(): { mandatoryBytes: number; prefetchBytes: number } {
-            const held = ((staged?.cpuLeases.length ?? 0) + (ready?.cpuLeases.length ?? 0)) * 65_536;
-            const nextBatch = staged?.groups[staged.groupIndex]?.paints.length ?? 0;
-            return { mandatoryBytes: held + CPU_BYTES + analytic.cpuWorkingSet(nextBatch).mandatoryBytes
-                + (staged && staged.cpuUsed + 512 > staged.cpuLeases.length * 65_536 ? 65_536 : 0), prefetchBytes: 0 };
+            return { mandatoryBytes: composer.memory().cpuBytes, prefetchBytes: 0 };
         },
-        dispose(): void { if (!disposed) { disposed = true; reset(); analytic.release(); pathCoverage.dispose(); } },
+        dispose(): void {
+            if (disposed) return;
+            disposed = true;
+            composer.dispose();
+            presented = null; omitPrepared = null;
+        },
     };
 }

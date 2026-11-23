@@ -83,7 +83,11 @@ export async function attachPreviewMedia(options: {
     const isCurrent = (value: BoardJobIdentity) => value.session === identity.session && value.epoch === identity.epoch && live(value);
     check(identity);
     const info = await inspectMedia(bytes, { memory: options.memory, identity, isCurrent, signal }); check(identity);
-    if (!info.mime.startsWith('image/') || info.mime === 'image/svg+xml' || info.duration !== null || !checkMediaDimensions(info.width, info.height).ok) {
+    // An SVG icon is admitted as an inserted SVG picture is: inspectMedia parsed its header in the contained SVG frame under the
+    // same preflight and 5 MiB SVG limit (the icon's own fetch limit is smaller), and the board decodes it as an image, never as
+    // markup in the page. Sites commonly declare only an SVG icon; it was refused ('not a supported picture'). Preview images stay raster.
+    const svg = info.mime === 'image/svg+xml';
+    if (!info.mime.startsWith('image/') || (svg && options.role !== 'favicon') || info.duration !== null || !checkMediaDimensions(info.width, info.height).ok) {
         throw new Error('it is not a supported picture');
     }
     const doc = session.doc, existing = doc.media.get(info.id);

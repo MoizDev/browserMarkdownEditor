@@ -28,9 +28,10 @@ export interface StrokeTriangles {
 const MAX_POINTS = 65_536, MAX_TRIANGLES_DEFAULT = 262_144;
 const MIN_CIRCLE_SEGMENTS = 8, MAX_CIRCLE_SEGMENTS = 128;
 
-interface Polyline { points: Vec2[]; closed: boolean }
+export interface Polyline { points: Vec2[]; closed: boolean }
 
-function flattenPolylines(commands: readonly PathCommand[], tolerance: number): Polyline[] | null {
+/** The subpaths of a command list, flattened: the stroke route's outline (the area route's contours) and its triangles share them. */
+export function flattenPolylines(commands: readonly PathCommand[], tolerance: number): Polyline[] | null {
     if (!(tolerance > 0) || !Number.isFinite(tolerance)) throw new RangeError('Invalid stroke flattening tolerance');
     const lines: Polyline[] = [];
     let current: Polyline | null = null, closedStart: Vec2 | null = null, count = 0;
@@ -83,7 +84,11 @@ function clean(points: readonly Vec2[], closed: boolean): Vec2[] {
 
 /** Dash intervals along a polyline, each an open piece. Phase and pattern follow canvas: a total
  * phase is reduced modulo the pattern length, and zero-length on-intervals become dots. */
-function dashPieces(line: Polyline, array: readonly number[], phase: number): Polyline[] {
+/** Dash steps one stroke may take, across all its subpaths. A dash of 1e-6 on a 1000-unit line is 5×10⁸ steps, each a new
+ * interval, before any triangle exists, so the count is bounded where the intervals are made, not only at the triangles. */
+const MAX_DASH_STEPS = 262_144;
+interface DashBudget { left: number }
+function dashPieces(line: Polyline, array: readonly number[], phase: number, budget: DashBudget): Polyline[] {
     const total = array.reduce((sum, value) => sum + value, 0);
     let index = 0, p = phase % total;
     if (p < 0) p += total;
@@ -100,6 +105,7 @@ function dashPieces(line: Polyline, array: readonly number[], phase: number): Po
         const ux = dx / length, uy = dy / length;
         let t = 0;
         while (t < length) {
+            if (--budget.left < 0) throw new RangeError('Stroke dash budget exceeded');
             const at = (value: number): Vec2 => ({ x: a.x + ux * value, y: a.y + uy * value });
             if (remaining <= 0) {
                 if (on) { if (current) pieces.push({ points: current, closed: false }); current = null; }
@@ -119,18 +125,30 @@ function dashPieces(line: Polyline, array: readonly number[], phase: number): Po
 /** Strokes are emitted in local units and rebased to origin. Circles are inscribed polygons whose
  * sagitta is within tolerance (design §5.1), so the union never bulges past the canonical arc. */
 class Sink {
-    readonly values: number[] = [];
+    /** Origin-relative vertices, two values each, in a buffer that doubles as it fills: the outline is copied out once at the end
+     * (`count` values are in use), where a boxed number array was copied at the end and a literal array was built per triangle. */
+    private values = new Float64Array(0);
+    private count = 0;
     minX = Infinity; minY = Infinity; maxX = -Infinity; maxY = -Infinity;
     constructor(private readonly ox: number, private readonly oy: number, private readonly limit: number) {}
     tri(a: Vec2, b: Vec2, c: Vec2): void {
-        if (this.values.length / 6 >= this.limit) throw new RangeError('Stroke triangle budget exceeded');
-        for (const p of [a, b, c]) {
-            const x = p.x - this.ox, y = p.y - this.oy;
-            this.values.push(x, y);
-            this.minX = Math.min(this.minX, x); this.maxX = Math.max(this.maxX, x);
-            this.minY = Math.min(this.minY, y); this.maxY = Math.max(this.maxY, y);
-        }
+        if (this.count / 6 >= this.limit) throw new RangeError('Stroke triangle budget exceeded');
+        this.vertex(a); this.vertex(b); this.vertex(c);
     }
+    private vertex(p: Vec2): void {
+        const x = p.x - this.ox, y = p.y - this.oy;
+        if (this.count + 2 > this.values.length) {
+            const grown = new Float64Array(Math.max(96, this.values.length * 2));
+            grown.set(this.values.subarray(0, this.count));
+            this.values = grown;
+        }
+        this.values[this.count] = x; this.values[this.count + 1] = y; this.count += 2;
+        this.minX = Math.min(this.minX, x); this.maxX = Math.max(this.maxX, x);
+        this.minY = Math.min(this.minY, y); this.maxY = Math.max(this.maxY, y);
+    }
+    /** The emitted triangles as an exact-size copy. */
+    triangles(): Float64Array { return this.values.slice(0, this.count); }
+    get size(): number { return this.count; }
     quad(a: Vec2, b: Vec2, c: Vec2, d: Vec2): void { this.tri(a, b, c); this.tri(a, c, d); }
     circle(centre: Vec2, radius: number, tolerance: number): void {
         const ratio = radius > tolerance ? 1 - tolerance / radius : -1;
@@ -217,11 +235,12 @@ export function pathStrokeTriangles(commands: readonly PathCommand[], options: S
     if (!lines) return null;
     const sink = new Sink(ox, oy, options.maxTriangles ?? MAX_TRIANGLES_DEFAULT);
     const solid = !dash || dash.array.reduce((sum, value) => sum + value, 0) <= 0;
+    const dashBudget: DashBudget = { left: MAX_DASH_STEPS };
     try {
         for (const line of lines) {
             const points = clean(line.points, line.closed);
             const pieceList: Polyline[] = solid ? [{ points, closed: line.closed }]
-                : dashPieces({ points, closed: line.closed }, dash!.array, dash!.phase);
+                : dashPieces({ points, closed: line.closed }, dash!.array, dash!.phase, dashBudget);
             for (const piece of pieceList) {
                 if (!piece.points.length) continue;
                 emitPolyline(sink, clean(piece.points, piece.closed), piece.closed, options);
@@ -231,7 +250,7 @@ export function pathStrokeTriangles(commands: readonly PathCommand[], options: S
         if (error instanceof RangeError && /budget/.test(error.message)) return null;
         throw error;
     }
-    if (!sink.values.length) return { triangles: new Float64Array(0), bounds: { x0: 0, y0: 0, x1: 0, y1: 0 } };
-    return { triangles: Float64Array.from(sink.values),
+    if (!sink.size) return { triangles: new Float64Array(0), bounds: { x0: 0, y0: 0, x1: 0, y1: 0 } };
+    return { triangles: sink.triangles(),
         bounds: { x0: sink.minX, y0: sink.minY, x1: sink.maxX, y1: sink.maxY } };
 }

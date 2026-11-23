@@ -23,3 +23,9 @@ export function subscribePdfTileArrivals(listener: () => void): () => void {
     listeners.add(listener);
     return () => { listeners.delete(listener); };
 }
+
+/** Audit only: arrived rasters whose every pixel is one colour, marked by the producer while the render audit is on and never
+ * otherwise (tileLayer's 'pdf:uniform-replaced'). Weak: a closed bitmap's mark goes with it. */
+const uniform = new WeakSet<ImageBitmap>();
+export function markPdfTileUniform(bitmap: ImageBitmap): void { uniform.add(bitmap); }
+export function isPdfTileUniform(bitmap: ImageBitmap): boolean { return uniform.has(bitmap); }

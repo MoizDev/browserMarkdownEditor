@@ -1,11 +1,12 @@
+import { auditCount, auditDrawnStart, auditDrawnTake, auditPresent, renderAuditEnabled } from './renderAudit';
 import type { Rect, ViewState } from '../types';
 import { deviceContext, imageExtent, paintCanvasIsolation, registerCanvasIsolation } from './canvas2dContext';
 import { createColourGroup2d } from './colourGroup2d';
 import type { ColourGroup2d } from './colourGroup2d';
 import { paintPageScope, paintWorldScope, paneCssTransform, projectPage } from './compositorProjection';
-import type { Compositor2DOptions, CompositorAppearance, CompositorCoverage, CompositorLayer, CreatedCompositor2D, IsolationPaintOptions, IsolationReservation, PaneCompositor, PaneSurfaceHost, TexturedQuadOptions } from './compositor.types';
+import type { Compositor2DOptions, CompositorAppearance, CompositorCoverage, CompositorLayer, CreatedCompositor2D, IsolationPaintOptions, IsolationReservation, PaneCompositor, PaneSurfaceHost, TexturedQuadOptions, TexturedQuadSpec } from './compositor.types';
 import { RENDER_CONSTANTS as POLICY } from './constants';
-import type { ByteLease, GfxLimits, GpuPass, RectI, TextureHandle } from './gfx/api';
+import type { ByteLease, DrawableImage, GfxLimits, GpuPass, RectI, TextureHandle } from './gfx/api';
 import type { MemoryCacheHandle } from './memoryGovernor';
 import type { BorrowedMirror } from './mirrorSet';
 import type { MirrorFrame, MirrorPresentation, PreparedMirrorPresentation } from './paneLifecycle';
@@ -41,6 +42,8 @@ interface ImageUse {
     lease: ByteLease | null;
     resident: boolean;
     admission: FrameBudget | null;
+    /** The frame this use was last admitted in: admissions go to the least recently admitted first (prepareFrame). */
+    admittedFrame?: number;
 }
 interface Crop {
     readonly rect: Rect;
@@ -71,7 +74,10 @@ interface MirrorJob {
     timer: ReturnType<typeof setTimeout> | null;
 }
 interface ColourJob {
+    /** The scene key the job was started for. */
     readonly key: string;
+    /** The paint key at the job's start: the picture it shows once composited. */
+    readonly paint: string;
     readonly snapshot: Snapshot;
     readonly frame: ScheduledFrame;
     readonly back: Buffer2D;
@@ -87,8 +93,9 @@ const tileSize = POLICY.tileInteriorPixels;
 const gutter = POLICY.tileGutterTexels;
 const maxImagePixels = (tileSize + 2 * gutter) ** 2;
 /** A bitmap up to a board picture tile (its interior and gutter) is drawn whole, one upload. Cut into platform-tile crops it was
- * copied while the board still held it: an 8000x6000 picture's six level-0 tiles took ~25 MB decoded plus ~25 MB of crops, the
- * crops were refused about halfway in a 41 MB pool and the picture never showed past its stand-in (canvas2d, DPR 2). */
+ * copied while the board still held it: on the feature build an 8000x6000 picture's six level-0 tiles took ~25 MB decoded plus
+ * ~25 MB of crops, the crops were refused about halfway in a 41 MB pool and the picture never showed past its stand-in (canvas2d,
+ * DPR 2: grid contrast 0.000; drawn whole 0.781 from 2 s after the insert, no frame over 8.33 ms on the insert or on doc12). */
 const wholeImagePixels = (POLICY.mediaTileInteriorPixels + 2 * gutter) ** 2;
 
 function sameToken(a: FrameToken | null, b: FrameToken): boolean {
@@ -121,6 +128,8 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
     private backing: SurfaceBacking | null = null;
     private displayReserved = 0;
     private working: MemoryCacheHandle | null = null;
+    /** Bytes of the one armed capacity waiter (see awaitCapacity), or null. */
+    private capacityWait: number | null = null;
     private cpu: MemoryCacheHandle | null = null;
     private readonly gpuLeases = new Set<ByteLease>();
     private readonly cpuLeases = new Set<ByteLease>();
@@ -167,8 +176,12 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
     private job: ColourJob | null = null;
     private mirrorJob: MirrorJob | null = null;
     private lastFrame: ScheduledFrame | null = null;
+    /** Audit only: the camera scale at the previous encode, for the present's zooming flag. */
+    private lastScale: number | null = null;
     private report: CompositorCoverage | null = null;
     private presentedKey = '';
+    /** Frames whose layers reported a change (see encode): each one repaints, whatever the scene key says. */
+    private drawn = 0;
     private missing = false;
     private busy = 0;
     private cropsPending = 0;
@@ -193,7 +206,11 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             reserveIsolation: (request: IsolationReservation) => this.reserveIsolation(request),
             paintIsolation: paintCanvasIsolation,
             uniforms: () => { throw new Error('Uniforms require an active GPU draw scope'); },
-            drawTexturedQuad: this.quad.bind(this) as PaneCompositor['resources']['drawTexturedQuad'] });
+            uniformsInto: () => { throw new Error('Uniforms require an active GPU draw scope'); },
+            markIncomplete: () => undefined,
+            drawTexturedQuad: this.quad.bind(this) as PaneCompositor['resources']['drawTexturedQuad'],
+            drawTexturedQuads: this.quads.bind(this) as PaneCompositor['resources']['drawTexturedQuads'],
+            imageReady: (image: DrawableImage) => this.imageReady(image) });
     }
 
     get surfaceGeneration(): number { return this.generation; }
@@ -242,6 +259,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         this.appearance = Object.freeze({ background: Object.freeze([...appearance.background]) as CompositorAppearance['background'], inverted: appearance.inverted });
         this.changed();
     }
+
     setMetrics(metrics: ReadySurfaceMetrics): void {
         this.check();
         const back = this.buffers.get('back');
@@ -286,6 +304,12 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             if (job?.stage === 'ready' && !budget.shouldYield() && budget.claimUpload(job.band.canvas.width * job.band.canvas.height * 4)) {
                 job.admission = budget;
             }
+            // The least recently admitted first. A use admitted in a frame that then did not draw it (a tile the layer left out as covered)
+            // stays unuploaded; first in the map's order, it took the frame's allowance in every attempt, and the images the frame did
+            // draw were refused for good: a PDF board with an embed repainted every tick at rest after a zoom and never presented the
+            // zoomed-back view (canvas2d DPR 2: one 1 MB tile admitted per frame, 36 claims refused per frame, 4 of 4 runs). In this order
+            // each frame admits an image not tried most recently, and a drawn image stays uploaded, so the frame completes.
+            const waiting: Array<[Buffer2D, ImageUse]> = [];
             for (const buffer of this.buffers.values()) for (let use of buffer.images.values()) {
                 // A canvas source is versioned by the frame key, which changes with every wet-ink revision. Admit it under
                 // the key this frame will encode with: admitting the previous key's use let encode re-version it without an
@@ -294,9 +318,18 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
                     use = { ...use, version: key, resident: false, admission: null };
                     buffer.images.set(use.source, use);
                 }
-                if (use.resident || budget.shouldYield()) continue;
+                if (!use.resident) waiting.push([buffer, use]);
+            }
+            waiting.sort((a, b) => (a[1].admittedFrame ?? -1) - (b[1].admittedFrame ?? -1));
+            for (const [, use] of waiting) {
+                if (budget.shouldYield()) break;
                 if (!use.lease) use.lease = this.reserveGpu(use.bytes);
-                if (use.lease && budget.claimUpload(use.bytes)) use.admission = budget;
+                // Refused: the residency only the last published frame holds goes first. That frame's pixels are on the display
+                // already, and its sources stay pinned for a retry, so only the accounting of their upload is given back; a later draw of
+                // one is admitted again. Measured (canvas2d, DPR 2 annotated PDF, a pen stroke): the published frame held 16.9 MB of
+                // tile images this frame did not draw, the next tile was refused, so no frame ever published to release them.
+                if (!use.lease && this.releaseStaleUses()) use.lease = this.reserveGpu(use.bytes);
+                if (use.lease && budget.claimUpload(use.bytes)) { use.admission = budget; use.admittedFrame = budget.frameId; }
             }
         } finally { this.busy--; }
     }
@@ -421,26 +454,48 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         } finally { target.native.restore(); }
     }
 
-    encode(frame: ScheduledFrame): ScheduledEncoding | null {
+    encode(frame: ScheduledFrame, changed: boolean): ScheduledEncoding | null {
         this.check();
+        if (changed) this.drawn++;
         this.lastFrame = frame;
         const snapshot = this.scene;
         const budget = this.budget;
         const back = this.buffers.get('back');
+        // A back buffer sized for a raise that has not committed (its resize was refused after the buffer was replaced) is not this
+        // snapshot's picture: nothing is encoded until a commit brings the metrics and the buffer to one size.
         if (this.encodedSources.size || !snapshot?.metrics || snapshot.view !== frame.view || !back || !budget || budget.frameId !== frame.frameId ||
+            back.canvas.width !== snapshot.metrics.backingWidth || back.canvas.height !== snapshot.metrics.backingHeight ||
             !sameToken(this.options.currentToken(), frame.token) || !this.healthy()) return null;
         const key = this.key(snapshot, frame);
+        // The paint key adds the count of changed frames. The scene key alone is blind to a layer that draws a newer picture under the
+        // same scene revision (an adapter promotes it in prepare): the frame was encoded, and the same key skipped the repaint.
+        const paint = `${key}#${this.drawn}`;
         this.activeKey = key;
         this.beginSources(key);
         const availability = snapshot.layers.map(binding => binding.coverage(frame, this.backend));
-        if (availability.some(item => !item.complete)) return null;
+        const zooming = renderAuditEnabled() && this.zoomStep(frame.view.camera.z);
+        if (availability.some(item => !item.complete)) {
+            if (renderAuditEnabled()) auditPresent({ pane: this.options.paneId, frame: frame.frameId, rawTick: frame.timestamp, backend: 'canvas2d',
+                layersComplete: false, canvas: null, standIns: 0, standInsRaster: 0, holes: 0, zooming, refusal: 'availability' });
+            return null;
+        }
         this.missing = false;
+        if (renderAuditEnabled()) auditDrawnStart();
         this.busy++;
         try {
-            if (this.job && this.job.key !== key) this.cancelJob();
-            if (this.presentedKey !== key) {
+            // The job follows the scene key. Keyed by the paint key, a layer that reports change on every frame while it is pending
+            // restarted the colour job each frame, so the inverted picture never finished. A composited job is replaced once the
+            // paint key has moved on: the picture it shows is then the older paint key, and only a fresh job repaints the rest.
+            if (this.job && (this.job.key !== key || this.job.stage === 'composited' && this.job.paint !== paint)) this.cancelJob();
+            // What the presented picture reflects: the paint key of the job that drew it, which can be older than this frame's.
+            let shown = paint;
+            if (this.presentedKey !== paint) {
                 if (snapshot.appearance.inverted && snapshot.layers.some(layer => layer.group === 'document')) {
-                    if (!this.paintInverted(snapshot, frame, back, key)) return null;
+                    if (!this.paintInverted(snapshot, frame, back, key, paint)) return null;
+                    shown = this.job!.paint;
+                    // A job that finished at an older paint key shows a picture this frame's paint would repaint: ask for the next
+                    // frame now, since nothing else may request one while the scene is idle.
+                    if (shown !== paint) this.options.invalidate('2d-paint-superseded');
                 } else {
                     opaque(back.native, snapshot.appearance);
                     if (__BME_BENCH__ && benchmarkDomain) benchmarkCanvas?.managers.get(this)?.begin(back.native, benchmarkDomain.benchmarkPaintDomain(snapshot, frame));
@@ -454,6 +509,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             this.busy++;
             const encodedSources = new Set(this.pendingSources), encodedCrops = new Set(this.pendingCrops);
             this.encodedSources.add(encodedSources); this.encodedCrops.add(encodedCrops);
+            const tally = renderAuditEnabled() ? auditDrawnTake() : null;
             let done = false;
             const release = () => { done = true; this.busy--; this.encodedSources.delete(encodedSources);
                 this.encodedCrops.delete(encodedCrops); this.pruneSources(); };
@@ -462,12 +518,16 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
                     if (done) throw new Error('Canvas encoding already consumed');
                     try {
                     if (this.disposed || this.scene !== snapshot || !sameToken(this.options.currentToken(), frame.token) || !this.healthy()) return null;
-                    if (this.presentedKey !== key && !this.publish(back, snapshot.metrics!)) return null;
-                    this.presentedKey = key;
+                    if (this.presentedKey !== shown && !this.publish(back, snapshot.metrics!)) return null;
+                    this.presentedKey = shown;
                     this.retained = encodedSources; this.retainedCrops = encodedCrops;
                     this.report = Object.freeze({ frameId: frame.frameId, token: frame.token, presented: true,
-                        complete: true, sharp: snapshot.metrics!.qualityScale === 1 && availability.every(item => item.sharp && !item.staleVersion),
+                        complete: true, layersComplete: availability.every(item => item.complete),
+                        sharp: snapshot.metrics!.qualityScale === 1 && availability.every(item => item.sharp && !item.staleVersion),
                         staleVersion: availability.some(item => item.staleVersion), qualityScale: snapshot.metrics!.qualityScale });
+                    if (tally) auditPresent({ pane: this.options.paneId, frame: frame.frameId, rawTick: frame.timestamp, backend: 'canvas2d',
+                        layersComplete: availability.every(item => item.complete), canvas: this.surface, standIns: tally.standIns,
+                        standInsRaster: tally.standInsRaster, holes: tally.holes, zooming, refusal: null });
                     return { drawn: frame.layers.map(item => ({ layer: item.layer, sceneRevision: item.sceneRevision })),
                         ...(__BME_BENCH__ ? { commitObservation: () => {
                             if (__BME_BENCH__ && benchmarkDomain) benchmarkCanvas?.managers.get(this)?.observe(back.native, frame, benchmarkDomain.benchmarkPaintDomain(snapshot, frame));
@@ -479,9 +539,16 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         } finally { this.busy--; }
     }
 
+    /** Audit only: whether the camera scale moved since the previous encode, then remembers this one. */
+    private zoomStep(scale: number): boolean {
+        const zooming = this.lastScale !== null && scale !== this.lastScale;
+        this.lastScale = scale;
+        return zooming;
+    }
+
     coverage(frame: ScheduledFrame): CompositorCoverage {
         if (this.healthy() && this.report?.frameId === frame.frameId && sameToken(this.report.token, frame.token)) return this.report;
-        return { frameId: frame.frameId, token: frame.token, presented: false, complete: false, sharp: false,
+        return { frameId: frame.frameId, token: frame.token, presented: false, complete: false, layersComplete: false, sharp: false,
             qualityScale: this.scene?.metrics?.qualityScale ?? 0 };
     }
     page(view: ViewState, index: number) { return projectPage(this.scene ? this.scene.layout : this.layout, view, index); }
@@ -649,7 +716,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
     }
     /** The CPU bytes this canvas's working cache holds: charged to the pane, so the pane's demand must declare them. */
     cpuWorkingBytes(): number { return this.cpuBytes; }
-    progressUploadBytes(): number { return wholeImagePixels * 4; }
+    progressUploadBytes(): number { return wholeImagePixels * POLICY.decodedRgbaBytesPerPixel; }
     private reserveGpu(bytes: number): ByteLease | null {
         const lease = this.working?.reserve(bytes) ?? null;
         if (lease) { this.gpuLeases.add(lease); this.gpuBytes += lease.bytes; }
@@ -666,10 +733,20 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
     private releaseCpuLease(lease: ByteLease | null): void {
         if (lease && this.cpuLeases.delete(lease)) { this.cpuBytes -= lease.bytes; this.cpu!.release(lease); }
     }
+    /** A refused raise leaves the pane on its last picture with no retry of its own: a layer that needs no frame never wakes it.
+     * One sized waiter on the working pool wakes it when the bytes fit (the same shape as embedPresentation's), so the retry
+     * waits for real capacity instead of polling. */
+    private awaitCapacity(bytes: number): void {
+        const pool = this.working;
+        if (this.capacityWait !== null || !pool?.whenAvailable || this.disposed) return;
+        this.capacityWait = bytes;
+        pool.whenAvailable(() => { this.capacityWait = null; if (!this.disposed) this.options.invalidate('2d-raise-capacity'); }, bytes);
+    }
     private resize(width: number, height: number) {
         this.check();
         const token = this.options.currentToken();
         const result = (complete: boolean) => ({ width, height, generation: token?.deviceGeneration ?? 0, complete });
+        const refused = () => ({ ...result(false), refused: true });
         if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 0 || height < 0 ||
             width > POLICY.maxSurfaceAxisPixels || height > POLICY.maxSurfaceAxisPixels || width * height > POLICY.maxSurfacePixels) throw new RangeError('Invalid CPU backing');
         if (this.encodedSources.size) return result(false);
@@ -677,15 +754,17 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         try {
             if (!this.init()) return result(false);
             if (!this.host && !this.surface.width && !this.surface.height && !this.displayReserved) this.backing!.stage();
-            const bytes = width * height * POLICY.surfaceReserveBytesPerPixel;
-            if (bytes > this.displayReserved) {
-                if (!this.backing!.reserve(bytes - this.displayReserved)) return result(false);
-                this.displayReserved = bytes;
-            }
+            // The back buffer first: its refusal then charges nothing for the display, and a display reserve taken below
+            // belongs to a back buffer that exists (a reserve held with no canvas for it stayed charged until the next publish).
             const old = this.buffers.get('back');
             if (old && (old.canvas.width !== width || old.canvas.height !== height)) this.dropWork();
-            if (!this.allocate('back', width, height, false)) return result(false);
+            if (!this.allocate('back', width, height, false)) { this.awaitCapacity(width * height * POLICY.surfaceReserveBytesPerPixel); return refused(); }
             if (old !== this.buffers.get('back')) { this.cancelJob(); this.generation = allocateSurfaceGeneration(); }
+            const bytes = width * height * POLICY.surfaceReserveBytesPerPixel;
+            if (bytes > this.displayReserved) {
+                if (!this.backing!.reserve(bytes - this.displayReserved)) { this.awaitCapacity(bytes - this.displayReserved); return refused(); }
+                this.displayReserved = bytes;
+            }
             return result(true);
         } finally { this.busy--; }
     }
@@ -745,6 +824,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
     }
     private paintBindings(bindings: readonly CompositorLayer[], target: Buffer2D, snapshot: Snapshot, frame: ScheduledFrame): void {
         for (const binding of bindings) {
+            auditCount(binding.id, 'canvas2d-layer');
             const effect = binding.isolation;
             if (!effect) {
                 target.context.save();
@@ -758,7 +838,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             });
         }
     }
-    private paintInverted(snapshot: Snapshot, frame: ScheduledFrame, back: Buffer2D, key: string): boolean {
+    private paintInverted(snapshot: Snapshot, frame: ScheduledFrame, back: Buffer2D, key: string, paint: string): boolean {
         if (!this.job) {
             // A band never exceeds the scheduler's one-tile progress admission, even at width8192.
             const rows = Math.max(1, Math.min(256, snapshot.metrics!.backingHeight, Math.floor(maxImagePixels / back.canvas.width)));
@@ -766,7 +846,7 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             if (!band) { this.options.invalidate('2d-document-buffer'); return false; }
             opaque(back.native, snapshot.appearance);
             if (__BME_BENCH__ && benchmarkDomain) benchmarkCanvas?.managers.get(this)?.begin(back.native, benchmarkDomain.benchmarkPaintDomain(snapshot, frame));
-            this.job = { key, snapshot, frame, back, band, y: 0, stage: 'render', colour: null, admission: null, timer: null };
+            this.job = { key, paint, snapshot, frame, back, band, y: 0, stage: 'render', colour: null, admission: null, timer: null };
         }
         const job = this.job;
         if (job.stage === 'colour') return false;
@@ -877,9 +957,16 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         return true;
     }
 
-    private quad(ctx: CanvasRenderingContext2D | GpuPass, image: ImageBitmap | TextureHandle,
+    /** A batch on the canvas path is its quads in order: each one is the single drawImage it always was. */
+    private quads(ctx: CanvasRenderingContext2D | GpuPass, image: DrawableImage | TextureHandle,
+        quads: readonly TexturedQuadSpec[], options: TexturedQuadOptions): void {
+        for (const quad of quads) this.quad(ctx, image, quad.sourceRect, quad.destRect, options);
+    }
+    private quad(ctx: CanvasRenderingContext2D | GpuPass, image: DrawableImage | TextureHandle,
         sourceRect: Readonly<Rect>, destRect: Readonly<Rect>, options: TexturedQuadOptions): void {
-        if (!('drawImage' in ctx) || !(image instanceof ImageBitmap)) throw new TypeError('A CPU quad needs a 2D context and ImageBitmap');
+        if (!('drawImage' in ctx) || !(image instanceof ImageBitmap || typeof VideoFrame !== 'undefined' && image instanceof VideoFrame)) {
+            throw new TypeError('A CPU quad needs a 2D context and an ImageBitmap or VideoFrame');
+        }
         if (!validRect(sourceRect) || !validRect(destRect) || !Number.isFinite(options.opacity) || options.opacity < 0 || options.opacity > 1) throw new TypeError('Invalid image quad');
         const previousCoverage = __BME_BENCH__ ? benchmarkCanvas?.coverageKinds.get(this) : undefined;
         const previousRatio = __BME_BENCH__ ? benchmarkCanvas?.scaleRatios.get(this) : undefined;
@@ -947,6 +1034,40 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
             if (!crop.image) { this.missing = true; continue; }
             this.drawImage(buffer, crop.image, { x: left - crop.rect.x, y: top - crop.rect.y, width: right - left, height: bottom - top }, dest);
         }
+    }
+    /** See CompositorResources.imageReady. The image's use in the back buffer is made and pinned here, so the next preparation leases
+     * and admits it (no frame would otherwise: a use is made only by a draw, and a draw that misses its upload drops the frame). Measured
+     * (canvas2d, doc12 paced zoom, impl/gpu 0ea94215): once a PDF drew its exact tiles over their stand-ins, every zoom step's new tiles
+     * missed their 1.1 MB uploads, at about one admitted per frame, and no frame was presented for the whole 2 s zoom (0 of 119 ticks). */
+    private imageReady(image: DrawableImage): boolean {
+        const back = this.buffers.get('back');
+        if (!back || !(image instanceof ImageBitmap)) return !!back;
+        // A larger image is drawn in crops, which have their own preparation.
+        if (image.width * image.height > wholeImagePixels) return true;
+        this.pendingSources.add(image);
+        let use = back.images.get(image);
+        const made = !use;
+        if (!use) {
+            use = { source: image, version: '', bytes: image.width * image.height * 4, resident: false, lease: null, admission: null };
+            back.images.set(image, use);
+        }
+        if (use.resident || use.admission !== null && use.admission.frameId === this.budget?.frameId) return true;
+        // Admitted now when this frame's upload allowance still holds it. The preparation's admission pass runs before the layers, so a
+        // tile first asked for by the frame that needs it (an off-view prefetch tile a zoom brings on view) waited a whole frame, and
+        // that frame was dropped: canvas2d presented a single notch in at +4 ticks, against +3 on WebGL2 and on feat/in-house-engines
+        // (doc12: four prefetch tiles rastered at rest, never drawn, needed by the notch's first frame).
+        const budget = this.budget;
+        if (budget && !budget.shouldYield()) {
+            this.busy++;
+            try {
+                if (!use.lease) use.lease = this.reserveGpu(use.bytes);
+                if (use.lease && budget.claimUpload(use.bytes)) { use.admission = budget; return true; }
+            } finally { this.busy--; }
+        }
+        // A new use, or one whose upload the frame's allowance refused, is admitted by a later frame; one refused its residency waits
+        // for the next frame something else asks for (retrying it every frame would spin rAF on a full pool).
+        if (made || use.lease) this.options.invalidate('2d-image-admission');
+        return false;
     }
     private mayUpload(admission: FrameBudget): boolean {
         return !this.nativeUploadUsed || performance.now() < admission.upload.deadline;
@@ -1027,6 +1148,20 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         for (const buffer of this.buffers.values()) for (const [source, use] of buffer.images) if (!pinned(source)) {
             this.releaseGpuLease(use.lease); buffer.images.delete(source);
         }
+    }
+    /** Gives back the upload residency of images the frame being built does not draw and no unconsumed encoding holds. Returns whether
+     * any was given back. */
+    private releaseStaleUses(): boolean {
+        let released = false;
+        for (const buffer of this.buffers.values()) for (const [source, use] of buffer.images) {
+            if (!use.lease || this.pendingSources.has(source)) continue;
+            let encoded = false;
+            for (const sources of this.encodedSources) if (sources.has(source)) { encoded = true; break; }
+            if (encoded) continue;
+            this.releaseGpuLease(use.lease); buffer.images.delete(source); released = true;
+        }
+        if (released) auditCount('2d', 'stale-uses-released');
+        return released;
     }
     private closeSource(state: ImageSourceState): void {
         for (const crop of state.crops.values()) this.closeCrop(crop);

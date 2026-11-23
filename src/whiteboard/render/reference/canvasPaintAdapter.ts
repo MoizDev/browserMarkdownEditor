@@ -23,6 +23,12 @@ export interface CanvasPaintAdapter {
      * moved on. Null when nothing is presented. */
     retainPrepared(): PreparedRetain | null;
     draw2d(ctx: CanvasRenderingContext2D, view: ViewState, band: PaintBand, omitNodes?: ReadonlySet<string>): void;
+    /** True when the presented paint holds every picture its items draw. A picture the GPU side released (it draws from its texture) or
+     * one being decoded again cannot be drawn on the CPU; a canvas2d pane releases nothing, so there it is true once presented. */
+    drawable2d(): boolean;
+    /** Asks again for every picture the GPU side released from the presented paint, because a 2D frame (a WebGL2 pane's resize
+     * bridge) is about to draw it; each settlement invalidates the frame. Returns how many it asked for. */
+    reacquireReleased(): number;
     release(reason: GpuReleaseReason): void;
     needsFrame(): boolean;
     memory(): { gpuBytes: number; cpuBytes: number };
@@ -46,6 +52,27 @@ export interface PreparedPaint2d {
 /** A prepared paint of a whole canonical frame, for layers that prepare their own frames directly. */
 export function preparedOfFrame(frame: PaintSource, resources: PaintResources2d, sharp?: boolean): PreparedPaint2d {
     return { sourceFrame: frame, root: rootOf(frame), windows: windowsOfSource(frame), resources, ...(sharp === undefined ? {} : { sharp }) };
+}
+
+/** The GPU side's hold on a picture's decoded bitmap, on the prepared resources of one paint. Once a GPU texture holds the
+ * pixels the GPU side releases the bitmap (the provider's lease, the largest copy of the picture), and asks for it again when
+ * a draw needs it. Only the GPU side calls it: a canvas2d draw never releases anything, so its output is unchanged. A released
+ * picture cannot be drawn from its bitmap, so the GPU side reacquires it before any CPU draw of that picture. */
+export interface PaintImageHold {
+    /** 'ready': the bitmap is held; 'released': it was given up; 'absent': not held (never requested, or still decoding). */
+    imageState(key: string): 'ready' | 'released' | 'absent';
+    /** Gives up the bitmap of a held picture; returns true when there was one to give up. */
+    releaseImage(key: string): boolean;
+    /** The held picture's size and, for a video node, the version of the frame its lease holds (0 for a picture). Null when not held. */
+    imageFact(key: string): { readonly width: number; readonly height: number; readonly version: number } | null;
+    /** Requests a released or absent picture again; its settlement invalidates the frame. A request already in flight is kept. */
+    reacquireImage(key: string): void;
+    /** True for a picture this adapter will never hold (its bytes could not be decoded): asking again changes nothing, so the GPU side
+     * draws canvas2d's placeholder for it. A picture a memory refusal skipped is not broken: the next snapshot asks for it again. */
+    imageBroken(key: string): boolean;
+    /** True while a picture this snapshot asked for may still come: its decode is in flight, or a memory refusal skipped it here (the
+     * next snapshot asks again). The GPU composer recomposes a tile that left such a picture out once this turns false. */
+    imageWaiting(key: string): boolean;
 }
 
 export interface PreparedRetain {
@@ -74,6 +101,11 @@ type Snapshot = {
     clips: Map<string, PreparedPath2d>;
     geometry: Map<string, { prepared: PreparedPath2d; bytes: number }>;
     images: Map<string, PaintImageLease | null>;
+    /** Pictures whose bitmap the GPU side gave up (imageState 'released'); reacquired by requestImage. */
+    released: Set<string>;
+    /** The pictures this paint's own items draw. The GPU route also requests finer tiles into the snapshot (reacquireImage) that
+     * no 2D draw reads: a 2D frame waits on, and asks again for, only these. */
+    drawn: Set<string>;
     /** Images a memory refusal skipped in this snapshot: drawn as placeholders now, asked for again by the next snapshot. */
     skipped: Set<string>;
     /** Built once, on first borrow, so every borrow of this snapshot is the same identity. */
@@ -170,7 +202,7 @@ export function createCanvasPaintAdapter(
         const windows = windowsOfSource(frame);
         // A full frame's window list duplicates its band arrays, so it is charged; a live frame's list is the frame's own.
         return { frame, scale, windows, window: 0, finished: false, index: 0, clipIndex: 0, paths: new WeakMap(), prepared: null,
-            clips: new Map(), geometry: new Map(), images: new Map(), skipped: new Set(), borrows: 0, closing: false, abort: new AbortController(),
+            clips: new Map(), geometry: new Map(), images: new Map(), released: new Set(), drawn: new Set(), skipped: new Set(), borrows: 0, closing: false, abort: new AbortController(),
             pending: 0, failed: false, failure: undefined, complete: false, disposed: false,
             bytes: frame.liveOnly ? 0 : refBytesOf(windows), job: null };
     }
@@ -244,6 +276,7 @@ export function createCanvasPaintAdapter(
             return;
         }
         if (item.kind === 'image') {
+            s.drawn.add(item.imageKey);
             requestImage(s, item.imageKey);
         } else if (item.kind !== 'text') {
             const itemScale = scaleFor(item, s.scale);
@@ -265,15 +298,53 @@ export function createCanvasPaintAdapter(
         s.index++;
         s.clipIndex = 0;
     }
+    function imageHold(s: Snapshot): PaintImageHold {
+        return {
+            imageState(key) { return s.images.get(key) ? 'ready' : s.released.has(key) ? 'released' : 'absent'; },
+            imageFact(key) {
+                const lease = s.images.get(key);
+                if (!lease) return null;
+                const version = (lease as { readonly version?: unknown }).version;
+                return { width: lease.width, height: lease.height, version: typeof version === 'number' ? version : 0 };
+            },
+            releaseImage(key) {
+                const lease = s.images.get(key);
+                if (!lease) return false;
+                s.images.delete(key); s.released.add(key); s.bytes -= lease.cpuBytes;
+                lease.release();
+                return true;
+            },
+            imageBroken(key) { return broken.has(key); },
+            imageWaiting(key) { return s.images.get(key) === null || s.skipped.has(key); },
+            reacquireImage(key) {
+                if (s.disposed || s.abort.signal.aborted || s.images.has(key)) return;
+                s.released.delete(key);
+                requestImage(s, key);
+            },
+        };
+    }
     function preparedOf(s: Snapshot): PreparedPaint2d {
         const windows = filterWindows(s.windows, include);
         if (windows !== s.windows) s.bytes += refBytesOf(windows);
         s.prepared ??= { sourceFrame: s.frame, root: rootOf(s.frame), windows, resources: {
             path: item => { const path = s.paths.get(item); if (!path) throw new Error('Missing prepared path'); return path; },
             clip: key => { const path = s.clips.get(key); if (!path) throw new Error('Missing prepared clip'); return path; },
-            image: key => { if (broken.has(key) || s.skipped.has(key)) return null; const image = s.images.get(key); if (!image) throw new Error('Missing prepared image'); return image.source; },
+            image: key => {
+                if (broken.has(key) || s.skipped.has(key)) return null; // a placeholder; see the requestImage failure path
+                const image = s.images.get(key);
+                if (image) return image.source;
+                throw new Error(s.released.has(key) ? 'Released prepared image' : 'Missing prepared image');
+            },
+            ...imageHold(s),
         } };
         return s.prepared;
+    }
+    // The presented paint holds every picture its items draw (see CanvasPaintAdapter.drawable2d).
+    function holdsDrawn(): boolean {
+        const s = presented;
+        if (disposed || !s || s.closing) return false;
+        for (const key of s.drawn) if (s.released.has(key) || s.images.get(key) === null) return false;
+        return true;
     }
     function borrowPrepared(): PreparedPaint2d | null {
         const s = presented;
@@ -331,7 +402,20 @@ export function createCanvasPaintAdapter(
             if (disposed || !s || s.closing) return null;
             return borrowSnapshot(s);
         },
+        drawable2d: holdsDrawn,
+        reacquireReleased() {
+            const s = presented;
+            if (disposed || !s || s.closing || !s.released.size) return 0;
+            // Only the pictures the 2D paint draws: re-decoding every GPU-planned finer tile (tens of MB at 400%) into the CPU pool
+            // when the bridge is short of it refused the bridge's own frame again (gpu-f2's review).
+            let asked = 0;
+            for (const key of s.drawn) if (s.released.delete(key)) { requestImage(s, key); asked++; }
+            return asked;
+        },
         draw2d(ctx, view, band, omitNodes) {
+            // A picture released to the GPU threw out of paintItem2d and failed the pane ('Could not continue: Released prepared
+            // image'): the scheduler unregistered it and the board stayed 'Updating' for good. Its caller reports such a paint incomplete.
+            if (!holdsDrawn()) return;
             const prepared = borrowPrepared();
             if (!prepared) return;
             project(ctx, view, () => {

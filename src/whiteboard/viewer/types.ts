@@ -1,4 +1,5 @@
 import type { PlatformLayerDefinition, PlatformPresentation } from '../../platform/render/attachPlatformPane.types';
+import type { ViewState } from '../../platform/types';
 import type { EmbedPresentationPort } from '../../platform/render/embedPresentation.types';
 import type { CompositorAppearance } from '../../platform/render/compositor.types';
 import type { PageStack } from '../../platform/render/pageStack';
@@ -62,12 +63,16 @@ export interface ViewerInteractionPorts {
     beforeHistoryReplay?(step: HistoryStepInfo, direction: 'undo' | 'redo'): boolean;
     presented?(revision: number, token: RenderToken, frame?: PaintSource, context?: ViewerPaintPresentation): void;
     liveNodeIds?(): ReadonlySet<string>;
+    /** Whether the live layer paints this node in the frame at `view` (see BoardWetRenderer.drawsLive). */
+    liveDraws?(nodeId: string, band: 'underlay' | 'content', view: ViewState, canvas: boolean): boolean;
     /** The theme palette changed. Interaction-owned paint (the wet ink source) caches pigments
      * from the palette and is only refreshed when its own layer is prepared, so the view must
      * tell it: the main layers' invalidation alone leaves a dark pigment on screen. */
     paletteChanged?(): void;
     /** Immutable, identity-stable semantic hover/edit targets requiring exact paint. */
     sensitiveNodeIds?(): ReadonlySet<string>;
+    /** Whether a pointer is down on the board (a stroke, a drag or a marquee in progress): its frames change for that input. */
+    pointerDown?(): boolean;
 }
 export interface ViewerEngine {
     readonly session: BoardSession; // EXACT same instance the App acquired; never a second doc.
@@ -88,9 +93,13 @@ export interface ViewerEngine {
     /** The requested or accepted embed set changed: repaint with the live barriers that set implies. */
     embedsChanged(): void;
     readyPaintFrame(): PaintSource | null;
+    /** The ink nodes the board's GPU tiles drew in the last composite: the live stroke hands over to them. */
+    boardDrawnInk(): ReadonlySet<string>;
     setInteractionLayers(layers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null): void;
     setPreviewLayers(layers: Readonly<{ underlay: PlatformLayerDefinition; content: PlatformLayerDefinition }> | null,
-        coverage?: () => Readonly<{ frame: PaintSource; nodeIds: ReadonlySet<string> }> | null): void;
+        coverage?: () => Readonly<{ frame: PaintSource; nodeIds: ReadonlySet<string>;
+            /** The commit revision while a committed overlay waits for the base to present it (see BoardPreview.presented). */
+            committed?: number }> | null): void;
     bindPreviewClear(clear: () => void): () => void;
     /** Detach the platform pane first: lifecycle disposes its layers. Releases only this view's
      * jobs/borrowed leases/listeners, NEVER the App-owned BoardSession or its undo/save state.
@@ -106,6 +115,8 @@ export interface AttachViewOptions {
     /** A view's playing video frames, served by their own image keys. Absent for any view with no video to play. */
     readonly liveFrames?: VideoFrameOverlay;
     readonly signal?: AbortSignal;
+    /** The pane this view draws in, naming its audit gauges (board:nodes:<auditPane>); absent, the document id names them. */
+    readonly auditPane?: string;
     readonly reveal: (world: Readonly<{ x: number; y: number; width: number; height: number }>) => void;
     readonly onError: (error: Error) => void;
 }

@@ -14,7 +14,9 @@ export type Backend = 'webgl2' | 'webgpu';
 export type BufferUse = 'vertex' | 'index' | 'uniform' | 'copy-src' | 'copy-dst';
 
 // rendering-design.md:97, 239–241: r8 is one-byte coverage, never colour storage.
-export type TextureFormat = 'rgba8' | 'r8';
+// 'r32f' (EXT_color_buffer_float + EXT_float_blend): one float per texel, the exact-area accumulator of union ink. Only
+// area targets and their span/resolve pipelines use it; uploads and sampling of it are not offered.
+export type TextureFormat = 'rgba8' | 'r8' | 'r32f';
 
 // rendering-design.md:98: writable attachments cannot simultaneously be sampled.
 export type TextureUse = 'sample' | 'render' | 'copy-src' | 'copy-dst';
@@ -133,12 +135,15 @@ export interface ShaderLayout {
 
 // rendering-design.md:137–146, 239: mask-max is only for coverage-mask construction;
 // multiply is destination-aware composition, not a fixed-function colour blend.
+// 'modulate' is the fixed-function dst·src step of a multiply slice (rgb ZERO, SRC_COLOR; alpha ZERO, ONE): no shader,
+// no backdrop copy. It is not the destination-aware multiply of beginGroup/composite, which samples a leased backdrop.
 export interface PipelineDesc {
     shader: ShaderModule;
     topology: 'triangles' | 'triangle-strip';
     colorFormat: TextureFormat;
     samples: Samples;
-    blend: 'replace' | 'source-over' | 'mask-max';
+    /** 'min' and 'max' (float targets only, EXT_float_blend): per-texel minimum or maximum of the written value. */
+    blend: 'replace' | 'source-over' | 'mask-max' | 'add' | 'modulate' | 'min' | 'max';
     alphaToCoverage: boolean;
     colorWrite: readonly [boolean, boolean, boolean, boolean];
     stencil: StencilState;
@@ -156,6 +161,9 @@ export interface Bindings {
 
 // rendering-design.md:152–158, 241–243: scissor is required, clipped to target/clip
 // bounds; an empty intersection draws nothing. Accessed buffer bytes are validated.
+// draw() validates the command and copies every field it records before it returns, so a caller may keep one DrawCommand
+// for a whole batch and rewrite its fields between draws: bindings.uniforms[i].slice (via uniformsInto), bindings.textures[i]
+// .texture, and scissor. Nothing else holds a reference to the command or to its slices.
 export interface DrawCommand {
     pipeline: PipelineHandle;
     bindings: Bindings;
@@ -179,6 +187,8 @@ export interface PassDesc {
     target: TargetHandle | 'surface';
     viewport: RectI;
     load: { kind: 'clear'; color: RgbaP } | { kind: 'load' };
+    // A clear covers this rectangle only (a shared atlas holds other regions); default is the whole viewport.
+    clearViewport?: RectI;
     store: 'store' | 'discard';
     // Required on stencil-backed targets, forbidden on the displayed surface.
     stencil?: {
@@ -198,19 +208,51 @@ export interface GroupToken { readonly id: number }
 
 // Pre-admitted stencil coverage storage: a colour texture plus a stencil-backed target on the same
 // lease. Created in prepare through the device, never inside a draw; the frame borrows it per scope.
+// `grid` 4: one texel per subsample, a (4·width)×(4·height) r8 texture with no MSAA. Draws rasterise at 4× device pixels
+// inside beginCoverage, and endCoverage box-averages each 4×4 block in the composite ('paint' output). Default 1: the
+// rgba8 colour target (MSAA or not) that composites its premultiplied colour, unchanged.
+export interface CoverageTargetOptions { readonly grid?: 1 | 4 }
+/** Atlas tile: one device-pixel square per slot, the candidate tile size of the union ink route. */
+export const COVERAGE_ATLAS_TILE = 8;
 export interface CoverageTarget {
     readonly target: TargetHandle;
     readonly texture: TextureHandle;
     readonly width: number;
     readonly height: number;
     readonly samples: Samples;
+    readonly grid: 1 | 4 | 16;
 }
 export interface CoverageToken { readonly id: number }
-export type CoverageOutput = { readonly kind: 'composite'; readonly blend: 'normal' | 'multiply' } | { readonly kind: 'mask' };
+/** An r32f area target: one float per device px, no stencil, borrowed per scope like a coverage target. */
+export interface AreaTarget {
+    readonly target: TargetHandle;
+    readonly texture: TextureHandle;
+    readonly width: number;
+    readonly height: number;
+}
+/** The paint output of an area scope: the same meaning as a grid target's 'paint' (see CoverageOutput). */
+export type AreaOutput = { readonly kind: 'area'; readonly blend: 'normal' | 'modulate'; readonly rgb: readonly [number, number, number]; readonly alpha: number };
+// 'modulate' lays the resolved slice on the surface by fixed-function dst·src (see PipelineDesc.blend), not by backdrop copy.
+// 'paint' (grid targets only) resolves the coverage c first and then composites once: 'normal' is source-over of rgb with
+// alpha·c; 'modulate' is one dst·k step with k = mix(1, rgb, alpha·c), so overlapping subsamples never compound.
+export type CoverageOutput =
+    | { readonly kind: 'composite'; readonly blend: 'normal' | 'multiply' | 'modulate' }
+    | { readonly kind: 'paint'; readonly blend: 'normal' | 'modulate'; readonly rgb: readonly [number, number, number]; readonly alpha: number }
+    /** 'coverage' (atlas targets only) resolves one slot's 16×16 texels per device pixel into `target`, an r8 render target of
+     * device size, at the device rectangle `at`. It writes through its own pass: no backdrop, no blend, no scope composite. */
+    | { readonly kind: 'coverage'; readonly target: TargetHandle; readonly at: RectI }
+    | { readonly kind: 'mask' };
 // Exact charge for a coverage target: RGBA8 colour, multisample colour where requested, and at
 // least 8 B/px/sample of stencil (the backend's own rule, matching webgl2 #targetBytes).
-export function coverageTargetBytes(width: number, height: number, samples: Samples): number {
+export function coverageTargetBytes(width: number, height: number, samples: Samples, grid: 1 | 4 | 16 = 1): number {
     if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0) throw new RangeError('Invalid coverage size');
+    if (grid !== 1 && grid !== 4 && grid !== 16 || grid !== 1 && samples !== 1) throw new RangeError('Invalid coverage grid');
+    if (grid === 4 || grid === 16) {
+        // One r8 byte and the 8 B stencil per texel, at grid² texels per device pixel (4 or 16 per side).
+        const texels = width * grid * height * grid;
+        if (!Number.isSafeInteger(texels * 9)) throw new RangeError('Coverage target exceeds safe accounting');
+        return texels * 9;
+    }
     const pixels = width * height;
     const bytes = pixels * 4 + pixels * ((samples === 4 ? 4 * 4 : 0) + 8 * samples);
     if (!Number.isSafeInteger(bytes)) throw new RangeError('Coverage target exceeds safe accounting');
@@ -248,10 +290,15 @@ export interface GpuPass {
     releaseTarget(target: TargetLease): void;
     pushClip(clip: RectI | ClipHandle): ClipToken;
     popClip(token: ClipToken): void;
+    /** The current clip, in the same space as a draw's scissor: nothing outside it is drawn. Read-only; for work that can skip what
+     * the clip excludes (the coverage kit's bands). */
+    clipRect(): Readonly<RectI>;
     // Ordinary node/ancestor opacity multiplies emitted paints, without isolation.
+    // 'modulate' composites the group's premultiplied colour over white by fixed-function dst·k, k = rgb + (1 − a): the
+    // multiply slice of a group drawn normally, with no backdrop copy. It takes colourEffect 'none' only.
     beginGroup(bounds: RectI, options: {
         opacity: number;
-        blend: 'normal' | 'multiply';
+        blend: 'normal' | 'multiply' | 'modulate';
         colourEffect: 'none' | 'page-invert';
     }): GroupToken;
     endGroup(token: GroupToken): void;
@@ -262,7 +309,8 @@ export interface GpuPass {
         opacity: number;
     }): void;
     // Stencil-winding coverage (rendering-design §2.4, §5.1). The target was admitted and created
-    // during prepare; this scope only BORROWS it. Draws between beginCoverage and endCoverage use
+    // during prepare; this scope only BORROWS it. `bounds` may be smaller than the target (a shared scratch drawn
+    // one band at a time); only that rectangle, from the target's origin, is drawn, resolved and composited. Draws between beginCoverage and endCoverage use
     // stencil pipelines against the target; endCoverage resolves multisampled colour and composites
     // the coverage into the current colour target with the clip active at begin. Nested or
     // overlapping borrows of one target are rejected; LIFO with clips and groups is enforced.
@@ -270,6 +318,14 @@ export interface GpuPass {
     // 'composite' blends the resolved coverage into the current colour target with the clip active
     // at begin; 'mask' leaves it untouched as an R-channel clip mask for createClip (rendering §5.1).
     endCoverage(token: CoverageToken, output: CoverageOutput): void;
+    // Exact-area coverage. The target is an r32f texture without stencil. beginArea opens one accumulation over the whole target
+    // (loaded, not cleared: the caller clears each region it draws into); draws then add into it. endArea closes it and composites
+    // nothing. compositeArea, in the scope that is current after endArea, paints min(1, |acc|) of the target's rectangle at `at`
+    // (bounds-sized) into the device rectangle `bounds` with the paint output and the active clip. One accumulation holds many areas
+    // in separate regions, so a run of shapes costs one pass on the target instead of one per shape.
+    beginArea(target: AreaTarget): CoverageToken;
+    endArea(token: CoverageToken): void;
+    compositeArea(target: AreaTarget, at: Readonly<{ x: number; y: number }>, bounds: RectI, output: AreaOutput): void;
     end(): void;
 }
 
@@ -277,6 +333,18 @@ export interface GpuPass {
 // pending frames never overwrite in-flight uniform slices or pooled attachments.
 export interface FrameEncoder {
     uniforms(bytes: ArrayBufferView): UniformSlice;
+    /** Copies bytes into this frame's ring and rewrites `into`, a caller-owned record, to name them: no allocation. Draw copies every
+     * slice it records, so a caller may rewrite the same record between draws of one DrawCommand. */
+    uniformsInto(bytes: ArrayBufferView, into: UniformSlice): void;
+    // Outside any pass: a target borrowed for this frame from the slots admitted at prepare (see the pass-level acquireTarget).
+    acquireTarget(desc: {
+        width: number;
+        height: number;
+        samples: Samples;
+        format?: TextureFormat;
+        stencil: boolean;
+        purpose: 'mask' | 'group' | 'scene-cache' | 'capture';
+    }): TargetLease | null;
     beginPass(desc: PassDesc): GpuPass;
     resolve(source: TargetHandle, dest: TextureHandle): void;
     copyTexture(
@@ -290,12 +358,17 @@ export interface FrameEncoder {
 }
 
 // rendering-design.md:202, 298: completion serials guard safe pooled-storage reuse.
-export interface Submission { readonly serial: number }
+// `stateSwitches`: program, blend and framebuffer changes the replayed commands made (the audit's gl:state).
+export interface Submission { readonly serial: number; readonly stateSwitches: number }
 
 // rendering-design.md:203–206, §2.5: already canonical; the caller closes the bitmap
 // explicitly after writeTexture returns. Upload does not repeat colour conversion.
+/** A decoded image a quad or an upload may read: an ImageBitmap, or a VideoFrame read directly (no CPU bitmap copy). The caller
+ * owns a VideoFrame and closes it once the call that read it has returned. */
+export type DrawableImage = ImageBitmap | VideoFrame;
+
 export interface BitmapUpload {
-    source: ImageBitmap;
+    source: DrawableImage;
     premultiplied: true;
     colorSpace: 'srgb';
     origin: 'top-left';
@@ -316,21 +389,33 @@ export interface GfxDevice {
     readonly backend: Backend;
     readonly generation: number;
     readonly limits: GfxLimits;
+    /** True when float (r32f) area targets and their min/max/add blends exist here (EXT_color_buffer_float with
+     * EXT_float_blend). False means the exact-area union route is not offered and the route takes grid4, counted. */
+    readonly areaTargets: boolean;
     createBuffer(bytes: number, uses: readonly BufferUse[], lease: ByteLease): BufferHandle;
     writeBuffer(dst: BufferHandle, offset: number, src: ArrayBufferView): void;
+    // `mips` allocates the full chain down to 1×1, charged to the lease in full (about a third more than level 0).
     createTexture(
         width: number,
         height: number,
         format: TextureFormat,
         uses: readonly TextureUse[],
         lease: ByteLease,
+        options?: { mips?: boolean },
     ): TextureHandle;
     writeTexture(dst: TextureHandle, rect: RectI, src: BitmapUpload | PixelUpload): void;
-    // Clamp at the edge; no mip levels.
-    createSampler(filter: 'nearest' | 'linear'): SamplerHandle;
+    // Fills levels 1… from level 0 on the GPU. Only for a texture created with `mips`; call after each write to level 0.
+    generateMips(texture: TextureHandle): void;
+    // Clamp at the edge. 'linear-mipmap' trilinear-filters across the chain; it reads level 0 alone when there is none.
+    createSampler(filter: 'nearest' | 'linear' | 'linear-mipmap'): SamplerHandle;
     createClip(mask: TextureHandle, deviceBounds: RectI): ClipHandle;
     // Admitted in prepare on the same lease (texture then stencil target). Destroy both to retire it.
-    createCoverageTarget(width: number, height: number, samples: Samples, lease: ByteLease): CoverageTarget;
+    createCoverageTarget(width: number, height: number, samples: Samples, lease: ByteLease, options?: CoverageTargetOptions): CoverageTarget;
+    /** An overlap atlas: `slotsAcross`×`slotsDown` slots of COVERAGE_ATLAS_TILE device px, each at 16 texels per device px (grid 16). */
+    createCoverageAtlas(slotsAcross: number, slotsDown: number, lease: ByteLease): CoverageTarget;
+    /** A sampleable rgba8 texture with its own single-sample, stencil-less render target, charged through one lease
+     * (width × height × 4): a layer's offscreen tile, composed on the GPU and then sampled by the layer. */
+    createRenderTexture(width: number, height: number, lease: ByteLease, options?: { format?: TextureFormat; copyDst?: boolean }): { texture: TextureHandle; target: TargetHandle };
     createPipeline(desc: PipelineDesc): Promise<PipelineHandle>;
     createTarget(
         color: TextureHandle,

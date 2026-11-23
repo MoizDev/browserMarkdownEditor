@@ -124,6 +124,7 @@ exception:** when the user EXPLICITLY asks for a code-based test, write it — o
 - **The app's user documentation is a file in this repo** — `utils/helpDoc.ts`, one exported string
   opened as a read-mode tab: a user-facing change is not finished until it describes the gestures it
   adds. Its pseudo-path is a **bare name**, so tab-closing code gates its equality branch to files.
+- **A pane draws on WebGL2 or its own canvas2d, both must work; every fallback is counted (`fallback:…`).**
 
 ## Conventions & gotchas
 
@@ -147,4 +148,3 @@ exception:** when the user EXPLICITLY asks for a code-based test, write it — o
 - **ESLint's relaxations are intentional**, each explained in `eslint.config.ts` — do not tighten them.
 - **Match the house comment style.** Explain *why*, beside the code, with the measured evidence that
   forced it ("measured: 7 tabs → 0"); a comment restating what the line does is not it.
-- **Ruled paper exists twice** — change both `paper.ts` and `pdfBuild.ts`.

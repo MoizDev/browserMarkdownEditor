@@ -3,6 +3,7 @@ import { figureHatch, pathCommands, type FigureGeometry, type PositionedFigureTe
 import type { InkCoverage } from '../ink/outline';
 import type { MediaEntry } from '../model/media';
 import { planPictureTiles, type PictureTileRequest } from '../media/tilePlan';
+import { parseMediaTileKey } from '../media/mips';
 import type { Node, StrokeNode } from '../model/nodes';
 import type { FaceTable } from '../text/paint';
 import { resolveSwatch, type PaintPalette } from './colour';
@@ -77,10 +78,19 @@ function* vectorNodePaint(node: Readonly<Node>, geometry: BoardVectorGeometry,
         const tiles = node.kind === 'picture' && options.tiles ? planPictureTiles(node, { id: node.media, w: media.w, h: media.h,
             mime: media.mime, animated: media.animated }, imageWorld, options.tiles, crop) : null;
         if (tiles) {
+            // A whole-mip item (the stand-in, or the whole picture at the level a worldless request could hold) names its picture, so
+            // the GPU composer plans the finer tiles of each tile it composes itself: the board settles on a whole-scene request with
+            // no world, which held a 4000x3000 picture at its 1000x750 level at 100% (measured, sharpness 0.19 vs canvas2d's 0.66).
+            const facts = options.tiles?.deviceScale !== undefined ? { media: { id: node.media, w: media.w, h: media.h, mime: media.mime,
+                animated: media.animated }, box: { w: node.w, h: node.h }, crop: crop ?? null } : null;
             // Each tile is its own image item, keyed by its tile key, so the paint pipeline acquires exactly the tiles it draws.
-            for (const tile of tiles) content.push({ ...base, kind: 'image', key: `${node.id}:tile:${tile.key}`, imageKey: tile.key,
-                localToWorld: imageWorld, clips, rect: tile.rect, sourceRect: tile.sourceRect,
-                opacity: context.opacity, blend: 'normal', inverted: node.kind === 'picture' && node.inverted, ...(tile.underlaid ? { underlaid: true as const } : {}) });
+            for (const tile of tiles) {
+                const parsed = facts && !tile.underlaid ? parseMediaTileKey(tile.key) : null;
+                content.push({ ...base, kind: 'image', key: `${node.id}:tile:${tile.key}`, imageKey: tile.key,
+                    localToWorld: imageWorld, clips, rect: tile.rect, sourceRect: tile.sourceRect,
+                    opacity: context.opacity, blend: 'normal', inverted: node.kind === 'picture' && node.inverted, ...(tile.underlaid ? { underlaid: true as const } : {}),
+                    ...(facts && parsed && parsed.column === -1 ? { picture: { ...facts, level: parsed.level } } : {}) });
+            }
         } else {
             const image: PaintImageItem = { ...base, kind: 'image', key: `${node.id}:image:${node.media}`, imageKey: node.media,
                 localToWorld: imageWorld, clips, rect: { x: 0, y: 0, width: node.w, height: node.h },

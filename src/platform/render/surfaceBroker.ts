@@ -2,6 +2,8 @@ import { RENDER_CONSTANTS } from './constants';
 import type { RenderToken } from './types';
 import type { ByteLease } from './gfx/api';
 import type { MemoryAllocator } from './memoryGovernor';
+import { auditCount } from './renderAudit';
+import { paneMotionState } from './paneMotion';
 import type {
     BrokerGpuOwner, ContextDisposeReason, CpuFallbackReason, GpuGrant, GpuRequestResult,
     SurfaceBrokerConfiguration, SurfaceCallbacks, SurfaceLease, SurfaceRegistration, SurfaceSnapshot, SurfaceStamp,
@@ -53,8 +55,24 @@ interface SurfaceEntry {
     pending: Promise<GpuRequestResult> | null;
     failed: CpuFallbackReason | null;
     waiting: boolean;
+    /** Live 2D because the visible-context cap was full: the upgrade waits for a quiet moment, not a gesture. */
+    budgetFallback: boolean;
+    /** A visibility change upgrades at once, without the quiet-moment wait. Consumed by the next capacity notification. */
+    upgradeBypass: boolean;
+    upgradeTimer: ReturnType<typeof setTimeout> | null;
+    /** Back-off for re-qualifying a timed-out restore: the Nth attempt waits REQUALIFY_MIN_MS * 2^N, capped (see armRequalify). */
+    requalifyAttempts: number;
+    requalifyTimer: ReturnType<typeof setTimeout> | null;
     lease: SurfaceLease;
 }
+
+/** A gesture is over once input and camera motion have been quiet this long; the upgrade waits for that, never mid-gesture. */
+const UPGRADE_QUIET_MS = 250;
+
+/** A timed-out restore is not permanent for a visible pane: the pane asks for a fresh context again after this back-off, doubling,
+ * capped. Measured need: a context lost with no restore left the pane on 2D for the session, until hidden and shown. */
+const REQUALIFY_MIN_MS = 5_000;
+const REQUALIFY_MAX_MS = 60_000;
 
 function sessionKey(token: RenderToken): string {
     return JSON.stringify([token.vaultEpoch, token.documentId, token.session]);
@@ -84,6 +102,7 @@ class SurfaceBroker {
     private windowVisible = true;
     private terminalContextActive = false;
     private notificationQueued = false;
+    private contextReserveWaiting = false;
     private contextAllocator: MemoryAllocator | null = null;
 
     configure({ contextAllocator }: SurfaceBrokerConfiguration): void {
@@ -121,15 +140,23 @@ class SurfaceBroker {
             state: circuit.pinned ? 'cpu-pinned' : 'dormant',
             hiddenAt: registration.view.visible ? null : performance.now(),
             generation: circuit.generation, checkedGeneration: null, reservation: null,
-            pending: null, failed: null, waiting: false,
+            pending: null, failed: null, waiting: false, budgetFallback: false, upgradeBypass: false, upgradeTimer: null,
+            requalifyAttempts: 0, requalifyTimer: null,
             lease: {
                 get stamp() { return stampOf(entry); },
                 updateView: view => this.updateView(entry, view),
                 updateToken: token => this.updateToken(entry, token),
                 requestGpu: (canvas, stamp) => this.requestGpu(entry, canvas, stamp),
+                canMarkPresented: (stamp, generation) => this.canMarkPresented(entry, stamp, generation),
                 markPresented: (stamp, generation) => this.markPresented(entry, stamp, generation),
-                failGpu: (stamp, generation, reason) => {
+                failGpu: (stamp, generation, reason, latch) => {
                     if (!this.matches(entry, stamp) || entry.reservation?.generation !== generation) return;
+                    // A latched failure pins the session to 2D for good. Without the latch the pane stays on the CPU until retry().
+                    // Neither is a user notice: a GPU defect is not the document's failure.
+                    if (latch) {
+                        entry.circuit.pinned = true;
+                        auditCount('context', 'gpu-error-latched');
+                    }
                     this.abandon(entry, 'creation-failed');
                     entry.failed = reason;
                     if (drawable(entry)) this.fallback(entry, reason);
@@ -172,6 +199,7 @@ class SurfaceBroker {
                 else this.armRestoreClock(entry, reservation);
             }
         }
+        for (const entry of this.surfaces.values()) if (visible && entry.failed === 'restore-timeout') this.armRequalify(entry);
         if (visible) this.notifyAvailable();
     }
 
@@ -258,8 +286,12 @@ class SurfaceBroker {
             // A zero-size pane can still receive a loss while geometry is changing.
             this.abandon(entry, 'context-lost');
         } else if (!wasDrawable && drawable(entry)) {
+            // Showing a pane is a fresh chance for it: the back-off starts again.
+            this.clearRequalify(entry);
             entry.failed = null;
             entry.waiting = !entry.circuit.pinned;
+            // Showing a pane is the visibility change the upgrade waits for: it is not a gesture, so it skips the quiet wait.
+            entry.upgradeBypass = true;
             this.notifyAvailable();
         }
     }
@@ -279,7 +311,7 @@ class SurfaceBroker {
             other !== entry && drawable(other) && other.reservation !== null).length;
         if (otherVisible >= RENDER_CONSTANTS.maxVisiblePaneContexts) {
             if (kept) this.abandon(entry, 'revoked');
-            return Promise.resolve(this.waitForCapacity(entry));
+            return Promise.resolve(this.fallbackBudget(entry));
         }
         if (kept?.owner) {
             if (kept.grant && (entry.state === 'rebuilding' || entry.state === 'gpu-visible')) {
@@ -301,7 +333,7 @@ class SurfaceBroker {
         }
         if (this.contextBudget.platform >= PLATFORM_CONTEXT_CEILING) this.revokeHiddenContexts(1);
         if (this.contextBudget.platform >= PLATFORM_CONTEXT_CEILING) {
-            return Promise.resolve(this.waitForCapacity(entry));
+            return Promise.resolve(this.fallbackBudget(entry));
         }
         if (this.usedCanvases.has(canvas)) {
             throw new Error('A fresh GPU attempt requires a fresh canvas');
@@ -311,7 +343,11 @@ class SurfaceBroker {
             if (!this.matches(entry, stamp)) return Promise.resolve({ kind: 'stale' });
             if (!drawable(entry) || !this.windowVisible) return Promise.resolve({ kind: 'ineligible' });
             if (entry.pending || entry.reservation || entry.circuit.pinned) return this.requestGpu(entry, canvas, stamp);
-            entry.failed = 'out-of-budget';
+            // Shared memory is short: this pane shows 2D now and waits for the reserve to fit. Marking it failed instead kept
+            // it on 2D until an explicit retry, even after the memory freed; the waiter is the real capacity event.
+            // With no sized waiter the pane would wait for nothing: it takes the explicit retry path instead.
+            if (this.awaitContextReserve()) entry.waiting = true;
+            else entry.failed = 'out-of-budget';
             return Promise.resolve(this.fallback(entry, 'out-of-budget'));
         }
         const reservation: Reservation = {
@@ -331,7 +367,7 @@ class SurfaceBroker {
             other !== entry && drawable(other) && other.reservation !== null).length;
         if (this.contextBudget.platform >= PLATFORM_CONTEXT_CEILING || visibleAfterAllocation >= RENDER_CONSTANTS.maxVisiblePaneContexts) {
             this.returnContextReserve(reservation);
-            return Promise.resolve(this.waitForCapacity(entry));
+            return Promise.resolve(this.fallbackBudget(entry));
         }
         // Both reservations and loss listeners precede getContext (§3.3:360–364).
         entry.reservation = reservation;
@@ -378,6 +414,7 @@ class SurfaceBroker {
                 this.abandon(entry, 'creation-failed');
                 entry.failed = 'creation-failed';
                 if (capabilityUnavailable && deviceHasWebGL2()) entry.callbacks.onCapabilityFailure?.();
+                auditCount('context', 'creation-failed');
                 return this.fallback(entry, 'creation-failed');
             }
             if (!valid() || !drawable(entry)) {
@@ -394,6 +431,7 @@ class SurfaceBroker {
                 if (entry.reservation !== reservation) return { kind: 'stale' };
                 this.abandon(entry, 'creation-failed');
                 entry.failed = 'creation-failed';
+                auditCount('context', 'creation-failed');
                 return this.fallback(entry, 'creation-failed');
             }
             return valid() && drawable(entry) ? { kind: 'gpu', grant } : { kind: 'stale' };
@@ -418,14 +456,33 @@ class SurfaceBroker {
                 }
                 return owner.resizeSurface(width, height);
             },
+            // The same lifetime checks as resizeSurface: a raise opened or presented after the grant went stale does nothing.
+            openOffscreen: (width, height) => {
+                if (!this.matches(entry, stamp) || entry.reservation !== reservation ||
+                    entry.generation !== generation || reservation.lost || !drawable(entry) || !this.windowVisible) return false;
+                return owner.openOffscreen(width, height);
+            },
+            commitSurface: () => {
+                if (!this.matches(entry, stamp) || entry.reservation !== reservation ||
+                    entry.generation !== generation || reservation.lost || !drawable(entry) || !this.windowVisible) return null;
+                return owner.commitSurface();
+            },
+            closeOffscreen: () => { owner.closeOffscreen(); },
         };
     }
 
+    /** Pure: whether the GPU surface may be shown now. The lifecycle asks before it switches the display, so a refused
+     * switch leaves the broker's state where the picture on screen says it is. */
+    private canMarkPresented(entry: SurfaceEntry, stamp: SurfaceStamp, generation: number): boolean {
+        return this.matches(entry, stamp) && drawable(entry) && this.windowVisible &&
+            !!entry.reservation?.owner && !entry.reservation.lost && !entry.reservation.context?.isContextLost() &&
+            entry.checkedGeneration === generation && entry.generation === generation;
+    }
+
     private markPresented(entry: SurfaceEntry, stamp: SurfaceStamp, generation: number): boolean {
-        if (!this.matches(entry, stamp) || !drawable(entry) || !this.windowVisible ||
-            !entry.reservation?.owner || entry.reservation.lost || entry.reservation.context?.isContextLost() ||
-            entry.checkedGeneration !== generation || entry.generation !== generation) return false;
+        if (!this.canMarkPresented(entry, stamp, generation)) return false;
         entry.state = 'gpu-visible';
+        entry.requalifyAttempts = 0;
         return true;
     }
 
@@ -449,6 +506,7 @@ class SurfaceBroker {
             finally {
                 const pinned = entry.circuit.losses.length >= RENDER_CONSTANTS.contextLossPinCount;
                 if (pinned) entry.circuit.pinned = true;
+                auditCount('context', pinned ? 'loss:pinned' : 'loss');
                 try {
                     zeroCanvas(reservation.canvas);
                     entry.callbacks.onSurfaceZeroed?.(reservation.canvas);
@@ -481,6 +539,7 @@ class SurfaceBroker {
             reservation.intentional || entry.circuit.pinned) return;
         reservation.restored = true;
         this.pauseRestoreClock(reservation);
+        auditCount('context', 'restored');
         if (!drawable(entry)) { this.abandon(entry, 'stale'); return; }
         if (reservation.foregroundMs >= RESTORE_FOREGROUND_MS) { this.restoreTimedOut(entry, reservation); return; }
         if (!this.windowVisible) return;
@@ -519,9 +578,34 @@ class SurfaceBroker {
 
     private restoreTimedOut(entry: SurfaceEntry, reservation: Reservation): void {
         if (!this.current(entry) || entry.reservation !== reservation || !reservation.lost) return;
+        auditCount('context', 'restore-timeout');
         this.abandon(entry, 'restore-timeout');
         entry.failed = 'restore-timeout';
         if (drawable(entry)) this.fallback(entry, 'restore-timeout');
+        this.armRequalify(entry);
+    }
+
+    /** Re-qualifies a timed-out pane with a fresh context after a back-off: a visible pane must not stay on 2D for the session.
+     * The wait doubles per attempt (5 s, 10 s, 20 s, ... to 60 s); a hidden or window-hidden pane arms nothing and is re-armed
+     * when it is shown. The re-qualification goes through the normal capacity path, so the context limits still apply. */
+    private armRequalify(entry: SurfaceEntry): void {
+        if (entry.requalifyTimer !== null || entry.failed !== 'restore-timeout' || !this.windowVisible || !drawable(entry)) return;
+        const delay = Math.min(REQUALIFY_MAX_MS, REQUALIFY_MIN_MS * 2 ** Math.min(entry.requalifyAttempts, 10));
+        entry.requalifyAttempts++;
+        entry.requalifyTimer = setTimeout(() => {
+            entry.requalifyTimer = null;
+            if (!this.current(entry) || entry.failed !== 'restore-timeout') return;
+            if (!this.windowVisible || !drawable(entry)) return;
+            auditCount('broker', 'requalify');
+            entry.failed = null;
+            entry.waiting = !entry.circuit.pinned;
+            this.notifyAvailable();
+        }, delay);
+    }
+
+    private clearRequalify(entry: SurfaceEntry): void {
+        if (entry.requalifyTimer !== null) { clearTimeout(entry.requalifyTimer); entry.requalifyTimer = null; }
+        entry.requalifyAttempts = 0;
     }
 
     private abandon(entry: SurfaceEntry, reason: ContextDisposeReason): void {
@@ -572,6 +656,9 @@ class SurfaceBroker {
             try { this.abandon(entry, 'disposed'); }
             finally {
                 entry.waiting = false;
+                entry.budgetFallback = false;
+                if (entry.upgradeTimer !== null) { clearTimeout(entry.upgradeTimer); entry.upgradeTimer = null; }
+                this.clearRequalify(entry);
                 entry.state = 'disposed';
                 this.surfaces.delete(entry.paneId);
                 this.notifyAvailable();
@@ -579,9 +666,44 @@ class SurfaceBroker {
         }
     }
 
-    private waitForCapacity(entry: SurfaceEntry): GpuRequestResult {
+    /** One sized waiter for the whole broker: it wakes once the context reserve fits, and the waiting panes retry then. Returns
+     * false when no waiter can be registered (the allocator cannot wake one), so the caller must not wait for it. */
+    private awaitContextReserve(): boolean {
+        if (this.contextReserveWaiting) return true;
+        if (!this.contextAllocator?.whenAvailable) return false;
+        this.contextReserveWaiting = true;
+        this.contextAllocator.whenAvailable(() => { this.contextReserveWaiting = false; this.notifyAvailable(); },
+            RENDER_CONSTANTS.keptContextReserveBytes);
+        return true;
+    }
+
+    /** The visible-context cap is full (a sixth visible pane, or the platform ceiling). The pane is live 2D at once, through the
+     * lifecycle's real presentation, never parked on its last picture; it upgrades to GPU when a context frees, on its next
+     * visibility change or a quiet moment (see notifyAvailable). Counted: fallback:budget. */
+    private fallbackBudget(entry: SurfaceEntry): GpuRequestResult {
         entry.waiting = true;
-        return this.fallback(entry, 'capacity');
+        entry.budgetFallback = true;
+        auditCount('context', 'fallback:budget');
+        return this.fallback(entry, 'budget');
+    }
+
+    /** Milliseconds until this pane is quiet: no input and no motion for the quiet window. A pane still moving reports one
+     * window and is asked again when it passes, so a fling or zoom that outlives its last input still holds the upgrade. */
+    private quietWait(entry: SurfaceEntry): number {
+        const motion = paneMotionState(entry.paneId);
+        if (motion.moving) return UPGRADE_QUIET_MS;
+        const since = Math.max(entry.view.lastInputAt, motion.stoppedAt);
+        return Math.max(0, since + UPGRADE_QUIET_MS - performance.now());
+    }
+
+    private deferUpgrade(entry: SurfaceEntry, delay: number): void {
+        if (entry.upgradeTimer !== null) return;
+        auditCount('context', 'upgrade:deferred');
+        // A real deadline, not a poll: the timer fires when the quiet window of input and motion has passed, and re-arms if not.
+        entry.upgradeTimer = setTimeout(() => {
+            entry.upgradeTimer = null;
+            if (this.current(entry)) this.notifyAvailable();
+        }, delay);
     }
 
     private fallback(entry: SurfaceEntry, reason: CpuFallbackReason): GpuRequestResult {
@@ -598,6 +720,9 @@ class SurfaceBroker {
             this.notificationQueued = false;
             if (!this.windowVisible) return;
             for (const entry of this.surfaces.values()) {
+                // Consumed on every visit: a visibility change's bypass covers this notification only, never a later one.
+                const bypass = entry.upgradeBypass;
+                entry.upgradeBypass = false;
                 if (!entry.waiting || !drawable(entry) || entry.circuit.pinned || entry.failed) continue;
                 // A returning kept context owns its slot already, even when all five panes are visible.
                 const others = [...this.surfaces.values()].filter(other =>
@@ -605,7 +730,18 @@ class SurfaceBroker {
                 const hasRoom = entry.reservation || this.contextBudget.platform < PLATFORM_CONTEXT_CEILING ||
                     [...this.surfaces.values()].some(other => !other.view.visible && other.reservation);
                 if (others >= RENDER_CONSTANTS.maxVisiblePaneContexts || !hasRoom) continue;
+                // A budget fallback upgrades on a visibility change or once input has been quiet: never mid-gesture.
+                const wait = entry.budgetFallback && !bypass ? this.quietWait(entry) : 0;
+                if (wait > 0) {
+                    this.deferUpgrade(entry, wait);
+                    continue;
+                }
+                if (entry.upgradeTimer !== null) { clearTimeout(entry.upgradeTimer); entry.upgradeTimer = null; }
                 entry.waiting = false;
+                if (entry.budgetFallback) {
+                    entry.budgetFallback = false;
+                    auditCount('context', 'upgrade');
+                }
                 entry.callbacks.onSlotAvailable();
             }
         });

@@ -68,6 +68,11 @@ export interface ReadySurfaceMetrics {
 /** Dormancy has no zero-DPR viewport to accidentally publish (design §8:731). */
 export type SurfaceMetrics = DormantSurfaceMetrics | ReadySurfaceMetrics;
 
+/** The lowest quality a visible surface is ever planned at. Insufficient memory lowers resolution down to this and never
+ * blanks the pane: the governor reserves each visible pane's surface at this scale before it splits the rest (by reading:
+ * the arithmetic is a 2560×1600 device pane at q 1/4 = 640×400 backing = 256,000 px × 12 B ≈ 3 MB per pane). */
+export const MIN_SURFACE_QUALITY = 0.25;
+
 /** Pure planning only; limits belong to the current device generation, grant to the current frame.
  * No source page, canvas or render target is allocated before q has been bounded (design §3.2:335–345).
  */
@@ -83,8 +88,11 @@ export function computeSurfaceMetrics(box: PhysicalBox, nominalDpr: number, limi
     const maxWidth = Math.min(RENDER_CONSTANTS.maxSurfaceAxisPixels, limits.maxTexture2D, limits.maxRenderTargetSize, limits.maxViewport[0]);
     const maxHeight = Math.min(RENDER_CONSTANTS.maxSurfaceAxisPixels, limits.maxTexture2D, limits.maxRenderTargetSize, limits.maxViewport[1]);
     const grant = Math.floor(pixelGrant);
-    const q = Math.min(1, maxWidth / box.width, maxHeight / box.height,
-        Math.sqrt(RENDER_CONSTANTS.maxSurfacePixels / box.width / box.height), Math.sqrt(grant / box.width / box.height));
+    const device = Math.min(1, maxWidth / box.width, maxHeight / box.height,
+        Math.sqrt(RENDER_CONSTANTS.maxSurfacePixels / box.width / box.height));
+    // A grant short of the minimum quality still presents at that quality: the pane lowers resolution, it does not blank.
+    // The device limits still bind (a limit below the minimum is the device's answer, not memory's).
+    const q = Math.min(device, Math.max(MIN_SURFACE_QUALITY, Math.sqrt(grant / box.width / box.height)));
     const backingWidth = Math.floor(box.width * q);
     const backingHeight = Math.floor(box.height * q);
     const renderDpr = nominalDpr * q;
@@ -119,7 +127,7 @@ export type SurfaceCommit =
     | { readonly kind: 'ready'; readonly tags: SurfaceCommitTags; readonly metrics: ReadySurfaceMetrics; readonly actual: SurfaceResizeResult }
     | { readonly kind: 'dormant'; readonly tags: SurfaceCommitTags; readonly metrics: DormantSurfaceMetrics }
     | { readonly kind: 'failed'; readonly tags: SurfaceCommitTags; readonly metrics: ReadySurfaceMetrics;
-        readonly reason: 'stale-limits' | 'resize-failed' | 'stale-generation' | 'incomplete' | 'buffer-mismatch';
+        readonly reason: 'stale-limits' | 'resize-failed' | 'stale-generation' | 'incomplete' | 'refused' | 'buffer-mismatch';
         readonly actual: SurfaceResizeResult | null };
 
 /** The scheduler calls this on geometry/show invalidation, never from an observation callback.
@@ -159,6 +167,7 @@ export class SurfaceMetricsCommitter {
             try {
                 actual = Object.freeze({ ...target.resizeSurface(metrics.backingWidth, metrics.backingHeight) });
                 if (target.generation !== tags.deviceGeneration || actual.generation !== tags.deviceGeneration) reason = 'stale-generation';
+                else if (actual.refused) reason = 'refused';
                 else if (!actual.complete) reason = 'incomplete';
                 else if (actual.width !== metrics.backingWidth || actual.height !== metrics.backingHeight) reason = 'buffer-mismatch';
             } catch {

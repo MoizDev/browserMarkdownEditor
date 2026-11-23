@@ -1,4 +1,5 @@
 import { RENDER_CONSTANTS } from '../constants';
+import { auditFrameRecord, auditFrameTime, auditStage, renderAuditEnabled, type FrameRecord } from '../renderAudit';
 
 type TimerExtension = { readonly TIME_ELAPSED_EXT: number; readonly GPU_DISJOINT_EXT: number };
 
@@ -10,7 +11,11 @@ export class Webgl2Timer {
     readonly #extension: TimerExtension | null;
     readonly #report: ((p95Ms: number, samples: number, disjoint: boolean) => void) | undefined;
     readonly #pending: WebGLQuery[] = [];
+    /** Each pending query's frame record (audit only, else null): a slow result names the frame's work. */
+    readonly #records: (FrameRecord | null)[] = [];
     readonly #samples: number[] = [];
+    /** Reused for the p95 over a full window, so each report sorts in place rather than copying the window. */
+    readonly #sorted = new Float64Array(RENDER_CONSTANTS.slowGpuSampleCount);
     #active: WebGLQuery | null = null;
 
     constructor(gl: WebGL2RenderingContext, report?: (p95Ms: number, samples: number, disjoint: boolean) => void) {
@@ -33,30 +38,41 @@ export class Webgl2Timer {
         if (!this.#active || !this.#extension) return;
         this.#gl.endQuery(this.#extension.TIME_ELAPSED_EXT);
         this.#pending.push(this.#active);
+        this.#records.push(auditFrameRecord());
         this.#active = null;
     }
 
+    /** Never waits on the GPU: a result is read only once its availability says it is ready. By reading: the disjoint flag
+     * used to be read on every poll tick while any query was pending, a synchronous round trip for nothing, so it is read
+     * only when a result is ready to be judged, and a flag set earlier is kept until then (conservative: it can only drop
+     * samples, never admit an invalid one). */
     poll(): void {
         const ext = this.#extension;
         if (!ext || !this.#pending.length) return;
         const gl = this.#gl;
-        if (gl.getParameter(ext.GPU_DISJOINT_EXT) === true) {
-            for (const query of this.#pending) gl.deleteQuery(query);
-            this.#pending.length = 0;
-            this.#samples.length = 0;
-            this.#report?.(0, 0, true);
-            return;
-        }
+        let disjoint: boolean | null = null;
         while (this.#pending.length && gl.getQueryParameter(this.#pending[0], gl.QUERY_RESULT_AVAILABLE) === true) {
+            disjoint ??= gl.getParameter(ext.GPU_DISJOINT_EXT) === true;
+            if (disjoint) {
+                for (const query of this.#pending) gl.deleteQuery(query);
+                this.#pending.length = 0; this.#records.length = 0;
+                this.#samples.length = 0;
+                this.#report?.(0, 0, true);
+                return;
+            }
             const query = this.#pending.shift()!;
+            const record = this.#records.shift() ?? null;
             const nanos: unknown = gl.getQueryParameter(query, gl.QUERY_RESULT);
             gl.deleteQuery(query);
             if (typeof nanos !== 'number' || !Number.isFinite(nanos) || nanos < 0) continue;
-            this.#samples.push(nanos / 1_000_000);
+            const ms = nanos / 1_000_000;
+            if (renderAuditEnabled()) { auditStage('gpu', 'gpu-time', ms); auditFrameTime(ms, record); }
+            this.#samples.push(ms);
             if (this.#samples.length > RENDER_CONSTANTS.slowGpuSampleCount) this.#samples.shift();
             if (this.#samples.length === RENDER_CONSTANTS.slowGpuSampleCount) {
-                const sorted = [...this.#samples].sort((a, b) => a - b);
-                this.#report?.(sorted[Math.ceil(sorted.length * 0.95) - 1], sorted.length, false);
+                this.#sorted.set(this.#samples);
+                this.#sorted.sort();
+                this.#report?.(this.#sorted[Math.ceil(this.#sorted.length * 0.95) - 1], this.#sorted.length, false);
             }
         }
     }
@@ -69,7 +85,7 @@ export class Webgl2Timer {
             for (const query of this.#pending) this.#gl.deleteQuery(query);
         }
         this.#active = null;
-        this.#pending.length = 0;
+        this.#pending.length = 0; this.#records.length = 0;
         this.#samples.length = 0;
     }
 }

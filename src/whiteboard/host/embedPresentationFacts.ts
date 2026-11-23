@@ -2,6 +2,7 @@ import type { PlatformPresentation } from '../../platform/render/attachPlatformP
 import type { EmbedClippedCoverage, EmbedCoveragePath, EmbedLaterPaint, EmbedPresentationFrame, EmbedPresentationPort,
     EmbedPresentedNode } from '../../platform/render/embedPresentation.types';
 import type { ByteLease } from '../../platform/render/gfx/api';
+import { auditCount, renderAuditEnabled } from '../../platform/render/renderAudit';
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { FrameToken, RenderToken } from '../../platform/render/types';
 import type { Affine, PathCommand, Rect } from '../../platform/types';
@@ -268,6 +269,8 @@ async function traceImage(cx: Coverage, source: ImageBitmap, region: Rect, opaqu
     const reservation = cx.memory.reserve(region.width * region.height * 5 + RESULT_BYTES);
     if (!reservation) return null;
     cx.holds.reservations.push(reservation);
+    // Counted, not hidden: this is a CPU copy of drawn board pixels, and it runs only for a draw whose later-paint facts changed.
+    auditCount('embed', 'facts:copy', 1, { bytes: region.width * region.height * 4 });
     const copy = await createImageBitmap(source, region.x, region.y, region.width, region.height);
     return send(cx, { bitmap: copy, opaqueAlpha }, [copy]);
 }
@@ -275,6 +278,7 @@ async function traceRaster(cx: Coverage, png: Uint8Array): Promise<AlphaTraceRep
     const reservation = cx.memory.reserve(RASTER_TILE_BYTES + png.byteLength + RESULT_BYTES);
     if (!reservation) return null;
     cx.holds.reservations.push(reservation);
+    auditCount('embed', 'facts:trace-raster', 1, { bytes: png.byteLength });
     return send(cx, { png, opaqueAlpha: true }, []);
 }
 /** Maps a traced reply into coverage. Opaque pixels are certified only inside `cover`; partial pixels are real translucency
@@ -400,6 +404,7 @@ async function prepareLater(doc: BoardDoc, frame: PaintSource, source: PaintNode
         if (!overlapping.length) continue;
         if (item.kind === 'image' && item.retainedTile) {
             const drawn = cx.drawn.get(item);
+            if (drawn) auditCount('embed', 'facts:readback', 1, { bytes: drawn.source.width * drawn.source.height * 4 });
             const read = drawn ? readAlphaPlane(drawn.source, drawn.source.width, drawn.source.height, cx.memory) : null;
             if (read) cx.holds.reservations.push(read.lease);
             for (const card of overlapping) {
@@ -428,29 +433,8 @@ function deviceRect(world: Rect, cx: Coverage): DeviceRect {
     return { x0: pane.x * cx.dpr, y0: pane.y * cx.dpr, x1: (pane.x + pane.width) * cx.dpr, y1: (pane.y + pane.height) * cx.dpr };
 }
 
-/** The raw frame as a pinned PaintNodeSource: the export text resolver reads only its identity and liveness guard. */
-function frameSource(frame: PaintSource, live: () => boolean): PaintNodeSource {
-    // A live frame is read one window per node, so the text resolver never receives a whole-frame array.
-    return { sourceDoc: frame.sourceDoc, token: frame.token, sceneRevision: frame.sceneRevision,
-        nodeCount: frame.liveOnly ? frame.windows.length : 1,
-        readNode: index => {
-            if (!frame.liveOnly) return { underlay: frame.underlay, content: frame.content };
-            const window = frame.windows[index];
-            return window.band === 'underlay' ? { underlay: window.items, content: [] } : { content: window.items };
-        }, isCurrent: live };
-}
-
-/**
- * Two-phase producer. The drawn callback can run before the platform accepts the presentation, so
- * the latest draw is held, its raw source and its exact drawn backings retained at the draw itself,
- * and it is built only when the matching acceptance arrives. A newer draw supersedes a held draw and
- * releases it at once, since it never reached the port; a newer draw also aborts a build in flight,
- * whose holds are released only after its glyph streams have settled. dispose releases the held draw
- * and aborts the build. A presented packet holds the raw frame and the drawn backings until the port
- * retires it; decoded copies and budget reservations are released only after every worker request
- * they served has physically retired. A draw whose backings cannot be proven presents nothing, so the
- * cards keep their true-order poster.
- */
+/** Everything a built packet depends on. A draw that matches the last handed packet on every field needs no copy, readback,
+ * trace or glyph stream: an idle board presented every tick, and each present rebuilt its later-paint facts. */
 interface BuildKey {
     readonly doc: PaintSource['sourceDoc'];
     readonly revision: number;
@@ -495,6 +479,30 @@ function sameBuild(a: BuildKey, b: BuildKey): boolean {
     }
     return true;
 }
+
+/** The raw frame as a pinned PaintNodeSource: the export text resolver reads only its identity and liveness guard. */
+function frameSource(frame: PaintSource, live: () => boolean): PaintNodeSource {
+    // A live frame is read one window per node, so the text resolver never receives a whole-frame array.
+    return { sourceDoc: frame.sourceDoc, token: frame.token, sceneRevision: frame.sceneRevision,
+        nodeCount: frame.liveOnly ? frame.windows.length : 1,
+        readNode: index => {
+            if (!frame.liveOnly) return { underlay: frame.underlay, content: frame.content };
+            const window = frame.windows[index];
+            return window.band === 'underlay' ? { underlay: window.items, content: [] } : { content: window.items };
+        }, isCurrent: live };
+}
+
+/**
+ * Two-phase producer. The drawn callback can run before the platform accepts the presentation, so
+ * the latest draw is held, its raw source and its exact drawn backings retained at the draw itself,
+ * and it is built only when the matching acceptance arrives. A newer draw supersedes a held draw and
+ * releases it at once, since it never reached the port; a newer draw also aborts a build in flight,
+ * whose holds are released only after its glyph streams have settled. dispose releases the held draw
+ * and aborts the build. A presented packet holds the raw frame and the drawn backings until the port
+ * retires it; decoded copies and budget reservations are released only after every worker request
+ * they served has physically retired. A draw whose backings cannot be proven presents nothing, so the
+ * cards keep their true-order poster.
+ */
 /** The frame whose draw a presentation shows: a frame skipped as unchanged shows the last real present's draw (drawnFrameId). */
 function drawnFrameOf(presentation: PlatformPresentation): number { return presentation.drawnFrameId ?? presentation.frameId; }
 /** Whether a presentation shows the draw made in `frameId` at `epoch`. A frame skipped as unchanged repeats that draw at the same drawn
@@ -507,12 +515,15 @@ function showsDraw(presentation: PlatformPresentation, frameId: number, epoch: n
 }
 export function createNativeEmbedPresentationProducer(options: NativeEmbedPresentationOptions): NativeEmbedPresentationProducer {
     let pending: Pending | null = null, building: Building | null = null, accepted: PlatformPresentation | null = null, disposed = false;
+    /** What the port holds now: the key of the last packet handed to it, cleared when the pane lets its packet go. */
+    let handedKey: BuildKey | null = null;
     const releaseQuietly = (value: Pending) => {
         try { value.releaseRaw(); } catch (error) { options.onError(error); }
         try { value.drawn?.release(); } catch (error) { options.onError(error); }
     };
-    const run = async (value: Pending, presentation: PlatformPresentation, controller: AbortController): Promise<void> => {
+    const run = async (value: Pending, presentation: PlatformPresentation, controller: AbortController, key: BuildKey): Promise<void> => {
         const { frame, context, drawn } = value, signal = controller.signal;
+        auditCount('embed', 'facts:build');
         const holds: Holds = { reservations: [], requests: [] };
         const releaseHeld = () => {
             releaseQuietly(value);
@@ -528,7 +539,7 @@ export function createNativeEmbedPresentationProducer(options: NativeEmbedPresen
             if (!doc) throw new Error('Embed presentation needs the pinned source document of the presented frame');
             const pane = context.paneTransform;
             if (!pane) throw new Error('Embed presentation needs the pane transform of the retained draw');
-            if (!drawn) { releaseHeld(); return; }
+            if (!drawn) { releaseHeld(); if (renderAuditEnabled()) auditCount('embed', 'facts:no-drawn'); return; }
             const drawnFrame = drawn.frame, dpr = context.view.viewport.dpr;
             const deviceScale = context.view.camera.z * dpr;
             const source = frameSource(drawnFrame, () => !signal.aborted && !disposed);
@@ -542,10 +553,12 @@ export function createNativeEmbedPresentationProducer(options: NativeEmbedPresen
                 camera: Object.freeze({ x: context.view.camera.x, y: context.view.camera.y, z: context.view.camera.z }),
                 nodes: presentedEmbeds(doc, drawnFrame, context.omittedNodeIds, pane, later), release: releaseHeld };
             handed = true;
+            handedKey = key;
             options.port.present(packet);
         } catch (error) {
             if (!handed) {
                 releaseHeld();
+                if (renderAuditEnabled()) auditCount('embed', 'facts:failed:' + (signal.aborted ? 'aborted' : String((error as Error)?.message ?? error).slice(0, 50)));
                 if (!signal.aborted) options.onError(error);
             }
         } finally {
@@ -554,12 +567,27 @@ export function createNativeEmbedPresentationProducer(options: NativeEmbedPresen
     };
     const pair = () => {
         const value = pending, presentation = accepted;
-        if (!presentation || !value || disposed || !showsDraw(presentation, value.context.frameId, value.context.view.epoch) || !sameRender(presentation.token, value.token)) return;
+        if (!presentation || !value || disposed || !showsDraw(presentation, value.context.frameId, value.context.view.epoch) || !sameRender(presentation.token, value.token)) {
+            if (renderAuditEnabled()) auditCount('embed', 'facts:unpaired:' + (!presentation ? 'no-presentation' : !value ? 'no-draw' : disposed ? 'disposed'
+                : drawnFrameOf(presentation) < value.context.frameId ? 'presentation-older' : drawnFrameOf(presentation) > value.context.frameId ? 'draw-older'
+                : !showsDraw(presentation, value.context.frameId, value.context.view.epoch) ? 'epoch' : 'token'));
+            return;
+        }
         pending = null;
-        const controller = new AbortController();
         const key = buildKeyOf(value, presentation);
+        // The port already holds a packet built from exactly this content: nothing is copied, read back or traced again.
+        if (handedKey && sameBuild(handedKey, key)) { releaseQuietly(value); auditCount('embed', 'facts:reuse'); return; }
+        const controller = new AbortController();
         building = { pending: value, controller, key, presentation };
-        void run(value, presentation, controller);
+        // The build runs in a task of its own. Its copies and readbacks are not part of the frame that presented the draw.
+        setTimeout(() => {
+            if (controller.signal.aborted) {
+                releaseQuietly(value);
+                if (building?.controller === controller) building = null;
+                return;
+            }
+            void run(value, presentation, controller, key);
+        }, 0);
     };
     return {
         presented(revision, token, frame, context) {
@@ -575,7 +603,7 @@ export function createNativeEmbedPresentationProducer(options: NativeEmbedPresen
             // the build keeps running. Aborted for every such draw, a pane presenting each tick at rest never finished one, so a loaded
             // embed stayed hidden and asked for frames for good (measured, canvas2d DPR 2 after a zoom: a draw and an abort per tick).
             if (building && !building.controller.signal.aborted && sameBuild(building.key, buildKeyOf(next, building.presentation))) {
-                releaseQuietly(next); return;
+                releaseQuietly(next); if (renderAuditEnabled()) auditCount('embed', 'facts:same-as-building'); return;
             }
             if (pending) releaseQuietly(pending);
             pending = next;
@@ -586,6 +614,8 @@ export function createNativeEmbedPresentationProducer(options: NativeEmbedPresen
             if (disposed) return;
             accepted = presentation;
             if (!presentation) {
+                // The pane let its packet go (hidden or suspended), so the next accepted draw must be built again.
+                handedKey = null;
                 const value = pending; pending = null;
                 if (value) releaseQuietly(value);
                 building?.controller.abort();
@@ -599,7 +629,7 @@ export function createNativeEmbedPresentationProducer(options: NativeEmbedPresen
             pair();
         },
         dispose() {
-            disposed = true; accepted = null;
+            disposed = true; accepted = null; handedKey = null;
             const value = pending; pending = null;
             if (value) releaseQuietly(value);
             building?.controller.abort();

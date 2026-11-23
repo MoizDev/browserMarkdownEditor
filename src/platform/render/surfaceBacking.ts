@@ -35,7 +35,7 @@ export class SurfaceBacking implements MemoryAllocator {
         });
         try {
             this.scratch = options.governor.register({
-                ...common, id: `${options.id}:candidate`, pool: 'gpu', kind: 'canvas-working', class: 'critical',
+                ...common, id: `${options.id}:candidate`, pool: 'gpu', kind: 'surface-scratch', class: 'critical',
                 memory: () => ({ live: this.displayed ? 0 : bytes(), retiring: 0 }), evict: () => {},
             });
         } catch (error) { this.display.close(); throw error; }

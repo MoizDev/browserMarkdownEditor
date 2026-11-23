@@ -496,7 +496,12 @@ export class PdfTileLayer implements Layer {
             // farthest prefetch tile to admit it, and the next frame asked for that one again (734 evictions, 3,776 rasters in 30 s).
             const ahead = request.priority === 'prefetch' ? { prefetch: true } : undefined;
             if (ahead && aheadRefused) continue;
-            let lease = this.host.allocator.cpu.reserve(bytes, ahead);
+            // A tile the view needs asks quietly first: the layer's own idle tiles, prefetch and covered stand-ins are its room, and the
+            // governor cannot take them during this frame (the pane's evict hook waits for a frame it has not touched). Asked as need
+            // first, the refusal was counted as pool pressure and stepped quality down although the room was this layer's to give
+            // (measured, canvas2d, DPR 2, doc40 at 300%, fast scroll: a 1 MB visible tile refused with 30-40 MB of the layer's
+            // off-view tiles held, quality below 1 for 6.5 s and "quality was reduced" shown; the same on the baseline).
+            let lease = this.host.allocator.cpu.reserve(bytes, ahead ?? { quiet: true });
             if (!lease) {
                 this.evictUnneeded(input.viewport, bytes, !ahead);
                 lease = this.host.allocator.cpu.reserve(bytes, ahead);

@@ -43,7 +43,8 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   `utils/engineRouting.ts`) plus per-node `locked` (`isLocked` walks ancestors). Save must honour it too.
   A read-only board view still gets the accessibility mirror (skip link, live region, object list): the view lease builds
   `viewer/accessibilityDom.ts` with `readOnly: true` (`nativeViewLease.ts`, `readonlyAccessibility`), which omits the drawing
-  cursor and pen-mode helper, and whose skip link only moves focus.
+  cursor and pen-mode helper, and whose skip link only moves focus. A chosen object there gets its outline alone (the
+  selection frame's `outlineOnly` mode, `viewer/selectionHandles.ts`, written from the view's `writeOverlays`), no handles.
 - The AI agent edits boards through the same transactions (`whiteboard/agent/`, `change/agentBatch.ts`;
   `vault-agent` skill).
 

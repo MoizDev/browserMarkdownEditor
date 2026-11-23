@@ -613,8 +613,30 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
     }, [activated, needsSource, mode, file.path, file.handle, file.name, readBytesVersioned, roleRetry, annotateEntry]);
 
     function focusReading() {
-        root.current?.querySelector<HTMLElement>(mode === 'edit' && !readOnly ? '.tl-container' : textSurfaceRef.current ? '.pdf-reading-scroll' : '.pdf-viewer-scroll')?.focus({ preventScroll: true });
+        // Annotate is a board, Original the tiled surface, Text its scroller. The old '.tl-container' and
+        // '.pdf-viewer-scroll' named elements nothing renders any more, so opening or switching back to a PDF left the
+        // keyboard where it was (measured: on the tree row, or on <body> after a tab switch).
+        const target = mode === 'edit' && !readOnly ? '.board-interaction-root' : textSurfaceRef.current ? '.pdf-reading-scroll' : '.pdf-tiled-surface';
+        focusWait.current?.();
+        const host = root.current, element = host?.querySelector<HTMLElement>(target);
+        if (element) { element.focus({ preventScroll: true }); return; }
+        if (!host) return;
+        // A PDF opened from the tree asks before its surface (a lazy chunk) has mounted: wait for it, briefly, and
+        // take the keyboard only if nobody has moved it meanwhile.
+        const holder = document.activeElement;
+        const stop = () => { observer.disconnect(); clearTimeout(timer); if (focusWait.current === stop) focusWait.current = null; };
+        const observer = new MutationObserver(() => {
+            const found = host.querySelector<HTMLElement>(target);
+            if (!found) return;
+            stop();
+            if (document.activeElement === holder || document.activeElement === document.body) found.focus({ preventScroll: true });
+        });
+        const timer = setTimeout(stop, 15_000);
+        focusWait.current = stop;
+        observer.observe(host, { childList: true, subtree: true });
     }
+    const focusWait = useRef<(() => void) | null>(null);
+    useEffect(() => () => focusWait.current?.(), []);
     useLayoutEffect(() => {
         tiledCapabilityAllowed.current = tiled && !annotationMode && !textSurface && !disk && !isDirty && !flushing;
     }, [tiled, annotationMode, textSurface, disk, isDirty, flushing]);

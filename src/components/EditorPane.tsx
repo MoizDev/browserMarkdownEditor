@@ -1,5 +1,6 @@
 import { registerReaderHostCommands } from '../utils/documentReading';
 import { useSyncExternalStore } from 'react';
+import { subscribeDocumentKeyboard } from '../utils/documentKeyboard';
 import { getReadingPreferences,subscribeReadingPreferences,setWordEmphasis,updateReadingTypography } from '../utils/readingPreferences';
 import { readPdfTextViewState } from '../utils/readerViewState';
 import type { PdfReadingBinding } from '../types/reading';
@@ -383,8 +384,8 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
     // What should hold the keyboard is the pane's to know (it owns the view),
     // when is this component's (it owns the tab bar) — so each note pane
     // registers a "take the keyboard" function here, by path: one pane per
-    // path is on screen at a time. A canvas pane registers nothing, and keeps
-    // what it does today.
+    // path is on screen at a time. A board (drawing, notebook, PDF) registers
+    // its interaction root.
     const pendingKeyboardPath = useRef<string|null>(null);
     const focusedPathRef = useRef<string | null>(null);
     const [keyboardTargets] = useState(() => new Map<string, () => void>());
@@ -437,6 +438,9 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
     const closeFromTabBar = useCallback((path: string) => {
         void Promise.resolve(onCloseTab(path)).then(handKeyboardToNote);
     }, [onCloseTab, handKeyboardToNote]);
+    // A document opened from outside the panes (the file tree) asks for the keyboard the same way; the open has
+    // already been dispatched, and a pane that mounts later takes it through `pendingKeyboardPath`.
+    useEffect(() => subscribeDocumentKeyboard(path => { pendingKeyboardPath.current = path; handKeyboardToNote(); }), [handKeyboardToNote]);
     // ── The keyboard chords that move between tabs ─────────────────────────
     //
     // ⌥⇥ / ⌥⇧⇥ walk the open documents, ⌥⇧W closes the focused one, ⌥⇧T puts the

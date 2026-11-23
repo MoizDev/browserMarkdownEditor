@@ -668,27 +668,41 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
     // tells whether the stroke's state is final for the frame, and each band compares it with its own last draw.
     const shownIds = new WeakMap<object, number>();
     let nextShownId = 0;
-    const shownIdOf = (shown: WetShown | null): number => {
+    const shownIdOf = (shown: object | null): number => {
         if (!shown) return 0;
         let id = shownIds.get(shown);
         if (id === undefined) shownIds.set(shown, id = ++nextShownId);
         return id;
     };
-    const fingerprintOf = (view: ViewState): number => {
+    const fingerprintOf = (view: ViewState, canvas: boolean): number => {
         const drawn = options.boardDrawnInk();
         keyStart();
         keyNumber(view.camera.x); keyNumber(view.camera.y); keyNumber(view.camera.z);
         keyNumber(view.viewport.width); keyNumber(view.viewport.height); keyNumber(view.viewport.dpr);
         keyInt(options.current() ? 1 : 0); keyInt(disposed ? 1 : 0);
+        if (canvas) keyNumber(shownIdOf(options.palette()));
         // Only what drawRouted draws: the pending strokes the board has not drawn, each with its two band runs. A stroke the board drew
         // (skipped at draw) or a run of a stroke no longer pending draws nothing, so its retirement leaves the picture as it was; keyed,
         // every pen-up's hand-over presented the same picture once more (measured: 12 of 18 redundant GPU presents, drawing, notebook, img8).
+        // draw2d fills each stroke's source instead, and canvas2d admits no runs: keyed by runs, a live stroke's fingerprint never moved,
+        // so every frame of it answered unchanged and the stroke showed only at pen-up (measured: canvas2d doc12 DPR 2 draw, 8 presents
+        // for 114 inputs, a held stroke's screenshot blank).
         for (const snapshot of handover?.pendingSnapshots() ?? []) {
             if (snapshot.dry && drawn.has(snapshot.identity.nodeId)) continue;
             const gesture = snapshot.identity.gestureSequence;
-            keyNumber(gesture); keyRun(runs.get(runKey(gesture, 'underlay'))); keyRun(runs.get(runKey(gesture, 'content')));
+            keyNumber(gesture);
+            if (canvas) keyNumber(sourceOf(snapshot)?.serial ?? -1);
+            else { keyRun(runs.get(runKey(gesture, 'underlay'))); keyRun(runs.get(runKey(gesture, 'content'))); }
         }
         return keyEnd();
+    };
+    /** Whether draw2d paints this pending stroke on this band: the same skips its loop makes, short of the off-screen test. */
+    const canvasPaints = (snapshot: WetInkSnapshot, band: WetBand, drawn: ReadonlySet<string>): boolean => {
+        if (snapshot.dry && drawn.has(snapshot.identity.nodeId)) return false;
+        const isHighlight = snapshot.presentation.tool === 'highlighter';
+        if (!isHighlight && band === 'underlay') return false;
+        if (!sourceOf(snapshot)) return false;
+        return !!resolveSwatch(options.palette(), snapshot.presentation.color as Swatch, isHighlight ? 'highlight' : 'stroke');
     };
     const keyRun = (slot: WetRunSlot | undefined): void => {
         if (!slot) { keyInt(-2); return; }
@@ -700,6 +714,8 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
     // Whether the band's last draw drew nothing (no shown run). An empty band stays unchanged whatever the view does: its fingerprint folds
     // the camera in, so without this a camera move answered changed for a band with no ink (measured: every zoom frame).
     const drawnEmpty: Partial<Record<WetBand, boolean>> = {};
+    // Whether the band's last draw was draw2d's: its picture is then keyed by the pending strokes' sources (fingerprintOf).
+    const drawnCanvas: Partial<Record<WetBand, boolean>> = {};
     let frameAnswer = false;
     const prepareShared = (view: ViewState, budget: FrameBudget): boolean => {
         if (disposed || !owner || !options.current()) return false;
@@ -751,10 +767,18 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         for (const [key, slot] of runs) if (((key & 1) === 1) === (band === 'content') && slot.shown) return true;
         return false;
     };
+    // canvas2d admits no runs, so bandHasInk is false there for good: what draw2d paints is each pending stroke's source.
+    const canvasHasInk = (band: WetBand): boolean => {
+        const drawn = options.boardDrawnInk();
+        return (handover?.pendingSnapshots() ?? []).some(snapshot => canvasPaints(snapshot, band, drawn));
+    };
+    const hasInk = (band: WetBand, canvas: boolean): boolean => canvas ? canvasHasInk(band) : bandHasInk(band);
     const prepareBand = (band: WetBand) => (view: ViewState, budget: FrameBudget): boolean | undefined => {
         const shared = prepareShared(view, budget);
-        if (!bandHasInk(band) && drawnEmpty[band] === true) return false;
-        const same = drawnKey[band] !== undefined && drawnKey[band] === fingerprintOf(view);
+        // Answered against the kind of draw the band last made; before any, the pane's backend decides.
+        const canvas = drawnCanvas[band] ?? !owner?.device();
+        if (!hasInk(band, canvas) && drawnEmpty[band] === true) return false;
+        const same = drawnKey[band] !== undefined && drawnKey[band] === fingerprintOf(view, canvas);
         // The answer's branch, as audit counters: a redundant present names the gate that made it changed.
         if (renderAuditEnabled()) auditCount('wet', `answer:${band}:${same ? 'same' : 'fingerprint'}:${!shared ? 'gate' : 'shared'}:${drawnKey[band] === undefined ? 'undrawn' : 'drawn'}`);
         // The picture is the one this band last drew whatever the shared state: a stroke whose tip is still in progress (its work has not
@@ -762,7 +786,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         // over an identical picture, because the tip yielded and the gate read that as a change.
         if (same) return false;
         if (!shared) return undefined;
-        if (drawnKey[band] === undefined) return bandHasInk(band) ? undefined : false;
+        if (drawnKey[band] === undefined) return hasInk(band, canvas) ? undefined : false;
         return undefined;
     };
     const make = (band: WetBand): PlatformLayerDefinition => ({
@@ -786,10 +810,10 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
             const layer: Layer & { prepareFirst(): boolean } = {
                 prepareFirst: () => !!owner?.device() && runsPending(),
                 prepare: prepareBand(band),
-                drawGpu(pass, view) { drawRouted(pass, view, band); drawnKey[band] = fingerprintOf(view); drawnEmpty[band] = !bandHasInk(band); },
+                drawGpu(pass, view) { drawRouted(pass, view, band); drawnCanvas[band] = false; drawnKey[band] = fingerprintOf(view, false); drawnEmpty[band] = !bandHasInk(band); },
                 draw2d(ctx, view) {
                     if (disposed || !options.current()) return;
-                    drawnKey[band] = fingerprintOf(view); drawnEmpty[band] = !bandHasInk(band);
+                    drawnCanvas[band] = true; drawnKey[band] = fingerprintOf(view, true); drawnEmpty[band] = !canvasHasInk(band);
                     // The CPU reference path: counted, so a device session that draws here is visible in the audit.
                     if (renderAuditEnabled()) auditCount('wet', 'draw:canvas2d');
                     const boardDrawn = options.boardDrawnInk();

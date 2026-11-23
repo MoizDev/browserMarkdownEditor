@@ -361,7 +361,11 @@ export const attachView: AttachView = options => {
             const pictures = runtime.session.doc.mediaRefs.size > 0;
             if (containsRect(view2d.world, screen) && (pictures ? scale === view2d.scale && containsRect(view2d.tiles, screen)
                 : inkRealisationNear(scale, view2d.scale, 0))) return;
-            if (!pictures && containsRect(view2d.world, screen) && (moving || now - zoom2d.at < ZOOM_SETTLE_MS) && inkRealisationNear(scale, view2d.scale, 1)) {
+            // A board with pictures stands through a zoom too while its picture tiles still cover the screen (a zoom in): they draw scaled
+            // until the exact ask, as its ink does. Asked on every step, canvas2d presented each step twice (measured, a 4000x3000 picture
+            // at DPR 2: 40 view requests and 80 presents for 40 wheel steps).
+            if (containsRect(view2d.world, screen) && (!pictures || containsRect(view2d.tiles, screen))
+                && (moving || now - zoom2d.at < ZOOM_SETTLE_MS) && inkRealisationNear(scale, view2d.scale, 1)) {
                 cancelSettle2d();
                 settle2d = setTimeout(() => { settle2d = null; requestPaint(); }, Math.max(0, zoom2d.at + ZOOM_SETTLE_MS - now) + 1);
                 return;

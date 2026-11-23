@@ -325,7 +325,7 @@ A board you open or create from the file tree takes the keyboard straight away, 
 ### The tool bar
 The bar at the bottom centre holds **Select** (\`V\`), **Hand** (\`H\`), **Draw** (\`D\`, also \`B\` or \`X\`), **Eraser** (\`E\`), **Arrow** (\`A\`), **Text** (\`T\`), **Note** (\`N\`, a sticky note), **Media** (a picture or video from your computer, \`Cmd/Ctrl + U\`) and **Rectangle** (\`R\`). The chevron at its end opens the rest: fifteen more figures (ellipse \`O\`, triangle, diamond, hexagon, oval, rhombus, star, cloud, heart, x box, check box and four block arrows), **Line** (\`L\`), **Highlight** (\`Shift + D\`), **Laser** (\`K\`) and **Frame** (\`F\`). While one of those is the active tool, the chevron shows it filled in blue. \`G\` picks the figure you used last. Hover any button for its name and key. In a narrow pane, the tools that do not fit on the bar move to the front of the chevron's list, the header's Undo, Redo, Delete and Duplicate move into its **Actions** grid, and the zoom box sits just above the bar.
 
-**Tool lock** (\`Q\`, or Menu → Preferences) keeps the tool you picked after each use.
+**Tool lock** (\`Q\`, or Menu → Preferences) keeps the tool you picked after each use. A shape, arrow, line or frame you have let go of always lands, however quickly you start the next one, press a key or pick another tool; \`Escape\` before you let go still cancels it, and \`Cmd/Ctrl + Z\` right after takes back the last one.
 
 ### Moving around
 - **Pan:** scroll or swipe, drag with the Hand tool, or hold \`Space\` and drag. The arrow keys pan when nothing is selected (\`Shift\` for bigger steps).

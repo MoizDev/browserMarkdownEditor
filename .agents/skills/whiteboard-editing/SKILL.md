@@ -54,6 +54,9 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   `registerPending`: the next press is admitted (`claimInput` reads `isInputGestureActive`), Escape/Delete/tool keys wait for it
   (`attach.ts` queues them with `enqueueAfterGesture`), only the view's end or — for an erase — an undo cancels it, and a
   revision that moves meanwhile is prepared again, not abandoned. A new gesture that reads the selection waits for `settled()`.
+  The creation tools (figure, frame, connector, polyline, text/sticky placement) follow the same rule: released shapes land
+  in the order drawn (`creationTurn`), each prepared again on a moved revision (`CreationGesture.rebase`); an undo while
+  work settles cancels only the latest undoable one; an arrow key waits behind settling work, then nudges or pans.
 - **One gesture owner at a time** (`input/router.ts`, `InputRouter`): tools receive normalised `RealSample`s only,
   stamped with an `InputToken` (vault epoch, tab, session and view generations). A replaced view cannot finish its
   successor's contact; check the token before acting on anything async.

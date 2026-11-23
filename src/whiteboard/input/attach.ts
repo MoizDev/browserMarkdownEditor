@@ -478,7 +478,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   const stopKeys = installKeyboard(view.surface, {
     visible: current, enabled: editable, shortcutsEnabled: services.shortcutsEnabled,
     modalOpen: services.modalOpen, editing: services.editing,
-    cursor, navigation: services.keyboardNavigation ? () => services.keyboardNavigation!(cursor.active) : undefined, gestureActive: () => router.activeOwner !== null,
+    cursor, navigation: services.keyboardNavigation ? navigationNow : undefined, gestureActive: () => router.activeOwner !== null,
     typeText: text => !!services.textInput?.type(text),
     modifierChanged: modifiers => { trackShift(modifiers.shift); pointer.modifiersChanged(modifiers) },
     clearLatches: () => { services.textInput?.cancelPending(); cancelContinuations(); services.cancelPendingGestures(); spaceHeld = false; zoomHeld = false; shiftHeld = false; overview.leave(); cursor.escape(); pointer.interrupt('flush'); services.clearLatches?.() },
@@ -499,6 +499,22 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       return runKey(id, event)
     },
   }, services.mac)
+  // An arrow key pressed while released work is still landing waits for it, like every other key, and only then decides
+  // between nudging the selection and panning: read at the press, the box's selection had not landed yet, so the key panned
+  // the view instead, or the nudge found the selection changed under it and did nothing.
+  function navigationNow(): KeyboardNavigationPriority {
+    const now = services.keyboardNavigation!(cursor.active)
+    if (router.activeOwner || !session.isGestureActive || session.isInputGestureActive) return now
+    const later = (direction: string, coarse: boolean): boolean => {
+      void session.enqueueAfterGesture(new AbortController().signal, () => {
+        if (!current()) return
+        const then = services.keyboardNavigation!(cursor.active)
+        if (then.hasSelection && editable()) then.nudge(direction, coarse); else then.pan(direction, coarse)
+      }).catch(error => { if (!isCancellation(error)) services.error(error) })
+      return true
+    }
+    return { ...now, hasSelection: true, nudge: later, pan: later }
+  }
   // Space and Z hold a quasi-mode, and accessibility keys speak: they act at once, never behind settling work.
   function holdsMode(id: string): boolean {
     return id === 'pan.hold' || id === 'pan.release' || id === 'zoom.hold' || id === 'zoom.release' || id.startsWith('accessibility.')

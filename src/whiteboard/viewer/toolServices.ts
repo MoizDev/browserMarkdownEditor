@@ -153,6 +153,14 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         && t.vaultEpoch === inputToken.vaultEpoch && t.tabId === inputToken.tabId && t.sessionGeneration === inputToken.sessionGeneration
         && t.viewGeneration === inputToken.viewGeneration && editable(), style: () => runtime.session.doc.ui, camera,
         mappings: options.mappings, invalidate: options.interaction.invalidate, onError: ui.error });
+    // Released shapes land in the order they were drawn, each prepared after the one before has applied.
+    let creationTail: Promise<void> = Promise.resolve();
+    const creationTurn = () => {
+        const ready = creationTail;
+        let done!: () => void;
+        creationTail = new Promise<void>(resolve => { done = resolve; });
+        return { ready, done };
+    };
     const pending = new Set<() => void>();
     const registerPending = (cancel: () => void) => { if (!editable()) throw new DOMException('View is not editable', 'AbortError'); pending.add(cancel); return () => { pending.delete(cancel); }; };
     let brush: ZoomBox | null = null, column: { x: number; y: number; width: number | null } | null = null;
@@ -210,6 +218,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
                 if (choice.id === 'figure' && !FIGURE_SHAPES.includes(variant as FigureShape)) throw new RangeError('Invalid figure variant');
                 const kind = choice.id;
                 return { ...route(boardCreationTool(kind), { runtime, render: runtime.render, camera, kind, registerPending,
+                    settle: () => runtime.session.beginGesture('settling'), registerSettling: select.registerSettling, creationTurn,
                     sampleToSurface: options.sampleToSurface, guides: select.setGuides, alwaysSnap: options.alwaysSnap,
                     ...(kind === 'figure' ? { figure: variant as FigureShape } : {}), preview, current: editable,
                     editText: async id => { await text.editText(id); }, resolveAttachment: (position, signal, request) => attachments.resolve(position, signal,

@@ -72,7 +72,7 @@ export function createNativeBoardContextMenu(options: {
         const picture = mediaSource ? mediaSource.selection(options.canWrite()) : null;
         if (picture && mediaSource) {
             const rows = mediaRows(picture, { ...mediaSource, current: same, notice: options.notice,
-                text: (key, fallback) => lang.table.strings[key] !== undefined ? t(key) : fallback });
+                text: key => t(key) });
             if (rows.length) extra.push({ kind: 'separator', id: 'media-separator' }, ...rows);
         }
         // A locked node is never in the selection, so a secondary click targets it here (F-CTX-006): the row acts on that

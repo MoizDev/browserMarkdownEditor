@@ -137,6 +137,8 @@ export function createNativeViewLease(options: {
     readPdfMedia?(id: MediaId, signal: AbortSignal): Promise<Blob>;
     editing?: {
         readonly clipboard: NativeClipboardService;
+        /** Ctrl/Cmd+P's route: the board's Print, which asks Selection or Sheet first. */
+        readonly print: () => boolean;
         readonly ui: NativeEditingToolOptions['ui'];
         readonly commands: NativeEditingToolOptions['commands'];
         /** Actual per-view services, not the document-wide promotion, authorize input. */
@@ -383,7 +385,7 @@ export function createNativeViewLease(options: {
         visible: () => parameters.visible, focused: () => parameters.focused, paged: board.doc.kind !== 'whiteboard',
         host, identity, clipboard: edit.clipboard, onEmbedInfrastructure: edit.onEmbedInfrastructure, certifyPresentation,
         bindClipboard: element => edit.clipboard.attach(element, lease, () => parameters.theme, options.onNotice, true,
-            () => inputPermitted && parameters.mode === 'edit' && edit.canMutate()),
+            () => inputPermitted && parameters.mode === 'edit' && edit.canMutate(), edit.print),
         toolOptions: { runtime, engine: viewer, images, camera, token, alwaysSnap: () => getBoardPreferences().isSnapMode,
             cropFromHandle: (id, edge, pointer) => edit.clipboard.cropFromHandle(id, edge, pointer), dynamicSize: () => getBoardPreferences().isDynamicResizeMode,
             wrapMode: () => getBoardPreferences().isWrapMode,

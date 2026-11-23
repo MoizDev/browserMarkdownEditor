@@ -25,12 +25,11 @@ export interface MediaRowActions {
     cardPreview(id: MediaRowId): Promise<void>;
 }
 
-// The crop bar's own aspect names, so the menu and the editor read the same in every board language. The English fallbacks
-// show only when a board has no table for the key, which every shipped table has.
-const CROP_ROWS: readonly { readonly preset: PictureCropPreset; readonly key: string; readonly fallback: string }[] = [
-    { preset: 'original', key: 'crop.aspect.original', fallback: 'Original' }, { preset: 'square', key: 'crop.aspect.square', fallback: 'Square (1:1)' },
-    { preset: 'circle', key: 'crop.aspect.circle', fallback: 'Circle (1:1)' }, { preset: 'landscape', key: 'crop.aspect.landscape', fallback: 'Landscape (4:3)' },
-    { preset: 'portrait', key: 'crop.aspect.portrait', fallback: 'Portrait (3:4)' }, { preset: 'wide', key: 'crop.aspect.wide', fallback: 'Wide (16:9)' },
+// The crop bar's own aspect names, so the menu and the editor read the same in every board language.
+const CROP_ROWS: readonly { readonly preset: PictureCropPreset; readonly key: string }[] = [
+    { preset: 'original', key: 'crop.aspect.original' }, { preset: 'square', key: 'crop.aspect.square' },
+    { preset: 'circle', key: 'crop.aspect.circle' }, { preset: 'landscape', key: 'crop.aspect.landscape' },
+    { preset: 'portrait', key: 'crop.aspect.portrait' }, { preset: 'wide', key: 'crop.aspect.wide' },
 ];
 
 /** The App's own picker for a replacement: one image, chosen from the right-click that asked for it. */
@@ -59,57 +58,56 @@ export interface MediaRowOptions {
     /** Whether the menu's selection is still the one it was raised over. */
     readonly current: () => boolean;
     readonly notice: (message: string) => void;
-    /** A board's translated label for a key, or the fallback when that key has no translation. */
-    readonly text?: (key: string, fallback: string) => string;
+    /** The board's translation of a message key, in the board's language. */
+    readonly text: (key: string) => string;
 }
 
 /** Rows for the one picture or card the menu was raised over. A blocked row stays on screen and says why. */
 export function mediaRows(selection: MediaRowSelection, options: MediaRowOptions): MenuRow[] {
-    const { actions, fail, pick, requestText, playback, current, notice, openCrop } = options;
-    const label = (key: string, fallback: string) => options.text ? options.text(key, fallback) : fallback;
+    const { actions, fail, pick, requestText, playback, current, notice, openCrop, text } = options;
     const attempt = (action: () => void | Promise<void>) => () => {
-        if (!current()) { notice('The selection changed; open the menu again.'); return; }
+        if (!current()) { notice(text('menu.selectionChanged')); return; }
         try { void Promise.resolve(action()).catch(fail); } catch (error) { fail(error); }
     };
     const rowState: { disabled?: true; reason?: string } = selection.blocked === null ? {} : { disabled: true, reason: selection.blocked };
     if (selection.kind === 'linkcard') {
-        return [{ kind: 'command', id: 'media-card-preview', label: 'Fetch link preview', ...rowState,
+        return [{ kind: 'command', id: 'media-card-preview', label: text('menu.fetchLinkPreview'), ...rowState,
             run: attempt(() => actions.cardPreview(selection.id)) }];
     }
     const rows: MenuRow[] = [];
     if (selection.replaceable) {
-        rows.push({ kind: 'command', id: 'media-replace', label: label('chrome.replaceMedia', 'Replace picture…'), ...rowState,
+        rows.push({ kind: 'command', id: 'media-replace', label: text('chrome.replaceMedia'), ...rowState,
             run: attempt(async () => { const file = await pick(); if (file) await actions.replace(selection.id, file, file.name); }) });
     }
     if (openCrop) {
-        rows.push({ kind: 'command', id: 'media-crop-editor', label: label('chrome.cropImage', 'Crop image'), ...rowState,
+        rows.push({ kind: 'command', id: 'media-crop-editor', label: text('chrome.cropImage'), ...rowState,
             run: attempt(() => openCrop(selection.id)) });
     }
     // The editor row above already says "Crop image"; this submenu names what it is for: the presets the editor offers.
-    rows.push({ kind: 'submenu', id: 'media-crop', label: label('chrome.cropToAspect', 'Crop to aspect ratio'), ...rowState,
-        entries: CROP_ROWS.map(({ preset, key, fallback }) => ({ kind: 'command' as const, id: `media-crop-${preset}`, label: label(key, fallback), ...rowState,
+    rows.push({ kind: 'submenu', id: 'media-crop', label: text('chrome.cropToAspect'), ...rowState,
+        entries: CROP_ROWS.map(({ preset, key }) => ({ kind: 'command' as const, id: `media-crop-${preset}`, label: text(key), ...rowState,
             run: attempt(() => actions.crop(selection.id, preset)) })) });
     // Invert is a picture's own flag; a clip's frames are not inverted by it.
     if (!selection.video) {
-        rows.push({ kind: 'command', id: 'media-invert', label: label('chrome.invertImage', 'Invert picture'), ...rowState,
+        rows.push({ kind: 'command', id: 'media-invert', label: text('chrome.invertImage'), ...rowState,
             run: attempt(() => actions.invert(selection.id)) });
     }
     // The original bytes are a copy the user asked for, so this row stays open on a locked or read-only picture.
-    rows.push({ kind: 'command', id: 'media-download-original', label: label('chrome.downloadOriginal', 'Download original'),
+    rows.push({ kind: 'command', id: 'media-download-original', label: text('chrome.downloadOriginal'),
         run: attempt(() => actions.downloadOriginal(selection.id)) });
     if (requestText) {
-        rows.push({ kind: 'command', id: 'media-alt-text', label: label('chrome.alternativeText', 'Alternative text…'), ...rowState,
+        rows.push({ kind: 'command', id: 'media-alt-text', label: text('chrome.alternativeText'), ...rowState,
             run: attempt(async () => {
                 const initial = actions.alternativeText(selection.id);
-                const value = await requestText({ title: label('chrome.alternativeText', 'Alternative text…'),
-                    body: 'Describe the picture for people who cannot see it.', confirmLabel: 'Save',
-                    input: { label: 'Alt text', initialValue: initial, validate: text => text.length > 10_000 ? 'The description is too long.' : null } });
+                const value = await requestText({ title: text('chrome.alternativeText'), body: text('crop.altBody'), confirmLabel: text('chrome.save'),
+                    input: { label: text('chrome.altLabel'), initialValue: initial, validate: value => value.length > 10_000 ? text('chrome.altTooLong') : null } });
                 if (value !== null && value !== initial) actions.setAlt(selection.id, value);
             }) });
     }
     if (playback && (selection.video || selection.animated) && (playback.shown(selection.id) || playback.playing(selection.id))) {
-        const playing = playback.playing(selection.id), noun = selection.video ? 'video' : 'animation';
-        rows.push({ kind: 'command', id: 'media-playback', label: playing ? `Pause ${noun}` : `Play ${noun}`,
+        const playing = playback.playing(selection.id);
+        const label = playing ? text(selection.video ? 'menu.pauseVideo' : 'menu.pauseAnimation') : text(selection.video ? 'menu.playVideo' : 'menu.playAnimation');
+        rows.push({ kind: 'command', id: 'media-playback', label,
             run: () => { try { if (playing) playback.pause(selection.id); else playback.play(selection.id); } catch (error) { fail(error); } } });
     }
     return rows;

@@ -49,12 +49,17 @@ export function PenPanel(props: PenPanelProps) {
         timer.current = window.setTimeout(finish, 500);
     };
     const toggleLabel = props.collapsed ? props.showLabel : props.hideLabel;
-    return <div className="board-pen-panel">
+    // The fold is a disclosure chevron at the panel's corner; its words are its name and tooltip. Written out as the button's
+    // text, "Hide colours and pen width" wrapped over two centred lines at the top of the panel and read as the panel's title.
+    return <div className={props.collapsed ? 'board-pen-panel board-pen-panel-collapsed' : 'board-pen-panel'}>
         <button type="button" className="board-chrome-tool board-pen-toggle" aria-label={toggleLabel}
             data-tooltip={toggleLabel} aria-expanded={!props.collapsed} onClick={() => { finish(); props.setCollapsed(!props.collapsed); }}>
             {props.collapsed && <span className="board-pen-indicator" aria-hidden="true"
                 style={{ background: props.nextColorCss, outlineColor: props.indicatorOutline }} />}
-            {toggleLabel}
+            <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}
+                strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+                <path d={props.collapsed ? 'm6 9 6 6 6-6' : 'm18 15-6-6-6 6'} />
+            </svg>
         </button>
         {!props.collapsed && <>
             <div className="board-pen-swatches">

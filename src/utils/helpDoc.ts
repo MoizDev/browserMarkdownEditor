@@ -348,7 +348,7 @@ The bar at the bottom centre holds **Select** (\`V\`), **Hand** (\`H\`), **Draw*
 ### The pen panel
 Colour and thickness live in the panel at the top right; it is the same panel in a drawing, a notebook and an annotated PDF. Pick one of twelve colours. The **slider is the pen's width**, and it is continuous rather than a set of sizes — it starts at a normal writing width and goes down to a hairline, which is what small handwriting on ruled paper needs. Double-click it to come back to the default. Drag the slider or pick a colour with something selected and it re-inks that instead of only the next stroke.
 
-**Hide colours and pen width**, at the top of the panel, folds it down to a single swatch in your current colour; **Show colours and pen width** opens it again. **Every file keeps its own pen.** A notebook you annotate in fine red stays fine and red; the PDF you were marking up in thick blue is still thick and blue when you come back to it. A brand new file starts at the width you were last using.
+The chevron at the top corner of the panel (**Hide colours and pen width**) folds it down to a single swatch in your current colour; click it again (**Show colours and pen width**) to open it. **Every file keeps its own pen.** A notebook you annotate in fine red stays fine and red; the PDF you were marking up in thick blue is still thick and blue when you come back to it. A brand new file starts at the width you were last using.
 
 Style keys for the selection: \`Alt + F\` fills a figure, \`Alt + Shift + F\` gives it a lined fill, \`Alt + T\` makes it white, and \`Shift + Q\` copies the style of what is under the pointer.
 

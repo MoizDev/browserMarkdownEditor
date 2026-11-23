@@ -437,10 +437,17 @@
     pointer-events: auto;
 }
 
+.board-pen-panel-collapsed {
+    width: auto;
+}
+
 .board-pen-toggle {
     display: flex;
+    align-self: flex-end;
     align-items: center;
     gap: 8px;
+    min-height: 28px;
+    padding: 4px 6px;
 }
 
 .board-pen-indicator {

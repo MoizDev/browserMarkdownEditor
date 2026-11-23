@@ -649,7 +649,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
         if (cursor.gesture) cursor.enter(modifiersOf(event));
         return true;
       }
-      if (id === 'zoom.hold') { zoomHeld = true; return true }
+      if (id === 'zoom.hold') { zoomHeld = true; services.zoomBrush().prepareOverview?.(); return true }
       if (id === 'zoom.release') { overview.leave(); zoomHeld = false; return true }
       if (id.startsWith('tool.bar.') && editable()) {
         // The chrome publishes the tools its bar shows; a slot the bar does not show (narrow pane, or a figure that is

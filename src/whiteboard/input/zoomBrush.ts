@@ -15,6 +15,10 @@ export interface ZoomBrushContext {
   view(): { readonly camera: ZoomCamera; readonly viewport: { readonly width: number; readonly height: number } }
   setCamera(camera: ZoomCamera): void
   clampZoom(z: number): number
+  /** Reads the sheet's content box ahead of a quick overview: it is asynchronous, so Z's press starts it. */
+  prepareOverview?(): void
+  /** The content box the overview fits, read for the current document; null means the overview fits the viewport alone. */
+  overviewBox?(): { readonly x: number; readonly y: number; readonly width: number; readonly height: number } | null
 }
 
 /** A brush smaller than 8 screen px in either direction is a click (catalogue T§4). */

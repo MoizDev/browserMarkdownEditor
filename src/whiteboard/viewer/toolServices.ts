@@ -23,6 +23,7 @@ import type { PaintImageProvider } from '../render/resources';
 import { textTool } from '../text/edit/tool';
 import { createBoardAttachmentResolver } from './attachments';
 import { boardCreationTool } from './creationTools';
+import { contentBounds, type ContentRect } from '../commands/contentBounds';
 import { createBoardInkServices } from './inkServices';
 import type { KeyboardContextRequest } from './keyboardContext';
 import { createBoardPointQuery } from './pointQuery';
@@ -191,6 +192,23 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         if (erasePath.length > 512) erasePath.splice(0, erasePath.length - 512);
         invalidate(); scheduleTrails();
     };
+    // The quick overview fits the sheet's content, which contentBounds reads asynchronously. Z's press reads it ahead, and it is kept
+    // per document revision: a stale box is not used, so Shift never waits on the read and fits the viewport alone instead.
+    let overviewContent: { readonly rev: number; readonly box: ContentRect | null } | null = null;
+    let overviewPending: { readonly rev: number; readonly controller: AbortController } | null = null;
+    const prepareOverview = () => {
+        const doc = runtime.session.doc, rev = doc.rev;
+        if (overviewContent?.rev === rev || overviewPending?.rev === rev) return;
+        overviewPending?.controller.abort();
+        const controller = new AbortController(), pending = { rev, controller };
+        overviewPending = pending;
+        const roots = (doc.children.get(runtime.selection.getSnapshot().sheet) ?? []).map(child => child.id);
+        const fence = () => { if (controller.signal.aborted || runtime.session.doc !== doc || doc.rev !== rev) throw new DOMException('Overview content changed', 'AbortError'); };
+        void contentBounds(runtime, roots, { signal: controller.signal, fence, cooperate: () => new Promise<void>(resolve => setTimeout(resolve, 0)) })
+            .then(box => { if (!controller.signal.aborted) overviewContent = { rev, box }; })
+            .catch(error => { if (!(error instanceof DOMException && error.name === 'AbortError')) ui.error(error); })
+            .finally(() => { if (overviewPending === pending) overviewPending = null; });
+    };
     const zoom: ZoomBrushContext = {
         toSurface: options.sampleToSurface,
         preview(box) { brush = box; invalidate(); },
@@ -208,6 +226,8 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         view: () => ({ camera: camera.camera, viewport: options.viewport() }),
         setCamera(next) { options.platform().cancelMotion(); camera.setCamera(next); options.interaction.cameraChanged(); },
         clampZoom: z => camera.clampZoom(z),
+        prepareOverview,
+        overviewBox: () => overviewContent && overviewContent.rev === runtime.session.doc.rev ? overviewContent.box : null,
     };
     const textContext = {
         createText(x: number, y: number, width: number | null) { if (editable()) text.manager.create(x, y, width); },

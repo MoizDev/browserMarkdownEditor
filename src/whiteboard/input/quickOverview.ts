@@ -1,8 +1,9 @@
 import { surfaceToWorld } from '../../platform/render/camera';
 import type { ZoomBrushContext, ZoomCamera, ZoomPoint } from './zoomBrush';
 
-/** The overview zooms out by the same step as the brush's Alt-click, so both zoom-outs feel alike. */
-const OVERVIEW_FACTOR = 0.5;
+/** The overview fits the viewport and the sheet's content together, then steps out a little more for breathing room
+ * (catalogue T§4: the target zoom times 0.85, ZoomQuick.ts:34-59). */
+const OVERVIEW_FACTOR = 0.85;
 
 interface OverviewState {
   readonly entry: { readonly camera: ZoomCamera; readonly width: number; readonly height: number };
@@ -34,8 +35,15 @@ export class QuickOverview {
     const ctx = this.zoom();
     const { camera, viewport } = ctx.view();
     if (!(viewport.width > 0 && viewport.height > 0)) return;
-    const z = ctx.clampZoom(camera.z * OVERVIEW_FACTOR);
-    const centre = surfaceToWorld({ x: viewport.width / 2, y: viewport.height / 2 }, camera);
+    // The union of what is on screen and the sheet's content (read ahead on Z's press, so this stays synchronous).
+    const topLeft = surfaceToWorld({ x: 0, y: 0 }, camera), bottomRight = surfaceToWorld({ x: viewport.width, y: viewport.height }, camera);
+    let x0 = topLeft.x, y0 = topLeft.y, x1 = bottomRight.x, y1 = bottomRight.y;
+    const content = ctx.overviewBox?.() ?? null;
+    if (content) { x0 = Math.min(x0, content.x); y0 = Math.min(y0, content.y); x1 = Math.max(x1, content.x + content.width); y1 = Math.max(y1, content.y + content.height); }
+    const fit = Math.min(viewport.width / (x1 - x0), viewport.height / (y1 - y0));
+    if (!(fit > 0 && Number.isFinite(fit))) return;
+    const z = ctx.clampZoom(fit * OVERVIEW_FACTOR);
+    const centre = { x: (x0 + x1) / 2, y: (y0 + y1) / 2 };
     const overview = { x: centre.x - viewport.width / 2 / z, y: centre.y - viewport.height / 2 / z, z };
     this.state = {
       entry: { camera: { ...camera }, width: viewport.width, height: viewport.height },

@@ -301,7 +301,7 @@ export default function App() {
   const {
     handleUnsignedPdfCopy, preparePdfPrint, rotatePdf, preparePdfDeparture, canLeavePdfVault
   } = usePdfActions({
-    getVaultActivation, readFileBytes, readFileSnapshot, readBytesVersioned, writeDistinctCopy, ask,
+    getVaultActivation, readFileSnapshot, readBytesVersioned, writeDistinctCopy, ask,
     tell, notifyRef, rootHandleRef, currentVaultIdRef, readerEpochRef, tabsRef, activeTabPathRef,
     documentBuffers, documentSessions, setTabs, nativePoliciesRef, bytesGenerationsRef,
     bumpBytesGeneration, flushingRef, flushTab, flushChainsRef, writeFileVersionedRef, diskStateRef,

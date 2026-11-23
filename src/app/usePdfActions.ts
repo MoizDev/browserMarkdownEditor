@@ -17,7 +17,6 @@ import { RECOVERY_SESSION_BINDING } from './nativeOwners';
 export interface UsePdfActionsDeps {
   // useFileSystem()
   getVaultActivation: FileSystemContextValue['getVaultActivation'];
-  readFileBytes: FileSystemContextValue['readFileBytes'];
   readFileSnapshot: FileSystemContextValue['readFileSnapshot'];
   readBytesVersioned: FileSystemContextValue['readBytesVersioned'];
   writeDistinctCopy: FileSystemContextValue['writeDistinctCopy'];
@@ -52,7 +51,7 @@ export interface UsePdfActionsDeps {
 
 export function usePdfActions(deps: UsePdfActionsDeps) {
   const {
-    getVaultActivation, readFileBytes, readFileSnapshot, readBytesVersioned, writeDistinctCopy, ask, tell,
+    getVaultActivation, readFileSnapshot, readBytesVersioned, writeDistinctCopy, ask, tell,
     notifyRef, rootHandleRef, currentVaultIdRef, readerEpochRef, tabsRef, activeTabPathRef, documentBuffers,
     documentSessions, setTabs, nativePoliciesRef, bytesGenerationsRef, bumpBytesGeneration, flushingRef,
     flushTab, flushChainsRef, writeFileVersionedRef, diskStateRef, setDiskState, currentPdfOwner,
@@ -78,32 +77,15 @@ export function usePdfActions(deps: UsePdfActionsDeps) {
       diskStateRef, flushChainsRef, flushingRef, pdfSeedForRef, rootHandleRef, tabsRef,
     ]);
 
-  /**
-   * Turn a PDF's pages a quarter at a time, and write it.
-   *
-   * A REAL EDIT, not a view setting (utils/pdfRotate.ts says why): the angle
-   * goes into each page's `/Rotate`, so a sideways scan is fixed for the
-   * reader, the annotate canvas, the thumbnails and every other app at once,
-   * through the one attribute all of them already honour.
-   *
-   * It writes through `writeFileVersioned` against the tab's disk baseline and
-   * queues on the same per-tab chain `flushTab` uses — a rotation is a save
-   * like any other, and must not overtake or interleave with one.
-   *
-   * REFUSED on a PDF this app has annotated. Its strokes are authored against
-   * the pages as they were, and `/Rotate` would turn the paper out from under
-   * every mark; the honest answer is to say so rather than move the ink. The
-   * role read that decides it happens HERE, at the moment of the gesture, so
-   * that merely opening a PDF to read still costs no attachment read.
-   */
+  /** Turn a PDF's pages a quarter at a time and write it (pdfGestures.rotatePdf says how). */
   const rotatePdf = useCallback(async (path: string, delta: number, pageIndex?: number) =>
     (await import('./pdfGestures')).rotatePdf({
-      getVaultActivation, readFileBytes, readFileSnapshot, notifyRef, rootHandleRef, currentVaultIdRef,
+      getVaultActivation, readFileSnapshot, notifyRef, rootHandleRef, currentVaultIdRef,
       readerEpochRef, tabsRef, documentBuffers, documentSessions, setTabs, nativePoliciesRef,
       bytesGenerationsRef, bumpBytesGeneration, flushingRef, flushChainsRef, writeFileVersionedRef,
       diskStateRef, setDiskState, pdfSeedForRef,
     }, path, delta, pageIndex), [
-      readFileBytes, readFileSnapshot, setDiskState, bumpBytesGeneration, documentSessions, documentBuffers,
+      readFileSnapshot, setDiskState, bumpBytesGeneration, documentSessions, documentBuffers,
       getVaultActivation, bytesGenerationsRef, currentVaultIdRef, diskStateRef, flushChainsRef, flushingRef,
       nativePoliciesRef, notifyRef, pdfSeedForRef, readerEpochRef, rootHandleRef, setTabs, tabsRef,
       writeFileVersionedRef,

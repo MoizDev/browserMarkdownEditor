@@ -160,8 +160,7 @@ export async function buildAnnotatedPdf(
     if (refusal) throw new PdfBuildRefused(refusal);
     // No defensive copy of `original`, on two independent grounds:
     //
-    //  1. OWNERSHIP. This module is reached ONLY from pdfBuild.worker.ts (and
-    //     pdfRotate.ts, itself worker-only, for the options above), and the
+    //  1. OWNERSHIP. This module is reached ONLY from pdfBuild.worker.ts, and the
     //     worker received `original` as a structured clone — nothing outside
     //     this thread can see it. The main thread's copy lives untouched in
     //     pdfRenderCache and is what every subsequent save rebuilds from.

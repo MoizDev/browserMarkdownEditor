@@ -30,7 +30,9 @@ function validateReply(op: WriterOp, value: unknown): void {
         if (!(value.bytes instanceof ArrayBuffer) || !value.bytes.byteLength || !finiteCount(value.revision) ||
             typeof value.writeId !== 'string' || !ID.test(value.writeId) || typeof value.sourceFingerprint !== 'string' || !HASH.test(value.sourceFingerprint) ||
             !record(value.verification) || value.verification.writeMark !== 'verified' || !finiteCount(value.verification.pageCount) || !finiteCount(value.verification.attachmentCount)) throw new Error('Malformed completed PDF');
-    } else if (op === 'writer.buildNotebook' || op === 'writer.rotate') {
+    } else if (op === 'writer.rotate') {
+        if (value.kind !== 'refused' && value.kind !== 'unchanged' && (value.kind !== 'update' || !(value.appendix instanceof ArrayBuffer))) throw new Error('Malformed PDF rotation plan');
+    } else if (op === 'writer.buildNotebook' || op === 'writer.verifyRotation') {
         if (!(value.bytes instanceof ArrayBuffer) || !value.bytes.byteLength) throw new Error('Malformed generated PDF');
     } else if (op === 'writer.inspect') {
         if (!finiteCount(value.pageCount) || !Array.isArray(value.geometries) || !Array.isArray(value.attachments) || typeof value.encrypted !== 'boolean' || typeof value.signed !== 'boolean') throw new Error('Malformed PDF inspection');

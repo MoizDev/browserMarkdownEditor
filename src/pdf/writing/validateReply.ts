@@ -1,6 +1,6 @@
 import { createPdfReplyValidators } from '../pool/validation';
 import { boolean, finite, integer, invalidPdfReply, record, text } from '../pool/validationCommon';
-import type { AttachmentDescriptor, AttachmentMetadata, WriterInspection, WriterOperations } from './protocol';
+import type { AttachmentDescriptor, AttachmentMetadata, RotationRefusal, WriterInspection, WriterOperations } from './protocol';
 
 const MAX_FILE = 0x7fffffff, MAX_PAGES = 100_000, MAX_ATTACHMENTS = 10_000;
 const HASH = /^[0-9a-f]{64}$/, WRITE_ID = /^[0-9a-f]{32}$/;
@@ -19,6 +19,10 @@ function matching(value: unknown, pattern: RegExp): string {
 function outputBytes(value: unknown): ArrayBuffer {
     if (!(value instanceof ArrayBuffer) || value.byteLength < 1 || value.byteLength > MAX_FILE) invalidPdfReply();
     return value; // Transferred non-shared bytes are already owned by the privileged host.
+}
+const ROTATION_REFUSALS = new Set(['signed', 'encrypted', 'annotated', 'notebook-source', 'missing-attachment', 'unsafe-policy', 'unsupported-format', 'unsupported-rotation']);
+function quarters(value: unknown, count: number): boolean {
+    return Array.isArray(value) && value.length === count && value.every(angle => angle === 0 || angle === 90 || angle === 180 || angle === 270);
 }
 function fingerprint(value: unknown): string { return matching(value, HASH); }
 function exact(actual: unknown, expected: unknown): void { if (actual !== expected) invalidPdfReply(); }
@@ -142,21 +146,29 @@ export function validatePdfWriterReply<K extends keyof WriterOperations>(op: K, 
             break;
         }
         case 'writer.rotate': {
-            const input = args as WriterOperations['writer.rotate']['args'];
-            const o = record(value, ['bytes', 'sourceFingerprint', 'geometries']);
-            const sourceFingerprint = fingerprint(o.sourceFingerprint); exact(sourceFingerprint, input.source.pristineFingerprint);
-            const pages = geometries(o.geometries);
-            if (!pages.length || input.pageIndices?.some(index => !Number.isSafeInteger(index) || index < 0 || index >= pages.length)) invalidPdfReply();
-            result = { bytes: outputBytes(o.bytes), sourceFingerprint, geometries: pages };
+            const o = value as Record<string, unknown>;
+            if (!o || typeof o !== 'object' || Array.isArray(o)) invalidPdfReply();
+            if (o.kind === 'refused') {
+                record(value, ['kind', 'cause']);
+                if (!ROTATION_REFUSALS.has(o.cause as string)) invalidPdfReply();
+                result = { kind: 'refused', cause: o.cause as RotationRefusal };
+            } else if (o.kind === 'unchanged') { record(value, ['kind']); result = { kind: 'unchanged' }; }
+            else {
+                const u = record(value, ['kind', 'appendix', 'base', 'pageCount', 'before', 'rotations']);
+                const input = args as WriterOperations['writer.rotate']['args'];
+                const pageCount = u.pageCount as number, base = u.base as number;
+                if (u.kind !== 'update' || !(u.appendix instanceof ArrayBuffer) || !Number.isSafeInteger(base) || base <= 0 || base > input.source.size ||
+                    !Number.isSafeInteger(pageCount) || pageCount < 1 || pageCount > 100_000 || !quarters(u.before, pageCount) || !quarters(u.rotations, pageCount) ||
+                    (!u.appendix.byteLength && base === input.source.size)) invalidPdfReply();
+                result = { kind: 'update', appendix: u.appendix, base, pageCount, before: [...u.before as number[]], rotations: [...u.rotations as number[]] };
+            }
             break;
         }
         case 'writer.verifyRotation': {
             const input = args as WriterOperations['writer.verifyRotation']['args'];
-            const o = record(value, ['bytes', 'sourceFingerprint', 'outputSha', 'geometries']);
-            const sourceFingerprint = fingerprint(o.sourceFingerprint); exact(sourceFingerprint, input.source.outerFingerprint);
-            const pages = geometries(o.geometries);
-            if (!pages.length || pages.length !== input.expected.length) invalidPdfReply();
-            result = { bytes: outputBytes(o.bytes), sourceFingerprint, outputSha: fingerprint(o.outputSha), geometries: pages };
+            const o = record(value, ['bytes', 'pageCount']);
+            if (o.pageCount !== input.rotations.length) invalidPdfReply();
+            result = { bytes: outputBytes(o.bytes), pageCount: o.pageCount };
             break;
         }
         case 'writer.release': record(value, []); result = {}; break;

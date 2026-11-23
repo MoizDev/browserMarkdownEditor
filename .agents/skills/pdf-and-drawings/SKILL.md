@@ -157,6 +157,18 @@ come back to either.
 - Ruled paper is defined in three places that must agree: geometry and hex colours in `utils/paper.ts`, the board's
   `Rgba` values in `whiteboard/host/notebookPaper.ts` (shared with `proceduralPaper.ts`), and pdf-lib `rgb` in
   `utils/pdfBuild.ts` (main-bundle `paper.ts` must stay free of pdf-lib).
+- **Rotation is an incremental update** (`pdf/writing/rotationUpdate.ts`, reader `rotationReader.ts`): the turned
+  page dictionaries (copies with a new `/Rotate`) and a new xref section of the file's own kind (table or stream) are
+  APPENDED, so the original stays a byte-exact prefix. A section the file still ends with that this writer appended
+  (marked `%local-vault-pdf/v1;rotation;base=N`) is REPLACED, not stacked: four turns restore the exact original
+  bytes. The planner runs the usual role/write-safety gates; a fresh writer verifies (exact prefix, section shape,
+  pdf-lib vs. our reader page by page, PDFium count and a sample of sizes/angles) before App's versioned write.
+  Annotated PDFs are refused (the ink rebuild from the pristine would undo a turn). Never decode or hash streams to
+  "prove" preservation again: the old inventory took ~9s on a scan and refused 8 of 11 real files.
+- A turn shows at the press (`utils/pdfRotationStandIn.ts`): the view draws its mirrored tiles turned into the turned
+  layout (a whole-page thumbnail fills what was off screen), writes the position the turned view opens on, and holds
+  its camera. App coalesces presses on the tab's chain and adopts the bytes with a new byte generation (no `diskRev`
+  remount); the picture leaves on the pane's first sharp frame of the written hash, or rolls back on failure.
 - `prepareUnsignedPdfCopy` is copy-only: a distinct collision-free target, the signed original untouched, no claim of
   signature validation.
 - PDF-pane print hands the exact saved bytes to the browser after flushing pending ink, not a raster spool.

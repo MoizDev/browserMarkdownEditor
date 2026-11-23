@@ -40,10 +40,10 @@ export const boardBindings: readonly KeyBinding[] = [
   { id: 'tool.laser', group: 'tools', label: 'Laser', key: 'k' },
   { id: 'tool.frame', group: 'tools', label: 'Frame', key: 'f' },
   { id: 'tool.lock', group: 'tools', label: 'Tool lock', key: 'q' },
-  // The bar's tools by position: 1–9 and 0 (the tenth) press the Nth tool the bar shows, not a fixed tool.
-  // The ten keys are dispatched but not listed: one dialog row (below) names them all, as a family the dispatcher reads from the key.
-  ...(['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'] as const).map(key => ({ id: `tool.bar.${key}`, group: 'tools', label: `Tool on the bar by position`, key, alias: true })),
-  { id: 'tool.bar.position', group: 'tools', label: 'Tool on the bar by position', key: '1', chordKey: '1–9, 0', dialogOnly: true },
+  // The bar's nine primary tools by position: 1–9 press the Nth tool the bar shows, not a fixed tool. The bar has no tenth
+  // slot, so 0 is unbound. The keys are dispatched but not listed: one dialog row (below) names them all, as a family the dispatcher reads from the key.
+  ...(['1', '2', '3', '4', '5', '6', '7', '8', '9'] as const).map(key => ({ id: `tool.bar.${key}`, group: 'tools', label: `Tool on the bar by position`, key, alias: true })),
+  { id: 'tool.bar.position', group: 'tools', label: 'Tool on the bar by position', key: '1', chordKey: '1–9', dialogOnly: true },
   // Comma presses the pointer at the keyboard cursor and lifting the key releases it (K§10.6).
   { id: 'pointer.hold', group: 'tools', label: 'Pointer down', key: ',' },
   { id: 'style.white', group: 'preferences', label: 'White', key: 't', alt: true },

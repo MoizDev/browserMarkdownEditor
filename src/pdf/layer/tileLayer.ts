@@ -259,6 +259,10 @@ export class PdfTileLayer implements Layer {
     private criticalMemo: { view: ViewState; revision: number; value: boolean } | null = null;
     /** A settled view whose mirror cannot be cropped because a visible tile is GPU-only; it keeps its older mirror. */
     private mirrorSkipped = '';
+    /** A settled view whose finished mirror lost crops to the CPU pool while it was made: copied again only once the governor
+     * wakes `mirrorWaiting` with those bytes free (see prepareMirror). */
+    private mirrorTrimmed = '';
+    private mirrorWaiting = false;
     /** Pages whose paper went down at the current source and layout, by page index, with the world rect painted. The
      * paper covers the whole page, so these areas are opaque. Cleared on a source change, on releaseGpu and on dispose. */
     private readonly drawnPages = new Map<number, Readonly<Rect>>();
@@ -1320,6 +1324,32 @@ export class PdfTileLayer implements Layer {
         allocator.whenAvailable(() => { this.awaitingGpu = false; this.host.invalidate('pdf-gpu-capacity'); }, bytes);
     }
 
+    /** The crop a mirror copies from a tile's bitmap (its whole tile, see prepareMirror), or null when it holds no pixels. */
+    private mirrorCrop(entry: Entry): { left: number; top: number; right: number; bottom: number; sx: number; sy: number;
+        width: number; height: number; bytes: number } | null {
+        const bitmap = entry.bitmap;
+        if (!bitmap) return null;
+        const bounds = rect(entry.request);
+        const left = bounds.x, top = bounds.y, right = bounds.x + bounds.width, bottom = bounds.y + bounds.height;
+        const scale = entry.request.scale.scale, edges = entry.request.tile.edges;
+        const sx = Math.max(0, Math.floor(1 + (left - edges.left) * scale) - 1);
+        const sy = Math.max(0, Math.floor(1 + (top - edges.top) * scale) - 1);
+        const ex = Math.min(bitmap.width, Math.ceil(1 + (right - edges.left) * scale) + 1);
+        const ey = Math.min(bitmap.height, Math.ceil(1 + (bottom - edges.top) * scale) + 1);
+        const width = ex - sx, height = ey - sy;
+        return width > 0 && height > 0 ? { left, top, right, bottom, sx, sy, width, height, bytes: width * height * 4 } : null;
+    }
+
+    /** A trimmed mirror's wake: the governor calls it once its bytes fit the pool. False when the pool has no waiters. */
+    private awaitMirrorCapacity(bytes: number): boolean {
+        const allocator = this.host.allocator.cpu;
+        if (!allocator.whenAvailable) return false;
+        if (this.mirrorWaiting) return true;
+        this.mirrorWaiting = true;
+        allocator.whenAvailable(() => { this.mirrorWaiting = false; this.host.invalidate('pdf-mirror-capacity'); }, bytes);
+        return true;
+    }
+
     private awaitCpuCapacity(bytes: number): void {
         const allocator = this.host.allocator.cpu;
         if (this.awaitingCpu || !allocator.whenAvailable) return;
@@ -1364,6 +1394,8 @@ export class PdfTileLayer implements Layer {
         if (!mirror || !snapshot || input.moving || this.disposed) { this.mirrorJob = null; return; }
         const key = mirrorViewKey(snapshot);
         if (key === this.mirrorKey) return;
+        // Its crops were trimmed: nothing is copied until the bytes they need fit (awaitMirrorCapacity's wake).
+        if (key === this.mirrorTrimmed && (this.mirrorWaiting || this.mirrorSkipped === key)) return;
         if (this.mirrorJob?.key !== key) {
             const exact = requests.filter(request => request.level === 'exact' && intersects(rect(request), input.viewport));
             const entries = exact.map(request => this.entries.get(request.text));
@@ -1394,6 +1426,20 @@ export class PdfTileLayer implements Layer {
                 mirrors.retainViewport(new Set(job.ids));
                 mirror.store.remember(job.view);
                 this.mirrorKey = job.key;
+                this.mirrorTrimmed = '';
+            } else {
+                // A crop of this view was trimmed while the rest were made: each copy reserves CPU, and a reservation the pool cannot
+                // hold trims it, mirrors included (visible exact mirrors are revocable). Started again at once, the job copied the
+                // trimmed crops, whose reservations trimmed others, and each arrival asked a frame: the board drew at rest for
+                // good (measured, WebGL2 PDF + 4000x3000 picture at 400%, DPR 2 dark, CPU 35.8 of 41 MB: 112 of 121 frames at rest
+                // pdf-mirror-arrived, the mirror set trimmed 28 times in 2 s; 2 of 12 runs). It is copied again once the missing bytes
+                // fit, so a copy never trims to make its own room (10 of 10 runs rested with no frame, the wait taken 2-6 times in each);
+                // with no wake to wait for, the view keeps its older mirror.
+                let missing = 0;
+                job.ids.forEach((id, index) => { if (!mirrors.holds(id)) missing += this.mirrorCrop(job.entries[index])?.bytes ?? 0; });
+                auditCount('pdf-page', 'mirror:trimmed-wait', 1, { bytes: missing });
+                if (!this.awaitMirrorCapacity(missing)) this.mirrorSkipped = key;
+                this.mirrorTrimmed = key;
             }
             this.mirrorJob = null;
             return;
@@ -1403,15 +1449,10 @@ export class PdfTileLayer implements Layer {
         if (!bitmap || this.entries.get(entry.request.text) !== entry) { this.mirrorJob = null; return; }
         // The whole tile, not the part the view shows: the copy then belongs to the tile version and serves every view
         // that shows it (by reading: the per-view crop was copied again for each view). The destination rectangle places it.
-        const bounds = rect(entry.request);
-        const left = bounds.x, top = bounds.y, right = bounds.x + bounds.width, bottom = bounds.y + bounds.height;
+        const crop = this.mirrorCrop(entry);
+        if (!crop) { this.mirrorJob = null; return; }
+        const { left, top, right, bottom, sx, sy, width, height } = crop;
         const scale = entry.request.scale.scale, edges = entry.request.tile.edges;
-        const sx = Math.max(0, Math.floor(1 + (left - edges.left) * scale) - 1);
-        const sy = Math.max(0, Math.floor(1 + (top - edges.top) * scale) - 1);
-        const ex = Math.min(bitmap.width, Math.ceil(1 + (right - edges.left) * scale) + 1);
-        const ey = Math.min(bitmap.height, Math.ceil(1 + (bottom - edges.top) * scale) + 1);
-        const width = ex - sx, height = ey - sy;
-        if (width <= 0 || height <= 0) { this.mirrorJob = null; return; }
         const lease = this.host.allocator.cpu.reserve(width * height * 4);
         if (!lease) { this.awaitCpuCapacity(width * height * 4); return; }
         job.pending = true;

@@ -208,6 +208,15 @@ export function createCanvasPaintAdapter(
     }
     function requestImage(s: Snapshot, key: string): void {
         if (s.images.has(key) || broken.has(key) || s.skipped.has(key)) return;
+        // A picture whose texture the device already holds starts released, as the GPU route leaves it once uploaded: asked for, it
+        // was decoded again at every new snapshot (an edit, a selection) only to be released unread (measured, a 4000x3000 JPEG
+        // inserted on a WebGL2 drawing: its stand-in decoded a second time 150 ms after the first). A CPU draw that needs it
+        // (a bridge, reacquireReleased) or a texture that is gone (the route's reacquireImage) asks for it again.
+        if (resources.textureHeld?.(key)) { s.released.add(key); return; }
+        fetchImage(s, key);
+    }
+    function fetchImage(s: Snapshot, key: string): void {
+        if (s.images.has(key) || broken.has(key) || s.skipped.has(key)) return;
         s.images.set(key, null);
         s.pending++;
         let promise: Promise<PaintImageLease>;
@@ -319,7 +328,7 @@ export function createCanvasPaintAdapter(
             reacquireImage(key) {
                 if (s.disposed || s.abort.signal.aborted || s.images.has(key)) return;
                 s.released.delete(key);
-                requestImage(s, key);
+                fetchImage(s, key);
             },
         };
     }
@@ -409,7 +418,7 @@ export function createCanvasPaintAdapter(
             // Only the pictures the 2D paint draws: re-decoding every GPU-planned finer tile (tens of MB at 400%) into the CPU pool
             // when the bridge is short of it refused the bridge's own frame again (gpu-f2's review).
             let asked = 0;
-            for (const key of s.drawn) if (s.released.delete(key)) { requestImage(s, key); asked++; }
+            for (const key of s.drawn) if (s.released.delete(key)) { fetchImage(s, key); asked++; }
             return asked;
         },
         draw2d(ctx, view, band, omitNodes) {

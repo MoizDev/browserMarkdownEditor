@@ -7,7 +7,8 @@ import { inverse } from '../geom/affine';
 import { acquireBoardGeometryScope } from '../commands/geometryScope';
 import { figureClickBox, figureDragBox } from '../geom/figures';
 import { snapBoardBounds, type BoardSnapGuide } from '../geom/runtimeSnap';
-import { gridRectangle } from '../input/gridCreation';
+import { gridAnchored, gridRectangle } from '../input/gridCreation';
+import { findStickyPit } from '../geom/stickyNeighbours';
 import { notebookGrowthOp } from '../commands/pagesAndSheets';
 import { styleGeometryMetrics } from '../geom/styleMetrics';
 import type { BoardRuntime } from '../host/runtime';
@@ -37,6 +38,8 @@ export interface BoardCreationContext {
     readonly preview: Pick<BoardPreview, 'show' | 'showOps' | 'waitUntilReady' | 'armCommit' | 'finishCommit' | 'cancelCommit' | 'clear'>;
     readonly guides?: (guides: readonly BoardSnapGuide[]) => void;
     readonly alwaysSnap?: () => boolean;
+    /** Dynamic size mode: text and notes are created at 1 / zoom. */
+    readonly dynamicSize?: () => boolean;
     current(): boolean;
     editText(id: Node['id']): void | Promise<void>;
     resolveAttachment(point: { x: number; y: number }, signal: AbortSignal, request?: AttachmentRequest): Promise<Attachment | null>;
@@ -110,6 +113,7 @@ class CreationGesture implements GestureOwner {
         let dx = p.x - this.base.x, dy = p.y - this.base.y;
         const surface = sampleSurface(sample, this.context.sampleToSurface);
         const moved = Math.hypot(surface.x - this.downSurface.x, surface.y - this.downSurface.y) >= CLICK_SLOP_CSS;
+        const drag = moved;
         if (modifiers.shift) {
             if (this.context.kind === 'connector' || this.context.kind === 'polyline') {
                 const length = Math.hypot(dx, dy), step = Math.PI / 12, angle = Math.round(Math.atan2(dy, dx) / step) * step;
@@ -119,9 +123,8 @@ class CreationGesture implements GestureOwner {
         const centered = modifiers.alt, x = centered ? this.base.x - Math.abs(dx) : this.base.x + Math.min(0, dx),
             y = centered ? this.base.y - Math.abs(dy) : this.base.y + Math.min(0, dy);
         const factor = centered ? 2 : 1;
-        const w = moved ? Math.max(1, Math.abs(dx) * factor) : this.context.kind === 'frame' ? 320 : this.context.kind === 'sticky' ? 200 : 100;
-        const h = moved ? Math.max(1, Math.abs(dy) * factor) : this.context.kind === 'frame' ? 180 : this.context.kind === 'sticky' ? 200 : 100;
-        const base = { ...this.base, x: moved ? x : this.base.x, y: moved ? y : this.base.y };
+        const w = drag ? Math.max(1, Math.abs(dx) * factor) : this.context.kind === 'frame' ? 320 : this.context.kind === 'sticky' ? 200 : 100;
+        const base = { ...this.base, x: drag ? x : this.base.x, y: drag ? y : this.base.y };
         const width = styleGeometryMetrics.actualWidth(this.context.kind === 'polyline' ? 'polyline' : this.context.kind === 'connector' ? 'connector' : 'figure', style.size, 1);
         switch (this.context.kind) {
             case 'figure': {
@@ -140,11 +143,12 @@ class CreationGesture implements GestureOwner {
             case 'text': return createText({ ...base, text: EMPTY_RICH_TEXT, color: style.color, size: style.size, font: style.font,
                 align: style.textAlign, autoSize: !moved, w, scale: 1 });
             case 'sticky': {
-                // A click's note is centred on the pointer (200 units at scale 1); its origin is the top-left corner.
-                const centred = moved ? base : { ...base, x: base.x - 100, y: base.y - 100 };
-                return createSticky({ ...centred, text: EMPTY_RICH_TEXT, color: 'yellow', labelColor: style.color,
+                // A note is centred on the pointer at its default size and follows the pointer while the gesture is held:
+                // tldraw creates the note and enters translate. Snapping (grid, pits) is applied in snapped().
+                const scale = this.noteScale();
+                return createSticky({ ...base, x: p.x - 100 * scale, y: p.y - 100 * scale, text: EMPTY_RICH_TEXT, color: 'yellow', labelColor: style.color,
                 size: style.size, font: style.font, align: style.align, valign: style.valign, growY: 0, fit: null,
-                scale: moved ? Math.max(.01, Math.max(w, h) / 200) : 1, url: null });
+                scale, url: null });
             }
             case 'polyline': return createPolyline({ ...this.base, points: [{ x: centered ? -dx : 0, y: centered ? -dy : 0 }, moved ? { x: dx, y: dy } : { x: .1, y: .1 }],
                 spline: style.spline, color: style.color, dash: style.dash, size: style.size, width });
@@ -153,11 +157,25 @@ class CreationGesture implements GestureOwner {
                 color: style.color, labelColor: style.color, fill: style.fill, dash: style.dash, size: style.size, font: style.font, label: null, width });
         }
     }
+    /** Dynamic size mode (preference isDynamicResizeMode) creates text and notes at 1 / zoom, so they keep their on-screen size. */
+    private noteScale(): number {
+        const zoom = this.context.camera.camera.z;
+        return this.context.dynamicSize?.() && zoom > 0 ? 1 / zoom : 1;
+    }
     private async snapped(sample: RealSample, modifiers: Modifiers, signal: AbortSignal): Promise<Node> {
         const node = this.node(sample, modifiers), surface = sampleSurface(sample, this.context.sampleToSurface);
         const moved = Math.hypot(surface.x - this.downSurface.x, surface.y - this.downSurface.y) >= CLICK_SLOP_CSS;
         if (moved && this.context.runtime.session.doc.view.grid && node.kind === 'figure' && node.shape === 'rectangle' && this.parentPose.rotation === 0) {
             this.context.guides?.([]); return gridRectangle(node, this.parentPose);
+        }
+        // A click's note takes an empty adjacent slot within 10 screen px of the pointer before any grid rounding (tldraw's order).
+        if (node.kind === 'sticky' && !moved) {
+            const pit = findStickyPit(this.context.runtime.session.doc, node.scale, { x: node.x + 100 * node.scale, y: node.y + 100 * node.scale },
+                node.parent, node.page, 10 / this.context.camera.camera.z);
+            if (pit) { this.context.guides?.([]); return { ...node, x: pit.x, y: pit.y }; }
+        }
+        if (this.context.runtime.session.doc.view.grid && this.parentPose.rotation === 0 && node.kind === 'sticky') {
+            this.context.guides?.([]); return gridAnchored(node, this.parentPose);
         }
         // Default: creation snapping is off unless Always Snap is inverted by the accelerator.
         if ((this.context.alwaysSnap?.() ?? false) === modifiers.accel

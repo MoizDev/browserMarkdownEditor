@@ -52,6 +52,8 @@ export interface BoardToolServicesOptions {
     readonly inputFrames: { schedule(callback: () => void): () => void };
     /** The board's always-snap preference, read live on each gesture; absent means no always-snap. */
     readonly alwaysSnap?: () => boolean;
+    /** Dynamic size mode: new text and notes are created at 1 / zoom. */
+    readonly dynamicSize?: () => boolean;
     readonly mappings: MappingHistory;
     readonly sampleToSurface: (sample: RealSample) => Point;
     readonly clientToSurface: (x: number, y: number) => Point;
@@ -207,7 +209,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
                 if (choice.id === 'figure' && !FIGURE_SHAPES.includes(variant as FigureShape)) throw new RangeError('Invalid figure variant');
                 const kind = choice.id;
                 return { ...route(boardCreationTool(kind), { runtime, render: runtime.render, camera, kind, registerPending,
-                    sampleToSurface: options.sampleToSurface, guides: select.setGuides, alwaysSnap: options.alwaysSnap,
+                    sampleToSurface: options.sampleToSurface, guides: select.setGuides, alwaysSnap: options.alwaysSnap, dynamicSize: options.dynamicSize,
                     ...(kind === 'figure' ? { figure: variant as FigureShape } : {}), preview, current: editable,
                     editText: async id => { await text.editText(id); }, resolveAttachment: (position, signal, request) => attachments.resolve(position, signal,
                         { ...request, input: sample.source === 'keyboard' ? 'mouse' : sample.source }), onError: ui.error }), completesTool: true };

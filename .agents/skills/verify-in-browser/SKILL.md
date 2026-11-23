@@ -102,7 +102,8 @@ Or make one as a person does: the file tree's **New drawing or notebook** button
   renderer string (`WEBGL_debug_renderer_info` on a throwaway canvas): a software renderer (SwiftShader, llvmpipe,
   "Software"/"Basic Render Driver") is CPU work that looks like WebGL2 and is not GPU evidence.
 - **DPR 2** needs a real scale: `args: ['--force-device-scale-factor=2', '--window-size=1200,887']` with
-  `contextOptions: { viewport: null }`. An emulated `deviceScaleFactor` lands raw CDP input at half scale. A
+  `contextOptions: { viewport: null }`. An emulated `deviceScaleFactor` lands raw CDP input at half scale and makes a
+  WebGL2 PDF pane draw only its top-left half in each direction (an artefact, not an app bug). A
   screenshot is in device pixels: a point picked from it is `x / scale` in CSS.
 - Headless Chrome ticks a synthetic 60 Hz whatever the flags: judge per-frame cost against 8.33 ms, not cadence.
   Time questions run alone (`run -w 8`, an exclusive slot); everything else is proved by counters.

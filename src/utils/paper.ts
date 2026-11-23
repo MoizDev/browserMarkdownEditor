@@ -72,17 +72,9 @@ export const DEFAULT_PAPER: NotebookPaper = {
     pageCount: 1,
 };
 
-/* Paper colours are FIXED, not themed.
- *
- * A page is paper: it is white here and white in the PDF this notebook exports
- * to, so a dark-mode variant would be a second appearance that the export could
- * not reproduce. The notebook canvas pins itself to tldraw's light scheme for
- * the same reason the PDF annotator does — see NotebookPane. */
-export const PAPER_WHITE = '#ffffff';
-// Ruled paper exists twice: pdfBuild.ts draws the same colours as PDF rgb. Change both when the rule changes.
-const RULE_COLOR = '#c3d3e8';
-const MARGIN_COLOR = '#e9b8bd';
-const EDGE_COLOR = '#e2e2e2';
+/* Paper colours are FIXED, not themed: a page is white here and white in the PDF a notebook exports to, so a
+ * dark-mode variant would be an appearance the export could not reproduce. The colours live where the paper is drawn:
+ * the board's in whiteboard/host/notebookPaper.ts, the export's in pdfBuild.ts. Change both when the rule changes. */
 
 /** Distance from the left edge to the margin rule: one inch, as on real paper. */
 const MARGIN_INSET = 72;
@@ -145,60 +137,4 @@ export function columnOffsets(paper: NotebookPaper): number[] {
 /** Where the left margin rule sits, or null when this paper has none. */
 export function marginX(paper: NotebookPaper): number | null {
     return paper.ruling === 'lined' && paper.margin ? MARGIN_INSET : null;
-}
-
-/**
- * One page of this paper as an SVG document.
- *
- * SVG rather than a rasterized image ON PURPOSE, and this is the one place the
- * app can have it: the PDF annotator is stuck rasterizing because pdf.js has no
- * SVG backend, but a notebook's page is drawn here — so the backdrop stays
- * resolution-independent and is still crisp at 800%, with no re-render pass and
- * no per-zoom memory. Every page of a notebook is identical, so ONE of these
- * serves the whole document.
- */
-export function paperSvg(paper: NotebookPaper): string {
-    const { width, height } = paperPageSize(paper);
-    const parts: string[] = [];
-
-    const line = (x1: number, y1: number, x2: number, y2: number, color: string, w = 0.75) =>
-        `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${color}" stroke-width="${w}"/>`;
-
-    if (paper.ruling === 'lined' || paper.ruling === 'grid') {
-        for (const y of ruleOffsets(paper)) parts.push(line(0, y, width, y, RULE_COLOR));
-    }
-    if (paper.ruling === 'grid') {
-        for (const x of columnOffsets(paper)) parts.push(line(x, 0, x, height, RULE_COLOR));
-    }
-    if (paper.ruling === 'dotted') {
-        for (const y of ruleOffsets(paper)) {
-            for (const x of columnOffsets(paper)) {
-                parts.push(`<circle cx="${x}" cy="${y}" r="1.1" fill="${RULE_COLOR}"/>`);
-            }
-        }
-    }
-    const margin = marginX(paper);
-    if (margin !== null) parts.push(line(margin, 0, margin, height, MARGIN_COLOR, 1));
-
-    // A hairline edge so a page reads as a sheet against the canvas rather than
-    // bleeding into it. Inset by half its width so it isn't clipped.
-    parts.push(`<rect x="0.25" y="0.25" width="${width - 0.5}" height="${height - 0.5}"`
-        + ` fill="none" stroke="${EDGE_COLOR}" stroke-width="0.5"/>`);
-
-    return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"`
-        + ` viewBox="0 0 ${width} ${height}">`
-        + `<rect width="${width}" height="${height}" fill="${PAPER_WHITE}"/>`
-        + parts.join('')
-        + `</svg>`;
-}
-
-/**
- * `paperSvg` as a data: URI, which is what tldraw's asset resolver hands back.
- *
- * encodeURIComponent, not base64: it keeps the markup legible in devtools and
- * is shorter for this content. `#` MUST be escaped or the parser truncates the
- * document at the first colour — which is every colour in the file.
- */
-export function paperDataUri(paper: NotebookPaper): string {
-    return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(paperSvg(paper))}`;
 }

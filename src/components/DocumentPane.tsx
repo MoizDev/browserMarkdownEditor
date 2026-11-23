@@ -1530,13 +1530,13 @@ function DocumentPane({
                            WHERE this handler lives is the whole safety
                            argument, and it is the reason it is not a document
                            listener with an exclusion list: this element is
-                           rendered `{!isCanvas && …}`, DrawingPane and
-                           NotebookPane are its siblings, EditorPane mounts every PdfPane outside the
-                           slot entirely, and GraphView replaces EditorPane. So
-                           tldraw's own menu, a PDF's and the graph's are
+                           rendered `{!isCanvas && …}`, EditorPane mounts every
+                           board (CanvasPane) and PdfPane outside the slot
+                           entirely, and GraphView replaces EditorPane. So a
+                           board's own menu, a PDF's and the graph's are
                            excluded BY CONSTRUCTION — there is no closest()
                            list here to drift out of step as surfaces are
-                           added. (Suppressing tldraw's menu would be a
+                           added. (Suppressing a board's menu would be a
                            regression, not a feature.)
 
                            An ordinary React prop, recreated per render, rather
@@ -1660,7 +1660,7 @@ function DocumentPane({
                     mounted per open PDF, whiteboard and notebook tab and
                     positions it over this slot: each must outlive the pane, so
                     that a tab switch neither reloads the document nor rebuilds
-                    a whole tldraw editor (components/floatingSlot.ts). */}
+                    its whole board session (components/floatingSlot.ts). */}
             </div>
         </div>
     );

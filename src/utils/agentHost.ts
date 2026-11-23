@@ -380,8 +380,8 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             const deps = getDeps();
             if (!deps.root) return { ok: false, reason: 'error', message: 'No vault is open.' };
             if (isNativeDrawingFile(path)) return { ok: false, reason: 'invalid', message: 'Native .drawing whiteboards are changed with canvas_apply, not as text.' };
-            // A canvas is JSON on disk but a live tldraw store on screen, which
-            // would re-serialize over any text edit at its next change.
+            // A canvas on screen is a live board session, which would
+            // re-serialize over any text edit at its next change.
             if (isCanvasFile(path) || isPdfFile(path) || isEpubFile(path)) {
                 return { ok: false, reason: 'invalid', message: isEpubFile(path) ? 'EPUB is read-only; its source cannot be edited.' : 'Drawings, notebooks and PDFs are changed with canvas_apply, not as text.' };
             }

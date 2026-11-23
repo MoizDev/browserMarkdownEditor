@@ -20,7 +20,7 @@
 // has vault_list / vault_search for that.
 //
 // Pure apart from awaiting reporters (which may render, for the picture). No
-// React, no tldraw, no pdf.js — this runs on every send, on the panel's path.
+// React, no board or PDF engine — this runs on every send, on the panel's path.
 
 import { CONTEXT_CLOSE_TAG, CONTEXT_OPEN_TAG } from '../../shared/vaultAgentProtocol';
 import type { AgentTabInfo, AgentWorkspaceSnapshot, RememberedPosition } from '../types/vaultAgent';

@@ -39,6 +39,7 @@ export class ToolState {
   private penContactSequence = 0
   private readonly pointerResolvers = new Map<string, () => Readonly<{ x: number; y: number }> | null>()
   private documentSyncDepth = 0
+  private bar: readonly ToolChoice[] = []
 
   constructor(registrations: readonly ToolRegistration[], private readonly selectId = 'select', private readonly figureId = 'figure', initialLocked = false) {
     for (const registration of registrations) {
@@ -151,6 +152,11 @@ export class ToolState {
     if (!registration || this.snapshot.active.id === id) return
     this.setTool(id, id === this.figureId && registration.hasVariants ? this.snapshot.lastFigure : undefined)
   }
+
+  /** The tools the chrome's bar shows, in order, as the chrome last drew them: the number keys press them. Session UI
+   * state, so it is not published to listeners; the chrome clears it when its bar unmounts. */
+  setBarTools(choices: readonly ToolChoice[]): void { this.bar = choices }
+  barTool(index: number): ToolChoice | undefined { return this.bar[index] }
 
   setLocked(locked: boolean): void {
     if (this.snapshot.locked !== locked) this.publish({ ...this.snapshot, locked })

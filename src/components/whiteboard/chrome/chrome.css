@@ -392,6 +392,57 @@
     background: var(--board-tool-active, #4a7fe8);
 }
 
+/* The tool lock sits above the bar's left end while the selected tool can be locked, drawn as its own small bar so it
+   reads as part of the tool bar. Pressed (locked) it takes the active blue, as a pressed tool does. */
+.board-chrome-tool-lock {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    inset-inline-start: 0;
+    width: 36px;
+    height: 36px;
+    border: 1px solid var(--board-bar-border, var(--background-modifier-border));
+    border-radius: 10px;
+    background: var(--board-bar-bg, var(--background-primary));
+    box-shadow: var(--board-bar-shadow, 0 4px 14px rgb(0 0 0 / 12%));
+}
+
+.board-chrome-tool-lock[aria-pressed='true'] {
+    background: var(--board-tool-active, #4a7fe8);
+    color: var(--board-tool-active-fg, #fff);
+}
+
+/* Focus mode's one dot, in the corner the zoom controls keep: the only chrome left on the board while it is on. */
+.board-chrome-focus-overlay {
+    justify-content: flex-end;
+    align-items: flex-end;
+}
+
+.board-chrome-focus {
+    display: grid;
+    place-items: center;
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    border: 1px solid var(--board-bar-border, var(--background-modifier-border));
+    border-radius: 50%;
+    background: var(--board-bar-bg, var(--background-primary));
+    box-shadow: var(--board-bar-shadow, 0 4px 14px rgb(0 0 0 / 12%));
+    color: var(--text-normal);
+    pointer-events: auto;
+    cursor: pointer;
+}
+
+.board-chrome-focus:hover {
+    background: var(--background-modifier-hover);
+}
+
+.board-chrome-focus > span {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: currentColor;
+}
+
 /* Native select and text input, dressed as the chrome's own controls. Options carry their own
    colours because the popup is the browser's, and a bare select picks the light system palette
    on the dark theme. */

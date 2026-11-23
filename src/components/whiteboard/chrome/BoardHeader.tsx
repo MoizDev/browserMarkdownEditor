@@ -3,6 +3,7 @@ import LucideGlyph from '../../LucideGlyph';
 import { openContextMenu, type ContextMenuEntry } from '../../../utils/contextMenu';
 import { dismissOnEscape } from '../../../utils/escapeDismiss';
 import { actionCommands, type BoardCommand, type BoardCommandSource } from './boardCommands';
+import { focusBoardInteraction } from './boardFocus';
 import { actionIcons, headerCommandIcons, headerIcons } from './boardIcons';
 import './chrome.css';
 
@@ -29,9 +30,10 @@ export function BoardHeader({ commands, locale, direction, menuLabel, menuEntrie
     const shownCommands = headerCommands.slice(0, fit), overflowCommands = headerCommands.slice(fit);
     const actionButton = useRef<HTMLButtonElement>(null);
     const actions = useRef<HTMLDivElement>(null);
+    // Escape returns the keyboard to the board, not to the Actions button: the button is outside the board's keyboard root.
     const closeActions = useCallback(() => {
         setActionsOpen(false);
-        actionButton.current?.focus();
+        focusBoardInteraction(actionButton.current);
     }, []);
     useEffect(() => {
         if (!actionsOpen) return;

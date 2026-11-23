@@ -32,6 +32,8 @@ export const boardBindings: readonly KeyBinding[] = [
   { id: 'tool.laser', group: 'tools', label: 'Laser', key: 'k' },
   { id: 'tool.frame', group: 'tools', label: 'Frame', key: 'f' },
   { id: 'tool.lock', group: 'tools', label: 'Tool lock', key: 'q' },
+  // The bar's tools by position: 1–9 and 0 (the tenth) press the Nth tool the bar shows, not a fixed tool.
+  ...(['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'] as const).map(key => ({ id: `tool.bar.${key}`, group: 'tools', label: `Toolbar tool ${key}`, key })),
   { id: 'style.white', group: 'preferences', label: 'White', key: 't', alt: true },
   { id: 'style.fill', group: 'preferences', label: 'Fill', key: 'f', alt: true },
   { id: 'style.linedFill', group: 'preferences', label: 'Lined fill', key: 'f', alt: true, shift: true },

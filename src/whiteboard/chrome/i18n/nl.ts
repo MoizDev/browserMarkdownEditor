@@ -3,6 +3,7 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
+        { key: "menu.canvas", text: "Canvas", reason: "Zelfde woord als in het Engels." },
         { key: "dialog.url", text: "URL", reason: "URL is the standard abbreviation, used unchanged in this language." },
         { key: "palette.recent", text: "Recent", reason: "The same word in Nederlands." },
         { key: "palette.help", text: "Help", reason: "The same word in Nederlands." },
@@ -477,5 +478,19 @@ export default defineBoardLanguage({
         "commands.convertToBookmark": "Converteren naar bladwijzer",
         "commands.flipHorizontal": "Horizontaal spiegelen",
         "commands.flipVertical": "Verticaal spiegelen",
+        "menu.copyAsPng": "Kopiëren als PNG",
+        "menu.copyAsSvg": "Kopiëren als SVG",
+        "menu.copyAsJson": "Kopiëren als JSON",
+        "menu.exportPng": "PNG exporteren",
+        "menu.exportSvg": "SVG exporteren",
+        "menu.selectToCopy": "Selecteer inhoud om te kopiëren.",
+        "menu.canvas": "Canvas",
+        "menu.selectionChanged": "De selectie is gewijzigd; open het menu opnieuw.",
+        "menu.fetchLinkPreview": "Linkvoorbeeld ophalen",
+        "menu.playVideo": "Video afspelen",
+        "menu.pauseVideo": "Video pauzeren",
+        "menu.playAnimation": "Animatie afspelen",
+        "menu.pauseAnimation": "Animatie pauzeren",
+        "chrome.cropToAspect": "Bijsnijden naar verhouding",
     },
 });

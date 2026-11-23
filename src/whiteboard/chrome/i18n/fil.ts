@@ -3,6 +3,7 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
+        { key: "menu.canvas", text: "Canvas", reason: "Parehong salita sa Ingles." },
         { key: "preferences.autoTrackpad", text: "Default (trackpad)", reason: "Same wording as English in this language." },
         { key: "dialog.url", text: "URL", reason: "URL is the standard abbreviation, used unchanged in this language." },
         { key: "styles.headBar", text: "Bar", reason: "Same wording as English in this language." },
@@ -478,5 +479,19 @@ export default defineBoardLanguage({
         "commands.convertToBookmark": "I-convert sa bookmark",
         "commands.flipHorizontal": "I-flip nang pahalang",
         "commands.flipVertical": "I-flip nang patayo",
+        "menu.copyAsPng": "Kopyahin bilang PNG",
+        "menu.copyAsSvg": "Kopyahin bilang SVG",
+        "menu.copyAsJson": "Kopyahin bilang JSON",
+        "menu.exportPng": "I-export ang PNG",
+        "menu.exportSvg": "I-export ang SVG",
+        "menu.selectToCopy": "Pumili ng nilalamang kokopyahin.",
+        "menu.canvas": "Canvas",
+        "menu.selectionChanged": "Nagbago ang pagpili; buksan muli ang menu.",
+        "menu.fetchLinkPreview": "Kunin ang preview ng link",
+        "menu.playVideo": "I-play ang video",
+        "menu.pauseVideo": "I-pause ang video",
+        "menu.playAnimation": "I-play ang animasyon",
+        "menu.pauseAnimation": "I-pause ang animasyon",
+        "chrome.cropToAspect": "I-crop sa aspect ratio",
     },
 });

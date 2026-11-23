@@ -5,6 +5,8 @@
     min-width: 0;
     min-height: 0;
     overflow: hidden;
+    /* The minimap sizes itself to the narrowest panes by this container (nativeMinimap.css). */
+    container-type: inline-size;
 }
 
 .board-viewer-surface, .board-viewer-overlay {
@@ -86,3 +88,12 @@
 .board-viewer-host:has(.native-minimap) .board-viewer-notice {
     bottom: 212px;
 }
+
+/* Stacked bottom row (ViewerHost's CHROME_STACK_BELOW_PX): the zoom row tops out at 112px, so 120px, and an open
+   minimap at 120 + 142 + 8. */
+.board-viewer-host[data-chrome-stacked]:has(.board-chrome-overlay) .board-viewer-notice,
+.board-viewer-host[data-chrome-stacked]:has(.board-chrome-overlay) .board-paint-status-pending,
+.board-viewer-host[data-chrome-stacked]:has(.board-chrome-overlay) .board-paint-status-failed { bottom: 120px; }
+.board-viewer-host[data-chrome-stacked]:has(.native-minimap) .board-viewer-notice,
+.board-viewer-host[data-chrome-stacked]:has(.native-minimap) .board-paint-status-pending,
+.board-viewer-host[data-chrome-stacked]:has(.native-minimap) .board-paint-status-failed { bottom: 270px; }

@@ -56,6 +56,11 @@ function enhanced(): boolean {
     return getBoardPreferences().enhancedA11yMode;
 }
 let leaveTimer = 0;
+// Where the pointer last was, and whether the target arrived under it without the pointer moving. Chromium sends
+// pointerover to whatever appears under a resting pointer (a panel opening, a pane mounting), so without this a
+// tooltip showed for a control the person never moved onto (measured: a drawing opened by keyboard under a parked
+// pointer showed "Hide colours and pen width" over its pen panel). Such a target waits for the pointer to move.
+let lastX = NaN, lastY = NaN, waitingForMove = false;
 
 function tooltipText(el: Element): string {
     return el.getAttribute('data-tooltip')?.trim() ?? '';
@@ -186,6 +191,7 @@ function leave(): void {
     hideBubble();
     target = null;
     dismissed = false;
+    waitingForMove = false;
 }
 
 // Forget the target outright, and do not warm the next hover.
@@ -193,6 +199,7 @@ function reset(): void {
     hideBubble();
     target = null;
     dismissed = false;
+    waitingForMove = false;
 }
 
 // A click, key, wheel, scroll or drag: down, and kept down until the pointer leaves.
@@ -217,6 +224,8 @@ function cancelLeave(): void {
 
 function onPointerOver(e: PointerEvent): void {
     if (e.pointerType === 'touch') return;
+    const resting = e.clientX === lastX && e.clientY === lastY;
+    lastX = e.clientX; lastY = e.clientY;
     // The pointer is on the bubble or back on its target: an enhanced bubble that was leaving stays up.
     if (e.target instanceof Node && bubble?.contains(e.target)) { cancelLeave(); return; }
     const el = e.target instanceof Element ? e.target.closest('[data-tooltip]') : null;
@@ -228,8 +237,22 @@ function onPointerOver(e: PointerEvent): void {
     target = el;
     dismissed = false;
     if (bubble) bubble.style.pointerEvents = instant ? 'auto' : '';
-    if (warm || instant) show();
+    waitingForMove = resting;
+    if (resting) return;
+    arm(warm || instant);
+}
+
+function arm(now: boolean): void {
+    if (now) show();
     else showTimer = window.setTimeout(show, SHOW_DELAY_MS);
+}
+
+function onPointerMove(e: PointerEvent): void {
+    if (e.pointerType === 'touch' || (e.clientX === lastX && e.clientY === lastY)) return;
+    lastX = e.clientX; lastY = e.clientY;
+    if (!waitingForMove || !target) return;
+    waitingForMove = false;
+    if (!dismissed) arm(target !== null && promptFor(target));
 }
 
 function onPointerOut(e: PointerEvent): void {
@@ -257,12 +280,14 @@ export function installTooltips(): () => void {
     const onHidden = () => { if (document.visibilityState === 'hidden') reset(); };
     document.addEventListener('pointerover', onPointerOver, opts);
     document.addEventListener('pointerout', onPointerOut, opts);
+    document.addEventListener('pointermove', onPointerMove, opts);
     for (const type of DISMISSERS) document.addEventListener(type, dismiss, opts);
     document.addEventListener('visibilitychange', onHidden);
     window.addEventListener('blur', reset);
     return () => {
         document.removeEventListener('pointerover', onPointerOver, opts);
         document.removeEventListener('pointerout', onPointerOut, opts);
+        document.removeEventListener('pointermove', onPointerMove, opts);
         for (const type of DISMISSERS) document.removeEventListener(type, dismiss, opts);
         document.removeEventListener('visibilitychange', onHidden);
         window.removeEventListener('blur', reset);

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { dismissOnEscape } from '../../../utils/escapeDismiss';
 import { MoreToolIcon, ToolIcon } from './toolIcons';
 import './chrome.css';
@@ -32,6 +32,11 @@ function name(choice: ToolChoice): string {
 export function ToolStrip({ primary, more, selected, moreLabel, toolsLabel, disabled, disabledReason, select }: ToolStripProps) {
     const [open, setOpen] = useState(false);
     const root = useRef<HTMLDivElement>(null);
+    const fit = useFittingTools(root, primary.length);
+    // The bar's tools that do not fit its row move to the front of More tools, in order, rather than scrolling inside
+    // the bar: a scrolled row left a sliver of a cut-off icon beside the chevron in a narrow pane.
+    const shown = fit < primary.length ? primary.slice(0, fit) : primary;
+    const overflow = fit < primary.length ? [...primary.slice(fit), ...more] : more;
     const trigger = useRef<HTMLButtonElement>(null);
     const popup = useRef<HTMLDivElement>(null);
     const close = useCallback(() => {
@@ -68,20 +73,49 @@ export function ToolStrip({ primary, more, selected, moreLabel, toolsLabel, disa
         ><ToolIcon id={choice.id} figure={choice.figure} /></button>;
     }
 
-    const moreDisabled = disabled || more.every(choice => disabledReason?.(choice) !== undefined);
-    const moreReason = moreDisabled ? more.map(choice => disabledReason?.(choice)).find(reason => reason !== undefined) : undefined;
+    const moreDisabled = disabled || overflow.every(choice => disabledReason?.(choice) !== undefined);
+    const moreReason = moreDisabled ? overflow.map(choice => disabledReason?.(choice)).find(reason => reason !== undefined) : undefined;
     // A tool living in the popover still shows on the bar: the chevron takes the active look while it is selected.
-    const moreCurrent = more.some(choice => sameTool(choice, selected));
+    const moreCurrent = overflow.some(choice => sameTool(choice, selected));
     return <div className="board-chrome-tools" ref={root}>
         <div role="toolbar" aria-label={toolsLabel} className="board-chrome-tool-row board-chrome-tool-strip" dir="ltr">
-            <div className="board-chrome-primary-tools">{primary.map(button)}</div>
+            <div className="board-chrome-primary-tools">{shown.map(button)}</div>
             <button type="button" ref={trigger} className="board-chrome-tool board-chrome-tool-icon board-chrome-tool-more"
                 aria-label={moreLabel} data-tooltip={moreReason ?? moreLabel} data-current={moreCurrent || undefined}
                 aria-expanded={open} aria-haspopup="dialog" disabled={moreDisabled}
                 onClick={() => setOpen(value => !value)}><MoreToolIcon /></button>
         </div>
         {open && <div ref={popup} role="dialog" aria-label={moreLabel} className="board-chrome-more">
-            {more.map(button)}
+            {overflow.map(button)}
         </div>}
     </div>;
+}
+
+/** How many of the bar's tools fit its row. The row is the chrome's bottom grid; when the zoom controls sit beside the
+ *  bar (ViewerHost has not set `data-chrome-stacked`) they take a column on each side, the centred bar the rest. Sizes
+ *  are read from the rendered bar (button step, the strip's own padding and chevron), never assumed. */
+function useFittingTools(root: RefObject<HTMLDivElement | null>, count: number): number {
+    const [fit, setFit] = useState(count);
+    useLayoutEffect(() => {
+        const tools = root.current, row = tools?.parentElement, host = tools?.closest('.board-viewer-host');
+        if (!tools || !row) return;
+        const measure = () => {
+            const strip = tools.querySelector<HTMLElement>('.board-chrome-tool-strip');
+            const group = tools.querySelector<HTMLElement>('.board-chrome-primary-tools');
+            const button = group?.querySelector<HTMLElement>('button');
+            if (!strip || !group || !button || !row.clientWidth) return;
+            const gap = parseFloat(getComputedStyle(group).columnGap) || 0, step = button.offsetWidth + gap;
+            const zoom = row.querySelector<HTMLElement>('.board-chrome-zoom');
+            const beside = zoom && !host?.hasAttribute('data-chrome-stacked') ? 2 * (zoom.offsetWidth + (parseFloat(getComputedStyle(row).columnGap) || 0)) : 0;
+            const room = row.clientWidth - beside - (strip.offsetWidth - group.offsetWidth);
+            if (step > 0) setFit(Math.max(1, Math.min(count, Math.floor((room + gap) / step))));
+        };
+        const resized = new ResizeObserver(measure);
+        resized.observe(row);
+        const restacked = new MutationObserver(measure);
+        if (host) restacked.observe(host, { attributes: true, attributeFilter: ['data-chrome-stacked'] });
+        measure();
+        return () => { resized.disconnect(); restacked.disconnect(); };
+    }, [root, count]);
+    return fit;
 }

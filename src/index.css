@@ -2237,6 +2237,15 @@ body.is-resizing-panes * {
   bottom: 212px;
 }
 
+/* A visible board whose zoom controls stack over its tool bar (ViewerHost) raises the corner by that row. */
+.editor-pane:has(.board-viewer-host[data-chrome-stacked]:not(.canvas-pane-hidden *)) .status-bar.is-lifted {
+  bottom: 120px;
+}
+
+.editor-pane:has(.board-viewer-host[data-chrome-stacked]:not(.canvas-pane-hidden *)):has(.native-minimap) .status-bar.is-lifted {
+  bottom: 270px;
+}
+
 .status-bar-item {
   flex-shrink: 0;
   line-height: 1.5;

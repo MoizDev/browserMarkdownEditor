@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { ReactNode } from 'react';
 import { useFileSystem } from '../context/FileSystemContext';
 import { readPdfRole } from '../utils/pdfRoleRead';
@@ -38,9 +38,11 @@ import './PdfPane.css';
 // Acquisition/editing and contained rendering stay behind their lazy entries.
 import { getPdfInkSourceState } from '../whiteboard/host/pdfInkSourceState';
 
-const PdfTiledSurface = lazy(() => import('./PdfTiledSurface'));
-const PdfTiledTextSurface = lazy(() => import('./PdfTiledTextSurface'));
-const NativePdfEntry = lazy(() => import('./whiteboard/NativePdfEntry'));
+import { nativePdfEntrySlot, pdfTiledSurfaceSlot, pdfTiledTextSurfaceSlot } from './pdfSurfaceModules';
+
+const PdfTiledSurface = pdfTiledSurfaceSlot.View;
+const PdfTiledTextSurface = pdfTiledTextSurfaceSlot.View;
+const NativePdfEntry = nativePdfEntrySlot.View;
 const NATIVE_PDF_ZOOM = Object.freeze({ min: 0.4, max: 4 });
 const NATIVE_PDF_INSETS = Object.freeze({ left: 28, right: 28, top: 16, bottom: 0 });
 
@@ -749,7 +751,7 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
                reading stuck on "Loading PDF…" forever, waiting for a read that
                no longer happens until you switch to annotate. Reading needs
                `viewBytes` and nothing else; that is the branch further down. */
-            body = <div className="pdf-pane-message">Loading PDF…</div>;
+            body = <div className="pdf-pane-message is-waiting">Loading PDF…</div>;
         } else if (mode === 'edit' && source?.kind === 'notebookExport' && !nativeCandidate) {
             // A notebook's export. Annotating it would fork a third document
             // whose marks the notebook could neither see nor replace, so the
@@ -768,8 +770,7 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
         } else if (nativeCandidate && nativeCanvasHost && attachCanvasSession && reading) {
             const nativeIdentity = nativeCanvasHost.identity(documentId);
             body = nativeIdentity && nativeIdentity.kind === 'pdfInk' ? (
-                <Suspense fallback={<div className="pdf-pane-message">Preparing PDF annotations…</div>}>
-                    <NativePdfEntry file={file} documentId={documentId} identity={nativeIdentity} nativeCanvasHost={nativeCanvasHost}
+                <NativePdfEntry fallback={<div className="pdf-pane-message">Preparing PDF annotations…</div>} file={file} documentId={documentId} identity={nativeIdentity} nativeCanvasHost={nativeCanvasHost}
                         legacyConversion={legacyConversion} onLegacyConversionRefused={message => {
                             if (currentEntry.current === annotateEntry) { setLegacyConversionEntry(null); tiledNotify(message); }
                         }}
@@ -780,7 +781,6 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
                         emphasisEnabled={reading.emphasisEnabled} onNotice={reading.onNotify}
                         onOpenNotebookSource={path => onOpenNotebookSource(file.path, path)}
                         onViewOriginal={() => { if (mode === 'edit') onToggleMode(file.path); }} />
-                </Suspense>
             ) : <div className="pdf-pane-message" role="status">Preparing PDF annotations…</div>;
 
         } else if (isDirty || flushing) {
@@ -789,11 +789,10 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
             // render a PDF that's missing the annotations the user just drew.
             body = <div className="pdf-pane-message">Applying annotations…</div>;
         } else if (!pdfRoute) {
-            body = <div className="pdf-pane-message" role="status">Loading PDF…</div>;
+            body = <div className="pdf-pane-message is-waiting" role="status">Loading PDF…</div>;
         } else if (tiled && tiledReading) {
             body = textSurface ? currentTiledSource ? (
-                <Suspense fallback={<div className="pdf-pane-message">Opening extracted text…</div>}>
-                    <PdfTiledTextSurface source={currentTiledSource} reading={tiledReading} filePath={file.path}
+                <PdfTiledTextSurface fallback={<div className="pdf-pane-message is-waiting">Opening extracted text…</div>} source={currentTiledSource} reading={tiledReading} filePath={file.path}
                         findMemory={findMemory} checkpoint={originalCheckpoint.current ?? readPdfViewPos(file.path) ?? { page: 0, offset: 0, zoom: 1 }}
                         anchor={initialTextAnchor} expectedPageDigest={pageDigest.current} sameSchema={sameTextSchema}
                         restorationNotice={restoreNotice} isVisible={isVisible} isFocused={isFocused}
@@ -804,21 +803,16 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
                             if (USER_TEXT_NAVIGATION_CAUSES.some(userCause => userCause === cause)) ++textNavigationRevision.current;
                             publishLocation(cause);
                         }} onTextQuality={setTextQuality} />
-                </Suspense>
             ) : (
-                <Suspense fallback={<div className="pdf-pane-message">Opening extracted text…</div>}>
-                    <PdfTiledSurface sourceOnly reading={tiledReading} filePath={file.path} visible={isVisible} focused={isFocused}
+                <PdfTiledSurface fallback={<div className="pdf-pane-message is-waiting">Opening extracted text…</div>} sourceOnly reading={tiledReading} filePath={file.path} visible={isVisible} focused={isFocused}
                         sourceHash={tiledVersion?.hash} findMemory={findMemory} searchVault={requestVaultSearch}
                         rotate={rotateThis} openText={() => { void showText().catch(error => tiledNotify(error instanceof Error ? error.message : 'Could not open extracted text.')); }}
                         onSource={setTiledSource} onCapabilities={reportTiledCapabilities} notify={tiledNotify} />
-                </Suspense>
             ) : (
-                <Suspense fallback={<div className="pdf-pane-message">Loading PDF…</div>}>
-                    <PdfTiledSurface reading={tiledReading} filePath={file.path} visible={isVisible} focused={isFocused}
+                <PdfTiledSurface fallback={<div className="pdf-pane-message is-waiting">Loading PDF…</div>} reading={tiledReading} filePath={file.path} visible={isVisible} focused={isFocused}
                         sourceHash={tiledVersion?.hash} findMemory={findMemory} searchVault={requestVaultSearch}
                         rotate={rotateThis} openText={() => { void showText().catch(error => tiledNotify(error instanceof Error ? error.message : 'Could not open extracted text.')); }}
                         onSource={setTiledSource} onCapabilities={reportTiledCapabilities} onPresentation={tiledPresented} notify={tiledNotify} />
-                </Suspense>
             );
         } else {
             body = <div className="pdf-pane-message" role="status">Preparing native PDF source…</div>;

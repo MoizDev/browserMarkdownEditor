@@ -1,10 +1,11 @@
-import { lazy,Suspense,useEffect,useMemo,useRef,useState,useSyncExternalStore } from 'react';
+import { useEffect,useMemo,useRef,useState,useSyncExternalStore } from 'react';
 import type { ReaderIdentity,ReaderIntegration,ReadOnlyFileSnapshot } from '../types/reading';
 import { getReadingPreferences,subscribeReadingPreferences,setWordEmphasis,updateReadingTypography } from '../utils/readingPreferences';
 import { readReaderViewState,flushReaderViewState } from '../utils/readerViewState';
 import { registerView } from '../utils/viewRegistry';
 import type { EpubViewInfo } from '../utils/viewRegistry';
-const EpubPane=lazy(()=>import('./EpubPane'));
+import { epubPaneSlot } from './paneModules';
+const EpubPane=epubPaneSlot.View;
 export default function EpubReaderHost({identity,integration,isFocused,onFocusPane,onRetryRead,registerKeyboardTarget,theme}:{identity:ReaderIdentity;integration:ReaderIntegration;isFocused:boolean;onFocusPane(path:string):void;onRetryRead(path:string):Promise<boolean>;registerKeyboardTarget(path:string,take:()=>void):()=>void;theme:'light'|'dark'}){
  const [snapshot,setSnapshot]=useState<ReadOnlyFileSnapshot|null>(null),[error,setError]=useState('');
  const preferences=useSyncExternalStore(subscribeReadingPreferences,getReadingPreferences);
@@ -20,7 +21,7 @@ export default function EpubReaderHost({identity,integration,isFocused,onFocusPa
  },[identity,integration]);
  if(error)return <div className="unread-pane" role="status"><p>{error}</p><button onClick={()=>void onRetryRead(identity.path)}>Retry</button></div>;
  if(!snapshot)return <div className="unread-pane" role="status">Opening EPUB…</div>;
- return <Suspense fallback={<div role="status">Loading EPUB reader…</div>}><EpubPane identity={identity} snapshot={snapshot} initialRecord={readReaderViewState(identity.vaultId,identity.path)} isFocused={isFocused}
+ return <EpubPane fallback={<div role="status">Loading EPUB reader…</div>} identity={identity} snapshot={snapshot} initialRecord={readReaderViewState(identity.vaultId,identity.path)} isFocused={isFocused}
  {...integration} onFocusPane={onFocusPane} onRetryRead={onRetryRead} registerKeyboardTarget={registerKeyboardTarget}
  preferences={readerPreferences}
  onPreferencesChange={next=>{setWordEmphasis(next.emphasis.enabled);updateReadingTypography(next.typography)}}
@@ -30,5 +31,5 @@ export default function EpubReaderHost({identity,integration,isFocused,onFocusPa
  onReaderMetadata={(_token,metadata)=>{info.current={...info.current,title:metadata.title,author:metadata.author}}}
  onReaderSelection={(_token,selection)=>{info.current={...info.current,selectedCanonicalText:selection?.text.slice(0,16000)??null}}}
  onReaderVisibleText={(_token,text)=>{info.current={...info.current,visibleCanonicalText:text.slice(0,24000)}}}
- /></Suspense>;
+ />;
 }

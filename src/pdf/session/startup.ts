@@ -66,3 +66,9 @@ export function startPdfPool(): void {
     };
     active = current;
 }
+
+/** Boots the contained broker frame and one render worker at idle, so a vault's first PDF open does not wait for the
+ * engine's fetch, compile and init (measured cold: 80-120 ms between the open's request and its first tile request). */
+export function warmPdfEngine(): void {
+    getSharedPdfPool().warm();
+}

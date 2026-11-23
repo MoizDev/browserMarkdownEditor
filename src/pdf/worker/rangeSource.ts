@@ -5,7 +5,9 @@ const BLOCK = 64 * 1024, CACHE = 8 * 1024 * 1024;
 interface SyncReader { readAsArrayBuffer(blob: Blob): ArrayBuffer }
 
 /** One immutable Blob reference per worker document; bounded synchronous ranges
- * satisfy the native callback without a parent round trip or whole-file copy. */
+ * satisfy the native callback without a parent round trip or whole-file copy. The first may be a slice of the disk
+ * snapshot: a read of it after the file changed on disk fails (NotReadableError) rather than returning other bytes, so
+ * pages are the snapshot's or a FileError, never a mix. `adopt` moves the reads onto the memory-backed copy. */
 export class PdfBlobSource implements ByteSource {
     readonly size: number;
     private readonly blocks = new Map<number, Uint8Array>();
@@ -23,6 +25,12 @@ export class PdfBlobSource implements ByteSource {
         this.reader = new ctor();
     }
     get cachedBytes(): number { return this.used; }
+    /** Cached blocks stay: they are the snapshot's bytes, which the copy holds too. A source that already failed stays
+     * failed: its snapshot was gone, and the copy made from it cannot be trusted to have finished first. */
+    adopt(blob: Blob): void {
+        if (!(blob instanceof Blob) || blob instanceof File || blob.size !== this.size) throw new PdfEngineError('RangeError', 'Invalid PDF source copy');
+        if (!this.closed && !this.failed) this.blob = blob;
+    }
     read(offset: number, length: number): Uint8Array {
         if (this.closed || this.failed) throw new PdfEngineError('FileError', 'PDF source is no longer readable');
         if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(length) || offset < 0 || length < 0 ||

@@ -56,7 +56,7 @@ export default function PdfTiledTextSurface({ source, reading, filePath, findMem
         return () => cancel.abort();
     }, [reader, anchor, checkpointPage, checkpointOffset, checkpointZoom]);
     const initial = anchor ?? (mapped && mapped.reader === reader ? mapped.anchor : undefined);
-    if (!reader || !initial) return <div className="pdf-pane-message">Opening extracted text…</div>;
+    if (!reader || !initial) return <div className="pdf-pane-message is-waiting">Opening extracted text…</div>;
     return <PdfReadingText filePath={filePath} controller={reader} isFocused={isFocused} isVisible={isVisible}
         anchor={initial} expectedPageDigest={expectedPageDigest} sameSchema={sameSchema} restorationNotice={restorationNotice}
         findMemory={findMemory} onShowOriginalPage={onShowOriginalPage} onShowOriginal={onShowOriginal}

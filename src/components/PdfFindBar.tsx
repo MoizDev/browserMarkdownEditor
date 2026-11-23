@@ -217,8 +217,10 @@ function PdfFindBar(props: PdfFindBarProps, forwarded: React.ForwardedRef<PdfFin
     const status = view.issue || (!query.trim() ? '' : !progress || index < 0 && !progress.done ? `Searching… ${progress?.pagesDone ?? 0}/${progress?.pagesTotal ?? '…'} pages`
         : hits.length ? `${index + 1} of ${hits.length.toLocaleString('en-US')}${progress.capped || !progress.done ? '+' : ''}` : 'No matches');
     const quality = progress ? [progress.textlessPages ? `${progress.textlessPages} ${progress.textlessPages === 1 ? 'page has' : 'pages have'} no text (scans are not OCR’d)` : '',
-        progress.failedPages.length ? `${progress.failedPages.length} ${progress.failedPages.length === 1 ? 'page could' : 'pages could'} not be read` : '',
-        progress.partialPages.length ? `${progress.partialPages.length} ${progress.partialPages.length === 1 ? 'page has' : 'pages have'} text-order/extraction warnings` : ''].filter(Boolean).join(' · ') : '';
+        progress.failedPages.length ? `${progress.failedPages.length} ${progress.failedPages.length === 1 ? 'page could' : 'pages could'} not be read` : '']
+        // Text-order warnings (partialPages) are extraction diagnostics, not a failure to find: a clean LaTeX book told the
+        // reader "180 pages have text-order/extraction warnings" while every match was found. Only text that is not there is said.
+        .filter(Boolean).join(' · ') : '';
     return <div className="pdf-find-bar" role="search" aria-label="Find in PDF" onContextMenu={contextMenu}
         onDragOver={event => event.preventDefault()} onDrop={event => event.preventDefault()}
         onKeyDown={event => {

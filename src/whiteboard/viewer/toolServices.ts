@@ -150,7 +150,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         }, error => { if (!controller.signal.aborted) ui.error(error); });
     };
     const text = createBoardTextEditor({ runtime, render: runtime.render, engine, preview, point, camera, viewport: options.viewport,
-        overlay: options.overlay, current, interaction: options.interaction, inputFrames: options.inputFrames, mac: ui.mac,
+        overlay: options.overlay, keyboardTarget: options.surface, current, interaction: options.interaction, inputFrames: options.inputFrames, mac: ui.mac,
         spelling: options.spelling, ui: ui.text, onError: ui.error, editingChanged: id => sensitive.setEditing(id) });
     const attachments = createBoardAttachmentResolver({ runtime, render: runtime.render, point, camera: options.view, current });
     const ink = createBoardInkServices({ runtime, samples: runtime.samples, token: inputToken, current: t => current()

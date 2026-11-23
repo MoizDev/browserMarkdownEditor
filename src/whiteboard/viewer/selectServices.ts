@@ -538,7 +538,8 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         const chip = cardControls.begin(physicalSurface(sample), sample, modifiers.accel);
         if (chip) return chip;
         if (!mutable()) return null;
-        const surface = physicalSurface(sample), coarse = sample.source === 'touch';
+        // A finger or a pen is a coarse pointer: its handles and hit margins are the larger ones (catalogue I§4.5).
+        const surface = physicalSurface(sample), coarse = sample.source === 'touch' || sample.source === 'pen';
         const shapeHit = shapeHandles.hit(surface, coarse, sample.time);
         if (shapeHit) return shapeHandles.begin(shapeHit, sample, modifiers);
         const direction = stickyHandles.hit(surface, coarse, sample.time);

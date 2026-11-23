@@ -1,7 +1,7 @@
 import { surfaceToWorld, worldToSurface, type CameraController, type Point } from '../../platform/render/camera';
 import type { NodeId } from '../model/ids';
 import { getPlatformRuntime } from '../../platform/render/platformRuntime';
-import type { ScheduledFrame } from '../../platform/render/scheduler';
+import type { ScheduledFrame, TouchPanSample } from '../../platform/render/scheduler';
 import type { RenderToken } from '../../platform/render/types';
 import type { PaintSource } from '../render/paintStream';
 import { keptLockedMessage } from '../commands/delete';
@@ -15,6 +15,7 @@ import type { PointerRoute } from '../input/pointerRouter';
 import type { InputToken, Modifiers, RealSample, Tool } from '../input/tool';
 import type { ZoomBox, ZoomBrushContext } from '../input/zoomBrush';
 import { zoomBrushTool } from '../input/zoomBrush';
+import { stepBoardZoom } from '../input/cameraZoom';
 import { FIGURE_SHAPES, type FigureShape } from '../model/styles';
 import type { PaintImageProvider } from '../render/resources';
 import { textTool } from '../text/edit/tool';
@@ -56,7 +57,7 @@ export interface BoardToolServicesOptions {
     readonly sampleToSurface: (sample: RealSample) => Point;
     readonly clientToSurface: (x: number, y: number) => Point;
     readonly interaction: { invalidate(): void; cameraChanged(): void };
-    readonly platform: () => { animateZoom(targetZ: number, anchor?: Point): void; cancelMotion(): void };
+    readonly platform: () => { animateZoom(targetZ: number, anchor?: Point): void; animatePan(delta: Point): void; startFling(samples: readonly TouchPanSample[]): void; cancelMotion(): void };
     readonly ui: {
         readonly mac: boolean;
         readonly text: BoardTextEditorOptions['ui'];
@@ -66,8 +67,9 @@ export interface BoardToolServicesOptions {
         modalOpen(): boolean;
         isDirectPen(event: PointerEvent): boolean;
         ownsWheel(event: WheelEvent): boolean;
-        /** Preferences: the local Edge scrolling flag, and whether the mouse wheel's zoom turn is inverted. */
+        /** Preferences: the Edge scrolling preference, the Input device choice, and whether the mouse wheel's zoom turn is inverted. */
         edgeScrolling(): boolean;
+        mouseWheel(): boolean;
         invertMouseZoom(): boolean;
         error(error: unknown): void;
         /** A quiet status message for the board's own surface (R-11 kept-locked notice). */
@@ -170,15 +172,16 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         toSurface: options.sampleToSurface,
         preview(box) { brush = box; invalidate(); },
         clearPreview() { brush = null; invalidate(); },
-        fitBox(box) {
+        fitBox(box, cap) {
             const vp = options.viewport(); if (box.width <= 0 || box.height <= 0 || vp.width <= 0 || vp.height <= 0) return;
             const world = surfaceToWorld({ x: box.x + box.width / 2, y: box.y + box.height / 2 }, camera.camera);
-            const target = camera.clampZoom(camera.camera.z * Math.min(vp.width / box.width, vp.height / box.height));
+            const fit = Math.min(vp.width / box.width, vp.height / box.height);
+            const target = camera.clampZoom(camera.camera.z * (cap === undefined ? fit : Math.min(fit, cap)));
             const centre = { x: vp.width / 2, y: vp.height / 2 }, z = camera.camera.z;
             options.platform().cancelMotion(); camera.setCamera({ x: world.x - centre.x / z, y: world.y - centre.y / z, z });
             options.interaction.cameraChanged(); options.platform().animateZoom(target, centre);
         },
-        zoomAt(anchor, factor) { options.platform().cancelMotion(); options.platform().animateZoom(camera.clampZoom(camera.camera.z * factor), anchor); },
+        stepZoom(direction, anchor) { options.platform().cancelMotion(); options.platform().animateZoom(camera.clampZoom(stepBoardZoom(runtime.session.doc, camera, direction)), anchor); },
         view: () => ({ camera: camera.camera, viewport: options.viewport() }),
         setCamera(next) { options.platform().cancelMotion(); camera.setCamera(next); options.interaction.cameraChanged(); },
         clampZoom: z => camera.clampZoom(z),
@@ -243,7 +246,12 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
     };
     const services: BoardInputServices = {
         tools: runtime.tools, history: runtime.session.history, mac: ui.mac, shortcutsEnabled: ui.shortcutsEnabled, modalOpen: ui.modalOpen,
-        edgeScrolling: ui.edgeScrolling, invertMouseZoom: ui.invertMouseZoom,
+        edgeScrolling: ui.edgeScrolling, mouseWheel: ui.mouseWheel, invertMouseZoom: ui.invertMouseZoom,
+        animateZoom: (zoom, anchor) => { options.platform().cancelMotion(); options.platform().animateZoom(camera.clampZoom(zoom), anchor); },
+        animatePan: delta => { options.platform().cancelMotion(); options.platform().animatePan(delta); },
+        // A pan's release slides the view; a new press stops whatever motion is still running (both were unwired before).
+        startFling: samples => options.platform().startFling(samples),
+        cancelMotion: () => options.platform().cancelMotion(),
         editing: () => !!text.manager.current, textInput: text.input, isDirectPen: ui.isDirectPen,
         handleDoubleClick: (surface, world, time) => select.doubleClickHandle(surface, world, time),
         commands: { run: (id, event) => {

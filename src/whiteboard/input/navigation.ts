@@ -15,7 +15,11 @@ export interface TouchActions {
 }
 
 interface TouchContact { point: ContactPoint; eligible: boolean }
-interface Pinch { ids: [number, number]; distance: number; zoom: number; anchor: Point }
+/** Two fingers start undecided. Each threshold is measured from the pair's start, so a finger that only drifts stays a pan
+ * until the midpoint moves 16 px, and a pinch is a zoom only after the spacing changes 24 px. Once panning, the spacing must
+ * change 64 px before the gesture becomes a zoom: a two-finger pan does not zoom by accident. Measured in CSS px (catalogue I§4.2). */
+const PINCH_ZOOM_START_PX = 24, PINCH_PAN_START_PX = 16, PINCH_ZOOM_FROM_PAN_PX = 64, PINCH_MIN_SPACING_PX = 8;
+interface Pinch { ids: [number, number]; distance: number; zoom: number; anchor: Point; mid: Point; start: Point; mode: 'undecided' | 'panning' | 'zooming' }
 
 // Contact identity survives suppression: a palm held through pen-up is never promoted.
 export class TouchArbiter {
@@ -74,12 +78,24 @@ export class TouchArbiter {
       const a = this.touches.get(this.pinch.ids[0])?.point
       const b = this.touches.get(this.pinch.ids[1])?.point
       if (!a || !b) return
+      const pinch = this.pinch
       const distance = Math.hypot(a.x - b.x, a.y - b.y)
-      if (distance < 8) return
+      if (distance < PINCH_MIN_SPACING_PX) return
       const centroid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }
-      const z = this.camera.clampZoom(this.pinch.zoom * distance / this.pinch.distance)
-      this.camera.setCamera(cameraAtAnchor(this.pinch.anchor, centroid, z))
-      this.actions.changed()
+      const spacing = Math.abs(distance - pinch.distance), drift = Math.hypot(centroid.x - pinch.start.x, centroid.y - pinch.start.y)
+      if (pinch.mode === 'undecided') {
+        if (spacing > PINCH_ZOOM_START_PX) pinch.mode = 'zooming'
+        else if (drift > PINCH_PAN_START_PX) pinch.mode = 'panning'
+      } else if (pinch.mode === 'panning' && spacing > PINCH_ZOOM_FROM_PAN_PX) pinch.mode = 'zooming'
+      if (pinch.mode === 'panning') {
+        this.camera.panBy({ x: pinch.mid.x - centroid.x, y: pinch.mid.y - centroid.y })
+        pinch.mid = centroid
+        this.actions.changed()
+      } else if (pinch.mode === 'zooming') {
+        const z = this.camera.clampZoom(pinch.zoom * distance / pinch.distance)
+        this.camera.setCamera(cameraAtAnchor(pinch.anchor, centroid, z))
+        this.actions.changed()
+      }
     } else if (this.pan?.id === point.id) {
       this.camera.panBy({ x: this.pan.point.x - point.x, y: this.pan.point.y - point.y })
       this.pan.point = point
@@ -106,11 +122,11 @@ export class TouchArbiter {
 
   private beginPinch(a: ContactPoint, b: ContactPoint): void {
     const distance = Math.hypot(a.x - b.x, a.y - b.y)
-    if (distance < 8) { this.pendingPair = [a.id, b.id]; return }
+    if (distance < PINCH_MIN_SPACING_PX) { this.pendingPair = [a.id, b.id]; return }
     this.pendingPair = null
     const centre = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }
     this.pan = null
-    this.pinch = { ids: [a.id, b.id], distance, zoom: this.camera.camera.z, anchor: surfaceToWorld(centre, this.camera.camera) }
+    this.pinch = { ids: [a.id, b.id], distance, zoom: this.camera.camera.z, anchor: surfaceToWorld(centre, this.camera.camera), mid: centre, start: centre, mode: 'undecided' }
   }
 }
 
@@ -122,16 +138,25 @@ export interface WheelAdapterOptions {
   readonly changed: () => void
   /** Preferences: a mouse wheel's zoom turn reverses. Panning never reverses. */
   readonly invertZoom?: () => boolean
+  /** Input device preference: true when the mouse is chosen, so a plain wheel turn zooms; Auto and Trackpad pan. */
+  readonly mouseWheel?: () => boolean
 }
+
+/** A wheel turn zooms by at most 10% (catalogue I§3.2): raw deltas clamp to ±10 and each unit is 1/100 of the zoom. A notch
+ * from a mouse is 100 px, so an unclamped turn zoomed ×1.65 per notch. Ctrl/Cmd swaps the device's behaviour, so a trackpad
+ * pinch (which arrives as Ctrl+wheel) zooms while the trackpad pans. */
+const WHEEL_ZOOM_STEP_CLAMP = 10, WHEEL_ZOOM_STEP_DIVISOR = 100
 
 export function installWheel(root: HTMLElement, options: WheelAdapterOptions): () => void {
   const wheel = (event: WheelEvent): void => {
     if (!options.owns(event) || !Number.isFinite(event.deltaX) || !Number.isFinite(event.deltaY) || (!event.deltaX && !event.deltaY)) return
     const mode = event.deltaMode === 1 ? 'line' : event.deltaMode === 2 ? 'page' : 'pixel'
-    if (event.ctrlKey || event.metaKey) {
-      const unit = mode === 'line' ? 16 : mode === 'page' ? options.camera.viewport.height : 1
+    const zooms = (event.ctrlKey || event.metaKey) !== (options.mouseWheel?.() ?? false)
+    if (zooms) {
+      const turn = Math.max(-WHEEL_ZOOM_STEP_CLAMP, Math.min(WHEEL_ZOOM_STEP_CLAMP, event.deltaY)) / WHEEL_ZOOM_STEP_DIVISOR
       const direction = options.invertZoom?.() ? -1 : 1
-      options.camera.zoomWheel(direction * event.deltaY * unit, options.toSurface(event.clientX, event.clientY))
+      const anchor = options.toSurface(event.clientX, event.clientY)
+      options.camera.zoomTo(options.camera.camera.z * (1 - direction * turn), anchor)
     } else {
       options.camera.panWheel({ deltaX: options.paged ? 0 : event.deltaX, deltaY: event.deltaY, deltaMode: mode, shift: !options.paged && event.shiftKey })
     }

@@ -7,7 +7,6 @@ export interface BoardViewFlags {
 }
 
 export interface BoardSessionPreferences {
-    readonly edgeScrolling: boolean;
     readonly pasteAtCursor: boolean;
 }
 
@@ -34,7 +33,7 @@ export class BoardPreferenceState {
     private readonly listeners = new Set<() => void>();
 
     constructor(view: BoardViewFlags, private readonly persistView: (flags: BoardViewFlags) => void) {
-        this.snapshot = { view: { ...view }, session: { edgeScrolling: true, pasteAtCursor: false } };
+        this.snapshot = { view: { ...view }, session: { pasteAtCursor: false } };
     }
 
     getSnapshot = (): BoardLocalPreferences => this.snapshot;

@@ -157,8 +157,17 @@ function textOwned(target: EventTarget | null, root: HTMLElement): boolean {
   return !!listbox && listbox !== root
 }
 
+// The browser's zoom keys belong to the page, so the board takes them while it has the keyboard (catalogue I§1.5).
+const BROWSER_ZOOM_KEYS: ReadonlySet<string> = new Set(['=', '+', '-', '0'])
+
 export function installKeyboard(root: HTMLElement, actions: KeyboardActions, mac: boolean): () => void {
   const keydown = (event: KeyboardEvent): void => {
+    if (root.contains(event.target as Node)) {
+      const accelDown = mac ? event.metaKey : event.ctrlKey
+      if (accelDown && !event.altKey && BROWSER_ZOOM_KEYS.has(event.key)) event.preventDefault()
+      // Windows opens the menu bar when Alt is released alone; a gesture or zoom that Alt joins must not reach it.
+      if (event.key === 'Alt' && actions.gestureActive?.()) event.preventDefault()
+    }
     if (event.defaultPrevented || !actions.visible() || actions.modalOpen() || actions.editing() || textOwned(event.target, root) || event.isComposing || event.keyCode === 229 || event.key === 'Dead' || event.getModifierState('AltGraph')) return
     if (!root.contains(event.target as Node)) return
     actions.modifierChanged?.({ shift: event.shiftKey, alt: event.altKey, control: event.ctrlKey, accel: mac ? event.metaKey : event.ctrlKey })
@@ -212,7 +221,9 @@ export function installKeyboard(root: HTMLElement, actions: KeyboardActions, mac
   }
   const keyup = (event: KeyboardEvent): void => {
     if (actions.visible() && !actions.modalOpen() && !actions.editing() && root.contains(document.activeElement)) {
-      actions.modifierChanged?.({ shift: event.shiftKey, alt: event.altKey, control: event.ctrlKey, accel: mac ? event.metaKey : event.ctrlKey })
+      // macOS still reports metaKey on Meta's own key-up, so the release is read as released here (catalogue I§1.4).
+      const accel = mac ? event.key !== 'Meta' && event.metaKey : event.ctrlKey
+      actions.modifierChanged?.({ shift: event.shiftKey, alt: event.altKey, control: event.ctrlKey, accel })
     }
     if (event.key === ' ' || event.code === 'Space') actions.run('pan.release', event)
     if (event.key.toLowerCase() === 'z' || event.code === 'KeyZ') actions.run('zoom.release', event)

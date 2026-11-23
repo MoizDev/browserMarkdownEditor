@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
-import { getBoardPreferences, mouseZoomInverted } from '../../utils/boardPreferences';
+import { getBoardPreferences, mouseInputChosen, mouseZoomInverted } from '../../utils/boardPreferences';
 import { getContextMenu } from '../../utils/contextMenu';
 import { translateBoard } from '../../whiteboard/chrome/language';
-import type { BoardPreferenceState } from '../../whiteboard/chrome/preferences';
 import { localizeBoardChrome } from './chrome/localize';
 import { useBoardDebugSampler } from './useBoardDebugSampler';
 import type { CommandState } from './chrome/boardCommands';
@@ -80,9 +79,6 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
     // Populated only when the real presentation port AND semantic per-node Load service are attached.
     const embedPortRef = useRef<EmbedPresentationPort | null>(null);
     const [embedPort, setEmbedPort] = useState<EmbedPresentationPort | null>(null);
-    // The per-session view preferences live with the clipboard service; the input layer reads them live through this ref.
-    const sessionPreferencesRef = useRef<BoardPreferenceState | null>(null);
-    useEffect(() => { sessionPreferencesRef.current = clipboard?.preferences ?? null; }, [clipboard]);
     const canMutateView = useCallback(() => !!viewRef.current?.editing?.isAttached() && chromeMountedRef.current && !!styleRef.current && !!embedPortRef.current, []);
     const onChromeReady = useCallback((ready: boolean) => { chromeMountedRef.current = ready; }, []);
     const report = useCallback((error: unknown) => {
@@ -104,7 +100,7 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
                 onAttachment(value) { if (live) setAttached(value); },
                     commands: { run(id, event) { const run = commandRef.current; if (!run) throw new Error('Board commands are not attached'); return run(id, event); } },
                     ui: { mac: /Mac|iPhone|iPad/.test(navigator.platform), shortcutsEnabled: () => getBoardPreferences().areKeyboardShortcutsEnabled,
-                        edgeScrolling: () => sessionPreferencesRef.current?.getSnapshot().session.edgeScrolling ?? true, invertMouseZoom: mouseZoomInverted,
+                        edgeScrolling: () => getBoardPreferences().edgeScrolling, mouseWheel: mouseInputChosen, invertMouseZoom: mouseZoomInverted,
                         // The chips on an embed or link card: consent and the controller are the embed host's; the address and preview are the card's own.
                         cards: { embedState: id => embedControllerRef.current?.state(id) ?? 'inert',
                             loadEmbed(id) { const target = embedControllerRef.current; return target ? target.load(id) : Promise.reject(new Error('Embeds are unavailable')); },

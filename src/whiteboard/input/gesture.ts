@@ -166,6 +166,9 @@ export class ToolState {
 
   escape(): void { this.setTool(this.selectId) }
 
+  /** The engine's "exit pen mode" command: the helper button and the accessibility button both call it. */
+  exitPenMode(): void { this.setPenMode(false) }
+
   private publish(snapshot: ToolStateSnapshot): void {
     this.snapshot = snapshot
     for (const listener of this.listeners) listener()

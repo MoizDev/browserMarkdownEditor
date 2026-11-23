@@ -16,8 +16,10 @@ export interface EdgeScrollOptions {
     onInputFrame(callback: () => void): () => void;
     invalidate(): void;
 }
-interface Contact { readonly id: number; x: number; y: number; modifiers: Modifiers; sample: RealSample | null }
-const EDGE = 8, DWELL = 200, RAMP = 200, SPEED = 800;
+interface Contact { readonly id: number; readonly coarse: boolean; x: number; y: number; modifiers: Modifiers; sample: RealSample | null }
+/** Catalogue I§6: a 8 px zone (12 px for a finger or pen, whose contact is wider), 200 ms of dwell, then a 200 ms cubic ease-in
+ * to 25 px per 60 Hz frame (1500 px/s), scaled by 0.612 on any axis of a viewport under 1000 px. */
+const EDGE = 8, EDGE_COARSE = 12, DWELL = 200, RAMP = 200, SPEED = 25 * 60, SMALL_SCREEN_PX = 1000, SMALL_SCREEN_SPEED = 0.612;
 
 /** Edge drift is camera work, not an ink sample or a document operation. A held
  * selection is reprojected only when the panned frame has actually presented. */
@@ -50,7 +52,7 @@ export class EdgeScroll {
     private down = (event: PointerEvent): void => {
         if (this.contact) { if (this.contact.id !== event.pointerId) this.stop(); return; }
         if (event.button !== 0) return;
-        this.contact = { id: event.pointerId, x: event.clientX, y: event.clientY, modifiers: this.modifiers(event), sample: null };
+        this.contact = { id: event.pointerId, coarse: event.pointerType !== 'mouse', x: event.clientX, y: event.clientY, modifiers: this.modifiers(event), sample: null };
     };
     private move = (event: PointerEvent): void => {
         const contact = this.contact;
@@ -77,8 +79,9 @@ export class EdgeScroll {
         if (!owner || !owner.pointerIds.has(contact.id) || (owner.kind !== 'node-edit' && owner.kind !== 'marquee')) { this.entered = 0; this.last = 0; return; }
         const rect = surface.getBoundingClientRect();
         if (!(rect.width > 0 && rect.height > 0) || !contact.sample) { this.entered = 0; this.last = 0; return; }
-        const axis = (value: number, start: number, end: number) => value < start + EDGE ? -Math.min(1, (start + EDGE - value) / EDGE)
-            : value > end - EDGE ? Math.min(1, (value - end + EDGE) / EDGE) : 0;
+        const edge = contact.coarse ? EDGE_COARSE : EDGE;
+        const axis = (value: number, start: number, end: number) => value < start + edge ? -Math.min(1, (start + edge - value) / EDGE)
+            : value > end - edge ? Math.min(1, (value - end + edge) / EDGE) : 0;
         const x = axis(contact.x, rect.left, rect.right), y = axis(contact.y, rect.top, rect.bottom);
         if (!x && !y) { this.entered = 0; this.last = 0; this.pending = null; return; }
         if (!this.entered) { this.entered = now; this.last = now; }
@@ -92,11 +95,12 @@ export class EdgeScroll {
             this.pending = null;
         }
         const elapsed = Math.max(0, Math.min(50, now - this.last)); this.last = now;
-        const ramp = Math.min(1, Math.max(0, (now - this.entered - DWELL) / RAMP));
+        const linear = Math.min(1, Math.max(0, (now - this.entered - DWELL) / RAMP)), ramp = linear * linear * linear;
         if (ramp && !this.pending && presented) {
             const before = camera.camera;
             const oldX = before.x, oldY = before.y;
-            camera.panBy({ x: x * SPEED * ramp * elapsed / 1000, y: y * SPEED * ramp * elapsed / 1000 });
+            const speedX = rect.width < SMALL_SCREEN_PX ? SMALL_SCREEN_SPEED : 1, speedY = rect.height < SMALL_SCREEN_PX ? SMALL_SCREEN_SPEED : 1;
+            camera.panBy({ x: x * SPEED * speedX * ramp * elapsed / 1000, y: y * SPEED * speedY * ramp * elapsed / 1000 });
             if (camera.camera.x !== oldX || camera.camera.y !== oldY) {
                 this.pending = presented; this.options.cameraChanged();
             }

@@ -7,7 +7,7 @@ export type PreferenceLabel = 'alwaysSnap' | 'toolLock' | 'showGrid' | 'selectOn
     | 'debugMode' | 'mouseRequired';
 
 type ViewFlag = 'grid' | 'focusMode' | 'toolLock' | 'transparent' | 'debugMode';
-type SessionFlag = 'edgeScrolling' | 'pasteAtCursor';
+type SessionFlag = 'pasteAtCursor';
 
 export interface LocalPreferencesView {
     readonly view: Readonly<Record<ViewFlag, boolean>>;
@@ -50,7 +50,8 @@ export function preferenceEntries({ local, label, theme }: PreferenceMenuOptions
         toggle('alwaysSnap', global.isSnapMode, () => updateBoardPreferences({ isSnapMode: !global.isSnapMode })),
         view('toolLock', 'toolLock'), view('showGrid', 'grid'),
         toggle('selectOnWrap', global.isWrapMode, () => updateBoardPreferences({ isWrapMode: !global.isWrapMode })),
-        view('focusMode', 'focusMode'), session('edgeScrolling', 'edgeScrolling'),
+        view('focusMode', 'focusMode'),
+        toggle('edgeScrolling', global.edgeScrolling, () => updateBoardPreferences({ edgeScrolling: !global.edgeScrolling })),
         toggle('dynamicSize', global.isDynamicResizeMode,
             () => updateBoardPreferences({ isDynamicResizeMode: !global.isDynamicResizeMode })),
         session('pasteAtCursor', 'pasteAtCursor'), input, accessibility,

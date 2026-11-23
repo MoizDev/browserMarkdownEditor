@@ -296,11 +296,15 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             const memory = runtime.governor.readout().gpu;
             if (!memoryGrant || gpu.backing.reservedBytes > memoryGrant.pixelGrant * RENDER_CONSTANTS.surfaceReserveBytesPerPixel ||
                 memory.chargedBytes > memory.targetBytes) {
+                // A ready GPU held behind the 2D picture for memory: the screen stays canvas2d, so it is counted like any other
+                // fallback (it was the one hold with no counter).
+                if (renderAuditEnabled()) auditCount('pane', `fallback:gpu-held:${!memoryGrant ? 'no-grant' : memory.chargedBytes > memory.targetBytes ? 'over-target' : 'pixel-grant'}`);
                 lifecycle?.invalidate('budget');
                 return false;
             }
             created.presenter.releaseSurface();
             if (!gpu.backing.promote()) {
+                auditCount('pane', 'fallback:gpu-held:promote-refused');
                 const surface = lifecycle?.surface;
                 surface?.failGpu(surface.stamp, grant.generation, 'out-of-budget', false);
                 return false;

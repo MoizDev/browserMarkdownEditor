@@ -11,6 +11,12 @@ export interface BoardSelectGestureContext extends SelectToolContext {
     insideSelection(sample: RealSample): boolean;
     /** The press lands on the selection: its picture may be built at rest before the drag that may follow. */
     prewarm?(): void;
+    /** The user's wrap-mode preference: a brush then selects only what it fully encloses, and accel inverts it for one gesture. */
+    readonly wrapMode?: () => boolean;
+    /** The press lies on a resize or rotate handle of the selection frame (accel turns such a drag into a brush). */
+    selectionHandleAt?(sample: RealSample): boolean;
+    /** An empty press that clears the selection leaves a focused group whose bounds it lies outside (catalogue S§4.6). */
+    leaveFocusAt?(point: Vec2): void;
 }
 
 /** A selection contact owns its hit preflight, optional exact sweep and final
@@ -36,6 +42,8 @@ class BoardSelectGesture implements GestureOwner {
     private finishing = false;
     private cleaned = false;
     private transform: GestureOwner | null = null;
+    /** The Alt state the live move was started with: a change while moving switches between moving and cloning. */
+    private transformAlt = false;
     private sweep: SweepQueue | null = null;
     private sweepLast: Vec2;
     private sweepPreview: ReadonlySet<NodeId> = new Set();
@@ -49,20 +57,13 @@ class BoardSelectGesture implements GestureOwner {
         this.release = context.hold();
         try {
             this.unregister = context.registerPending(() => this.cancel('invalidated'));
-            if (keys.alt) {
-                const services: SweepQueueServices = { ...context.scribble,
-                    preview: ids => {
-                        this.sweepPreview = ids;
-                        if (this.hit === null && this.dragging && this.valid()) context.scribble.preview(ids);
-                    } };
-                this.sweep = new SweepQueue(services);
-                this.sweep.add(this.sweepLast, this.sweepLast, false);
-            }
+            if (keys.alt) this.startSweep();
             void context.hit(down, this.controller.signal).then(id => {
                 if (!this.valid()) { this.cancel('invalidated'); return; }
                 this.hit = id;
+                // A selection handle is not a body press: accel-drag from a handle brushes (crop and resize are the handle's own gestures).
                 this.body = id === null && !this.startKeys.shift && !this.startKeys.alt && this.initial.length > 0
-                    && context.insideSelection(down);
+                    && context.insideSelection(down) && !(this.startKeys.accel && context.selectionHandleAt?.(down));
                 if (this.body || (id !== null && this.initial.includes(id))) context.prewarm?.();
                 if (id !== null && this.sweep) { this.sweep.cancel(); this.sweep = null; this.points.length = 1; }
                 if (this.dragging) this.activateDrag();
@@ -71,6 +72,16 @@ class BoardSelectGesture implements GestureOwner {
         } catch (error) { this.cancel('invalidated'); throw error; }
     }
 
+    /** Alt on empty canvas scribbles: the path from here is swept, and pressing or releasing Alt mid-brush switches the mode. */
+    private startSweep(): void {
+        const services: SweepQueueServices = { ...this.context.scribble,
+            preview: ids => {
+                this.sweepPreview = ids;
+                if (this.hit === null && this.dragging && this.valid()) this.context.scribble.preview(ids);
+            } };
+        this.sweep = new SweepQueue(services);
+        this.sweep.add(this.sweepLast, this.sweepLast, false);
+    }
     private valid(): boolean {
         // The fence guards the hit/marquee decision. A running transform republishes the selection
         // snapshot as it moves; it owns its own validity, and the fence cancelled every drag-move.
@@ -92,27 +103,35 @@ class BoardSelectGesture implements GestureOwner {
         finally { if (!(error instanceof DOMException && error.name === 'AbortError')) this.context.onError(error); }
     }
     private region(): SelectRegion {
-        return this.startKeys.alt && this.hit === null
+        return this.keys.alt && this.hit === null
             ? { kind: 'scribble', points: this.points }
-            : { kind: 'marquee', start: { x: this.down.x, y: this.down.y }, end: { x: this.last.x, y: this.last.y }, containment: this.keys.control };
+            : { kind: 'marquee', start: { x: this.down.x, y: this.down.y }, end: { x: this.last.x, y: this.last.y }, containment: this.containment() };
+    }
+    /** Wrap mode (the preference) selects only what the brush fully encloses; accel inverts it for this gesture. */
+    private containment(): boolean {
+        return (this.context.wrapMode?.() ?? false) !== this.keys.accel;
     }
     private activateDrag(): void {
         if (!this.valid() || this.hit === undefined || this.transform) return;
-        if (this.body) {
-            this.transform = this.context.beginTransform(this.down, this.initial[0], this.startKeys);
-            this.transform.update([this.last], this.keys);
-        } else if (this.hit !== null) {
+        if (this.body) this.beginMove(this.initial[0]);
+        else if (this.hit !== null && !this.startKeys.accel) {
             if (!this.context.selection.getSnapshot().selected.includes(this.hit)) {
                 // Default: Shift-drag adds the hit before moving; Shift-click still toggles on release.
                 this.context.selection.replace(this.startKeys.shift ? [...this.initial, this.hit] : [this.hit]);
                 this.selectionFence = this.context.selection.getSnapshot();
             }
-            this.transform = this.context.beginTransform(this.down, this.hit, this.startKeys);
-            this.transform.update([this.last], this.keys);
+            this.beginMove(this.hit);
         } else {
             if (this.sweep) this.context.scribble.preview(this.sweepPreview);
             this.context.preview(this.region());
         }
+    }
+    /** A move of `hit`, cloned while Alt is held (catalogue S§7.4). The move is relative to the press, so a switch restarts it
+     * from the current pointer without a jump. */
+    private beginMove(hit: NodeId): void {
+        this.transformAlt = this.keys.alt;
+        this.transform = this.context.beginTransform(this.down, hit, { ...this.startKeys, alt: this.keys.alt });
+        this.transform.update([this.last], this.keys);
     }
     update(samples: readonly RealSample[], keys: Modifiers): void {
         if (this.ended || this.cleaned) return;
@@ -131,8 +150,18 @@ class BoardSelectGesture implements GestureOwner {
                 const surface = sampleSurface(this.last, this.context.sampleToSurface);
                 this.dragging = Math.hypot(surface.x - this.downSurface.x, surface.y - this.downSurface.y) >= this.context.dragThresholdCss;
             }
-            if (this.transform) this.transform.update(samples, keys);
+            if (this.transform && keys.alt !== this.transformAlt) {
+                // Alt pressed or released mid-move: clone or move the originals from here (catalogue S§7.4).
+                const previous = this.transform; this.transform = null; previous.cancel('invalidated');
+                if (this.dragging) this.activateDrag();
+            }
+            else if (this.transform) this.transform.update(samples, keys);
             else if (this.dragging) this.activateDrag();
+            // Alt pressed or released mid-brush switches between the rectangle and the scribble (catalogue S§5, S§6).
+            if (!this.transform && (this.hit === null || this.hit === undefined)) {
+                if (keys.alt && !this.sweep) { this.startSweep(); this.points.length = 0; this.points.push(this.sweepLast); }
+                else if (!keys.alt && this.sweep) { this.sweep.cancel(); this.sweep = null; this.context.scribble.preview(new Set()); }
+            }
         } catch (error) { this.fail(error); }
     }
     finish(reason: FinishReason): void {
@@ -154,9 +183,13 @@ class BoardSelectGesture implements GestureOwner {
             }
             if (!this.dragging) {
                 this.sweep?.cancel(); this.sweep = null;
-                if (this.hit === null) { if (!this.keys.shift) this.context.selection.clear(); }
+                // Shift and accel both add or remove; alt replaces the selection (catalogue S§4.3-4.6).
+                const additive = (this.keys.shift || this.keys.accel) && !this.keys.alt;
+                if (this.hit === null) {
+                    if (!additive) { this.context.selection.clear(); this.context.leaveFocusAt?.({ x: this.down.x, y: this.down.y }); }
+                }
                 else if (this.hit !== undefined) {
-                    if (this.keys.shift) this.context.selection.toggle(this.hit);
+                    if (additive) this.context.selection.toggle(this.hit);
                     else this.context.selection.replace([this.hit]);
                 }
                 this.cleanup(); return;

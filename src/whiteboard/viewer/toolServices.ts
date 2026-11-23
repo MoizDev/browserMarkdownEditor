@@ -52,6 +52,8 @@ export interface BoardToolServicesOptions {
     readonly inputFrames: { schedule(callback: () => void): () => void };
     /** The board's always-snap preference, read live on each gesture; absent means no always-snap. */
     readonly alwaysSnap?: () => boolean;
+    /** The board's wrap-mode preference, read live on each gesture (brush selects only what it fully encloses). */
+    readonly wrapMode?: () => boolean;
     readonly mappings: MappingHistory;
     readonly sampleToSurface: (sample: RealSample) => Point;
     readonly clientToSurface: (x: number, y: number) => Point;
@@ -120,7 +122,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
     const select = createBoardSelectServices({ runtime, render: runtime.render, camera: options.view, cameraController: camera,
         surface: options.surface, inputToken, cameraChanged: options.interaction.cameraChanged, sampleToSurface: options.sampleToSurface, point, region, preview,
         overlay: options.overlay, token, current: t => current() && options.current(t), canMutateView: () => options.editable() && !runtime.session.isReadOnly,
-        inputFrames: options.inputFrames, alwaysSnap: options.alwaysSnap,
+        inputFrames: options.inputFrames, alwaysSnap: options.alwaysSnap, wrapMode: options.wrapMode,
         editSticky: async id => { await text.editText(id); }, cards: ui.cards, onError: ui.error, openKeyboardContextMenu: ui.openKeyboardContextMenu,
         onKeptLocked: kept => ui.notice?.(keptLockedMessage(kept.length)) });
     // Hover and edit targets from real callbacks: the text editor reports the node it holds, and the
@@ -132,14 +134,14 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         endHoverPick();
         const tool = runtime.tools.getSnapshot().active.id;
         if (event.type === 'pointerout' || (tool !== 'select' && tool !== 'eraser') || !current()
-            || (event.pointerType !== 'mouse' && event.pointerType !== 'pen')) { sensitive.setHovered(null); return; }
+            || (event.pointerType !== 'mouse' && event.pointerType !== 'pen')) { sensitive.setHovered(null); select.setHover(null); return; }
         const input = event.pointerType === 'pen' ? 'pen' : 'mouse';
         let at: Point;
-        try { at = options.clientToSurface(event.clientX, event.clientY); } catch { sensitive.setHovered(null); return; }
+        try { at = options.clientToSurface(event.clientX, event.clientY); } catch { sensitive.setHovered(null); select.setHover(null); return; }
         const controller = new AbortController(), seq = ++hoverSeq;
         hoverPick = controller;
         point.hit(at, input, controller.signal).then(id => {
-            if (!controller.signal.aborted && seq === hoverSeq) sensitive.setHovered(id);
+            if (!controller.signal.aborted && seq === hoverSeq) { sensitive.setHovered(id); if (tool === 'select') select.setHover(id); }
         }, error => { if (!controller.signal.aborted) ui.error(error); });
     };
     const text = createBoardTextEditor({ runtime, render: runtime.render, engine, preview, point, camera, viewport: options.viewport,
@@ -236,7 +238,15 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         const open = (locked: NodeId | null) => { if (opener instanceof HTMLElement) ui.contextMenu({ point, opener, locked }); };
         let world: Point;
         try { world = surfaceToWorld(options.clientToSurface(point.x, point.y), options.view().camera); } catch (error) { ui.error(error); open(null); return; }
-        void select.lockedAt(world, new AbortController().signal).then(open, error => {
+        const signal = new AbortController().signal;
+        // A locked node is targeted without being selected (F-CTX-006); any other press first selects what it lands on.
+        void select.lockedAt(world, signal).then(async locked => {
+            if (locked === null) {
+                try { await select.secondarySelect(world, signal); }
+                catch (error) { if (!(error instanceof DOMException && error.name === 'AbortError')) ui.error(error); }
+            }
+            open(locked);
+        }, error => {
             if (!(error instanceof DOMException && error.name === 'AbortError')) ui.error(error);
             open(null);
         });

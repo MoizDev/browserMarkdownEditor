@@ -1,9 +1,24 @@
 # Browser-run toolbox
 
-Plain Node ESM + pinned Playwright/CfT (`verify/browser-pin.json`), no runner. Drive the **real app**,
-never import its modules. Read `scratch/HOWTO.md`; use assigned ports, own install, `hc run --bg`.
-Stop servers between runs. Under charter §0 the implementation bar is static gates + one normal
-real-app run; reviewer proofs and qualified timings are deferred. JSDoc documents exact options.
+Plain Node ESM + the pinned Playwright/Chrome for Testing (`verify/browser-pin.json`), no runner. Drive the
+**real app**, never import its modules. It is used **only when a change needs it** (a UI/UX change, or anything
+visible only by using the app); `typecheck` and `lint` gate everything else. JSDoc documents exact options.
+
+## Setup, once per machine
+
+```sh
+npm ci
+node verify/install-browser.mjs     # = npm run verify:browser; downloads, checks the sha256, prints the path
+```
+
+- **Browser**: `BME_CHROME_PATH` if set, else `<BME_BROWSER_CACHE or the per-user cache>/<version>/…`
+  (macOS `~/Library/Caches/bme-verify/browsers`, Linux `$XDG_CACHE_HOME` or `~/.cache`, Windows
+  `%LOCALAPPDATA%`). A missing browser fails naming the installer.
+- **Scratch**: `BME_SCRATCH`, else a per-clone folder under the OS temp dir (`paths.mjs` `scratchDir`). Builds,
+  profiles, screenshots and reports go there, never into the repo; `prepareApp` refuses a scratch inside it.
+- **Ports** are yours to choose and strict: a taken port fails instead of moving. Servers stop on exit.
+- **Material not in the repo** (a corpus, upstream fixtures, a reference checkout) is named by an env variable or
+  argument; a kit without it stops with one sentence saying what to provide (`paths.mjs` `requiredInput`).
 
 ## Runnable example: `verify/guards/toolbox-smoke.mjs`
 
@@ -11,28 +26,31 @@ Three notes/image → Open Vault → A → Cmd/Ctrl+E → type → read autosave
 then an original EPUB fixture opens its real opaque frame with zero pageerrors.
 Expected through restore: **one A writable/close, zero removals/workers**. Controls cover reads,
 completed-close barriers, async-false waits, and UTF-8 CSS loaded as stylesheet **and fetch()**.
-Set `BME_SCRATCH`, `BME_PORT`, optionally `BME_ROOT`. Preparation and execution are separate:
+`BME_PORT` (default 6160), optionally `BME_SCRATCH`, `BME_ROOT`, `BME_MODE`. Preparation and execution are
+separate steps:
 
 ```sh
-L=/Users/adham/Developer/bme-impl/scratch/bin/bme-lock
 export BME_MODE=production                     # repeat with dev for StrictMode
-"$L" build -- node verify/guards/toolbox-smoke.mjs --prepare
-"$L" run -- node verify/guards/toolbox-smoke.mjs
-# Existing mutant arms are kept for deferred review, NOT implementation merge conditions.
+node verify/guards/toolbox-smoke.mjs --prepare
+BME_PORT=6160 node verify/guards/toolbox-smoke.mjs
+# The mutant arms (--mutant, --binding-mutant, --init-mutant, …) prove the oracles; not routine.
 ```
 
-**Never build under run/bench**: it deadlocks the pool. Preparation freezes dist + build identity
-in `prepared.json`. Dev rechecks HEAD + src/index/shared/public/config content (generated EPUB too):
+Preparation freezes dist + build identity in `prepared.json`; a run serves exactly that and never
+rebuilds. Dev rechecks HEAD + src/index/shared/public/config content (generated EPUB too):
 `build.devSourceCheck` records expected/actual; drift is HarnessFault. Kept extra mutants are dev-only
-`--dev-drift-mutant` / `--head-drift-mutant`, plus `--init-mutant` (both phases; details in the skill).
+`--dev-drift-mutant` / `--head-drift-mutant`, plus `--init-mutant` (both phases).
 The latter hides subframe FSA constructors and removes guards, proving the pageerror oracle.
 OPFS is **not real disk**.
 
 ## Small API (all page operations take `page` first)
 
-- **serve:** `prepareApp({root,scratch,mode})` reuses/acquires build. `serveApp({root,scratch,port,
-  mode,build:false})` → url/distDir/identity/stop; stop in finally. Build/prepare refuse run/bench.
-  `withSaveSkipped` uses an isolated APFS clone of **this worktree's own** dependencies.
+- **serve:** `prepareApp({root?,scratch?,mode})` builds and freezes. `serveApp({root?,scratch?,port,
+  mode,build:false})` → url/distDir/identity/stop; stop in finally. `scratch` defaults to
+  `scratchDir('app', mode)`. `withSaveSkipped` copies **this worktree's own** dependencies (an APFS
+  clone on macOS).
+- **paths:** `sourceRoot`, `scratchRoot`, `scratchDir(...)`, `pin`, `pinnedChromePath()`,
+  `pinnedChrome()` (throws naming the installer), `browserCache()`, `requiredInput(VAR, what)`.
 - **identity:** `buildIdentity({worktree,distDir?,patch?})` → commit/treeClean/patchSha256/files
   [{path,sha256,bytes}]/manifestSha256. `bindServedBodies(context,{identity,origin,mode,buildMode,
   report?,blockExternalOrigins?,moduleOverrides?})` → check/stop. Attach before goto; **check before
@@ -64,7 +82,7 @@ OPFS is **not real disk**.
   worker internals/blob bodies** (V-01b); no paused-target counters for timing. **requests:**
   recordRequests → read/stop, URL/origin/method/status/type/transfer bytes (raw-route is intercepted).
 - **targets:** instrumentTargets(page,{debuggingPort,vaultName,report}) → check/read/stop; functional
-  only, never bench; caller-range loopback port. Same runtime in window/workers, strict announced
+  only, never bench; a loopback port you chose. Same runtime in window/workers, strict announced
   worker receipts; frames deferred. See TARGETS.md: measured CfT157 WorkerLocation crash, minimal
   sequence, and mandatory rule to take pre-resume URLs from TargetInfo, never WorkerLocation.
 - **report:** createReport({scratch,name,fixtures,...}) → data/assert(label,expected,actual)/fail/finish;

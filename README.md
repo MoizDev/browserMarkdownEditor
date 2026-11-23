@@ -97,8 +97,11 @@ npm run lint       # ESLint
 `dist/` is a static site: any static host works, as long as it serves the app over HTTPS (or
 `localhost`), which the File System Access API requires.
 
-There is no unit-test suite. Behaviour is checked by driving the real app in headless Chromium with
-Playwright against a stubbed vault (`verify/`); `typecheck` and `lint` are the static gates.
+There is no test suite, and none is run routinely: `npm run typecheck` and `npm run lint` are the static gates
+for every change. A change that can only be judged by using the app (any UI/UX change) is checked by driving the
+real production build in headless Chrome for Testing with Playwright against a stubbed vault (`verify/`). After
+`npm ci`, `npm run verify:browser` installs that pinned browser once; the recipe is in
+`.agents/skills/verify-in-browser/SKILL.md`, and `verify/guards/toolbox-smoke.mjs` is a worked example.
 
 ### The helper (`helper/`)
 
@@ -143,7 +146,7 @@ exactly those bytes, and the build fails if any of them differs from its manifes
 | `shared/` | Types and data shared by the app and the helper |
 | `helper/` | VaultAgent |
 | `build/` | Vite plugins: asset integrity, generated frames, third-party notices |
-| `verify/` | Headless-browser verification toolbox and fixtures |
+| `verify/` | Headless verification of the real app, used when a change needs it: toolbox (`lib/`), pinned-browser installer, fixtures |
 
 `AGENTS.md` holds the rules every change must respect, and `.agents/skills/` the deeper notes on
 each subsystem.

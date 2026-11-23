@@ -36,18 +36,18 @@ drawing a line. **Zero tldraw code**, ever; `.tldraw` is only a legacy import (`
 
 ```bash
 npm run dev        # regenerate contained EPUB frame, then Vite + React Fast Refresh
-npm run build      # regenerate EPUB frame + notices, production build → dist/
+npm run build      # regenerate EPUB frame + notices, production build → dist/ (npm run preview serves it)
 npm run typecheck  # tsc for src+shared, then -p helper (the real "did I break types" check)
 npm run lint       # eslint .      (flat config, loaded via jiti)
-npm run preview    # serve a production build
+npm run verify:browser # once per machine: the pinned Chrome for Testing headless runs use (verify-in-browser)
 npm run helper:dev # the VaultAgent helper (Bun) from source, dev origins allowed; helper:build compiles
 ```
 
-**Checks — CODE-BASED TESTS ARE BANNED (the user's decision; never reintroduce them unasked).** No
-unit tests, test suites, `.test`/`.spec` files, test runner or `test` script, in-file test or self-test
-functions — all were deleted. The ONLY tests are headless-browser runs driving the real app (load
-`verify-in-browser` before claiming anything works); `typecheck` and `lint` are the static gates. **One
-exception:** when the user EXPLICITLY asks for a code-based test, write it — only that test, that task.
+**Checks — CODE-BASED TESTS ARE BANNED (the user's decision; never reintroduce them unasked).** No unit tests,
+suites, `.test`/`.spec` files, runner, `test` script or self-test functions, and nothing is run routinely.
+`typecheck` + `lint` gate EVERY change. A headless run of the real app (`verify-in-browser`) is done **if and only
+when the change needs it**: UI/UX, or anything visible only by using the app as a person would. **One exception:**
+when the user EXPLICITLY asks for a code-based test, write it — only that test, that task.
 
 ## Architecture: what every change must respect
 

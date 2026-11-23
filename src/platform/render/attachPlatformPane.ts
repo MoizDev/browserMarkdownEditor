@@ -2,7 +2,7 @@ import { auditCount, auditFrame, auditPresent, renderAuditEnabled } from './rend
 import type { ViewState } from '../types';
 const benchmarkMemory = __BME_BENCH__ ? await import('./benchmarkMemory') : null;
 import type { DamageRecord } from './damage';
-import { clearRenderQuality, reportRenderPinned, reportRenderQuality } from '../renderStatus';
+import { reportRenderPinned } from '../renderStatus';
 import type { AttachPlatformPane, PlatformLayerDefinition, PlatformPaneOptions } from './attachPlatformPane.types';
 import { createPaneSurfaceHost, PaneBackendSwitch } from './backendSwitch';
 import { CameraController } from './camera';
@@ -33,7 +33,7 @@ import type { MirrorView } from './mirrorSet';
 import { PaneLayerSet } from './paneLayerSet';
 import { PaneLifecycle } from './paneLifecycle';
 import { PaneSizeObserver } from './paneObservation';
-import { getPlatformRuntime } from './platformRuntime';
+import { getPlatformRuntime, type MemoryNotice } from './platformRuntime';
 import type { ScheduledFrame, ScheduledPaneLease } from './scheduler';
 import { computeSurfaceMetrics, SurfaceMetricsCommitter } from './surfaceMetrics';
 import type { FrameToken, Layer, RenderToken } from './types';
@@ -409,7 +409,8 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                 surfaceHost.clearStaged();
             }
         },
-        notice: (message: 'memory-pressure' | 'cpu-floor-denied') => options.onNotice(message),
+        notice: (message: MemoryNotice) => options.onNotice(message),
+        noticeCleared: (message: MemoryNotice) => options.onNoticeCleared?.(message),
         error: options.onError,
     };
     const removeRuntime = runtime.add(options.paneId, runtimePane);
@@ -674,7 +675,6 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                                     viewEpoch: frame.view.epoch, revision, drawnFrameId: frame.frameId });
                                 if (lastQuality !== qualityScale) {
                                     lastQuality = qualityScale;
-                                    reportRenderQuality(options.paneId, qualityScale);
                                     options.onQualityChange?.({ qualityScale });
                                 }
                                 if (drawing === compositor) queueMicrotask(requestGpu);
@@ -867,7 +867,6 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             runtime.clearDeviceTrouble(options.paneId);
             for (const cache of caches) { cache.cpu.close(); cache.gpu.close(); }
             removeRuntime();
-            clearRenderQuality(options.paneId);
         },
     };
 };

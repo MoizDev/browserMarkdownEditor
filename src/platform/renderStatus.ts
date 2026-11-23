@@ -6,7 +6,6 @@ export type GpuUnavailableCause = 'no-webgl2' | 'software' | 'unsupported' | 'gp
 type Listener = (message: string) => void;
 
 const listeners = new Set<Listener>();
-const reducedPanes = new Set<string>();
 
 export function subscribeRenderStatus(listener: Listener): () => void {
     listeners.add(listener);
@@ -21,16 +20,9 @@ export function reportRenderPinned(): void {
     announce('Graphics interrupted repeatedly. This pane will use standard rendering for this session.');
 }
 
-export function reportRenderQuality(paneId: string, qualityScale: number): void {
-    if (qualityScale >= 1) {
-        reducedPanes.delete(paneId);
-    } else if (!reducedPanes.has(paneId)) {
-        reducedPanes.add(paneId);
-        announce('Display quality is reduced to keep this pane responsive.');
-    }
-}
-
-export function clearRenderQuality(paneId: string): void { reducedPanes.delete(paneId); }
+// Reduced quality is not announced here: the pane says so itself ('memory-pressure', once its own grant has kept it below full quality
+// for a second, withdrawn when it returns). Announced here too, at the first soft present, the status line repeated it at once and
+// covered the board's own notice and its Dismiss button (seen with a forced degrade, two PDFs and a board side by side).
 
 /** What the person reads when a pane draws in a compatible mode (canvas2d) for good, by why. The browser setting is named because it is
  * the one thing the person can change: Chrome's "Use graphics acceleration when available" turns software rendering back into the GPU. */

@@ -598,9 +598,12 @@ interface HostedPane {
 /** App-owned collection, not module state; scheduler callbacks supply visibility and real deadlines. */
 export class PaneLifecycleHost {
     private readonly panes = new Map<string, HostedPane>();
-    private pressureAnnounced = false;
 
-    constructor(private readonly governor: MemoryGovernor, private readonly onPressure: (state: MemoryPressureState) => void) { }
+    // No announcement on the governor's state: 'trimming' is cache eviction, the answer to pressure, and announcing it as
+    // "quality was reduced" on whichever pane had focus showed the notice ~1 s after opening any PDF at DPR 2 with every grant
+    // at quality 1 (measured: state trimming, qualityScale 1, GPU 83.5/285 MB). Each pane's own grant decides
+    // (PlatformRuntime.reconcileMemoryNotices).
+    constructor(private readonly governor: MemoryGovernor) { }
 
     add(pane: HostedPane): () => void {
         if (this.panes.has(pane.paneId)) throw new Error('A pane lifecycle is already hosted');
@@ -627,9 +630,6 @@ export class PaneLifecycleHost {
 
     advancePressure(now: number, liveGesture: boolean): void {
         this.governor.advance(now, liveGesture);
-        const state = this.governor.readout().state;
-        if (state === 'normal') this.pressureAnnounced = false;
-        else if (!this.pressureAnnounced) { this.pressureAnnounced = true; this.onPressure(state); }
         for (const pane of this.panes.values()) pane.applyBudget(this.governor.grant(pane.paneId));
     }
 }

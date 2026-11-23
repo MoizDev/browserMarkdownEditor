@@ -80,6 +80,11 @@ Constants are in `types.ts` (`RenderConstants`, documented per field) with value
   panes and the broker gives five visible panes a GPU). Other pane
   notices: `memory-pressure`, `cpu-floor-denied`, `cpu-pinned`. All appear in the app's own UI, never a native
   dialog.
+- **Memory notices come from the pane's own grant, never the governor's state** (`PlatformRuntime.reconcileMemoryNotices`):
+  `memory-pressure` when that pane's `qualityScale < 1`, `cpu-floor-denied` when its grant is under its
+  `cpuMandatoryBytes`, each raised once it has lasted `memoryNoticeDelayMs` (1 s) and withdrawn via `onNoticeCleared`
+  when it ends. `trimming` is cache eviction and is silent: announced, every DPR 2 PDF said "quality was reduced" ~1 s
+  after opening with every grant at 1, on whichever pane had focus. The status line no longer repeats it.
 
 canvas2d is a complete path, not a placeholder: a machine without a usable GPU runs everything on it, and it never
 draws differently because a GPU exists.
@@ -144,6 +149,9 @@ draws differently because a GPU exists.
   `min(DPR,2)²`. Unscaled, a small DPR 2 pane sat at the floor and never drew again after a saturated zoom.
 - Grants: a visible pane's pinned positions (`gpuPinnedBytes`) first and never trimmed while visible; the rest by
   focus weight (2:1). A position past its pane's share is composed one level down, never trimmed from the screen.
+- CPU target: `8 MB·N + 12 B·devicePixels`, raised to `Σ visible cpuMandatoryBytes / 0.8` (the trim line, so a trim never
+  cuts into a floor), floor 32 MB, inside the device ceiling. Without it one DPR 2 PDF was refused its own floor.
+- `ReserveOptions.quiet`: a first ask the owner can answer from its own idle residency; a refusal is not pressure.
 - Pressure is app-wide: refusals trim before quality (`q`) drops; recovery waits for sustained low use and no
   gesture. `trouble()` gives a layer `'slow-gpu'` (timing, never memory: shed per-frame work) or `'pressure'`.
 - A cache filling its budget is not a leak: it must plateau under the target and give back everything above the view

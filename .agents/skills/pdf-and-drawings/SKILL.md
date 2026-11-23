@@ -56,6 +56,15 @@ come back to either.
 - An opaque one-colour tile (blank page: the producer scans every raster, `pdfTileUniformColour`) is, on a device, a
   1x1 texture of its own bytes (`Entry.solid`, `tile-upload:solid`): no tile-sized texture or upload (doc12 zoom:
   34.9 → 19.6 Mpx). Opaque only, so it samples what a textured neighbour does; canvas2d, mirrors and bridges keep the bitmap.
+- A visible tile reserves its CPU bytes `{ quiet: true }` first, frees the layer's own idle tiles, prefetch and covered
+  stand-ins (`evictUnneeded`), and only then asks as need: the governor cannot evict a pane mid-frame, so a first ask
+  as need counted the layer's own room as pool pressure and stepped canvas2d quality down on a fast scroll.
+- A bitmap waits for the view's mirror only while the mirror can be made: a mirror trimmed and waiting for room
+  (`mirrorTrimmed`) releases the uploaded bitmaps, which were that room (the view keeps its older mirror).
+- A tile rejected by a cancellation (`isCancellation`: the pool's `'Cancelled'`, e.g. a recycled worker, or an
+  `AbortError`) is removed unmarked and asked for again, never failed with "could not be rendered".
+- The pane's notice bar offers **Retry** (reloads the document) only for a failed page or an error notice; memory and
+  mode notices get Dismiss only, and the post-retry note clears on the next sharp frame (`PASSING_NOTICES`).
 - Zoom deliberately holds rasters during the gesture (`ZOOM_GESTURE_HOLD_MAX_MS`, 48 ms): rastering through it cost
   about 10x the PDFium CPU.
 - Tiles mirror into the session (`tileMirror.ts`): pixels belong to the document session, not the layer. After a

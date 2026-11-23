@@ -7,11 +7,18 @@ import { PaneLifecycleHost } from './paneLifecycle';
 import { defaultUploadAllowance, FrameScheduler } from './scheduler';
 import { surfaceBroker } from './surfaceBroker';
 
+export type MemoryNotice = 'memory-pressure' | 'cpu-floor-denied';
+
+/** One pane's memory notice: since when its state holds (the timer that raises it once it has lasted) and whether it is shown. */
+interface MemoryNoticeTrack { timer: ReturnType<typeof setTimeout> | null; shown: boolean }
+
 export interface RuntimePane {
     demand(): PaneMemoryDemand;
     interacting(): boolean;
     windowVisibility?(visible: boolean): void;
-    notice(message: 'memory-pressure' | 'cpu-floor-denied'): void;
+    notice(message: MemoryNotice): void;
+    /** The state a notice described is over (quality back to full, the floor granted, the pane hidden or gone). */
+    noticeCleared(message: MemoryNotice): void;
     error(error: unknown): void;
 }
 
@@ -41,7 +48,7 @@ export class PlatformRuntime {
     private readonly slowGpu = new Set<string>();
     private readonly stalledFence = new Set<string>();
     private readonly capabilityFailures = new Map<string, number>();
-    private readonly deniedCpuFloor = new Set<string>();
+    private readonly memoryNotices = new Map<string, Map<MemoryNotice, MemoryNoticeTrack>>();
     private memoryAdvanceQueued = false;
     private recoveryTimer: ReturnType<typeof setTimeout> | null = null;
     private recoveryAt: number | null = null;
@@ -62,12 +69,7 @@ export class PlatformRuntime {
         surfaceBroker.configure({ contextAllocator: context });
         surfaceBroker.setTerminalContextActive(getTerminalContextActive());
         subscribeTerminalContext(active => surfaceBroker.setTerminalContextActive(active));
-        this.lifecycles = new PaneLifecycleHost(this.governor, () => {
-            const panes = [...this.panes.values()];
-            const pane = panes.find(pane => { const demand = pane.demand(); return demand.visible && demand.focused; }) ??
-                panes.find(pane => pane.demand().visible) ?? panes[0];
-            pane?.notice('memory-pressure');
-        });
+        this.lifecycles = new PaneLifecycleHost(this.governor);
         this.scheduler = new FrameScheduler({
             reducedMotion: false,
             uploadAllowance: interval => defaultUploadAllowance(interval, this.bandwidth),
@@ -110,7 +112,7 @@ export class PlatformRuntime {
             this.slowGpu.delete(paneId);
             this.stalledFence.delete(paneId);
             this.capabilityFailures.delete(paneId);
-            this.deniedCpuFloor.delete(paneId);
+            this.dropMemoryNotices(paneId);
             this.refresh();
         };
     }
@@ -133,14 +135,58 @@ export class PlatformRuntime {
             this.governor.updatePanes(demands);
             this.planned = { demands, liveGesture };
         }
-        for (const demand of demands) {
-            const denied = demand.visible && (this.governor.grant(demand.paneId)?.cpuBytes ?? 0) < (demand.cpuMandatoryBytes ?? 0);
-            if (denied && !this.deniedCpuFloor.has(demand.paneId)) {
-                this.deniedCpuFloor.add(demand.paneId);
-                this.panes.get(demand.paneId)?.notice('cpu-floor-denied');
-            } else if (!denied) this.deniedCpuFloor.delete(demand.paneId);
-        }
         if (changed) this.advance();
+        else this.reconcileMemoryNotices();
+    }
+
+    /** Whether a pane's own grant shows the state a memory notice describes, from the demand last planned. A pane that is hidden,
+     * gone or not yet sized shows neither. */
+    private memoryState(paneId: string, notice: MemoryNotice): boolean {
+        const demand = this.planned?.demands.find(demand => demand.paneId === paneId);
+        if (!demand?.visible || demand.requestedPixels <= 0) return false;
+        const grant = this.governor.grant(paneId);
+        if (!grant) return false;
+        // Reduced quality is this pane's quality scale below 1: its surface really draws fewer pixels than asked. Never the
+        // governor's app-wide state, nor a quality another pane lost.
+        return notice === 'memory-pressure' ? grant.qualityScale < 1 : grant.cpuBytes < (demand.cpuMandatoryBytes ?? 0);
+    }
+
+    /** Raises a pane's memory notice once its state has lasted memoryNoticeDelayMs and withdraws it when the state ends. */
+    private reconcileMemoryNotices(): void {
+        for (const paneId of this.panes.keys()) {
+            for (const notice of ['memory-pressure', 'cpu-floor-denied'] as const) {
+                const holds = this.memoryState(paneId, notice);
+                let tracks = this.memoryNotices.get(paneId);
+                const track = tracks?.get(notice);
+                if (holds && !track) {
+                    if (!tracks) this.memoryNotices.set(paneId, tracks = new Map());
+                    const started: MemoryNoticeTrack = { shown: false, timer: null };
+                    started.timer = setTimeout(() => {
+                        started.timer = null;
+                        if (this.memoryNotices.get(paneId)?.get(notice) !== started) return;
+                        if (!this.memoryState(paneId, notice)) { this.endMemoryNotice(paneId, notice); return; }
+                        started.shown = true;
+                        this.panes.get(paneId)?.notice(notice);
+                    }, POLICY.memoryNoticeDelayMs);
+                    tracks.set(notice, started);
+                } else if (!holds && track) this.endMemoryNotice(paneId, notice);
+            }
+        }
+    }
+
+    private endMemoryNotice(paneId: string, notice: MemoryNotice): void {
+        const tracks = this.memoryNotices.get(paneId), track = tracks?.get(notice);
+        if (!tracks || !track) return;
+        if (track.timer !== null) clearTimeout(track.timer);
+        tracks.delete(notice);
+        if (!tracks.size) this.memoryNotices.delete(paneId);
+        if (track.shown) this.panes.get(paneId)?.noticeCleared(notice);
+    }
+
+    /** A removed pane takes its pending notices with it; nothing is withdrawn from a pane that is gone. */
+    private dropMemoryNotices(paneId: string): void {
+        for (const track of this.memoryNotices.get(paneId)?.values() ?? []) if (track.timer !== null) clearTimeout(track.timer);
+        this.memoryNotices.delete(paneId);
     }
 
     trouble(reason: MemoryTrouble): void {
@@ -203,6 +249,7 @@ export class PlatformRuntime {
 
     private advance(): void {
         this.lifecycles.advancePressure(performance.now(), [...this.panes.values()].some(pane => pane.interacting()));
+        this.reconcileMemoryNotices();
         // The governor says when it next needs an advance that no event will bring (a deferred degrade, a recovery's held
         // window). Only that deadline is armed: nothing polls while the memory is idle.
         const at = this.governor.wakeAt();

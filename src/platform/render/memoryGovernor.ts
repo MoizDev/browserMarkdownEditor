@@ -25,6 +25,10 @@ export interface ReserveOptions {
      * undrawn tiles, recomposed the next frame: at rest at 332%, 60 presents a second and 985 MB of tiles evicted per second, and the
      * board never left 'Updating'. */
     readonly prefetch?: boolean;
+    /** A first ask that the owner can still answer itself: admitted only if it fits as the pool and grant stand, and a refusal
+     * reclaims nothing, trims nothing and is not pressure. The owner then frees what it holds and does not need, and asks again
+     * without it; only that refusal is pressure. */
+    readonly quiet?: boolean;
 }
 /** The kinds a pane's layer-cache share never counts: each is limited apart (paneUsed). */
 const PANE_APART_KINDS: ReadonlySet<string> = new Set(['surface', 'program', 'context', 'live-input', 'canvas-working', 'surface-scratch']);
@@ -376,6 +380,7 @@ export class MemoryGovernor {
         let pixels = 0;
         let visible = 0;
         let dprScale = 1;
+        let floors = 0;
         for (const pane of panes) {
             count(pane.requestedPixels);
             count(pane.gpuNeedBytes);
@@ -388,6 +393,7 @@ export class MemoryGovernor {
             ids.add(pane.paneId);
             if (pane.visible && pane.requestedPixels > 0) {
                 pixels += pane.requestedPixels; visible++;
+                floors += pane.cpuMandatoryBytes ?? 0;
                 const dpr = pane.devicePixelRatio ?? 1;
                 if (Number.isFinite(dpr) && dpr > 1) dprScale = Math.max(dprScale, Math.min(POLICY.gpuGrantMaxDpr, dpr) ** 2);
             }
@@ -409,8 +415,16 @@ export class MemoryGovernor {
             // again (measured: doc12 and LARGE=11 at DPR 2, draw-sat and drag-sat 0/91; zoom-sat 52-70 stand-in presents).
             this.target.gpu = Math.min(this.ceilings.gpuBytes, Math.max(POLICY.gpuGrantMinBytes * dprScale,
                 (POLICY.gpuGrantBaseBytes + POLICY.gpuGrantPerVisiblePaneBytes * visible) * dprScale + POLICY.gpuGrantPerVisiblePixelBytes * pixels));
+            // The CPU target also covers every visible pane's declared floor, inside the device ceiling, with room for the pressure trim:
+            // the per-pixel formula (8 MB + 12 B/px) is below a PDF pane's floor (its view's tiles, their cropped mirror and the 2D
+            // canvas: ~15-17 B per device pixel), so one PDF alone, nothing else open, was refused its floor at DPR 2. Measured, one
+            // visible PDF: 1440x900 (3.49 M device px) floor 50.3-54.5 MB against a 50.2 MB grant; 2560x1440 (11.76 M) 159.7-169.6 MB
+            // against 149.6 MB. Divided by the trim line, not the soft line: a trim takes the pool to 80% of the target, and at
+            // floor / 0.9 that is under the floor itself, so a trim evicted visible tiles. Floor / 0.8 is 60-68 and 200-212 MB here;
+            // a 'high' device's 256 MB ceiling holds both, a smaller device's ceiling still bounds it.
             this.target.cpu = Math.min(this.ceilings.cpuRasterBytes, Math.max(POLICY.cpuGrantMinBytes,
-                POLICY.cpuGrantPerVisiblePaneBytes * visible + POLICY.cpuGrantPerVisiblePixelBytes * pixels));
+                POLICY.cpuGrantPerVisiblePaneBytes * visible + POLICY.cpuGrantPerVisiblePixelBytes * pixels,
+                Math.ceil(floors / POLICY.memoryTrimTargetRatio)));
             this.trimmedAt.gpu = -1;
             this.trimmedAt.cpu = -1;
             this.replan();
@@ -739,6 +753,7 @@ export class MemoryGovernor {
         // That is not pressure: nothing is trimmed and no quality is stepped. The refused work waits, and the replan that
         // grants the pane's demand wakes it. Seen: a new arrow's first 64 KB working buffer degraded a near-empty canvas2d pane.
         if (!allowed() && !this.overPool(pool, bytes) && !this.hasDemand(cache)) return null;
+        if (options?.quiet && !allowed()) return null;
         // Work ahead of need also stops at the soft-pressure line: the pressure trim takes the pool back below it, so prefetch admitted
         // above it is evicted again. Measured (canvas2d, DPR 2 annotated PDF): prefetch filled the CPU pool to its target, every mirror
         // crop or board buffer after it was refused, its refusal trimmed the pool to 80% (4.3 MB of prefetch), the prefetch was rastered

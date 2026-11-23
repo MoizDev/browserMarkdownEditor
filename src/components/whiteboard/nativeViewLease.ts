@@ -369,8 +369,7 @@ export function createNativeViewLease(options: {
             reveal, onError: options.onError });
         snapshotNow = () => viewer.getSnapshot();
     } catch (error) { animation.dispose(); video.dispose(); backdrop?.dispose(); images.dispose(); if (!cameraClaim) cameraOwner.dispose(); throw error; }
-    let presentedView: ViewState | null = null, presentedFrame: number | null = null, qualityNotice: string | null = null,
-        qualityTimer: ReturnType<typeof setTimeout> | null = null;
+    let presentedView: ViewState | null = null, presentedFrame: number | null = null, qualityNotice: string | null = null;
     const edit = options.parameters.mode === 'edit' ? options.editing : undefined;
     const editing = (() => { try { return edit ? createNativeEditingLease({ session: board, runtime, engine: viewer, token,
         inputToken: { vaultEpoch: token.vaultEpoch, tabId: token.documentId, sessionGeneration: token.session, viewGeneration: viewLease },
@@ -523,26 +522,28 @@ export function createNativeViewLease(options: {
                 viewer.presentationAccepted(presentation && certifyPresentation(presentation) ? presentation : null);
                 if (presentation && certifyPresentation(presentation)) backdrop?.notePresentation?.();
                 if (presentation && certifyPresentation(presentation)) recordBoardPresentation(performance.now(), presentation.backend);
-                // A sharp, complete frame at full quality ends reduced quality: a pending notice is dropped, a shown one withdrawn.
-                if ((qualityNotice || qualityTimer) && presentation && presentedFrame !== null && presentation.complete && presentation.sharp
-                    && !presentation.staleVersion && certifyPresentation(presentation)) {
-                    if (qualityTimer) { clearTimeout(qualityTimer); qualityTimer = null; }
-                    if (qualityNotice) { const shown = qualityNotice; qualityNotice = null; options.onNoticeCleared?.(shown); }
-                }
-            }, onError: options.onError, onNoticeCleared: (_code, cause) => options.onNoticeCleared?.(gpuUnavailableText(cause)),
+                // A sharp, complete frame at full quality ends reduced quality: that notice is withdrawn. A refused CPU floor can hold
+                // under a sharp frame, so the platform alone withdraws it (cleared here, it flashed for one frame).
+                if (qualityNotice === noticeText('memory-pressure') && presentation && presentedFrame !== null && presentation.complete && presentation.sharp
+                    && !presentation.staleVersion && certifyPresentation(presentation)) clearQualityNotice();
+            }, onError: options.onError,
+            onNoticeCleared: (code, cause) => {
+                if (code === 'gpu-unavailable') options.onNoticeCleared?.(gpuUnavailableText(cause));
+                else if (qualityNotice === noticeText(code)) clearQualityNotice();
+            },
             onNotice: (code, cause) => {
                 const text = code === 'gpu-unavailable' ? gpuUnavailableText(cause) : noticeText(code);
                 if (code !== 'memory-pressure' && code !== 'cpu-floor-denied') { options.onNotice(text); return; }
-                // A memory notice describes reduced quality a person could see, so it waits until that has lasted a second.
-                // Measured: shown at once, it stayed in the page 16 ms (one soft frame at a zoom-out) and then the next sharp
-                // frame withdrew it, a flash nobody could read; before that it stayed for the whole session.
-                if (qualityNotice || qualityTimer) return;
-                qualityTimer = setTimeout(() => {
-                    qualityTimer = null;
-                    if (disposed) return;
-                    qualityNotice = text; options.onNotice(text);
-                }, QUALITY_NOTICE_DELAY_MS);
+                // The platform raises a memory notice only once this pane's own grant has kept it below full quality (or refused its
+                // floor) for memoryNoticeDelayMs, and withdraws it when that ends; a cache trim is never one.
+                if (disposed || qualityNotice === text) return;
+                if (qualityNotice) clearQualityNotice();
+                qualityNotice = text; options.onNotice(text);
             } } });
+    function clearQualityNotice(): void {
+        if (!qualityNotice) return;
+        const shown = qualityNotice; qualityNotice = null; options.onNoticeCleared?.(shown);
+    }
     // The platform receives the same controller as pointer input, including its
     // actual constraints and measured viewport; motion never uses a second pose.
     const platform = { ...services, camera, readCamera: () => { refreshViewport(); return camera.camera; } };
@@ -672,7 +673,7 @@ export function createNativeViewLease(options: {
         subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
         dispose() {
             if (disposed) return;
-            recordViewport(); disposed = true; if (qualityTimer) { clearTimeout(qualityTimer); qualityTimer = null; } unregisterView?.(); stopSelection(); stopViewer(); stopEditingReady?.(); edit?.onAttachment(false); detachSurface();
+            recordViewport(); disposed = true; unregisterView?.(); stopSelection(); stopViewer(); stopEditingReady?.(); edit?.onAttachment(false); detachSurface();
             navigation.dispose(); if (!cameraTransferred) cameraOwner.dispose(); viewer.dispose(); animation.dispose(); video.dispose(); images.dispose(); backdrop?.dispose(); backdrop = undefined; listeners.clear(); platformPane = null;
         },
     };
@@ -744,9 +745,6 @@ function createNativeLiveView(source: NativeLiveSource): NativeLiveView {
         },
     };
 }
-
-/** How long reduced quality must last before the notice says so. */
-const QUALITY_NOTICE_DELAY_MS = 1000;
 
 /** The platform reports codes; the bar shows sentences (the codes reached the owner as raw words). */
 function noticeText(code: string): string {

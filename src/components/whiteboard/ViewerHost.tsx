@@ -34,6 +34,8 @@ export interface ViewerHostProps<T extends object> {
     readonly paint?: BoardPaintProgress;
     /** A writable view must enforce the same authority in its session and input. */
     readonly readOnly?: boolean;
+    /** Read-only only until editing is admitted: the authority holds, but the notice about it is not shown for a passing state. */
+    readonly admitting?: boolean;
     /** The editing input installs the same engine's accessible mirror itself. */
     readonly externalAccessibility?: boolean;
     readonly view: ViewerViewHandle;
@@ -54,7 +56,7 @@ const CHROME_STACK_BELOW_PX = 780;
 
 /** No engine import: the lazy route supplies the real session and view. */
 export default function ViewerHost<T extends object>({
-    name, documentId, vaultEpoch, isVisible, isFocused, theme, inverted, reason, readOnlyNotice, readOnly = true, externalAccessibility = false,
+    name, documentId, vaultEpoch, isVisible, isFocused, theme, inverted, reason, readOnlyNotice, readOnly = true, admitting = false, externalAccessibility = false,
     view, layers, platform, registerKeyboardTarget, onFocus, chrome, readiness, paint,
 }: ViewerHostProps<T>) {
     const [surface, setSurface] = useState<HTMLDivElement | null>(null);
@@ -119,7 +121,7 @@ export default function ViewerHost<T extends object>({
             <div className="board-viewer-overlay" ref={setOverlay} />
         </BoardAccessibility>
         <BoardPaintStatus readiness={readiness} paint={paint} isVisible={isVisible} reason={reason} />
-        {readOnly && <div className="board-viewer-notice" role="status">{reason ?? readOnlyNotice}</div>}
+        {readOnly && !admitting && <div className="board-viewer-notice" role="status">{reason ?? readOnlyNotice}</div>}
         {chrome}
     </div>;
 }

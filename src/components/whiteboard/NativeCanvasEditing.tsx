@@ -46,6 +46,8 @@ export interface NativeEditingRenderContext {
     /** null dismisses the notice shown. */
     readonly setNotice: (value: string | null) => void;
     readonly editable: boolean;
+    /** Editing is still being admitted: the session is sealed read-only only until its services connect (or admission fails). */
+    readonly admitting: boolean;
     readonly canMutate: () => boolean;
 }
 
@@ -177,6 +179,7 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
     const mac = /Mac|iPhone|iPad/.test(navigator.platform);
     const shortcutRef = useRef<(() => void) | null>(null);
     const [chromeReady, setChromeReady] = useState(false), [thumbnails, setThumbnails] = useState(false);
+    const [admissionFailed, setAdmissionFailed] = useState(false);
     const [servicesEpoch, refreshServices] = useState(0);
     const minimapRef = useRef(false), setMinimapRef = useRef<((value: boolean) => void) | null>(null);
     const minimapVisible = useCallback(() => minimapRef.current, []);
@@ -293,14 +296,17 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
             if (!host.canWrite(identity) || adapter.board.isReadOnly) throw new Error(adapter.board.readOnlyReason ?? 'The canvas source is not writable');
             lease.refreshAuthority();
             if (wasReadOnly) refreshServices(epoch => epoch + 1);
-        } catch (error) { report(error); }
+        } catch (error) { setAdmissionFailed(true); report(error); }
     }, [props.isVisible, signal, current, attached, chromeReady, owned, embedPort, lease, styleRef, commandRef,
         contextMenuRef, canMutateView, host, identity, adapter, servicesEpoch, report]);
 
     if (!owned) return <>{dialogs.dialogs}<div role="status">Preparing board commands…</div></>;
+    const editable = attached && chromeReady && !!embedPort && !adapter.board.isReadOnly && host.canWrite(identity);
+    // A writable source is sealed read-only only until the services above connect and the effect admits it; saying "read-only"
+    // meanwhile flashed on every board load (measured: 34 ms, under "Loading drawing…"). A refused admission says so.
+    const admitting = !editable && !admissionFailed && host.canWriteSource(identity);
     return <>{dialogs.dialogs}{cropDialog}{renderView({ lease, chrome: editingChrome, inverted, setInverted, notice, setNotice,
-            editable: attached && chromeReady && !!embedPort && !adapter.board.isReadOnly && host.canWrite(identity),
-            canMutate: lease.canMutateView })}</>;
+            editable, admitting, canMutate: lease.canMutateView })}</>;
 }
 
 function NativeChromeAttachment({ context, bind, children }: { readonly context: NativeEditingChromeContext;

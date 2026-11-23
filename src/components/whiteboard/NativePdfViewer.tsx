@@ -192,9 +192,9 @@ function PdfAttached({ props, lease, onFocus, register, inverted, setInverted, c
         inverted={inverted} setInverted={setInverted} cover={cover} reason={reason} readOnly detach={detach} />;
 }
 
-function PdfAttachedFrame({ props, lease, viewer, onFocus, register, inverted, setInverted, cover, reason, readOnly, editingChrome, detach }: {
+function PdfAttachedFrame({ props, lease, viewer, onFocus, register, inverted, setInverted, cover, reason, readOnly, admitting, editingChrome, detach }: {
     props: NativePdfViewerProps; lease: NativeViewLease; viewer: NativeViewLease['view']; onFocus(): void; register(focus: () => void): () => void;
-    inverted: boolean; setInverted(value: boolean): void; cover: boolean; reason?: string | null; readOnly: boolean; editingChrome?: ReactNode; detach?: boolean;
+    inverted: boolean; setInverted(value: boolean): void; cover: boolean; reason?: string | null; readOnly: boolean; admitting?: boolean; editingChrome?: ReactNode; detach?: boolean;
 }) {
     const view = useSyncExternalStore(lease.subscribe, lease.getSnapshot, lease.getSnapshot);
     const navigation = useSyncExternalStore(lease.subscribe, lease.getNavigationSnapshot, lease.getNavigationSnapshot);
@@ -204,7 +204,7 @@ function PdfAttachedFrame({ props, lease, viewer, onFocus, register, inverted, s
             isVisible={props.isVisible} isFocused={props.isFocused} theme={props.theme} inverted={inverted}
             view={viewer} layers={view.layers} platform={view.platform} reason={view.reason ?? VIEW_REASON}
             readiness={view.readiness} paint={view.paint}
-            readOnly={readOnly} externalAccessibility={editingChrome !== undefined} readOnlyNotice={VIEW_REASON} registerKeyboardTarget={register} onFocus={onFocus}
+            readOnly={readOnly} admitting={admitting} externalAccessibility={editingChrome !== undefined} readOnlyNotice={VIEW_REASON} registerKeyboardTarget={register} onFocus={onFocus}
             chrome={<>{editingChrome}{!editingChrome && <div className="native-canvas-navigation" role="toolbar" aria-label="PDF navigation">
                 <label>Page <input type="number" min={1} max={pages} value={navigation.page + 1} onChange={event => {
                     const page = event.currentTarget.valueAsNumber;
@@ -329,7 +329,7 @@ function PdfEditingAttached({ props, context, updating, rebind }: { props: Nativ
         {context.notice && <span className="board-viewer-notice" role="status">{context.notice}</span>}</>;
     return <PdfAttachedFrame props={props} lease={lease} viewer={lease.view} onFocus={onFocus} register={register}
         inverted={context.inverted} setInverted={context.setInverted} cover={cover} reason={source.reason}
-        readOnly={!context.editable} editingChrome={chrome} detach={!paired} />;
+        readOnly={!context.editable} admitting={context.admitting} editingChrome={chrome} detach={!paired} />;
 }
 
 export default function NativePdfViewer(props: NativePdfViewerProps) {

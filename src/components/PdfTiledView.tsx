@@ -715,7 +715,11 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
             else if (phase === 'move') pointerMove(event);
             else pointerEnd(event);
         };
-        host.addEventListener('wheel', wheel, { passive: false });
+        // The wheel (and a trackpad pinch, which arrives as ctrl+wheel) is taken on the content, not the surface: links are buttons in the
+        // overlay, a sibling of the surface, so over a table of contents or a citation every wheel event missed the handler and the page
+        // stood still under the cursor until the link left it (inv-f e11: zero presents while 40 wheel events reached the window).
+        const wheelTarget = contentHost ?? host;
+        wheelTarget.addEventListener('wheel', wheel, { passive: false });
         host.addEventListener('keydown', keydown);
         if (capabilities.copy !== true) {
             host.addEventListener('pointerdown', pointerDown); host.addEventListener('pointermove', pointerMove);
@@ -723,11 +727,11 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         }
         return () => {
             touchHandler.current = () => {}; pointers.clear();
-            observer.disconnect(); host.removeEventListener('wheel', wheel); host.removeEventListener('keydown', keydown);
+            observer.disconnect(); wheelTarget.removeEventListener('wheel', wheel); host.removeEventListener('keydown', keydown);
             host.removeEventListener('pointerdown', pointerDown); host.removeEventListener('pointermove', pointerMove);
             host.removeEventListener('pointerup', pointerEnd); host.removeEventListener('pointercancel', pointerEnd);
         };
-    }, [host, clamp, constraint, capabilities, filePath, find.find, goPage, onNotice, onRotate, persist, platformPane, rotate, stack, updateCamera]);
+    }, [host, contentHost, clamp, constraint, capabilities, filePath, find.find, goPage, onNotice, onRotate, persist, platformPane, rotate, stack, updateCamera]);
 
     useEffect(() => {
         const renderPageWithInfo = async (pageNumber: number, maxSide: number) => {

@@ -136,7 +136,7 @@ export function createBoardRuntime(options: BoardRuntimeOptions): BoardRuntime {
                 const sheet = options.doc.sheetOrder[0]; if (sheet) selection.setSheet(sheet.id);
             }
             selection.reconcile(options.doc);
-            if (applied.touched.board.has('ui.tool') && tools.getRegistration(options.doc.ui.tool)) tools.setTool(options.doc.ui.tool);
+            if (applied.touched.board.has('ui.tool')) tools.adoptTool(options.doc.ui.tool);
             if (applied.touched.board.has('view.toolLock')) tools.setLocked(options.doc.view.toolLock);
             scene?.record(applied);
         },

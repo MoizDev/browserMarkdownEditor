@@ -206,6 +206,21 @@ export function createCanvasPaintAdapter(
             pending: 0, failed: false, failure: undefined, complete: false, disposed: false,
             bytes: frame.liveOnly ? 0 : refBytesOf(windows), job: null };
     }
+    // A still picture's lease, counted, so two snapshots of one frame can hold it at once. A zoom step starts a snapshot at the new
+    // scale, and asking the provider again for a picture the presented snapshot holds settled only a task later: the step presented
+    // the old snapshot at the new camera, then the new one when the lease landed (measured, canvas2d, a 4000x3000 picture at DPR 2:
+    // 80 presents for 40 wheel steps). A share is taken in the same prepare, so the step's snapshot completes in its own frame.
+    const shares = new WeakMap<PaintImageLease, { readonly lease: PaintImageLease; count: number }>();
+    function shareHandle(root: { readonly lease: PaintImageLease; count: number }): PaintImageLease {
+        let open = true;
+        const handle: PaintImageLease = { source: root.lease.source, width: root.lease.width, height: root.lease.height, cpuBytes: root.lease.cpuBytes,
+            release() { if (!open) return; open = false; if (--root.count === 0) root.lease.release(); } };
+        shares.set(handle, root);
+        return handle;
+    }
+    // A video frame's lease carries the version of its frame, and a new snapshot wants the newest: only stills are shared.
+    const counted = (lease: PaintImageLease): PaintImageLease =>
+        (lease as { readonly version?: unknown }).version === undefined ? shareHandle({ lease, count: 1 }) : lease;
     function requestImage(s: Snapshot, key: string): void {
         if (s.images.has(key) || broken.has(key) || s.skipped.has(key)) return;
         // A picture whose texture the device already holds starts released, as the GPU route leaves it once uploaded: asked for, it
@@ -217,6 +232,14 @@ export function createCanvasPaintAdapter(
     }
     function fetchImage(s: Snapshot, key: string): void {
         if (s.images.has(key) || broken.has(key) || s.skipped.has(key)) return;
+        const held = presented && presented !== s && presented.frame === s.frame ? presented.images.get(key) : null;
+        const root = held ? shares.get(held) : undefined;
+        if (root) {
+            root.count++;
+            const lease = shareHandle(root);
+            s.images.set(key, lease); s.bytes += lease.cpuBytes;
+            return;
+        }
         s.images.set(key, null);
         s.pending++;
         let promise: Promise<PaintImageLease>;
@@ -226,8 +249,9 @@ export function createCanvasPaintAdapter(
             if (s.disposed || s.abort.signal.aborted || !resources.frames.isCurrent(s.frame)) {
                 lease.release();
             } else {
-                s.images.set(key, lease);
-                s.bytes += lease.cpuBytes;
+                const kept = counted(lease);
+                s.images.set(key, kept);
+                s.bytes += kept.cpuBytes;
             }
             s.pending--;
             resources.invalidate();

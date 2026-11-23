@@ -529,7 +529,8 @@ export function createNativeViewLease(options: {
                     if (qualityTimer) { clearTimeout(qualityTimer); qualityTimer = null; }
                     if (qualityNotice) { const shown = qualityNotice; qualityNotice = null; options.onNoticeCleared?.(shown); }
                 }
-            }, onError: options.onError, onNotice: (code, cause) => {
+            }, onError: options.onError, onNoticeCleared: (_code, cause) => options.onNoticeCleared?.(gpuUnavailableText(cause)),
+            onNotice: (code, cause) => {
                 const text = code === 'gpu-unavailable' ? gpuUnavailableText(cause) : noticeText(code);
                 if (code !== 'memory-pressure' && code !== 'cpu-floor-denied') { options.onNotice(text); return; }
                 // A memory notice describes reduced quality a person could see, so it waits until that has lasted a second.

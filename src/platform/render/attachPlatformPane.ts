@@ -20,6 +20,9 @@ const FRESH_VIEW_COVER_MS = 3000;
  * of gpu-f2's runs. A bridge that presents does so within a few frames; past this the GPU is resized directly and draws from the
  * textures it kept, the last picture standing in until the exact one lands. */
 const BRIDGE_WAIT_MS = 300;
+/** How long a pane must stay on canvas2d for want of a free GPU context before the person is told: a layout change can show a pane
+ * a moment before its neighbour's context is released, and a notice for that would flash and vanish. */
+const BUDGET_NOTICE_DELAY_MS = 1000;
 import type { QualifiedGpuPane } from './gpuPaneCandidate';
 import type { CameraConstraint } from './camera';
 import type { CompositorBackend, CompositorLayer, Compositor2DOptions, CreatedCompositor2D, PaneCompositor } from './compositor.types';
@@ -96,6 +99,13 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     let gpuRequested = false;
     /** The 2D bridge of a GPU resize: when it began (null when none is pending), whether this resize skipped it, and its wake. */
     let bridgeSince: number | null = null, bridgeSkipped = false, bridgeTimer: ReturnType<typeof setTimeout> | null = null;
+    // The visible-context cap is full: this pane draws on canvas2d until a slot frees (the broker's budget fallback). The person is
+    // told once it has lasted BUDGET_NOTICE_DELAY_MS, and the notice is withdrawn at the pane's first GPU present.
+    let budgetNoticeTimer: ReturnType<typeof setTimeout> | null = null, budgetNoticeShown = false;
+    const endBudgetNotice = (): void => {
+        if (budgetNoticeTimer !== null) { clearTimeout(budgetNoticeTimer); budgetNoticeTimer = null; }
+        if (budgetNoticeShown) { budgetNoticeShown = false; options.onNoticeCleared?.('gpu-unavailable', 'too-many-panes'); }
+    };
     const endBridge = (): void => { bridgeSince = null; if (bridgeTimer !== null) { clearTimeout(bridgeTimer); bridgeTimer = null; } };
     const drawCompositor = (): PaneCompositor | null => gpu && cpuPresented ? gpu.bundle.compositor : compositorRef.current;
     const activeMetrics = (): SurfaceMetricsCommitter => gpu && cpuPresented ? gpuMetrics : cpuMetrics;
@@ -443,6 +453,15 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                     onCapabilityFailure: () => runtime.observeCapabilityFailure(options.paneId),
                     onCpuFallback: reason => {
                         auditCount('pane', `fallback:pane-2d:${reason}`);
+                        if (reason === 'budget' && budgetNoticeTimer === null && !budgetNoticeShown) {
+                            budgetNoticeTimer = setTimeout(() => {
+                                budgetNoticeTimer = null;
+                                if (disposed || !visible || (gpu && surfaceHost.current === gpu.bundle.compositor)) return;
+                                budgetNoticeShown = true;
+                                auditCount('pane', 'notice:too-many-panes');
+                                options.onNotice('gpu-unavailable', 'too-many-panes');
+                            }, BUDGET_NOTICE_DELAY_MS);
+                        }
                         gpu = null;
                         cpuPresented = false;
                         endBridge(); bridgeSkipped = false;
@@ -646,7 +665,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                                 auditFrame(drawing.backend, performance.now() - encodeStart);
                                 touchedFrame = frame.frameId;
                                 if (qualityScale < 1) auditCount('pane', 'quality-below-1');
-                                if (drawing !== compositor) { candidate.presented(frame.token.deviceGeneration); bridgeSkipped = false; }
+                                if (drawing !== compositor) { candidate.presented(frame.token.deviceGeneration); bridgeSkipped = false; if (budgetNoticeTimer !== null || budgetNoticeShown) endBudgetNotice(); }
                                 lastReport = { frameId: frame.frameId, revision, backend: drawing.backend, complete, sharp, staleVersion,
                                     camera: { x: liveCamera.x, y: liveCamera.y, z: liveCamera.z },
                                     drawn: { x: frame.view.camera.x, y: frame.view.camera.y, z: frame.view.camera.z }, geometry: geometry?.generation };
@@ -836,6 +855,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             setVisible(false);
             disposed = true;
             if (freshTimer !== null) { clearTimeout(freshTimer); freshTimer = null; }
+            if (budgetNoticeTimer !== null) { clearTimeout(budgetNoticeTimer); budgetNoticeTimer = null; }
             endBridge();
             lastReport = null; options.onPresentation(null);
             candidate.dispose();

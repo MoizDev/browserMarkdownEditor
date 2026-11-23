@@ -89,6 +89,8 @@ export interface PlatformPaneOptions<T extends object> {
      * the visible CPU working set was refused; consumers must not make transient GPU pressure fatal.
      */
     onNotice(message: 'memory-pressure' | 'cpu-floor-denied' | 'gpu-unavailable' | 'cpu-pinned', cause?: GpuUnavailableCause): void;
+    /** A notice that described a passing state is over: the pane that showed 'too-many-panes' now draws on the GPU. */
+    onNoticeCleared?(message: 'gpu-unavailable', cause: GpuUnavailableCause): void;
     /** Report presented quality changes, including recovery; never report an unpresented allocation (§6.4:653). */
     onQualityChange?(report: { readonly qualityScale: number }): void;
     mirrorQuad?(entry: BorrowedMirror<T>, view: MirrorView): CompositorMirrorQuad | null;

@@ -15,9 +15,9 @@ export const RENDER_CONSTANTS: RenderConstants = Object.freeze({
         depth: false,
         stencil: false,
         preserveDrawingBuffer: false,
-        // Not 'high-performance': an integrated GPU is a real GPU for this work, and asking for more wakes a dual-GPU Mac's discrete
-        // GPU for every open document. A software renderer is refused by the broker (softwareRenderer), not by this attribute.
-        powerPreference: 'default',
+        // The fastest GPU the machine has: 'default' leaves a dual-GPU Mac (and a hybrid laptop) on its integrated GPU. The owner's
+        // call: the most GPU over battery. A software renderer is refused by the broker (softwareRenderer), not by this attribute.
+        powerPreference: 'high-performance',
         desynchronized: false,
         failIfMajorPerformanceCaveat: true,
     }),

@@ -7,7 +7,7 @@ import type { RenderToken } from '../../platform/render/types';
 
 type Services = Omit<PlatformPaneOptions<object>, 'documentToken' | 'initialVisible' | 'initialFocused' | 'layers'>;
 type NativeViewPorts = Pick<Services, 'consumeInput' | 'isInteracting' | 'setInputEnabled' | 'cancelViewWork'
-    | 'writeOverlays' | 'onPresentation' | 'onError' | 'onNotice'>;
+    | 'writeOverlays' | 'onPresentation' | 'onError' | 'onNotice' | 'onNoticeCleared'>;
 
 /** Construct once per view lease; callbacks read the live viewer and the one shared camera. */
 export function createNativeViewPlatform(options: {
@@ -56,5 +56,6 @@ export function createNativeViewPlatform(options: {
         onPresentation: presentation => ports.onPresentation(presentation),
         onError: error => ports.onError(error),
         onNotice: (message, cause) => ports.onNotice(message, cause),
+        onNoticeCleared: (message, cause) => ports.onNoticeCleared?.(message, cause),
     };
 }

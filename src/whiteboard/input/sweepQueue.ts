@@ -10,7 +10,7 @@ export interface SweepQueueServices {
   beginSweep(from: SweepPoint, to: SweepPoint, topOnly: boolean): SweptSelectionCursor
   sceneRevision(): number
   now(): number
-  schedule(callback: () => void): () => void
+  schedule(callback: () => void, onDrop?: () => void): () => void
   preview(ids: ReadonlySet<NodeId>): void
 }
 
@@ -78,7 +78,8 @@ export class SweepQueue {
 
   private request(): void {
     if (this.settled || this.scheduled || this.waiting) return
-    this.scheduled = this.services.schedule(() => { this.scheduled = null; this.step() })
+    // A dropped frame must clear the flag too, or every later request is ignored and the release never completes (the input host's contract).
+    this.scheduled = this.services.schedule(() => { this.scheduled = null; this.step() }, () => { this.scheduled = null })
   }
 
   private restart(revision: number): void {

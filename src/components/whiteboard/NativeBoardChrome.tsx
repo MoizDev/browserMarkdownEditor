@@ -7,6 +7,7 @@ import { boardBindings, shortcutGroups } from '../../whiteboard/input/keyboard';
 import type { ViewerEngine } from '../../whiteboard/viewer/types';
 import { persistLastPenScale } from './chrome/penPanelStore';
 import { SessionBoardChrome, type SessionBoardChromeProps } from './chrome/SessionBoardChrome';
+import type { ToolStateView } from './chrome/ConnectedBoardChrome';
 
 type Supplied = Omit<SessionBoardChromeProps, 'kind' | 'locale' | 'direction' | 'translate' | 'languages' | 'selectLanguage'
     | 'toolState' | 'toolShortcut' | 'shortcuts' | 'localPreferences' | 'penPanel'>;
@@ -26,7 +27,10 @@ type Styles = ReturnType<typeof createBoardStyleControls>;
 export function NativeBoardChrome(props: NativeBoardChromeProps) {
     const { runtime, engine, language, currentOwner, reportError, onStyles } = props;
     const tools = useMemo(() => ({ getSnapshot: runtime.tools.getSnapshot, subscribe: runtime.tools.subscribe,
-        setTool(id: string, variant?: string) { if (currentOwner()) runtime.tools.setTool(id, variant); } }), [runtime, currentOwner]);
+        setTool(id: string, variant?: string) { if (currentOwner()) runtime.tools.setTool(id, variant); },
+        toggleLocked() { if (currentOwner()) runtime.tools.toggleLocked(); },
+        lockable: (id: string) => runtime.tools.getRegistration(id)?.persistence === 'single-use',
+        setBarTools: (choices: readonly { readonly id: string; readonly variant?: string }[]) => runtime.tools.setBarTools(choices) }), [runtime, currentOwner]);
     if (engine.session !== runtime.session) throw new Error('Board chrome needs the attached board session');
     const [owned, setOwned] = useState<{ runtime: BoardRuntime; engine: ViewerEngine; language: BoardLanguageState; styles: Styles } | null>(null);
     useEffect(() => {
@@ -41,7 +45,7 @@ export function NativeBoardChrome(props: NativeBoardChromeProps) {
 }
 
 function AttachedNativeBoardChrome({ runtime, language, preferences, mac, onReady, onStyles: _onStyles, styles, tools, ...props }: NativeBoardChromeProps & {
-    styles: Styles; tools: Pick<NativeBoardChromeProps['runtime']['tools'], 'getSnapshot' | 'subscribe' | 'setTool'>;
+    styles: Styles; tools: ToolStateView;
 }) {
     const lang = useSyncExternalStore(language.subscribe, language.getSnapshot, language.getSnapshot);
     const local = useSyncExternalStore(preferences.subscribe, preferences.getSnapshot, preferences.getSnapshot);
@@ -57,8 +61,10 @@ function AttachedNativeBoardChrome({ runtime, language, preferences, mac, onRead
         onReady(true); return () => onReady(false); }, [onReady, styles, props.isVisible]);
     useEffect(() => { styles.refresh(); }, [props.readOnly, styles]);
     useEffect(() => { if (!props.isVisible) styles.finish(); }, [props.isVisible, styles]);
+    // A tool's chord is its binding's; the media tool's is Insert media's (⌘U), and an id with a dot names its binding.
     const tooltip = (id: string, figure?: string) => {
-        const key = id === 'figure' ? `figure.${figure ?? runtime.tools.getSnapshot().lastFigure ?? 'rectangle'}` : `tool.${id}`;
+        const key = id === 'figure' ? `figure.${figure ?? runtime.tools.getSnapshot().lastFigure ?? 'rectangle'}`
+            : id === 'media' ? 'media.insert' : id.includes('.') ? id : `tool.${id}`;
         const binding = boardBindings.find(item => item.id === key);
         if (!binding) return undefined;
         return [binding.accel ? (mac ? '⌘' : 'Ctrl') : '', binding.alt ? (mac ? '⌥' : 'Alt') : '',

@@ -5,7 +5,8 @@ import type { ReactNode } from 'react';
  * (node_modules/lucide-static/icons/<kebab-name>.svg), the set the app already ships
  * (see components/icons.tsx), so the bar reads as the same family as the sidebar.
  * Four tools have no Lucide glyph (diamond, oval, rhombus, polyline); those are drawn
- * here on the same 24-unit grid with the same stroke. Never copied from tldraw.
+ * here on the same 24-unit grid with the same stroke. Never copied from tldraw. The tool lock's padlocks are Lucide's
+ * `lock` and `lock-open` (lucide-static 1.43), the same family.
  */
 const GLYPHS: Readonly<Record<string, ReactNode>> = {
     select: <path d="M4.037 4.688a.495.495 0 0 1 .651-.651l16 6.5a.5.5 0 0 1-.063.947l-6.124 1.58a2 2 0 0 0-1.438 1.435l-1.579 6.126a.5.5 0 0 1-.947.063z" />,
@@ -95,6 +96,14 @@ const GLYPHS: Readonly<Record<string, ReactNode>> = {
         <path d="m12 5 7 7-7 7" />
     </>,
     more: <path d="m18 15-6-6-6 6" />,
+    lock: <>
+        <rect width="18" height="11" x="3" y="11" rx="2" ry="2" />
+        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+    </>,
+    'lock-open': <>
+        <rect width="18" height="11" x="3" y="11" rx="2" ry="2" />
+        <path d="M7 11V7a5 5 0 0 1 9.9-1" />
+    </>,
 };
 
 /** The glyph key for a tool: the figure's own key for `figure` choices, the id otherwise. */
@@ -115,5 +124,13 @@ export function MoreToolIcon() {
     return <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}
         strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
         {GLYPHS.more}
+    </svg>;
+}
+
+/** The tool lock's padlock: closed while the selected tool stays chosen after one use. */
+export function LockIcon({ locked }: { readonly locked: boolean }) {
+    return <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}
+        strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+        {GLYPHS[locked ? 'lock' : 'lock-open']}
     </svg>;
 }

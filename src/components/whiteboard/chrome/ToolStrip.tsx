@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { dismissOnEscape } from '../../../utils/escapeDismiss';
-import { MoreToolIcon, ToolIcon } from './toolIcons';
+import { LockIcon, MoreToolIcon, ToolIcon } from './toolIcons';
+import { focusBoardInteraction } from './boardFocus';
+import { chordLabel } from './toolChoices';
 import './chrome.css';
 
 export interface ToolChoice {
@@ -8,6 +10,14 @@ export interface ToolChoice {
     readonly label: string;
     readonly shortcut?: string;
     readonly figure?: string;
+}
+
+export interface ToolLockView {
+    readonly locked: boolean;
+    readonly label: string;
+    readonly shortcut?: string;
+    readonly disabledReason?: string;
+    readonly toggle: () => void;
 }
 
 export interface ToolStripProps {
@@ -19,17 +29,17 @@ export interface ToolStripProps {
     readonly disabled?: boolean;
     readonly disabledReason?: (choice: ToolChoice) => string | undefined;
     readonly select: (choice: ToolChoice) => void;
+    /** Present only while the selected tool can be locked (a single-use tool); the lock sits above the bar. */
+    readonly lock?: ToolLockView;
+    /** The tools the bar shows now, after the fit: the number keys press these, so the chrome publishes them. */
+    readonly onShown?: (shown: readonly ToolChoice[]) => void;
 }
 
 function sameTool(a: ToolChoice, b: ToolChoice): boolean {
     return a.id === b.id && a.figure === b.figure;
 }
 
-function name(choice: ToolChoice): string {
-    return choice.shortcut ? `${choice.label} — ${choice.shortcut}` : choice.label;
-}
-
-export function ToolStrip({ primary, more, selected, moreLabel, toolsLabel, disabled, disabledReason, select }: ToolStripProps) {
+export function ToolStrip({ primary, more, selected, moreLabel, toolsLabel, disabled, disabledReason, select, lock, onShown }: ToolStripProps) {
     const [open, setOpen] = useState(false);
     const root = useRef<HTMLDivElement>(null);
     const fit = useFittingTools(root, primary.length);
@@ -37,11 +47,14 @@ export function ToolStrip({ primary, more, selected, moreLabel, toolsLabel, disa
     // the bar: a scrolled row left a sliver of a cut-off icon beside the chevron in a narrow pane.
     const shown = fit < primary.length ? primary.slice(0, fit) : primary;
     const overflow = fit < primary.length ? [...primary.slice(fit), ...more] : more;
+    useEffect(() => { onShown?.(shown); });
+    useEffect(() => () => onShown?.([]), [onShown]);
     const trigger = useRef<HTMLButtonElement>(null);
     const popup = useRef<HTMLDivElement>(null);
+    // Escape returns the keyboard to the board, not to the chevron: the chevron is outside the board's keyboard root.
     const close = useCallback(() => {
         setOpen(false);
-        trigger.current?.focus();
+        focusBoardInteraction(root.current);
     }, []);
 
     useEffect(() => {
@@ -59,7 +72,7 @@ export function ToolStrip({ primary, more, selected, moreLabel, toolsLabel, disa
     }, [open, close]);
 
     function button(choice: ToolChoice) {
-        const label = name(choice);
+        const label = chordLabel(choice.label, choice.shortcut);
         const reason = disabledReason?.(choice);
         return <button
             type="button"
@@ -78,6 +91,11 @@ export function ToolStrip({ primary, more, selected, moreLabel, toolsLabel, disa
     // A tool living in the popover still shows on the bar: the chevron takes the active look while it is selected.
     const moreCurrent = overflow.some(choice => sameTool(choice, selected));
     return <div className="board-chrome-tools" ref={root}>
+        {lock && <button type="button" className="board-chrome-tool board-chrome-tool-icon board-chrome-tool-lock"
+            aria-label={chordLabel(lock.label, lock.shortcut)} data-tooltip={lock.disabledReason ?? chordLabel(lock.label, lock.shortcut)}
+            aria-pressed={lock.locked} disabled={lock.disabledReason !== undefined} onClick={lock.toggle}>
+            <LockIcon locked={lock.locked} />
+        </button>}
         <div role="toolbar" aria-label={toolsLabel} className="board-chrome-tool-row board-chrome-tool-strip" dir="ltr">
             <div className="board-chrome-primary-tools">{shown.map(button)}</div>
             <button type="button" ref={trigger} className="board-chrome-tool board-chrome-tool-icon board-chrome-tool-more"

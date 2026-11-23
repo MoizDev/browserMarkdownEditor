@@ -126,6 +126,8 @@ export function SessionBoardChrome(props: SessionBoardChromeProps) {
                 const state = props.toolStateFor(choice.id, choice.figure);
                 return state.enabled ? undefined : state.reason;
             }} focusMode={props.localPreferences.view.focusMode}
+            focusModeLabel={labels.preferenceLabel('focusMode')} exitFocusMode={() => props.localPreferences.setView('focusMode', false)}
+            toolLockLabel={labels.preferenceLabel('toolLock')}
             penPanel={props.penPanel ? { ...props.penPanel, disabled: props.readOnly || props.penPanel.disabled } : undefined}
             debug={debugOverlay} pageControls={props.pageControls}
             zoomControls={{ zoom: props.zoom, locale: props.locale, direction: props.direction,

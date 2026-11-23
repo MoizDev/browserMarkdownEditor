@@ -533,6 +533,15 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       }
       if (id === 'zoom.hold') { zoomHeld = true; return true }
       if (id === 'zoom.release') { overview.leave(); zoomHeld = false; return true }
+      if (id.startsWith('tool.bar.') && editable()) {
+        // The chrome publishes the tools its bar shows; a slot the bar does not show (narrow pane, or a figure that is
+        // unavailable) does nothing, so the key falls through to the other bindings as an unbound key would.
+        const digit = Number(id.slice('tool.bar.'.length)), choice = services.tools.barTool(digit === 0 ? 9 : digit - 1)
+        if (!choice) return false
+        if (choice.id === 'media') return services.commands.run('media.insert', event)
+        cancelContinuations(); services.cancelPendingGestures()
+        services.tools.setTool(choice.id, choice.variant); return true
+      }
       if (id.startsWith('tool.') && editable()) {
         cancelContinuations(); services.cancelPendingGestures()
         const tool = id.slice(5)

@@ -4,7 +4,6 @@ import type { PageTileArgs, PageTileResult } from '../worker/protocol';
 import type { WithoutDocKey } from '../pool/types';
 import { getPdfFontEpoch, pdfVariantRevision } from '../fonts/profiles';
 import { markPdfTileArrived, markPdfTileUniform } from '../pool/arrivalWindow';
-import { renderAuditEnabled } from '../../platform/render/renderAudit';
 import type { PdfTileRequest } from './tileDemand';
 import type { CreatePdfTileProducer, PdfTileProducerOptions } from './tileProducer.types';
 
@@ -30,11 +29,12 @@ function priority(request: PdfTileRequest, focused: boolean): Priority {
 
 /** One pool request can serve multiple consumers, but every consumer owns its own bitmap (C5.3). */
 
-/** Audit only: every pixel the same (RGBA as one word). Stops at the first that differs, so a tile with any content costs a few reads. */
-function uniformPixels(pixels: ArrayBuffer): boolean {
+/** The one colour of a raster whose every pixel is the same (RGBA compared as one word), as its four bytes; null otherwise. Stops at
+ * the first pixel that differs; a whole blank tile is one pass over its words (measured: 0.1 ms for a 514x514 tile). */
+function uniformColour(pixels: ArrayBuffer): Uint8Array | null {
     const words = new Uint32Array(pixels), first = words[0];
-    for (let i = 1; i < words.length; i++) if (words[i] !== first) return false;
-    return true;
+    for (let i = 1; i < words.length; i++) if (words[i] !== first) return null;
+    return words.length ? new Uint8Array(pixels.slice(0, 4)) : null;
 }
 
 export const createPdfTileProducer: CreatePdfTileProducer = (options: PdfTileProducerOptions) => {
@@ -122,9 +122,9 @@ export const createPdfTileProducer: CreatePdfTileProducer = (options: PdfTilePro
                     }
                     if (!options.isCurrent() || document.closed || getPdfFontEpoch(document.docKey) !== epoch) throw new DOMException('Stale PDF tile', 'AbortError');
                     converting = true;
-                    // Audit only: whether the raster is one colour, for the page's 'pdf:uniform-replaced' (tileLayer). Read here, where
-                    // the raw pixels still are; with the audit off nothing is read.
-                    const uniform = renderAuditEnabled() && uniformPixels(result.pixels);
+                    // Whether the raster is one colour, read here where the raw pixels still are: a GPU layer draws such a tile from
+                    // a 1x1 texture (tileLayer's solid tiles), and the audit tapes 'pdf:uniform-replaced' by it.
+                    const uniform = uniformColour(result.pixels);
                     const bitmap = await createImageBitmap(new ImageData(new Uint8ClampedArray(result.pixels), width, height),
                         { premultiplyAlpha: 'premultiply', colorSpaceConversion: 'none' });
                     if (signal.aborted || !options.isCurrent() || document.closed || getPdfFontEpoch(document.docKey) !== epoch || !finish()) {
@@ -133,7 +133,7 @@ export const createPdfTileProducer: CreatePdfTileProducer = (options: PdfTilePro
                         return;
                     }
                     markPdfTileArrived(bitmap);
-                    if (uniform) markPdfTileUniform(bitmap);
+                    if (uniform) markPdfTileUniform(bitmap, uniform);
                     resolve(bitmap);
                 }).catch(error => { if (finish()) reject(error); }).finally(releaseWaiter);
             });

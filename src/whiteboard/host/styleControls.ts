@@ -5,7 +5,7 @@ import { clampPenScale } from '../chrome/penWidth';
 import { BoardStyleCommands } from '../chrome/styleCommands';
 import type { ToolState } from '../input/gesture';
 import type { NodeId } from '../model/ids';
-import { DASHES, FILLS, FONTS, SIZES, SWATCHES, type Arrowhead, type Dash, type Fill, type FigureShape, type Font, type HAlign, type Size, type Swatch, type TextAlign, type VAlign } from '../model/styles';
+import { DASHES, FILLS, FONTS, OPACITIES, SIZES, SWATCHES, type Arrowhead, type Dash, type Fill, type FigureShape, type Font, type HAlign, type Size, type Swatch, type TextAlign, type VAlign } from '../model/styles';
 import type { PaintPalette } from '../render/colour';
 import type { BoardRuntime } from './runtime';
 import { figureLabelGrowY } from '../text/edit/growth';
@@ -58,8 +58,9 @@ export function createBoardStyleControls(options: BoardStyleControlsOptions) {
     const styles = {
         currentColor: () => commands.currentColor(),
         /** The values the command palette lists, in its order. White is left out as in the pen panel (penPanel.ts). */
-        options: { colours: SWATCHES.filter(color => color !== 'white'), fills: FILLS, dashes: DASHES, sizes: SIZES, fonts: FONTS,
+        options: { colours: SWATCHES.filter(color => color !== 'white'), opacities: OPACITIES, fills: FILLS, dashes: DASHES, sizes: SIZES, fonts: FONTS,
             aligns: ['start', 'middle', 'end'] as const },
+        currentOpacity: () => commands.currentOpacity(),
         /** The defaults the next shape gets, which the command palette's style rows mark as chosen. */
         nextStyle: () => { const next = session.doc.ui.next; return { fill: next.fill, dash: next.dash, size: next.size, font: next.font, align: next.align }; },
         currentWidthScale: () => commands.currentWidthScale(),

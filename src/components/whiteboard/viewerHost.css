@@ -27,7 +27,12 @@
     border-radius: 6px;
     background: var(--background-secondary);
     color: var(--text-normal);
+    /* A notice tells, it does not take input: a click on its text reached no board, so focus fell to the body and the
+       tool keys died (measured on canvas2d, where the GPU notice covers the bottom edge). Its Dismiss button still works. */
+    pointer-events: none;
 }
+
+.board-viewer-notice button { pointer-events: auto; }
 
 /* A notice the person can put away: text and its Dismiss in one row, the button kept to its own width. */
 .board-viewer-notice-dismissible {
@@ -89,6 +94,13 @@
     bottom: 212px;
 }
 
+/* The space the chrome's bottom edge takes, which the docked style panel stops above (chrome.css .board-chrome-pen).
+   Each rule sets the same numbers as the notice and minimap offsets around it; the more specific combinations come last. */
+.board-viewer-host:has(.board-chrome-overlay) { --board-chrome-reserve: 62px; }
+.board-viewer-host:has(.board-viewer-notice) { --board-chrome-reserve: 120px; }
+.board-viewer-host:has(.native-minimap) { --board-chrome-reserve: 212px; }
+.board-viewer-host:has(.native-minimap):has(.board-viewer-notice) { --board-chrome-reserve: 270px; }
+
 /* Stacked bottom row (ViewerHost's CHROME_STACK_BELOW_PX): the zoom row tops out at 112px, so 120px, and an open
    minimap at 120 + 142 + 8. */
 .board-viewer-host[data-chrome-stacked]:has(.board-chrome-overlay) .board-viewer-notice,
@@ -97,6 +109,10 @@
 .board-viewer-host[data-chrome-stacked]:has(.native-minimap) .board-viewer-notice,
 .board-viewer-host[data-chrome-stacked]:has(.native-minimap) .board-paint-status-pending,
 .board-viewer-host[data-chrome-stacked]:has(.native-minimap) .board-paint-status-failed { bottom: 270px; }
+.board-viewer-host[data-chrome-stacked]:has(.board-chrome-overlay) { --board-chrome-reserve: 120px; }
+.board-viewer-host[data-chrome-stacked]:has(.board-viewer-notice) { --board-chrome-reserve: 178px; }
+.board-viewer-host[data-chrome-stacked]:has(.native-minimap) { --board-chrome-reserve: 270px; }
+.board-viewer-host[data-chrome-stacked]:has(.native-minimap):has(.board-viewer-notice) { --board-chrome-reserve: 328px; }
 
 /* The helper buttons (Exit pen mode, Back to content) stack in one column under the top bar, top left, as tldraw does.
    Their hidden state must win over the button's own display, or a hidden button still takes its row. */

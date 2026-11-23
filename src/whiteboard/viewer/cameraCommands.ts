@@ -1,13 +1,19 @@
 import type { CameraController, Point, ViewportInsets } from '../../platform/render/camera';
+import type { Camera } from '../../platform/types';
+import { getBoardPreferences } from '../../utils/boardPreferences';
 import { centredCamera, contentBounds, fitEdges, fitTarget, pageStackBounds, unionRects, type ContentRect } from '../commands/contentBounds';
 import type { BoardRuntime } from '../host/runtime';
 import { resetBoardZoom, stepBoardZoom } from '../input/cameraZoom';
 import type { NodeId } from '../model/ids';
-import { tweenCamera, type CameraTween } from './cameraTween';
+
+/** Back to content's glide: 220 ms, tldraw's back-to-content move (scaled by the board's motion setting). */
+const BACK_TO_CONTENT_MS = 220;
 
 export interface BoardCameraCommandsOptions {
     readonly runtime: BoardRuntime;
     readonly camera: CameraController;
+    /** The pane's motion: the platform scheduler animates the camera; cancel ends the glide in flight. */
+    readonly motion: { glideTo(target: Camera, durationMs: number): void; cancel(): void };
     readonly surface: HTMLElement;
     current(): boolean;
     changed(): void;
@@ -20,11 +26,12 @@ export interface BoardCameraCommandsOptions {
 export function createBoardCameraCommands(options: BoardCameraCommandsOptions) {
     const { runtime, camera, surface } = options, session = runtime.session, doc = session.doc, owner = session.owner;
     const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
-    let disposed = false, serial = 0, pending: AbortController | undefined, cursor: Point | null = null, glide: CameraTween | undefined;
+    const { motion } = options;
+    let disposed = false, serial = 0, pending: AbortController | undefined, cursor: Point | null = null;
     const current = () => !disposed && options.current() && runtime.session === session && session.owner === owner && session.doc === doc;
     const cancel = () => { serial++; pending?.abort(); pending = undefined; cancelGlide(); };
     // A glide is the view's own motion; the person taking the view back (a press or a wheel turn on the board) ends it.
-    const cancelGlide = () => { glide?.cancel(); glide = undefined; };
+    const cancelGlide = () => motion.cancel();
     const viewport = () => camera.viewport;
     const moved = (event: PointerEvent) => {
         if (!current()) return;
@@ -93,7 +100,9 @@ export function createBoardCameraCommands(options: BoardCameraCommandsOptions) {
             fence();
             if (!content) return;
             const target = centredCamera(content, camera.clampZoom(Math.min(1, starting.z)), view, fitEdges(doc, view, false));
-            glide = tweenCamera({ from: starting, target, durationMs: 220, apply: next => { camera.setCamera(next); notify(); } });
+            // Zero at the board's reduced-motion setting: the scheduler jumps there at once.
+            motion.glideTo(target, BACK_TO_CONTENT_MS * getBoardPreferences().animationSpeed);
+            notify();
         })().catch(error => { if (active()) options.error(error); }).finally(() => { if (pending === controller) pending = undefined; });
     };
     const run = (id: string): boolean => {

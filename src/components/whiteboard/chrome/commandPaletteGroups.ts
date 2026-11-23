@@ -10,11 +10,14 @@ import type { ToolChoices } from './toolChoices';
  */
 export interface PaletteStyleCommands {
     readonly options: {
-        readonly colours: readonly string[]; readonly fills: readonly string[]; readonly dashes: readonly string[];
-        readonly sizes: readonly string[]; readonly fonts: readonly string[]; readonly aligns: readonly string[];
+        readonly colours: readonly string[]; readonly opacities: readonly number[]; readonly fills: readonly string[];
+        readonly dashes: readonly string[]; readonly sizes: readonly string[]; readonly fonts: readonly string[]; readonly aligns: readonly string[];
     };
     currentColor(): string | null;
+    /** The opacity the selection shares, null when nothing is selected or the items differ. */
+    currentOpacity(): number | null;
     setColor(color: string): void;
+    setOpacity(opacity: number): void;
     setFill(fill: string): void;
     setDash(dash: string): void;
     setSize(size: string): void;
@@ -93,11 +96,14 @@ function pickOne(id: string, label: string, rows: readonly { readonly id: string
 }
 
 function styleSubmenus(styles: PaletteStyleCommands, t: BoardTranslate): ContextMenuSubmenu[] {
-    const next = styles.nextStyle(), current = styles.currentColor();
+    const next = styles.nextStyle(), current = styles.currentColor(), currentOpacity = styles.currentOpacity();
     const labelOf = (labels: Readonly<Record<string, string>>, value: string) => labels[value] ? t(labels[value]) : value;
     const { options } = styles;
     const colour = pickOne('colour', t('styles.colour'), options.colours.map(color => ({
         id: `colour-${color}`, label: t(`colours.${color}`), checked: color === current, run: () => styles.setColor(color),
+    })));
+    const opacity = pickOne('opacity', t('styles.opacity'), options.opacities.map(value => ({
+        id: `opacity-${value}`, label: `${Math.round(value * 100)}%`, checked: value === currentOpacity, run: () => styles.setOpacity(value),
     })));
     const fill = pickOne('fill', t('styles.fill'), options.fills.map(value => ({
         id: `fill-${value}`, label: labelOf(FILL_LABELS, value), checked: value === next.fill, run: () => styles.setFill(value),
@@ -114,7 +120,7 @@ function styleSubmenus(styles: PaletteStyleCommands, t: BoardTranslate): Context
     const alignment = pickOne('alignment', t('styles.alignment'), options.aligns.map(value => ({
         id: `alignment-${value}`, label: labelOf(ALIGN_LABELS, value), checked: value === next.align, run: () => styles.setAlignment(value, value),
     })));
-    return [colour, fill, dash, size, font, alignment];
+    return [colour, opacity, fill, dash, size, font, alignment];
 }
 
 /**

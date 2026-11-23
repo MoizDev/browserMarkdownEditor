@@ -8,7 +8,6 @@ import { prepareNativeRuntime } from '../../whiteboard/host/prepareNativeRuntime
 import { registerNativeNotebookExporter } from '../../whiteboard/host/registerNativeNotebookExporter';
 import { pinNativeSheetThumbnailBounds } from '../../whiteboard/host/sheetThumbnailBounds';
 import { contentBounds, type ContentRect } from '../../whiteboard/commands/contentBounds';
-import { tweenCamera } from '../../whiteboard/viewer/cameraTween';
 import type { Camera } from '../../platform/types';
 import { boardPageStack } from '../../whiteboard/model/pages';
 import { useDocumentClipboard, useNativeClipboard } from './useNativeClipboard';
@@ -155,18 +154,14 @@ export function AttachedViewer({ props, identity, lease, inverted, setInverted, 
         })();
         return () => controller.abort();
     }, [minimapOpen, props.isVisible, board, lease, sheet, revision, sceneRevision, fontEpoch, minimapCurrent, thumbnailKey]);
-    // One glide at a time: a newer map move (a click, a drag's first step) replaces the one in flight.
-    const minimapGlide = useRef<{ cancel(): void } | undefined>(undefined);
-    useEffect(() => () => { minimapGlide.current?.cancel(); }, []);
+    // One glide at a time: a newer map move (a click, a drag's first step) replaces the one in flight, in the pane's motion.
+    useEffect(() => () => { lease.cancelGlide(); }, [lease]);
     const navigateMinimap = useCallback((centre: { x: number; y: number }, mode: 'glide' | 'jump') => {
         if (!minimapCurrent()) return;
-        minimapGlide.current?.cancel(); minimapGlide.current = undefined;
         const from = lease.camera.camera, viewport = lease.camera.viewport;
         const target = { x: centre.x - viewport.width / (2 * from.z), y: centre.y - viewport.height / (2 * from.z), z: from.z };
-        const apply = (next: Camera) => { lease.camera.setCamera(next); lease.changed(); };
-        if (mode === 'jump') { apply(target); return; }
-        // 320 ms is tldraw's medium animation (options.ts animationMediumMs); the map's own reduced-motion setting applies.
-        minimapGlide.current = tweenCamera({ from: { ...from }, target, durationMs: 320, apply });
+        // 320 ms is tldraw's medium animation (options.ts animationMediumMs), scaled by the board's motion setting: zero jumps.
+        lease.glideTo(target, mode === 'jump' ? 0 : 320 * getBoardPreferences().animationSpeed);
     }, [lease, minimapCurrent]);
     // The selection's exact boxes, so the map can paint them. Read per shape with the scene's cached bounds, capped so a
     // huge selection cannot queue an unbounded walk.

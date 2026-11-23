@@ -57,9 +57,11 @@ export function BoardChrome({ locale, direction, selectedTool, toolLabel, toolSh
         <div className="board-chrome-top">
             <BoardHeader {...header} locale={locale} direction={direction} />
             {pageControls}
-            {stylePanel && <div className="board-chrome-pen"><DockedStylePanel {...stylePanel} /></div>}
         </div>
         {palette}
+        {/* The docked panel is a flow column, not a float under the header: it gets the height the bottom row,
+            the notices and an open minimap leave free (chrome.css .board-chrome-pen), so it never runs into them. */}
+        {stylePanel && <div className="board-chrome-pen"><DockedStylePanel {...stylePanel} /></div>}
         <div className="board-chrome-bottom">
             {stylePanel && <StylePopoverAnchor {...stylePanel} />}
             <ToolStrip primary={choices.primary} more={choices.more} selected={selectedTool} lock={lock} onShown={onBarTools}

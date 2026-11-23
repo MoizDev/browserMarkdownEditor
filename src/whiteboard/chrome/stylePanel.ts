@@ -17,15 +17,16 @@ export type Shared<T> = T | typeof MIXED | null;
 export type StyleRow = 'colour' | 'opacity' | 'fill' | 'dash' | 'size' | 'width' | 'font' | 'textAlign' | 'labelAlign'
     | 'shape' | 'route' | 'heads' | 'spline';
 
-/** The styles each kind of node carries; opacity is on every kind and is added separately. */
+/** The styles each kind of node carries; opacity is on every kind and is added separately. Figures, arrows and lines
+ * have no width row: their outline width is the size's (setSize writes it), so a second control would only overwrite it. */
 const ROWS_BY_KIND: Readonly<Record<string, readonly StyleRow[]>> = {
     'stroke:pen': ['colour', 'dash', 'width'],
     'stroke:highlighter': ['colour', 'width'],
-    figure: ['colour', 'fill', 'dash', 'size', 'width', 'font', 'labelAlign', 'shape'],
+    figure: ['colour', 'fill', 'dash', 'size', 'font', 'labelAlign', 'shape'],
     text: ['colour', 'size', 'width', 'font', 'textAlign'],
     sticky: ['colour', 'size', 'width', 'font', 'labelAlign'],
-    connector: ['colour', 'dash', 'size', 'width', 'font', 'route', 'heads'],
-    polyline: ['colour', 'dash', 'size', 'width', 'spline'],
+    connector: ['colour', 'dash', 'size', 'font', 'route', 'heads'],
+    polyline: ['colour', 'dash', 'size', 'spline'],
 };
 
 /** What the next shape of each tool carries when nothing is selected. Ink carries its width on the board, not per node. */

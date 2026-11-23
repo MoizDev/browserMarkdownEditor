@@ -5,7 +5,7 @@ import { worldPose } from '../change/coordinates';
 import { worldToSurface, type CameraController } from '../../platform/render/camera';
 import type { ScheduledFrame } from '../../platform/render/scheduler';
 import type { RenderToken } from '../../platform/render/types';
-import type { ViewState } from '../../platform/types';
+import type { Camera, ViewState } from '../../platform/types';
 import type { Op } from '../change/ops';
 import { planDelete } from '../commands/delete';
 import { acquireBoardGeometryScope } from '../commands/geometryScope';
@@ -55,6 +55,8 @@ export interface BoardSelectServicesOptions {
     readonly render: Pick<ReturnType<typeof createBoardRenderServices>, 'prepareChangeGeometry' | 'pinChangeGeometry' | 'changeGeometry'>;
     readonly camera: () => ViewState;
     readonly cameraController: CameraController;
+    /** The pane's motion, for the camera glides the commands run (back to content). */
+    readonly motion: { glideTo(target: Camera, durationMs: number): void; cancel(): void };
     readonly surface: HTMLElement;
     readonly inputToken: InputToken;
     readonly cameraChanged: () => void;
@@ -686,7 +688,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         const hit = shapeHandles.hit(physicalSurface(sample), false, sample.time);
         return hit ? shapeHandles.remove(hit) : false;
     };
-    const cameraCommands = createBoardCameraCommands({ runtime, camera: options.cameraController, surface: options.surface,
+    const cameraCommands = createBoardCameraCommands({ runtime, camera: options.cameraController, motion: options.motion, surface: options.surface,
         current, changed: options.cameraChanged, error: report });
     const backToContent = createBackToContent({ runtime, overlay: options.overlay, surface: options.surface, current,
         activate: () => { cameraCommands.run('camera.backToContent'); }, error: report });

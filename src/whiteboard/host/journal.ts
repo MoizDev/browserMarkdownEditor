@@ -7,6 +7,7 @@ import type { MediaEntry, MediaId } from '../model/media';
 import type { BoardJournalPort } from '../session/factoryTypes';
 import { createBoardRecoveryCapture } from './recoveryCapture';
 import { recoverBoardJournal } from './recoveryReplay';
+import { isCancellation } from '../../platform/workers/envelope';
 
 // Provenance: C-20 journal transport, cumulative board recipe and transactional
 // replay contracts; independent composition without third-party source.
@@ -45,7 +46,7 @@ export function createBoardJournal(options: BoardJournalOptions): BoardJournalPo
         });
         // A superseded or cancelled append is not a failure: a later dirty batch journals the same content again.
         tail = task.then(() => {}, error => {
-            if (error instanceof DOMException && error.name === 'AbortError') return;
+            if (isCancellation(error)) return;
             failure ??= error; report(error);
         });
         void tail.finally(() => { inFlight--; releaseWhenIdle(); });

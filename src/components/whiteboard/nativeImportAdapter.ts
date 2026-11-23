@@ -2,6 +2,7 @@ import type { BoardToolServicesOptions } from '../../whiteboard/viewer/toolServi
 import type { ClipboardPoint } from '../../whiteboard/clipboard/types';
 import type { NativeClipboardBinding } from './useNativeClipboard';
 import type { BoardRuntime } from '../../whiteboard/host/runtime';
+import { isCancellation } from '../../platform/workers/envelope';
 
 /** Uses the same document-owned clipboard/ingest controller as paste and drop. */
 export function createNativeImportAdapter(binding: NativeClipboardBinding, runtime: BoardRuntime, currentOwner: () => boolean,
@@ -34,7 +35,7 @@ export function createNativeImportAdapter(binding: NativeClipboardBinding, runti
                 onError(new Error('The board changed while choosing media; choose the files again.')); return;
             }
             binding.controller.importFiles(files, point).catch(error => {
-                onError(error instanceof DOMException && error.name === 'AbortError'
+                onError(isCancellation(error)
                     ? new Error('The chosen media was not inserted: the import was interrupted. Choose the files again.') : error);
             });
         };

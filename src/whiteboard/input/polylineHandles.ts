@@ -5,6 +5,7 @@ import { snapBoardBounds, type BoardSnapGuide } from '../geom/runtimeSnap';
 import type { BoardRuntime } from '../host/runtime';
 import type { NodeId } from '../model/ids';
 import type { CancelReason, FinishReason, GestureOwner, Modifiers, RealSample } from './tool';
+import { isCancellation } from '../../platform/workers/envelope';
 
 export interface PolylineHandleOptions {
     readonly runtime: BoardRuntime;
@@ -82,7 +83,7 @@ export function polylineHandleGesture(first: RealSample, modifiers: Modifiers, o
             } else { preview = result; result = undefined; options.show(preview.ops); }
         } catch (error) {
             if (!cleaned && !request.signal.aborted && turn === sequence) {
-                try { if (current() && !(error instanceof DOMException && error.name === 'AbortError')) options.error(error); } finally { cancel(); }
+                try { if (current() && !isCancellation(error)) options.error(error); } finally { cancel(); }
             }
         } finally { result?.release(); }
     };

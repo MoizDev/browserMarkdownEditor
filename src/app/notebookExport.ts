@@ -8,6 +8,7 @@ import { joinVaultPath, parentVaultPath } from '../utils/paths';
 import { sameStat } from '../utils/diskVersion';
 import { getNotebookExporter } from '../utils/notebookRenderCache';
 import type { UseNotebookExportDeps } from './useNotebookExport';
+import { isCancellation } from '../platform/workers/envelope';
 
 /**
  * A notebook's Export to PDF: the render, then the destination transaction.
@@ -59,7 +60,7 @@ export async function handleExportNotebook(deps: Pick<NotebookExportDeps,
         + `${paper.pageCount === 1 ? 'page' : 'pages'}.`,
     });
   } catch (err) {
-    if (err instanceof DOMException && err.name === 'AbortError' && !isCurrent()) return;
+    if (isCancellation(err) && !isCurrent()) return;
     console.error('Could not export the notebook:', err);
     notify(err instanceof DOMException && err.name === 'TypeMismatchError'
       ? `A folder named "${notebookPdfName(file.name)}" already exists.` : `Could not export "${file.name}".`);

@@ -29,6 +29,7 @@ import type { createNativeViewLease, NativeViewLease } from './nativeViewLease';
 import { documentClipboard, type NativeClipboardService } from './useNativeClipboard';
 import { useNativeBoardDialogs } from './useNativeBoardDialogs';
 import { useNativeBoardLanguage } from './useNativeBoardLanguage';
+import { isCancellation } from '../../platform/workers/envelope';
 
 interface CropOpen { readonly id: MediaRowId; readonly url: string; readonly width: number; readonly height: number; readonly window: CropWindow; readonly circle: boolean }
 
@@ -86,7 +87,7 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
     const canMutateView = useCallback(() => !!viewRef.current?.editing?.isAttached() && chromeMountedRef.current && !!styleRef.current && !!embedPortRef.current, []);
     const onChromeReady = useCallback((ready: boolean) => { chromeMountedRef.current = ready; }, []);
     const report = useCallback((error: unknown) => {
-        if (!(error instanceof DOMException && error.name === 'AbortError')) setNotice(error instanceof Error ? error.message : String(error));
+        if (!isCancellation(error)) setNotice(error instanceof Error ? error.message : String(error));
     }, []);
     useEffect(() => {
         if (!props.isVisible) return;
@@ -193,7 +194,7 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
             if (!blob) throw new Error('The picture bytes are unavailable.');
             if (signal.aborted) return;
             setCrop({ id, url: URL.createObjectURL(blob), width: info.width, height: info.height, window: info.window, circle: info.circle });
-        }).catch(error => { if (!(error instanceof DOMException && error.name === 'AbortError')) report(error); });
+        }).catch(error => { if (!isCancellation(error)) report(error); });
     }, [clipboard, report, signal]);
     const closeCrop = useCallback(() => setCrop(null), []);
     const confirmCrop = useCallback((frame: CropWindow, circle: boolean) => {

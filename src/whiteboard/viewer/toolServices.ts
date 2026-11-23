@@ -30,6 +30,7 @@ import { createBoardTextEditor, type BoardTextEditorOptions } from './textEditor
 import { createSensitiveTargets } from './sensitiveTargets';
 import type { ViewerEngine } from './types';
 import type { BoardCardActions } from './cardControls';
+import { isCancellation } from '../../platform/workers/envelope';
 
 /** The board's context-menu request: the pointer, the element the menu hangs from, and the locked node it targets, if any. */
 export interface BoardContextMenuRequest { readonly point: { readonly x: number; readonly y: number }; readonly opener: HTMLElement; readonly locked: NodeId | null }
@@ -237,7 +238,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         let world: Point;
         try { world = surfaceToWorld(options.clientToSurface(point.x, point.y), options.view().camera); } catch (error) { ui.error(error); open(null); return; }
         void select.lockedAt(world, new AbortController().signal).then(open, error => {
-            if (!(error instanceof DOMException && error.name === 'AbortError')) ui.error(error);
+            if (!isCancellation(error)) ui.error(error);
             open(null);
         });
     };

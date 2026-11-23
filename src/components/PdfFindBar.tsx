@@ -4,6 +4,7 @@ import type { PdfFindMemory } from '../utils/pdfFindHighlight';
 import { dismissOnEscape } from '../utils/escapeDismiss';
 import { openContextMenu } from '../utils/contextMenu';
 import { copyText, readClipboardText, CLIPBOARD_READ_BLOCKED, CLIPBOARD_WRITE_BLOCKED } from '../utils/clipboard';
+import { isCancellation } from '../platform/workers/envelope';
 import './PdfFindBar.css';
 
 export interface PdfFindStart { page: number; y: number }
@@ -27,7 +28,7 @@ interface PdfFindBarProps {
     onNotify?(message: string): void;
 }
 const keyOf = (hit?: PdfFindHit) => hit ? `${hit.page}:${hit.from}:${hit.to}` : '';
-const cancelled = (error: unknown) => error instanceof Error && (error.name === 'AbortError' || error.name === 'AbortException');
+const cancelled = (error: unknown) => isCancellation(error) || error instanceof Error && error.name === 'AbortException';
 function mergeHits(a: readonly PdfFindHit[], b: readonly PdfFindHit[]) {
     return [...new Map([...a, ...b].map(hit => [keyOf(hit), hit])).values()].sort((x, y) => x.page - y.page || x.from - y.from);
 }

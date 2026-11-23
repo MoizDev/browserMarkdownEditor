@@ -10,6 +10,7 @@ import { fetchLinkPreview } from './preview';
 import { attachPreviewMedia, previewAddress, PREVIEW_ICON_BYTES, PREVIEW_IMAGE_BYTES, type PreviewRole } from './previewMedia';
 import type { StoreMedia } from './storage.types';
 import { resolveEmbedCandidate, type EmbedManifest } from './embed';
+import { isCancellation } from '../../platform/workers/envelope';
 
 // Provenance: media §10a/§11 card conversion and explicit preview consent;
 // independent transaction composition, no upstream engine source.
@@ -86,7 +87,7 @@ export function fetchCardPreview(options: {
             if (!address) return;
             try { await attachPreviewMedia({ runtime, memory: options.memory, storeMedia: storage, context, id: options.id, url: address, role, limit, current: options.current }); }
             catch (error) {
-                if (error instanceof DOMException && error.name === 'AbortError') throw error;
+                if (isCancellation(error)) throw error;
                 failures.push(`${role === 'image' ? 'The preview picture' : 'The icon'} was not saved: ${error instanceof Error ? error.message : 'unavailable'}.`);
             }
         };

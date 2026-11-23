@@ -16,6 +16,7 @@ import PdfFindBar from './PdfFindBar';
 import type { PdfFindBarHandle, PdfFindStart } from './PdfFindBar';
 import type { PdfFindHit } from '../utils/pdfFind';
 import type { PdfFindMemory } from '../utils/pdfFindHighlight';
+import { isCancellation } from '../platform/workers/envelope';
 
 export interface PdfTiledFindOptions {
     session: PdfTiledDocumentSession;
@@ -82,7 +83,7 @@ export function usePdfTiledFind(options: PdfTiledFindOptions) {
                 // passive resource disposal. It cannot notify the new document.
                 const owner = live.current;
                 if (!mounted.current || owner.session !== session || owner.document !== document || !owner.isVisible ||
-                    !session.isCurrent() || document.closed || error instanceof Error && error.name === 'AbortError') return;
+                    !session.isCurrent() || document.closed || isCancellation(error)) return;
                 owner.notify(error instanceof Error && error.message.trim() ? error.message : 'PDF text highlights are unavailable.');
             },
         });

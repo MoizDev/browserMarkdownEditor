@@ -8,14 +8,20 @@ export interface SessionGestureQueueOptions {
 }
 export interface SessionGestureQueue {
     readonly isGestureActive: boolean;
+    /** A gesture still in the person's hands (a contact down, an IME composition), as opposed to one only settling. */
+    readonly isInputGestureActive: boolean;
     /** Admission/readiness and external I/O finish before enqueue. Task is synchronous. */
     enqueueAfterGesture<T>(signal: AbortSignal, task: () => T): Promise<T>;
-    /** Pointer gesture/IME start. Release on EVERY end/cancel/flush path, idempotently. */
-    beginGesture(): () => void;
+    /** Pointer gesture/IME start. Release on EVERY end/cancel/flush path, idempotently. A `settling` hold is work the
+     * person has already finished (an erase or a box after pointer-up, a commit awaiting its frame): it orders queued
+     * edits and commands after it exactly like any hold, but does not refuse the person's next press. Take it BEFORE
+     * releasing the gesture's own hold, so the queue never drains in between. */
+    beginGesture(phase?: GesturePhase): () => void;
     /** Called when isGestureActive changes: commands disabled during a gesture re-read their state at its start and end. */
     subscribeGesture(listener: () => void): () => void;
     dispose(): void;
 }
+export type GesturePhase = 'input' | 'settling';
 interface Pending {
     previous: Pending | null;
     next: Pending | null;
@@ -30,7 +36,7 @@ interface Pending {
 export function createSessionGestureQueue(options: SessionGestureQueueOptions): SessionGestureQueue {
     const owner = Object.freeze({ documentId: options.owner.documentId, session: options.owner.session });
     let first: Pending | null = null, last: Pending | null = null;
-    let holds = 0, disposed = false, scheduled = false;
+    let holds = 0, settling = 0, disposed = false, scheduled = false;
     const gestureListeners = new Set<() => void>();
     const gestureChanged = () => {
         for (const listener of [...gestureListeners]) {
@@ -70,6 +76,7 @@ export function createSessionGestureQueue(options: SessionGestureQueueOptions): 
     };
     return {
         get isGestureActive() { return holds > 0 && !disposed; },
+        get isInputGestureActive() { return holds > settling && !disposed; },
         enqueueAfterGesture<T>(signal: AbortSignal, task: () => T): Promise<T> {
             let work: (() => T) | undefined = task;
             return new Promise<T>((resolve, reject) => {
@@ -104,15 +111,15 @@ export function createSessionGestureQueue(options: SessionGestureQueueOptions): 
                 } catch (error) { item.cancel(error); }
             });
         },
-        beginGesture() {
+        beginGesture(phase = 'input') {
             if (disposed) throw new ApplyFailed('disposed', 'The board session has ended');
             let active = true;
             const release = () => {
                 if (!active) return;
                 active = false;
-                if (!disposed) { holds--; schedule(); if (!holds) gestureChanged(); }
+                if (!disposed) { holds--; if (phase === 'settling') settling--; schedule(); if (!holds) gestureChanged(); }
             };
-            holds++;
+            holds++; if (phase === 'settling') settling++;
             if (holds === 1) gestureChanged();
             return release;
         },
@@ -154,7 +161,8 @@ export class GestureMutationQueue implements SessionGestureQueue {
         });
     }
     get isGestureActive(): boolean { return this.queue.isGestureActive; }
-    beginGesture(): () => void { return this.queue.beginGesture(); }
+    get isInputGestureActive(): boolean { return this.queue.isInputGestureActive; }
+    beginGesture(phase?: GesturePhase): () => void { return this.queue.beginGesture(phase); }
     subscribeGesture(listener: () => void): () => void { return this.queue.subscribeGesture(listener); }
     enqueueAfterGesture<T>(signal: AbortSignal, task: () => T): Promise<T> { return this.queue.enqueueAfterGesture(signal, task); }
     afterGesture<T>(task: () => T, signal: AbortSignal = uncancelled): Promise<T> { return this.enqueueAfterGesture(signal, task); }

@@ -338,7 +338,7 @@ The bar at the bottom centre holds **Select** (\`V\`), **Hand** (\`H\`), **Draw*
 ### Drawing
 - **Draw** follows your pen, mouse or finger. Hold \`Shift\` while drawing to make the next part straight; press \`Shift\` and click with Draw to continue your last stroke with a straight line from its end.
 - **Highlight** draws a broad see-through stroke. **Laser** draws a trail that fades by itself and is never saved — for pointing while you share your screen.
-- **Eraser** removes whatever it touches.
+- **Eraser** removes whatever it touches. Every sweep counts, however quickly you start the next one or switch tools; \`Cmd/Ctrl + Z\` brings back what the last sweep removed.
 - **Figures**, **Arrow** and **Line**: drag to draw. An arrow that starts or ends on a shape stays attached to it when the shape moves; double-click an arrow's end to switch its arrowhead on or off.
 - **Text**: click to start typing; **Note** puts a sticky note where you click. To change the words of a selected text or note, press \`Enter\` or double-click it; \`Escape\` finishes.
 - **Frame**: drag to draw a named frame. It clips what sits inside it and takes in anything fully inside the box; \`Cmd/Ctrl + Alt + G\` frames the selection, or removes the frames when only frames are selected (their contents stay put). **Fit to content** (Menu → Edit) shrinks or grows a frame around what it holds.

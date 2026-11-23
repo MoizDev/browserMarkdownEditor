@@ -46,7 +46,7 @@ export interface BoardHistory {
 }
 
 // Interface only: the apply/history/save packages supply the single implementation.
-export interface BoardSession extends Pick<SessionGestureQueue, 'enqueueAfterGesture' | 'beginGesture' | 'isGestureActive' | 'subscribeGesture'> {
+export interface BoardSession extends Pick<SessionGestureQueue, 'enqueueAfterGesture' | 'beginGesture' | 'isGestureActive' | 'isInputGestureActive' | 'subscribeGesture'> {
     readonly owner: SessionOwner;
     readonly doc: BoardDoc;
     readonly samples: SampleStoreReader;

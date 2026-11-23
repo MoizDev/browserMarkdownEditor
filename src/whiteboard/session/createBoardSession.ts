@@ -8,7 +8,7 @@ import type { MediaLease } from '../media/store';
 import type { NodeId, SheetId } from '../model/ids';
 import { MEDIA_MIMES, type MediaId, type MediaMime } from '../model/media';
 import { boardContentSource, type PinnedBoardBuild } from './contentSource';
-import { createSessionGestureQueue } from './gestureQueue';
+import { createSessionGestureQueue, type GesturePhase } from './gestureQueue';
 import { createSaveScheduler } from './saveScheduler';
 import type { BoardSessionFactoryOptions, ComposedBoardSession } from './factoryTypes';
 import type { SerializerCheckpoint } from '../format/serializerClient';
@@ -224,14 +224,15 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
         get contentRevision() { return contentRevision; },
         get readOnlyReason() { return readonlyReason(); },
         get isGestureActive() { return queue.isGestureActive; },
+        get isInputGestureActive() { return queue.isInputGestureActive; },
         apply(transaction: Transaction) { guard(); return applyController.apply(transaction); },
         preflight(transaction: Transaction) { guard(); return applyController.preflight(transaction); },
         begin(origin: TransactionOrigin, label: string) { guard(); return applyController.begin(origin, label); },
         enqueueAfterGesture<T>(signal: AbortSignal, task: () => T) { return queue.enqueueAfterGesture(signal, task); },
         subscribeGesture(listener: () => void) { return queue.subscribeGesture(listener); },
-        beginGesture() {
+        beginGesture(phase?: GesturePhase) {
             guard();
-            const release = queue.beginGesture();
+            const release = queue.beginGesture(phase);
             scheduler.setGesture(true); notifyPending();
             let active = true;
             return () => { if (active) { active = false; try { release(); } finally { scheduler.setGesture(queue.isGestureActive); notifyPending(); } } };

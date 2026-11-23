@@ -21,7 +21,7 @@ import { createNativeCameraOperations } from './nativeCameraOperations';
 import { createNativeKeyCommands, nativeActionShortcut, nativeCommandShortcut } from './nativeCommandSource';
 import { createNativeEditingKeyboard } from './nativeEditingKeyboard';
 import { chooseReplacementImage, type MediaRowId } from './nativeMediaRows';
-import { NativeCropDialog, type CropWindow } from './NativeCropDialog';
+import { NativePictureCrop, NativePictureToolbar } from './NativePictureCrop';
 import type { NativeEditingCapabilities, NativeEditingCapabilityFactory } from './nativeEditingCapabilities';
 import { createNativeLinkOperations } from './nativeLinkOperations';
 import type { createNativeViewLease, NativeViewLease } from './nativeViewLease';
@@ -29,7 +29,6 @@ import { documentClipboard, type NativeClipboardService } from './useNativeClipb
 import { useNativeBoardDialogs } from './useNativeBoardDialogs';
 import { useNativeBoardLanguage } from './useNativeBoardLanguage';
 
-interface CropOpen { readonly id: MediaRowId; readonly url: string; readonly width: number; readonly height: number; readonly window: CropWindow; readonly circle: boolean }
 
 type Links = ReturnType<typeof createNativeLinkOperations>;
 type Styles = ReturnType<typeof createBoardStyleControls>;
@@ -67,6 +66,9 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
     const { identity, nativeCanvasHost: host } = props;
     const current = useCallback(() => host.isCurrent(identity), [host, identity]);
     const language = useNativeBoardLanguage(onUnavailable);
+    // The capability factory's translator outlives the render that created it, so it reads the language through a ref.
+    const languageRef = useRef(language);
+    useLayoutEffect(() => { languageRef.current = language; }, [language]);
     const dialogs = useNativeBoardDialogs({ documentId: identity.documentId, session: identity.session, isVisible: props.isVisible, currentOwner: current });
     const [notice, setNotice] = useState<string | null>(null), [localInverted, setLocalInverted] = useState(false);
     const inverted = inversion?.value ?? localInverted, setInverted = inversion?.set ?? setLocalInverted;
@@ -126,7 +128,7 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
             const acquired = view;
             void factory({ runtime, lease: acquired, host, identity, clipboard: service, signal: controller.signal,
                 current: () => current() && acquired.isCurrent(), canWrite: () => canMutateView() && host.canWrite(identity),
-                requestText: dialogs.requestText, notice: setNotice }).then(value => {
+                requestText: dialogs.requestText, notice: setNotice, t: key => { const table = languageRef.current?.getSnapshot().table; return table ? translateBoard(table, key) : key; } }).then(value => {
                 if (!live || controller.signal.aborted || !current()) { value.dispose(); return; }
                 owned = value; setCapabilities(value);
             }, error => { if (live && !controller.signal.aborted) onUnavailable(error); });
@@ -179,29 +181,13 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
     const shortcutsAvailable = useCallback(() => !!shortcutRef.current, []);
     const openShortcuts = useCallback(() => { if (!shortcutRef.current) throw new Error('Shortcuts are unavailable'); shortcutRef.current(); }, []);
     const canWrite = useCallback(() => canMutateView() && host.canWrite(identity), [canMutateView, host, identity]);
-    // The crop editor's one open picture: its original, read for this editor and released when the editor closes.
-    const [crop, setCrop] = useState<CropOpen | null>(null);
-    useEffect(() => { if (!crop) return; const url = crop.url; return () => URL.revokeObjectURL(url); }, [crop]);
+    // The menu's crop row starts the same crop the picture's own toolbar and double-click start: one session per document.
     const openCrop = useCallback((id: MediaRowId) => {
-        const info = clipboard.media.cropSource(id);
-        if (!info) { report(new Error('This picture cannot be cropped.')); return; }
-        clipboard.media.readOriginal(id, signal).then(blob => {
-            if (!blob) throw new Error('The picture bytes are unavailable.');
-            if (signal.aborted) return;
-            setCrop({ id, url: URL.createObjectURL(blob), width: info.width, height: info.height, window: info.window, circle: info.circle });
-        }).catch(error => { if (!(error instanceof DOMException && error.name === 'AbortError')) report(error); });
-    }, [clipboard, report, signal]);
-    const closeCrop = useCallback(() => setCrop(null), []);
-    const confirmCrop = useCallback((frame: CropWindow, circle: boolean) => {
-        const open = crop;
-        setCrop(null);
-        if (!open) return;
-        try { clipboard.media.cropWindow(open.id, frame, circle); } catch (error) { report(error); }
-    }, [crop, clipboard, report]);
-    const cropDialog = crop ? <NativeCropDialog key={crop.url} url={crop.url} width={crop.width} height={crop.height}
-        initial={crop.window} initialCircle={crop.circle} onConfirm={confirmCrop} onCancel={closeCrop} /> : null;
+        clipboard.crop.open(id).catch(error => { if (!(error instanceof DOMException && error.name === 'AbortError')) report(error); });
+    }, [clipboard, report]);
+    const translate = useCallback((key: string) => translateBoard(language.getSnapshot().table, key), [language]);
     const link = useMemo(() => createNativeLinkOperations({ runtime, lease, current, canWrite,
-        requestText: dialogs.requestText, requestTextChoice: dialogs.requestTextChoice, notice: setNotice }), [runtime, lease, current, canWrite, dialogs.requestText, dialogs.requestTextChoice, setNotice]);
+        requestText: dialogs.requestText, requestTextChoice: dialogs.requestTextChoice, notice: setNotice, t: translate }), [runtime, lease, current, canWrite, dialogs.requestText, dialogs.requestTextChoice, setNotice, translate]);
     useLayoutEffect(() => { linksRef.current = link; return () => { if (linksRef.current === link) linksRef.current = null; }; }, [linksRef, link]);
     // Print and PDF export belong to the clipboard service that owns this board's focused print pin.
     const runPrint = useCallback(() => clipboard.print(), [clipboard]);
@@ -274,8 +260,12 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
             toolStateFor={toolStateFor} commands={commands} actionShortcut={commands.actionShortcut} actionState={commands.actionState}
             runAction={commands.runAction} openMedia={() => { void commands.runAction('uploadMedia'); }} zoom={context.zoom}
             minimapVisible={context.minimapOpen} confirm={dialogs.confirm} canWrite={canWrite} registerShortcuts={registerShortcuts} onReady={handleChromeReady} onStyles={onStyles}
-            notebook={runtime.session.doc.kind !== 'whiteboard' ? { inverted, setInverted, thumbnailsOpen: thumbnails, setThumbnailsOpen: setThumbnails } : undefined} /></NativeChromeAttachment>;
-    }, [runtime, lease, language, clipboard, current, mac, props.isVisible, adapter, canWrite, report, toolStateFor, owned, dialogs.confirm, registerShortcuts, onStyles, handleChromeReady, inverted, setInverted, thumbnails, bindMinimap]);
+            notebook={runtime.session.doc.kind !== 'whiteboard' ? { inverted, setInverted, thumbnailsOpen: thumbnails, setThumbnailsOpen: setThumbnails } : undefined} />
+            <NativePictureToolbar lease={lease} media={clipboard.media} store={clipboard.crop} t={translate} isVisible={props.isVisible} writable={canWrite}
+                requestText={dialogs.requestText} onError={report} notice={setNotice} />
+            <NativePictureCrop lease={lease} store={clipboard.crop} media={clipboard.media} t={translate} isVisible={props.isVisible} onError={report} /></NativeChromeAttachment>;
+    }, [runtime, lease, language, clipboard, current, mac, props.isVisible, adapter, canWrite, report, toolStateFor, owned, dialogs.confirm, registerShortcuts, onStyles, handleChromeReady, inverted, setInverted, thumbnails, bindMinimap,
+        translate, dialogs.requestText, setNotice]);
     useEffect(() => {
         if (!props.isVisible || signal.aborted || !current() || !attached || !chromeReady || !owned || !embedPort
             || !lease.editing?.isAttached() || !lease.editing.getTools() || !styleRef.current || !shortcutRef.current
@@ -295,7 +285,7 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
         contextMenuRef, canMutateView, host, identity, adapter, servicesEpoch, report]);
 
     if (!owned) return <>{dialogs.dialogs}<div role="status">Preparing board commands…</div></>;
-    return <>{dialogs.dialogs}{cropDialog}{renderView({ lease, chrome: editingChrome, inverted, setInverted, notice, setNotice,
+    return <>{dialogs.dialogs}{renderView({ lease, chrome: editingChrome, inverted, setInverted, notice, setNotice,
             editable: attached && chromeReady && !!embedPort && !adapter.board.isReadOnly && host.canWrite(identity),
             canMutate: lease.canMutateView })}</>;
 }

@@ -68,8 +68,9 @@ export function planBoardClipboardPlacement(options: BoardClipboardPlacementOpti
     const bounds = source.bounds, viewport = target.viewport;
     const sourceCentre = { x: bounds.x + bounds.w / 2, y: bounds.y + bounds.h / 2 };
     const viewportCentre = { x: viewport.x + viewport.w / 2, y: viewport.y + viewport.h / 2 };
-    const inside = bounds.x >= viewport.x && bounds.y >= viewport.y
-        && bounds.x + bounds.w <= viewport.x + viewport.w && bounds.y + bounds.h <= viewport.y + viewport.h;
+    // Board content that is already on screen pastes where it is, as a copy on top; anything out of view lands at the view centre.
+    const overlaps = bounds.x < viewport.x + viewport.w && bounds.x + bounds.w > viewport.x
+        && bounds.y < viewport.y + viewport.h && bounds.y + bounds.h > viewport.y;
     const same = source.from !== null && source.from.board === receivingBoardId && source.from.sheet === target.sheet;
     const inverted = intent === 'paste-inverted' || intent === 'paste-plain-inverted';
     const cursor = target.pasteAtCursor !== inverted;
@@ -81,8 +82,7 @@ export function planBoardClipboardPlacement(options: BoardClipboardPlacementOpti
         // Duplicate steps right by the selection's width plus a 10-unit gap, in world units (spec F-ARR-005: 190 then 280).
         centre = { x: sourceCentre.x + bounds.w + 10, y: sourceCentre.y };
     } else if (cursor) centre = target.pointer ?? viewportCentre;
-    // Plain paste lands in the view, never over its source: in place is the inverted (⌥) paste's own result.
-    else if (inverted && same && inside) { centre = sourceCentre; preserve = true; }
+    else if (same && overlaps) { centre = sourceCentre; preserve = true; }
     else centre = viewportCentre;
     // In-place is exact even when existing content straddles a physical page gap.
     if (!preserve) centre = clampPoint(doc, centre);

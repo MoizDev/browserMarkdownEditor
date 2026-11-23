@@ -71,6 +71,12 @@ export const boardBindings: readonly KeyBinding[] = [
   { id: 'frame.remove', group: 'edit', label: 'Remove frame', key: 'g', accel: true, alt: true, shift: true },
   { id: 'lock', group: 'edit', label: 'Lock', key: 'l', shift: true },
   { id: 'duplicate', group: 'edit', label: 'Duplicate', key: 'd', accel: true },
+  // The clipboard chords run from the view's own keydown, which handles them before this table sees them (native copy and paste
+  // events are never routed here); these rows name them for the shortcuts dialog. Plain Paste is the native paste event, not listed.
+  { id: 'clipboard.pastePlain', group: 'edit', label: 'Paste as plain text', key: 'v', accel: true, shift: true },
+  { id: 'clipboard.pasteAtCursor', group: 'edit', label: 'Paste at cursor', key: 'v', accel: true, alt: true },
+  { id: 'clipboard.pastePlainAtCursor', group: 'edit', label: 'Paste plain text at cursor', key: 'v', accel: true, alt: true, shift: true },
+  { id: 'clipboard.copyPng', group: 'edit', label: 'Copy as PNG', key: 'c', accel: true, shift: true },
   { id: 'media.insert', group: 'edit', label: 'Insert media', key: 'u', accel: true },
   // Before text.italic, which shares Cmd/Ctrl+I: the board's dispatch skips text-formatting, so italic stays a text-editor key.
   { id: 'embed.insert', group: 'edit', label: 'Insert embed', key: 'i', accel: true },

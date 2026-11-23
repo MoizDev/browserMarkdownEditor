@@ -75,12 +75,9 @@ export async function classifyClipboard(input: ClipboardInput, intent: Clipboard
         const dropped = input.uriList ? await firstUri(input.uriList, host.appOrigin, signal) : null;
         return dropped ? { kind: 'url', url: dropped } : { kind: 'empty' };
     }
+    // Plain paste takes only non-blank text; a blank or absent text falls through to the normal order, so a copied picture still pastes.
     const plainOnly = intent === 'paste-plain' || intent === 'paste-plain-inverted';
-    if (plainOnly) {
-        if (input.text) return plain(input.text, signal);
-        if (input.files.length) return { kind: 'files', files: input.files };
-        return input.text !== null ? plain(input.text, signal) : { kind: 'empty' };
-    }
+    if (plainOnly && input.text !== null && input.text.trim()) return plain(input.text, signal);
     let markers: HtmlClipboardMarkers | null = null;
     if (input.html !== null) {
         if (new Blob([input.html]).size > SECURITY_LIMITS.clipboardHtmlBytes) {

@@ -1,5 +1,6 @@
 import { pageAt } from '../../platform/render/pageStack';
 import { normalizedRotation, worldPose } from '../change/coordinates';
+import { isLocked } from '../change/commands';
 import type { Op } from '../change/ops';
 import { acquireBoardGeometryScope } from '../commands/geometryScope';
 import { notebookGrowthOp } from '../commands/pagesAndSheets';
@@ -21,6 +22,11 @@ import type { Block, RichFragment } from '../text/richText';
 import { planBoardClipboardPlacement } from './placement';
 import type { ClipboardIntent, ClipboardTarget } from './types';
 
+/** Text pasted from the top edge of the view keeps this many screen pixels clear of it (catalogue c.8). */
+const TEXT_TOP_CLEARANCE_PX = 40;
+/** The nodes that carry a link address, the same set the Edit link command reaches. */
+const LINKABLE_KINDS: ReadonlySet<string> = new Set(['figure', 'sticky', 'picture', 'linkcard', 'embed']);
+
 // Provenance: external clipboard placement, text-layout and atomic change
 // contracts; independent authoring path, no third-party source.
 export type ExternalClipboardContent =
@@ -38,6 +44,8 @@ export interface InsertClipboardTextOptions {
     readonly embedManifest?: EmbedManifest;
     readonly intent: ClipboardIntent;
     readonly content: ExternalClipboardContent;
+    /** A pasted address goes into the one selected link-carrying node instead of making a new card (paste, not drop or embed insertion). */
+    readonly aimAtSelectedLink?: boolean;
     readonly signal?: AbortSignal;
     cooperate?(): Promise<void>;
 }
@@ -108,6 +116,21 @@ export async function insertClipboardText(options: InsertClipboardTextOptions): 
             url = decision.url;
         } else throw new TypeError('Unsupported clipboard content');
         check();
+        if (url !== undefined && options.aimAtSelectedLink) {
+            const selection = runtime.selection.getSnapshot().selected, aimed = selection.length === 1 ? doc.nodes.get(selection[0]!) : undefined;
+            if (aimed && LINKABLE_KINDS.has(aimed.kind) && !isLocked(doc, aimed)) {
+                const value = url, linked = aimed.id;
+                return session.enqueueAfterGesture(signal, () => {
+                    check();
+                    session.history.open('Paste link');
+                    try {
+                        const applied = session.apply({ origin: 'paste', label: 'Paste link', ops: [{ t: 'set', id: linked, key: 'url', value } as Op] });
+                        applied.release();
+                        return linked;
+                    } finally { session.history.close(); }
+                });
+            }
+        }
         const id = newNodeId(doc), initialSiblings = doc.children.get(target.sheet) ?? [];
         const initialOrder = keyBetween(initialSiblings.at(-1)?.order ?? null, null);
         const stack = boardPageStack(doc.host), first = stack?.rects[0];
@@ -143,7 +166,10 @@ export async function insertClipboardText(options: InsertClipboardTextOptions): 
             intent: options.intent, containsFrame: false, source: { from: null,
                 bounds: { x: measured.x, y: measured.y, w: measured.width, h: measured.height } } });
         const parent = placement.parent, siblings = doc.children.get(parent) ?? [], order = keyBetween(siblings.at(-1)?.order ?? null, null);
-        const wx = placement.delta.x, wy = placement.delta.y;
+        // Text is lifted, never moved down, so its top stays clear of the view's top edge.
+        const floor = target.viewport.y + TEXT_TOP_CLEARANCE_PX / options.cameraZoom;
+        const lift = node.kind === 'text' ? Math.max(0, floor - (measured.y + placement.delta.y)) : 0;
+        const wx = placement.delta.x, wy = placement.delta.y + lift;
         if (isSheetParent(doc, parent)) node = { ...node, parent, order, x: wx - (first?.x ?? 0), y: wy - (first?.y ?? 0), page: stack ? 0 : -1 };
         else {
             const pose = worldPose(doc, parent), dx = wx - pose.x, dy = wy - pose.y, c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);

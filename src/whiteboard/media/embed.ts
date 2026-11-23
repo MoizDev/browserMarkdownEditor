@@ -15,11 +15,21 @@ export type EmbedProvider = 'youtube' | 'vimeo' | 'figma' | 'canva' | 'google-ma
 export interface EmbedCandidate { readonly provider: EmbedProvider; readonly url: string }
 /** The size a pasted embed opens at, in world units. Most provider pages are 16:9; Spotify's player is a fixed-height strip,
  * which at 16:9 would leave most of the card empty. */
+// Default size of a new embed per provider, in world units (the catalogue's per-provider table); Spotify opens at its
+// player strip's height, and an unlisted provider uses the common size.
+const EMBED_SIZES: Readonly<Partial<Record<EmbedProvider, { readonly w: number; readonly h: number }>>> = Object.freeze({
+    youtube: { w: 800, h: 450 }, vimeo: { w: 640, h: 360 }, codepen: { w: 520, h: 400 }, scratch: { w: 520, h: 400 },
+    desmos: { w: 700, h: 450 }, spotify: { w: 800, h: 352 },
+});
+const EMBED_SIZE_DEFAULT = Object.freeze({ w: 720, h: 500 });
 export function embedCardSize(provider: EmbedProvider): { readonly w: number; readonly h: number } {
-    return provider === 'spotify' ? { w: 800, h: 352 } : { w: 800, h: 450 };
+    return EMBED_SIZES[provider] ?? EMBED_SIZE_DEFAULT;
 }
-/** Every size the app gives an embed, so a card still at one of them takes the size of its new kind on conversion. */
-export const EMBED_CARD_SIZES: readonly { readonly w: number; readonly h: number }[] = [{ w: 800, h: 450 }, { w: 800, h: 352 }];
+/** Every size the app gives an embed (and 800×450, the size every embed had before), so a card still at one of them takes
+ * the size of its new kind on conversion. */
+export const EMBED_CARD_SIZES: readonly { readonly w: number; readonly h: number }[] = [
+    { w: 800, h: 450 }, EMBED_SIZE_DEFAULT, ...Object.values(EMBED_SIZES).filter(size => size !== undefined),
+];
 function enabledOrigins(manifest: EmbedManifest | undefined): readonly string[] | null {
     if (!manifest || manifest.version !== 1 || !Array.isArray(manifest.origins) || !manifest.origins.length
         || manifest.origins.length > ORIGINS.length || new Set(manifest.origins).size !== manifest.origins.length

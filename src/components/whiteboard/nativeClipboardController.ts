@@ -218,7 +218,8 @@ export function createNativeClipboardController(options: NativeClipboardControll
             report(() => { const target = targetNow(); const read = readClipboard(); void read.catch(() => {}); void execute(read, target, intent).catch(pasteFailure); });
         },
         keydown(event: KeyboardEvent) {
-            if (options.editingText() || !(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'v' || (!event.altKey && !event.shiftKey)) return false;
+            // The physical key, not `event.key`: on macOS Option turns V into "√", so ⌘⌥V and ⌘⇧⌥V would never match by character.
+            if (options.editingText() || !(event.metaKey || event.ctrlKey) || (event.code !== 'KeyV' && event.key.toLowerCase() !== 'v') || (!event.altKey && !event.shiftKey)) return false;
             event.preventDefault();
             const intent = event.shiftKey ? event.altKey ? 'paste-plain-inverted' : 'paste-plain' : 'paste-inverted';
             report(() => { const target = targetNow(); const read = readClipboard(); void read.catch(() => {}); void execute(read, target, intent).catch(pasteFailure); });

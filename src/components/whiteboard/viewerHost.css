@@ -146,4 +146,181 @@
 
 .board-helper-back {
     order: 1;
+
+/* The picture's own crop (NativePictureCrop): drawn over the board where the picture is, its whole original faded and the kept
+   window bright. The frame turns with the picture; the bar above it does not, so it is a sibling placed in the surface's pixels. */
+.crop-live {
+    position: absolute;
+    width: 0;
+    height: 0;
+    transform-origin: 0 0;
+    pointer-events: none;
+    z-index: 4;
+}
+
+.crop-live-frame {
+    position: absolute;
+    left: 0;
+    top: 0;
+    transform-origin: 50% 50%;
+    pointer-events: none;
+}
+
+.crop-live-faded,
+.crop-live-kept {
+    position: absolute;
+    display: block;
+    max-width: none;
+    user-select: none;
+    pointer-events: none;
+}
+
+.crop-live-full {
+    position: absolute;
+    background: var(--background-primary);
+    pointer-events: none;
+}
+
+.crop-live-faded {
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    opacity: .35;
+}
+
+.crop-live-window {
+    position: absolute;
+    box-sizing: border-box;
+    outline: 1.5px solid var(--text-accent);
+    outline-offset: -1px;
+    cursor: move;
+    pointer-events: auto;
+    touch-action: none;
+}
+
+.crop-live-window.is-circle {
+    border-radius: 50%;
+}
+
+.crop-live-clip {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+}
+
+.crop-live-window.is-circle .crop-live-clip {
+    border-radius: 50%;
+}
+
+.crop-handle {
+    position: absolute;
+    width: 11px;
+    height: 11px;
+    transform: translate(-50%, -50%);
+    background: var(--text-accent);
+    border: 1.5px solid var(--text-on-accent);
+    border-radius: 2px;
+    pointer-events: auto;
+}
+
+.crop-handle-nw { left: 0; top: 0; cursor: nwse-resize; }
+.crop-handle-n { left: 50%; top: 0; cursor: ns-resize; }
+.crop-handle-ne { left: 100%; top: 0; cursor: nesw-resize; }
+.crop-handle-e { left: 100%; top: 50%; cursor: ew-resize; }
+.crop-handle-se { left: 100%; top: 100%; cursor: nwse-resize; }
+.crop-handle-s { left: 50%; top: 100%; cursor: ns-resize; }
+.crop-handle-sw { left: 0; top: 100%; cursor: nesw-resize; }
+.crop-handle-w { left: 0; top: 50%; cursor: ew-resize; }
+
+/* The crop bar and the picture toolbar float above the picture's top edge, centred on it, in the same chrome as the other bars. */
+.crop-bar,
+.picture-toolbar {
+    position: absolute;
+    z-index: 5;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px;
+    transform: translate(-50%, calc(-100% - 10px));
+    border: 1px solid var(--board-bar-border, transparent);
+    border-radius: 12px;
+    background: var(--board-bar-bg, var(--background-primary));
+    box-shadow: var(--board-bar-shadow, 0 6px 20px rgb(0 0 0 / 16%), 0 1px 3px rgb(0 0 0 / 10%));
+    color: var(--text-normal);
+    white-space: nowrap;
+    pointer-events: auto;
+}
+
+.crop-bar {
+    padding: 4px 6px;
+}
+
+.crop-field {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.crop-select {
+    padding: 4px 6px;
+    font: inherit;
+    font-size: 12px;
+    color: var(--text-normal);
+    background: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 6px;
+}
+
+.crop-zoom .crop-range {
+    width: 96px;
+    accent-color: var(--text-accent);
+}
+
+.crop-bar-btn,
+.picture-toolbar-btn {
+    display: grid;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    place-items: center;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: color-mix(in srgb, var(--text-normal) 80%, var(--background-primary));
+    cursor: pointer;
+}
+
+.crop-bar-btn:hover,
+.picture-toolbar-btn:hover {
+    background: var(--background-modifier-hover);
+}
+
+.crop-bar-apply {
+    color: var(--text-on-accent);
+    background: var(--text-accent);
+}
+
+.crop-bar-apply:hover {
+    background: var(--text-accent);
+    filter: brightness(1.08);
+}
+
+.picture-toolbar-text {
+    width: auto;
+    padding: 0 8px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .04em;
+}
+
+.visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
 }

@@ -14,6 +14,8 @@ export interface ToolRegistration {
 export interface ToolChoice {
   readonly id: string
   readonly variant?: string
+  /** The tool's name in the board's language, when the bar supplies it: a text dropped from the bar starts with it. */
+  readonly label?: string
 }
 
 /** Returns true when the board view takes the press (see ChromeToolDrag). */

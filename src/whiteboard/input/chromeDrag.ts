@@ -169,22 +169,25 @@ export class ChromeToolDrag<Context> {
 /** A toolbar text drop: the text is created where the pointer is released, and entered for editing (catalogue T§11). It has no
  *  drag width of its own, unlike the text tool's press-and-drag column. Its preview is the same auto-size mark the text tool
  *  shows, carried by the pointer until release, so the text appears where the mark was. */
-export const textDropTool: Tool<TextToolContext> = {
-  id: 'text',
-  begin(first: RealSample, _modifiers: Modifiers, context: TextToolContext): GestureOwner {
-    let last = first
-    context.previewTextColumn(first.x, first.y, null)
-    return {
-      kind: 'node-edit', pointerIds: new Set([first.pointerId]),
-      update(samples) {
-        for (const sample of samples) if (sample.pointerId === first.pointerId) last = sample
-        context.previewTextColumn(last.x, last.y, null)
-      },
-      finish(reason) {
-        context.clearTextColumnPreview()
-        if (reason === 'up') context.createText(last.x, last.y, null)
-      },
-      cancel() { context.clearTextColumnPreview() },
-    }
-  },
+export function textDropTool(label: string | undefined): Tool<TextToolContext> {
+  return {
+    id: 'text',
+    begin(first: RealSample, _modifiers: Modifiers, context: TextToolContext): GestureOwner {
+      let last = first
+      context.previewTextColumn(first.x, first.y, null)
+      return {
+        kind: 'node-edit', pointerIds: new Set([first.pointerId]),
+        update(samples) {
+          for (const sample of samples) if (sample.pointerId === first.pointerId) last = sample
+          context.previewTextColumn(last.x, last.y, null)
+        },
+        finish(reason) {
+          context.clearTextColumnPreview()
+          // The drop creates "Text" (the tool's name) and selects it all, so typing replaces it (catalogue T§11).
+          if (reason === 'up') context.createText(last.x, last.y, null, label || undefined)
+        },
+        cancel() { context.clearTextColumnPreview() },
+      }
+    },
+  }
 }

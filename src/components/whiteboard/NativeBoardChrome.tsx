@@ -32,7 +32,7 @@ export function NativeBoardChrome(props: NativeBoardChromeProps) {
         // A registration's `lockable: false` (zoom) withdraws the padlock, as ToolState's own rule does (gesture.ts).
         lockable: (id: string) => { const registration = runtime.tools.getRegistration(id); return registration?.persistence === 'single-use' && registration.lockable !== false; },
         setBarTools: (choices: readonly { readonly id: string; readonly variant?: string }[]) => runtime.tools.setBarTools(choices),
-        beginDrag: (choice: { readonly id: string; readonly variant?: string }, event: PointerEvent, bar: Element) => currentOwner() && runtime.tools.beginChromeDrag(choice, event, bar) }), [runtime, currentOwner]);
+        beginDrag: (choice: { readonly id: string; readonly variant?: string; readonly label?: string }, event: PointerEvent, bar: Element) => currentOwner() && runtime.tools.beginChromeDrag(choice, event, bar) }), [runtime, currentOwner]);
     if (engine.session !== runtime.session) throw new Error('Board chrome needs the attached board session');
     const [owned, setOwned] = useState<{ runtime: BoardRuntime; engine: ViewerEngine; language: BoardLanguageState; styles: Styles } | null>(null);
     useEffect(() => {

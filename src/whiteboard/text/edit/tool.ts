@@ -3,7 +3,7 @@ import type { GestureOwner, Modifiers, RealSample, Tool } from '../../input/tool
 export interface TextToolContext {
     // The tool supplies geometry; the view creates through the shared apply path
     // and then enters editing on the created node.
-    createText(x: number, y: number, width: number | null): void;
+    createText(x: number, y: number, width: number | null, seed?: string): void;
     worldToScreen(x: number, y: number): { readonly x: number; readonly y: number };
     previewTextColumn(x: number, y: number, width: number | null): void;
     clearTextColumnPreview(): void;

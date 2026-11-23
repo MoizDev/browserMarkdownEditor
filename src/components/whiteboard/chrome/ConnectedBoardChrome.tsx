@@ -11,7 +11,7 @@ export interface ToolStateView {
     /** The tools the bar shows now, in order; the number keys press them. */
     setBarTools(choices: readonly { readonly id: string; readonly variant?: string }[]): void;
     /** A press on a bar tool that is dragged onto the board; the board takes it or not. */
-    beginDrag?(choice: { readonly id: string; readonly variant?: string }, event: PointerEvent, bar: Element): boolean;
+    beginDrag?(choice: { readonly id: string; readonly variant?: string; readonly label?: string }, event: PointerEvent, bar: Element): boolean;
 }
 
 export interface ConnectedBoardChromeProps extends Omit<BoardChromeProps, 'selectedTool' | 'selectTool' | 'dragTool' | 'lastFigure' | 'toolLock' | 'onBarTools'> {
@@ -26,7 +26,7 @@ export function ConnectedBoardChrome({ toolState, openMedia, ...props }: Connect
         lastFigure={snapshot.lastFigure}
         toolLock={toolState.lockable(snapshot.active.id) ? { locked: snapshot.locked, toggle: toolState.toggleLocked } : undefined}
         onBarTools={shown => toolState.setBarTools(shown.map(choice => ({ id: choice.id, variant: choice.figure })))}
-        dragTool={toolState.beginDrag && ((choice, event, bar) => toolState.beginDrag!({ id: choice.id, variant: choice.figure }, event, bar))}
+        dragTool={toolState.beginDrag && ((choice, event, bar) => toolState.beginDrag!({ id: choice.id, variant: choice.figure, label: choice.label }, event, bar))}
         selectTool={choice => {
             if (choice.id === 'media') openMedia();
             else toolState.setTool(choice.id, choice.figure);

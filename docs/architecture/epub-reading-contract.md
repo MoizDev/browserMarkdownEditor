@@ -42,18 +42,18 @@ then resolves page bounds/quote and detects digest drift. Legacy surface:text re
 the old emphasis action, so restore Original with the same anchor/camera. New Text writes carry
 textChoice:manual; only that marker authorizes restoring Text. No global preference migration is
 needed: saved emphasis remains a paint preference and never selects a surface. Surface and location
-writes update the
-central record synchronously, with flushes on hide/unmount/pagehide. Original updates its legacy
-camera in memory before a header action. No new PDF proxy is created for a surface switch.
-Native PDF uses the exact pdf.js 6.1.200 original glyph/paint route (pdfNativeEmphasis), adding
-a thin same-color stroke before the original fill on eligible glyphs. Capability requires a final
-pixel difference in a canonical white-background whole-page probe, bounded to 2^20 pixels; it is
-not a separate per-zoom proof. Clipped, off-page, white-on-white or occluded calls alone cannot
-enable the header. Off pixels are painted before the independent proof, and a cached verdict avoids
-repeating it on zoom. Probe consumers hold their own page leases and cancel independently of the
-display raster. Current-page Viewer and pristine annotation backdrop results publish availability
-through PdfPane; unknown/loading pages are inactive. Immutable display-list plans are bounded and
-invalidated with page cleanup; context bindings are per-render and no result is stored in the vault.
+writes update the central record synchronously, with flushes on hide/unmount/pagehide. Original updates its legacy
+camera in memory before a header action. A surface switch opens no second copy of the document: both
+surfaces share the App source in the one PDF pool.
+Native PDF emphasis is drawn by the PDFium tile worker (`src/pdf/emphasis/`). The plan (`plan.ts`,
+algorithm `latin-prefix-v1`) finds eligible glyph prefixes in the page's text objects, builds each glyph's
+cell without flattening rotation or shear (`cell.ts`) and rejects a word whose stroke would collide with
+other ink (`collision.ts`); the tile render adds a thin same-colour stroke (`EMPHASIS_STROKE_EM`, 0.035 em)
+to those glyphs. Emphasis tiles are their own variant keyed by profile, so plain tiles stay valid.
+Capability is a per-page verdict (`controller.ts`) from a whole-page probe on opaque white, bounded to
+2^20 pixels (`EMPHASIS_MAX_PROBE_PIXELS`, profile `page-probe-v1`); verdicts are cached per page, so zoom
+does not repeat the probe. Unknown/loading pages are inactive; availability publishes through PdfPane
+(`utils/pdfEmphasisAvailability.ts`), and no result is stored in the vault.
 The Text agent reporter supplies actual bounded visible/selected canonical text and physical-page
 extraction. Text image capture is explicitly unsupported; it never substitutes an Original PNG.
 

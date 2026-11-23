@@ -11,6 +11,15 @@ import type { ScenePaintNodeStream } from './scenePaintStream';
 import type { PaintNodeOrder } from './paintOrder';
 import { SECURITY_LIMITS } from '../security/limits';
 
+/** The paint source's yield between slices. A chain of setTimeout(0) is clamped to 4 ms from its fifth link, and the streaming source
+ * yields every 0.25 ms of work, so a dense tile's read of a sheet waited about 4 ms per slice with the main thread idle (measured,
+ * canvas2d DPR 2, the stroke seed fitted at 1% after a hide: one read of 1,024 nodes took 1.26 s, the board 'Loading drawing…' for
+ * 2.5 s). scheduler.yield gives input and rendering their turn without the clamp. */
+function yieldToHost(): Promise<void> {
+    const scheduler = (globalThis as typeof globalThis & { scheduler?: { yield?(): Promise<void> } }).scheduler;
+    return scheduler?.yield ? scheduler.yield() : new Promise<void>(resolve => setTimeout(resolve, 0));
+}
+
 // Provenance: document-model transforms and frame clipping, paint-stream order
 // and page-stack contracts; independent traversal, no third-party source.
 export interface SceneResolveContext {
@@ -214,7 +223,7 @@ export function createScenePaintNodeStream(doc: BoardDoc, token: RenderToken, re
                     if (next.done) { ended = true; signal.removeEventListener('abort', abort); return null; }
                     if (next.value.kind === 'emit') return next.value.node;
                     if (next.value.kind === 'resolve') value = await ports.resolve(next.value.node, next.value.context, controller.signal);
-                    else await (ports.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+                    else await (ports.cooperate?.() ?? yieldToHost());
                 }
             };
             const promise = run();
@@ -239,7 +248,7 @@ export async function prepareScenePaintSource(doc: BoardDoc, token: RenderToken,
             const next = job.next(value); value = undefined;
             if (next.done) return next.value;
             if (next.value.kind === 'resolve') value = await ports.resolve(next.value.node, next.value.context, signal);
-            else await (ports.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+            else await (ports.cooperate?.() ?? yieldToHost());
             signal.throwIfAborted();
         }
     } finally { job.return(undefined as never); }

@@ -607,7 +607,11 @@ export class PdfTileLayer implements Layer {
         const snapshot = this.mirror?.view(view);
         // One key per call: it is a JSON string, and the expression below hashed the same snapshot up to twice.
         const snapshotKey = snapshot ? mirrorViewKey(snapshot) : '';
-        const mirrored = !snapshot || snapshotKey === this.mirrorKey || snapshotKey === this.mirrorSkipped;
+        // A view whose mirror was trimmed and waits for room (mirrorTrimmed) lets go too: the bitmaps held for it were the room it
+        // waited for, so neither ever came. Measured, doc40 at 300% on WebGL2, DPR 2, at rest: 26.7 MB of tiles already on the GPU
+        // kept beside a 15 MB older mirror, the CPU pool at 42.7 of 47.9 MB 8 s later, one 10.6 MB mirror:trimmed-wait never woken.
+        // The view keeps its older mirror (the mirror is only a stand-in, see prepareMirror's fallback:mirror-kept-older).
+        const mirrored = !snapshot || snapshotKey === this.mirrorKey || snapshotKey === this.mirrorSkipped || snapshotKey === this.mirrorTrimmed;
         for (const [key, entry] of this.entries) {
             if (!entry.bitmap || entry.texture?.device !== device) continue;
             // Only the current plan's visible tiles feed the mirror; an older scale kept as a stand-in never does

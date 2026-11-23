@@ -94,8 +94,14 @@ interface Props {
 
 /** The pane is a camera and DOM chrome around one shared-platform page layer.
  * The document/pool and CPU mirror belong to App's session, not this mount. */
-/** The governor's memory notices, which clear when the pane is back at full quality. */
-const QUALITY_NOTICES = new Set(['PDF rendering quality was reduced to fit memory.', 'PDF rendering is limited by available memory.']);
+/** The platform's memory notices for this pane: raised once its own grant has kept it below full quality (or refused its CPU floor)
+ * for a second, withdrawn when that ends. */
+const MEMORY_NOTICES = { 'memory-pressure': 'PDF rendering quality was reduced to fit memory.', 'cpu-floor-denied': 'PDF rendering is limited by available memory.' } as const;
+const RETRY_REQUESTED = 'Retry requested. Pages may remain unavailable until rendering completes.';
+/** Notices about a state a sharp frame ends, so they clear on the next sharp frame: a sharp frame is full quality. The retry message is
+ * one: posted as an error, it stayed over sharp pages for good after a retry (seen at 1440x900, b2). A refused CPU floor is not: it
+ * can hold under a sharp frame of tiles already drawn, and cleared by that frame it flashed for one frame; the platform withdraws it. */
+const PASSING_NOTICES = new Set<string>([MEMORY_NOTICES['memory-pressure'], RETRY_REQUESTED]);
 
 export default function PdfTiledView({ reading, session, document: pdf, filePath, isVisible, isFocused,
     mirror, transition, bridge, capturer, findMemory, selectionState, sourceHash, onPresentation, onSearchVault, onRotate, onOpenTextView, onNotice, onCapabilities }: Props) {
@@ -145,7 +151,7 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
     const clearQualityNotice = useCallback(() => {
         if (!mounted.current || liveSession.current !== session) return;
         const current = sessionNotices.get(session);
-        if (!current || current.error || !QUALITY_NOTICES.has(current.message)) return;
+        if (!current || current.error || !PASSING_NOTICES.has(current.message)) return;
         sessionNotices.delete(session);
         setNoticeState({ session, notice: undefined });
     }, [session]);
@@ -165,7 +171,9 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
             await retryDocument.call(pdf.poolDocument);
             if (!mounted.current || liveSession.current !== session || !session.isCurrent()) return;
             setRetryGeneration(value => value + 1);
-            reportRenderNotice('Retry requested. Pages may remain unavailable until rendering completes.', true);
+            // The retry answers the error it was asked for: that notice gives way to one the next sharp frame clears.
+            sessionNotices.delete(session);
+            reportRenderNotice(RETRY_REQUESTED);
         } catch {
             reportRenderNotice('PDF retry failed. The current document and annotations were retained.', true);
         } finally {
@@ -601,10 +609,9 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
             if (currentSharp.current && updatingRef.current) { updatingRef.current = false; setUpdating(false); }
             if (currentSharp.current) clearQualityNotice();
         }, onError: () => reportRenderNotice('The PDF viewer encountered a rendering error.', true),
-        onNotice: (message, cause) => reportRenderNotice(message === 'memory-pressure' ? 'PDF rendering quality was reduced to fit memory.'
-            : message === 'cpu-floor-denied' ? 'PDF rendering is limited by available memory.'
-                : message === 'cpu-pinned' ? 'PDF rendering is using a compatible mode.' : gpuUnavailableText(cause)),
-        onNoticeCleared: (_message, cause) => clearRenderNotice(gpuUnavailableText(cause)),
+        onNotice: (message, cause) => reportRenderNotice(message === 'memory-pressure' || message === 'cpu-floor-denied' ? MEMORY_NOTICES[message]
+            : message === 'cpu-pinned' ? 'PDF rendering is using a compatible mode.' : gpuUnavailableText(cause)),
+        onNoticeCleared: (message, cause) => clearRenderNotice(message === 'gpu-unavailable' ? gpuUnavailableText(cause) : MEMORY_NOTICES[message]),
     }), [lease, mirror, capturer, mirrorView, onNotice, pageLayer, pdf, session, stack, updateTextMirrorView, onFindView, filePath, persist, correctReveal, clamp, refreshSelectionPointer, capabilities, reportRenderNotice, clearQualityNotice, clearRenderNotice]);
     const platformPane = usePlatformPane<PdfMirrorPixels>({ host, isVisible, isFocused, vaultEpoch: session.token.vaultEpoch,
         documentId: session.token.documentId, layers, services });
@@ -803,16 +810,19 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         : pageStatus.state === 'slow' ? `Still drawing page ${page + 1}…`
             : pageStatus.state === 'failed' || pageStatus.state === 'quarantined' ? pageStatus.reason ?? 'This page could not be drawn.' : undefined;
     const visibleNotice = pageNotice ?? notice?.message;
+    // Retry reloads the document, so it is offered only for a page or render that failed. A memory or mode notice gets Dismiss only:
+    // retrying one reloaded every page and left an error-class message over sharp pages.
+    const offerRetry = !!pageNotice || !!notice?.error;
     return <div className={`pdf-viewer pdf-tiled-view${thumbs ? ' has-thumbs' : ''}`}>
         {find.bar}
         {outline.panel}
         {visibleNotice && <div className="pdf-tiled-notice" role="status">
             <div>{visibleNotice}</div>
             <div className="pdf-tiled-notice-actions">
-                <button type="button" className="disk-bar-btn" onClick={() => { void retry(); }} disabled={!retryDocument || retryBusy === session}>Retry</button>
+                {offerRetry && <button type="button" className="disk-bar-btn" onClick={() => { void retry(); }} disabled={!retryDocument || retryBusy === session}>Retry</button>}
                 {!pageNotice && <button type="button" className="disk-bar-btn" onClick={() => { sessionNotices.delete(session); setNoticeState({ session, notice: undefined }); }}>Dismiss</button>}
             </div>
-            {!retryDocument && <div className="pdf-tiled-notice-hint">Retry is unavailable.</div>}
+            {offerRetry && !retryDocument && <div className="pdf-tiled-notice-hint">Retry is unavailable.</div>}
         </div>}
         {thumbs && isVisible && <PdfThumbnails ref={thumbsRef} sizes={pdf.pages} renderThumbnail={renderThumbnail} onSelect={goPage} initialPage={page} />}
         <div className="pdf-tiled-content" ref={setContentHost}><div className="pdf-tiled-surface" ref={setHost} tabIndex={0} aria-label="PDF pages" />

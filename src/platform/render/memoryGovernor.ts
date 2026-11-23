@@ -376,6 +376,7 @@ export class MemoryGovernor {
         let pixels = 0;
         let visible = 0;
         let dprScale = 1;
+        let floors = 0;
         for (const pane of panes) {
             count(pane.requestedPixels);
             count(pane.gpuNeedBytes);
@@ -388,6 +389,7 @@ export class MemoryGovernor {
             ids.add(pane.paneId);
             if (pane.visible && pane.requestedPixels > 0) {
                 pixels += pane.requestedPixels; visible++;
+                floors += pane.cpuMandatoryBytes ?? 0;
                 const dpr = pane.devicePixelRatio ?? 1;
                 if (Number.isFinite(dpr) && dpr > 1) dprScale = Math.max(dprScale, Math.min(POLICY.gpuGrantMaxDpr, dpr) ** 2);
             }
@@ -409,8 +411,15 @@ export class MemoryGovernor {
             // again (measured: doc12 and LARGE=11 at DPR 2, draw-sat and drag-sat 0/91; zoom-sat 52-70 stand-in presents).
             this.target.gpu = Math.min(this.ceilings.gpuBytes, Math.max(POLICY.gpuGrantMinBytes * dprScale,
                 (POLICY.gpuGrantBaseBytes + POLICY.gpuGrantPerVisiblePaneBytes * visible) * dprScale + POLICY.gpuGrantPerVisiblePixelBytes * pixels));
+            // The CPU target also covers every visible pane's declared floor with the soft-pressure line's headroom, inside the device
+            // ceiling: the per-pixel formula (8 MB + 12 B/px) is below a PDF pane's floor (its view's tiles, their cropped mirror and the
+            // 2D canvas: ~15-17 B per device pixel), so one PDF alone, nothing else open, was refused its floor at DPR 2 and the floor
+            // alone held the pool past its trim line. Measured, one visible PDF: 1440x900 (3.49 M device px) floor 50.3-54.5 MB against
+            // a 50.2 MB grant; 2560x1440 (11.76 M) 159.7-169.6 MB against 149.6 MB. Floor / 0.9 puts the floor itself below the line
+            // (60.6 and 188 MB); a 'high' device's 256 MB ceiling holds both, a smaller device's ceiling still bounds it.
             this.target.cpu = Math.min(this.ceilings.cpuRasterBytes, Math.max(POLICY.cpuGrantMinBytes,
-                POLICY.cpuGrantPerVisiblePaneBytes * visible + POLICY.cpuGrantPerVisiblePixelBytes * pixels));
+                POLICY.cpuGrantPerVisiblePaneBytes * visible + POLICY.cpuGrantPerVisiblePixelBytes * pixels,
+                Math.ceil(floors / POLICY.memorySoftPressureRatio)));
             this.trimmedAt.gpu = -1;
             this.trimmedAt.cpu = -1;
             this.replan();

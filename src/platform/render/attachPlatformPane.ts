@@ -33,7 +33,7 @@ import type { MirrorView } from './mirrorSet';
 import { PaneLayerSet } from './paneLayerSet';
 import { PaneLifecycle } from './paneLifecycle';
 import { PaneSizeObserver } from './paneObservation';
-import { getPlatformRuntime } from './platformRuntime';
+import { getPlatformRuntime, type MemoryNotice } from './platformRuntime';
 import type { ScheduledFrame, ScheduledPaneLease } from './scheduler';
 import { computeSurfaceMetrics, SurfaceMetricsCommitter } from './surfaceMetrics';
 import type { FrameToken, Layer, RenderToken } from './types';
@@ -409,7 +409,8 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                 surfaceHost.clearStaged();
             }
         },
-        notice: (message: 'memory-pressure' | 'cpu-floor-denied') => options.onNotice(message),
+        notice: (message: MemoryNotice) => options.onNotice(message),
+        noticeCleared: (message: MemoryNotice) => options.onNoticeCleared?.(message),
         error: options.onError,
     };
     const removeRuntime = runtime.add(options.paneId, runtimePane);

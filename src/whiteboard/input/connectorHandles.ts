@@ -71,7 +71,7 @@ export function connectorEndHandleGesture(first: RealSample, modifiers: Modifier
         try {
             if (!scope) await source;
             check();
-            // Ctrl on macOS and Cmd anywhere are the no-binding keys; the free end then moves as an ordinary point.
+            // The accel key (Cmd on macOS, Ctrl elsewhere) and Ctrl are the no-binding keys; the free end then moves as an ordinary point.
             const bindable = !input.accel && !input.control;
             const attachment = bindable ? await options.resolveAttachment(point, localRequest.signal,
                 { precise: target => precision.decide(target, now, speed, otherEnd?.target === target && otherEnd.precise),

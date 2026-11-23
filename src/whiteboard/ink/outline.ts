@@ -1,7 +1,7 @@
 import type { PathCommand } from '../../platform/types';
 import type { CurveGeometry } from './curve';
 import { CurveFlag } from './curve';
-import { CubicFlattenJob, INK_CAP_ERROR_DEVICE_PX, INK_CENTRELINE_ERROR_DEVICE_PX, INK_MAX_FLAT_PIECES, INK_RADIUS_ERROR_DEVICE_PX } from './flatten';
+import { CubicFlattenJob, INK_CAP_ERROR_DEVICE_PX, INK_CENTRELINE_ERROR_DEVICE_PX, INK_DASH_PHASE_ERROR_DEVICE_PX, INK_MAX_FLAT_PIECES, INK_RADIUS_ERROR_DEVICE_PX } from './flatten';
 import type { CubicArcMap } from './flatten';
 import type { SampleSequence } from './samples';
 import { curveRadii, DOT_METRIC_PROVISIONAL, interpolateRadius, radiusAtCurveParameter, radiusAtSample, strokeDot } from './width';
@@ -125,6 +125,7 @@ export class InkCoverageJob {
     private readonly centreTolerance: number;
     private readonly radiusTolerance: number;
     private readonly arcTolerance: number;
+    private readonly phaseBudget: number;
     private readonly prefixError: number;
     private readonly originError: number;
     private readonly radiusSlope: number;
@@ -183,7 +184,14 @@ export class InkCoverageJob {
             && (source.firstSpan > 0 || !this.reachesEnd) && options.radiusSlopeBound === undefined)) {
             throw new RangeError('Partial pressure/dash geometry needs a certified whole-stroke radius-slope bound');
         }
-        const phaseBudget = Math.min(this.centreTolerance / 2, this.radiusSlope ? this.radiusTolerance / (4 * this.radiusSlope) : Infinity);
+        // A dash or dot is placed by arc length, so an arc-length error SLIDES the pattern along the drawn
+        // curve; it moves no outline off the centreline. It has its own budget (INK_DASH_PHASE_ERROR_DEVICE_PX),
+        // no longer a share of the centre tolerance: once freehand spans became real curves, certifying
+        // 1/64 px of drift made a dashed spiral wait for memory forever (measured beside the constant).
+        // The radius term still bounds a pressure stroke's width error.
+        const phaseBudget = Math.min(INK_DASH_PHASE_ERROR_DEVICE_PX / options.deviceScale,
+            this.radiusSlope ? this.radiusTolerance / (4 * this.radiusSlope) : Infinity);
+        this.phaseBudget = phaseBudget;
         this.arcTolerance = this.patterned ? phaseBudget / Math.max(1, samples.count - 1 + (this.closed ? 1 : 0)) : Infinity;
         this.prefixError = options.arcPrefix?.errorWorld ?? 0;
         const distance = options.arcPrefix?.distanceWorld ?? 0;
@@ -319,7 +327,7 @@ export class InkCoverageJob {
         const phaseError = this.patterned ? this.prefixError
             + Math.max(Math.abs(this.arcPosition - this.lengthLower), Math.abs(this.lengthUpper - this.arcPosition)) : 0;
         const radiusError = this.radiusError + this.radiusArithmetic + this.radiusSlope * phaseError;
-        if (radiusError > this.radiusTolerance || this.centreError + phaseError > 2 * this.centreTolerance) {
+        if (radiusError > this.radiusTolerance || this.centreError > 2 * this.centreTolerance || phaseError > this.phaseBudget) {
             throw new RangeError('Ink arc-length bounds exceed the declared geometry allocation');
         }
         if (this.pointSpacing && !this.isDot && this.reachesEnd && this.nextPoint === this.arcPosition && this.geometry.spanCount) {

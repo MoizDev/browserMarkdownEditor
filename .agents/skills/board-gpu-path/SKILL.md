@@ -51,6 +51,9 @@ and the platform alone picks the device.
   positions under its bounds dirty, and a dirty position is recomposed into the target it already has.
 - `prepare(view, budget, prepared, omit?)`: `omit` is the nodes a drag previews elsewhere; their tiles compose
   without them. The draw never takes an omit set.
+- Every upload belongs to prepare: each route's `uploadPrepared()` runs at its end, and `encodeOffscreen` (the text
+  route's glyph-to-atlas conversion) only encodes what it staged. A device refuses a write after a pass is recorded
+  in the frame (`rendering-platform`, "Uploads belong in prepare").
 - **Routes**: `routePath` (fills, strokes, clips), `routeInk`, `routeImage`, `routeText` (glyph masks,
   `textMasks.ts`), and `cpu`. A run no GPU route takes is counted `fallback:item-cpu:<kind>:<why>`.
 - **Exact area** is the bar for shapes and ink: the exact coverage of the item's own geometry, not canvas2d (which
@@ -103,6 +106,12 @@ and the platform alone picks the device.
 
 - A node that leaves the omit set while its tiles lack it is drawn live (`heldNodes`) until an entry encoded since
   holds it (`heldLive`). Positions under a held node compose first.
+- **`drawnLive` is cleared where the draw happens** (`tileComposer.ts` `drawGpu`), not at prepare. The base layer
+  reads `drawnLiveNodeIds(band)` between the overlay's prepare and its draw; cleared at prepare it read an empty set
+  on every frame of a drag, so the dragged node's original stayed on screen until release (measured: drawn=0 at each
+  base read). It is the composer's truth for what the composite laid live.
+- A cached picture is used only when its scene revision and render token both match the frame (`sameToken`,
+  `render/boardLayers.ts`, which the preview layers import too); a source that fails it is not reused.
 - The wet layer (`viewer/wetLayer.ts`) lets go of a stroke when the board reports it in `drawnInkNodeIds`, read in
   the wet layer's own prepare. A node goes in only once every live part of it was admitted this frame: reported
   earlier, a deferred re-admission at pen-up left the stroke on neither layer for a frame.

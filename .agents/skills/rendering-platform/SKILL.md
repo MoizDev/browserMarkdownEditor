@@ -127,6 +127,11 @@ draws differently because a GPU exists.
   and measurement alike.
 - `encode`/`submit` may return null: never acknowledge a present or advance overlays without a complete current
   frame. Budget deferrals requeue; external waits wake on completion or a real deadline, never by polling frames.
+- **Camera motion is the scheduler's.** `glideTo(target, ms)` is on `PlatformPane` and on the `ScheduledPaneLease`:
+  the scheduler's own frame loop moves the camera, and each glide cancels the one before it. `animatePan(delta)` is a
+  glide of a pan delta over `GLIDE_MS` (320 ms; the board's Space+arrow paging and its pan use it). Reduced motion, a
+  zero duration or a pane that cannot run frames jump at once, so a caller's move (back to content, the minimap)
+  still lands. `startFling` and `cancelMotion` are wired the same way (`scheduler.ts`, `attachPlatformPane.ts`).
 - Ask for a frame only for a cause. With the audit on, each present is named `present:<cause>` (`input`, `camera`,
   `wake`, `invalidate:<reason>`, `needsFrame:<layer>`); `none` is a fault.
 - A layer passed over by the budget counts as changed. A layer's class (critical/optional) is read once as its
@@ -165,6 +170,10 @@ draws differently because a GPU exists.
 - Nothing unchanged is redone and nothing per frame is allocated: no re-raster, re-tessellation, re-upload, per-frame
   string keys or snapshot arrays. On a tiled GPU the cost is render-target switches (`gpu:target-switch`).
 - Mask clips and groups need isolation targets planned in prepare (`host.reserveIsolation`).
+- **Uploads belong in prepare.** A route's `uploadPrepared()` (`render/gpu/contracts.ts`) runs at the end of every
+  prepare, because a device refuses `writeBuffer`/`writeTexture` once a pass is recorded in the frame, and
+  `encodeOffscreen` runs after the earlier layers' passes. Anything staged after that upload is a composer bug and
+  fails the frame (`routeText.ts`, "staged after its upload"), never a silent draw from rows that lack it.
 - Audit-on builds share pipelines per device exactly as production does (`PerDeviceMap`, `auditViewTarget` in
   `renderAudit.ts`); a per-layer copy measures the kit, not the product.
 

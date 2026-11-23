@@ -194,7 +194,7 @@ Under each pane's tabs is a row belonging to that pane: its file's name in the m
 
 - **←** and **→** walk that pane back and forward through the documents it has shown, the way a browser's do. Each pane remembers its own, and only for as long as the app is open — after a reload both arrows start out greyed, because there is nowhere yet to go back to.
 - The **eye** button switches that pane between Read Mode and Edit Mode (\`Cmd + E\` / \`Ctrl + E\` does the same to the pane you last clicked in). On a PDF you can annotate, it switches between reading and drawing on it instead. A whiteboard, a notebook, this guide and a note that could not be read have no such button.
-- **⋯** holds what is left: **Insert table…** in a note, **Read extracted text** and **Original PDF** on a PDF, **Export to PDF** on a notebook, and **Close this pane**, which closes the pane and everything open in it.
+- **⋯** holds what is left: **Insert table…** in a note, **Read extracted text**, **Original PDF** and **Print…** on a PDF, **Export to PDF** on a notebook, and **Close this pane**, which closes the pane and everything open in it.
 
 With more than one pane, the pane you last clicked in is the one with the coloured underline, and it is the one that ⌘E, ⌘F and ⌘S act on. Every pane is a real editor: you can type in all of them, and each keeps its own undo history.
 
@@ -278,6 +278,8 @@ A note scrolls on past its last line by about half the height of its pane, so th
 ### Auto-Save
 You do not need to manually save your work. The editor automatically saves your changes to your local hard drive 1 second after you stop typing. You can also manually trigger a save using \`Cmd + S\` or \`Ctrl + S\`. If you reload or close the window while a change is still waiting to be saved, the browser asks whether you want to leave, in its own words; choose to stay and the save finishes as usual. Switching away from the window also saves straight away, as far as the browser lets it: that is a best effort, not a guarantee against a crash.
 
+If a save fails — the folder became read-only, the disk is full, another program holds the file — a notice at the bottom right says which file was not saved and why, and the status bar reads **Not saved**. It never takes the keyboard, so you can keep typing: your text stays in the tab, the next change tries again, and the notice goes away by itself once a save succeeds. Close it with **×** if you have read it; it stays closed for that file until the file saves again.
+
 ### When Files Change Outside the App
 Your notes are ordinary files, so other programs can change them too — a \`git pull\` in the terminal, a formatter, a sync service like iCloud or Dropbox, another editor, or this app open in a second browser tab. The editor notices, and never saves over a change it has not seen:
 - **A note you have open updates by itself** when its file changes and you have nothing unsaved in it. Your cursor and scroll position stay where they were, and \`Cmd + Z\` / \`Ctrl + Z\` steps back to the text you had before. Drawings, notebooks and PDFs reload the same way.
@@ -317,6 +319,8 @@ A **drawing** keeps its canvas controls. PDFs use their in-app reader and annota
 Three kinds of file open on a canvas instead of in the text editor: **drawings**, **notebooks** and **PDFs** you write on. All three use the same **board** — the same tools, menus and shortcuts, described first below — and are saved a second after you stop. A board is editable whenever its file can be written; otherwise it opens read-only with a notice that says why.
 
 Make a drawing or a notebook with the **pencil** button at the top of the sidebar (**New drawing or notebook**), then **New Drawing** or **New Notebook**, and type its name.
+
+A board you open or create from the file tree takes the keyboard straight away, so its tool keys work at once; so does clicking any button on its tool bar.
 
 ### The tool bar
 The bar at the bottom centre holds **Select** (\`V\`), **Hand** (\`H\`), **Draw** (\`D\`, also \`B\` or \`X\`), **Eraser** (\`E\`), **Arrow** (\`A\`), **Text** (\`T\`), **Note** (\`N\`, a sticky note), **Media** (a picture or video from your computer, \`Cmd/Ctrl + U\`) and **Rectangle** (\`R\`). The chevron at its end opens the rest: fifteen more figures (ellipse \`O\`, triangle, diamond, hexagon, oval, rhombus, star, cloud, heart, x box, check box and four block arrows), **Line** (\`L\`), **Highlight** (\`Shift + D\`), **Laser** (\`K\`) and **Frame** (\`F\`). While one of those is the active tool, the chevron shows it filled in blue. \`G\` picks the figure you used last. Hover any button for its name and key.
@@ -470,7 +474,7 @@ Editable annotations are limited to **32 MiB**: beyond that the save is refused 
 **Fonts.** When a PDF uses fonts it does not include, the reader substitutes bundled Noto faces where supported; ambiguous Chinese uses Simplified Chinese, and a known character set takes precedence over a conflicting language hint. **PDF feature limitations** states this policy for every PDF, not only those that needed it.
 
 #### Printing a PDF
-Use **Print…** at the top of the PDF (or \`Cmd + P\` / \`Ctrl + P\` while it has focus), choose **Prepare PDF** to save any pending annotations, then **Open PDF** to open the exact saved file in a new browser tab, and print from the browser's PDF viewer there. A blocked pop-up or a changed file is reported; allow pop-ups or resolve the notice and try again. An encrypted PDF may ask for its password again there. To print a notebook, press \`Cmd + P\` / \`Ctrl + P\` on its board, or export it to PDF first.
+Choose **Print…** in the PDF's **⋯** menu while reading it (or press \`Cmd + P\` / \`Ctrl + P\` while it has focus), choose **Prepare PDF** to save any pending annotations, then **Open PDF** to open the exact saved file in a new browser tab, and print from the browser's PDF viewer there. A blocked pop-up or a changed file is reported; allow pop-ups or resolve the notice and try again. An encrypted PDF may ask for its password again there. To print a notebook, press \`Cmd + P\` / \`Ctrl + P\` on its board, or export it to PDF first.
 
 ### EPUB books
 
@@ -486,7 +490,7 @@ Position and reading layout live only in this browser, separately for each vault
 
 ### Word emphasis
 
-The **Word emphasis** button in a reading header, its **⋯** row, and **Settings → Reading** share one preference, initially Off, across supported reading views. There are no per-file overrides. It visually emphasizes prefixes of eligible Latin prose, including rendered table body prose. In Markdown and EPUB, authored bold, code, math, URLs and unsupported scripts remain ordinary. PDF emphasis follows its original glyph mappings and supported painting routes. This optional visual heuristic makes no reading-speed or accessibility claim.
+The **Word emphasis** button in a reading header (three short lines, each starting heavy), its **⋯** row, and **Settings → Reading** share one preference, initially Off, across supported reading views. There are no per-file overrides. It visually emphasizes prefixes of eligible Latin prose, including rendered table body prose. In Markdown and EPUB, authored bold, code, math, URLs and unsupported scripts remain ordinary. PDF emphasis follows its original glyph mappings and supported painting routes. This optional visual heuristic makes no reading-speed or accessibility claim.
 
 It leaves the source, save state, undo history and copied text intact. PDF and EPUB emphasis paints eligible glyphs in the same document view, preserving original layout, artwork and reading position. Switching it Off restores the original paint. Image-only pages and unsupported text profiles remain unchanged and show why the control is inactive, while retaining your preference. Source editing and code/TeX keep their existing presentation. Notes, TXT and extensionless files keep their existing Markdown presentation and editor typography. Toggle with Enter/Space or a pointer; no new global shortcut is added. Reading preferences are stored in your browser, never in the vault.
 

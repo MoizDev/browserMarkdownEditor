@@ -3,7 +3,6 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
-        { key: "dialog.embedProviders", text: "Supported providers", reason: "Not translated yet: this board language shows the English heading." },
         { key: "chrome.system", text: "System", reason: "Same wording as English in this language." },
         { key: "paper.blank", text: "Blank", reason: "Same wording as English in this language." },
         { key: "styles.start", text: "Start", reason: "Same wording as English in this language." },
@@ -22,7 +21,7 @@ export default defineBoardLanguage({
     strings: {
         "dialog.insertEmbed": "Sett inn innebygging",
         "dialog.embedBody": "Skriv inn en lenke fra en støttet leverandør av innebygging. Innebyggingen lastes ikke før du velger Last inn.",
-        "dialog.embedProviders": "Supported providers",
+        "dialog.embedProviders": "Støttede leverandører",
         "dialog.url": "URL",
         "crop.aspect": "Sideforhold",
         "crop.zoom": "Forstørrelse",

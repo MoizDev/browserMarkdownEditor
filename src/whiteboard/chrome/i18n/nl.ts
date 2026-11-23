@@ -4,7 +4,6 @@ export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
         { key: "menu.canvas", text: "Canvas", reason: "Zelfde woord als in het Engels." },
-        { key: "dialog.embedProviders", text: "Supported providers", reason: "Not translated yet: this board language shows the English heading." },
         { key: "dialog.url", text: "URL", reason: "URL is the standard abbreviation, used unchanged in this language." },
         { key: "palette.recent", text: "Recent", reason: "The same word in Nederlands." },
         { key: "palette.help", text: "Help", reason: "The same word in Nederlands." },
@@ -20,7 +19,7 @@ export default defineBoardLanguage({
     strings: {
         "dialog.insertEmbed": "Insluiting invoegen",
         "dialog.embedBody": "Voer een koppeling in van een ondersteunde aanbieder van insluitingen. De insluiting wordt pas geladen als je Laden kiest.",
-        "dialog.embedProviders": "Supported providers",
+        "dialog.embedProviders": "Ondersteunde aanbieders",
         "dialog.url": "URL",
         "crop.aspect": "Beeldverhouding",
         "crop.zoom": "Zoomniveau",

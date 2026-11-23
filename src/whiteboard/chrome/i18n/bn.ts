@@ -3,7 +3,6 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
-        { key: "dialog.embedProviders", text: "Supported providers", reason: "Not translated yet: this board language shows the English heading." },
         { key: "dialog.url", text: "URL", reason: "URL is the standard abbreviation, used unchanged in this language." },
         { key: "commands.exportPng", text: "PNG", reason: "International file format or paper size designation." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -17,7 +16,7 @@ export default defineBoardLanguage({
     strings: {
         "dialog.insertEmbed": "এম্বেড ঢোকান",
         "dialog.embedBody": "একটি সমর্থিত এম্বেড প্রদানকারীর লিঙ্ক লিখুন। আপনি লোড বেছে না নেওয়া পর্যন্ত এম্বেডটি লোড হবে না।",
-        "dialog.embedProviders": "Supported providers",
+        "dialog.embedProviders": "সমর্থিত প্রদানকারী",
         "dialog.url": "URL",
         "crop.aspect": "দৈর্ঘ্য-প্রস্থ অনুপাত",
         "crop.zoom": "জুম",

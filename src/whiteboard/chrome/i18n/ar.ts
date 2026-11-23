@@ -3,7 +3,6 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "rtl",
     englishTerms: [
-        { key: "dialog.embedProviders", text: "Supported providers", reason: "Not translated yet: this board language shows the English heading." },
         { key: "dialog.url", text: "URL", reason: "URL is the standard abbreviation, used unchanged in this language." },
         { key: "commands.copyAsPng", text: "PNG", reason: "اسم تنسيق الملف." },
         { key: "commands.copyAsSvg", text: "SVG", reason: "اسم تنسيق الملف." },
@@ -17,7 +16,7 @@ export default defineBoardLanguage({
     strings: {
         "dialog.insertEmbed": "إدراج تضمين",
         "dialog.embedBody": "أدخل رابطًا من مزوّد تضمين مدعوم. يبقى التضمين غير محمّل حتى تختار تحميل.",
-        "dialog.embedProviders": "Supported providers",
+        "dialog.embedProviders": "المزودون المدعومون",
         "dialog.url": "URL",
         "crop.aspect": "نسبة الأبعاد",
         "crop.zoom": "التكبير",

@@ -3,7 +3,6 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
-        { key: "dialog.embedProviders", text: "Supported providers", reason: "Not translated yet: this board language shows the English heading." },
         { key: "dialog.url", text: "URL", reason: "URL is the standard abbreviation, used unchanged in this language." },
         { key: "commands.exportPng", text: "PNG", reason: "International file format or paper size designation." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -17,7 +16,7 @@ export default defineBoardLanguage({
     strings: {
         "dialog.insertEmbed": "ఎంబెడ్‌ను చొప్పించు",
         "dialog.embedBody": "మద్దతు ఉన్న ఎంబెడ్ ప్రొవైడర్ నుండి లింక్‌ను నమోదు చేయండి. లోడ్ ఎంచుకునే వరకు ఎంబెడ్ లోడ్ కాదు.",
-        "dialog.embedProviders": "Supported providers",
+        "dialog.embedProviders": "మద్దతు ఉన్న ప్రొవైడర్లు",
         "dialog.url": "URL",
         "crop.aspect": "ఆస్పెక్ట్ నిష్పత్తి",
         "crop.zoom": "జూమ్",

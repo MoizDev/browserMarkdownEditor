@@ -3,7 +3,6 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
-        { key: "dialog.embedProviders", text: "Supported providers", reason: "Not translated yet: this board language shows the English heading." },
         { key: "dialog.url", text: "URL", reason: "URL is the standard abbreviation, used unchanged in this language." },
         { key: "commands.exportPng", text: "PNG", reason: "International file format or paper size designation." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -17,7 +16,7 @@ export default defineBoardLanguage({
     strings: {
         "dialog.insertEmbed": "എംബെഡ് ചേർക്കുക",
         "dialog.embedBody": "പിന്തുണയ്ക്കുന്ന ഒരു എംബെഡ് ദാതാവിൽ നിന്നുള്ള ലിങ്ക് നൽകുക. ലോഡ് തിരഞ്ഞെടുക്കുന്നതുവരെ എംബെഡ് ലോഡ് ചെയ്യില്ല.",
-        "dialog.embedProviders": "Supported providers",
+        "dialog.embedProviders": "പിന്തുണയ്ക്കുന്ന ദാതാക്കൾ",
         "dialog.url": "URL",
         "crop.aspect": "വീക്ഷണാനുപാതം",
         "crop.zoom": "വലുതാക്കൽ",

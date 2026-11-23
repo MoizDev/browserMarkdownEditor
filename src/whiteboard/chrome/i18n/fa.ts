@@ -3,7 +3,6 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "rtl",
     englishTerms: [
-        { key: "dialog.embedProviders", text: "Supported providers", reason: "Not translated yet: this board language shows the English heading." },
         { key: "dialog.url", text: "URL", reason: "URL is the standard abbreviation, used unchanged in this language." },
         { key: "commands.exportPng", text: "PNG", reason: "International file format or paper size designation." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -17,7 +16,7 @@ export default defineBoardLanguage({
     strings: {
         "dialog.insertEmbed": "درج جاسازی",
         "dialog.embedBody": "یک پیوند از ارائه‌دهنده‌ی جاسازی پشتیبانی‌شده وارد کنید. جاسازی تا وقتی بارگذاری را انتخاب نکنید، بارگذاری نمی‌شود.",
-        "dialog.embedProviders": "Supported providers",
+        "dialog.embedProviders": "ارائه‌دهندگان پشتیبانی‌شده",
         "dialog.url": "URL",
         "crop.aspect": "نسبت ابعاد",
         "crop.zoom": "بزرگنمایی",

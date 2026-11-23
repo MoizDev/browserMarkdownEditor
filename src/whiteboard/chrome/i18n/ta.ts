@@ -3,7 +3,6 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
-        { key: "dialog.embedProviders", text: "Supported providers", reason: "Not translated yet: this board language shows the English heading." },
         { key: "dialog.url", text: "URL", reason: "URL is the standard abbreviation, used unchanged in this language." },
         { key: "commands.exportPng", text: "PNG", reason: "International file format or paper size designation." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -17,7 +16,7 @@ export default defineBoardLanguage({
     strings: {
         "dialog.insertEmbed": "உட்பொதியைச் செருகு",
         "dialog.embedBody": "ஆதரிக்கப்படும் உட்பொதி வழங்குநரின் இணைப்பை உள்ளிடவும். ஏற்று என்பதைத் தேர்ந்தெடுக்கும் வரை உட்பொதி ஏற்றப்படாது.",
-        "dialog.embedProviders": "Supported providers",
+        "dialog.embedProviders": "ஆதரிக்கப்படும் வழங்குநர்கள்",
         "dialog.url": "URL",
         "crop.aspect": "விகிதம்",
         "crop.zoom": "பெரிதாக்கு",

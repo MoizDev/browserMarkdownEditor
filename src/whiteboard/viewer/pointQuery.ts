@@ -114,6 +114,7 @@ async function connectorPoint(node: Readonly<ConnectorNode>, geometry: Connector
 /** Queries one published Scene revision, not a second index or live paint cache. */
 export function createBoardPointQuery(options: BoardPointQueryOptions): {
     hit(point: Vec2, input: InputKind, signal: AbortSignal): Promise<NodeId | null>;
+    hitHover(point: Vec2, input: InputKind, signal: AbortSignal): Promise<NodeId | null>;
     hitTarget(point: Vec2, input: InputKind, signal: AbortSignal): Promise<BoardTargetHit | null>;
     hitLocked(point: Vec2, input: InputKind, signal: AbortSignal): Promise<NodeId | null>;
     dispose(): void;
@@ -121,7 +122,7 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
     const jobs = new Set<AbortController>();
     let disposed = false;
     const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
-    async function run(point: Vec2, input: InputKind, signal: AbortSignal, targetMode: boolean, lockedMode = false): Promise<Candidate | null> {
+    async function run(point: Vec2, input: InputKind, signal: AbortSignal, targetMode: boolean, lockedMode = false, hoverMode = false): Promise<Candidate | null> {
             if (disposed) throw cancelled();
             if (![point.x, point.y].every(Number.isFinite) || !['mouse', 'pen', 'touch'].includes(input)) throw new RangeError('Invalid point query');
             const { runtime } = options, doc = runtime.session.doc, revision = doc.rev, selection = runtime.selection.getSnapshot();
@@ -181,7 +182,10 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                     // evidence. Connector/group/opaque targets are excluded by model V-8. Do not lift without that evidence.
                     if (targetMode && (node.kind === 'group' || node.kind === 'connector' || node.kind === 'opaque'
                         || node.kind === 'stroke' || node.kind === 'polyline')) return;
-                    const selected = targetMode ? node.id : selectableAtFocus(doc, node.id, selection.focus, selection.sheet, lockedMode);
+                    let selected = targetMode ? node.id : selectableAtFocus(doc, node.id, selection.focus, selection.sheet, lockedMode);
+                    // Hover (catalogue S§2): a child of a group that is selected is hovered itself, not its group, so the outline
+                    // is the child's own. A press keeps the promotion (it selects or drags the group).
+                    if (hoverMode && selected && selected !== node.id && selection.selected.includes(selected)) selected = node.id;
                     if (!selected || node.kind === 'group') return;
                     let clipped = false, clipUncertain = false, outsideFrame = false;
                     const frameClips: PointClipContour[] = [];
@@ -329,6 +333,7 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
     }
     return {
         async hit(point, input, signal) { return (await run(point, input, signal, false))?.id ?? null; },
+        async hitHover(point, input, signal) { return (await run(point, input, signal, false, false, true))?.id ?? null; },
         /** The topmost node under the point when that node is locked, else null. A locked node cannot be selected, so a
          * secondary click reaches it only through this (F-CTX-006); the caller must not select it. */
         async hitLocked(point, input, signal) {

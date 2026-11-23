@@ -163,7 +163,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
             }, error => { if (!controller.signal.aborted && !(error instanceof DOMException && error.name === 'AbortError')) ui.error(error); });
             return;
         }
-        point.hit(at, input, controller.signal).then(id => {
+        point.hitHover(at, input, controller.signal).then(id => {
             if (!controller.signal.aborted && seq === hoverSeq) { sensitive.setHovered(id); if (tool === 'select') select.setHover(id); }
         }, error => { if (!controller.signal.aborted) ui.error(error); });
     };

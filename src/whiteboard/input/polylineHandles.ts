@@ -80,9 +80,10 @@ export function polylineHandleGesture(first: RealSample, modifiers: Modifiers, o
             if (options.snap && (objects || grid)) {
                 const snapped = await snapBoardBounds({ runtime, bounds: { x: raw.x, y: raw.y, width: 0, height: 0 }, selected: [options.id],
                     zoom: options.snap.zoom(), current: active, signal: request.signal, cooperate: options.cooperate,
-                    objects, grid, gaps: false, points: true, ownPoints: otherVertices(doc, options.id, options.index) });
+                    objects, grid, gaps: false, points: true, outline: true, ownPoints: otherVertices(doc, options.id, options.index) });
                 if (!active()) throw new DOMException('Polyline snap became stale', 'AbortError');
-                point = { x: raw.x + snapped.delta.x, y: raw.y + snapped.delta.y }; guides = snapped.guides;
+                // A snapped axis lands on its target itself: raw + delta can miss it by an ulp.
+                point = { x: snapped.landed?.x ?? raw.x + snapped.delta.x, y: snapped.landed?.y ?? raw.y + snapped.delta.y }; guides = snapped.guides;
             }
             if (keys.shift && options.angleSnap !== false) {
                 const angled = angleFromNeighbour(runtime, options.id, options.index, point);

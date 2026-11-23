@@ -9,6 +9,7 @@ import type { Camera, ViewState, Viewport } from '../../platform/types';
 import type { BoardRuntime } from '../host/runtime';
 import type { BoardInputServices } from '../input/attach';
 import { eraserTool, laserTool, type LaserPoint } from '../input/basicTools';
+import { textDropTool } from '../input/chromeDrag';
 import { LaserTrail } from '../input/laserTrail';
 import type { ToolChoice } from '../input/gesture';
 import type { MappingHistory } from '../input/pointer';
@@ -22,6 +23,8 @@ import type { PaintImageProvider } from '../render/resources';
 import { textTool } from '../text/edit/tool';
 import { createBoardAttachmentResolver } from './attachments';
 import { boardCreationTool } from './creationTools';
+import { contentBounds, type ContentRect } from '../commands/contentBounds';
+import { notePointerSource } from './pointerKind';
 import { createBoardInkServices } from './inkServices';
 import type { KeyboardContextRequest } from './keyboardContext';
 import { createBoardPointQuery } from './pointQuery';
@@ -191,6 +194,23 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         if (erasePath.length > 512) erasePath.splice(0, erasePath.length - 512);
         invalidate(); scheduleTrails();
     };
+    // The quick overview fits the sheet's content, which contentBounds reads asynchronously. Z's press reads it ahead, and it is kept
+    // per document revision: a stale box is not used, so Shift never waits on the read and fits the viewport alone instead.
+    let overviewContent: { readonly rev: number; readonly box: ContentRect | null } | null = null;
+    let overviewPending: { readonly rev: number; readonly controller: AbortController } | null = null;
+    const prepareOverview = () => {
+        const doc = runtime.session.doc, rev = doc.rev;
+        if (overviewContent?.rev === rev || overviewPending?.rev === rev) return;
+        overviewPending?.controller.abort();
+        const controller = new AbortController(), pending = { rev, controller };
+        overviewPending = pending;
+        const roots = (doc.children.get(runtime.selection.getSnapshot().sheet) ?? []).map(child => child.id);
+        const fence = () => { if (controller.signal.aborted || runtime.session.doc !== doc || doc.rev !== rev) throw new DOMException('Overview content changed', 'AbortError'); };
+        void contentBounds(runtime, roots, { signal: controller.signal, fence, cooperate: () => new Promise<void>(resolve => setTimeout(resolve, 0)) })
+            .then(box => { if (!controller.signal.aborted) overviewContent = { rev, box }; })
+            .catch(error => { if (!(error instanceof DOMException && error.name === 'AbortError')) ui.error(error); })
+            .finally(() => { if (overviewPending === pending) overviewPending = null; });
+    };
     const zoom: ZoomBrushContext = {
         toSurface: options.sampleToSurface,
         preview(box) { brush = box; invalidate(); },
@@ -208,12 +228,34 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         view: () => ({ camera: camera.camera, viewport: options.viewport() }),
         setCamera(next) { options.platform().cancelMotion(); camera.setCamera(next); options.interaction.cameraChanged(); },
         clampZoom: z => camera.clampZoom(z),
+        prepareOverview,
+        overviewBox: () => overviewContent && overviewContent.rev === runtime.session.doc.rev ? overviewContent.box : null,
     };
     const textContext = {
         createText(x: number, y: number, width: number | null) { if (editable()) text.manager.create(x, y, width); },
         worldToScreen: (x: number, y: number) => worldToSurface({ x, y }, camera.camera),
         previewTextColumn(x: number, y: number, width: number | null) { column = { x, y, width }; invalidate(); },
         clearTextColumnPreview() { column = null; invalidate(); },
+    };
+    // A creation's route. A toolbar drag (`follow`) centres the shape on the pointer and moves it with the pointer until release.
+    const creation = (choice: ToolChoice, sample: RealSample, follow: boolean): PointerRoute<unknown> => {
+        const variant = choice.variant ?? runtime.tools.getSnapshot().lastFigure ?? 'rectangle';
+        if (choice.id === 'figure' && !FIGURE_SHAPES.includes(variant as FigureShape)) throw new RangeError('Invalid figure variant');
+        const kind = choice.id as 'figure' | 'sticky' | 'frame' | 'connector' | 'polyline';
+        return { ...route(boardCreationTool(kind), { runtime, render: runtime.render, camera, kind, registerPending,
+            sampleToSurface: options.sampleToSurface, guides: select.setGuides, hint: select.setConnectorTarget, alwaysSnap: options.alwaysSnap, dynamicSize: options.dynamicSize,
+            ...(kind === 'figure' ? { figure: variant as FigureShape } : {}), preview, current: editable, follow,
+            editText: async id => { await text.editText(id); }, resolveAttachment: (position, signal, request) => attachments.resolve(position, signal,
+                { ...request, input: sample.source === 'keyboard' ? 'mouse' : sample.source }), onError: ui.error }), completesTool: true };
+    };
+    // A bar tool pressed on the chrome and dragged onto the board. Tools without a toolbar drag return null: the press is then a click.
+    const resolveChromeDrag = (choice: ToolChoice, sample: RealSample, _modifiers: Modifiers): PointerRoute<unknown> | null => {
+        if (!editable()) return null;
+        switch (choice.id) {
+            case 'text': return route(textDropTool, textContext);
+            case 'figure': case 'sticky': case 'frame': case 'connector': case 'polyline': return creation(choice, sample, true);
+            default: return null;
+        }
     };
     const resolve = (choice: ToolChoice, sample: RealSample, modifiers: Modifiers): PointerRoute<unknown> | null => {
         if (!editable()) return null;
@@ -228,16 +270,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
                 if (!media?.tool || typeof media.tool.begin !== 'function') throw new Error('Media import backend did not supply a tool');
                 return media;
             }
-            case 'figure': case 'sticky': case 'frame': case 'connector': case 'polyline': {
-                const variant = choice.variant ?? runtime.tools.getSnapshot().lastFigure ?? 'rectangle';
-                if (choice.id === 'figure' && !FIGURE_SHAPES.includes(variant as FigureShape)) throw new RangeError('Invalid figure variant');
-                const kind = choice.id;
-                return { ...route(boardCreationTool(kind), { runtime, render: runtime.render, camera, kind, registerPending,
-                    sampleToSurface: options.sampleToSurface, guides: select.setGuides, hint: select.setConnectorTarget, alwaysSnap: options.alwaysSnap, dynamicSize: options.dynamicSize,
-                    ...(kind === 'figure' ? { figure: variant as FigureShape } : {}), preview, current: editable,
-                    editText: async id => { await text.editText(id); }, resolveAttachment: (position, signal, request) => attachments.resolve(position, signal,
-                        { ...request, input: sample.source === 'keyboard' ? 'mouse' : sample.source }), onError: ui.error }), completesTool: true };
-            }
+            case 'figure': case 'sticky': case 'frame': case 'connector': case 'polyline': return creation(choice, sample, false);
             default: throw new Error(`Unsupported routed board tool: ${choice.id}`);
         }
     };
@@ -292,9 +325,10 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         } },
         ink: ink.ink, continueInk: ink.continueInk,
         resolveTool: (choice, sample, modifiers) => resolve(choice, sample, modifiers),
-        resolveKeyboardTool: (choice, sample, modifiers) => resolve(choice, sample, modifiers), zoomBrush: () => zoom,
+        resolveKeyboardTool: (choice, sample, modifiers) => resolve(choice, sample, modifiers), resolveChromeDrag, zoomBrush: () => zoom,
         keyboardCursorInitial: ui.keyboardCursorInitial, keyboardCursorVisible: ui.keyboardCursorVisible, keyboardNavigation: ui.keyboardNavigation,
-        ownsWheel: ui.ownsWheel, cameraChanged: options.interaction.cameraChanged, error: ui.error, pointerChanged: ui.pointerChanged,
+        ownsWheel: ui.ownsWheel, cameraChanged: options.interaction.cameraChanged, error: ui.error,
+        pointerChanged: sample => { notePointerSource(sample.source); ui.pointerChanged?.(sample); },
         hover: event => { ui.hover?.(event); trackHover(event); }, contextMenu: contextMenuAt, drop: event => options.imports.drop(event), linkAt: ui.linkAt,
         penModeChanged: ui.penModeChanged, persistToolLock: ui.persistToolLock, clearLatches: ui.clearLatches, cancelPendingGestures: cancelPending,
         clearLaserTrail: dropTrails,

@@ -33,13 +33,15 @@ export interface ToolStripProps {
     readonly lock?: ToolLockView;
     /** The tools the bar shows now, after the fit: the number keys press these, so the chrome publishes them. */
     readonly onShown?: (shown: readonly ToolChoice[]) => void;
+    /** A press on a bar tool that is then dragged off the bar onto the board. The board decides whether that tool has a drag. */
+    readonly dragTool?: (choice: ToolChoice, event: PointerEvent, bar: Element) => boolean;
 }
 
 function sameTool(a: ToolChoice, b: ToolChoice): boolean {
     return a.id === b.id && a.figure === b.figure;
 }
 
-export function ToolStrip({ primary, more, selected, moreLabel, toolsLabel, disabled, disabledReason, select, lock, onShown }: ToolStripProps) {
+export function ToolStrip({ primary, more, selected, moreLabel, toolsLabel, disabled, disabledReason, select, lock, onShown, dragTool }: ToolStripProps) {
     const [open, setOpen] = useState(false);
     const root = useRef<HTMLDivElement>(null);
     const fit = useFittingTools(root, primary.length);
@@ -82,6 +84,22 @@ export function ToolStrip({ primary, more, selected, moreLabel, toolsLabel, disa
             data-tooltip={reason ?? label}
             aria-pressed={sameTool(choice, selected)}
             disabled={disabled || reason !== undefined}
+            // Only a press that stays on the bar is a click; one that leaves it is a drag onto the board (ChromeToolDrag).
+            onPointerDown={dragTool ? event => {
+                const bar = event.currentTarget.closest<HTMLElement>('.board-chrome-tool-strip, .board-chrome-more');
+                if (!bar || event.button !== 0 || !dragTool(choice, event.nativeEvent, bar)) return;
+                // Leaving the More popover starts the drop: the popover closes as the shape starts, as it does on a click.
+                if (!bar.classList.contains('board-chrome-more')) return;
+                const leave = (move: PointerEvent) => {
+                    const box = bar.getBoundingClientRect();
+                    if (move.clientX < box.left || move.clientX > box.right || move.clientY < box.top || move.clientY > box.bottom) {
+                        setOpen(false);
+                        window.removeEventListener('pointermove', leave);
+                    }
+                };
+                window.addEventListener('pointermove', leave);
+                window.addEventListener('pointerup', () => window.removeEventListener('pointermove', leave), { once: true });
+            } : undefined}
             onClick={() => { select(choice); setOpen(false); }}
         ><ToolIcon id={choice.id} figure={choice.figure} /></button>;
     }

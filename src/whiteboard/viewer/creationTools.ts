@@ -44,6 +44,8 @@ export interface BoardCreationContext {
     /** The arrow target hint, shown while the pointer is over a shape an arrow end would bind to. */
     readonly hint?: (target: NodeId | null) => void;
     readonly alwaysSnap?: () => boolean;
+    /** A toolbar drag: the shape is centred on the pointer at its default size and follows it until release (catalogue T§7, T§12). */
+    readonly follow?: boolean;
     /** Dynamic size mode: text and notes are created at 1 / zoom. */
     readonly dynamicSize?: () => boolean;
     current(): boolean;
@@ -122,15 +124,18 @@ class CreationGesture implements GestureOwner {
         const pose = this.parentPose, dx = point.x - pose.x, dy = point.y - pose.y, c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
         return { x: c * dx + s * dy, y: -s * dx + c * dy };
     }
+    private get follows(): boolean { return this.context.follow === true; }
     private isClick(): boolean {
+        if (this.follows) return false;
         const surface = sampleSurface(this.sample, this.context.sampleToSurface);
         return Math.hypot(surface.x - this.downSurface.x, surface.y - this.downSurface.y) < CLICK_SLOP_CSS;
     }
     private node(sample = this.sample, modifiers = this.modifiers): Node {
-        const p = this.local(sample), style = this.style;
+        const p = this.local(sample), style = this.style, follow = this.follows;
         let dx = p.x - this.base.x, dy = p.y - this.base.y;
         const surface = sampleSurface(sample, this.context.sampleToSurface);
-        const moved = Math.hypot(surface.x - this.downSurface.x, surface.y - this.downSurface.y) >= CLICK_SLOP_CSS;
+        // A toolbar drag has no press of its own: it places the shape at the pointer, so it is never a box drawn from the press.
+        const moved = !follow && Math.hypot(surface.x - this.downSurface.x, surface.y - this.downSurface.y) >= CLICK_SLOP_CSS;
         const drag = moved;
         if (modifiers.shift) {
             if (this.context.kind === 'connector' || this.context.kind === 'polyline') {
@@ -142,18 +147,18 @@ class CreationGesture implements GestureOwner {
             y = centered ? this.base.y - Math.abs(dy) : this.base.y + Math.min(0, dy);
         const factor = centered ? 2 : 1;
         const w = drag ? Math.max(1, Math.abs(dx) * factor) : this.context.kind === 'frame' ? 320 : this.context.kind === 'sticky' ? 200 : 100;
-        const base = { ...this.base, x: drag ? x : this.base.x, y: drag ? y : this.base.y };
+        const base = follow ? { ...this.base, x: p.x, y: p.y } : { ...this.base, x: drag ? x : this.base.x, y: drag ? y : this.base.y };
         const width = styleGeometryMetrics.actualWidth(this.context.kind === 'polyline' ? 'polyline' : this.context.kind === 'connector' ? 'connector' : 'figure', style.size, 1);
         switch (this.context.kind) {
             case 'figure': {
-                const shape = this.context.figure ?? 'rectangle', down = { x: this.base.x, y: this.base.y };
+                const shape = this.context.figure ?? 'rectangle', down = follow ? { x: p.x, y: p.y } : { x: this.base.x, y: this.base.y };
                 const box = moved ? figureDragBox(shape, down, p, modifiers) : figureClickBox(shape, down);
                 return createFigure({ ...base, x: box.x, y: box.y, shape, w: box.width, h: box.height, growY: 0,
                     color: style.color, labelColor: style.color, fill: style.fill, dash: style.dash, size: style.size, font: style.font,
                     align: style.align, valign: style.valign, label: null, width, flipX: false, flipY: false, url: null });
             }
             case 'frame': {
-                const down = { x: this.base.x, y: this.base.y };
+                const down = follow ? { x: p.x, y: p.y } : { x: this.base.x, y: this.base.y };
                 const box = moved ? figureDragBox('rectangle', down, p, modifiers)
                     : { x: down.x - 160, y: down.y - 90, width: 320, height: 180 };
                 return createFrame({ ...base, x: box.x, y: box.y, w: box.width, h: box.height, name: '', color: null });
@@ -168,12 +173,25 @@ class CreationGesture implements GestureOwner {
                 size: style.size, font: style.font, align: style.align, valign: style.valign, growY: 0, fit: null,
                 scale, url: null });
             }
-            case 'polyline': return createPolyline({ ...this.base, points: [{ x: centered ? -dx : 0, y: centered ? -dy : 0 }, moved ? { x: dx, y: dy } : { x: .1, y: .1 }],
+            // A toolbar drag's line and arrow are 200 px on the diagonal, centred on the pointer (catalogue T§8, T§9).
+            case 'polyline': return createPolyline(follow ? { ...this.base, x: p.x - 100, y: p.y - 100, points: [{ x: 0, y: 200 }, { x: 200, y: 0 }],
+                spline: style.spline, color: style.color, dash: style.dash, size: style.size, width }
+                : { ...this.base, points: [{ x: centered ? -dx : 0, y: centered ? -dy : 0 }, moved ? { x: dx, y: dy } : { x: .1, y: .1 }],
                 spline: style.spline, color: style.color, dash: style.dash, size: style.size, width });
-            case 'connector': return createConnector({ ...this.base, route: style.route, start: { x: centered ? -dx : 0, y: centered ? -dy : 0, attach: null },
+            case 'connector': return createConnector(follow ? { ...this.base, x: p.x - 100, y: p.y - 100, route: style.route,
+                start: { x: 0, y: 200, attach: null }, end: { x: 200, y: 0, attach: null }, bend: 0, headStart: style.headStart, headEnd: style.headEnd,
+                color: style.color, labelColor: style.color, fill: style.fill, dash: style.dash, size: style.size, font: style.font, label: null, width }
+                : { ...this.base, route: style.route, start: { x: centered ? -dx : 0, y: centered ? -dy : 0, attach: null },
                 end: { x: moved ? dx : .1, y: moved ? dy : .1, attach: null }, bend: 0, headStart: style.headStart, headEnd: style.headEnd,
                 color: style.color, labelColor: style.color, fill: style.fill, dash: style.dash, size: style.size, font: style.font, label: null, width });
         }
+    }
+    /** The node with its end moved to a world point, exactly: the landing point of a snap (BoardSnapResult.landed). */
+    private endAt(node: Extract<Node, { kind: 'connector' | 'polyline' }>, world: { readonly x: number; readonly y: number }): Extract<Node, { kind: 'connector' | 'polyline' }> {
+        const at = this.local(world);
+        if (node.kind === 'connector') return { ...node, end: { ...node.end, x: at.x - node.x, y: at.y - node.y } };
+        const last = node.points.length - 1;
+        return { ...node, points: node.points.map((p, i) => i === last ? { x: at.x - node.x, y: at.y - node.y } : p) };
     }
     /** Dynamic size mode (preference isDynamicResizeMode) creates text and notes at 1 / zoom, so they keep their on-screen size. */
     private noteScale(): number {
@@ -182,12 +200,12 @@ class CreationGesture implements GestureOwner {
     }
     private async snapped(sample: RealSample, modifiers: Modifiers, signal: AbortSignal): Promise<Node> {
         const node = this.node(sample, modifiers), surface = sampleSurface(sample, this.context.sampleToSurface);
-        const moved = Math.hypot(surface.x - this.downSurface.x, surface.y - this.downSurface.y) >= CLICK_SLOP_CSS;
+        const moved = this.follows || Math.hypot(surface.x - this.downSurface.x, surface.y - this.downSurface.y) >= CLICK_SLOP_CSS;
         if (moved && this.context.runtime.session.doc.view.grid && node.kind === 'figure' && node.shape === 'rectangle' && this.parentPose.rotation === 0) {
             this.context.guides?.([]); return gridRectangle(node, this.parentPose);
         }
         // A click's note takes an empty adjacent slot within 10 screen px of the pointer before any grid rounding (tldraw's order).
-        if (node.kind === 'sticky' && !moved) {
+        if (node.kind === 'sticky' && (!moved || this.follows)) {
             const pit = findStickyPit(this.context.runtime.session.doc, node.scale, { x: node.x + 100 * node.scale, y: node.y + 100 * node.scale },
                 node.parent, node.page, 10 / this.context.camera.camera.z);
             if (pit) { this.context.guides?.([]); return { ...node, x: pit.x, y: pit.y }; }
@@ -198,7 +216,7 @@ class CreationGesture implements GestureOwner {
         // Default: creation snapping is off unless Always Snap is inverted by the accelerator. An arrow's free end is the exception:
         // it follows the grid whenever grid mode is on, and never snaps to objects (catalogue a.3, a.4).
         if ((node.kind !== 'connector' && (this.context.alwaysSnap?.() ?? false) === modifiers.accel)
-            || Math.hypot(surface.x - this.downSurface.x, surface.y - this.downSurface.y) < CLICK_SLOP_CSS) {
+            || (!this.follows && Math.hypot(surface.x - this.downSurface.x, surface.y - this.downSurface.y) < CLICK_SLOP_CSS)) {
             this.context.guides?.([]); return node;
         }
         const { runtime } = this.context;
@@ -229,10 +247,16 @@ class CreationGesture implements GestureOwner {
             }
             // An end point snaps to points (corners and centres), as a handle does; it has no width, so no gaps.
             const snapped = await snapBoardBounds({ runtime, bounds: { ...point, width: 0, height: 0 }, selected: [],
-                zoom: this.context.camera.camera.z, current: active, signal, points: true, gaps: false });
+                zoom: this.context.camera.camera.z, current: active, signal, points: true, gaps: false,
+                // A line's new end snaps to an outline like its handles (catalogue b.4); an arrow's end follows the bind-or-grid rule.
+                outline: node.kind === 'polyline' });
             if (!active()) throw new DOMException('Creation snap invalidated', 'AbortError');
-            const next = this.node({ ...sample, x: sample.x + snapped.delta.x, y: sample.y + snapped.delta.y }, modifiers);
-            if (next.kind !== 'connector' && next.kind !== 'polyline') throw new Error('Creation kind changed');
+            const moved = this.node({ ...sample, x: sample.x + snapped.delta.x, y: sample.y + snapped.delta.y }, modifiers);
+            if (moved.kind !== 'connector' && moved.kind !== 'polyline') throw new Error('Creation kind changed');
+            // A point or outline snap lands the end on its target exactly; sample + delta can miss it by an ulp.
+            const reached = endpoint(moved), landed = snapped.landed;
+            const next = landed && (landed.x !== undefined || landed.y !== undefined)
+                ? this.endAt(moved, { x: landed.x ?? reached.x, y: landed.y ?? reached.y }) : moved;
             const actual = endpoint(next), zoom = this.context.camera.camera.z;
             this.context.guides?.(snapped.guides.filter(guide => Math.abs((guide.axis === 'x' ? actual.x : actual.y) - guide.value) * zoom <= 0.5));
             return next;
@@ -377,7 +401,7 @@ class CreationGesture implements GestureOwner {
             transformBox(bounds, 0, geometry.bounds.ink, 0, [c, s, -s, c, pose.x, pose.y]);
             const growth = notebookGrowthOp(doc, Math.max(bounds[3], logical.y + logical.height));
             // A click makes a frame at its default size and captures nothing: only a drag's frame takes the shapes it encloses.
-            const adopted = node.kind === 'frame' && !this.isClick() ? await this.enclosedFrameChildren(node, pose) : [];
+            const adopted = node.kind === 'frame' && !this.isClick() && !this.follows ? await this.enclosedFrameChildren(node, pose) : [];
             const lease = adopted.length ? await render.pinChangeGeometry(adopted, signal, doc, () => this.valid()) : undefined;
             try {
                 if (!this.valid()) throw new DOMException('Creation invalidated', 'AbortError');

@@ -78,23 +78,34 @@ export async function findStickyNeighbour(options: {
     check(); return best?.id ?? null;
 }
 
-/** A click snaps into an empty adjacent slot ("pit") of a note of the same scale and rotation when the pointer is within `radius`
- * of it (tldraw's adjacent-position snap). The slots are the offsets Tab and Cmd+Enter use, so a note made in a pit is the note
- * the keyboard would have made; a slot is taken when another note's centre sits in it. Returns the new note's local top-left. */
-export function findStickyPit(doc: BoardDoc, scale: number, centre: Vec2, parent: ParentId, page: number, radius: number): Vec2 | null {
-    const siblings = doc.children.get(parent) ?? [];
+export type StickyDirection = 'left' | 'right' | 'up' | 'down';
+/** The offset of the slot a neighbour takes beside a note, in the note's own frame: one note width (or height, plus the grown
+ * text) and the 10 px margin away. Tab, Cmd+Enter and the pits of a click or a drag all take these slots (catalogue T§10). */
+export function stickyNeighbourOffset(scale: number, growY: number, direction: StickyDirection): Vec2 {
+    switch (direction) {
+        case 'right': return { x: 210 * scale, y: growY * scale / 2 };
+        case 'left': return { x: -210 * scale, y: growY * scale / 2 };
+        case 'down': return { x: 0, y: (210 + growY) * scale };
+        case 'up': return { x: 0, y: -210 * scale };
+    }
+}
+const POINTS: readonly StickyDirection[] = ['right', 'left', 'down', 'up'];
+
+/** A click or a drag snaps into an empty adjacent slot ("pit") of a note of the same scale and rotation when the pointer is within
+ * `radius` of it (tldraw's adjacent-position snap). The slots are the ones Tab and Cmd+Enter use, so a note made in a pit is the
+ * note the keyboard would have made; a slot is taken when another note's centre sits in it. `moving` is the note being dragged:
+ * it neither offers nor occupies a slot. Returns the new note's local top-left. */
+export function findStickyPit(doc: BoardDoc, scale: number, centre: Vec2, parent: ParentId, page: number, radius: number,
+    moving?: NodeId): Vec2 | null {
+    const siblings = (doc.children.get(parent) ?? []).filter(node => node.id !== moving);
     const centreOf = (note: Readonly<StickyNode>): Vec2 => ({ x: note.x + 100 * note.scale, y: note.y + (100 + note.growY / 2) * note.scale });
     const notes = siblings.filter((node): node is StickyNode => node.kind === 'sticky' && node.scale === scale && node.rotation === 0
         && node.page === page && !isLocked(doc, node) && Math.hypot(centreOf(node).x - centre.x, centreOf(node).y - centre.y) <= 420 * scale + radius);
     let best: { topLeft: Vec2; distance: number } | null = null;
     for (const note of notes) {
-        const slots: Vec2[] = [
-            { x: note.x + 210 * scale, y: note.y + note.growY * scale / 2 },
-            { x: note.x - 210 * scale, y: note.y + note.growY * scale / 2 },
-            { x: note.x, y: note.y + (210 + note.growY) * scale },
-            { x: note.x, y: note.y - 210 * scale },
-        ];
-        for (const topLeft of slots) {
+        for (const direction of POINTS) {
+            const offset = stickyNeighbourOffset(note.scale, note.growY, direction);
+            const topLeft = { x: note.x + offset.x, y: note.y + offset.y };
             const c = { x: topLeft.x + 100 * scale, y: topLeft.y + 100 * scale };
             const distance = Math.hypot(c.x - centre.x, c.y - centre.y);
             if (distance > radius || (best && distance >= best.distance)) continue;

@@ -5,14 +5,28 @@ import type { NodeSetOp, Transaction } from '../change/ops';
 import { acquireBoardGeometryScope, type BoardGeometryScope } from '../commands/geometryScope';
 import type { BoardRuntime } from '../host/runtime';
 import { childrenOf, hasOpaqueDescendant, sheetOf, type BoardDoc } from '../model/doc';
-import type { NodeId } from '../model/ids';
+import type { NodeId, ParentId } from '../model/ids';
+import type { Node } from '../model/nodes';
 import { projectBoardGeometrySets } from '../model/overlayDoc';
 import { projectFrameMembership } from './frameMembership';
 import { projectBoardTransformPreview } from './transformProjection';
+import { findStickyPit } from './stickyNeighbours';
 import type { Vec2 } from './path';
 import { SNAP_MAX_SPEED, snapBoardBounds, type BoardSnapGuide } from './runtimeSnap';
 import { TranslationPlan } from './translation';
 import { constrainedTranslation } from './transforms';
+
+/** The correction that moves a dragged note into the free slot beside another note it is within `10 / zoom` of (catalogue S§7.5).
+ * Only a note on an unrotated frame has slots; the note itself neither offers nor occupies one. */
+function stickyPitCorrection(doc: BoardDoc, root: Node, delta: Vec2, zoom: number): Vec2 | null {
+    if (root.kind !== 'sticky' || root.rotation !== 0) return null;
+    const parent = worldPose(doc, root.parent as ParentId), origin = worldPose(doc, root.id);
+    if (parent.rotation !== 0) return null;
+    const x = origin.x + delta.x - parent.x, y = origin.y + delta.y - parent.y;
+    const centre = { x: x + 100 * root.scale, y: y + (100 + root.growY / 2) * root.scale };
+    const slot = findStickyPit(doc, root.scale, centre, root.parent as ParentId, root.page, 10 / zoom, root.id);
+    return slot ? { x: slot.x - x, y: slot.y - y } : null;
+}
 
 export interface BoardTranslationOptions {
     readonly runtime: BoardRuntime;
@@ -109,9 +123,12 @@ export async function createBoardTranslationPlan(options: BoardTranslationOption
                     for (const root of roots) { const b = staged.scope.logicalBounds(root.id); x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y);
                         x1 = Math.max(x1, b.x + b.width); y1 = Math.max(y1, b.y + b.height); }
                     const useX = !shift || delta.x !== 0, useY = !shift || delta.y !== 0;
-                    const result = await snapBoardBounds({ runtime, bounds: { x: x0, y: y0, width: x1 - x0, height: y1 - y0 },
-                        selected: roots.map(node => node.id), zoom, allowX: useX, allowY: useY, objects, grid,
-                        current: () => active() && snapFence!(), signal: request, cooperate: options.cooperate });
+                    // A note dragged into a free slot beside another note takes the pit, as a click does; the pit replaces the object
+                    // and grid snap for this move (catalogue S§7.5). Its correction is measured from the current delta.
+                    const pit = objects && roots.length === 1 ? stickyPitCorrection(doc, roots[0]!, delta, zoom) : null;
+                    const result = pit ? { delta: pit, guides: [] as readonly BoardSnapGuide[] } : await snapBoardBounds({ runtime,
+                        bounds: { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }, selected: roots.map(node => node.id), zoom, allowX: useX,
+                        allowY: useY, objects, grid, current: () => active() && snapFence!(), signal: request, cooperate: options.cooperate });
                     assert(); if (!snapFence()) throw new DOMException('Snap settings changed', 'AbortError');
                     const snapX = useX ? result.delta.x : 0, snapY = useY ? result.delta.y : 0;
                     guides = result.guides.filter(guide => (guide.featureAxis ?? guide.axis) === 'x' ? useX : useY);

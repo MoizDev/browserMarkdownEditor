@@ -8,6 +8,7 @@ import type { BoardRuntime } from '../host/runtime';
 import { PresentedHistory } from '../input/presentedHistory';
 import type { NodeId } from '../model/ids';
 import type { StickyNode } from '../model/nodes';
+import { handleRadius, pointerIsCoarse } from './pointerKind';
 
 export interface StickyHandleOptions {
     readonly runtime: BoardRuntime;
@@ -52,6 +53,7 @@ export function createStickyHandles(options: StickyHandleOptions) {
     // The four buttons are built once per svg and moved by their numbers: a frame that moves nothing writes nothing. By reading:
     // the frame replaced all twelve nodes every time, and during a drag the sticky moves on every move.
     let buttons: readonly Button[] | null = null;
+    let coarseShown = pointerIsCoarse();
     const scratch = new Float64Array(directions.length * 2), hitScratch = new Float64Array(directions.length * 2);
     const paint = (node: Readonly<StickyNode>, camera: ViewState['camera'], moving: Vec2 | null) => {
         if (!svg) {
@@ -60,9 +62,11 @@ export function createStickyHandles(options: StickyHandleOptions) {
             buttons = null;
         }
         const parent = svg;
+        // The neighbour dots grow for a finger or a pen (catalogue I§4.5); they keep their nodes and only change their radius.
+        if (buttons && coarseShown !== pointerIsCoarse()) { coarseShown = pointerIsCoarse(); for (const button of buttons) button.circle.setAttribute('r', String(handleRadius(7))); }
         if (!buttons) buttons = directions.map(() => {
             const circle = document.createElementNS(SVG_NS, 'circle');
-            circle.setAttribute('r', '7'); circle.setAttribute('fill', '#ffffff'); circle.setAttribute('stroke', '#75b7ff'); circle.setAttribute('stroke-width', '1.5');
+            circle.setAttribute('r', String(handleRadius(7))); circle.setAttribute('fill', '#ffffff'); circle.setAttribute('stroke', '#75b7ff'); circle.setAttribute('stroke-width', '1.5');
             const across = document.createElementNS(SVG_NS, 'line'), down = document.createElementNS(SVG_NS, 'line');
             across.setAttribute('stroke', '#3476c7'); across.setAttribute('stroke-width', '1.5');
             down.setAttribute('stroke', '#3476c7'); down.setAttribute('stroke-width', '1.5');

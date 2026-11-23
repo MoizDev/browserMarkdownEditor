@@ -13,6 +13,7 @@ import type { InkContinuation } from './continueInk'
 import { installWheel, TouchArbiter, type ContactPoint } from './navigation'
 import { MappingHistory } from './pointer'
 import { PointerRouter, type PointerRoute } from './pointerRouter'
+import { ChromeToolDrag } from './chromeDrag'
 import { EdgeScroll } from './edgeScroll'
 import { TouchDoubleTap } from './touchDoubleTap'
 import { DelegatedInkBridge, type PresentedWetSample } from './delegatedBridge'
@@ -68,6 +69,8 @@ export interface BoardInputServices {
   keyboardCursorInitial?(): Point
   keyboardCursorVisible?(point: Point): Point
   resolveKeyboardTool?(choice: ToolStateSnapshot['active'], sample: RealSample, modifiers: Modifiers): PointerRoute<unknown> | null
+  /** The route a bar tool takes when it is dragged onto the board; null when the tool has no toolbar drag. */
+  resolveChromeDrag?(choice: ToolStateSnapshot['active'], sample: RealSample, modifiers: Modifiers): PointerRoute<unknown> | null
   keyboardHandleCommand?(id: string, sample: RealSample): boolean
   keyboardContextMenu?(surface: Point, world: Point): boolean
   handleDoubleClick?(surface: Point, world: Point, time: number): boolean
@@ -357,6 +360,13 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     contextMenu: event => { event.preventDefault(); if (!rightPressActive && event.button !== 2 && !event.ctrlKey) services.contextMenu?.(event) },
     error: services.error,
   })
+  // A bar tool pressed on the chrome: the board's router owns the drag once the pointer leaves the bar (see ChromeToolDrag).
+  const chromeDrag = new ChromeToolDrag<unknown>({ token: view.token, router, mappings: view.mappings, mac: services.mac, current, editable,
+    claim, releaseClaim, resolve: (choice, sample, modifiers) => services.resolveChromeDrag?.(choice, sample, modifiers) ?? null,
+    select: choice => services.tools.setTool(choice.id, choice.variant), snapshot: () => services.tools.getSnapshot(),
+    complete: start => services.tools.complete(start),
+    focus: () => view.surface.closest<HTMLElement>('.board-interaction-root')?.focus({ preventScroll: true }), error: services.error })
+  const unbindChromeDrag = services.tools.bindChromeDrag(view.token, (choice, event, bar) => chromeDrag.begin(choice, event, bar))
   let cancelKeyboardGesture = () => false
   let dismissKeyboardCursor = () => {}
   const cancelForCamera = () => {
@@ -639,7 +649,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
         if (cursor.gesture) cursor.enter(modifiersOf(event));
         return true;
       }
-      if (id === 'zoom.hold') { zoomHeld = true; return true }
+      if (id === 'zoom.hold') { zoomHeld = true; services.zoomBrush().prepareOverview?.(); return true }
       if (id === 'zoom.release') { overview.leave(); zoomHeld = false; return true }
       if (id.startsWith('tool.bar.') && editable()) {
         // The chrome publishes the tools its bar shows; a slot the bar does not show (narrow pane, or a figure that is
@@ -703,7 +713,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     if (!live) return
     flush()
     window.removeEventListener('pagehide', pagehide)
-    stopFlush?.(); delegated?.dispose(); unbindPointer(); doubleTap.dispose(); edgeScroll.dispose(); cursor.dispose(); stopCursor?.(); modifierRelease.dispose()
+    stopFlush?.(); delegated?.dispose(); unbindPointer(); unbindChromeDrag(); doubleTap.dispose(); edgeScroll.dispose(); cursor.dispose(); stopCursor?.(); modifierRelease.dispose()
     pointer.dispose()
     live = false
     view.surface.removeEventListener('keydown', keyActivity, true)

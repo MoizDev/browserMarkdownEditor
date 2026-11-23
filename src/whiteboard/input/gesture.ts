@@ -16,6 +16,9 @@ export interface ToolChoice {
   readonly variant?: string
 }
 
+/** Returns true when the board view takes the press (see ChromeToolDrag). */
+export type ChromeDragBegin = (choice: ToolChoice, event: PointerEvent, bar: Element) => boolean
+
 export interface ToolStateSnapshot {
   readonly active: ToolChoice
   readonly locked: boolean
@@ -38,6 +41,7 @@ export class ToolState {
   private readonly penContactListeners = new Set<(id: number, down: boolean, direct: boolean, time: number) => void>()
   private penContactSequence = 0
   private readonly pointerResolvers = new Map<string, () => Readonly<{ x: number; y: number }> | null>()
+  private readonly chromeDrags = new Map<string, ChromeDragBegin>()
   private documentSyncDepth = 0
   private bar: readonly ToolChoice[] = []
 
@@ -55,6 +59,15 @@ export class ToolState {
   bindPresentedPointer(token: InputToken, resolve: () => Readonly<{ x: number; y: number }> | null): () => void {
     const key = this.pointerKey(token); this.pointerResolvers.set(key, resolve)
     return () => { if (this.pointerResolvers.get(key) === resolve) this.pointerResolvers.delete(key) }
+  }
+  /** A board view takes a press that began on the chrome's tool bar. Each view binds its own token; the first current view accepts. */
+  bindChromeDrag(token: InputToken, begin: ChromeDragBegin): () => void {
+    const key = this.pointerKey(token); this.chromeDrags.set(key, begin)
+    return () => { if (this.chromeDrags.get(key) === begin) this.chromeDrags.delete(key) }
+  }
+  beginChromeDrag(choice: ToolChoice, event: PointerEvent, bar: Element): boolean {
+    for (const begin of [...this.chromeDrags.values()]) if (begin(choice, event, bar)) return true
+    return false
   }
   presentedPointer(token: InputToken): Readonly<{ x: number; y: number }> | null {
     const point = this.pointerResolvers.get(this.pointerKey(token))?.() ?? null

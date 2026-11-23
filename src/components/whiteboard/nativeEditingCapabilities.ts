@@ -26,5 +26,7 @@ export interface NativeEditingCapabilityContext {
     canWrite(): boolean;
     requestText(question: BoardTextQuestion): Promise<string | null>;
     notice(message: string): void;
+    /** The board's translated text for a key. */
+    t(key: string): string;
 }
 export type NativeEditingCapabilityFactory = (context: NativeEditingCapabilityContext) => Promise<NativeEditingCapabilities>;

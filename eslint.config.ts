@@ -195,7 +195,8 @@ export default defineConfig([
             'src/components/whiteboard/NativeCanvasEditing.tsx', 'src/components/whiteboard/NativeBoardChrome.tsx', 'src/components/whiteboard/NativeBoardChromeHost.tsx',
             'src/components/whiteboard/nativeBoardActions.ts', 'src/components/whiteboard/nativeBoardContextMenu.ts', 'src/components/whiteboard/nativeBoardOperations.ts', 'src/components/whiteboard/nativeCameraOperations.ts',
             'src/components/whiteboard/nativeCommandSource.ts', 'src/components/whiteboard/nativeEditingKeyboard.ts', 'src/components/whiteboard/nativeEditingLease.ts',
-            'src/components/whiteboard/nativeEditingCapabilityFactory.ts', 'src/components/whiteboard/nativePdfEditingLease.ts',
+            'src/components/whiteboard/nativeEditingCapabilityFactory.ts',
+            'src/components/whiteboard/NativePictureCrop.tsx', 'src/components/whiteboard/pictureCropStore.ts', 'src/components/whiteboard/nativePdfEditingLease.ts',
             // App's lazy canonical PDF source bridge: App awaits this factory only on a PDF source.acquire,
             // so it is the single non-view importer of the dark PDF session (same reach as NativePdfEntry).
             'src/components/whiteboard/preparePdfInkAttempt.ts',

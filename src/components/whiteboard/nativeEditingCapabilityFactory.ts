@@ -43,10 +43,10 @@ export function createNativeEditingCapabilities(context: NativeEditingCapability
             const binding = context.lease.editing?.getBinding();
             if (!binding) throw new Error('Canvas input is not attached');
             const captured = binding.controller.captureInsertionTarget();
-            const value = await context.requestText({ title: 'Insert embed',
-                body: 'Enter a link from a supported embed provider. The embed stays unloaded until you choose Load.', confirmLabel: 'Insert',
-                input: { label: 'URL', initialValue: '', placeholder: 'https://…',
-                    validate: input => resolveEmbedCandidate(input, environment, manifest) ? null : 'Enter a link from a supported embed provider.' } });
+            const value = await context.requestText({ title: context.t('dialog.insertEmbed'),
+                body: context.t('dialog.embedBody'), confirmLabel: context.t('dialog.create'),
+                input: { label: context.t('dialog.url'), initialValue: '', placeholder: 'https://…',
+                    validate: input => resolveEmbedCandidate(input, environment, manifest) ? null : context.t('dialog.embedInvalid') } });
             if (value === null) return;
             if (!writable() || !captured.current()) throw new DOMException('Embed insertion target changed', 'AbortError');
             await runtime.jobs.run(async job => {

@@ -24,6 +24,10 @@ import type { NativeViewLease } from './nativeViewLease';
 import { createNativeClipboardController } from './nativeClipboardController';
 import { chooseReplacementImage, mediaRows } from './nativeMediaRows';
 import { printBoard } from './printBoard';
+import { createPictureCropStore, type PictureCropStore } from './pictureCropStore';
+import { worldToLocal } from '../../whiteboard/change/coordinates';
+import { isLocked } from '../../whiteboard/change/commands';
+import type { NodeId } from '../../whiteboard/model/ids';
 
 interface ViewBinding {
     readonly controller: ReturnType<typeof createNativeClipboardController>;
@@ -46,6 +50,8 @@ export interface NativeClipboardService {
     readonly storeMedia: StoreMedia;
     /** The one picture/card action provider for this document; every view's menu reads its selection. */
     readonly media: MediaActions;
+    /** The crop session on this document's board: one draft, shown by the editing view that has the picture. */
+    readonly crop: PictureCropStore;
     theme(): 'light' | 'dark';
     /** Prints the focused board through its own pinned source. False when the board is not current or busy. */
     print(): boolean;
@@ -128,6 +134,9 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
     // Replacing a picture and pasting one share this one port: a PDF page embeds its pictures in its own PDF through the
     // real receipt, and a file board writes its own file. Replacement commits the receipt in its single transaction.
     const mediaActions = createMediaActions({ runtime, memory, environment: { appOrigin: location.origin }, current, storeMedia, readMedia });
+    const cropLifetime = new AbortController();
+    const crop = createPictureCropStore({ media: mediaActions, signal: cropLifetime.signal,
+        canStart: () => !!active && active.writable() && !runtime.session.isGestureActive });
     const ingestor = createBoardMediaIngestor({ runtime, memory, current, finishGesture, storeMedia,
         noticeRefused: files => report(files.map(file => `${file.name}: ${file.reason}`).join('; ')) });
     const prepareExport = (route: Parameters<typeof prepareNativeExport>[0]['route'], signal: AbortSignal) => prepareNativeExport({ runtime, route, signal,
@@ -205,7 +214,7 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
         return job;
     };
     const service: NativeClipboardService = {
-        preferences, memory, readMedia, storeMedia, media: mediaActions,
+        preferences, memory, readMedia, storeMedia, media: mediaActions, crop,
         theme: () => active?.theme() ?? 'light',
         print: () => startFocusedTask(signal => focusedPdf(signal, true)),
         pagePng: async (page, maxSide, signal) => {
@@ -254,11 +263,29 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                     event.preventDefault(); event.stopPropagation(); service.print(); return;
                 }
                 if (canWriteView()) {
+                    if (event.key === 'Enter' && !event.repeat && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && !crop.get()) {
+                        const selection = runtime.selection.getSnapshot(), picture = selection.selected.length === 1 ? runtime.session.doc.nodes.get(selection.selected[0]!) : undefined;
+                        if (picture?.kind === 'picture' && !isLocked(runtime.session.doc, picture)) { event.preventDefault(); event.stopPropagation(); void crop.open(picture.id).catch(fail); return; }
+                    }
                     if (!inputHandled && (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'd') {
                         event.preventDefault(); event.stopPropagation(); void commands.duplicate(); return;
                     }
                     controller.keydown(event);
                 }
+            };
+            // The single picture the press landed on, when it is one the board lets this view crop; null otherwise.
+            const pictureAt = (clientX: number, clientY: number): NodeId | null => {
+                const selection = runtime.selection.getSnapshot(), picture = selection.selected.length === 1 ? runtime.session.doc.nodes.get(selection.selected[0]!) : undefined;
+                if (!picture || picture.kind !== 'picture' || isLocked(runtime.session.doc, picture)) return null;
+                const world = surfaceToWorld(surfacePoint(clientX, clientY), lease.camera.camera), local = worldToLocal(runtime.session.doc, picture, world);
+                return local.x >= 0 && local.y >= 0 && local.x <= picture.w && local.y <= picture.h ? picture.id : null;
+            };
+            // Double-clicking the picture's body, or pressing Enter with it selected, crops it in place (catalogue S§10.2).
+            const dblclick = (event: MouseEvent) => {
+                if (event.button !== 0 || !canWriteView() || crop.get()) return;
+                const id = pictureAt(event.clientX, event.clientY);
+                if (id === null) return;
+                focus(); void crop.open(id).catch(fail);
             };
             const dragover = (event: DragEvent) => { if (canWriteView()) controller.dragover(event); };
             const drop = (event: DragEvent) => { if (canWriteView()) { focus(); controller.drop(event); } };
@@ -270,7 +297,8 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                     { kind: 'command', id: 'copy', label: 'Copy', disabled, ...(disabled ? { reason: why } : {}), run: commands.copy },
                     { kind: 'command', id: 'copy-png', label: 'Copy as PNG', run: commands.copyAsPng },
                     { kind: 'command', id: 'copy-svg', label: 'Copy as SVG', run: commands.copyAsSvg },
-                    { kind: 'command', id: 'copy-json', label: 'Copy as JSON', run: commands.copyAsJson },
+                    // Debug-only, as the board's own menu offers it: the raw document JSON is for developers.
+                    ...(runtime.session.doc.view.debugMode ? [{ kind: 'command' as const, id: 'copy-json', label: 'Copy as JSON', run: commands.copyAsJson }] : []),
                     { kind: 'command', id: 'export-png', label: 'Export PNG', run: () => commands.exportPng('context') },
                     { kind: 'command', id: 'export-svg', label: 'Export SVG', run: () => commands.exportSvg('context') },
                     { kind: 'command', id: 'paste', label: 'Paste', disabled: readonly, ...(readonly ? { reason: 'This canvas is read-only.' } : {}), run: () => controller.paste() },
@@ -283,6 +311,7 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
             };
             surface.addEventListener('focus', focus); surface.addEventListener('pointermove', move);
             surface.addEventListener('copy', copy); surface.addEventListener('cut', cut); surface.addEventListener('keydown', keydown);
+            surface.addEventListener('dblclick', dblclick);
             if (!inputHandled) {
                 surface.addEventListener('paste', paste);
                 surface.addEventListener('dragover', dragover); surface.addEventListener('drop', drop); surface.addEventListener('contextmenu', menu);
@@ -293,6 +322,9 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                 controller.retire(() => controllers.delete(controller));
                 surface.removeEventListener('focus', focus); surface.removeEventListener('pointermove', move);
                 surface.removeEventListener('copy', copy); surface.removeEventListener('cut', cut); surface.removeEventListener('keydown', keydown);
+                surface.removeEventListener('dblclick', dblclick);
+                // A crop belongs to the view it was started in: leaving the view ends it and keeps nothing.
+                crop.cancel();
                 if (!inputHandled) {
                     surface.removeEventListener('paste', paste);
                     surface.removeEventListener('dragover', dragover); surface.removeEventListener('drop', drop); surface.removeEventListener('contextmenu', menu);
@@ -305,6 +337,7 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
             if (disposed) return; disposed = true; services.delete(runtime); active = undefined; bindings.clear();
             releasePagePin();
             preferenceLifetime.abort(); stopPreferences();
+            crop.dispose(); cropLifetime.abort();
             try { commands.dispose(); } finally {
                 try { for (const controller of controllers) controller.dispose(); } finally {
                     controllers.clear(); try { ingestor.dispose(); } finally { cache.close(); }

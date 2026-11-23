@@ -20,6 +20,8 @@ export function createNativeLinkOperations(options: {
     readonly requestText: (question: BoardTextQuestion) => Promise<string | null>;
     readonly requestTextChoice: (question: BoardTextQuestion) => Promise<{ readonly value: string } | 'alt' | null>;
     readonly notice: (message: string) => void;
+    /** The board's translated text for a key; the Edit link dialog's own words come from its table. */
+    readonly t: (key: string) => string;
 }) {
     const { runtime, lease } = options, session = runtime.session, doc = session.doc;
     if (lease.runtime !== runtime) throw new Error('Link actions need the attached board session');
@@ -38,12 +40,13 @@ export function createNativeLinkOperations(options: {
         if (node && !isLocked(doc, node)) return { enabled: true };
         return { enabled: false, reason: 'Select text or one unlocked picture, figure, note or card' };
     };
-    const ask = (initial: string, allowEmpty: boolean) => options.requestTextChoice({ title: 'Edit link', body: allowEmpty
-        ? 'Enter an absolute link address, or leave it empty to remove the link.' : 'Enter an absolute link address.',
-        confirmLabel: 'Apply', altLabel: allowEmpty ? 'Remove link' : undefined, input: { label: 'URL', initialValue: initial, placeholder: 'https://…', validate(value) {
+    // Links open in a new tab, which the dialog says; an address that is not a valid URL is refused in the field, not later.
+    const ask = (initial: string, allowEmpty: boolean) => options.requestTextChoice({ title: options.t('chrome.editLink'), body: options.t('dialog.linkNewTab'),
+        confirmLabel: options.t('chrome.continue'), altLabel: allowEmpty ? options.t('dialog.clear') : undefined,
+        input: { label: options.t('dialog.url'), initialValue: initial, placeholder: 'https://…', validate(value) {
             if (allowEmpty && !value.trim()) return null;
             const result = checkContentUrl(value.trim(), 'click', environment);
-            return result.ok ? null : result.reason;
+            return result.ok ? null : options.t('dialog.linkInvalid');
         } } });
     const editText = async () => {
         const text = editor(), context = text?.linkContext();

@@ -23,6 +23,7 @@ import type { SceneSpatial } from '../scene/types';
 import { createViewerAccessibility } from './accessibility';
 import { createPreviewSlot } from './previewSlot';
 import type { AttachView, ViewerInteractionPorts, ViewerPaintPresentation, ViewerReadiness, ViewerSnapshot, ViewerViewParams } from './types';
+import { isCancellation } from '../../platform/workers/envelope';
 
 class SelectionIds implements ReadonlySet<string> {
     readonly [Symbol.toStringTag] = 'SelectionIds';
@@ -129,7 +130,7 @@ export const attachView: AttachView = options => {
         }, palette: () => palettes.light, onError: error => report(error),
     }) : null;
     const report = (error: unknown) => {
-        if (disposed || (error instanceof DOMException && error.name === 'AbortError')) return;
+        if (disposed || isCancellation(error)) return;
         failed = error instanceof Error ? error : new Error(String(error));
         options.onError(failed); publish();
     };

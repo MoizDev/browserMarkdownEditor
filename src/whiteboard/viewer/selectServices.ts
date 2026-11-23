@@ -43,6 +43,7 @@ import { createCardControls, type BoardCardActions } from './cardControls';
 import { createSelectionHandles } from './selectionHandles';
 import { createBoardSelectionNavigation } from './selectionNavigation';
 import type { BoardPreview } from './preview';
+import { isCancellation } from '../../platform/workers/envelope';
 
 // Provenance: SelectGesture, swept selection, geometry preparation, transaction
 // and shared frame contracts; independent host composition, no third-party source.
@@ -583,7 +584,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         const direction = directions[command as keyof typeof directions];
         if (!direction) return false;
         void navigation.navigation.cardinal(direction).catch(error => {
-            if (!(error instanceof DOMException && error.name === 'AbortError')) report(error);
+            if (!isCancellation(error)) report(error);
         });
         return true;
     };

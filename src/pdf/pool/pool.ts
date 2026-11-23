@@ -1,5 +1,5 @@
 import { createWorkerClient } from '../../platform/workers/client';
-import type { ContainedPort, Priority, WorkerClient } from '../../platform/workers/envelope';
+import { isCancellation, type ContainedPort, type Priority, type WorkerClient } from '../../platform/workers/envelope';
 import { PdfEngineError } from '../engine/types';
 import type { DocInfo } from '../engine/types';
 import type { PageGeometry } from '../../platform/types';
@@ -377,7 +377,7 @@ class Pool implements PdfPool {
         job.settled = true; job.signal.removeEventListener('abort', job.abort);
         job.progress?.finish();
         if (error instanceof Error && job.op === 'page.tile' && job.rasterEpoch === job.doc.rasterEpoch && Number.isSafeInteger(job.args.page) &&
-            !['AbortError', 'Cancelled'].includes(error.name)) failPdfPage(job.doc.key, job.args.page as number, 'failed', 'This page could not be drawn.');
+            !isCancellation(error)) failPdfPage(job.doc.key, job.args.page as number, 'failed', 'This page could not be drawn.');
         if (job.timer) clearTimeout(job.timer);
         const index = this.queue.indexOf(job); if (index >= 0) this.queue.splice(index, 1);
         if (error !== undefined) job.reject(error); else job.resolve(value);
@@ -508,7 +508,7 @@ class Pool implements PdfPool {
                         } else this.promoteRegions(job.doc, page as number, job.priority);
                         try { await waitFor(regions, signal); }
                         catch (error) {
-                            if (!signal.aborted && error instanceof Error && ['AbortError', 'Cancelled'].includes(error.name)) {
+                            if (!signal.aborted && isCancellation(error)) {
                                 if (job.doc.regions.get(page as number) === regions) job.doc.regions.delete(page as number);
                                 continue;
                             }
@@ -617,7 +617,7 @@ class Pool implements PdfPool {
         const shared = pending;
         // The first waiter owns this shared installation; its preemption must not fail the others.
         return waitFor(shared, signal).catch(error => {
-            if (!signal.aborted && error instanceof Error && ['AbortError', 'Cancelled'].includes(error.name)) {
+            if (!signal.aborted && isCancellation(error)) {
                 if (slot.fonts.get(id) === shared) slot.fonts.delete(id);
                 return this.provideFont(slot, id, signal);
             }

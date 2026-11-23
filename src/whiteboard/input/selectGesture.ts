@@ -3,6 +3,7 @@ import type { NodeId } from '../model/ids';
 import type { SelectRegion, SelectToolContext } from '../tools/select';
 import { SweepQueue, type SweepQueueServices } from './sweepQueue';
 import { sampleSurface, type CancelReason, type FinishReason, type GestureOwner, type Modifiers, type RealSample, type Tool } from './tool';
+import { isCancellation } from '../../platform/workers/envelope';
 
 export interface BoardSelectGestureContext extends SelectToolContext {
     readonly sampleToSurface: (sample: RealSample) => Vec2;
@@ -89,7 +90,7 @@ class BoardSelectGesture implements GestureOwner {
     private fail(error: unknown): void {
         if (this.cleaned || this.controller.signal.aborted) return;
         try { this.cancel('invalidated'); }
-        finally { if (!(error instanceof DOMException && error.name === 'AbortError')) this.context.onError(error); }
+        finally { if (!isCancellation(error)) this.context.onError(error); }
     }
     private region(): SelectRegion {
         return this.startKeys.alt && this.hit === null

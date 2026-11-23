@@ -1,5 +1,6 @@
 import type { Affine, ViewState } from '../../platform/types';
 import type { RenderToken } from '../../platform/render/types';
+import { isCancellation } from '../../platform/workers/envelope';
 import { worldPose } from '../change/coordinates';
 import { compose, inverse } from '../geom/affine';
 import type { PathPickOptions } from '../geom/pick';
@@ -520,7 +521,8 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
             for (const [id] of ordered) { result.push(id); if (due()) await yieldSort(); }
             check(); return Object.freeze(result);
         } catch (error) {
-            if (!(error instanceof DOMException && error.name === 'AbortError')) { try { options.onError(error); } catch { /* preserve query failure */ } }
+            // A marquee the person ended (Escape, ⌘Z, a click) aborts its own signal: never theirs to see (isCancellation).
+            if (!isCancellation(error) && !signal.aborted) { try { options.onError(error); } catch { /* preserve query failure */ } }
             throw error;
         } finally { cursor?.cancel(); }
     }

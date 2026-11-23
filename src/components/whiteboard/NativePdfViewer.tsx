@@ -7,6 +7,7 @@ import { createNativePdfEditingLease } from './nativePdfEditingLease';
 import ViewerHost from './ViewerHost';
 import { useNativeClipboard } from './useNativeClipboard';
 import './NativeCanvasEntry.css';
+import { isCancellation } from '../../platform/workers/envelope';
 
 const VIEW_REASON = 'PDF annotation tools are unavailable in this view.';
 type ViewOptions = Parameters<typeof createNativeViewLease>[0];
@@ -344,7 +345,7 @@ export default function NativePdfViewer(props: NativePdfViewerProps) {
     const onUnavailable = useCallback((error: unknown) => {
         console.error('Native PDF editing failed:', error);
         setUnavailable(true);
-        if (!(error instanceof DOMException && error.name === 'AbortError')) noticeRef.current(error instanceof Error ? error.message : String(error));
+        if (!isCancellation(error)) noticeRef.current(error instanceof Error ? error.message : String(error));
     }, []);
     if (props.identity.kind !== 'pdfInk') return <div role="alert">The PDF ink source is unavailable.</div>;
     if (!unavailable && openedAsEditing) {

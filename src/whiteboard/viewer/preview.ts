@@ -16,6 +16,7 @@ import type { PaintImageProvider } from '../render/resources';
 import type { ScenePaintRequest, SceneSnapshot } from '../scene/types';
 import type { ViewerEngine } from './types';
 import { auditTape, renderAuditEnabled } from '../../platform/render/renderAudit';
+import { isCancellation } from '../../platform/workers/envelope';
 
 export interface BoardPreviewOptions {
     readonly engine: ViewerEngine;
@@ -457,7 +458,7 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
             } catch (error) {
                 if (!job.signal.aborted && generation === seq) {
                     clear();
-                    if (!(error instanceof DOMException && error.name === 'AbortError')) report(error);
+                    if (!isCancellation(error)) report(error);
                 }
             } finally {
                 if (!handedOff) releaseLeases();

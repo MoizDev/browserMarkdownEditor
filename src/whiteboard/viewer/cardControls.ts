@@ -9,6 +9,7 @@ import { PresentedHistory } from '../input/presentedHistory';
 import type { GestureOwner, RealSample } from '../input/tool';
 import type { NodeId } from '../model/ids';
 import type { EmbedNode, LinkcardNode, Node } from '../model/nodes';
+import { isCancellation } from '../../platform/workers/envelope';
 
 /** What a card's controls may do. Embed consent is session-only and never saved; opening and fetching are explicit gestures. */
 export interface BoardCardActions {
@@ -67,7 +68,7 @@ export function createCardControls(options: CardControlOptions) {
     let svg: SVGSVGElement | undefined, disposed = false;
     const presented = new PresentedHistory<ViewState['camera']>();
     const current = () => !disposed && options.current();
-    const report = (error: unknown) => { if (!(error instanceof DOMException && error.name === 'AbortError')) options.error(error); };
+    const report = (error: unknown) => { if (!isCancellation(error)) options.error(error); };
     /** The sheet's nodes in paint order (the last is the topmost); groups have no ink of their own, and their children are listed. */
     const sheetNodes = (): Node[] => {
         const out: Node[] = [];

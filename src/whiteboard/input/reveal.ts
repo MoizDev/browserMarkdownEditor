@@ -1,4 +1,5 @@
 import type { RevealBounds, RevealIdentity, RevealServices, SelectionReveal } from './revealTypes'
+import { isCancellation } from '../../platform/workers/envelope'
 
 function valid(rect: RevealBounds): boolean {
   return [rect.x, rect.y, rect.width, rect.height].every(Number.isFinite) && rect.width >= 0 && rect.height >= 0
@@ -35,7 +36,7 @@ export function createSelectionReveal(services: RevealServices): SelectionReveal
       services.camera.setCamera({ x: camera.x - sx / camera.z, y: camera.y - sy / camera.z, z: camera.z })
       services.changed()
     }).catch(error => {
-      if (!disposed && serial === sequence && services.current(captured) && !(error instanceof DOMException && error.name === 'AbortError')) services.error?.(error)
+      if (!disposed && serial === sequence && services.current(captured) && !isCancellation(error)) services.error?.(error)
     })
   }
   return {

@@ -1,5 +1,6 @@
 import type { Affine, Rect, ViewState } from '../../platform/types';
 import { cameraTransform, worldToSurface } from '../../platform/render/camera';
+import { isCancellation } from '../../platform/workers/envelope';
 import { worldPose, worldToLocal } from '../change/coordinates';
 import { compose } from '../geom/affine';
 import type { ConnectorGeometry } from '../geom/connectorTypes';
@@ -321,7 +322,8 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                 if (!scene.ready || scene.revision !== revision) throw cancelled();
                 return selectionResult.winner;
             } catch (error) {
-                if (!(error instanceof DOMException && error.name === 'AbortError')) {
+                // Every pointer move aborts the previous hover pick (endHoverPick): a superseded pick is not an error.
+                if (!isCancellation(error) && !combined.aborted) {
                     try { options.onError(error); } catch { /* Preserve the query error. */ }
                 }
                 throw error;

@@ -13,6 +13,7 @@ import { pdfDocKey } from '../worker/protocol';
 import { consumePdfTileArrival, forgetPdfTileArrival, isPdfTileUniform, pdfTileUniformColour } from '../pool/arrivalWindow';
 import { auditCount, auditDrawn, auditTape, renderAuditEnabled } from '../../platform/render/renderAudit';
 import { QuadList } from './quadList';
+import { isCancellation } from '../../platform/workers/envelope';
 
 /** The pool returns the requested cell plus its one-pixel apron. Ownership of
  * every returned bitmap transfers to this layer, including cancelled replies. */
@@ -534,7 +535,10 @@ export class PdfTileLayer implements Layer {
             }, error => {
                 this.slotFreed();
                 const current = this.entries.get(key) === entry;
-                const cancelled = entry.controller.signal.aborted || (error instanceof Error && error.name === 'AbortError');
+                // A pool-side cancellation ('Cancelled': a recycled or restarted engine, e.g. "Worker recycled: …") is not this tile's
+                // failure either: marked failed, a page that was still wanted showed "A PDF page could not be rendered" over a page that
+                // renders fine. Removed without a mark, the invalidate below asks for it again if the view still needs it.
+                const cancelled = entry.controller.signal.aborted || isCancellation(error);
                 if (current) this.remove(key, entry);
                 this.finishRetiring(entry);
                 if (!current) return;

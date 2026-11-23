@@ -24,6 +24,7 @@ import type { NativeViewLease } from './nativeViewLease';
 import { createNativeClipboardController } from './nativeClipboardController';
 import { chooseReplacementImage, mediaRows } from './nativeMediaRows';
 import { printBoard } from './printBoard';
+import { isCancellation } from '../../platform/workers/envelope';
 
 interface ViewBinding {
     readonly controller: ReturnType<typeof createNativeClipboardController>;
@@ -79,7 +80,7 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
         release(value) { cache.release(value); live -= value.bytes; },
     };
     const report = (message: string) => { const target = active ?? bindings.values().next().value; target?.notice(message); };
-    const fail = (error: unknown) => { if (!(error instanceof DOMException && error.name === 'AbortError')) report(error instanceof Error ? error.message : String(error)); };
+    const fail = (error: unknown) => { if (!isCancellation(error)) report(error instanceof Error ? error.message : String(error)); };
     const preferenceLifetime = new AbortController();
     const preferences = new BoardPreferenceState(readBoardViewFlags(runtime.session.doc.view), flags => {
         if (!current() || runtime.session.isReadOnly) throw new Error(runtime.session.readOnlyReason ?? 'Board is read-only');

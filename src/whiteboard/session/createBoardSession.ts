@@ -12,6 +12,7 @@ import { createSessionGestureQueue } from './gestureQueue';
 import { createSaveScheduler } from './saveScheduler';
 import type { BoardSessionFactoryOptions, ComposedBoardSession } from './factoryTypes';
 import type { SerializerCheckpoint } from '../format/serializerClient';
+import { isCancellation } from '../../platform/workers/envelope';
 
 function emptyTouched(): { nodes: Set<NodeId>; sheets: Set<SheetId>; board: Set<BoardKey>; media: Set<MediaId> } {
     return { nodes: new Set(), sheets: new Set(), board: new Set(), media: new Set() };
@@ -199,7 +200,7 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
         finishComposition: options.finishComposition,
         captureJournal: () => { const source = capture(); return journal.capture(source, cachedSource!.context); },
         // A journal append superseded by a newer revision or a closing session is cancelled work: the next dirty batch journals it.
-        journalError: error => { if (!(error instanceof DOMException && error.name === 'AbortError')) options.onFailure(error); },
+        journalError: error => { if (!isCancellation(error)) options.onFailure(error); },
     });
     const mediaReferenceSnapshot = () => {
         const names = new Set<string>(), unresolved = new Set<MediaId>();

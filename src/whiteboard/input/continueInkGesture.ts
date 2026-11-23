@@ -3,6 +3,7 @@ import type { BoardSession } from '../session/BoardSession';
 import type { InkContinuation } from './continueInk';
 import { WetInkHandover } from './liveInk';
 import type { CancelReason, FinishReason, GestureOwner, Modifiers, RealSample } from './tool';
+import { isCancellation } from '../../platform/workers/envelope';
 
 export interface InkContinuationGestureOptions {
     readonly session: BoardSession;
@@ -75,7 +76,7 @@ export class InkContinuationGesture implements GestureOwner {
             this.options.invalidate();
         }).catch(error => {
             this.options.handover.clear(this.plan.identity);
-            if (!this.controller.signal.aborted && !(error instanceof DOMException && error.name === 'AbortError')) this.options.error(error);
+            if (!this.controller.signal.aborted && !isCancellation(error)) this.options.error(error);
         }).finally(() => { this.running = false; this.cleanup(); });
     }
     cancel(_reason: CancelReason): void {

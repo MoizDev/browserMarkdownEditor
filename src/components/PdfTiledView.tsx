@@ -40,6 +40,7 @@ import { usePdfTiledCopyMenu } from './usePdfTiledCopyMenu';
 import { usePdfTiledOutline } from './usePdfTiledOutline';
 import { registerView, type PdfViewInfo } from '../utils/viewRegistry';
 import { gpuUnavailableText } from '../utils/renderStatus';
+import { isCancellation } from '../platform/workers/envelope';
 import '../pdf/overlay/links.css';
 import './PdfTiledView.css';
 
@@ -582,7 +583,7 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
                     // link cleanup. Cancellation is not a modal reader failure.
                     if (controller.signal.aborted || !mounted.current || liveSession.current !== session ||
                         !session.isCurrent() || pdf.poolDocument.closed || !active.current.isVisible ||
-                        error instanceof Error && error.name === 'AbortError') return;
+                        isCancellation(error)) return;
                     onNotice(error instanceof Error && error.message.trim() ? error.message : 'PDF links are unavailable.');
                 })
                     .finally(() => { if (linkTasks.current.get(index) === controller) linkTasks.current.delete(index); });

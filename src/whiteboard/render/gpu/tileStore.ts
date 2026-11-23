@@ -648,11 +648,11 @@ class GpuTileStore implements NumericTileStore {
     }
 
     /** The GPU bytes of the targets held on the current device, and no CPU bytes: composed content lives in GPU targets only.
-     * With no device the store reports zero and keeps its ledger, so a device that returns resumes the same count. */
+     * With no device (the 2D bridge keeps the targets of a device that comes back) the ledger is reported as it stands: the owner
+     * decides whether it still counts, and a released store holds none. */
     memory(): { gpuBytes: number; cpuBytes: number } {
         const device = this.host.device();
-        if (device === null) return { gpuBytes: 0, cpuBytes: 0 };
-        this.adopt(device);
+        if (device !== null) this.adopt(device);
         return { gpuBytes: this.gpuBytes, cpuBytes: 0 };
     }
 

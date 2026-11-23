@@ -375,12 +375,16 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
                     // Per frame, so a run's counters name the frames a present was hidden in (the release hole's correlation).
                     if (!device) auditCount(surface, `prepare:hidden:no-device:f${budget.frameId}`);
                 }
-                composer.release('hidden');
-                // A device that is merely absent (the 2D bridge: the first CPU picture, a resize) keeps the presented picture: the
-                // device comes back for the same paint. Only a lost or released device, or a paint of another document, drops it.
+                // A device that is merely absent (the 2D bridge: the first CPU picture, a resize) keeps the presented picture and the
+                // composer's tiles and textures: the same device comes back for the same paint. A device that is lost or released
+                // releases this layer through the pane (releaseGpu), and every route and kit rebinds to a new one. Released here, each
+                // bridge dropped the whole picture's GPU work and rebuilt it right after, under the pressure that had stepped the
+                // quality (measured, a 4000x3000 picture zoomed to 400% on a WebGL2 PDF at DPR 2: 46-57 bridge frames, each a release).
+                // Only a paint of another document, or none, drops them. The ledger stays with them, so the governor still sees
+                // the kept bytes and its trim still reaches them through evictGpu (a layer reporting none is skipped by the pane).
                 const bridge = !device && !!prepared && documentMatches(prepared.root, budget.token) && documentMatches(prepared.sourceFrame, budget.token);
-                if (!bridge) presented = null;
-                omitPrepared = null; ledger = null;
+                if (!bridge) { composer.release('hidden'); presented = null; ledger = null; }
+                omitPrepared = null;
                 return true;
             }
             omitPrepared = omit?.size ? omit : null;
@@ -470,7 +474,10 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
         // geometry cache) are not reported, since the governor would refuse to admit bytes it has not reserved.
         memory(): { gpuBytes: number; cpuBytes: number } {
             // The composer's ledger (store targets and route leases, the CPU route's included) counts only while its device generation is current.
-            const held = ledger !== null && ledger.device === host.device() && ledger.generation === host.generation;
+            // A device merely absent (the 2D bridge) still holds what the bridge kept; a lost or released one has cleared the ledger
+            // (release) or moved the generation (the broker retires it before any fallback).
+            const device = host.device();
+            const held = ledger !== null && (device === null || ledger.device === device) && ledger.generation === host.generation;
             return { gpuBytes: held ? composer.memory().gpuBytes : 0, cpuBytes: cpu.memory().cpuBytes };
         },
         cpuWorkingSet(): { mandatoryBytes: number; prefetchBytes: number } {

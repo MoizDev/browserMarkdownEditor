@@ -13,6 +13,13 @@ export type EmbedManifest = EmbedFrameManifest;
 export type EmbedProvider = 'youtube' | 'vimeo' | 'figma' | 'canva' | 'google-maps' | 'val-town' | 'codesandbox' | 'codepen'
     | 'scratch' | 'google-calendar' | 'google-slides' | 'replit' | 'felt' | 'spotify' | 'observable' | 'desmos' | 'tldraw';
 export interface EmbedCandidate { readonly provider: EmbedProvider; readonly url: string }
+/** The size a pasted embed opens at, in world units. Most provider pages are 16:9; Spotify's player is a fixed-height strip,
+ * which at 16:9 would leave most of the card empty. */
+export function embedCardSize(provider: EmbedProvider): { readonly w: number; readonly h: number } {
+    return provider === 'spotify' ? { w: 800, h: 352 } : { w: 800, h: 450 };
+}
+/** Every size the app gives an embed, so a card still at one of them takes the size of its new kind on conversion. */
+export const EMBED_CARD_SIZES: readonly { readonly w: number; readonly h: number }[] = [{ w: 800, h: 450 }, { w: 800, h: 352 }];
 function enabledOrigins(manifest: EmbedManifest | undefined): readonly string[] | null {
     if (!manifest || manifest.version !== 1 || !Array.isArray(manifest.origins) || !manifest.origins.length
         || manifest.origins.length > ORIGINS.length || new Set(manifest.origins).size !== manifest.origins.length

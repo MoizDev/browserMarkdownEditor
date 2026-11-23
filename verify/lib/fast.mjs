@@ -3,7 +3,7 @@ import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { scratchDir, sourceRoot } from './paths.mjs';
 import { prepareApp, serveApp } from './serve.mjs';
 import { openBrowser } from './browser.mjs';
 import { bindServedBodies } from './identity.mjs';
@@ -18,10 +18,9 @@ import { opaqueFrameEpub } from './epubFixture.mjs';
 import { createDeterministicPdf, saveDeterministicPdf } from '../fixtures/lib/pdf.mjs';
 
 const exec = promisify(execFile);
-export const fastRoot = resolve(process.env.BME_ROOT ?? fileURLToPath(new URL('../../', import.meta.url)));
-export const fastScratch = resolve(process.env.BME_FAST_SCRATCH ?? '/Users/adham/Developer/bme-impl/scratch/v-a-fast');
+export const fastRoot = resolve(process.env.BME_ROOT ?? sourceRoot);
+export const fastScratch = resolve(process.env.BME_FAST_SCRATCH ?? scratchDir('fast'));
 export const fastPort = Number(process.env.BME_PORT);
-export const lockPath = '/Users/adham/Developer/bme-impl/scratch/bin/bme-lock';
 export const appScratch = mode => join(fastScratch, mode);
 
 export async function prepareFast() {
@@ -77,7 +76,7 @@ export async function replaceNote(page, text) {
 /** One report per guard, fresh OPFS contexts per case, immutable prepared app. */
 export async function fastGuard(name, flow) {
     if (process.argv.includes('--prepare')) { await prepareFast(); return; }
-    if (!Number.isInteger(fastPort) || fastPort < 1024) throw new Error('Set BME_PORT to a port in your assigned range');
+    if (!Number.isInteger(fastPort) || fastPort < 1024) throw new Error('Set BME_PORT to a free port for the preview server (1024–65535)');
     const report = await createReport({ scratch: fastScratch, name, functionalOnly: true, timingClaims: false });
     report.data.sessions = [];
     const session = async ({ label, files, mode = 'production', init, requests = true }, action) => {

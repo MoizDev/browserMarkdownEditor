@@ -10,6 +10,7 @@ import { resolveExternal } from './fetch-external.mjs';
 import { buildIdentity, bindServedBodies } from '../lib/identity.mjs';
 import { installVault, seedVault } from '../lib/vault.mjs';
 import { createReport } from '../lib/report.mjs';
+import { pin, pinnedChrome } from '../lib/paths.mjs';
 const args = process.argv.slice(2);
 const options = {};
 for (let i = 0; i < args.length; i++) {
@@ -31,8 +32,7 @@ if (out.startsWith(REPO))
 const origin = new URL(options.url);
 if (!['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname))
     throw new Error('V-05 only drives a loopback app');
-const pin = JSON.parse(await readFile(resolve(REPO, 'verify/browser-pin.json'), 'utf8'));
-const executablePath = options.browser ?? `/Users/adham/Developer/bme-impl/scratch/browsers/${pin.version}/${pin.executable}`;
+const executablePath = options.browser ?? await pinnedChrome();
 await mkdir(out, { recursive: false });
 const ledger = await createReport({ scratch: out, name: 'V-05',
     gate: 'V-05', status: 'failed', stage: 'preparation',

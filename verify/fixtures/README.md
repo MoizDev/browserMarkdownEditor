@@ -144,13 +144,14 @@ Never open hostile inputs in a native viewer; use only isolated browser/worker r
 
 ## Running V-05
 
-Use the run's `bme-lock` and scratch Vite recipe; the server must already serve the production app
-on a seat-owned port. Chrome for Testing is pinned by `verify/browser-pin.json`; no npx-cache driver.
+The server must already serve the production app (`prepareApp`, then `serveApp({ build: false })`
+from `verify/lib/serve.mjs`) on a port you chose. Chrome for Testing is the pinned one
+(`node verify/install-browser.mjs` once; `--browser` overrides); no npx-cache driver.
 Artifacts go into a fresh directory outside the repo. The ordinary gate is:
 
 ```sh
-bme-lock run -w 2 -- node verify/fixtures/run-v05.mjs \
-  --out /absolute/scratch/v05-run --url http://localhost:6180 \
+node verify/fixtures/run-v05.mjs \
+  --out /absolute/scratch/v05-run --url http://127.0.0.1:6180 \
   --dist /absolute/scratch/dist --block-external
 ```
 

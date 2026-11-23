@@ -141,6 +141,15 @@ export class ToolState {
     this.publish({ ...this.snapshot, active: { id, ...(variant !== undefined ? { variant } : {}) }, lastFigure, selectionEpoch: this.snapshot.selectionEpoch + 1 })
   }
 
+  /** Adopt a tool named by the document (`ui.tool` stores the id alone). The same id keeps its variant, and a
+   * figure coming back takes the last figure: re-applying the bare id dropped `rectangle` from the snapshot after
+   * every choice, so the bar showed no tool pressed (measured: R pressed, `aria-pressed` false on every button). */
+  adoptTool(id: string): void {
+    const registration = this.registry.get(id)
+    if (!registration || this.snapshot.active.id === id) return
+    this.setTool(id, id === this.figureId && registration.hasVariants ? this.snapshot.lastFigure : undefined)
+  }
+
   setLocked(locked: boolean): void {
     if (this.snapshot.locked !== locked) this.publish({ ...this.snapshot, locked })
   }

@@ -14,6 +14,8 @@ export const BOARD_TOOL_REGISTRATIONS: readonly ToolRegistration[] = Object.free
 ]);
 export function createBoardToolState(ui: UiBlock, locked: boolean): ToolState {
     const tools = new ToolState(BOARD_TOOL_REGISTRATIONS, 'select', 'figure', locked);
-    if (tools.getRegistration(ui.tool)) tools.setTool(ui.tool);
+    // `ui.tool` keeps no figure kind, and a figure tool draws a rectangle until one is chosen: say so on the bar.
+    if (ui.tool === 'figure') tools.setTool('figure', 'rectangle');
+    else tools.adoptTool(ui.tool);
     return tools;
 }

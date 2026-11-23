@@ -1,9 +1,10 @@
-import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import { usePlatformPane, type UsePlatformPaneOptions } from '../platformPane/usePlatformPane';
 import BoardAccessibility, { type BoardAccessibilitySource } from './BoardAccessibility';
 import type { PlatformPane } from '../../platform/render/attachPlatformPane.types';
 import type { RenderToken } from '../../platform/render/types';
 import BoardPaintStatus, { type BoardPaintProgress, type BoardReadiness } from './BoardPaintStatus';
+import { getContextMenu } from '../../utils/contextMenu';
 import './viewerHost.css';
 
 /** The owner keeps the document/session alive across graph view, hidden tabs
@@ -73,9 +74,25 @@ export default function ViewerHost<T extends object>({
         if (!isVisible || !interaction || !overlay) return;
         return view.attachInput(interaction, overlay);
     }, [view, isVisible, interaction, overlay]);
-    useLayoutEffect(() => registerKeyboardTarget(() => interactionRef.current?.focus()), [registerKeyboardTarget]);
+    useLayoutEffect(() => registerKeyboardTarget(() => interactionRef.current?.focus({ preventScroll: true })), [registerKeyboardTarget]);
+    // A toolbar button clicked with the pointer hands the keyboard back to the board, as tldraw's toolbar does: the
+    // click focused the button, outside the interaction root the shortcuts listen on, so the next tool key went
+    // nowhere (measured: Select clicked, then E — still Select). Only a pointer click (`detail` 0 is Enter/Space on
+    // a button someone is walking by keyboard, who keeps it), and never from a popup the click opened: a button
+    // that declares one, an app menu now open, or focus already moved elsewhere. A tool picked inside More tools
+    // unmounts its button, leaving the keyboard on `<body>`, which is taken too.
+    const returnKeyboard = useCallback((event: MouseEvent<HTMLDivElement>) => {
+        if (event.detail === 0 || !(event.target instanceof Element)) return;
+        const button = event.target.closest('button');
+        if (!button || button.hasAttribute('aria-haspopup') || interactionRef.current?.contains(button)) return;
+        requestAnimationFrame(() => {
+            const active = document.activeElement;
+            if ((active !== button && active !== document.body && active !== null) || getContextMenu() !== null) return;
+            interactionRef.current?.focus({ preventScroll: true });
+        });
+    }, []);
 
-    return <div className="board-viewer-host" onContextMenu={event => event.preventDefault()} onPointerDownCapture={() => { if (isVisible) onFocus(); }}>
+    return <div className="board-viewer-host" onContextMenu={event => event.preventDefault()} onPointerDownCapture={() => { if (isVisible) onFocus(); }} onClick={returnKeyboard}>
         <BoardAccessibility name={name} source={view.accessibility} isVisible={isVisible} readOnly={readOnly}
             mirrorEnabled={!externalAccessibility} interactionRef={captureInteraction}>
             <div className="board-viewer-surface" ref={setSurface} aria-hidden="true" />

@@ -574,7 +574,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
         services.persistToolLock?.(session.doc.view.toolLock)
       }
       const tool = session.doc.ui.tool
-      if (snapshot.active.id !== tool && services.tools.getRegistration(tool)) services.tools.setTool(tool)
+      services.tools.adoptTool(tool)
     })
   })
   updateMirror()

@@ -3,15 +3,19 @@ import { prepareNotebookTransform } from './notebookTranslation';
 import { prepareConnectorControl, type ConnectorControl, type ConnectorControlPreview } from '../geom/connectorControls';
 import type { BoardRuntime } from '../host/runtime';
 import type { NodeId } from '../model/ids';
-import type { CancelReason, FinishReason, GestureOwner, Modifiers, RealSample } from './tool';
+import { CLICK_SLOP_CSS, type CancelReason, type FinishReason, type GestureOwner, type Modifiers, type RealSample } from './tool';
 
 /** A dragged label snaps to the path centre within this many CSS px at the current zoom (source-only candidate, unconfirmed). */
 export const LABEL_CENTRE_SNAP_PX = 10;
+/** An arc's bend snaps to straight within 16 px of the chord; an elbow's midpoint to the middle of its range within 10 px (catalogue B§). */
+const HANDLE_CENTRE_SNAP_PX = 16, HANDLE_MID_SNAP_PX = 10;
 
 export interface ConnectorControlGestureOptions {
     readonly runtime: BoardRuntime;
     readonly zoom?: () => number;
     readonly id: NodeId;
+    /** A press on a label that does not drag edits its text (catalogue §7 a.7, S§11.3). */
+    readonly editText?: (id: NodeId) => void | Promise<void>;
     readonly control: ConnectorControl;
     readonly current: () => boolean;
     readonly hold: () => () => void;
@@ -29,7 +33,7 @@ export interface ConnectorControlGestureOptions {
 /** Control previews are derived from the original revision; only the last request can commit. */
 export function connectorControlGesture(first: RealSample, _modifiers: Modifiers, options: ConnectorControlGestureOptions): GestureOwner {
     const release = options.hold(), pointerIds = new Set([first.pointerId]);
-    let sample = first, sequence = 0, ended = false, cleaned = false;
+    let sample = first, sequence = 0, ended = false, cleaned = false, moved = false;
     let controller: AbortController | undefined, preview: ConnectorControlPreview | undefined, unregister: (() => void) | undefined;
     const cleanup = () => {
         if (cleaned) return; cleaned = true; controller?.abort();
@@ -46,7 +50,8 @@ export function connectorControlGesture(first: RealSample, _modifiers: Modifiers
             const zoom = options.zoom?.() ?? 1;
             result = await prepareConnectorControl({ runtime: options.runtime, id: options.id, control: options.control,
                 point, signal: request.signal, current: () => !cleaned && options.current() && turn === sequence,
-                cooperate: options.cooperate, labelSnapWorld: zoom > 0 ? LABEL_CENTRE_SNAP_PX / zoom : undefined });
+                cooperate: options.cooperate, labelSnapWorld: zoom > 0 ? LABEL_CENTRE_SNAP_PX / zoom : undefined,
+                handleSnapWorld: zoom > 0 ? { centre: HANDLE_CENTRE_SNAP_PX / zoom, mid: HANDLE_MID_SNAP_PX / zoom } : undefined });
             if (cleaned || request.signal.aborted || turn !== sequence) return;
             if (!options.current()) { cancel(); return; }
             if (commit) {
@@ -75,13 +80,19 @@ export function connectorControlGesture(first: RealSample, _modifiers: Modifiers
         update(samples) {
             if (ended || cleaned) return;
             if (!options.current()) { cancel(); return; }
-            for (const next of samples) if (pointerIds.has(next.pointerId)) sample = next;
+            for (const next of samples) if (pointerIds.has(next.pointerId)) {
+                sample = next;
+                // A drag is a move past the click slop: measured in CSS px, so the slop holds at any zoom.
+                if (Math.hypot(next.x - first.x, next.y - first.y) * (options.zoom?.() ?? 1) >= CLICK_SLOP_CSS) moved = true;
+            }
             void render(false);
         },
         finish(reason: FinishReason) {
             if (ended || cleaned) return;
             if (reason !== 'up' || !options.current()) { cancel(); return; }
-            ended = true; void render(true);
+            ended = true;
+            if (options.control === 'label' && !moved && options.editText) { cleanup(); void options.editText(options.id); return; }
+            void render(true);
         },
         cancel(_reason: CancelReason) { cancel(); },
     };

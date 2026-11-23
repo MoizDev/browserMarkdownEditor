@@ -21,6 +21,8 @@ export interface ConnectorControlOptions {
     readonly cooperate?: () => Promise<void>;
     /** World distance within which a dragged label snaps to the path centre (a screen distance at the current zoom). */
     readonly labelSnapWorld?: number;
+    /** World distances within which an arc's bend snaps to straight (centre) and an elbow's midpoint to the middle of its range. */
+    readonly handleSnapWorld?: Readonly<{ centre: number; mid: number }>;
 }
 export interface ConnectorControlPreview {
     readonly ops: readonly NodeSetOp[];
@@ -32,7 +34,8 @@ const clamp = (value: number) => Math.max(0, Math.min(1, value));
 export function connectorLabelFraction(node: Readonly<ConnectorNode>, geometry: ConnectorGeometry, point: Vec2, snapWorld?: number): number {
     return projectConnectorLabel(node, geometry, point, snapWorld).fraction;
 }
-function controlValue(node: Readonly<ConnectorNode>, geometry: ConnectorGeometry, control: ConnectorControl, point: Vec2, snapWorld?: number): NodeSetOp {
+function controlValue(node: Readonly<ConnectorNode>, geometry: ConnectorGeometry, control: ConnectorControl, point: Vec2, snapWorld?: number,
+    handleSnap?: Readonly<{ centre: number; mid: number }>): NodeSetOp {
     const a = geometry.start.aimWorld, b = geometry.end.aimWorld, dx = b.x - a.x, dy = b.y - a.y, length = Math.hypot(dx, dy);
     if (![a.x, a.y, b.x, b.y, dx, dy, length].every(Number.isFinite)) throw new RangeError('Connector control geometry overflows');
     if (control === 'label') return { t: 'set', id: node.id, key: 'labelAt', value: connectorLabelFraction(node, geometry, point, snapWorld) };
@@ -40,10 +43,15 @@ function controlValue(node: Readonly<ConnectorNode>, geometry: ConnectorGeometry
         // Default, calibration cut by owner: the dominant route axis controls the elbow midpoint.
         const value = Math.abs(dx) >= Math.abs(dy) ? (dx ? (point.x - a.x) / dx : 0.5) : (dy ? (point.y - a.y) / dy : 0.5);
         if (!Number.isFinite(value)) throw new RangeError('Connector elbow control overflows');
-        return { t: 'set', id: node.id, key: 'elbowMid', value: clamp(value) };
+        // Within the mid radius of the middle of the range, the midpoint snaps there (catalogue B§ elbow midpoint snap 10).
+        const axisLength = Math.abs(dx) >= Math.abs(dy) ? Math.abs(dx) : Math.abs(dy);
+        const mid = handleSnap && Math.abs(value - 0.5) * axisLength <= handleSnap.mid ? 0.5 : clamp(value);
+        return { t: 'set', id: node.id, key: 'elbowMid', value: mid };
     }
-    const bend = length ? (point.x - (a.x / 2 + b.x / 2)) * (-dy / length) + (point.y - (a.y / 2 + b.y / 2)) * (dx / length) : 0;
+    let bend = length ? (point.x - (a.x / 2 + b.x / 2)) * (-dy / length) + (point.y - (a.y / 2 + b.y / 2)) * (dx / length) : 0;
     if (!Number.isFinite(bend)) throw new RangeError('Connector bend control overflows');
+    // Near the chord the bend snaps to straight: an arc's middle handle centres on the chord (catalogue B§ arc centre snap 16).
+    if (handleSnap && Math.abs(bend) <= handleSnap.centre) bend = 0;
     return { t: 'set', id: node.id, key: 'bend', value: Math.max(-1_000_000, Math.min(1_000_000, bend)) };
 }
 
@@ -65,7 +73,7 @@ export async function prepareConnectorControl(options: ConnectorControlOptions):
         check(); epoch = runtime.render.text.fonts.epoch;
         const prepared = await runtime.render.prepareForPick(node, signal, doc); check();
         if (!prepared.connector) throw new Error('Connector geometry is unavailable');
-        const control = controlValue(node, prepared.connector, options.control, options.point, options.labelSnapWorld);
+        const control = controlValue(node, prepared.connector, options.control, options.point, options.labelSnapWorld, options.handleSnapWorld);
         const ops: NodeSetOp[] = Object.is(Reflect.get(node, control.key), control.value) ? [] : [control];
         if (!ops.length) {
             const release = () => { if (!released) { released = true; source.release(); } };

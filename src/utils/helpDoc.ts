@@ -325,7 +325,7 @@ A board you open or create from the file tree takes the keyboard straight away, 
 ### The tool bar
 The bar at the bottom centre holds **Select** (\`V\`), **Hand** (\`H\`), **Draw** (\`D\`, also \`B\` or \`X\`), **Eraser** (\`E\`), **Arrow** (\`A\`), **Text** (\`T\`), **Note** (\`N\`, a sticky note), **Media** (a picture or video from your computer, \`Cmd/Ctrl + U\`) and **Rectangle** (\`R\`). The chevron at its end opens the rest: fifteen more figures (ellipse \`O\`, triangle, diamond, hexagon, oval, rhombus, star, cloud, heart, x box, check box and four block arrows), **Line** (\`L\`), **Highlight** (\`Shift + D\`), **Laser** (\`K\`) and **Frame** (\`F\`). While one of those is the active tool, the chevron shows it filled in blue. \`G\` picks the figure you used last. Hover any button for its name and key. In a narrow pane, the tools that do not fit on the bar move to the front of the chevron's list, the header's Undo, Redo, Delete and Duplicate move into its **Actions** grid, and the zoom box sits just above the bar.
 
-**Tool lock** (\`Q\`, or Menu → Preferences) keeps the tool you picked after each use.
+**Tool lock** (\`Q\`, or Menu → Preferences) keeps the tool you picked after each use. A shape, arrow, line or frame you have let go of always lands, however quickly you start the next one, press a key or pick another tool; \`Escape\` before you let go still cancels it, and \`Cmd/Ctrl + Z\` right after takes back the last one.
 
 ### Moving around
 - **Pan:** scroll or swipe, drag with the Hand tool, or hold \`Space\` and drag. The arrow keys pan when nothing is selected (\`Shift\` for bigger steps).
@@ -388,7 +388,7 @@ Screenshots taken out of a dark-themed app land on a notebook page or a whiteboa
 Navigation, selection, copying and exporting never edit the file; only drawing and editing do.
 
 ### Saving, reopening and the agent
-Every change is saved to the file a second after you stop; \`Cmd/Ctrl + Z\` undoes and \`Cmd/Ctrl + Shift + Z\` redoes. Drawings and notebooks **reopen where you left them** — the same spot on a drawing, the same page and zoom in a notebook — just as a PDF does, whether you switch tabs, close the file or reload the app.
+Every change is saved to the file a second after you stop; \`Cmd/Ctrl + Z\` undoes and \`Cmd/Ctrl + Shift + Z\` redoes. Drawings and notebooks **reopen where you left them** — the same spot on a drawing, the same page and zoom in a notebook — just as a PDF does, whether you switch tabs, close the file or reload the app. A drawing you open here for the first time shows the view saved in the file, if it has one (an older \`.tldraw\` drawing opens where it was last viewed); otherwise it frames everything on the page with a margin, never zoomed in past 100 %.
 
 A drawing or notebook this version cannot read safely — an unreadable file, one written in a newer format, or one that is not the kind its name says — **opens read-only**: neither drawing on it nor Save can overwrite the original file. An empty file is still a valid new board.
 
@@ -397,7 +397,7 @@ The agent's **canvas tools** work on the document rather than its view: they can
 For drawing without a pointer, the **Use keyboard drawing cursor** button gives the board a cursor you move with the arrow keys and press and lift with \`Enter\`. \`Alt + R\` repeats the board's last announcement for a screen reader.
 
 ### When the graphics card cannot be used
-Drawings, notebooks and PDFs are drawn with your computer's graphics card (WebGL2) whenever the browser offers it, and otherwise with the browser's ordinary drawing, which shows exactly the same thing but can be slower on large documents. When a document has no usable graphics card — graphics acceleration switched off in Chrome, software-only graphics, an unsupported card, or repeated graphics errors on that document — a notice says so once, with **Dismiss**: on a board in a box just above the tool bar, on a PDF at the bottom left. A board's other notices, such as a picture that could not be shown, appear in the same box.
+Drawings, notebooks and PDFs are drawn with your computer's graphics card (WebGL2) whenever the browser offers it, and otherwise with the browser's ordinary drawing, which shows exactly the same thing but can be slower on large documents. When a document has no usable graphics card — graphics acceleration switched off in Chrome, software-only graphics, an unsupported card, or repeated graphics errors on that document — a notice says so once, with **Dismiss**: on a board in a box just above the tool bar, on a PDF at the bottom left. A board's other notices, such as a picture that could not be shown, appear in the same box with it, newest last, each with its own **Dismiss**; a new notice never hides one you have not read.
 
 ### Drawings
 A **drawing** (\`.drawing\`) is a canvas with no pages at all — an endless sheet in every direction, for diagrams and thinking rather than for a page you intend to hand in. Its **Minimap** (bottom right) shows the artwork and your current view: click or drag in it to move there; with the minimap focused, the arrow keys move a quarter of the view (a full view with \`Shift\`), and \`Home\` / \`End\` go to the artwork's top-left / bottom-right. A drawing has no paper, and its own **Theme**.

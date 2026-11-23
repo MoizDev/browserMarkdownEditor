@@ -33,6 +33,12 @@ export interface BoardCreationContext {
     readonly camera: CameraController;
     readonly sampleToSurface: (sample: RealSample) => { readonly x: number; readonly y: number };
     registerPending(cancel: () => void): () => void;
+    /** The hold a released shape keeps until it has landed (a `settling` gesture hold: the next press is admitted). */
+    settle(): () => void;
+    /** Finished work: a new press, a key or a tool change does not cancel it; the view's end or an undo of it does. */
+    registerSettling(cancel: () => void, undoable: boolean): () => void;
+    /** The released shapes land one after another, in the order they were drawn: `ready` when the earlier ones have. */
+    creationTurn(): { readonly ready: Promise<void>; done(): void };
     readonly figure?: FigureShape;
     readonly preview: Pick<BoardPreview, 'show' | 'showOps' | 'waitUntilReady' | 'armCommit' | 'finishCommit' | 'cancelCommit' | 'clear'>;
     readonly guides?: (guides: readonly BoardSnapGuide[]) => void;
@@ -46,20 +52,20 @@ class CreationGesture implements GestureOwner {
     readonly kind = 'node-edit' as const;
     readonly pointerIds: ReadonlySet<number>;
     private readonly controller = new AbortController();
-    private readonly revision: number;
+    private revision: number;
     private readonly toolEpoch: number;
     private readonly toolStart: ReturnType<BoardCreationContext['runtime']['tools']['getSnapshot']>;
     private readonly document: BoardRuntime['session']['doc'];
     private readonly owner: BoardRuntime['session']['owner'];
-    private readonly selection: ReturnType<BoardRuntime['selection']['getSnapshot']>;
-    private readonly release: () => void;
-    private readonly unregister: () => void;
+    private selection: ReturnType<BoardRuntime['selection']['getSnapshot']>;
+    private release: () => void;
+    private unregister: () => void;
     private readonly parent: ParentId;
     private readonly page: number;
-    private readonly parentPose: { x: number; y: number; rotation: number };
+    private parentPose: { x: number; y: number; rotation: number };
     private readonly downSurface: { x: number; y: number };
     private lastSurface: { x: number; y: number };
-    private readonly base: { id: Node['id']; parent: ParentId; order: string; page: number; x: number; y: number; ext: null };
+    private base: { id: Node['id']; parent: ParentId; order: string; page: number; x: number; y: number; ext: null };
     private readonly style;
     private fontEpoch: number | undefined;
     private previewRequest: AbortController | undefined;
@@ -70,6 +76,8 @@ class CreationGesture implements GestureOwner {
     private modifiers: Modifiers;
     private ended = false;
     private released = false;
+    /** Set once the creation's transaction has applied: from then on a moved revision is its own, never a reason to retry. */
+    private landed = false;
     constructor(private readonly down: RealSample, modifiers: Modifiers, private readonly context: BoardCreationContext) {
         const doc = context.runtime.session.doc, selection = context.runtime.selection.getSnapshot();
         this.pointerIds = new Set([down.pointerId]); this.sample = down; this.lastMovedAt = down.time; this.downModifiers = modifiers; this.modifiers = modifiers;
@@ -90,12 +98,33 @@ class CreationGesture implements GestureOwner {
         catch (error) { this.release(); throw error; }
         try { this.draw(); } catch (error) { this.cancel('invalidated'); throw error; }
     }
-    private valid(): boolean {
-        const { runtime } = this.context, session = runtime.session;
+    /** The board this shape is drawn on is still the one, editable: nothing it can be prepared again against has gone. */
+    private alive(): boolean {
+        const session = this.context.runtime.session;
         return !this.controller.signal.aborted && this.context.current() && session.owner === this.owner
-            && session.doc === this.document && this.document.rev === this.revision && !session.isReadOnly
-            && runtime.selection.getSnapshot() === this.selection
+            && session.doc === this.document && !session.isReadOnly;
+    }
+    /** Nothing it was prepared against has moved: the revision, the selection, the font epoch. */
+    private fresh(): boolean {
+        const { runtime } = this.context;
+        return this.document.rev === this.revision && runtime.selection.getSnapshot() === this.selection
             && (this.fontEpoch === undefined || runtime.render.text.fonts.epoch === this.fontEpoch);
+    }
+    private valid(): boolean { return this.alive() && this.fresh(); }
+    /** Prepares the shape again against the board as it is now. A shape drawn while the previous one was still landing
+     * was prepared against the revision before it, and that landing (or an erase's, or the tool lock's write) made it
+     * invalid: drawn 20 ms apart with the tool lock on, 3 of 8 rectangles were lost. Only its container can refuse it now:
+     * gone, locked or no longer a container. Its place on top of its siblings and its parent's pose are read again. */
+    private rebase(): boolean {
+        if (this.fresh()) return true;
+        const { runtime } = this.context, doc = this.document;
+        const parent = doc.nodes.get(this.parent as Node['id']);
+        if (!isSheetParent(doc, this.parent) && (!parent || (parent.kind !== 'group' && parent.kind !== 'frame') || isLocked(doc, parent))) return false;
+        if (!isSheetParent(doc, this.parent)) this.parentPose = worldPose(doc, this.parent);
+        const point = this.local(this.down), children = doc.children.get(this.parent) ?? [];
+        this.base = { ...this.base, order: keyBetween(children.at(-1)?.order ?? null, null), x: point.x, y: point.y };
+        this.revision = doc.rev; this.selection = runtime.selection.getSnapshot(); this.fontEpoch = undefined;
+        return true;
     }
     private local(point: { x: number; y: number }) {
         const pose = this.parentPose, dx = point.x - pose.x, dy = point.y - pose.y, c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
@@ -201,7 +230,7 @@ class CreationGesture implements GestureOwner {
         return result.delta.x || result.delta.y ? this.node({ ...sample, x: sample.x + result.delta.x, y: sample.y + result.delta.y }, modifiers) : node;
     }
     private draw(): void {
-        if (!this.valid()) return;
+        if (!this.alive() || !this.rebase()) return;
         const sample = this.sample, modifiers = this.modifiers, turn = ++this.previewGeneration;
         this.previewRequest?.abort(); const request = new AbortController(); this.previewRequest = request;
         this.context.preview.show([this.node(sample, modifiers)]);
@@ -211,7 +240,7 @@ class CreationGesture implements GestureOwner {
     }
     update(samples: readonly RealSample[], modifiers: Modifiers): void {
         if (this.ended) return;
-        if (!this.valid()) { this.cancel('invalidated'); return; }
+        if (!this.alive() || !this.rebase()) { this.cancel('invalidated'); return; }
         this.modifiers = modifiers;
         for (const sample of samples) if (this.pointerIds.has(sample.pointerId)) {
             const surface = sampleSurface(sample, this.context.sampleToSurface);
@@ -224,12 +253,37 @@ class CreationGesture implements GestureOwner {
         if (this.ended) return;
         this.ended = true;
         this.previewGeneration++; this.previewRequest?.abort();
-        if (reason !== 'up' || !this.valid()) { this.cancel('invalidated'); return; }
+        if (reason !== 'up' || !this.alive() || !this.rebase()) { this.cancel('invalidated'); return; }
         if (this.context.kind === 'connector' && this.isClick()) {
             this.context.runtime.tools.keepToolOnce(this.toolEpoch); this.cancel('invalidated'); this.completeTool(); return;
         }
         if (this.context.kind === 'polyline' && this.isClick()) this.context.runtime.tools.keepToolOnce(this.toolEpoch);
-        void this.commit().catch(error => { if (!this.controller.signal.aborted) this.context.onError(error); }).finally(() => { this.cleanup(); this.completeTool(); });
+        // A shape the person has released lands, as an erase or a box does (whiteboard-editing): it trades its input hold for a
+        // settling one and registers as settling, not pending. Pending, the next press cancelled it, and while it held an input
+        // hold that press was refused. Escape before release, the view's end, or an undo while it lands still take it back.
+        let settle: (() => void) | null = null;
+        try {
+            settle = this.context.settle();
+            const unregister = this.context.registerSettling(() => this.cancel('invalidated'), true);
+            this.unregister(); this.unregister = unregister;
+        } catch (error) {
+            settle?.(); this.cancel('invalidated'); this.context.onError(error); return;
+        }
+        const input = this.release;
+        this.release = settle; input();
+        const turn = this.context.creationTurn();
+        void turn.ready.then(() => this.land()).catch(error => { if (!this.controller.signal.aborted) this.context.onError(error); })
+            .finally(() => { turn.done(); this.cleanup(); this.completeTool(); });
+    }
+    /** Commits, preparing again when the board moved under the commit (an earlier shape or an erase landing meanwhile):
+     * a moved revision is not the person cancelling it. Bounded: a board rewritten on every attempt reports the failure. */
+    private async land(): Promise<void> {
+        for (let attempt = 0; ; attempt++) {
+            if (!this.alive()) throw new DOMException('Creation invalidated', 'AbortError');
+            if (!this.rebase()) throw new DOMException('The shape\'s container changed while it was being placed', 'AbortError');
+            try { await this.commit(); return; }
+            catch (error) { if (this.landed || attempt >= 8 || !this.alive() || this.fresh()) throw error; }
+        }
     }
     private async enclosedFrameChildren(node: Extract<Node, { kind: 'frame' }>, pose: { x: number; y: number; rotation: number }): Promise<NodeId[]> {
         const { runtime } = this.context, doc = runtime.session.doc, signal = this.controller.signal;
@@ -331,7 +385,7 @@ class CreationGesture implements GestureOwner {
                             reparentNode(doc, builder, child, node.id, render.changeGeometry, keys[i]);
                         }
                     }
-                    const applied = builder.commit(); applied.release(); this.context.preview.finishCommit();
+                    const applied = builder.commit(); this.landed = true; applied.release(); this.context.preview.finishCommit();
                 } catch (error) { builder.abort(); this.context.preview.cancelCommit(); throw error; }
                 runtime.selection.replace([node.id]);
                 if (node.kind === 'polyline') runtime.tools.rememberPolyline(node.id, this.toolEpoch, this.isClick());

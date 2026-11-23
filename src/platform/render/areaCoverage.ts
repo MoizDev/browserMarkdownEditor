@@ -23,8 +23,9 @@
  * 'unsupported', and its caller keeps the coverage route, counted. Leases are handed to the device at creation (it returns them
  * on destroy), so nothing is released twice. */
 import type { Affine } from '../types';
-import type { AreaOutput, AreaTarget, BufferHandle, GfxDevice, GpuPass, PipelineHandle, RectI, ShaderModule } from './gfx/api';
+import type { AreaOutput, AreaTarget, BufferHandle, ByteLease, GfxDevice, GpuPass, PipelineHandle, RectI, ShaderModule } from './gfx/api';
 import type { LayerHost } from './compositor.types';
+import type { MemoryAllocator } from './memoryGovernor';
 import type { FrameBudget } from './types';
 import { ArenaError } from './resourceArena';
 import { auditCount, PerDeviceMap } from './renderAudit';
@@ -177,9 +178,17 @@ void main() { accumulated = 0.0; }`,
 };
 const NO_STENCIL = { enabled: false } as const;
 
+/** Where a scratch's bytes are charged: the kit that reports them, the GPU allocator (its layer's cache) the lease is on, and the lease. */
+interface ScratchCharge { readonly holder: object; readonly gpu: MemoryAllocator; readonly lease: ByteLease }
 /** The shared scratch of one device: one r32f target at least as large as every viewport an area kit there has drawn into, used by
- * every area kit on the device. `holder` is the kit that reports its bytes (one report, however many kits draw with it). */
-interface Scratch { readonly target: AreaTarget; readonly bytes: number; users: number; holder: object | null }
+ * every area kit on the device. `users` are the kits holding it, each with the allocator it reserves from. Only `charge.holder`
+ * reports its bytes, and the charge's lease is on that kit's allocator: the report and the lease always name the same cache.
+ * They did not when the report followed whichever kit was asked next while the lease stayed where the scratch was made: a
+ * 158-stroke board's underlay published the 10,902,528-byte scratch (1872 x 1456 x 4) against a lease another layer held, and
+ * the governor logged "GPU accounting ... published 23902224 bytes against 12999696 reserved" and charged it twice.
+ * `targetLease` is attached to the target and goes back when the target is destroyed. */
+interface Scratch { readonly target: AreaTarget; readonly bytes: number; readonly users: Map<object, MemoryAllocator>; charge: ScratchCharge;
+    readonly targetLease: ByteLease }
 const scratchOf = new PerDeviceMap<GfxDevice, Scratch>();
 
 /** One edge + clear pipeline pair per device incarnation, shared by every area kit on it (no per-kit parameter) and kept while the device
@@ -285,13 +294,38 @@ export function createAreaKit(): AreaKit {
             const made = owner.createRenderTexture(width, height, lease, { format: 'r32f' });
             target = { target: made.target, texture: made.texture, width, height };
         } catch (error) {
+            host.allocator.gpu.release(lease);
             if (error instanceof ArenaError && error.code === 'out-of-budget') return 'denied';
             throw error;
         }
-        if (existing) { owner.destroy(existing.target.target); owner.destroy(existing.target.texture); }
-        const scratch: Scratch = { target, bytes, users: existing?.users ?? 0, holder: kitToken };
+        if (existing) destroyScratch(owner, existing);
+        const scratch: Scratch = { target, bytes, users: existing?.users ?? new Map(), charge: { holder: kitToken, gpu: host.allocator.gpu, lease },
+            targetLease: lease };
         scratchOf.set(owner, scratch);
         return scratch;
+    };
+    /** Destroys a scratch's target and returns its charge: the target's own lease goes back with the target (a release is
+     * idempotent), and a charge moved to another kit's allocator is returned there. */
+    const destroyScratch = (owner: GfxDevice, scratch: Scratch): void => {
+        owner.destroy(scratch.target.target); owner.destroy(scratch.target.texture);
+        if (scratch.charge.lease !== scratch.targetLease) scratch.charge.gpu.release(scratch.charge.lease);
+    };
+    /** The charge's holder has let go while other kits still draw with the scratch: the charge moves to one of them, reserved there
+     * before it is returned where it was, so a refusal leaves it on the old (possibly closed) cache, still reserved exactly once,
+     * and the next admit or report retries. Nobody reports it meanwhile: a cache holding a lease it does not publish is not a fault. */
+    const rehome = (owner: GfxDevice, scratch: Scratch): void => {
+        if (scratch.users.has(scratch.charge.holder)) return;
+        for (const [holder, gpu] of scratch.users) {
+            const lease = gpu.reserve(scratch.bytes);
+            if (!lease || lease.bytes < scratch.bytes) { if (lease) gpu.release(lease); continue; }
+            // A reservation can trim the pool, and that can drop this very scratch: then the new lease is not needed.
+            if (scratchOf.get(owner) !== scratch) { gpu.release(lease); return; }
+            scratch.charge.gpu.release(scratch.charge.lease);
+            scratch.charge = { holder, gpu, lease };
+            auditCount('area', 'scratch-rehomed', 1, { bytes: scratch.bytes });
+            return;
+        }
+        auditCount('area', 'scratch-rehome-refused', 1, { bytes: scratch.bytes });
     };
     const destroySet = (set: EdgeSet): void => {
         if (sets.get(set.key) === set) sets.delete(set.key);
@@ -350,10 +384,10 @@ export function createAreaKit(): AreaKit {
         idleBytes = 0; setBytes = 0;
         if (device && holding) {
             const scratch = scratchOf.get(device);
-            if (scratch && --scratch.users === 0) {
-                scratchOf.delete(device);
-                device.destroy(scratch.target.target); device.destroy(scratch.target.texture);
-            } else if (scratch && scratch.holder === kitToken) scratch.holder = null;
+            if (scratch && scratch.users.delete(kitToken)) {
+                if (scratch.users.size === 0) { scratchOf.delete(device); destroyScratch(device, scratch); }
+                else rehome(device, scratch);
+            }
         }
         holding = false;
         if (pipelineSet && device) releaseAreaPipelines(device, pipelineSet);
@@ -396,7 +430,8 @@ export function createAreaKit(): AreaKit {
             if (!pipelines) { auditCount('area', pipelineSet && pipelineSet.users > 1 ? 'deferred:compiling:shared' : 'deferred:compiling'); return { status: 'deferred' }; }
             const scratch = acquireScratch(host, owner, viewport);
             if (scratch === 'denied') return { status: 'denied', pool: 'gpu', bytes: viewport.width * viewport.height * 4 };
-            if (!holding) { scratch.users++; holding = true; }
+            if (!holding) { scratch.users.set(kitToken, host.allocator.gpu); holding = true; }
+            rehome(owner, scratch);
             for (const set of held) { if (set.refs++ === 0) idleBytes -= set.bytes; }
             const prepared: PreparedArea = { device: owner, generation: host.generation, sets: held,
                 affines: parts.filter(part => part.edges.length).map(part => part.affine), bounds };
@@ -482,12 +517,10 @@ export function createAreaKit(): AreaKit {
         },
         beginFrame(next): void { frame = next; },
         release,
-        // The scratch is reported once, by its holder; when the holder lets go while others draw with it, the next of them to be
-        // asked takes the report.
+        // The scratch is reported once, by the kit whose allocator holds its charge (a report never moves without the lease).
         memory: () => {
             const scratch = holding && device ? scratchOf.get(device) : undefined;
-            if (scratch && scratch.holder === null) scratch.holder = kitToken;
-            return { gpuBytes: setBytes + (scratch && scratch.holder === kitToken ? scratch.bytes : 0) };
+            return { gpuBytes: setBytes + (scratch && scratch.charge.holder === kitToken ? scratch.bytes : 0) };
         },
     };
 }

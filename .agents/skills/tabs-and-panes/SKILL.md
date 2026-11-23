@@ -73,6 +73,8 @@ Three structures, each with one job:
   several documents are editable at once, and canvases serialize after their pane has gone. It checks
   `canUpdateTabContent` and the live session owner, reports to the ledger, and schedules the per-tab save.
   `fromDisk` reports a saved revision: no dirty, nothing scheduled.
+- **`dirty` is cleared when nothing is left to write**, at the write and again when a session's pending work
+  settles (`settleCleanTabs`): a board acknowledges its write while its after-write step is still tracked work.
 - **Autosave is per tab** (`saveTimersRef`, 1 s debounce); closing one tab never cancels another's write.
 - **`flushTab` writes are serialized per DOCUMENT** (`flushChainsRef` by `OpenTab.id`, so a rename mid-write
   cannot split a chain) and go only through `writeFileVersioned` against `getBaseline(id)`

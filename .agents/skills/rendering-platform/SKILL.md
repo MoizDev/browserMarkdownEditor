@@ -144,6 +144,10 @@ draws differently because a GPU exists.
 - Every GPU and CPU raster byte is a lease from the host allocators (`host.allocator.gpu/cpu.reserve`). A refused
   reservation means defer or draw lower quality, never an unaccounted allocation; return a lease to the allocator
   that issued it. GPU retirement stays charged until it completes.
+- A resource shared by several layers' kits (the area and path coverage scratches, one per device) is published
+  by exactly one layer: the one whose allocator holds its charge. When that layer lets go, the charge is reserved
+  on another holder before it is returned (`rehome`); a report that moves without its lease is logged as
+  "GPU accounting … published … against … reserved" and charged twice.
 - GPU target (`memoryGovernor.ts`, `updatePanes`): `base + perPane·N + 24 B·devicePixels`, floor 64 MB, inside the
   device class ceiling (128/256/512 MB by `navigator.deviceMemory`); fixed terms scale by the largest visible
   `min(DPR,2)²`. Unscaled, a small DPR 2 pane sat at the floor and never drew again after a saturated zoom.

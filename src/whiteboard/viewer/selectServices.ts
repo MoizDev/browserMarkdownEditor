@@ -126,14 +126,13 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         };
     };
     const settled = (): Promise<void> => settling.size ? new Promise(resolve => { settledWaiters.push(resolve); }) : Promise.resolve();
+    // An undo takes back ONE step: the latest undoable work still landing. Cancelling every one made a ⌘Z right after two
+    // shapes drawn back to back take both. The view's end (undo false) cancels them all.
     const cancelSettling = (undo: boolean): boolean => {
-        let cancelled = false;
-        for (const [cancel, undoable] of [...settling]) {
-            if (undo && !undoable) continue;
-            cancelled = true;
-            try { cancel(); } catch (error) { report(error); }
-        }
-        return cancelled;
+        const work = [...settling].filter(([, undoable]) => !undo || undoable);
+        const chosen = undo ? work.slice(-1) : work;
+        for (const [cancel] of chosen) { try { cancel(); } catch (error) { report(error); } }
+        return chosen.length > 0;
     };
     const setGuides = (value: readonly BoardSnapGuide[]) => { guides = value; requestFrame(); };
     // A transform preview draws the moving shape. The committed selection box must not stay behind it, and it follows
@@ -707,7 +706,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const tool = { id: boardSelectTool.id, begin(sample: RealSample, modifiers: Modifiers) {
         return boardSelectTool.begin(sample, modifiers, selectContext);
     } };
-    return { select, tool, eraser, beginHandle, doubleClickHandle, handleCommand, keyboardContextMenu, lockedAt, nudge, transform, navigate, command, stickyNeighbour, setGuides, navigation, writeOverlays: (frame: ScheduledFrame) => auditTimed('select-overlay', () => writeOverlays(frame)), cancelPending, cancelSettling,
+    return { select, tool, eraser, beginHandle, doubleClickHandle, handleCommand, keyboardContextMenu, lockedAt, nudge, transform, navigate, command, stickyNeighbour, setGuides, navigation, writeOverlays: (frame: ScheduledFrame) => auditTimed('select-overlay', () => writeOverlays(frame)), cancelPending, cancelSettling, registerSettling,
         /** A released erase still landing shows its strokes dimmed: a new press must not clear that overlay. */
         holdsPreview: () => erasing.size > 0,
         dispose() { if (disposed) return; cancelPending(); cancelSettling(false); for (const controller of controllers) controller.abort(); controllers.clear(); disposed = true; keyboardContext?.dispose(); backToContent.dispose(); cameraCommands.dispose(); selectionCommands.dispose(); styleShortcuts.dispose(); navigation.dispose(); selectionHandles.dispose(); shapeHandles.dispose(); stickyHandles.dispose(); cardControls.dispose(); scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); guideSvg?.remove(); guideSvg = null; svg = null; shape = null;

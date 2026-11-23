@@ -54,6 +54,9 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   `registerPending`: the next press is admitted (`claimInput` reads `isInputGestureActive`), Escape/Delete/tool keys wait for it
   (`attach.ts` queues them with `enqueueAfterGesture`), only the view's end or — for an erase — an undo cancels it, and a
   revision that moves meanwhile is prepared again, not abandoned. A new gesture that reads the selection waits for `settled()`.
+  The creation tools (figure, frame, connector, polyline, text/sticky placement) follow the same rule: released shapes land
+  in the order drawn (`creationTurn`), each prepared again on a moved revision (`CreationGesture.rebase`); an undo while
+  work settles cancels only the latest undoable one; an arrow key waits behind settling work, then nudges or pans.
 - **One gesture owner at a time** (`input/router.ts`, `InputRouter`): tools receive normalised `RealSample`s only,
   stamped with an `InputToken` (vault epoch, tab, session and view generations). A replaced view cannot finish its
   successor's contact; check the token before acting on anything async.
@@ -133,7 +136,8 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   (`mainMenu.ts`, `preferencesMenu.ts`, `themeMenu.ts`, `languageMenu.ts`), `boardCommands.ts`.
 - Context menus are the app's own (`openBoardContextMenu.ts`, `nativeBoardContextMenu.ts`; `app-context-menu`).
   Dialogs and notices are the app's own UI; no native confirm/alert/prompt/tooltip. A board's notices (the render
-  notices included) show in its own `.board-viewer-notice` box with Dismiss, in viewing and editing alike: a bare
+  notices included) show together in its own `.board-viewer-notice` box, each with Dismiss, newest last (`useBoardNotices`,
+  `BoardNoticeStack`): a new notice never replaces one, and only Dismiss counts as dismissing. In viewing and editing alike, a bare
   `role="status"` element with no place in the layout is in the DOM and nowhere on screen.
 - Board preferences persist in `localStorage['bme.whiteboard.preferences']` (`utils/boardPreferences.ts`).
 - Copy/cut/paste are listened on the board surface (`useNativeClipboard.ts`); paste classifies native records,

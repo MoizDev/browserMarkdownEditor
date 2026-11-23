@@ -16,6 +16,7 @@ import { createNativeViewLease, type NativeViewLease } from './nativeViewLease';
 import ViewerHost from './ViewerHost';
 import NativeNotebookThumbnails from './NativeNotebookThumbnails';
 import NativeMinimap, { type NativeMinimapThumbnail } from './NativeMinimap';
+import { getBoardPreferences, subscribeBoardPreferences, updateBoardPreferences } from '../../utils/boardPreferences';
 import { NativeCanvasEditing, type NativeEditingViewOptions, type NativeEditingRenderContext } from './NativeCanvasEditing';
 import type { BoardSessionPort, HostedBoardAdapter } from './boardSessionAdapter';
 import './NativeCanvasEntry.css';
@@ -33,6 +34,10 @@ function cameraSnapshotReader(lease: NativeViewLease) {
         }
         return value;
     };
+}
+
+function readMinimapOpen(): boolean {
+    return getBoardPreferences().minimapOpen;
 }
 
 export interface NativeCanvasEntryProps {
@@ -109,7 +114,9 @@ export function AttachedViewer({ props, identity, lease, inverted, setInverted, 
         ? clipboard.pagePng(index, maxSide, signal) : Promise.reject(new Error('The board is not ready to show its pages.')), [clipboard]);
     const jump = useCallback((page: number) => lease.jump(page), [lease]);
     const stack = board.doc.kind === 'notebook' ? boardPageStack(board.doc.host) : undefined;
-    const [minimapOpen, setMinimapOpen] = useState(false);
+    // The minimap's open state is one shared preference (collapsed by default), so every board and tab agrees.
+    const minimapOpen = useSyncExternalStore(subscribeBoardPreferences, readMinimapOpen, readMinimapOpen);
+    const setMinimapOpen = useCallback((open: boolean) => { updateBoardPreferences({ minimapOpen: open }); }, []);
     const [thumbnail, setThumbnail] = useState<NativeMinimapThumbnail | null>(null);
     const [minimapNotice, setMinimapNotice] = useState('');
     const fonts = lease.runtime.render.text.fonts;

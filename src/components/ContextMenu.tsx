@@ -50,9 +50,15 @@ function place(point: number, size: number, limit: number): number {
     return Math.max(MARGIN, Math.min(flipped, limit - size - MARGIN));
 }
 
+/** The menu's bottom edge sits on `point`, unless it would not fit above (then it hangs below, as `place` does). */
+function placeAbove(point: number, size: number, limit: number): number {
+    const above = point - size;
+    return above >= MARGIN ? above : place(point, size, limit);
+}
+
 function SubmenuRows({ entries, activate, direction }: {
     entries: ContextMenuSubmenu['entries'];
-    activate: (run: () => void | Promise<void>) => void;
+    activate: (run: () => void | Promise<void>, keepOpen?: boolean) => void;
     direction?: 'ltr' | 'rtl';
 }) {
     const [child, setChild] = useState<{ entry: ContextMenuSubmenu; anchor: DOMRect; focus: boolean } | null>(null);
@@ -97,7 +103,7 @@ function SubmenuRows({ entries, activate, direction }: {
             return <button key={item.id} type="button" className={`context-menu-item${item.danger ? ' is-danger' : ''}`}
                 role={item.checked === undefined ? 'menuitem' : 'menuitemradio'} aria-checked={item.checked}
                 disabled={item.disabled} data-tooltip={item.reason} onMouseEnter={() => setChild(null)}
-                onClick={() => activate(item.run)}>
+                onClick={() => activate(item.run, item.keepOpen)}>
                 {item.checked !== undefined && <span className="context-menu-item-check" aria-hidden="true">{item.checked && <Check size={14} />}</span>}
                 {item.label}
                 {item.shortcut && <span style={{ marginInlineStart: 'auto' }}>{item.shortcut}</span>}
@@ -214,7 +220,7 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
         const rect = el.getBoundingClientRect();
         setPos({
             left: place(request.x, rect.width, window.innerWidth),
-            top: place(request.y, rect.height, window.innerHeight),
+            top: request.above ? placeAbove(request.y, rect.height, window.innerHeight) : place(request.y, rect.height, window.innerHeight),
         });
     }, [request, rowIndex]);
 
@@ -393,8 +399,8 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
 
     /** Close FIRST, then act. A `run` that raises the app's dialog would
      *  otherwise be fighting this menu for the focus it is about to take. */
-    const activate = (run: () => void | Promise<void>) => {
-        onClose();
+    const activate = (run: () => void | Promise<void>, keepOpen = false) => {
+        if (!keepOpen) onClose();
         void run();
     };
 
@@ -498,7 +504,7 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
                             onMouseEnter={() => {
                                 if (request.entries.find(item => item.id === flyout?.id)?.kind === 'submenu') setFlyout(null);
                             }}
-                            onClick={() => activate(entry.run)}
+                            onClick={() => activate(entry.run, entry.keepOpen)}
                         >
                             {hasChecks && (
                                 <span className="context-menu-item-check" aria-hidden="true">

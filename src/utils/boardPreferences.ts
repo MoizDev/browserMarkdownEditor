@@ -16,11 +16,13 @@ export interface BoardPreferences {
     isZoomDirectionInverted: boolean;
     locale: string;
     colorScheme: 'light' | 'dark' | 'system';
+    /** The navigation panel's minimap, shared by every board and tab. Collapsed until the person opens it. */
+    minimapOpen: boolean;
 }
 const defaults: BoardPreferences = {
     version: 1, isSnapMode: false, isWrapMode: false, isDynamicResizeMode: false,
     animationSpeed: 1, areKeyboardShortcutsEnabled: true, enhancedA11yMode: false,
-    inputMode: null, isZoomDirectionInverted: false, locale: 'en', colorScheme: 'system',
+    inputMode: null, isZoomDirectionInverted: false, locale: 'en', colorScheme: 'system', minimapOpen: false,
 };
 // Until the user chooses, motion follows the OS: a reduced-motion request starts at speed 0 (camera.md F-A11Y-005).
 function osAnimationSpeed(): number {
@@ -45,6 +47,7 @@ function clamp(value: unknown): BoardPreferences {
         isZoomDirectionInverted: flag('isZoomDirectionInverted', defaults.isZoomDirectionInverted),
         locale,
         colorScheme: input.colorScheme === 'light' || input.colorScheme === 'dark' || input.colorScheme === 'system' ? input.colorScheme : defaults.colorScheme,
+        minimapOpen: flag('minimapOpen', defaults.minimapOpen),
     };
 }
 let current: BoardPreferences | undefined;

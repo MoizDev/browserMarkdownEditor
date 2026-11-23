@@ -57,8 +57,16 @@ export function createNativeCameraOperations(options: {
         },
         zoomIn: operation(available, () => lease.zoomStep(1)),
         zoomOut: operation(available, () => lease.zoomStep(-1)),
-        zoomTo100: operation(available, () => lease.resetZoom()),
-        zoomToFit: operation(available, () => fit(false)),
+        // Zoom to 100% says nothing at 100%, and fit says nothing about an empty sheet (tldraw's enablement, actions.tsx:1562-1577).
+        zoomTo100: operation(() => {
+            const state = available();
+            return state.enabled && Math.abs(lease.camera.camera.z - 1) <= 1e-3 ? no('The view is already at 100%') : state;
+        }, () => lease.resetZoom()),
+        zoomToFit: operation(() => {
+            const state = available(), doc = session.doc;
+            return state.enabled && doc.kind === 'whiteboard' && !doc.bySheet.get(runtime.selection.getSnapshot().sheet)?.size
+                ? no('There is no content to fit') : state;
+        }, () => fit(false)),
         zoomToSelection: operation(selection, () => fit(true)),
         toggleMinimap: operation(() => session.doc.kind === 'whiteboard' ? available() : no('Minimap is available on drawings'),
             () => options.setMinimapVisible(!options.minimapVisible())),

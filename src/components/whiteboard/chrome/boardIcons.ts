@@ -20,6 +20,17 @@ const ellipsisVertical: IconNode[] = [['circle', { cx: 12, cy: 12, r: 1 }], ['ci
 /** The bar's icon buttons other than the menu and the sheet name. */
 export const headerIcons = { menu, chevronDown, actions: ellipsisVertical } as const;
 
+/** The navigation panel and the helper buttons: Lucide's plus, minus, chevrons, arrow-left and x (ISC), the same
+ *  24-unit, 2-stroke family as the rest of this file. */
+const plus: IconNode[] = [['path', { d: 'M5 12h14' }], ['path', { d: 'M12 5v14' }]];
+const minus: IconNode[] = [['path', { d: 'M5 12h14' }]];
+const chevronLeft: IconNode[] = [['path', { d: 'm15 18-6-6 6-6' }]];
+const chevronRight: IconNode[] = [['path', { d: 'm9 18 6-6-6-6' }]];
+const arrowLeft: IconNode[] = [['path', { d: 'm12 19-7-7 7-7' }], ['path', { d: 'M19 12H5' }]];
+const close: IconNode[] = [['path', { d: 'M18 6 6 18' }], ['path', { d: 'm6 6 12 12' }]];
+
+export const navigationIcons = { zoomIn: plus, zoomOut: minus, chevronLeft, chevronRight, arrowLeft, close } as const;
+
 /** Undo, Redo, Delete and Duplicate in the bar, keyed by the command each one runs. */
 export const headerCommandIcons: Readonly<Record<'undo' | 'redo' | 'delete' | 'duplicate', IconNode[]>> = {
     undo, redo, delete: trash, duplicate: copy,

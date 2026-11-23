@@ -40,6 +40,9 @@ async function acquire<S extends BoardSessionPort>(options: NativeBoardAcquisiti
             let reason: string | null = emergencyReadOnlyReason;
             let activated = false, sealed: string | null = null;
             const conversionPending = !!prepared!.conversionPending, digest = prepared!.legacyOriginalSha256;
+            let noticeDismissed = false;
+            const importNotice = prepared!.importNotice ? { text: prepared!.importNotice,
+                isDismissed: () => noticeDismissed, dismiss() { noticeDismissed = true; } } : undefined;
             const owned = prepared!.take(owner, isLiveOwner, () => reason ??
                 (sourceAuthorized() ? null : 'Canvas source is not currently authorized for editing.'));
             taken = true;
@@ -51,7 +54,7 @@ async function acquire<S extends BoardSessionPort>(options: NativeBoardAcquisiti
                 if (!owned.board.isReadOnly) throw new Error('Board session did not enforce its initial read-only policy');
                 const emergency = policy.emergencyReadOnly;
                 const hosted = createBoardSessionAdapter(owner, owned.board, isLiveOwner, () => owned.dispose());
-                return { ...hosted, activateEditing() {
+                return { ...hosted, ...(importNotice ? { importNotice } : {}), activateEditing() {
                     // A versioned PDF save advances bytes, not the retained board/undo owner.
                     if (!isLiveOwner(owner) || !currentOwner() || getSessionIdentity(documentId)?.serial !== owner.session) throw new DOMException('Board session ended', 'AbortError');
                     if (sealed) throw new Error(sealed);

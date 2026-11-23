@@ -70,7 +70,11 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
     const current = useCallback(() => host.isCurrent(identity), [host, identity]);
     const language = useNativeBoardLanguage(onUnavailable);
     const dialogs = useNativeBoardDialogs({ documentId: identity.documentId, session: identity.session, isVisible: props.isVisible, currentOwner: current });
-    const [notice, setNotice] = useState<string | null>(null), [localInverted, setLocalInverted] = useState(false);
+    const importNotice = adapter.importNotice;
+    const [notice, setNotice] = useState<string | null>(() => importNotice && !importNotice.isDismissed() ? importNotice.text : null);
+    const [localInverted, setLocalInverted] = useState(false);
+    // Dismissed or replaced, the conversion notice is done for this session.
+    useEffect(() => { if (importNotice && notice !== importNotice.text) importNotice.dismiss(); }, [importNotice, notice]);
     const inverted = inversion?.value ?? localInverted, setInverted = inversion?.set ?? setLocalInverted;
     const [lease, setLease] = useState<NativeViewLease | null>(null), [clipboard, setClipboard] = useState<NativeClipboardService | null>(null);
     const [capabilities, setCapabilities] = useState<NativeEditingCapabilities | null>(null), [attached, setAttached] = useState(false);

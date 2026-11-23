@@ -7,6 +7,8 @@ import type { BoardSessionPort, HostedBoardAdapter } from './boardSessionAdapter
 export interface PreparedNativeBoard<S extends BoardSessionPort> {
     readonly legacyOriginalSha256: string | null;
     readonly conversionPending?: boolean;
+    /** The board notice for a converted old board (items left out, repairs worth reading); null when none. */
+    readonly importNotice?: string | null;
     /** Commit a captured dirty cold input only after the bridge owns this board. */
     acceptPinnedSource?(source: DeferredSource): boolean;
     take(owner: SourceOwner, isLiveOwner: (owner: SourceOwner) => boolean, readOnlyReason: () => string | null): {

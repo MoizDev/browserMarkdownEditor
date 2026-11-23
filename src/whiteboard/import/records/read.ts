@@ -20,6 +20,7 @@ import { readInlineAsset, relativeLegacyAssetSource, type AdmitLegacyMedia, type
 import { readPictureShape } from './pictures';
 import { readLegacySheet } from './sheets';
 import { readStroke } from './stroke';
+import { checkVersion, upgradeShapeProps } from './versions';
 
 export interface LegacyRecordOptions {
     readonly kind: 'whiteboard' | 'notebook' | 'pdf-ink';
@@ -35,6 +36,15 @@ export interface LegacyRecordOptions {
         readonly page: number; readonly x: number; readonly y: number; readonly scale: number; readonly pastEnd?: boolean;
     }>;
 }
+/** What a left-out shape cost the person, as the board notice counts it ("2 embeds, 1 unknown shape"). */
+const ITEM_NAMES: Readonly<Record<string, string>> = {
+    draw: 'stroke', highlight: 'highlighter stroke', geo: 'shape', note: 'sticky note', text: 'text', arrow: 'arrow',
+    line: 'line', frame: 'frame', group: 'group', image: 'picture', video: 'video', bookmark: 'link card', embed: 'embed',
+};
+export function legacyItemName(type: unknown): string {
+    return typeof type === 'string' && Object.hasOwn(ITEM_NAMES, type) ? ITEM_NAMES[type] : 'unknown shape';
+}
+
 export interface LegacyRecordDraft {
     readonly kind: 'draft';
     readonly source: string;
@@ -58,7 +68,11 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
     const bookmarks = new Map<string, LegacyObject>();
     const preservedRecords: { type: string; id: string; raw: RawJson }[] = [];
     const preservedIds = new Set<string>();
+    // A record is kept once however many reasons keep it (extra props, then an unknown kind, wrote it twice).
+    const preservedSources = new WeakSet<LegacyObject>();
     const preserve = (record: LegacyObject, id: string, family: string) => {
+        if (preservedSources.has(record)) return;
+        preservedSources.add(record);
         const type = `legacy-${family}`;
         let preservedId = id, suffix = 0;
         while (preservedIds.has(`${type}\u0000${preservedId}`)) preservedId = `${id.slice(0, 100)}~duplicate${++suffix}`;
@@ -76,11 +90,27 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
         try {
             switch (record.typeName) {
                 case 'page': sheets.push(readLegacySheet(record)); report.count('sheet'); break;
-                case 'shape': shapes.push(readShape(record, report)); break;
-                case 'binding':
-                    bindings.push(readBinding(record));
-                    if (id) preserve(record, id, 'binding');
+                case 'shape': {
+                    const shape = readShape(record, report);
+                    const version = checkVersion(envelope.versions, `shape.${shape.type}`);
+                    if (!version.ok) {
+                        preserve(record, shape.id, 'shape');
+                        report.refuse(shape.id, version.reason, legacyItemName(shape.type));
+                        break;
+                    }
+                    const upgraded = upgradeShapeProps(shape);
+                    // The record as written stays beside the node made from its filled-in props.
+                    if (upgraded.upgraded) preserve(record, shape.id, 'shape');
+                    shapes.push(upgraded.upgraded ? { ...shape, props: upgraded.props } : shape);
                     break;
+                }
+                case 'binding': {
+                    if (id) preserve(record, id, 'binding');
+                    const version = checkVersion(envelope.versions, `binding.${String(record.type)}`);
+                    if (!version.ok) { report.repair(id, `${version.reason}; the arrow end is left unattached`); break; }
+                    bindings.push(readBinding(record));
+                    break;
+                }
                 case 'asset': assets.push(record); assetOrdinals.set(record, sourceOrdinal); break;
                 case 'document': case 'user': {
                     if (!id) throw new Error('Metadata record has no identifier');
@@ -88,8 +118,10 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
                     break;
                 }
                 default:
+                    // Session-scope records (camera, instance, pointer, presence) and anything newer: kept as written in
+                    // the converted file, and none is a drawn item the person loses.
                     if (id) preserve(record, id, 'unknown-record');
-                    report.refuse(id, `Unsupported record type ${String(record.typeName)}`);
+                    report.repair(id, `Record type ${String(record.typeName)} preserved`);
             }
         } catch (error) {
             options.signal?.throwIfAborted();
@@ -97,7 +129,8 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
             if (id) {
                 try { preserve(record, id, 'unreadable-record'); } catch { /* Original source remains available. */ }
             }
-            report.refuse(id, error instanceof Error ? error.message : 'Invalid record');
+            report.refuse(id, error instanceof Error ? error.message : 'Invalid record',
+                record.typeName === 'shape' ? legacyItemName(record.type) : record.typeName === 'page' ? 'page' : undefined);
         }
     }
     const backdropAssets = new Set<string>(), ordinaryAssets = new Set<string>();
@@ -129,6 +162,7 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
             if (id) {
                 try { preserve(record, id, 'unreadable-asset'); } catch { /* Original source remains available. */ }
             }
+            // Not an item of its own: each picture using it is counted where its shape is read (missing asset).
             report.refuse(id, error instanceof Error ? error.message : 'Invalid asset');
         }
     }
@@ -140,7 +174,7 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
     for (const binding of bindings) {
         let ends = bindingEnds.get(binding.connector);
         if (!ends) bindingEnds.set(binding.connector, ends = new Map());
-        if (ends.has(binding.terminal)) report.refuse(binding.id, 'Multiple bindings for one endpoint');
+        if (ends.has(binding.terminal)) report.repair(binding.id, 'Extra binding for one endpoint preserved');
         else ends.set(binding.terminal, binding);
     }
     const nodes: Node[] = [];
@@ -153,8 +187,9 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
             if (role === 'ambiguous') report.repair(shape.id, 'Possible page backdrop retained as a picture');
             const extras = [...unknownShapeFields(shape), ...unknownShapeProperties(shape).map(key => `props.${key}`)];
             if (extras.length) {
+                // The node is made from the props it knows; the record as written keeps the rest.
                 preserve(shape.source, shape.id, 'shape');
-                report.refuse(shape.id, `Unsupported properties: ${extras.join(', ')}`);
+                report.repair(shape.id, `Unknown properties preserved: ${extras.join(', ')}`);
             }
             const root = sheetIds.has(shape.parentId as SheetId);
             let base = shapeBase(shape, options.kind !== 'whiteboard' && root ? 0 : -1);
@@ -165,16 +200,22 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
             }
             if ((shape.type === 'image' || shape.type === 'video') && typeof shape.props.assetId === 'string'
                 && !assetIds.has(shape.props.assetId)) {
-                report.refuse(shape.id, `Missing or unsupported asset ${shape.props.assetId}`);
+                report.refuse(shape.id, `Missing or unsupported asset ${shape.props.assetId}`, `${legacyItemName(shape.type)} without its file`);
                 const fields = new Map(base.ext?.fields ?? []);
                 fields.set('legacyMissingAsset', parseJson(JSON.stringify(shape.props.assetId)).raw());
                 base = { ...base, ext: { fields, raw: base.ext?.raw ?? new Map() } };
             }
             let node: Node | null = null;
             if (shape.type === 'draw' || shape.type === 'highlight') {
-                const stroke = readStroke(shape, base, options.samples);
+                const stroke = readStroke(shape, base, options.samples, report);
+                if (!stroke) {
+                    // Nothing to draw (tldraw writes `path: ''` for a stroke of no points): a counted repair, kept as written.
+                    preserve(shape.source, shape.id, 'shape');
+                    report.repair(shape.id, 'Empty stroke removed');
+                    continue;
+                }
                 leases.push(stroke.lease); node = stroke.node;
-                if (stroke.dropped) report.repair(shape.id, `Dropped ${stroke.dropped} non-finite stroke point${stroke.dropped === 1 ? '' : 's'}`);
+                if (stroke.dropped) report.repair(shape.id, `Dropped ${stroke.dropped} non-finite stroke point${stroke.dropped === 1 ? '' : 's'}`, 'damaged end removed', 'stroke');
             } else {
                 const ends = bindingEnds.get(base.id);
                 const start = shape.props.start, end = shape.props.end;
@@ -192,17 +233,18 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
                         const rich = convertLegacyRichText(value);
                         for (const reason of rich.repairs) report.repair(owner, reason);
                         if (rich.repairs.length || rich.unrepresentable.length) preserve(shape.source, owner, 'rich-text');
-                        for (const reason of rich.unrepresentable) report.refuse(owner, reason);
+                        // The text is kept; only formatting it cannot hold is simplified (the record keeps the original).
+                        for (const reason of rich.unrepresentable) report.repair(owner, reason, 'formatting simplified', 'text');
                         return rich.text;
                     }, endpoints);
             }
             if (!node) {
                 preserve(shape.source, shape.id, 'shape');
-                report.refuse(shape.id, `Unsupported shape ${shape.type}`);
+                report.refuse(shape.id, `Unsupported shape ${shape.type}`, legacyItemName(shape.type));
             } else { nodes.push(node); report.count(node.kind); }
         } catch (error) {
             try { preserve(shape.source, shape.id, 'shape'); } catch { /* Original source remains available. */ }
-            report.refuse(shape.id, error instanceof Error ? error.message : 'Invalid shape');
+            report.refuse(shape.id, error instanceof Error ? error.message : 'Invalid shape', legacyItemName(shape.type));
         }
     }
     const byId = new Map<NodeId, Node>();
@@ -219,7 +261,7 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
                 const position = pageForRoot(node);
                 if (position.pastEnd) report.repair(node.id, 'Content past the last page retained on the last page');
                 roots.set(node, position);
-            } catch (error) { report.refuse(node.id, error instanceof Error ? error.message : 'Cannot map page'); }
+            } catch (error) { report.refuse(node.id, error instanceof Error ? error.message : 'Cannot map page', 'item off the pages'); }
         }
     }
     const mappedNodes = nodes.map(node => {
@@ -241,7 +283,7 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
     options.assertCurrent();
     const result = report.finish();
     return { kind: 'draft', source: text, envelope, sheets, nodes: mappedNodes, media, preservedRecords, leases, report: result,
-        readOnly: result.unrepresentable.length > 0, converted: false };
+        readOnly: false, converted: false };
     } catch (error) {
         for (const lease of leases) lease.release();
         throw error;

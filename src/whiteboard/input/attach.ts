@@ -73,6 +73,7 @@ export interface BoardInputServices {
   cancelMotion?(): void
   edgeScrolling?(): boolean
   invertMouseZoom?(): boolean
+  plainWheelZooms?(): boolean
   error(error: unknown): void
   pointerChanged?(sample: RealSample): void
   hover?(event: PointerEvent): void
@@ -409,7 +410,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     }
   })
   const stopWheel = installWheel(view.surface, {
-    camera: view.camera, paged: view.paged, toSurface: view.clientToSurface, invertZoom: () => services.invertMouseZoom?.() ?? false,
+    camera: view.camera, paged: view.paged, toSurface: view.clientToSurface, invertZoom: () => services.invertMouseZoom?.() ?? false, plainWheelZooms: () => services.plainWheelZooms?.() ?? false,
     owns: event => current() && services.ownsWheel(event),
     changed: () => {
       cancelForCamera()

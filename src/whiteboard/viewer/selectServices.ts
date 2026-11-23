@@ -69,6 +69,7 @@ export interface BoardSelectServicesOptions {
     /** The embed and link-card chips' actions; absent, the cards draw no chips. */
     readonly cards?: BoardCardActions | null;
     readonly alwaysSnap?: () => boolean;
+    readonly isWrapMode?: () => boolean;
     onError(error: unknown): void;
     onKeptLocked?(ids: readonly NodeId[]): void;
     toggleWhiteboardTheme?(): void;
@@ -202,7 +203,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     });
     const select: SelectToolContext = {
         selection: runtime.selection, dragThresholdCss: CLICK_SLOP_CSS, scribble: sweep(false),
-        hold: () => session.beginGesture(), registerPending, toSurface, isCurrent: mutable,
+        hold: () => session.beginGesture(), registerPending, toSurface, isCurrent: mutable, isWrapMode: () => options.isWrapMode?.() ?? false,
         async hit(sample, signal) {
             check(signal); const revision = doc.rev;
             const point = { x: sample.x, y: sample.y }, input = sample.source === 'keyboard' ? 'mouse' : sample.source;

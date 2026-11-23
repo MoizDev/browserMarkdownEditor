@@ -122,13 +122,16 @@ export interface WheelAdapterOptions {
   readonly changed: () => void
   /** Preferences: a mouse wheel's zoom turn reverses. Panning never reverses. */
   readonly invertZoom?: () => boolean
+  /** True when a plain wheel turn zooms, which makes Ctrl/Cmd+wheel the pan. Pinch arrives as Ctrl+wheel, so mouse mode pans on pinch. */
+  readonly plainWheelZooms?: () => boolean
 }
 
 export function installWheel(root: HTMLElement, options: WheelAdapterOptions): () => void {
   const wheel = (event: WheelEvent): void => {
     if (!options.owns(event) || !Number.isFinite(event.deltaX) || !Number.isFinite(event.deltaY) || (!event.deltaX && !event.deltaY)) return
     const mode = event.deltaMode === 1 ? 'line' : event.deltaMode === 2 ? 'page' : 'pixel'
-    if (event.ctrlKey || event.metaKey) {
+    const zooms = (event.ctrlKey || event.metaKey) !== (options.plainWheelZooms?.() ?? false)
+    if (zooms) {
       const unit = mode === 'line' ? 16 : mode === 'page' ? options.camera.viewport.height : 1
       const direction = options.invertZoom?.() ? -1 : 1
       options.camera.zoomWheel(direction * event.deltaY * unit, options.toSurface(event.clientX, event.clientY))

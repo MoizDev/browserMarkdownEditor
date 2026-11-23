@@ -1,4 +1,4 @@
-import { getBoardPreferences, mouseZoomInverted } from '../../utils/boardPreferences';
+import { getBoardPreferences, mouseWheelZooms, mouseZoomInverted } from '../../utils/boardPreferences';
 import { isTransientPictureFailure } from '../../whiteboard/media/transientFailure';
 import { recordBoardPresentation } from './debugStats';
 import { encodeTiledPngInWorker } from '../../whiteboard/export/pngWorkerClient';
@@ -380,7 +380,7 @@ export function createNativeViewLease(options: {
         host, identity, clipboard: edit.clipboard, onEmbedInfrastructure: edit.onEmbedInfrastructure, certifyPresentation,
         bindClipboard: element => edit.clipboard.attach(element, lease, () => parameters.theme, options.onNotice, true,
             () => inputPermitted && parameters.mode === 'edit' && edit.canMutate()),
-        toolOptions: { runtime, engine: viewer, images, camera, token, alwaysSnap: () => getBoardPreferences().isSnapMode,
+        toolOptions: { runtime, engine: viewer, images, camera, token, alwaysSnap: () => getBoardPreferences().isSnapMode, isWrapMode: () => getBoardPreferences().isWrapMode,
             inputToken: { vaultEpoch: token.vaultEpoch, tabId: token.documentId, sessionGeneration: token.session, viewGeneration: viewLease },
             view: () => { if (!presentedView) throw new Error('The board has not presented its input mapping'); return presentedView; },
             viewport: refreshViewport, current: candidate => current() && candidate.documentId === token.documentId &&
@@ -395,7 +395,7 @@ export function createNativeViewLease(options: {
     const navigation = editing ?? createBoardNavigationHost({ camera, viewport: refreshViewport, platform: () => platformPane,
         visible: () => parameters.visible && !!platformPane, current,
         changed: () => cameraOwner.changed(), onUserNavigation: markUserNavigation, invalidate, onError: options.onError,
-        mac: /Mac|iPhone|iPad/.test(navigator.platform), invertMouseZoom: mouseZoomInverted });
+        mac: /Mac|iPhone|iPad/.test(navigator.platform), invertMouseZoom: mouseZoomInverted, plainWheelZooms: mouseWheelZooms });
     const withCapturer = <T,>(run: (capturer: ReturnType<typeof createPlatformCapturer>) => Promise<T>): Promise<T> => {
         if (!current()) return Promise.reject(new Error('Native view capture is unavailable'));
         const sheetId = runtime.selection.getSnapshot().sheet;

@@ -52,6 +52,7 @@ export interface BoardToolServicesOptions {
     readonly inputFrames: { schedule(callback: () => void): () => void };
     /** The board's always-snap preference, read live on each gesture; absent means no always-snap. */
     readonly alwaysSnap?: () => boolean;
+    readonly isWrapMode?: () => boolean;
     readonly mappings: MappingHistory;
     readonly sampleToSurface: (sample: RealSample) => Point;
     readonly clientToSurface: (x: number, y: number) => Point;
@@ -69,6 +70,7 @@ export interface BoardToolServicesOptions {
         /** Preferences: the local Edge scrolling flag, and whether the mouse wheel's zoom turn is inverted. */
         edgeScrolling(): boolean;
         invertMouseZoom(): boolean;
+        plainWheelZooms(): boolean;
         error(error: unknown): void;
         /** A quiet status message for the board's own surface (R-11 kept-locked notice). */
         notice?(message: string): void;
@@ -120,7 +122,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
     const select = createBoardSelectServices({ runtime, render: runtime.render, camera: options.view, cameraController: camera,
         surface: options.surface, inputToken, cameraChanged: options.interaction.cameraChanged, sampleToSurface: options.sampleToSurface, point, region, preview,
         overlay: options.overlay, token, current: t => current() && options.current(t), canMutateView: () => options.editable() && !runtime.session.isReadOnly,
-        inputFrames: options.inputFrames, alwaysSnap: options.alwaysSnap,
+        inputFrames: options.inputFrames, alwaysSnap: options.alwaysSnap, isWrapMode: options.isWrapMode,
         editSticky: async id => { await text.editText(id); }, cards: ui.cards, onError: ui.error, openKeyboardContextMenu: ui.openKeyboardContextMenu,
         onKeptLocked: kept => ui.notice?.(keptLockedMessage(kept.length)) });
     // Hover and edit targets from real callbacks: the text editor reports the node it holds, and the
@@ -243,7 +245,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
     };
     const services: BoardInputServices = {
         tools: runtime.tools, history: runtime.session.history, mac: ui.mac, shortcutsEnabled: ui.shortcutsEnabled, modalOpen: ui.modalOpen,
-        edgeScrolling: ui.edgeScrolling, invertMouseZoom: ui.invertMouseZoom,
+        edgeScrolling: ui.edgeScrolling, invertMouseZoom: ui.invertMouseZoom, plainWheelZooms: ui.plainWheelZooms,
         editing: () => !!text.manager.current, textInput: text.input, isDirectPen: ui.isDirectPen,
         handleDoubleClick: (surface, world, time) => select.doubleClickHandle(surface, world, time),
         commands: { run: (id, event) => {

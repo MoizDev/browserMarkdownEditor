@@ -23,6 +23,7 @@ export interface BoardNavigationHostOptions {
     readonly contextMenu?: (event: MouseEvent) => void;
     readonly keyboard?: BoardNavigationOptions['keyboard'];
     readonly invertMouseZoom?: () => boolean;
+    readonly plainWheelZooms?: () => boolean;
     readonly mappings?: MappingHistory;
     readonly overlay?: (frame: ScheduledFrame, element: HTMLElement) => void;
     readonly presented?: (presentation: PlatformPresentation | null) => void;
@@ -64,7 +65,7 @@ export function createBoardNavigationHost(options: BoardNavigationHostOptions): 
         const captured = binding;
         detach = attachBoardNavigation({ surface: captured.surface, camera: options.camera, viewport: options.viewport,
             platform: options.platform, visible: active, current: () => active() && binding === captured,
-            mac: options.mac, linkAt: options.linkAt, contextMenu: options.contextMenu, keyboard: options.keyboard, invertMouseZoom: options.invertMouseZoom,
+            mac: options.mac, linkAt: options.linkAt, contextMenu: options.contextMenu, keyboard: options.keyboard, invertMouseZoom: options.invertMouseZoom, plainWheelZooms: options.plainWheelZooms,
             onError: report,
             interactionChanged(value) { if (binding === captured) { contact = value; invalidate(); } },
             changed() {

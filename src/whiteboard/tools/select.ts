@@ -20,6 +20,8 @@ export interface SelectToolContext {
     region(region: SelectRegion, signal: AbortSignal): Promise<readonly NodeId[]>;
     preview(region: SelectRegion | null): void;
     beginTransform(sample: RealSample, hit: NodeId, modifiers: Modifiers): GestureOwner;
+    /** Select on wrap: the preference turns the brush's Ctrl meaning around, as Cmd inverts wrap mode in the catalogue. */
+    isWrapMode(): boolean;
     onError(error: unknown): void;
 }
 const point = (sample: RealSample): Vec2 => ({ x: sample.x, y: sample.y });
@@ -66,7 +68,7 @@ class SelectGesture implements GestureOwner {
         const last = this.samples[this.samples.length - 1] ?? this.down;
         return this.scribbleIntent && this.hitId === null
             ? { kind: 'scribble', points: [point(this.down), ...this.samples.map(point)] }
-            : { kind: 'marquee', start: point(this.down), end: point(last), containment: this.modifiers.control };
+            : { kind: 'marquee', start: point(this.down), end: point(last), containment: this.modifiers.control !== this.context.isWrapMode() };
     }
     private activateDrag(): void {
         if (!this.valid() || this.hitId === undefined || this.transform) return;

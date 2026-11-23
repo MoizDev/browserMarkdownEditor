@@ -13,12 +13,14 @@ export interface ShortcutsDialogProps {
     readonly direction: 'ltr' | 'rtl';
     readonly closeLabel: string;
     readonly groups: readonly ShortcutGroup[];
+    /** Shown above the list while the keyboard-shortcuts preference is off: the rows still document the keys, but none of them fires. */
+    readonly offNotice?: string;
     readonly returnFocus: HTMLElement | null;
     readonly onClose: () => void;
 }
 
 /** Groups are derived by the caller from the board's dispatch keymap. */
-export function ShortcutsDialog({ label, locale, direction, closeLabel, groups, returnFocus, onClose }: ShortcutsDialogProps) {
+export function ShortcutsDialog({ label, locale, direction, closeLabel, groups, offNotice, returnFocus, onClose }: ShortcutsDialogProps) {
     const labelId = useId();
     const closeButton = useRef<HTMLButtonElement>(null);
     const content = useRef<HTMLDivElement>(null);
@@ -59,6 +61,7 @@ export function ShortcutsDialog({ label, locale, direction, closeLabel, groups, 
                 <button type="button" ref={closeButton} className="board-chrome-tool" onClick={onClose}>{closeLabel}</button>
             </header>
             <div ref={content} tabIndex={0} className="board-shortcuts-content">
+                {offNotice && <p className="board-shortcuts-off" role="note">{offNotice}</p>}
                 {groups.map(group => <section key={group.id}>
                     <h3>{group.label}</h3>
                     <dl>{group.bindings.map(binding => <div key={binding.id} className="board-shortcut-row">

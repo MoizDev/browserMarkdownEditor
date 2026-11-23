@@ -522,7 +522,7 @@
 .board-shortcuts-dialog {
     display: flex;
     flex-direction: column;
-    width: min(680px, calc(100vw - 32px));
+    width: min(960px, calc(100vw - 32px));
     max-height: min(80vh, 800px);
     border: 1px solid var(--background-modifier-border);
     border-radius: 8px;
@@ -540,6 +540,30 @@
 .board-shortcuts-content {
     overflow: auto;
     padding: 0 16px 16px;
+    /* Groups flow into columns the way the sheet reads: three across when the dialog is wide, fewer when it is not. */
+    columns: 3 260px;
+    column-gap: 32px;
+}
+
+.board-shortcuts-content > section {
+    break-inside: avoid;
+    margin-bottom: 20px;
+}
+
+.board-shortcuts-content h3 {
+    margin: 0 0 4px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-muted);
+}
+
+.board-shortcuts-off {
+    margin: 0 0 16px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: var(--background-secondary);
+    color: var(--text-muted);
+    column-span: all;
 }
 
 .board-shortcut-row {
@@ -550,3 +574,6 @@
 }
 
 .board-shortcut-row dd { margin: 0; }
+
+/* Key caps read as the UI's own text: the default monospace made "Delete" and "Tab" look like code next to the symbols. */
+.board-shortcuts-dialog kbd { font-family: inherit; }

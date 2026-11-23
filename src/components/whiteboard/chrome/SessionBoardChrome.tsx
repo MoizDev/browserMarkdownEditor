@@ -133,6 +133,7 @@ export function SessionBoardChrome(props: SessionBoardChromeProps) {
                 minimapVisible: props.minimapVisible, commands: actions }} />
         {shortcutsOpen && <ShortcutsDialog label={labels.text('keyboardShortcuts')} locale={props.locale}
             direction={props.direction} closeLabel={labels.text('close')}
+            offNotice={global.areKeyboardShortcutsEnabled ? undefined : labels.text('keyboardShortcutsOff')}
             groups={localizeShortcutGroups(props.shortcuts, props.translate)} returnFocus={returnFocus} onClose={closeShortcuts} />}
     </>;
 }

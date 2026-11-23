@@ -29,10 +29,14 @@ export function pageOrigin(doc: BoardDoc, page: number): Point {
     if (!rect) refuseChange('V-7', 'Page geometry is unavailable');
     return { x: rect.x, y: rect.y };
 }
+/** Canonical rotation in [0, 2π). A residue of a few ulps either side of a whole turn is the orientation 0: measured, three
+ * 15° keyboard steps back to 0 left -1.3e-14 rad on every member, and the record validator refuses a rotation outside
+ * [0, 2π), so the residue must land on 0 here rather than reach the record. */
 export function normalizedRotation(angle: number): number {
-    const turn = Math.PI * 2;
+    const turn = Math.PI * 2, epsilon = 1e-12;
     const value = angle % turn;
-    return value < 0 ? value + turn : value === 0 ? 0 : value;
+    const wrapped = value < 0 ? value + turn : value;
+    return wrapped < epsilon || wrapped > turn - epsilon ? 0 : wrapped;
 }
 export function worldPose(doc: BoardDoc, id: ParentId): WorldPose {
     const chain: Node[] = [];
@@ -74,7 +78,7 @@ export function poseInParent(doc: BoardDoc, node: Node, parent: ParentId, pose: 
         const page = doc.kind === 'whiteboard' ? -1
             : pageAt(layout(doc), finitePoint(requireGeometry(geometry).worldBoundsCenter(doc, node)).y);
         const origin = pageOrigin(doc, page);
-        return { x: pose.x - origin.x, y: pose.y - origin.y, rotation: pose.rotation, page };
+        return { x: pose.x - origin.x, y: pose.y - origin.y, rotation: normalizedRotation(pose.rotation), page };
     }
     const container = worldPose(doc, parent), dx = pose.x - container.x, dy = pose.y - container.y;
     const c = Math.cos(container.rotation), s = Math.sin(container.rotation);

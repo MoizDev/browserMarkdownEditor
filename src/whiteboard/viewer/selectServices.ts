@@ -17,6 +17,8 @@ import type { BoardSnapGuide } from '../geom/runtimeSnap';
 import { BOARD_GRID_STEP, boardSnapGrid } from '../geom/gridSnap';
 import { createBoardTranslationPlan } from '../geom/runtimeTranslation';
 import { createBoardRotationPlan } from '../geom/runtimeTransforms';
+import { rotationCentre } from '../geom/rotationCentre';
+import { selectedRootsAsync } from '../geom/selectedRootsAsync';
 import { createBoardLeafResizePlan } from '../geom/runtimeLeafPlan';
 import type { Vec2 } from '../geom/path';
 import type { BoardRuntime } from '../host/runtime';
@@ -343,28 +345,41 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
                     } finally { plan.cancel(); }
                     return;
                 }
-                const scope = await acquireBoardGeometryScope(runtime, ids, { signal: controller.signal, current: active });
-                let centre: Vec2;
-                try {
-                    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, visited = 0;
-                    for (const id of ids) {
-                        const b = scope.logicalBounds(id); x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y);
-                        x1 = Math.max(x1, b.x + b.width); y1 = Math.max(y1, b.y + b.height);
-                        if (++visited % 128 === 0) {
-                            await new Promise<void>(resolve => setTimeout(resolve, 0));
-                            if (!active()) throw new DOMException('Keyboard transform became stale', 'AbortError');
-                        }
-                    }
-                    centre = { x: (x0 + x1) / 2, y: (y0 + y1) / 2 };
-                } finally { scope.release(); }
                 if (!active()) return;
                 // The hold above is this transform's own: the flip runs under it, so it must not refuse it as a foreign gesture.
-                if (flip) { await flipBoardLeaves({ runtime, ids, centre, axis: flip, current: active, signal: controller.signal, heldGestures: 1 }); return; }
+                if (flip) {
+                    const scope = await acquireBoardGeometryScope(runtime, ids, { signal: controller.signal, current: active });
+                    let centre: Vec2;
+                    try {
+                        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, visited = 0;
+                        for (const id of ids) {
+                            const b = scope.logicalBounds(id); x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y);
+                            x1 = Math.max(x1, b.x + b.width); y1 = Math.max(y1, b.y + b.height);
+                            if (++visited % 128 === 0) {
+                                await new Promise<void>(resolve => setTimeout(resolve, 0));
+                                if (!active()) throw new DOMException('Keyboard transform became stale', 'AbortError');
+                            }
+                        }
+                        centre = { x: (x0 + x1) / 2, y: (y0 + y1) / 2 };
+                    } finally { scope.release(); }
+                    if (!active()) return;
+                    await flipBoardLeaves({ runtime, ids, centre, axis: flip, current: active, signal: controller.signal, heldGestures: 1 }); return;
+                }
+                // A step turns about a centre the turn leaves in place (rotationCentre), so repeated steps compose. A locked
+                // member never turns, so it stays out of the centre.
+                const movable = (await selectedRootsAsync(doc, ids, { signal: controller.signal, current: active })).filter(node => !node.locked).map(node => node.id);
+                if (!movable.length) return;
+                const pivotScope = await acquireBoardGeometryScope(runtime, movable, { signal: controller.signal, current: active });
+                let centre: Vec2;
+                try { centre = await rotationCentre(pivotScope, movable); } finally { pivotScope.release(); }
+                if (!active()) return;
                 const angle = angles[command], down = { x: centre.x + 1, y: centre.y };
                 const plan = await createBoardRotationPlan({ runtime, ids, centre, down, orientation: 0,
                     current: active, signal: controller.signal });
                 try {
-                    const preview = await plan.preview({ x: centre.x + Math.cos(angle), y: centre.y + Math.sin(angle) }, false, controller.signal);
+                    // The angle is applied as given: a pointer placed at centre + (cos, sin) and read back by atan2 rounds at
+                    // this magnitude (measured: a 1e-14 rad residue per step, which a return to 0 then carried into the record).
+                    const preview = await plan.previewAngle(angle, controller.signal);
                     const notebook = preview.ops.length ? await prepareNotebookTransform({ runtime, ids, preview, signal: controller.signal, current: active }) : null;
                     try {
                         if (active()) await presentAndCommit(notebook?.ops ?? preview.ops, controller.signal, active, () => {

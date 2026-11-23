@@ -29,6 +29,7 @@ export default defineBoardLanguage({
         "crop.aspect.wide": "Rộng (16:9)",
         "crop.altBody": "Mô tả hình ảnh cho những người không thể nhìn thấy hình.",
         "crop.selectionChanged": "Vùng chọn đã thay đổi; hãy chọn lại hình ảnh.",
+        "print.scopeBody": "In các mục đã chọn hay toàn bộ trang tính?",
         "chrome.altLabel": "Văn bản thay thế",
         "chrome.altTooLong": "Mô tả quá dài.",
         "dialog.linkNewTab": "Liên kết sẽ mở trong thẻ mới.",

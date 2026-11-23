@@ -30,6 +30,7 @@ export default defineBoardLanguage({
         "crop.aspect.wide": "Geniş ekran (16:9)",
         "crop.altBody": "Resmi göremeyen kişiler için resmi açıklayın.",
         "crop.selectionChanged": "Seçim değişti; resmi yeniden seçin.",
+        "print.scopeBody": "Seçili öğeler mi yazdırılsın, yoksa tüm sayfa mı?",
         "chrome.altLabel": "Alternatif metin",
         "chrome.altTooLong": "Açıklama çok uzun.",
         "dialog.linkNewTab": "Bağlantılar yeni bir sekmede açılır.",

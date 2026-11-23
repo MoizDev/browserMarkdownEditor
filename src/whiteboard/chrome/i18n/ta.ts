@@ -29,6 +29,7 @@ export default defineBoardLanguage({
         "crop.aspect.wide": "அகல வடிவம் (16:9)",
         "crop.altBody": "படத்தைப் பார்க்க முடியாதவர்களுக்காக அதை விவரிக்கவும்.",
         "crop.selectionChanged": "தேர்வு மாறிவிட்டது; படத்தை மீண்டும் தேர்ந்தெடுக்கவும்.",
+        "print.scopeBody": "தேர்ந்தெடுத்த உருப்படிகளை அச்சிடவா அல்லது முழு தாளையுமா?",
         "chrome.altLabel": "மாற்று உரை",
         "chrome.altTooLong": "விளக்கம் மிக நீளமாக உள்ளது.",
         "dialog.linkNewTab": "இணைப்புகள் புதிய தாவலில் திறக்கப்படும்.",

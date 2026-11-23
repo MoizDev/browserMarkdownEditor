@@ -29,6 +29,7 @@ export default defineBoardLanguage({
         "crop.aspect.wide": "വൈഡ് (16:9)",
         "crop.altBody": "ചിത്രം കാണാൻ കഴിയാത്തവർക്കായി അതിനെ വിവരിക്കുക.",
         "crop.selectionChanged": "തിരഞ്ഞെടുപ്പ് മാറി; ചിത്രം വീണ്ടും തിരഞ്ഞെടുക്കുക.",
+        "print.scopeBody": "തിരഞ്ഞെടുത്ത ഇനങ്ങൾ അച്ചടിക്കണോ അതോ മുഴുവൻ ഷീറ്റോ?",
         "chrome.altLabel": "ഇതര വാചകം",
         "chrome.altTooLong": "വിവരണം വളരെ നീണ്ടതാണ്.",
         "dialog.linkNewTab": "ലിങ്കുകൾ പുതിയ ടാബിൽ തുറക്കും.",

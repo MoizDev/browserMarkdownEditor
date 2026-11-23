@@ -31,6 +31,7 @@ export default defineBoardLanguage({
         "crop.aspect.wide": "Ballaaran (16:9)",
         "crop.altBody": "Sharax sawirka dadka aan arki karin.",
         "crop.selectionChanged": "Xulashada way beddeshay; sawirka mar kale dooro.",
+        "print.scopeBody": "Ma daabacaa waxyaabaha la doortay mise xaashida oo dhan?",
         "chrome.altLabel": "Qoraalka kaabka",
         "chrome.altTooLong": "Sharaxaaddu aad bay u dheer tahay.",
         "dialog.linkNewTab": "Xiriiriyeyaashu waxay ka furmi doonaan tab cusub.",

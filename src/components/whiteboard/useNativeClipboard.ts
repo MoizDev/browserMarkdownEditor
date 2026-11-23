@@ -54,7 +54,9 @@ export interface NativeClipboardService {
     readonly crop: PictureCropStore;
     theme(): 'light' | 'dark';
     /** Prints the focused board through its own pinned source. False when the board is not current or busy. */
-    print(): boolean;
+    print(wholeSheet?: boolean): boolean;
+    /** Starts a crop of one picture from a Ctrl/Cmd-press on its selection handle; false when that picture cannot be cropped now. */
+    cropFromHandle(id: NodeId, edge: { readonly dx: -1 | 0 | 1; readonly dy: -1 | 0 | 1 }, pointer: { readonly pointerId: number; readonly x: number; readonly y: number }): boolean;
     /** One page's preview from the pinned all-sheet print source, no longer than `maxSide` pixels (the notebook thumbnails). */
     pagePng(page: number, maxSide: number, signal: AbortSignal): Promise<Blob>;
     /** Saves the focused board's whole sheet as a PDF. False when the board is not current or busy. */
@@ -136,13 +138,13 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
     const mediaActions = createMediaActions({ runtime, memory, environment: { appOrigin: location.origin }, current, storeMedia, readMedia });
     const cropLifetime = new AbortController();
     const crop = createPictureCropStore({ media: mediaActions, signal: cropLifetime.signal,
-        canStart: () => !!active && active.writable() && !runtime.session.isGestureActive });
+        canStart: duringGesture => !!active && active.writable() && (duringGesture || !runtime.session.isGestureActive) });
     const ingestor = createBoardMediaIngestor({ runtime, memory, current, finishGesture, storeMedia,
         noticeRefused: files => report(files.map(file => `${file.name}: ${file.reason}`).join('; ')) });
-    const prepareExport = (route: Parameters<typeof prepareNativeExport>[0]['route'], signal: AbortSignal) => prepareNativeExport({ runtime, route, signal,
+    const prepareExport = (route: Parameters<typeof prepareNativeExport>[0]['route'], signal: AbortSignal, wholeSheet = false) => prepareNativeExport({ runtime, route, signal,
         boardName: host.identity(identity.documentId)?.name ?? identity.name, theme: active?.theme() ?? 'light',
         transparent: runtime.session.doc.view.transparent, current, notice: report, onError: fail,
-        ...(retainPdfSource ? { retainPdfSource } : {}) });
+        ...(retainPdfSource ? { retainPdfSource } : {}), ...(wholeSheet ? { wholeSheet } : {}) });
     let commands: ReturnType<typeof createNativeClipboardCommands>;
     try {
         commands = createNativeClipboardCommands({ runtime, token, memory, cache: host.clipboard, current,
@@ -168,8 +170,8 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
             boardName: () => host.identity(identity.documentId)?.name ?? identity.name,
         });
     } catch (error) { stopPreferences(); preferenceLifetime.abort(); ingestor.dispose(); cache.close(); throw error; }
-    const focusedPdf = async (signal: AbortSignal, print: boolean) => {
-        const job = await prepareExport(print ? 'print' : 'menu', signal);
+    const focusedPdf = async (signal: AbortSignal, print: boolean, wholeSheet = false) => {
+        const job = await prepareExport(print ? 'print' : 'menu', signal, wholeSheet);
         try {
             const pdf = await job.print.pdf(signal);
             signal.throwIfAborted();
@@ -215,8 +217,16 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
     };
     const service: NativeClipboardService = {
         preferences, memory, readMedia, storeMedia, media: mediaActions, crop,
+        // Ctrl/Cmd-drag from a handle of one croppable picture (catalogue S§10.2): the crop opens and its edge follows the press.
+        cropFromHandle(id, edge, pointer) {
+            // The sample's x/y are relative to the board surface; the drag measures client pixels, so the surface's origin is added.
+            if (!active?.writable() || !mediaActions.cropSource(id)) return false;
+            const origin = active.surface.getBoundingClientRect();
+            void crop.beginEdge(id, edge, { pointerId: pointer.pointerId, x: pointer.x + origin.left, y: pointer.y + origin.top }).catch(fail);
+            return true;
+        },
         theme: () => active?.theme() ?? 'light',
-        print: () => startFocusedTask(signal => focusedPdf(signal, true)),
+        print: wholeSheet => startFocusedTask(signal => focusedPdf(signal, true, wholeSheet)),
         pagePng: async (page, maxSide, signal) => {
             if (disposed || !current()) throw new Error('The board is no longer open.');
             return (await pinPagePrint()).print.pngPage(page, signal, maxSide);
@@ -285,7 +295,9 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                 if (event.button !== 0 || !canWriteView() || crop.get()) return;
                 const id = pictureAt(event.clientX, event.clientY);
                 if (id === null) return;
-                focus(); void crop.open(id).catch(fail);
+                // A double-click's second press is still a gesture when its event fires: the crop opens once that gesture has ended,
+                // because the store refuses to start during one (measured: the open was refused and the double-click did nothing).
+                focus(); void runtime.session.enqueueAfterGesture(cropLifetime.signal, () => crop.open(id)).catch(fail);
             };
             const dragover = (event: DragEvent) => { if (canWriteView()) controller.dragover(event); };
             const drop = (event: DragEvent) => { if (canWriteView()) { focus(); controller.drop(event); } };

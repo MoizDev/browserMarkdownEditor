@@ -29,6 +29,7 @@ export default defineBoardLanguage({
         "crop.aspect.wide": "ワイド (16:9)",
         "crop.altBody": "画像を見ることができない人のために、画像の内容を説明してください。",
         "crop.selectionChanged": "選択が変わりました。画像をもう一度選択してください。",
+        "print.scopeBody": "選択した項目を印刷しますか、それともシート全体を印刷しますか？",
         "chrome.altLabel": "代替テキスト",
         "chrome.altTooLong": "説明が長すぎます。",
         "dialog.linkNewTab": "リンクは新しいタブで開きます。",

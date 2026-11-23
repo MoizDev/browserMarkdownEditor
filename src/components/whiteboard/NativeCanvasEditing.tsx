@@ -193,7 +193,15 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
         requestText: dialogs.requestText, requestTextChoice: dialogs.requestTextChoice, notice: setNotice, t: translate }), [runtime, lease, current, canWrite, dialogs.requestText, dialogs.requestTextChoice, setNotice, translate]);
     useLayoutEffect(() => { linksRef.current = link; return () => { if (linksRef.current === link) linksRef.current = null; }; }, [linksRef, link]);
     // Print and PDF export belong to the clipboard service that owns this board's focused print pin.
-    const runPrint = useCallback(() => clipboard.print(), [clipboard]);
+    // With a selection on a whiteboard, the app's own dialog asks what to print (catalogue c.10): the selection, or the whole sheet.
+    // A paged board prints its pages whatever is selected, so it is not asked.
+    const runPrint = useCallback((): boolean => {
+        if (runtime.session.doc.kind !== 'whiteboard' || !runtime.selection.getSnapshot().selected.length) return clipboard.print();
+        void dialogs.chooseOne({ title: translate('chrome.print'), body: translate('print.scopeBody'),
+            confirmLabel: translate('palette.selection'), altLabel: translate('chrome.sheet') })
+            .then(choice => { if (choice) clipboard.print(choice === 'alt'); }, report);
+        return true;
+    }, [clipboard, runtime, dialogs, translate, report]);
     const runExportPdf = useCallback(() => clipboard.exportPdf(), [clipboard]);
     const [owned, setOwned] = useState<{ camera: ReturnType<typeof createNativeCameraOperations>;
         commands: ReturnType<typeof createNativeBoardOperations> } | null>(null);

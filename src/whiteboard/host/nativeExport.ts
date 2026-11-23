@@ -53,6 +53,8 @@ export interface NativeExportOptions {
     readonly maxSide?: number;
     /** A captured semantic selection, including the flatten operation's locked-subtree mask. */
     readonly selection?: Readonly<{ roots: readonly NodeId[]; excludeSubtrees: readonly NodeId[] }>;
+    /** A print of the whole sheet even while something is selected: the print dialog's "Sheet" answer. */
+    readonly wholeSheet?: boolean;
     readMedia?(entry: MediaEntry, signal: AbortSignal): Promise<Blob | null>;
     current(): boolean;
     notice(message: string): void;
@@ -94,7 +96,7 @@ export async function prepareNativeExport(options: NativeExportOptions): Promise
     if (region && options.selection) throw new TypeError('Explicit selection and capture region are mutually exclusive');
     // A paged document prints every page: a selection never shrinks the whole PDF a print must carry.
     const pagedPrint = route === 'print' && doc.kind !== 'whiteboard';
-    const selectedRoots = options.selection ? [...options.selection.roots] : route === 'menu' || region || pagedPrint ? [] : [...selection.selected];
+    const selectedRoots = options.selection ? [...options.selection.roots] : route === 'menu' || region || pagedPrint || options.wholeSheet ? [] : [...selection.selected];
     if (options.selection && !selectedRoots.length) throw new RangeError('Nothing to export');
     const excluded = new Set(options.selection?.excludeSubtrees), rootOf = new Map<NodeId, NodeId>();
     const selected = new Set<NodeId>(), pending = selectedRoots.map(id => ({ id, root: id }));

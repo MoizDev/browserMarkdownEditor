@@ -29,6 +29,7 @@ export default defineBoardLanguage({
         "crop.aspect.wide": "Panorámica (16:9)",
         "crop.altBody": "Describe a imaxe para as persoas que non a poden ver.",
         "crop.selectionChanged": "A selección cambiou; selecciona de novo a imaxe.",
+        "print.scopeBody": "Imprimir os elementos seleccionados ou toda a folla?",
         "chrome.altLabel": "Texto alternativo",
         "chrome.altTooLong": "A descrición é demasiado longa.",
         "dialog.linkNewTab": "As ligazóns abriranse nunha pestana nova.",

@@ -29,6 +29,7 @@ export default defineBoardLanguage({
         "crop.aspect.wide": "वाइड (16:9)",
         "crop.altBody": "जसले तस्बिर देख्न सक्दैनन्, तिनीहरूको लागि तस्बिरको वर्णन गर्नुहोस्।",
         "crop.selectionChanged": "चयन परिवर्तन भयो; तस्बिर फेरि चयन गर्नुहोस्।",
+        "print.scopeBody": "चयन गरिएका वस्तुहरू छाप्ने कि सम्पूर्ण पाना?",
         "chrome.altLabel": "वैकल्पिक पाठ",
         "chrome.altTooLong": "वर्णन धेरै लामो छ।",
         "dialog.linkNewTab": "लिङ्कहरू नयाँ ट्याबमा खुल्नेछन्।",

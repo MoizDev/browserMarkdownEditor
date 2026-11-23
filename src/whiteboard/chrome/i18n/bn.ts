@@ -29,6 +29,7 @@ export default defineBoardLanguage({
         "crop.aspect.wide": "ওয়াইড (16:9)",
         "crop.altBody": "যাঁরা ছবি দেখতে পান না তাঁদের জন্য ছবিটির বর্ণনা দিন।",
         "crop.selectionChanged": "নির্বাচন বদলে গেছে; ছবিটি আবার নির্বাচন করুন।",
+        "print.scopeBody": "নির্বাচিত আইটেম, নাকি পুরো শিট ছাপবেন?",
         "chrome.altLabel": "বিকল্প পাঠ্য",
         "chrome.altTooLong": "বর্ণনাটি খুব দীর্ঘ।",
         "dialog.linkNewTab": "লিঙ্ক একটি নতুন ট্যাবে খুলবে।",

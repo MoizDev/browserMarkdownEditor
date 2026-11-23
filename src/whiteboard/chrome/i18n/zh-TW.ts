@@ -29,6 +29,7 @@ export default defineBoardLanguage({
         "crop.aspect.wide": "寬螢幕 (16:9)",
         "crop.altBody": "為無法看見圖片的人描述圖片內容。",
         "crop.selectionChanged": "選取範圍已變更；請重新選取圖片。",
+        "print.scopeBody": "列印所選項目，還是整張頁面？",
         "chrome.altLabel": "替代文字",
         "chrome.altTooLong": "描述過長。",
         "dialog.linkNewTab": "連結會在新分頁中開啟。",

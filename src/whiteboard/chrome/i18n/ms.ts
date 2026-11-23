@@ -30,6 +30,7 @@ export default defineBoardLanguage({
         "crop.aspect.wide": "Lebar (16:9)",
         "crop.altBody": "Terangkan imej untuk orang yang tidak dapat melihatnya.",
         "crop.selectionChanged": "Pilihan telah berubah; pilih imej semula.",
+        "print.scopeBody": "Cetak item yang dipilih atau keseluruhan helaian?",
         "chrome.altLabel": "Teks alternatif",
         "chrome.altTooLong": "Penerangan terlalu panjang.",
         "dialog.linkNewTab": "Pautan akan dibuka dalam tab baharu.",

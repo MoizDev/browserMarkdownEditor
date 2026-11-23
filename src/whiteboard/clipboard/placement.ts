@@ -1,7 +1,8 @@
 import { isLocked } from '../change/commands';
+import { worldPose } from '../change/coordinates';
 import { boardSnapGrid, nearestBoardGridCoordinate } from '../geom/gridSnap';
 import { sheetOf, type BoardDoc } from '../model/doc';
-import type { NodeId, ParentId } from '../model/ids';
+import type { NodeId, ParentId, SheetId } from '../model/ids';
 import { boardPageStack } from '../model/pages';
 import { pageAt } from '../../platform/render/pageStack';
 import type { BoardPayload, ClipboardBounds } from './snapshot';
@@ -45,6 +46,25 @@ function clampPoint(doc: BoardDoc, point: ClipboardPoint): ClipboardPoint {
     return { x: Math.max(rect.x, Math.min(rect.x + rect.width, point.x)),
         y: Math.max(rect.y, Math.min(rect.y + rect.height, point.y)) };
 }
+/** The deepest unlocked frame on the sheet that holds a world point, or null. A cursor paste lands in it (catalogue c.4 "Parent"):
+ *  the same rule a shape drop uses to pick its frame, and nested frames give the innermost. Rotated frames are tested in their own
+ *  frame. */
+function frameUnder(doc: BoardDoc, sheet: SheetId, point: ClipboardPoint): ParentId | null {
+    let best: ParentId | null = null, bestDepth = -1;
+    for (const id of doc.bySheet.get(sheet) ?? []) {
+        const node = doc.nodes.get(id);
+        if (!node || node.kind !== 'frame' || isLocked(doc, node)) continue;
+        const pose = worldPose(doc, node.id), dx = point.x - pose.x, dy = point.y - pose.y;
+        const c = Math.cos(-pose.rotation), s = Math.sin(-pose.rotation);
+        const lx = c * dx - s * dy, ly = s * dx + c * dy;
+        if (lx < 0 || ly < 0 || lx > node.w || ly > node.h) continue;
+        let depth = 0;
+        for (let parent: ParentId | undefined = node.parent; depth < 64 && parent !== undefined; depth++) parent = doc.nodes.get(parent as NodeId)?.parent;
+        if (depth > bestDepth) { best = node.id; bestDepth = depth; }
+    }
+    return best;
+}
+
 export function planBoardClipboardPlacement(options: BoardClipboardPlacementOptions): BoardClipboardPlacement {
     const { receivingBoardId, target, source, doc, cameraZoom, intent } = options;
     if (!identity(receivingBoardId) || !target || !source || (source.from !== null && (!source.from || !identity(source.from.board) || !identity(source.from.sheet)
@@ -61,8 +81,15 @@ export function planBoardClipboardPlacement(options: BoardClipboardPlacementOpti
     if (target.pointer !== null && (!target.pointer || !Number.isFinite(target.pointer.x) || !Number.isFinite(target.pointer.y))) {
         throw new RangeError('Invalid clipboard pointer');
     }
+    const inverted = intent === 'paste-inverted' || intent === 'paste-plain-inverted';
+    const cursor = target.pasteAtCursor !== inverted;
+    // A cursor paste takes the frame under the cursor, not the selected one (catalogue c.4): the point decides, and a selected frame
+    // is only the target of a paste made without a point. Copies that include frames never nest.
+    const cursorPaste = cursor && target.pointer !== null && intent !== 'drop' && intent !== 'duplicate';
     let parent: ParentId = target.sheet;
-    if (target.selectedFrame !== null) {
+    if (cursorPaste) {
+        if (!options.containsFrame) parent = frameUnder(doc, target.sheet, target.pointer!) ?? target.sheet;
+    } else if (target.selectedFrame !== null) {
         const frame = doc.nodes.get(target.selectedFrame as NodeId);
         if (!frame || frame.kind !== 'frame' || sheetOf(doc, frame.id) !== target.sheet) throw new Error('Clipboard target frame is stale');
         if (!options.containsFrame && !isLocked(doc, frame)) parent = frame.id;
@@ -74,8 +101,6 @@ export function planBoardClipboardPlacement(options: BoardClipboardPlacementOpti
     const overlaps = bounds.x < viewport.x + viewport.w && bounds.x + bounds.w > viewport.x
         && bounds.y < viewport.y + viewport.h && bounds.y + bounds.h > viewport.y;
     const same = source.from !== null && source.from.board === receivingBoardId && source.from.sheet === target.sheet;
-    const inverted = intent === 'paste-inverted' || intent === 'paste-plain-inverted';
-    const cursor = target.pasteAtCursor !== inverted;
     let centre: ClipboardPoint, preserve = false;
     if (intent === 'drop') {
         if (!target.pointer) throw new RangeError('Drop placement requires its captured world point');

@@ -32,6 +32,7 @@ export default defineBoardLanguage({
         "crop.aspect.wide": "Bred (16:9)",
         "crop.altBody": "Beskriv billedet for personer, der ikke kan se det.",
         "crop.selectionChanged": "Markeringen ændrede sig; markér billedet igen.",
+        "print.scopeBody": "Udskriv de valgte elementer eller hele arket?",
         "chrome.altLabel": "Alternativ tekst",
         "chrome.altTooLong": "Beskrivelsen er for lang.",
         "dialog.linkNewTab": "Links åbnes i en ny fane.",

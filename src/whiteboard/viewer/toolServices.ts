@@ -61,6 +61,8 @@ export interface BoardToolServicesOptions {
     readonly dynamicSize?: () => boolean;
     /** The board's wrap-mode preference, read live on each gesture (brush selects only what it fully encloses). */
     readonly wrapMode?: () => boolean;
+    /** Ctrl/Cmd-drag from a resize handle of the one selected picture crops it from that edge; false when it cannot be cropped. */
+    readonly cropFromHandle?: (id: NodeId, edge: { readonly dx: -1 | 0 | 1; readonly dy: -1 | 0 | 1 }, pointer: { readonly pointerId: number; readonly x: number; readonly y: number }) => boolean;
     readonly mappings: MappingHistory;
     readonly sampleToSurface: (sample: RealSample) => Point;
     readonly clientToSurface: (x: number, y: number) => Point;
@@ -131,7 +133,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         motion: { glideTo: (target, durationMs) => options.platform().glideTo(target, durationMs), cancel: () => options.platform().cancelMotion() },
         surface: options.surface, inputToken, cameraChanged: options.interaction.cameraChanged, sampleToSurface: options.sampleToSurface, point, region, preview,
         overlay: options.overlay, token, current: t => current() && options.current(t), canMutateView: () => options.editable() && !runtime.session.isReadOnly,
-        inputFrames: options.inputFrames, alwaysSnap: options.alwaysSnap, wrapMode: options.wrapMode,
+        inputFrames: options.inputFrames, alwaysSnap: options.alwaysSnap, wrapMode: options.wrapMode, cropFromHandle: options.cropFromHandle,
         editSticky: async id => { await text.editText(id); }, editTextAt: (id, point, pointerId) => text.editTextAt(id, point, pointerId), cards: ui.cards, onError: ui.error, openKeyboardContextMenu: ui.openKeyboardContextMenu,
         onKeptLocked: kept => ui.notice?.(keptLockedMessage(kept.length)) });
     // Hover and edit targets from real callbacks: the text editor reports the node it holds, and the

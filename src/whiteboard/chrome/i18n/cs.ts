@@ -29,6 +29,7 @@ export default defineBoardLanguage({
         "crop.aspect.wide": "Široký (16:9)",
         "crop.altBody": "Popište obrázek pro lidi, kteří ho nemohou vidět.",
         "crop.selectionChanged": "Výběr se změnil; vyberte obrázek znovu.",
+        "print.scopeBody": "Vytisknout vybrané položky, nebo celou stránku?",
         "chrome.altLabel": "Alternativní text",
         "chrome.altTooLong": "Popis je příliš dlouhý.",
         "dialog.linkNewTab": "Odkazy se otevřou v nové záložce.",

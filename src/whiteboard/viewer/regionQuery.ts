@@ -184,7 +184,7 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                 if (!selected) return undefined;
                 if (query.kind === 'polygon' && query.containment && selected !== node.id)
                     groups.set(selected, Math.max(groups.get(selected) ?? -Infinity, resolved.rank));
-                const prepared = await options.geometry.prepareForPick(node, signal); check();
+                const prepared = await options.geometry.prepareForPick(node, signal, undefined, camera.z); check();
                 const hasCertifiedVector = !!prepared.vector && !!vectorNarrowDescriptor(prepared.vector);
                 let localPoints: readonly Vec2[] = regionPoints, partialFrame = false;
                 const frameClips: PointClipContour[] = [];

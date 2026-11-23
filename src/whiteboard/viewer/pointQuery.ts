@@ -29,7 +29,7 @@ import { selectableAtFocus } from '../selection';
 
 export interface BoardPointQueryOptions {
     readonly runtime: BoardRuntime;
-    readonly geometry: { prepareForPick(node: Readonly<Node>, signal: AbortSignal): Promise<Readonly<{
+    readonly geometry: { prepareForPick(node: Readonly<Node>, signal: AbortSignal, doc?: undefined, cssPerWorld?: number): Promise<Readonly<{
         vector?: BoardVectorGeometry; ink?: readonly InkCoverage[]; connector?: ConnectorGeometry;
     }>> };
     readonly camera: () => ViewState;
@@ -201,7 +201,7 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                         if (Math.min(local.x, local.y, parent.w - local.x, parent.h - local.y) * camera.z <= halo) clipUncertain = true;
                     }
                     if (clipped) return;
-                    const prepared = await options.geometry.prepareForPick(node, combined);
+                    const prepared = await options.geometry.prepareForPick(node, combined, undefined, camera.z);
                     check();
                     if (!scene.ready || scene.resolveSpatial(ref)?.id !== resolved.id || scene.resolveSpatial(ref)?.rank !== resolved.rank) throw cancelled();
                     let result = miss, ambiguous = false, target: BoardTargetHit | undefined;

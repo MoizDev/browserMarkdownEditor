@@ -15,14 +15,16 @@ export const textTool: Tool<TextToolContext> = {
         if (first.source === 'keyboard') return null;
         const origin = context.worldToScreen(first.x, first.y);
         let last = first;
-        let width: number | null = null, ended = false;
+        let width: number | null = null, ended = false, fixed = false;
+        // A deliberate drag makes fixed width once, and it stays fixed: held 150 ms and moved horizontally past the threshold.
+        // A click, or a shorter drag, is auto-sized (the catalogue's text-tool drag rule).
         const update = (sample: RealSample) => {
             if (ended) return;
             last = sample;
             const screen = context.worldToScreen(sample.x, sample.y);
             const threshold = first.source === 'touch' ? 36 : 24;
-            width = sample.time - first.time >= 150 && Math.abs(screen.x - origin.x) > threshold
-                ? Math.max(16, Math.abs(sample.x - first.x)) : null;
+            if (!fixed && sample.time - first.time >= 150 && Math.abs(screen.x - origin.x) > threshold) fixed = true;
+            width = fixed ? Math.max(16, Math.abs(sample.x - first.x)) : null;
             context.previewTextColumn(Math.min(first.x, sample.x), first.y, width);
         };
         const hold = setTimeout(() => update({ ...last, time: Math.max(last.time, first.time + 150) }), 150);

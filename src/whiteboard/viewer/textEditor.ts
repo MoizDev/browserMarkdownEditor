@@ -12,8 +12,9 @@ import { transformBox } from '../geom/bounds';
 import { figureLabelRequest } from '../geom/providers';
 import type { BoardRuntime } from '../host/runtime';
 import { isSheetParent } from '../model/doc';
-import type { NodeId, ParentId } from '../model/ids';
-import type { Node } from '../model/nodes';
+import { newNodeId, type NodeId, type ParentId } from '../model/ids';
+import { createText, type Node } from '../model/nodes';
+import { keyBetween } from '../model/orderKey';
 import { boardPageStack, pageOrigin, reanchorPage } from '../model/pages';
 import { prepareBoardVectorGeometryNow } from '../render/vectorGeometry';
 import { colourCss } from '../render/colour';
@@ -36,6 +37,7 @@ import { insertionFragment, linkRangeAt, plain } from '../text/richOperations';
 import type { ViewerEngine } from './types';
 import type { BoardPreview } from './preview';
 import type { createBoardPointQuery } from './pointQuery';
+import { createFormatToolbar, formatStateIn } from './textFormatToolbar';
 
 export interface BoardTextEditorOptions {
     /** The node whose text is being edited, or null: its paint is exact while the editor holds it. */
@@ -267,7 +269,30 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
         }
         result = { ...result, ops }; return result;
     };
-    const create = textCreation({ doc, zoom: () => camera.camera.z, dynamicSize: options.ui.dynamicTextSize,
+    // The height of an empty line per font and size. The layout reads the face, so a font is measured only once it has loaded;
+    // until then a click is placed on the pointer's top edge. The cache is dropped whenever the font set changes.
+    const lineHeights = new Map<string, number>(), lineLoading = new Set<string>();
+    const lineProbe = () => createText({ id: newNodeId(doc), parent: runtime.selection.getSnapshot().focus, order: keyBetween(null, null), page: -1,
+        x: 0, y: 0, ext: null, text: EMPTY_RICH_TEXT, color: doc.ui.next.color, size: doc.ui.next.size, font: doc.ui.next.font,
+        align: doc.ui.next.textAlign, autoSize: true, w: 1, scale: 1 });
+    const lineHeight = (): number | null => {
+        const probe = lineProbe(), key = `${probe.font}|${probe.size}`, known = lineHeights.get(key);
+        if (known !== undefined) return known;
+        if (!lineLoading.has(key)) {
+            lineLoading.add(key);
+            void (async () => {
+                try {
+                    if (!await render.text.fonts.load({ family: probe.font, bold: false, italic: false })) return;
+                    await render.text.loadFaces(probe, () => {});
+                    const prepared = render.text.prepareNow(probe, { revision: `line:${key}`, zoom: 1 });
+                    if (prepared && !disposed) lineHeights.set(key, prepared.paint.lines[0] ? prepared.paint.lines[0].bottom - prepared.paint.lines[0].top : prepared.paint.box.h);
+                } catch (error) { report(error); }
+                finally { lineLoading.delete(key); }
+            })();
+        }
+        return null;
+    };
+    const create = textCreation({ doc, zoom: () => camera.camera.z, dynamicSize: options.ui.dynamicTextSize, lineHeight,
         place(x, y) {
             const parent = runtime.selection.getSnapshot().focus, root = isSheetParent(doc, parent), stack = boardPageStack(doc.host);
             const page = root && stack ? pageAt(stack, y) : -1, origin = page >= 0 && stack ? pageOrigin(stack, page) : undefined;
@@ -388,10 +413,12 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
         }, error => { if (!(error instanceof DOMException && error.name === 'AbortError')) report(error); }).finally(settled);
     };
     const stopFonts = render.text.fonts.subscribe(() => {
+        lineHeights.clear(); void lineHeight();
         if (!active || !manager.current) return;
         if (doc.nodes.get(active)?.kind === 'connector') refreshConnector(active);
         else { manager.refresh(); requestFrame(); }
     });
+    void lineHeight();
     const stopSession = session.subscribe(() => {
         if (!active || !manager.current || doc.nodes.get(active)?.kind !== 'connector') return;
         const entry = metrics.get(active);
@@ -404,26 +431,12 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
     };
     /** The floating "Text formatting" toolbar (F-TEXT-011/012). Its buttons run the same command bridge as the
      * text menu and the shortcuts; pointerdown is kept from the editor so the selection survives the click. */
-    const formatToolbar = (): HTMLElement => {
-        if (toolbar) return toolbar;
-        const bar = document.createElement('div');
-        bar.setAttribute('role', 'toolbar'); bar.setAttribute('aria-label', 'Text formatting'); bar.hidden = true;
-        bar.style.cssText = 'position:absolute;left:0;top:0;display:flex;gap:2px;padding:3px;z-index:2;pointer-events:auto;'
-            + 'background:var(--background-primary);border:1px solid var(--background-modifier-border);border-radius:6px;'
-            + 'box-shadow:0 2px 8px rgba(0,0,0,0.25);white-space:nowrap;transform:translate(-50%,-100%);';
-        const items: readonly (readonly [string, string])[] = [['bold', 'Bold'], ['italic', 'Italic'], ['code', 'Code'], ['link', 'Link'],
-            ['bullet-list', 'Bulleted list'], ['highlight', 'Highlight']];
-        for (const [name, label] of items) {
-            const button = document.createElement('button');
-            button.type = 'button'; button.textContent = label; button.dataset.command = name;
-            button.style.cssText = 'font:inherit;font-size:12px;padding:3px 7px;border:0;border-radius:4px;cursor:pointer;'
-                + 'background:transparent;color:var(--text-normal);';
-            button.addEventListener('pointerdown', event => { event.preventDefault(); event.stopPropagation(); });
-            button.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); command(name); });
-            bar.append(button);
-        }
-        overlay.append(bar); toolbar = bar;
-        return bar;
+    let formatBar: ReturnType<typeof createFormatToolbar> | null = null, formatKey = '';
+    const formatToolbar = (): ReturnType<typeof createFormatToolbar> => {
+        if (formatBar) return formatBar;
+        formatBar = createFormatToolbar(name => command(name));
+        overlay.append(formatBar.element); toolbar = formatBar.element;
+        return formatBar;
     };
     const placeToolbar = (matrix: Affine, viewport: { readonly width: number; readonly height: number }, selection: { readonly anchor: number; readonly focus: number }) => {
         const active_ = manager.current, from = Math.min(selection.anchor, selection.focus), to = Math.max(selection.anchor, selection.focus);
@@ -432,9 +445,12 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
         const top = rects.reduce((best, rect) => (rect.y < best.y ? rect : best));
         const point = transformPoint(matrix, { x: top.x + top.width / 2, y: top.y });
         const bounds = overlay.getBoundingClientRect(), bar = formatToolbar();
-        if (!(bounds.width > 0 && viewport.width > 0)) { bar.hidden = true; return; }
+        if (!(bounds.width > 0 && viewport.width > 0)) { bar.element.hidden = true; return; }
         const scale = bounds.width / viewport.width;
-        bar.style.left = `${point.x * scale}px`; bar.style.top = `${point.y * scale - 8}px`; bar.hidden = false;
+        // The state is read from the text only when the text or the selection moved: placeToolbar runs every frame.
+        const node = active && doc.nodes.get(active), text = node && nodeText(node), key = `${active}:${doc.rev}:${selection.anchor}:${selection.focus}`;
+        if (text && key !== formatKey) { formatKey = key; bar.setState(formatStateIn(text, Math.min(selection.anchor, selection.focus), Math.max(selection.anchor, selection.focus))); }
+        bar.element.style.left = `${point.x * scale}px`; bar.element.style.top = `${point.y * scale - 8}px`; bar.element.hidden = false;
     };
     const writeOverlays = (frame: ScheduledFrame) => {
         if (!current() || frame.token.documentId !== session.owner.documentId || frame.token.session !== session.owner.session

@@ -95,7 +95,7 @@ export default function PdfTiledSurface(props: Props) {
     if (error?.key === key && !source) return <>{passwordPrompt}<div className="pdf-pane-message" role="alert">{error.message}
         <button className="pdf-pane-action" onClick={() => { setError(null); setRetry(value => value + 1); }}>Retry</button>
         </div></>;
-    if (!source) return <>{passwordPrompt}<div className="pdf-pane-message" role="status">{props.sourceOnly ? 'Opening extracted text…' : 'Loading PDF…'}</div></>;
+    if (!source) return <>{passwordPrompt}<div className="pdf-pane-message is-waiting" role="status">{props.sourceOnly ? 'Opening extracted text…' : 'Loading PDF…'}</div></>;
     if (props.sourceOnly) return null;
     return <PdfTiledView reading={reading} session={source.session} document={source.document}
         mirror={source.mirror} capturer={source.capturer} selectionState={source.selection} transition={source.transition} bridge={source.bridge}

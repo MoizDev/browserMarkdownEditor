@@ -127,6 +127,11 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         return () => pdf.emphasis.setVisiblePages([], -1, false);
     }, [pdf, page, isVisible, isFocused]);
     const [thumbs, setThumbs] = useState(readThumbnailsOpen);
+    // Blank pages at their final size and place from the moment the geometry is known until the first frame presents.
+    // Without them the pane sat empty and dark between the source opening and the first picture (inv-f cold-small: 400 ->
+    // 505 ms); with them the picture lands in the paper it was waiting in, with no layout change.
+    const [paper, setPaper] = useState<readonly { left: number; top: number; width: number; height: number }[] | null>(null);
+    const paperShown = useRef(false);
     const [noticeState, setNoticeState] = useState<{ session: PdfTiledDocumentSession; notice: RenderNotice | undefined }>(() =>
         ({ session, notice: sessionNotices.get(session) }));
     const [retryBusy, setRetryBusy] = useState<PdfTiledDocumentSession | null>(null);
@@ -601,6 +606,7 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
             for (const [index, task] of linkTasks.current) if (!visible.has(index)) { task.abort(); linkTasks.current.delete(index); }
         },
         onPresentation: presentation => {
+            if (presentation && paperShown.current) { paperShown.current = false; setPaper(null); }
             pendingPresentation.current = presentation;
             const token = presentation?.token;
             currentSharp.current = !!presentation && presentation.complete && presentation.sharp && !presentation.staleVersion && session.isCurrent() &&
@@ -627,7 +633,19 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
             if (!initialized.current) {
                 const pos = initial.current ?? { page: 0, offset: 0, zoom: 1 };
                 const restored = cameraForPagedPosition({ ...pos, zoom: pos.zoom ?? 1 }, next, stack, INSETS, LIMITS);
-                if (restored) { camera.current = clamp(restored); initialized.current = true; }
+                if (restored) {
+                    camera.current = clamp(restored); initialized.current = true;
+                    if (!paperShown.current) {
+                        // The same projection the page layer paints with (pagePresentation), so no page moves when it lands.
+                        const view = { camera: camera.current, viewport: next, epoch: 0, moving: false };
+                        const bottom = view.camera.y + next.height / view.camera.z, sheets = [];
+                        for (let index = Math.max(0, pageAt(stack, view.camera.y)); index < stack.rects.length && stack.rects[index].y < bottom; index++) {
+                            const box = stack.rects[index], matrix = pagePresentation(box, view).surface;
+                            sheets.push({ left: matrix[4], top: matrix[5], width: box.width * matrix[0], height: box.height * matrix[3] });
+                        }
+                        paperShown.current = true; setPaper(sheets);
+                    }
+                }
             } else camera.current = clamp(constraint.resize(camera.current, previous, next));
             persist(); platformPane.current?.observeSize(); platformPane.current?.invalidate('pdf-resize');
         };
@@ -829,7 +847,10 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
             {offerRetry && !retryDocument && <div className="pdf-tiled-notice-hint">Retry is unavailable.</div>}
         </div>}
         {thumbs && isVisible && <PdfThumbnails ref={thumbsRef} sizes={pdf.pages} renderThumbnail={renderThumbnail} onSelect={goPage} initialPage={page} />}
-        <div className="pdf-tiled-content" ref={setContentHost}><div className="pdf-tiled-surface" ref={setHost} tabIndex={0} aria-label="PDF pages" />
+        <div className="pdf-tiled-content" ref={setContentHost}>
+            {paper && <div className={`pdf-tiled-paper${inverted ? ' is-inverted' : ''}`} aria-hidden="true">
+                {paper.map((sheet, index) => <div key={index} style={sheet} />)}</div>}
+            <div className="pdf-tiled-surface" ref={setHost} tabIndex={0} aria-label="PDF pages" />
             <div className="pdf-tiled-overlays" ref={setOverlay} />
             {updating && <div className="pdf-tiled-updating" role="status">Updating PDF…</div>}</div>
         <div className="pdf-viewer-controls">

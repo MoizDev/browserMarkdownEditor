@@ -75,7 +75,7 @@ const PdfPaneHost = React.memo(function PdfPaneHost({
     if (!activated) return null;
     if (module.status !== 'ready') return (
         <div
-            className={`pdf-pane pdf-pane-message${rest.isVisible ? '' : ' pdf-pane-hidden'}`}
+            className={`pdf-pane pdf-pane-message${rest.isVisible ? '' : ' pdf-pane-hidden'}${module.status === 'error' ? '' : ' is-waiting'}`}
             style={loadingStyle}
             role={module.status === 'error' ? 'alert' : 'status'}
             onPointerDownCapture={() => { if (rest.isVisible) rest.onFocusPane(rest.file.path); }}

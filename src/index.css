@@ -3431,6 +3431,24 @@ body.is-resizing-panes * {
   text-align: center;
 }
 
+/* A wait label shows only once the wait has lasted: a PDF that fills in within a few hundred ms (most do, measured
+   ~0.1-0.3 s from the click) flashed "Loading PDF…" for one or two frames. Still in the DOM for assistive tech. */
+.pdf-pane-message.is-waiting {
+  animation: pdf-pane-waiting 160ms ease-out 400ms both;
+}
+@keyframes pdf-pane-waiting {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pdf-pane-message.is-waiting { animation-duration: 0s; }
+}
+
+.pdf-tiled-paper { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.pdf-tiled-paper > div { position: absolute; background: #fff; }
+/* Inverted pages: white maps to black under the page inversion (platform/render/colour.ts). */
+.pdf-tiled-paper.is-inverted > div { background: #000; }
+
 .pdf-pane-action {
   padding: 6px 12px;
   border: 1px solid var(--background-modifier-border);

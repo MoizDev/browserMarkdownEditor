@@ -39,6 +39,7 @@ import { paintKey, type BoardViewLease, type BoardViewParameters, type BoardView
 import { createNativeViewPlatform } from './nativeViewPlatform';
 import { createNativeEditingLease, type NativeEditingToolOptions, type NativeEmbedInfrastructure } from './nativeEditingLease';
 import { createBoardAccessibilityDom } from '../../whiteboard/viewer/accessibilityDom';
+import { createSelectionHandles } from '../../whiteboard/viewer/selectionHandles';
 import type { NativeClipboardService } from './useNativeClipboard';
 import { gpuUnavailableText } from '../../utils/renderStatus';
 
@@ -180,6 +181,8 @@ export function createNativeViewLease(options: {
         session: identity.session, bytesGeneration: identity.bytesGeneration });
     const viewLease = ++serial, listeners = new Set<(change?: string) => void>();
     let parameters = { ...options.parameters }, disposed = false, platformPane: PlatformPane | null = null;
+    /** The read-only outline of the chosen object, while this view is attached to an input surface. */
+    let readonlyOutline: ReturnType<typeof createSelectionHandles> | null = null;
     let inputPermitted = true;
     let backdrop = options.pdfBackdrop;
     let surface: HTMLElement | null = null;
@@ -519,7 +522,7 @@ export function createNativeViewLease(options: {
             setInputEnabled: enabled => navigation.setInputEnabled(enabled && inputPermitted && sourceCurrent() && parameters.visible),
             cancelViewWork: reason => navigation.cancelViewWork(reason),
             writeOverlays: frame => { refreshViewport(); recordViewport(); if (presentedFrame === frame.frameId) presentedView = { ...frame.view,
-                camera: { ...frame.view.camera }, viewport: { ...frame.view.viewport } }; navigation.writeOverlays(frame); },
+                camera: { ...frame.view.camera }, viewport: { ...frame.view.viewport } }; navigation.writeOverlays(frame); readonlyOutline?.write(frame); },
             onPresentation: presentation => {
                 presentedFrame = presentation && current() && presentation.token.documentId === token.documentId &&
                     presentation.token.session === token.session && presentation.token.vaultEpoch === token.vaultEpoch &&
@@ -668,6 +671,10 @@ export function createNativeViewLease(options: {
             attachInput(interaction, overlay) {
                 detachSurface(); surface = interaction;
                 // Only a view with no editing lease builds this mirror; editing builds the full one in its own input host.
+                // A read-only view has no selection frame of its own (the editing services draw it), so a chosen object gets its outline alone.
+                const outline = options.readonlyAccessibility && !edit ? createSelectionHandles({ runtime, overlay, current, visible: () => parameters.visible,
+                    invalidate: invalidatePane, error: options.onError, outlineOnly: true }) : null;
+                readonlyOutline = outline;
                 const mirror = options.readonlyAccessibility && !edit ? createBoardAccessibilityDom({ runtime, engine: viewer, surface: interaction, overlay,
                     current, visible: () => parameters.visible, schedule: callback => { const frame = requestAnimationFrame(() => callback());
                         return () => cancelAnimationFrame(frame); },
@@ -681,7 +688,7 @@ export function createNativeViewLease(options: {
                 };
                 resize = new ResizeObserver(measure); resize.observe(interaction); measure();
                 const detach = navigation.attachInput(interaction, overlay);
-                return () => { mirror?.dispose(); detach(); if (surface === interaction) detachSurface(); };
+                return () => { mirror?.dispose(); outline?.dispose(); if (readonlyOutline === outline) readonlyOutline = null; detach(); if (surface === interaction) detachSurface(); };
             },
         },
         getSnapshot() {

@@ -20,7 +20,11 @@ export type SelectionHandleHit = Readonly<{ kind: 'resize'; handle: ResizeHandle
 export interface SelectionHandleOptions {
     readonly runtime: BoardRuntime;
     readonly overlay: HTMLElement;
-    readonly camera: () => ViewState;
+    /** Absent for an outline, which has no handles to hit. */
+    readonly camera?: () => ViewState;
+    /** A read-only view draws the selection frame's outline alone: its box and stroke, and no handles, grip or stem, since
+     * nothing can be dragged there. */
+    readonly outlineOnly?: boolean;
     readonly current: () => boolean;
     readonly visible: () => boolean;
     readonly invalidate: () => void;
@@ -89,7 +93,7 @@ export function createSelectionHandles(options: SelectionHandleOptions) {
     const { runtime } = options, session = runtime.session, doc = session.doc;
     let box: OrientedBox | null = null, controller: AbortController | undefined, generation = 0, disposed = false;
     let svg: SVGSVGElement | undefined;
-    let handleNodes: HandleNodes | undefined;
+    let handleNodes: HandleNodes | undefined, outlineNode: SVGPolygonElement | undefined;
     const presented = new PresentedHistory<ViewState['camera']>();
     const current = () => !disposed && options.current() && options.visible() && session.doc === doc;
     const clear = () => { box = null; svg?.remove(); svg = undefined; presented.clear(); options.invalidate(); };
@@ -134,9 +138,18 @@ export function createSelectionHandles(options: SelectionHandleOptions) {
         if (!svg) {
             svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('aria-hidden', 'true');
             svg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible'; options.overlay.append(svg);
-            handleNodes = undefined;
+            handleNodes = undefined; outlineNode = undefined;
         }
         projectInto(shape, view, drawn, moving ? moving.x : 0, moving ? moving.y : 0);
+        if (options.outlineOnly) {
+            outlineNode ??= document.createElementNS(SVG_NS, 'polygon');
+            if (!outlineNode.parentNode) {
+                outlineNode.setAttribute('fill', 'none'); outlineNode.setAttribute('stroke', '#75b7ff'); outlineNode.setAttribute('stroke-width', '1.5');
+                svg.append(outlineNode);
+            }
+            outlineNode.setAttribute('points', `${drawn[0]},${drawn[1]} ${drawn[4]},${drawn[5]} ${drawn[8]},${drawn[9]} ${drawn[12]},${drawn[13]}`);
+            return;
+        }
         const nodes = handleNodes ??= buildHandleNodes(svg, handles.length);
         const last = nodes.last;
         // The handles grow for a finger or a pen, the size the catalogue uses for a coarse pointer (I§4.5).
@@ -174,7 +187,7 @@ export function createSelectionHandles(options: SelectionHandleOptions) {
         },
         hit(surface: Vec2, coarse = false, time?: number): SelectionHandleHit | null {
             const camera = presented.at(time);
-            if (!current() || !box || !camera || !Number.isFinite(surface.x) || !Number.isFinite(surface.y)) return null;
+            if (!current() || !box || !camera || !options.camera || !Number.isFinite(surface.x) || !Number.isFinite(surface.y)) return null;
             // Default, calibration cut by owner: resize precedes the outward rotation hotspot.
             projectInto(box, { ...options.camera(), camera }, hitPositions);
             const radius = coarse ? 14 : 6;

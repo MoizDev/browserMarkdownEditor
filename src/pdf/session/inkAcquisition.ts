@@ -10,7 +10,7 @@ import type { WriterSource } from '../writing/protocol';
 import { typedPdfWriter } from '../writing/writerClient';
 import { getSharedPdfPool } from './startup';
 import { createPdfInkBackdrop } from './inkBackdrop';
-import type { PdfInkAcquisition, PdfInkAcquisitionOptions } from './inkAcquisition.types';
+import type { PdfInkAcquisition, PdfInkAcquisitionOptions, PdfReadOnlyInkSource } from './inkAcquisition.types';
 
 const HASH = /^[0-9a-f]{64}$/;
 const MEDIA = /^board-media\/([0-9a-f]{64})\.[a-zA-Z0-9]{1,16}$/;
@@ -71,11 +71,12 @@ export async function acquirePdfInkSource(options: PdfInkAcquisitionOptions): Pr
     };
     const onAbort = () => { void release(); };
     options.signal?.addEventListener('abort', onAbort, { once: true });
-    const readOnly = async (reason: string, notebook?: { notebookSource: { path: string; exportedAt?: number }; outerFingerprint: string }): Promise<PdfInkAcquisition> => {
+    const readOnly = async (reason: string, notebook?: { notebookSource: { path: string; exportedAt?: number }; outerFingerprint: string },
+        cause?: PdfReadOnlyInkSource['cause']): Promise<PdfInkAcquisition> => {
         guard();
         await release();
         if (!callerCurrent()) throw stale();
-        return { kind: 'read-only', reason, ...(notebook ? { ...notebook, isCurrent: callerCurrent } : {}), release };
+        return { kind: 'read-only', reason, ...(cause ? { cause } : {}), ...(notebook ? { ...notebook, isCurrent: callerCurrent } : {}), release };
     };
     try {
         guard();
@@ -90,13 +91,13 @@ export async function acquirePdfInkSource(options: PdfInkAcquisitionOptions): Pr
         const inspection: PdfInkInspection = await outer.request('doc.inspectInk', {}, { priority: 0, signal: lifetime });
         guard();
         if (inspection.kind === 'read-only') {
-            if (inspection.reason === 'inspection-failed') return await readOnly(`PDF ink inspection failed (${inspection.phase}; ${inspection.errorClass}).`);
+            if (inspection.reason === 'inspection-failed') return await readOnly(`PDF ink inspection failed (${inspection.phase}; ${inspection.errorClass}).`, undefined, 'inspection-failed');
             if (inspection.reason !== 'notebook-source') return await readOnly(inspection.reason === 'unsafe-policy'
-                ? 'The PDF write safety could not be established; annotation is read-only.' : `PDF ink is read-only: ${inspection.reason}.`);
+                ? 'The PDF write safety could not be established; annotation is read-only.' : `PDF ink is read-only: ${inspection.reason}.`, undefined, inspection.reason);
             const outerFingerprint = await chunkedBlobSha256(options.outer, guard);
             guard();
             if (outerFingerprint !== inspection.outerFingerprint) return await readOnly('The PDF source fingerprint does not match the inspected bytes.');
-            return await readOnly('This PDF was exported from a notebook.', { notebookSource: Object.freeze({ ...inspection.notebookSource }), outerFingerprint });
+            return await readOnly('This PDF was exported from a notebook.', { notebookSource: Object.freeze({ ...inspection.notebookSource }), outerFingerprint }, 'notebook-source');
         }
         if ((inspection.kind !== 'plain' && inspection.kind !== 'native') || inspection.formatId !== NATIVE_FORMAT_ID || inspection.writeSafety?.kind !== 'safe' ||
             !memoryBlob(inspection.pristine) || !HASH.test(inspection.outerFingerprint) || !HASH.test(inspection.pristineFingerprint) ||

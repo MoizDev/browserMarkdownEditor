@@ -2,6 +2,7 @@ import type { PageGeometry } from '../../platform/types';
 import type { RenderToken } from '../../platform/render/types';
 import type { PdfPool } from '../pool/types';
 import type { WriterSource } from '../writing/protocol';
+import type { PdfInkInspectionFailure } from '../writing/inkInspection.types';
 import type { TypedPdfWriter } from '../writing/writerClient';
 import type { PdfInkBackdrop, PdfInkBackdropOptions } from './inkBackdrop.types';
 
@@ -27,6 +28,8 @@ export type PdfEditableInkSource = {
 export interface PdfReadOnlyInkSource {
     kind: 'read-only';
     reason: string;
+    /** What the inspection found, for a caller that must explain it in plain words (rotation); absent = not inspected. */
+    cause?: PdfInkInspectionFailure | 'inspection-failed' | 'notebook-source';
     /** Verified against the actual outer snapshot; never an editing capability. */
     notebookSource?: { readonly path: string; readonly exportedAt?: number };
     outerFingerprint?: string;

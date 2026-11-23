@@ -818,7 +818,7 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
                 <PdfCapabilitiesNotice capabilities={capabilities} nativeFontPolicy />
             </div>
             <PdfTiledPageField page={page} pageCount={pdf.pages.length} onNavigate={goPage} />
-            <div className="pdf-viewer-pill"><button aria-label="Zoom out" onClick={() => zoomBy(1 / 1.2)}>−</button><span>{Math.round(zoom * 100)}%</span><button aria-label="Zoom in" onClick={() => zoomBy(1.2)}>+</button></div>
+            <div className="pdf-viewer-pill pdf-viewer-zoom"><button type="button" aria-label="Zoom out" data-tooltip="Zoom out" onClick={() => zoomBy(1 / 1.2)}>−</button><span className="pdf-viewer-zoom-value">{Math.round(zoom * 100)}%</span><button type="button" aria-label="Zoom in" data-tooltip="Zoom in" onClick={() => zoomBy(1.2)}>+</button></div>
         </div>
     </div>;
 }

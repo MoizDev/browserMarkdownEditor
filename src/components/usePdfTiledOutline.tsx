@@ -124,7 +124,7 @@ export function usePdfTiledOutline(options: Options): { button: ReactNode; panel
     const first = Math.max(0, Math.floor(scroll / HEIGHT) - OVERSCAN), last = Math.min(rows.length, Math.ceil((scroll + height) / HEIGHT) + OVERSCAN);
     const indices = Array.from({ length: Math.max(0, last - first) }, (_, index) => first + index);
     if (rows.length && (activeIndex < first || activeIndex >= last)) indices.push(activeIndex);
-    const button = <button ref={buttonRef} type="button" data-tooltip="Contents" aria-label="Contents" aria-expanded={open}
+    const button = <button ref={buttonRef} type="button" className={`pdf-viewer-outline-toggle${open ? ' is-on' : ''}`} data-tooltip="Contents" aria-label="Contents" aria-expanded={open}
         aria-controls={`${prefix}-panel`} onClick={() => open ? close(false) : setOpen(true)}>
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
             <path d="M5 5h14M5 9h14M5 13h10M5 17h10M5 21h7" />

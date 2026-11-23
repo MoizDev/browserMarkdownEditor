@@ -146,6 +146,7 @@
 
 .board-helper-back {
     order: 1;
+}
 
 /* The picture's own crop (NativePictureCrop): drawn over the board where the picture is, its whole original faded and the kept
    window bright. The frame turns with the picture; the bar above it does not, so it is a sibling placed in the surface's pixels. */

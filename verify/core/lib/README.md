@@ -36,9 +36,8 @@ core lanes may import the missing WebSocket/worker-target pieces, not copy them.
   to Playwright waitForFunction. `__bmePickVault` changes the picker stub, not app state: use actual
   Open Vault/switcher gestures afterwards. V-01a's fuller vault API replaces this minimal piece.
 
-No build/run is started by these modules. Separate preparation from execution, obey
-`/Users/adham/Developer/bme-impl/scratch/HOWTO.md`, and stop servers between runs. No memory-costing
-nested grants. Records contain fixtures only; the run must block outside requests, use fresh OPFS
+No build/run is started by these modules. Separate preparation from execution and
+stop servers between runs; the browser is the pinned one (`node verify/install-browser.mjs`). Records contain fixtures only; the run must block outside requests, use fresh OPFS
 and never open a real user vault. Existing body-binding/preparation probes are retained for the
 review phase under charter §0, not additional merge conditions. Helpers are exercised only through
 real-browser runs, never a unit test or in-file self-check; not every helper branch is claimed covered.

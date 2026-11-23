@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { chromium } from 'playwright';
+import { pinnedChrome } from '../../lib/paths.mjs';
 
 const [url, artifactArg, identityPath] = process.argv.slice(2);
 assert(url && artifactArg && identityPath, 'Usage: node verify/core/C-03/reproduce.mjs URL ARTIFACT_DIR BUILD_IDENTITY');
@@ -13,7 +14,7 @@ const artifacts = resolve(artifactArg);
 await mkdir(artifacts, { recursive: true });
 const driver = createRequire(import.meta.url)('playwright/package.json').version;
 assert.equal(driver, '1.63.0');
-const browser = await chromium.launch({ headless: true, executablePath: '/Users/adham/Developer/bme-impl/scratch/browsers/157.0.8103.39/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing' });
+const browser = await chromium.launch({ headless: true, executablePath: await pinnedChrome() });
 const identity = { browser: browser.version(), driver, commit: build.commit, mode: build.mode, tree: build.tree, url, idbShim: false, excludedCloses: 'fixture/outside writes' };
 assert.equal(identity.browser, '157.0.8103.39');
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });

@@ -30,8 +30,8 @@ not merely recorded. There is no IndexedDB shim.
   control. P/B parity compares final vault bytes by SHA-256 and initial/final visible DOM; an image
   must actually be visible and decoded after restoration, not just present on disk.
 - **D:** same flow against the development server, StrictMode on; no root/tree hook, reports or events.
-  Browser/driver, clean source commit, and the live server's explicit worktree root/cwd/serve grant
-  are asserted. Observed response hashes are recorded. **Loss:** dev source text carries dead guarded
+  Browser/driver, clean source commit, and the live server's explicit worktree root and cwd (read
+  from its process id) are asserted. Observed response hashes are recorded. **Loss:** dev source text carries dead guarded
   code; dev does not claim textual exclusion or byte-identical transformed responses.
 - The build helper writes `<outDir>.identity.json`: exact source commit, clean tree (or mutant patch
   SHA-256), mode and SHA-256 of every output file. The run requires `--expect-commit`, checks mode and
@@ -52,39 +52,37 @@ are not reordered and callback dependencies stay identical to the uninstrumented
 
 ## Build and run
 
-All installs/builds/static checks/servers/browser runs go through the integrator's `bme-lock`. Slow
-commands run in `hc run --bg`; `hc wait` must report `ended:true` before stopping their server.
-`impl/ref/c-15b` takes only `impl/reference` and its own hook commits, **never I-0 or impl/core**.
-Reference has no Playwright, so copy this directory to the lane worktree and execute runs there.
+Wait for each run to end before stopping its server. REF is a clean checkout of the commit
+under test (its own `npm ci`); LANE is a worktree with Playwright and this directory; S is a
+scratch folder outside both. The pinned browser comes from `node verify/install-browser.mjs`.
 
 ```sh
-export L=/Users/adham/Developer/bme-impl/scratch/bin/bme-lock
-export S=/Users/adham/Developer/bme-impl/scratch/c-b
-export REF=/Users/adham/Developer/bme-impl/wt/c-b-ref
-export LANE=/Users/adham/Developer/bme-impl/wt/c-b
+export REF=/path/to/clean/reference/checkout
+export LANE=/path/to/this/worktree
+export S=/path/to/scratch/outside/both
 export COMMIT=$(git -C "$REF" rev-parse HEAD)
 
-# In clean REF, with its own npm ci already complete. S/vite.config.mjs spreads
-# REF/vite.config.ts and sets root=REF, a private cacheDir/outDir (HOWTO recipe).
+# In clean REF. S/vite.config.mjs spreads REF/vite.config.ts and sets root=REF and a private
+# cacheDir/outDir.
 cd "$REF"
-"$L" build -- sh -c './node_modules/.bin/vite build --config "$S/vite.config.mjs" --mode benchmark --outDir "$S/benchmark-dist" && node verify/core/C-15b/build-identity.mjs --root "$REF" --out-dir "$S/benchmark-dist" --mode benchmark'
-"$L" build -- sh -c './node_modules/.bin/vite build --config "$S/vite.config.mjs" --outDir "$S/production-dist" && node verify/core/C-15b/build-identity.mjs --root "$REF" --out-dir "$S/production-dist" --mode production'
+./node_modules/.bin/vite build --config "$S/vite.config.mjs" --mode benchmark --outDir "$S/benchmark-dist" && node verify/core/C-15b/build-identity.mjs --root "$REF" --out-dir "$S/benchmark-dist" --mode benchmark
+./node_modules/.bin/vite build --config "$S/vite.config.mjs" --outDir "$S/production-dist" && node verify/core/C-15b/build-identity.mjs --root "$REF" --out-dir "$S/production-dist" --mode production
 
-# In a separate hc terminal, serve benchmark-dist through the serve grant:
-"$L" serve -- ./node_modules/.bin/vite preview --config "$S/vite.config.mjs" --outDir "$S/benchmark-dist" --host 127.0.0.1 --port 6300 --strictPort
+# In a separate terminal, serve benchmark-dist:
+./node_modules/.bin/vite preview --config "$S/vite.config.mjs" --outDir "$S/benchmark-dist" --host 127.0.0.1 --port 6300 --strictPort
 
-# From LANE, after copying this directory there:
+# From LANE:
 cd "$LANE"
-"$L" run -- node verify/core/C-15b/run.mjs --mode benchmark --url http://localhost:6300/ --out-dir "$S/benchmark-dist" --expect-commit "$COMMIT" --result "$S/benchmark.json"
+node verify/core/C-15b/run.mjs --mode benchmark --url http://localhost:6300/ --out-dir "$S/benchmark-dist" --expect-commit "$COMMIT" --result "$S/benchmark.json"
 # Stop benchmark preview, serve production-dist on 6300 instead, then:
-"$L" run -- node verify/core/C-15b/run.mjs --mode production --url http://localhost:6300/ --out-dir "$S/production-dist" --expect-commit "$COMMIT" --result "$S/production.json"
-"$L" run -- node verify/core/C-15b/run.mjs --compare "$S/benchmark.json" "$S/production.json"
+node verify/core/C-15b/run.mjs --mode production --url http://localhost:6300/ --out-dir "$S/production-dist" --expect-commit "$COMMIT" --result "$S/production.json"
+node verify/core/C-15b/run.mjs --compare "$S/benchmark.json" "$S/production.json"
 
-# Stop preview. Start dev with an explicit positional root (record its hc ID):
+# Stop preview. Start dev with an explicit positional root, in the background, keeping its pid:
 cd "$REF"
-"$L" serve -- ./node_modules/.bin/vite "$REF" --config "$S/vite.config.mjs" --host 127.0.0.1 --port 6300 --strictPort
-# Then from LANE, DEV_ID being that live hc terminal:
-"$L" run -- node verify/core/C-15b/run.mjs --mode dev --url http://localhost:6300/ --source-root "$REF" --dev-server "$DEV_ID" --expect-commit "$COMMIT" --result "$S/dev.json"
+./node_modules/.bin/vite "$REF" --config "$S/vite.config.mjs" --host 127.0.0.1 --port 6300 --strictPort & DEV_PID=$!
+# Then from LANE:
+node verify/core/C-15b/run.mjs --mode dev --url http://localhost:6300/ --source-root "$REF" --dev-server "$DEV_PID" --expect-commit "$COMMIT" --result "$S/dev.json"
 ```
 
 Each clean arm exits 0. Product assertions exit 1 with a named `FAIL` reason (`P-anchor`, `P-hook`,

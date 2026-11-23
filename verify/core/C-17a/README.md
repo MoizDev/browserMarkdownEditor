@@ -9,7 +9,7 @@ JSON reports and the before screenshot; workspace screenshots remain for inspect
 
 - Unfixed clear + reload: light/font22/tab7 became dark/font16/tab4; a three-note
   session lost alpha/beta and its scroll record. Evidence:
-  `/Users/adham/Developer/bme-impl/scratch/c-b/C-17a/baseline/`.
+  `C-17a/baseline/` in the scratch folder.
 - Production candidate: nondefault settings, all three notes and gamma's exact
   scroll record survive clear + reload. Another window clears while the live
   Settings panel changes font22→23; the newer value survives recovery and reload.
@@ -20,9 +20,8 @@ JSON reports and the before screenshot; workspace screenshots remain for inspect
   `Settings restored after another tab reset them` once, then null.
 
 Passing reports: `scratch/c-b/C-17a/sanity-reload/report.json` (production light)
-and `scratch/c-b/C-17a/dev-notice/report.json` (dev dark), under the absolute
-`/Users/adham/Developer/bme-impl/` scratch root. Both themes' `after.png` were inspected.
-Final typecheck/lint pass: hc terminal `t382`; production build: `t362`.
+and `scratch/c-b/C-17a/dev-notice/report.json` (dev dark), in the scratch folder.
+Both themes' `after.png` were inspected. Final typecheck/lint and production build passed.
 
 The initial expanded run exposed a harness assumption: activating another headless
 page need not hide this page. The removal arm now uses real reloads and observes

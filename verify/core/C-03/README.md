@@ -8,20 +8,18 @@ an entry; no IndexedDB shim. Named OPFS vaults replace only the picker and
 permission grants. Fixture/external writes are excluded from app counters.
 
 Build an unchanged App/context source snapshot in an isolated source worktree
-with its own install and private Vite config, under the build lock:
+with its own install and private Vite config:
 
 ```sh
-L=/Users/adham/Developer/bme-impl/scratch/bin/bme-lock
-"$L" build -- node verify/core/C-03/build.mjs production /path/to/private-vite.mjs /path/to/unfixed-dist
+node verify/core/C-03/build.mjs production /path/to/private-vite.mjs /path/to/unfixed-dist
 ```
 
-Serve that output using `L serve -- vite preview --strictPort` on this seat's
-port, immediately around the browser run (never leave it up while queued for a
-run). The identity helper binds the source commit/tree/mode to every output
+Serve that output using `vite preview --strictPort` on a port you chose,
+immediately around the browser run. The identity helper binds the source commit/tree/mode to every output
 file hash; the browser asserts the HTML and every actual script response hash.
 
 ```sh
-"$L" run -- node verify/core/C-03/reproduce.mjs \
+node verify/core/C-03/reproduce.mjs \
   http://localhost:6285/ /path/to/artifacts /path/to/unfixed-dist.identity.json
 ```
 

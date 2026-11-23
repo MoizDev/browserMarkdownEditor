@@ -58,42 +58,41 @@ build's `write-identity.mjs` output sits beside its outDir and records commit,
 clean source (or mutant patch SHA-256), mode and every output file's SHA-256. The
 browser requires the expected commit/patch and binds every scanned served body
 to that inventory. D has no outDir: it checks the clean dev worktree's Git HEAD,
-and checks its supervised hc program's explicit positional Vite root, cwd and
-strict port match the requested worktree and URL; observed response hashes are
+and checks that its live dev server process (`--dev-pid`) has an explicit positional
+Vite root, cwd and strict port that match the requested worktree and URL; observed response hashes are
 recorded. There is no app diagnostic route. These are functional OPFS gates, not
 native-disk/FSEvents or timing sign-off. Ring wraparound and the full layout/input
 catalogue are left to later graph gates.
 
 ## Build and run
 
-Obey `scratch/HOWTO.md`: own installs, private cache, pinned browser, every build/
-static/browser/serve operation under bme-lock, slow commands in hc terminals.
-Reference has no Playwright dependency. Copy `graph-hooks.mjs` into the lane's
+Own installs, private cache outside the clone, the pinned browser
+(`node verify/install-browser.mjs`). Reference has no Playwright dependency. Copy `graph-hooks.mjs` into the lane's
 same `verify/core/C-15d/` path, resolving the lane's I-0 driver; do not merge I-0
 into reference. Static gates likewise use unchanged mirrored hook source in lane.
 
-Set `W=/Users/adham/Developer/bme-impl`, `L=$W/scratch/bin/bme-lock`,
-`REF=$W/wt/c-e-ref`, `S=$W/scratch/c-e/c15-v2`, and `COMMIT=$(git -C "$REF" rev-parse HEAD)`.
+Set `REF` to a clean reference checkout, `S` to a scratch folder outside it, and
+`COMMIT=$(git -C "$REF" rev-parse HEAD)`.
 Create a scratch Vite config importing the reference config, with `root: REF`, a
 private `cacheDir` and scratch outDir. From the CLEAN reference worktree, build
-both modes and write identity immediately in the same locked command:
+both modes and write identity immediately in the same command:
 
 ```sh
-$L build -- bash -c './node_modules/.bin/vite build --config <cfg> --outDir <P> && node verify/core/C-15d/write-identity.mjs --output=<P> --mode=production'
-$L build -- bash -c './node_modules/.bin/vite build --config <cfg> --outDir <B> --mode benchmark && node verify/core/C-15d/write-identity.mjs --output=<B> --mode=benchmark'
+./node_modules/.bin/vite build --config <cfg> --outDir <P> && node verify/core/C-15d/write-identity.mjs --output=<P> --mode=production
+./node_modules/.bin/vite build --config <cfg> --outDir <B> --mode benchmark && node verify/core/C-15d/write-identity.mjs --output=<B> --mode=benchmark
 ```
 
-Serve P/B at 6360/6361 with `$L serve -- vite preview --config <cfg> --outDir <P|B>
---port <port> --strictPort`. Start D in an hc terminal, keeping its returned ID:
-`$L serve -- ./node_modules/.bin/vite "$REF" --config <cfg> --port 6362 --strictPort`.
+Serve P/B at 6360/6361 with `vite preview --config <cfg> --outDir <P|B>
+--port <port> --strictPort`. Start D in the background, keeping its pid:
+`./node_modules/.bin/vite "$REF" --config <cfg> --port 6362 --strictPort & DEV_PID=$!`.
 The explicit positional root is required for the dev identity assertion. From lane:
 
 ```sh
-$L run -- node verify/core/C-15d/graph-hooks.mjs \
+node verify/core/C-15d/graph-hooks.mjs \
   --commit=$COMMIT \
   --prod-url=http://localhost:6360/ --prod-identity=$S/production.identity.json \
   --bench-url=http://localhost:6361/ --bench-identity=$S/benchmark.identity.json \
-  --dev-url=http://localhost:6362/ --dev-root=$REF --dev-terminal=<hc-ID> \
+  --dev-url=http://localhost:6362/ --dev-root=$REF --dev-pid=$DEV_PID \
   --out=$S/clean
 ```
 

@@ -1,15 +1,16 @@
 import { chromium } from 'playwright';
 import assert from 'node:assert/strict';
+import { pinnedChrome, pinnedChromePath } from '../../lib/paths.mjs';
 
 export const args = Object.fromEntries(process.argv.slice(2).map(arg => {
     const at = arg.indexOf('=');
     return [arg.slice(2, at), arg.slice(at + 1)];
 }));
 export const url = args.url ?? 'http://localhost:6364/';
-export const chrome = '/Users/adham/Developer/bme-impl/scratch/browsers/157.0.8103.39/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing';
+export const chrome = pinnedChromePath();
 
 export async function launch(files) {
-    const browser = await chromium.launch({ executablePath: chrome, headless: true });
+    const browser = await chromium.launch({ executablePath: await pinnedChrome(), headless: true });
     try { return await openVault(browser, files); }
     catch (error) { await browser.close(); throw error; }
 }

@@ -6,6 +6,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { chromium } from 'playwright';
 import { fixtures, partialFixture } from './fixtures.mjs';
+import { pinnedChrome, scratchDir } from '../../lib/paths.mjs';
 
 const args = Object.fromEntries(process.argv.slice(2).map(arg => {
     const split = arg.indexOf('=');
@@ -14,7 +15,7 @@ const args = Object.fromEntries(process.argv.slice(2).map(arg => {
 const companion = args.companion === 'true';
 const theme = args.theme || 'dark';
 const cases = companion ? [partialFixture()] : fixtures;
-const output = args.out || '/Users/adham/Developer/bme-impl/scratch/c-d/C-13/table';
+const output = args.out || scratchDir('C-13', 'table');
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const report = { scope: companion ? 'benchmark companion: initially partial parse' : 'production primary',
     url: args.url, browser: null, playwright: createRequire(import.meta.url)('playwright/package.json').version,
@@ -93,7 +94,7 @@ try {
         assert.ok(args.patch, 'mutant identity requires its patch');
         assert.equal(sha256(await readFile(args.patch)), report.identity.tree.patchSha256, 'mutant patch identity');
     }
-    const executablePath = (await readFile('/Users/adham/Developer/bme-impl/scratch/browsers/CHROME', 'utf8')).trim();
+    const executablePath = process.env.BME_CHROME_PATH ?? await pinnedChrome();
     browser = await chromium.launch({ executablePath, headless: true });
     report.browser = browser.version();
     assert.equal(report.browser, '157.0.8103.39', 'browser identity');

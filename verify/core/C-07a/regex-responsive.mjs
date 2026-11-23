@@ -2,12 +2,13 @@ import assert from 'node:assert/strict';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { chromium } from 'playwright';
+import { pinnedChrome, scratchDir } from '../../lib/paths.mjs';
 
 const origin = process.env.BME_ORIGIN ?? 'http://localhost:6320';
-const output = process.env.BME_OUTPUT ?? '/Users/adham/Developer/bme-impl/scratch/c-c/C-07a';
+const output = process.env.BME_OUTPUT ?? scratchDir('C-07a');
 const mode = process.env.BME_CASE ?? 'all';
 const pin = JSON.parse(await readFile(new URL('../../browser-pin.json', import.meta.url), 'utf8'));
-const chrome = (await readFile('/Users/adham/Developer/bme-impl/scratch/browsers/CHROME', 'utf8')).trim();
+const chrome = process.env.BME_CHROME_PATH ?? await pinnedChrome();
 await mkdir(output, { recursive: true });
 
 async function until(condition, description, ms = 10000) {

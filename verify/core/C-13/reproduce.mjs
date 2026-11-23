@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { chromium } from 'playwright';
+import { pinnedChrome, scratchDir } from '../../lib/paths.mjs';
 
-const [url = 'http://localhost:6340/', output = '/Users/adham/Developer/bme-impl/scratch/c-d/C-13/unfixed'] = process.argv.slice(2);
+const [url = 'http://localhost:6340/', output = scratchDir('C-13', 'unfixed')] = process.argv.slice(2);
 const driver = createRequire(import.meta.url)('playwright/package.json').version;
 const fixture = (name, fence, lang, body, after) => ({
     name, fence, body, diagram: lang === 'mermaid',
@@ -19,7 +20,7 @@ const fixtures = [
 const failures = [], rows = [], errors = [];
 const check = (value, message) => { if (!value) failures.push(`FAIL E01 ${message}`); };
 await mkdir(output, { recursive: true });
-const executablePath = (await readFile('/Users/adham/Developer/bme-impl/scratch/browsers/CHROME', 'utf8')).trim();
+const executablePath = process.env.BME_CHROME_PATH ?? await pinnedChrome();
 const browser = await chromium.launch({ headless: true, executablePath });
 const report = { browser: browser.version(), playwright: driver, url, rows, failures, pageErrors: errors };
 let context;

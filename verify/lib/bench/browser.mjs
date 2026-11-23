@@ -1,19 +1,24 @@
 // The only browser/toolbox adapter. Timed sessions never attach paused targets.
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
-import { readFile, readdir, mkdir, mkdtemp, rm, stat } from 'node:fs/promises';
-import { join, resolve, extname, relative } from 'node:path';
+import { readFile, readdir, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { dirname, join, resolve, extname, relative, sep } from 'node:path';
 import { createRequire } from 'node:module';
-import { fileURLToPath } from 'node:url';
 import { processMemory } from './machine.mjs';
 import { scratch } from './lock.mjs';
+import { pin, pinnedChrome, pinnedChromePath } from '../paths.mjs';
 import { beginBrowserLaunch, epochMicroseconds } from './benchProcesses.mjs';
 import { median } from './stats.mjs';
 import { noteSentinel as sentinel, noteFixtureText, noteOpenDefinition,
     installNoteObservation, prepareNoteOpen, dispatchNoteOpen, noteDefinition, noteOpenLatency } from './noteOpenMetric.mjs';
-const pin = JSON.parse(await readFile(fileURLToPath(new URL('../../browser-pin.json', import.meta.url)), 'utf8'));
 const chromeVersion = pin.version;
-const chromePath = join(scratch, 'browsers', chromeVersion, pin.executable);
+const chromePath = pinnedChromePath();
+// The folder the pinned browser's own processes (Crashpad included) run from: above the unpacked
+// archive's own folder, wherever the browser was installed.
+const pinnedInstall = (() => {
+    const tail = Object.values(pin.platforms).map(entry => join(entry.executable)).find(tail => chromePath.endsWith(`${sep}${tail}`));
+    return tail ? chromePath.slice(0, -tail.length - 1) : dirname(chromePath);
+})();
 const vaultName = 'benchmark-vault';
 const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json',
     '.wasm': 'application/wasm', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.png': 'image/png' };
@@ -77,14 +82,14 @@ async function pinnedDriver() {
     const require = createRequire(import.meta.url);
     const driverVersion = JSON.parse(await readFile(require.resolve('playwright/package.json'), 'utf8')).version;
     if (driverVersion !== '1.63.0') throw new Error(`Expected pinned Playwright1.63.0, got ${driverVersion}`);
-    await stat(chromePath);
+    await pinnedChrome();
     return { ...await import('playwright'), driverVersion };
 }
 export async function openPreparedBrowser({ profile, url, contextOptions = {} }) {
     if (!resolve(profile).startsWith(`${scratch}/`) || !/^http:\/\/(?:127\.0\.0\.1|localhost):\d+$/.test(url)) throw new Error('Prepared browser requires scratch profile and loopback server');
     if (['executablePath', 'channel', 'proxy', 'headless', 'args'].some(key => key in contextOptions)) throw new Error('Do not override the pinned browser/proxy/launch flags');
     const { chromium, driverVersion } = await pinnedDriver();
-    const launch = beginBrowserLaunch({ pinnedInstall: join(scratch, 'browsers', chromeVersion), profile });
+    const launch = beginBrowserLaunch({ pinnedInstall, profile });
     let context;
     try {
         context = await chromium.launchPersistentContext(profile, { viewport: { width: 1280, height: 800 },

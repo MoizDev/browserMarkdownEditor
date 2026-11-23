@@ -8,24 +8,25 @@ It checks unchanged PDF bytes and zero uncaught page errors, and captures the vi
 
 ## Run
 
-Prepare separately from browser execution, with the lane's shared-machine grants. Run from the
-worktree. The shared toolbox and fixture helpers are now in-tree: no scratch Node resolver.
+Install the pinned browser once (`node verify/install-browser.mjs`). Generate the fixtures into the
+scratch folder, prepare the build (P-07a's preparation, shared), then run each theme. Defaults:
+`BME_SCRATCH` = the scratch folder's `P-07a/<mode>`, `BME_FIXTURES` = `P-07b1/book`,
+`BME_ROLE_FIXTURES` (portfolio arm) = `P-07b1/roles`, `BME_OUT` = `P-07b1/result`; set them to move
+any of these. `BME_SCRATCH`/`BME_OUT` below are examples.
 
 ```sh
-bme-lock build -- env BME_SCRATCH=/absolute/scratch/app BME_MODE=production \
-  node verify/pdf/P-07a/prepare.mjs
-bme-lock run -- env BME_SCRATCH=/absolute/scratch/app BME_OUT=/absolute/scratch/dark \
-  BME_FIXTURES=/absolute/GEN-18-876-output BME_THEME=dark BME_DPR=1 \
-  node verify/pdf/P-07b1/find.mjs
-bme-lock run -- env BME_SCRATCH=/absolute/scratch/app BME_OUT=/absolute/scratch/light \
-  BME_FIXTURES=/absolute/GEN-18-876-output BME_THEME=light BME_DPR=1 \
-  node verify/pdf/P-07b1/find.mjs
+node verify/fixtures/pdf/generators/unique-textbook.mjs --out "$S/book" --seed 1346651697 --pages 876
+BME_SCRATCH="$S/app" BME_MODE=production node verify/pdf/P-07a/prepare.mjs
+for theme in dark light; do
+  BME_SCRATCH="$S/app" BME_FIXTURES="$S/book" BME_OUT="$S/$theme" BME_THEME=$theme BME_DPR=1 \
+    node verify/pdf/P-07b1/find.mjs
+done
 ```
 
-`BME_PORT` must be 6400–6419 (default 6404); theme is dark/light and DPR is 1/2. The script owns
-server startup and cleanup in `finally`. Generated fixture bytes stay in scratch; PDF and oracle
-hashes/lengths must match their admitted manifest records. Results include raw served-body identity,
-the actual browser/driver pin, fixture records, live range observations and worker requests.
+`BME_PORT` is any free port you choose (default 6404); theme is dark/light and DPR is 1/2. The
+script owns server startup and cleanup in `finally`. Generated fixture bytes stay in scratch; PDF and
+oracle hashes/lengths must match their admitted manifest records. Results include raw served-body
+identity, the actual browser/driver pin, fixture records, live range observations and worker requests.
 
 The pre-change baseline failed the named Original Meta+F witness: no app input and an uncancelled
 trusted key. During development, an observer using `queueMicrotask` sampled cancellation *before*
@@ -35,7 +36,7 @@ The corrected baseline still fails, while the app-owned input and interception p
 
 ## Scope and deferred review
 
-Under charter §0, this package's merge sanity check is clean typecheck/lint plus the real-app run,
+This package's merge sanity check is clean typecheck/lint plus the real-app run,
 with light/dark screenshots inspected. No more mutant, harness-fault or identity-proof reruns are
 being built for review. Existing baseline/candidate evidence is retained.
 

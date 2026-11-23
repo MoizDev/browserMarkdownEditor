@@ -25,16 +25,13 @@ Mermaid and malformed/unclosed Mermaid. Source prefixes inside container bodies 
 preserved in Copy: this fixes fence-row bounds, not code normalization.
 
 ```sh
-W=/Users/adham/Developer/bme-impl
-L=$W/scratch/bin/bme-lock
-# In wt/c-d; all builds/installs/static/serve/run commands need the HOWTO lock.
-$L run -- node verify/core/C-13/fences.mjs --url=http://localhost:6340/ --identity=$W/scratch/c-d/C-13/head.identity.json --out=$W/scratch/c-d/C-13/head-table
-$L run -- node verify/core/C-13/fences.mjs --url=http://localhost:6341/ --identity=$W/scratch/c-d/C-13/candidate.identity.json --out=$W/scratch/c-d/C-13/candidate-table --reference=$W/scratch/c-d/C-13/head-table
+# S is a scratch folder outside the clone; the pinned browser comes from `node verify/install-browser.mjs`.
+node verify/core/C-13/fences.mjs --url=http://localhost:6340/ --identity=$S/C-13/head.identity.json --out=$S/C-13/head-table
+node verify/core/C-13/fences.mjs --url=http://localhost:6341/ --identity=$S/C-13/candidate.identity.json --out=$S/C-13/candidate-table --reference=$S/C-13/head-table
 ```
 
-Run each slow command in an hc terminal. Start the matching `vite preview` immediately before the
-browser through `bme-lock serve`, with `--strictPort`, and stop it immediately afterward. Scratch
-config `W/scratch/c-d/C-13/vite.config.mjs` roots at the lane, has a private cache and chooses outDir
+Start the matching `vite preview` immediately before the browser, with `--strictPort`, and stop it
+immediately afterward. Scratch config `$S/C-13/vite.config.mjs` roots at the worktree, has a private cache and chooses outDir
 from `BME_OUT`. Build directly with Vite, never npm run build/dev. The baseline outDir is retained
 unchanged after the fix. Each build writes a sidecar identity with the existing
 `verify/core/C-15d/write-identity.mjs`; every fetched script body is hash-matched through actual

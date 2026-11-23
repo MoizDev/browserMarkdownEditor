@@ -2,11 +2,12 @@ import { spawnSync } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { scratchRoot } from '../../lib/paths.mjs';
 
 const [kind, baseArg, fixtureArg, outArg] = process.argv.slice(2);
 if (process.argv.length !== 6 || !['hyphen', 'abort'].includes(kind)) throw new Error('Usage: mutant-proof.mjs <hyphen|abort> <prepared mutant base> <fixture dir> <fresh output dir>');
 const base = resolve(baseArg), out = resolve(outArg), fixtures = resolve(fixtureArg);
-if (!base.startsWith('/Users/adham/Developer/bme-impl/scratch/p-b/') || !out.startsWith('/Users/adham/Developer/bme-impl/scratch/p-b/')) throw new Error('Use this lane scratch');
+if (!base.startsWith(`${scratchRoot}/`) || !out.startsWith(`${scratchRoot}/`)) throw new Error(`Keep the mutant and its proof under the scratch folder ${scratchRoot}`);
 await mkdir(out); // Stale result JSON must never kill a mutant.
 const cases = [];
 for (const theme of ['dark', 'light']) for (const dpr of [1, 2]) {

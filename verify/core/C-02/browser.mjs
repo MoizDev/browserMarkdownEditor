@@ -1,16 +1,16 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { chromium } from 'playwright';
+import { pinnedChrome } from '../../lib/paths.mjs';
 
 export const args = process.argv.slice(2);
 export const option = (name, fallback) => args.includes(name) ? args[args.indexOf(name) + 1] : fallback;
-const chrome = '/Users/adham/Developer/bme-impl/scratch/browsers/157.0.8103.39/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing';
 export const url = option('--url', 'http://localhost:6301/');
 export const driver = createRequire(import.meta.url)('playwright/package.json').version;
 
 export async function launch() {
     assert.equal(driver, '1.63.0', 'use the pinned driver');
-    const browser = await chromium.launch({ headless: true, executablePath: chrome });
+    const browser = await chromium.launch({ headless: true, executablePath: await pinnedChrome() });
     try {
     assert.equal(browser.version(), '157.0.8103.39', 'use the pinned browser');
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, locale: 'en-US' });

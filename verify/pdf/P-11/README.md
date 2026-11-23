@@ -6,16 +6,15 @@ app modules, product hooks or synthetic input events are used. All external requ
 
 ## Run
 
-Read the run's scratch `HOWTO.md`; every install/build/browser/static command uses `bme-lock` and
-long commands run in an `hc` terminal. Use this worktree's pinned Playwright 1.63.0 and Chrome for
-Testing 157.0.8103.39, never the installed Chrome or bundled Chromium.
+Use this worktree's pinned Playwright 1.63.0 and Chrome for Testing 157.0.8103.39 (installed once
+by `node verify/install-browser.mjs`; `CHROME` overrides the path), never the installed Chrome or
+bundled Chromium.
 
 ```sh
 node verify/fixtures/pdf/generators/selection-page.mjs --out <fresh-scratch-fixtures> --seed 1346651697
-# Build with the production scratch Vite config, then serve that output on your seat's port.
+# Build with a scratch Vite config (outDir outside the repo), then preview it on a free port.
 BUILD_WORKTREE='<built source worktree>' BUILD_DIST='<its production outDir>' \
-CHROME='<pinned Chrome executable>' \
-  <bme-lock> run -- node verify/pdf/P-11/selection.mjs \
+  node verify/pdf/P-11/selection.mjs \
   http://localhost:6480 <scratch-fixtures> <scratch-results> verify all
 ```
 
@@ -54,8 +53,7 @@ Classic Original's documented native right-click menu is unchanged: a real right
 
 ## Mutants — real source builds, never a response-time logic patch
 
-Create **one** detached scratch worktree at the fix commit and run its own `npm ci` once through the
-build semaphore. For each gate, restore **only this disposable worktree**, then:
+Create **one** detached scratch worktree at the fix commit and run its own `npm ci` once. For each gate, restore **only this disposable worktree**, then:
 
 ```sh
 git -C <scratch-mutant-tree> checkout -- .

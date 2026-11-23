@@ -7,15 +7,16 @@ import { installHelperStandIn, toolText } from '../lib/helper.mjs';
 import { installCounters, installWorkerTargets } from '../lib/counters.mjs';
 import { buildIdentity, bindServedBodies } from '../lib/substitute.mjs';
 import { installVault, seedVault } from '../lib/vault.mjs';
+import { pinnedChrome, scratchDir } from '../../lib/paths.mjs';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
-const scratch = process.env.BME_SCRATCH ?? '/Users/adham/Developer/bme-impl/scratch/c-c/c07b';
+const scratch = process.env.BME_SCRATCH ?? scratchDir('C-07');
 const origin = new URL(process.env.BME_ORIGIN ?? 'http://localhost:6320').origin;
 const dist = process.env.BME_DIST ?? resolve(scratch, 'dist/benchmark');
 const output = resolve(scratch, 'backoff-repro');
 await mkdir(output, { recursive: true });
 const pin = JSON.parse(await readFile(new URL('../../browser-pin.json', import.meta.url), 'utf8'));
-const chrome = (await readFile('/Users/adham/Developer/bme-impl/scratch/browsers/CHROME', 'utf8')).trim();
+const chrome = process.env.BME_CHROME_PATH ?? await pinnedChrome();
 const prelude = await readFile(new URL('./faults/crash-after-hello.mjs', import.meta.url), 'utf8');
 const identity = await buildIdentity({ worktree: root, distDir: dist });
 const events = [];

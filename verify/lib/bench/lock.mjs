@@ -1,46 +1,36 @@
 import { mkdir, open, readFile, unlink, appendFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-const exec = promisify(execFile);
-export const scratch = process.env.BME_SCRATCH ?? '/Users/adham/Developer/bme-impl/scratch';
-export const lockRoot = process.env.BME_LOCK_DIR ?? join(scratch, 'locks');
+import { scratchRoot } from '../paths.mjs';
+export const scratch = scratchRoot;
+export const lockRoot = join(scratch, 'locks');
 const lockPath = join(lockRoot, 'bench.lock');
-export async function lockState() {
-    return JSON.parse(await readFile(join(lockRoot, 'state.json'), 'utf8'));
-}
 function alive(pid) {
     if (!Number.isSafeInteger(pid) || pid < 1) return false;
     try { process.kill(pid, 0); return true; } catch (error) { return error.code !== 'ESRCH'; }
 }
-async function ancestors() {
-    const result = new Set([process.pid]);
-    let pid = process.ppid;
-    while (pid > 1 && !result.has(pid)) {
-        result.add(pid);
-        const { stdout } = await exec('/bin/ps', ['-o', 'ppid=', '-p', String(pid)]);
-        pid = Number(stdout.trim());
-    }
-    return result;
+// An accepted timing is only as good as the quiet machine under it, and only the person running
+// it can promise that: they declare how long the machine stays otherwise idle, from the moment
+// the run starts. Fixed once per process, so every check compares against the same window.
+let declaredWindow;
+function timingWindow() {
+    if (declaredWindow) return declaredWindow;
+    const minutes = Number(process.env.BME_BENCH_WINDOW_MINUTES);
+    if (!(minutes > 0)) throw new Error('Accepted timing needs a declared quiet window: set BME_BENCH_WINDOW_MINUTES to how many minutes this machine will run nothing else');
+    declaredWindow = { since: new Date().toTimeString().slice(0, 8), minutes };
+    return declaredWindow;
 }
 export async function assertGrant(mode) {
-    const state = await lockState(), parents = await ancestors();
     const cls = mode === 'accepted' ? 'bench' : 'run';
-    const grant = state.holders.find(h => h.cls === cls && parents.has(h.pid) && alive(h.pid));
-    if (!grant) throw new Error(`Run this script through bme-lock ${cls}; no ancestor holds that grant`);
-    if (mode === 'accepted') {
-        if (!state.window) throw new Error('Accepted timing requires an integrator-declared window');
-        const others = state.holders.filter(h => h.id !== grant.id && alive(h.pid));
-        if (others.length) throw new Error(`Timing window still has other holders: ${JSON.stringify(others)}`);
-        // The integrator's current state has a time-of-day, not an expiry timestamp.
-        // Refuse expired grants too; crossing midnight is handled as the preceding day.
-        const [hours, minutes, seconds] = state.window.since.split(':').map(Number);
+    const window = mode === 'accepted' ? timingWindow() : null;
+    if (window) {
+        // The window has a time-of-day, not an expiry timestamp; crossing midnight is the preceding day.
+        const [hours, minutes, seconds] = window.since.split(':').map(Number);
         const start = new Date(); start.setHours(hours, minutes, seconds, 0);
         if (start.getTime() > Date.now()) start.setDate(start.getDate() - 1);
-        if (!(Date.now() - start.getTime() < state.window.minutes * 60_000)) throw new Error('Timing window expired');
+        if (!(Date.now() - start.getTime() < window.minutes * 60_000)) throw new Error('Timing window expired');
     }
-    return { grant, window: state.window };
+    return { grant: { pid: process.pid, cls }, window };
 }
 export async function reclaimBenchLock(token, cause) {
     if (!token || !cause) throw new Error('Reclaim requires the exact token and a recorded cause');
@@ -64,7 +54,7 @@ export async function reclaimBenchLock(token, cause) {
 export async function acquireBenchLock(mode) {
     const grant = await assertGrant(mode);
     await mkdir(dirname(lockPath), { recursive: true });
-    const holder = { pid: process.pid, parentPid: process.ppid, holder: process.env.HC_TERMINAL_ID ?? 'unknown',
+    const holder = { pid: process.pid, parentPid: process.ppid,
         started: new Date().toISOString(), token: randomUUID(), mode, grant };
     let fd;
     try { fd = await open(lockPath, 'wx', 0o600); }
@@ -75,11 +65,13 @@ export async function acquireBenchLock(mode) {
         catch { throw new Error(`Unreadable/partially written lock ${lockPath}; refuse to steal it`); }
         // A dead PID is stale, not free. Automatic read/unlink/recreate permits two
         // reclaimers to unlink a new holder's lock. Refuse and request manual recovery.
-        throw new Error(`${alive(previous.pid) ? 'Held' : 'STALE (dead PID; use explicit token-checked v-c reclaim)'}: ${lockPath}: ${JSON.stringify(previous)}`);
+        throw new Error(`${alive(previous.pid) ? 'Held' : 'STALE (dead PID; reclaim it with `node verify/bench/v-c.mjs reclaim <token> <cause>`)'}: ${lockPath}: ${JSON.stringify(previous)}`);
     }
     try { await fd.writeFile(JSON.stringify(holder, null, 2)); await fd.sync(); }
     catch (error) { await fd.close(); await unlink(lockPath); throw error; }
     await fd.close();
+    // Inherited by child processes too: the functional-only target observer refuses a timed run.
+    process.env.BME_TIMED_RUN = holder.token;
     return { holder, async assertHeld() {
         try {
             const current = JSON.parse(await readFile(lockPath, 'utf8'));
@@ -89,11 +81,12 @@ export async function acquireBenchLock(mode) {
                 throw new Error('Timing window changed mid-run');
             }
         } catch (error) {
-            error.invalidCause = `machine grant/window invalid: ${error.message}`; throw error;
+            error.invalidCause = `bench lock/window invalid: ${error.message}`; throw error;
         }
     }, async release() {
         const current = JSON.parse(await readFile(lockPath, 'utf8'));
         if (current.token !== holder.token) throw new Error('Refusing to release another benchmark holder');
         await unlink(lockPath);
+        delete process.env.BME_TIMED_RUN;
     } };
 }

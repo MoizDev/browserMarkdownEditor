@@ -3,19 +3,21 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { prepareApp } from '../../lib/serve.mjs';
+import { scratchRoot } from '../../lib/paths.mjs';
 
 const kind = process.argv[2];
 if (process.argv.length !== 4 || !['hyphen', 'abort'].includes(kind)) throw new Error('Usage: mutant.mjs <hyphen|abort> <fresh scratch root>');
 const base = resolve(process.argv[3]), sourceRoot = resolve('.');
-if (!base.startsWith('/Users/adham/Developer/bme-impl/scratch/p-b/')) throw new Error('Mutants stay in this lane scratch');
+if (!base.startsWith(`${scratchRoot}/`)) throw new Error(`Mutants stay under the scratch folder ${scratchRoot}`);
 await mkdir(base); // A stale source/build is not a mutant witness.
 const root = resolve(base, 'source'), scratch = resolve(base, 'build');
 await mkdir(root);
 for (const file of ['src', 'shared', 'public', 'package.json', 'package-lock.json', 'tsconfig.json', 'vite.config.ts', 'index.html', 'THIRD_PARTY_NOTICES']) {
     await cp(resolve(file), resolve(root, file), { recursive: true });
 }
-// Private APFS clone of this worktree's own install; never shared/hardlinked.
-execFileSync('/bin/cp', ['-cR', resolve('node_modules'), resolve(root, 'node_modules')]);
+// A private copy of this worktree's own install (an APFS clone on macOS); never shared/hardlinked.
+if (process.platform === 'darwin') execFileSync('/bin/cp', ['-cR', resolve('node_modules'), resolve(root, 'node_modules')]);
+else await cp(resolve('node_modules'), resolve(root, 'node_modules'), { recursive: true, verbatimSymlinks: true });
 const changes = [];
 async function patch(file, before, after) {
     const path = resolve(root, file), text = await readFile(path, 'utf8');

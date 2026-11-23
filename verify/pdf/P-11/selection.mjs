@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { loadIdentityToolbox } from '../lib/identityToolbox.mjs';
+import { pinnedChrome } from '../../lib/paths.mjs';
 const { buildIdentity, bindServedBodies, toolboxIdentity } = await loadIdentityToolbox();
 
 // Browser-only gate: no app-module imports, no product hooks, no synthetic
@@ -10,8 +11,8 @@ const { buildIdentity, bindServedBodies, toolboxIdentity } = await loadIdentityT
 const { chromium } = await import('playwright');
 const [url, fixtureDir, outDir, mode = 'verify', gate = 'all'] = process.argv.slice(2);
 const mutant = process.env.BUILD_MUTANT ?? 'none';
-if (!url || !fixtureDir || !outDir || !process.env.BUILD_WORKTREE || !process.env.BUILD_DIST || !process.env.CHROME || process.argv.length > 7 || !['record', 'verify'].includes(mode) || !['all', 'R3a', 'R3b', 'R3c'].includes(gate) || !['none', 'R3a', 'R3b', 'R3c'].includes(mutant) || (mutant !== 'none' && gate !== 'all' && gate !== mutant)) {
-  throw new Error('URL fixtureDir outputDir [record|verify] [all|R3a|R3b|R3c]; set CHROME, BUILD_WORKTREE, BUILD_DIST, optional BUILD_MUTANT=R3a|R3b|R3c');
+if (!url || !fixtureDir || !outDir || !process.env.BUILD_WORKTREE || !process.env.BUILD_DIST || process.argv.length > 7 || !['record', 'verify'].includes(mode) || !['all', 'R3a', 'R3b', 'R3c'].includes(gate) || !['none', 'R3a', 'R3b', 'R3c'].includes(mutant) || (mutant !== 'none' && gate !== 'all' && gate !== mutant)) {
+  throw new Error('URL fixtureDir outputDir [record|verify] [all|R3a|R3b|R3c]; set BUILD_WORKTREE, BUILD_DIST, optional BUILD_MUTANT=R3a|R3b|R3c (CHROME overrides the pinned browser)');
 }
 const patch = mutant === 'none' ? undefined : await readFile(resolve(process.env.BUILD_WORKTREE, `verify/pdf/P-11/mutants/${mutant}.patch`));
 const identity = await buildIdentity({ worktree: process.env.BUILD_WORKTREE, distDir: process.env.BUILD_DIST, patch });
@@ -36,7 +37,7 @@ if (fixtureEntries.length !== 3) throw new Error('Missing P-11 fixture identitie
 const oracle = JSON.parse(await readFile(resolve(fixtureDir, 'selection-geometry.json'), 'utf8'));
 const driver = createRequire(import.meta.url)('playwright/package.json').version;
 if (driver !== '1.63.0') throw new Error(`Wrong Playwright: ${driver}`);
-const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROME });
+const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROME ?? await pinnedChrome() });
 const report = { build: identity, toolbox: toolboxIdentity, mutant, requiredBodies, browser: browser.version(), driver, mode, gate, fixtures: fixtureEntries, cases: [], failures: [] };
 const requiredArms = gate === 'all' ? ['R3a', 'R3b', 'R3c'] : [gate];
 const normal = text => text.normalize('NFKC').replace(/\s+/g, ' ').trim();

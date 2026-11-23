@@ -8,35 +8,35 @@ fix packages; none is claimed proved by this package.
 
 ## Run
 
-Read the run's `scratch/HOWTO.md` first. All installs, builds, servers, browsers and static checks
-use `scratch/bin/bme-lock`. Use the pinned Playwright dependency and Chrome from
-`verify/browser-pin.json`; never the npx cache, bundled Chromium or auto-updating installed Chrome.
+Use the pinned Playwright dependency and the Chrome for Testing from `verify/browser-pin.json`
+(`node verify/install-browser.mjs` once per machine); never the npx cache, bundled Chromium or
+auto-updating installed Chrome. Scratch defaults to `w-a/` under the toolbox scratch root
+(`BME_SCRATCH`, else a per-clone folder in the OS temp dir); `WA_SCRATCH` moves it.
 
-1. Export `impl/reference` to an owned scratch source directory (`git archive`), install that
-   source's dependencies through the build lock, and build with an owned scratch Vite config.
+1. Export the reference commit to a scratch source directory (`git archive`), install that
+   source's dependencies, and build with a scratch Vite config.
    It imports that export's Vite config, uses that export as `root`, and puts `cacheDir`/`outDir`
    under scratch. Never mutate `src/`, shared config or the reference branch.
 2. Write `$WA_SCRATCH/build.json` containing `commit`, `ref`, `mode` and `indexSha256` (the actual
-   built index's SHA-256), then serve that build at an owned loopback port through the serve lock.
-3. From this worktree, e.g.:
+   built index's SHA-256), then serve that build on a loopback port you choose (`--strictPort`).
+3. From the clone, e.g.:
 
    ```sh
-   L=/Users/adham/Developer/bme-impl/scratch/bin/bme-lock
-   REPEAT=1 BASE_URL=http://localhost:6500/ "$L" run -w 2 -- node verify/whiteboard/w-a/WB-D21.mjs
-   REPEAT=2 BASE_URL=http://localhost:6500/ "$L" run -w 2 -- node verify/whiteboard/w-a/WB-D21.mjs
+   REPEAT=1 BASE_URL=http://localhost:6500/ node verify/whiteboard/w-a/WB-D21.mjs
+   REPEAT=2 BASE_URL=http://localhost:6500/ node verify/whiteboard/w-a/WB-D21.mjs
    node verify/whiteboard/w-a/manifest.mjs
    ```
 
 Every script accepts `REPEAT` (default `1`), `PHASE` (`before` by default), `BASE_URL`, `WA_SCRATCH`,
-`BUILD_META`, `CHROME` and `DPR`. `CORPUS` overrides the retained planning corpus location. Selected
+`BUILD_META`, `CHROME` and `DPR`. WB-D3 and WB-D5 need the whiteboard formats corpus, which is not in
+the repo: set `CORPUS` to its folder (they refuse to start without it). Selected
 scripts also accept `HOSTS`, `KINDS` or `CONTINUATIONS`. The same scripts run unchanged against the
 M0 build with its own `BUILD_META` and `PHASE=after`. Do not relabel an old build as M0.
 
 Results live under `$WA_SCRATCH/reference/<row>/<phase>/<arm>-<repeat>/`. Only the scripts and
 `reference-manifest.json` are committed. The manifest hashes every retained artifact, fixture and
 script, reports repeat comparison, and records pending arms without turning them into passes.
-Failed exploratory attempts are retained separately under `scratch/w-a/debug/first-captures/`.
-Stop the server when not about to run; stop all activity in an announced timing window.
+Stop the server when not about to run.
 
 ## Identity and observations
 
@@ -79,5 +79,5 @@ Repeated logical counts and flags compare exactly. Paint counts compare within 5
 zoom percentages allow 10% for the animated in-flight sample and 1% for the settled pinch ratio.
 D5 rAF counts allow 30%, timer counts 2 callbacks; heap is reported, not compared as an identical
 allocation count. Full screenshots include transient Saved chrome and are **archival captures, not
-pixel-exact goldens**; D21/D28 compare their declared content ROIs. The machine is shared, so these
-are functional callback observations, never performance sign-off.
+pixel-exact goldens**; D21/D28 compare their declared content ROIs. These are functional callback
+observations, never performance sign-off.

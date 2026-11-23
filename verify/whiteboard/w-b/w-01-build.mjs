@@ -6,26 +6,19 @@ import { createHash } from 'node:crypto';
 import { relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { scratchDir } from '../../lib/paths.mjs';
 
 const { values } = parseArgs({ options: {
-  scratch: { type: 'string', default: '/Users/adham/Developer/bme-impl/scratch/w-b/build' },
+  scratch: { type: 'string', default: scratchDir('w-b', 'build') },
   mutant: { type: 'boolean', default: false },
   'prefetch-mutant': { type: 'boolean', default: false },
 } });
 const worktree = resolve(fileURLToPath(new URL('../../..', import.meta.url)));
-const lock = '/Users/adham/Developer/bme-impl/scratch/bin/bme-lock';
 const run = (program, args, options = {}) => new Promise((done, reject) => {
   const child = spawn(program, args, { stdio: 'inherit', ...options });
   child.on('error', reject);
   child.on('exit', code => code === 0 ? done() : reject(new Error(`${program} exited ${code}`)));
 });
-// Copying the mutant's independent dependencies consumes the build grant too.
-if (process.env.BME_W01_BUILD_LOCKED !== '1') {
-  await run(lock, ['build', '--', process.execPath, fileURLToPath(import.meta.url), ...process.argv.slice(2)], {
-    cwd: worktree, env: { ...process.env, BME_W01_BUILD_LOCKED: '1' },
-  });
-  process.exit(0);
-}
 if (values.mutant && values['prefetch-mutant']) throw new Error('Choose one mutant per build');
 const mutant = values.mutant ? 'registration' : values['prefetch-mutant'] ? 'prefetch' : null;
 const patchFile = mutant ? `verify/whiteboard/w-b/mutants/${mutant}.patch` : null;

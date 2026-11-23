@@ -3,8 +3,9 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { seedPdf } from './lib/files.mjs';
+import { scratchDir } from '../../lib/paths.mjs';
 
-const root = process.env.WA_SCRATCH ?? '/Users/adham/Developer/bme-impl/scratch/w-a';
+const root = process.env.WA_SCRATCH ?? scratchDir('w-a');
 const phase = process.env.PHASE ?? 'before';
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const expected = { 'WB-D1': 1, 'WB-D2': 1, 'WB-D3': 9, 'WB-D5': 2, 'WB-D6': 2,

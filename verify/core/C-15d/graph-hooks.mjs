@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { chromium } from 'playwright';
+import { pinnedChrome, scratchDir } from '../../lib/paths.mjs';
 
 // Drives only the real app. An independent OPFS writer saves the link while
 // the graph stays mounted; the app's real observer/poll publishes the result.
@@ -14,8 +15,8 @@ const args = Object.fromEntries(process.argv.slice(2).map(a => {
     return [a.slice(2, at), a.slice(at + 1)];
 }));
 const requireStepMs = args['step-ms'] === 'require';
-const out = path.resolve(args.out ?? '/Users/adham/Developer/bme-impl/scratch/c-e/C-15d');
-const chrome = args.chrome ?? '/Users/adham/Developer/bme-impl/scratch/browsers/157.0.8103.39/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing';
+const out = path.resolve(args.out ?? scratchDir('C-15d'));
+const chrome = args.chrome ?? await pinnedChrome();
 const fixture = {
     'A.md': '# A\n\n[[B]]\n',
     'B.md': '# B\n\n[[C]]\n',
@@ -373,22 +374,28 @@ async function arm(browser, name, url, manifest) {
 
 let browser;
 try {
-    for (const key of ['commit', 'prod-url', 'bench-url', 'dev-url', 'prod-identity', 'bench-identity', 'dev-root', 'dev-terminal']) if (!args[key]) fail('setup', `missing --${key}`);
+    for (const key of ['commit', 'prod-url', 'bench-url', 'dev-url', 'prod-identity', 'bench-identity', 'dev-root', 'dev-pid']) if (!args[key]) fail('setup', `missing --${key}`);
     identity(report.driver === '1.63.0', `Playwright ${report.driver} != 1.63.0`);
     browser = await chromium.launch({ executablePath: chrome, headless: true });
     report.browser = browser.version();
     identity(report.browser === report.expectedBrowser, `Chrome ${report.browser} != ${report.expectedBrowser}`);
     const production = await buildIdentity('prod');
     const benchmark = await buildIdentity('bench');
-    // The supervised serve terminal is part of the setup identity, not an app
-    // diagnostic route. Its explicit positional Vite root must be this clean tree.
+    // The dev server's live process (`--dev-pid`) is part of the setup identity, not an app
+    // diagnostic route. Its explicit positional Vite root must be this clean tree. argv is
+    // read from `ps` and split on spaces, so keep the root path space-free.
     const root = path.resolve(args['dev-root']);
     const dev = report.arms.dev = { identity: { root, commit: execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), status: execFileSync('git', ['-C', root, 'status', '--porcelain'], { encoding: 'utf8' }) }, scripts: [], loss: 'Dev serves source text with dead guarded hook code; text exclusion is not claimed.' };
-    const terminal = JSON.parse(execFileSync('hc', ['get', args['dev-terminal']], { encoding: 'utf8' }));
+    const pid = String(Number(args['dev-pid']));
+    let terminal;
+    try {
+        terminal = { pid, state: 'live', argv: execFileSync('ps', ['-ww', '-o', 'args=', '-p', pid], { encoding: 'utf8' }).trim().split(/\s+/),
+            cwd: execFileSync('lsof', ['-a', '-d', 'cwd', '-p', pid, '-Fn'], { encoding: 'utf8' }).split('\n').find(line => line.startsWith('n'))?.slice(1) ?? '' };
+    } catch { terminal = { pid, state: 'gone', argv: [], cwd: '' }; }
     dev.identity.terminal = terminal;
     identity(dev.identity.commit === args.commit && !dev.identity.status, 'dev worktree is not clean at expected commit');
-    identity(terminal.state === 'live' && path.resolve(terminal.cwd) === root && terminal.argv.some((value, i) => value === root && /(?:^|\/)vite$/.test(terminal.argv[i - 1] ?? '')), 'dev terminal does not launch Vite with the expected explicit root');
-    identity(terminal.argv[terminal.argv.indexOf('--port') + 1] === new URL(args['dev-url']).port && terminal.argv.includes('--strictPort'), 'dev URL does not match the supervised strict port');
+    identity(terminal.state === 'live' && path.resolve(terminal.cwd) === root && terminal.argv.some((value, i) => value === root && /(?:^|\/)vite$/.test(terminal.argv[i - 1] ?? '')), 'dev server does not launch Vite with the expected explicit root');
+    identity(terminal.argv[terminal.argv.indexOf('--port') + 1] === new URL(args['dev-url']).port && terminal.argv.includes('--strictPort'), 'dev URL does not match the dev server strict port');
     dev.identity.mode = terminal.argv.includes('--mode') ? terminal.argv[terminal.argv.indexOf('--mode') + 1] : 'development';
     identity(dev.identity.mode === (args['dev-mode'] ?? 'development'), 'dev mode differs from the requested control');
     await arm(browser, 'production', args['prod-url'], production);

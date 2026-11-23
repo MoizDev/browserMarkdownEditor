@@ -40,21 +40,21 @@ last-wins versus current first-wins fix cannot confound a force differential.
 
 ## Prepare, then run (no nested builds)
 
-Use the run's bme-lock, assigned ports and pinned dependencies. Preparation is
-separate; an execution run cannot build. For the recorded A/A, the clean detached
-reference worktree was `W/wt/c-e-g0-reference`, at
+Use ports you chose and the pinned dependencies. Preparation is separate; an
+execution run cannot build. For the recorded A/A, the clean detached reference
+worktree was a separate checkout at
 `4d2198fe8aa89daa13b11d0a14b7a7fed3dfb5af` (main plus approved C-15d hooks).
 It has its OWN npm ci, never a shared node_modules link.
 
 ```sh
-L build -- node verify/core/G0/prepare.mjs --root <worktree> --scratch <outside-build-directory>
-L run -w 2 -- node verify/core/G0/tbgr.mjs \
+node verify/core/G0/prepare.mjs --root <worktree> --scratch <outside-build-directory>
+node verify/core/G0/tbgr.mjs \
   --out <run-directory> --seed 123456789 \
   --reference <prepared-reference-directory> --candidate <prepared-candidate-directory>
 ```
 
 Both prepared apps must be benchmark builds. The runner serves them at6360/6361
-under its run grant with `serveApp({build:false})`, stops them in finally, opens
+with `serveApp({build:false})`, stops them in finally, opens
 fresh PINNED browsers/contexts, and seeds identical named OPFS containers. It uses
 shared `installVault/seedVault`, `openBrowser`, `createReport`, and served-body
 binding before assertions. Functional raw-route binds the observed script/CSS
@@ -78,7 +78,7 @@ extracted simulation function is imported or invoked in the page.
 
 ## Recorded sanity
 
-`W=/Users/adham/Developer/bme-impl`, `L=$W/scratch/bin/bme-lock`.
+`W/scratch/…` below is the scratch folder the recorded run used.
 
 - Full manifest: `W/scratch/c-e/G0/generated-all/graphset-manifest.json`.
   SHA256 `970c87efb92be33b3f4b40e34327b2d59a8a97570e25b74415c42ba97725b639`.

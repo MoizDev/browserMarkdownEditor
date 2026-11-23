@@ -43,17 +43,16 @@ The independent raw PDF serializer stays in the PDF fixture domain.
 
 ## Capture, twice
 
-Read the run's shared scratch `HOWTO.md`. Every install/build/static/browser command needs its
-published semaphore. `L` below is its `bin/bme-lock`. `CHROME` is the **pinned executable path**, not a
-channel. `DIST` is the production output of the baseline commit, never a Part A/candidate build.
+The pinned browser comes from `node verify/install-browser.mjs` (`--chrome` overrides it with
+another executable path, never a channel). `DIST` is the production output of the baseline commit, never a Part A/candidate build.
 The script owns and closes its static server; do not start a second server on that port.
 
 ```sh
-L run -- node verify/pdf/P-00/capture.mjs \
-  --dist "$DIST" --corpus "$A" --out "$CAPTURE_A" --chrome "$CHROME" \
+node verify/pdf/P-00/capture.mjs \
+  --dist "$DIST" --corpus "$A" --out "$CAPTURE_A" \
   --app-commit d53ae0a5c6a4b000c01ec83d487d608bc3f11895 --port 6380
-L run -- node verify/pdf/P-00/capture.mjs \
-  --dist "$DIST" --corpus "$B" --out "$CAPTURE_B" --chrome "$CHROME" \
+node verify/pdf/P-00/capture.mjs \
+  --dist "$DIST" --corpus "$B" --out "$CAPTURE_B" \
   --app-commit d53ae0a5c6a4b000c01ec83d487d608bc3f11895 --port 6380
 diff -u "$CAPTURE_A/functional.json" "$CAPTURE_B/functional.json"
 ```

@@ -1,29 +1,17 @@
 import { spawn, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { access, copyFile, lstat, mkdir, readFile, readdir, readlink, realpath, symlink, writeFile } from 'node:fs/promises';
+import { copyFile, cp, lstat, mkdir, readFile, readdir, readlink, realpath, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { buildIdentity } from './identity.mjs';
-import { currentGrants } from './resources.mjs';
+import { scratchRoot, sourceRoot } from './paths.mjs';
 
-const lock = '/Users/adham/Developer/bme-impl/scratch/bin/bme-lock';
-const howto = '/Users/adham/Developer/bme-impl/scratch/HOWTO.md';
-const sourceRoot = fileURLToPath(new URL('../../', import.meta.url));
 const children = new Set();
 let signalsInstalled = false;
 
-async function preparationGrants() {
-    await access(howto);
-    const grants = await currentGrants();
-    // With a 6-unit VM, four runs waiting for nested builds can fill the whole
-    // pool forever. Preparation and browser execution must be separate phases.
-    if (grants.has('run') || grants.has('bench')) throw new Error('Refusing to build or prepare under a run/bench grant; use --prepare under build first, then serveApp({build:false}) under run');
-    return grants;
-}
-
-function start(args, cwd, alreadyGranted = false) {
-    const command = alreadyGranted ? args.slice(args.indexOf('--') + 1) : [lock, ...args];
+// Each child leads its own process group (detached) so stop() ends Vite's whole tree, and every
+// child is stopped on exit or a signal: a preview left behind keeps its strict port taken.
+function start(command, cwd) {
     const child = spawn(command[0], command.slice(1), { cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '';
     const capture = bytes => { output = (output + bytes.toString()).slice(-50000); };
@@ -60,8 +48,7 @@ function start(args, cwd, alreadyGranted = false) {
 }
 
 async function command(args, cwd) {
-    const grants = args[0] === 'build' ? await preparationGrants() : new Set();
-    const task = start(args, cwd, grants.has(args[0]));
+    const task = start(args, cwd);
     try {
         const result = await task.ended;
         if (result.code !== 0) throw new Error(`Command failed (${result.code}): ${args.join(' ')}\n${task.output()}`, { cause: result.error });
@@ -112,13 +99,14 @@ async function checkDevSource(prepared) {
     return check;
 }
 
-/** Preparation only: run under build, never run/bench (HOWTO §1, verification.md §2).
- * Reuses an ancestor build grant rather than nesting another one.
- * @param {{root?: string, scratch: string, mode?: 'dev'|'production'|'benchmark', manifest?: boolean, sourcemap?: boolean}} options
+/** Preparation: build once and freeze the build's identity in `<scratch>/prepared.json`. Kept a
+ * separate phase from serving so a run measures the build it names, never one rebuilt under it,
+ * and so many runs can share one build. `scratch` defaults to `scratchDir('app', mode)`.
+ * @param {{root?: string, scratch?: string, mode?: 'dev'|'production'|'benchmark', manifest?: boolean, sourcemap?: boolean}} options
  */
 export async function prepareApp({ root = sourceRoot, scratch, mode = 'production', manifest = false, sourcemap = false }) {
-    await preparationGrants();
-    if (!scratch || !['dev', 'production', 'benchmark'].includes(mode)) throw new Error('Preparation needs scratch and a known build mode');
+    scratch ??= join(scratchRoot, 'app', mode);
+    if (!['dev', 'production', 'benchmark'].includes(mode)) throw new Error(`Unknown build mode: ${mode}`);
     root = resolve(root); scratch = resolve(scratch);
     if (scratch === root || scratch.startsWith(`${root}/`)) throw new Error('Vite scratch must be outside the source root');
     await mkdir(scratch, { recursive: true });
@@ -127,11 +115,11 @@ export async function prepareApp({ root = sourceRoot, scratch, mode = 'productio
     let mutant;
     try { mutant = JSON.parse(await readFile(join(root, '.bme-mutant.json'), 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
     const repository = mutant?.sourceRoot ?? root;
-    if (mode !== 'dev') await command(['build', '--', process.execPath, join(root, 'node_modules/vite/bin/vite.js'), 'build', '--config', config, '--mode', mode], root);
+    if (mode !== 'dev') await command([process.execPath, join(root, 'node_modules/vite/bin/vite.js'), 'build', '--config', config, '--mode', mode], root);
     else {
         // The dev plugin regenerates this served source at startup. Freeze its
         // deterministic output now too, rather than omit ignored generated code.
-        await command(['build', '--', process.execPath, join(root, 'src/epub/build-frame.mjs')], root);
+        await command([process.execPath, join(root, 'src/epub/build-frame.mjs')], root);
     }
     const devSource = mode === 'dev' ? await devSourceSnapshot(root) : undefined;
     const artifact = await buildIdentity({ worktree: repository, distDir: mode === 'dev' ? undefined : dist, patch: mutant });
@@ -145,13 +133,15 @@ export async function prepareApp({ root = sourceRoot, scratch, mode = 'productio
     return prepared;
 }
 
-/** Serve the prepared real app; build:true is refused under run/bench.
- * @param {{root?: string, scratch: string, port: number,
+/** Serve the prepared real app on 127.0.0.1:`port`, strictly: a taken port fails rather than
+ * moving, so a run can never talk to someone else's server. Pass `build: false` to serve what
+ * `prepareApp` froze (the normal split); `build: true` prepares first. Call `stop()` in a finally.
+ * @param {{root?: string, scratch?: string, port: number,
  *   mode?: 'dev'|'production'|'benchmark', build?: boolean}} options
  */
 export async function serveApp({ root = sourceRoot, scratch, port, mode = 'production', build = true }) {
-    await access(howto);
-    if (!scratch || !Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('serveApp needs scratch and an assigned port');
+    scratch ??= join(scratchRoot, 'app', mode);
+    if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('serveApp needs a port you chose (1024–65535)');
     root = resolve(root); scratch = resolve(scratch);
     const prepared = build ? await prepareApp({ root, scratch, mode }) : JSON.parse(await readFile(join(scratch, 'prepared.json'), 'utf8'));
     if (prepared.root !== root || prepared.scratch !== scratch || prepared.mode !== mode) throw new Error('Prepared app identity/root/mode does not match the requested run; prepare it first');
@@ -160,7 +150,7 @@ export async function serveApp({ root = sourceRoot, scratch, port, mode = 'produ
     const probe = createServer();
     await new Promise((resolve, reject) => { probe.once('error', reject); probe.listen(port, '127.0.0.1', resolve); });
     await new Promise((resolve, reject) => probe.close(error => error ? reject(error) : resolve()));
-    const args = ['serve', '--', process.execPath, join(root, 'node_modules/vite/bin/vite.js'), ...(mode === 'dev' ? [] : ['preview']), '--config', prepared.config, '--host', '127.0.0.1', '--port', String(port), '--strictPort'];
+    const args = [process.execPath, join(root, 'node_modules/vite/bin/vite.js'), ...(mode === 'dev' ? [] : ['preview']), '--config', prepared.config, '--host', '127.0.0.1', '--port', String(port), '--strictPort'];
     const server = start(args, root), url = `http://127.0.0.1:${port}/`;
     try {
         let exited = false;
@@ -179,8 +169,7 @@ export async function serveApp({ root = sourceRoot, scratch, port, mode = 'produ
 }
 
 /** Mutants share one isolated source/dependency copy, never the live worktree. */
-async function copyForMutation({ root = sourceRoot, scratch }, name) {
-    await preparationGrants();
+async function copyForMutation({ root = sourceRoot, scratch = join(scratchRoot, 'mutants') }, name) {
     root = await realpath(root);
     const target = join(scratch, `${name}-${Date.now()}`);
     await mkdir(target, { recursive: true });
@@ -193,14 +182,15 @@ async function copyForMutation({ root = sourceRoot, scratch }, name) {
     }
     const ownModules = await realpath(join(root, 'node_modules'));
     if (ownModules !== join(root, 'node_modules')) throw new Error('Mutant dependencies must be this worktree’s own install, not a shared symlink');
-    // APFS clone: 3.4 s measured by the integrator, no shared mutable install.
-    await command(['build', '--', '/bin/cp', '-c', '-R', ownModules, join(target, 'node_modules')], root);
+    // An APFS clone on macOS (3.4 s measured), a plain copy elsewhere; never a shared mutable install.
+    if (process.platform === 'darwin') await command(['/bin/cp', '-c', '-R', ownModules, join(target, 'node_modules')], root);
+    else await cp(ownModules, join(target, 'node_modules'), { recursive: true, verbatimSymlinks: true });
     if (await realpath(join(target, 'node_modules')) === ownModules) throw new Error('Mutant dependencies must be an isolated clone');
     return { root: target, sourceRoot: root };
 }
 
-/** V-01a's anchored mutant; only scratch changes (verification.md VER-13).
- * @param {{root?: string, scratch: string}} options
+/** V-01a's anchored mutant; only scratch changes.
+ * @param {{root?: string, scratch?: string}} options
  * @returns {Promise<string>} Scratch source root, with its exact patch manifest.
  */
 export async function withSaveSkipped(options) {
@@ -210,7 +200,7 @@ export async function withSaveSkipped(options) {
     const before = 'const result = await writeFileVersionedRef.current(handle, data, expected);';
     const after = "const result = { status: 'written' as const, version: expected! };";
     const original = await readFile(path, 'utf8');
-    if (original.split(before).length !== 2) throw new Error('Save-skipped mutant anchor changed or is ambiguous (VER-13)');
+    if (original.split(before).length !== 2) throw new Error('Save-skipped mutant anchor changed or is ambiguous');
     await writeFile(path, original.replace(before, after));
     await writeFile(join(target, '.bme-mutant.json'), JSON.stringify({ name: 'save-skipped', sourceRoot: root, file: 'src/App.tsx', before, after,
         originalSha256: createHash('sha256').update(original).digest('hex') }));
@@ -218,7 +208,7 @@ export async function withSaveSkipped(options) {
 }
 
 /** The source change is deliberately deferred until AFTER dev preparation.
- * @param {{root?: string, scratch: string, file?: 'src/App.tsx'|'index.html'|'vite.config.ts'}} options
+ * @param {{root?: string, scratch?: string, file?: 'src/App.tsx'|'index.html'|'vite.config.ts'}} options
  * @returns {Promise<string>} Scratch source root; the run applies its declared append.
  */
 export async function withDevSourceDrift(options) {

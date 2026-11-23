@@ -1,14 +1,13 @@
 # P-07a — canonical PDF find through the real Text view
 
 Plain Node + Playwright driving the running app. No app-module imports, direct matcher calls,
-unit tests or product diagnostics. Read the repository's `verify-in-browser` skill and scratch
-HOWTO first. Every slow command belongs in an `hc run --bg` terminal; use `hc wait`, not polling.
-Classic pdf.js runs weigh **1** (p-lead ruling); the new PDFium pool's weight 2 starts at P3.
+unit tests or product diagnostics. Read the repository's `verify-in-browser` skill first and
+install the pinned browser once with `node verify/install-browser.mjs`.
 
 ## Preparation and runs
 
-`L=/Users/adham/Developer/bme-impl/scratch/bin/bme-lock`. Choose a fresh scratch directory `S`;
-never put output in the repository. After the shared toolbox/fixture helpers and GEN-18 merge:
+Choose a fresh scratch directory `S` outside the repository (the defaults, without the variables
+below, are `P-07a/<mode>`, `P-07a/corpus` and `P-07a/result` under the toolbox's scratch folder):
 
 ```sh
 node verify/fixtures/pdf/generators/find-corpus.mjs --out "$S/corpus" --seed 1346651697
@@ -16,42 +15,38 @@ node verify/fixtures/pdf/generators/find-corpus.mjs --out "$S/corrupt" --seed 13
 node verify/fixtures/pdf/generators/find-corpus.mjs --out "$S/cap" --seed 1346651697 --variant cap
 node verify/fixtures/pdf/generators/unique-textbook.mjs --out "$S/book" --seed 1346651697 --pages 876
 
-# Separate build preparation from run; never nest build under run/bench.
-BME_MODE=production BME_SCRATCH="$S/app-production" "$L" build -- node verify/pdf/P-07a/prepare.mjs
-BME_MODE=dev BME_SCRATCH="$S/app-dev" "$L" build -- node verify/pdf/P-07a/prepare.mjs
+# Prepare each build once, before any run; runs serve what was prepared and never rebuild.
+BME_MODE=production BME_SCRATCH="$S/app-production" node verify/pdf/P-07a/prepare.mjs
+BME_MODE=dev BME_SCRATCH="$S/app-dev" node verify/pdf/P-07a/prepare.mjs
 
 # Execute every required visible case, not just one matrix cell.
 for theme in dark light; do for dpr in 1 2; do
   BME_THEME=$theme BME_DPR=$dpr BME_FIXTURES="$S/corpus" BME_SCRATCH="$S/app-production" \
-    BME_OUT="$S/corpus-$theme-$dpr" "$L" run -- node verify/pdf/P-07a/run.mjs
+    BME_OUT="$S/corpus-$theme-$dpr" node verify/pdf/P-07a/run.mjs
 done; done
 BME_CORRUPT=1 BME_FIXTURES="$S/corrupt" BME_SCRATCH="$S/app-production" \
-  BME_OUT="$S/corrupt-result" "$L" run -- node verify/pdf/P-07a/run.mjs
+  BME_OUT="$S/corrupt-result" node verify/pdf/P-07a/run.mjs
 BME_CAP=1 BME_FIXTURES="$S/cap" BME_SCRATCH="$S/app-production" \
-  BME_OUT="$S/cap-result" "$L" run -- node verify/pdf/P-07a/run.mjs
+  BME_OUT="$S/cap-result" node verify/pdf/P-07a/run.mjs
 
 # StrictMode/all-page reuse, then independent cold refine and hide sessions.
 for arm in ordinary refine hide; do
   BME_MODE=dev BME_PORT=6400 BME_TEXTBOOK=1 BME_FIXTURES="$S/book" BME_SCRATCH="$S/app-dev" \
     BME_LIFECYCLE=$([ "$arm" = refine ] && echo 1 || echo 0) \
     BME_HIDE=$([ "$arm" = hide ] && echo 1 || echo 0) BME_OUT="$S/book-$arm" \
-    "$L" run -- node verify/pdf/P-07a/run.mjs
+    node verify/pdf/P-07a/run.mjs
 done
 BME_MODE=dev BME_PORT=6400 BME_FIXTURES="$S/corpus" BME_SCRATCH="$S/app-dev" \
-  BME_OUT="$S/corpus-strict" "$L" run -- node verify/pdf/P-07a/run.mjs
+  BME_OUT="$S/corpus-strict" node verify/pdf/P-07a/run.mjs
 ```
 
 The browser arm uses `serveApp({build:false})` and stops it in `finally` after **each** run. It
-never leaves a preview parked while waiting for a grant. Production defaults to port 6401; every
-port must be 6400–6419. All booleans/modes/theme/DPR/roles are validated; no positional run args.
+never leaves a preview parked. `BME_PORT` is any free port you choose (default 6401). All booleans/modes/theme/DPR/roles are validated; no positional run args.
 Refine and hide require separate fresh textbook sessions. A historical baseline is not an
 acceptance bypass. Each requested query/lifecycle arm must execute; setup failures never pass.
 
-Temporary pre-merge runs used an explicitly recorded scratch-only Node resolver pointing the
-canonical `verify/lib/*` and fixture-helper imports at their owners' worktrees. No copied helper
-or private identity implementation is committed here. Remove that resolver after those merges.
-Until GEN-18's records merge, the textbook run explicitly supplies `BME_FIXTURE_MANIFEST` pointing
-to p-a's manifest; its PDF **and oracle** must match the declared hashes/lengths. No silent fallback.
+`BME_FIXTURE_MANIFEST` may name another fixture manifest; its PDF **and oracle** must match the
+declared hashes/lengths. No silent fallback.
 
 ## Witness, identity and the two mutants
 
@@ -76,17 +71,17 @@ to p-a's manifest; its PDF **and oracle** must match the declared hashes/lengths
   the HTTP cache and is **not timing evidence**. Both browser/driver pins are checked. Fixture and
   independent oracle bytes must match the stream manifest; OPFS readback uses `readWitness`.
 
-Prepare both scratch mutants under build, then use the same real-app gate in all four cases:
+Prepare both scratch mutants (under the scratch folder; the scripts refuse other paths), then use the same real-app gate in all four cases:
 
 ```sh
-"$L" build -- node verify/pdf/P-07a/mutant.mjs hyphen "$S/mutant-hyphen"
-"$L" build -- node verify/pdf/P-07a/mutant.mjs abort "$S/mutant-abort"
-"$L" run -- node verify/pdf/P-07a/mutant-proof.mjs hyphen "$S/mutant-hyphen" "$S/corpus" "$S/hyphen-proof"
-"$L" run -- node verify/pdf/P-07a/mutant-proof.mjs abort "$S/mutant-abort" "$S/book" "$S/abort-proof"
+node verify/pdf/P-07a/mutant.mjs hyphen "$S/mutant-hyphen"
+node verify/pdf/P-07a/mutant.mjs abort "$S/mutant-abort"
+node verify/pdf/P-07a/mutant-proof.mjs hyphen "$S/mutant-hyphen" "$S/corpus" "$S/hyphen-proof"
+node verify/pdf/P-07a/mutant-proof.mjs abort "$S/mutant-abort" "$S/book" "$S/abort-proof"
 ```
 
 `mutant.mjs` refuses nonunique patch anchors and existing output, clones this worktree's own install
-with APFS, and builds with the production config. The hyphen mutant removes only line-end H joins;
+(an APFS clone on macOS), and builds with the production config. The hyphen mutant removes only line-end H joins;
 the named count failures must be **exactly** `transformation` and `state-of-the-art`, with the other
 11 controls passing. The abort mutant removes both old-scan aborts; the named stale-result observer
 must fail. `mutant-proof.mjs` requires all four theme/DPR cases, correct mutant identity, zero page
@@ -125,6 +120,5 @@ is embedded. GEN-08's full script/glyph corpus remains a separate fixture lane o
   P-07b/F5/P5 or their named owners. Fixed generator shapes are not random-input coverage. The
   legacy Text status combines partial/failed/textless counts, so separate severity UI awaits F2.
 
-The static no-regex seam and deliberately violating source are documented in
-`P/60-implementation/seams/p-b-P-07a.md`. Run `lint-witness.mjs` under static **after** that seam;
-before it, exit 1 with no restrictions is the truthful missing-guard witness, not a passed gate.
+`lint-witness.mjs` lints a deliberately violating source against the static no-regex seam; exit 1
+with no restrictions would be the truthful missing-guard witness, not a passed gate.

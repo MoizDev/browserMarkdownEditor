@@ -2,7 +2,8 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { launchRuntime, frames } from '../harness/runtime.mjs';
 import { vaultHelpers } from '../harness/vault.mjs';
-const out = '/Users/adham/Developer/bme-impl/scratch/w-b/b39/discovery';
+import { scratchDir } from '../../lib/paths.mjs';
+const out = scratchDir('w-b', 'b39', 'discovery');
 await mkdir(out, { recursive: true });
 const h = await launchRuntime({ baseURL: process.env.BASE_URL || 'http://localhost:6520/', blockOffOrigin: true });
 const result = { runtime: h.runtimeIdentity, markers: [], controls: [], errors: h.errors };

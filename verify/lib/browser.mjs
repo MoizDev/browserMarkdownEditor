@@ -1,25 +1,21 @@
 import { createRequire } from 'node:module';
-import { access, readFile } from 'node:fs/promises';
-import { join } from 'node:path';
 import { createServer } from 'node:net';
+import { pin, pinnedChrome } from './paths.mjs';
 
-const pin = JSON.parse(await readFile(new URL('../browser-pin.json', import.meta.url), 'utf8'));
-const defaultExecutable = join('/Users/adham/Developer/bme-impl/scratch/browsers', pin.version, pin.executable);
-
-/** A fresh context, never the user's profile. The caller holds a bme-lock run grant.
+/** A fresh context, never the user's profile. The browser comes from `pinnedChromePath()`
+ * (`BME_CHROME_PATH`, else the installer's cache); a missing one fails naming the installer.
  * @param {{executablePath?: string, contextOptions?: import('playwright').BrowserContextOptions,
  *   launchOptions?: import('playwright').LaunchOptions, debuggingPort?: number}} options
  */
-export async function openBrowser({ executablePath = process.env.BME_CHROME_PATH ?? defaultExecutable,
-    contextOptions = {}, launchOptions = {}, debuggingPort } = {}) {
+export async function openBrowser({ executablePath, contextOptions = {}, launchOptions = {}, debuggingPort } = {}) {
     const require = createRequire(import.meta.url);
     const driverVersion = require('playwright/package.json').version;
     if (`playwright@${driverVersion}` !== pin.driver) throw new Error(`Unpinned Playwright: ${driverVersion}; expected ${pin.driver}`);
-    await access(executablePath);
+    executablePath ??= await pinnedChrome();
     const { chromium } = await import('playwright');
     const args = [...(launchOptions.args ?? [])];
     if (debuggingPort !== undefined) {
-        if (!Number.isInteger(debuggingPort) || debuggingPort < 1024 || debuggingPort > 65535) throw new Error('Pass a debuggingPort from your own assigned range');
+        if (!Number.isInteger(debuggingPort) || debuggingPort < 1024 || debuggingPort > 65535) throw new Error('Pass a free debuggingPort you chose (1024–65535)');
         if (args.some(arg => /^--remote-debugging-(?:port|address)/.test(arg) || /^--remote-allow-origins=.*\*/.test(arg))) throw new Error('Conflicting or wildcard debugging arguments are forbidden');
         // An occupied port could belong to the user's browser. Never discover or
         // attach to it accidentally; this is our fresh, privately launched browser.

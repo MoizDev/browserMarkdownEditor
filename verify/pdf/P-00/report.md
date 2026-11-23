@@ -30,7 +30,7 @@ PNG bytes remain outside the repository. Emitted chunk identities are in `P-00a-
 ## Corpus freeze and determinism
 
 Generators/independent oracles are frozen through `77b908f`; seed **1346651697** (`0x50444631`),
-Node **v26.0.0**, zlib **1.2.12**. Two fresh invocations in `W/scratch/p-a/corpus-7` and `corpus-8`
+Node **v26.0.0**, zlib **1.2.12**. Two fresh invocations in `<run scratch>/corpus-7` and `corpus-8`
 produced byte-identical PDF **and oracle JSON** outputs (8 emitted files, no differences).
 
 Manifest: `verify/fixtures/pdf/manifest.json`, SHA-256
@@ -87,7 +87,7 @@ browser-toolbar automation. Text find uses the app's actual form and result butt
 
 ## Repeat evidence and negative control
 
-Completed captures: `W/scratch/p-a/baselines-7` and `baselines-11`. The latter exited 0 as hc t2f7.
+Completed captures: `<run scratch>/baselines-7` and `baselines-11`. The latter exited 0.
 The first capture had completed every case and emitted its completion manifest before its surrounding
 paired job was stopped for a timing window; the incomplete queued second arm was never credited.
 Earlier failed/paused diagnostic attempts are not the offered goldens.
@@ -100,7 +100,7 @@ Earlier failed/paused diagnostic attempts are not the offered goldens.
 | `landmarks.json` | `7a57f45ba556531cede5b73dd093c17f10a3b93708a8dd548eec8d55e7a59f56` |
 | `build-identity.json` | `f890bcc3edcccb7d3c589b0b065b694143987f02ca606d7a600bb646ed3201a5` |
 
-The named whole-chunk `pdf-pane-boot-throw` control ran as hc t2f8 and exited **1**. Its recorded
+The named whole-chunk `pdf-pane-boot-throw` control ran and exited **1**. Its recorded
 `mutantFired:true` and actual page error **`P00 MUTANT: PDF pane chunk did not boot`** accompany the
 failed page-paint prerequisite; see `P-00a-mutant.json`. This is not credited merely because a command
 failed, and is **not** a substitute for later defects' specific logic mutants.
@@ -113,16 +113,10 @@ and a fake seeded Text record (the real manual Text action and actual persisted 
 
 ## Commands, static checks and next work
 
-Exact portable commands are in [README.md](README.md). Local completed replay:
+Exact portable commands are in [README.md](README.md); the completed replay ran that capture over
+corpora 8 and 11.
 
-```sh
-hc run --bg --name p-a-final-replay --cwd W/wt/p-a \
-  sh W/scratch/p-a/capture-all.sh 8 11
-# capture-all.sh wraps the real capture in bme-lock run (weight 1).
-```
-
-`npm run typecheck` and `npm run lint` passed through `bme-lock static`; production build passed
-through `bme-lock build`. Both completed browser jobs closed their servers; no p-a listener remained
+`npm run typecheck`, `npm run lint` and the production build passed. Both completed browser jobs closed their servers; no p-a listener remained
 on ports 6380–6399. No tests, runner, production diagnostics, source hooks or product edits were added.
 
 Next: adopt V-01a identity and v-b's generic fixture helpers when merged, then P-00b captures on the

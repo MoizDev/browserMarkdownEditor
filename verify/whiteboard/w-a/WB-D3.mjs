@@ -1,9 +1,10 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { runArm, hash } from './lib/browser.mjs';
+import { requiredInput } from '../../lib/paths.mjs';
 import { hosts, filename, seedPdf, document, shapePaint } from './lib/files.mjs';
 
-const corpus = process.env.CORPUS ?? '/Users/adham/Developer/browserMarkdownEditor/planning/10-whiteboard/formats/corpus';
+const corpus = requiredInput('CORPUS', 'the whiteboard formats corpus folder (with growth/whiteboard-10000.tldraw and growth/notebook-10000.notebook)');
 const kinds = (process.env.KINDS ?? 'native,truncated,non-json').split(',');
 for (const host of hosts) for (const kind of kinds) await runArm('WB-D3', `${host}-${kind}`, async h => {
   const name = filename(host);

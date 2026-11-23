@@ -1,11 +1,11 @@
 # Functional worker counters (V-01b part 1)
 
-Use only in a **functional** real-app run. `instrumentTargets` refuses a bench grant: pausing
-workers changes timings. Every debug port comes from the caller's assigned range, is pre-probed,
+Use only in a **functional** real-app run. `instrumentTargets` refuses a timed bench run (the bench
+lock sets `BME_TIMED_RUN`): pausing workers changes timings. Every debug port is the caller's choice, is pre-probed,
 bound to `127.0.0.1`, and closes with the fresh pinned browser. Never use a remote-origin wildcard.
 
 ```js
-const session = await openBrowser({ debuggingPort: MY_DEBUG_PORT });
+const session = await openBrowser({ debuggingPort: MY_DEBUG_PORT }); // a free port you chose
 await installCounters(session.context, { vaultName, postMessages: true, blobReads: true });
 await installVault(session.context, { name: vaultName });
 const page = await session.context.newPage();
@@ -52,10 +52,10 @@ crashes its renderer before instrumentation is installed:
 The renderer died about 250ms after attach (unqualified observation), not at the later command
 timeout. `1+1` returned 2; `globalThis.name` returned its string; auto-attach-off and resume-without-
 evaluate controls completed the same annotated save without crashing. Explicit contextId did
-not cure WorkerLocation. Evidence: scratch/v-a-targets/reports/2026-11-14T00-16-*.
+not cure WorkerLocation. Evidence: the 2026-11-14T00:16 worker-targets-smoke reports (not kept in the repo).
 
 **Never touch WorkerLocation before resume; take the URL from TargetInfo.** The runtime receives
 that URL from the observer, including for its receipt and relative child-worker URLs. Any other
 new pre-resume native getter must first get the same isolated control; do not assume it is safe.
-Existing crash diagnostics and mutants are retained for the deferred review phase, not rerun as
-implementation merge conditions (charter §0).
+The crash diagnostics and mutants are kept to re-prove this when the browser pin moves; they are not
+part of an ordinary check.

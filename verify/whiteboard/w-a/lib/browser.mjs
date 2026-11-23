@@ -3,8 +3,9 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { chromium } from 'playwright';
+import { pinnedChrome, scratchDir } from '../../../lib/paths.mjs';
 
-export const scratch = process.env.WA_SCRATCH ?? '/Users/adham/Developer/bme-impl/scratch/w-a';
+export const scratch = process.env.WA_SCRATCH ?? scratchDir('w-a');
 export const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 export const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 export async function until(read, description, timeout = 30000) {
@@ -122,7 +123,7 @@ export async function launch(row, arm, options = {}) {
   await fs.mkdir(output, { recursive: true });
   const meta = JSON.parse(await fs.readFile(process.env.BUILD_META ?? path.join(scratch, 'build.json'), 'utf8'));
   const browser = await chromium.launch({ headless: true,
-    executablePath: process.env.CHROME ?? '/Users/adham/Developer/bme-impl/scratch/browsers/157.0.8103.39/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing' });
+    executablePath: process.env.CHROME ?? await pinnedChrome() });
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 },
     deviceScaleFactor: Number(process.env.DPR ?? 1), acceptDownloads: true,
     hasTouch: options.hasTouch ?? false });

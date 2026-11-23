@@ -3,7 +3,8 @@
 import { chromium } from 'playwright';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
+import { pinnedChrome, requiredInput } from '../../lib/paths.mjs';
 
 const [url, identityPath, out] = process.argv.slice(2);
 if (process.argv.length !== 5 || !url || !identityPath || !out) throw new Error('Usage: reproduce.mjs <preview-url/> <artifact-identity.json> <fresh-out>');
@@ -13,13 +14,13 @@ const identity = JSON.parse(await readFile(identityPath, 'utf8'));
 if (!identity.files?.['index.html']) throw new Error('Missing artifact identity');
 const pin = JSON.parse(await readFile(new URL('../../browser-pin.json', import.meta.url), 'utf8'));
 const file = 'bug_jpx.pdf';
-const fixture = await readFile(`/Users/adham/Developer/browserMarkdownEditor/planning/00-evidence/pdf/offscreen/downloads/upstream-fixtures/${file}`);
+const fixture = await readFile(join(requiredInput('BME_PDF_UPSTREAM_FIXTURES', 'the folder of pdf.js upstream test PDFs that holds bug_jpx.pdf (sha256 4010d808…)'), file));
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const fixtureSha256 = sha(fixture);
 if (fixtureSha256 !== '4010d808557a72278368c05518367735ed186cbdd04974b8506275f9ac40f999') throw new Error('Local witness identity mismatch');
 await mkdir(out);
 const report = { fixture: { file, sha256: fixtureSha256, provenance: 'rights-unverified local witness' }, applicationCommit: identity.commit, browser: null, bodies: [], messages: [], warnings: [], errors: [] };
-const browser = await chromium.launch({ headless: true, executablePath: `/Users/adham/Developer/bme-impl/scratch/browsers/${pin.version}/${pin.executable}` });
+const browser = await chromium.launch({ headless: true, executablePath: await pinnedChrome() });
 try {
     report.browser = browser.version();
     if (report.browser !== pin.version) throw new Error('Wrong browser');

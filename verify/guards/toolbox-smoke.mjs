@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { readFile, writeFile } from 'node:fs/promises';
 import { prepareApp, serveApp, withSaveSkipped, withDevSourceDrift } from '../lib/serve.mjs';
 import { openBrowser } from '../lib/browser.mjs';
+import { scratchDir } from '../lib/paths.mjs';
 import { installVault, seedVault, readWitness, waitForVault } from '../lib/vault.mjs';
 import { editMode, typeText, fontsReady } from '../lib/input.mjs';
 import { installReload, forceReload } from '../lib/reload.mjs';
@@ -29,7 +30,7 @@ const fixtures = {
 };
 const options = {
     root: resolve(process.env.BME_ROOT ?? '.'),
-    scratch: resolve(process.env.BME_SCRATCH ?? '/Users/adham/Developer/bme-impl/scratch/v-a'),
+    scratch: resolve(process.env.BME_SCRATCH ?? scratchDir('toolbox-smoke')),
     port: Number(process.env.BME_PORT ?? 6160),
     mode: process.env.BME_MODE ?? 'production',
 };

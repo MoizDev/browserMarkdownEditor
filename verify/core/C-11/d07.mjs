@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { args, launch, openFile, activePath, backlinks, graph, editor, saveText, reload } from './browser.mjs';
+import { scratchDir } from '../../lib/paths.mjs';
 
 const cases = [
     ['E01_https', '[web](https://example.com/README.md)'],
@@ -42,7 +43,7 @@ const cases = [
 const targets = ['README.md', 'Space Note.md', 'folder/Prefixed.md', 'C#.md', 'What?.md'];
 const files = Object.fromEntries([...targets.map(name => [name, `# Target ${name}\n`]), ...cases.map(([name, link]) => [`${name}.md`, `# ${name}\n\n${link}\n`])]);
 const expected = Object.fromEntries(targets.map(target => [target, cases.filter(row => row[2] === target).map(row => `${row[0]}.md`).sort()]));
-const out = args.out ?? '/Users/adham/Developer/bme-impl/scratch/c-e/C-11-D07';
+const out = args.out ?? scratchDir('C-11-D07');
 const report = { fixture: files, expected, phases: {}, driver: createRequire(import.meta.url)('playwright/package.json').version, idbShim: false };
 await mkdir(out, { recursive: true });
 let browser;

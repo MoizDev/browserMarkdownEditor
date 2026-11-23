@@ -1,6 +1,5 @@
 import { installCounterRuntime } from './counterRuntime.mjs';
 import { readCounters } from './counters.mjs';
-import { currentGrants } from './resources.mjs';
 
 function harnessFault(message) {
     const error = new Error(message);
@@ -57,7 +56,7 @@ async function connect(debuggingPort) {
     };
 }
 
-/** Functional-only CDP observer (verification.md:121–142). Owns no app entry.
+/** Functional-only CDP observer. Owns no app entry.
  * Part1 counts every dedicated worker; iframe targets are recorded/resumed but
  * explicitly DEFERRED, never described as counted. No timed run may install it.
  * @param {import('playwright').Page} page
@@ -66,8 +65,9 @@ async function connect(debuggingPort) {
  *     noAutoAttach?: boolean, resumeOnly?: boolean, evaluateControl?: 'trivial'|'location'|'name'}}} options
  */
 export async function instrumentTargets(page, { debuggingPort, vaultName, report, fault = {} }) {
-    if ((await currentGrants()).has('bench')) throw harnessFault('Paused-target instrumentation is forbidden in a bench grant');
-    if (!Number.isInteger(debuggingPort) || debuggingPort < 1024 || debuggingPort > 65535) throw harnessFault('A debuggingPort from the caller’s own range is required');
+    // Pausing workers changes timings. The bench lock marks its process (and children) as timed.
+    if (process.env.BME_TIMED_RUN) throw harnessFault('Paused-target instrumentation is forbidden in a timed bench run');
+    if (!Number.isInteger(debuggingPort) || debuggingPort < 1024 || debuggingPort > 65535) throw harnessFault('A debuggingPort you chose (1024–65535) is required');
     const pageProbe = await page.context().newCDPSession(page);
     const { targetInfo: pageInfo } = await pageProbe.send('Target.getTargetInfo');
     await pageProbe.detach();

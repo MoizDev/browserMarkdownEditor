@@ -56,56 +56,51 @@ interval control. Playwright is asserted to be 1.63.0 and Chrome for Testing 157
 
 ## Preparation and execution
 
-Follow the integrator's `scratch/HOWTO.md`; every install/build/static/serve/browser command uses
-`bme-lock`, with slow commands in `hc` terminals. Use only the seat's assigned ports. Never merge
-core/I-0 into `impl/ref/c-15c`; it contains only `impl/reference` and these hooks/scripts. Copy this
-verification directory into the lane checkout for its pinned Playwright driver when needed.
+Use ports you chose and the pinned browser (`node verify/install-browser.mjs`; `BME_CHROME_PATH`
+overrides). REF is a clean reference checkout holding only the reference and these hooks/scripts;
+LANE is a worktree with the pinned Playwright driver (copy this verification directory there when
+needed). S is a scratch folder outside both. `S/vite.config.mjs` imports the reference's original
+Vite config, sets its literal `root`, a private `cacheDir`, and an `outDir` selected with `BME_OUT`.
+Commit the source and scripts before building identities.
 
-Reference worktree: `/Users/adham/Developer/bme-impl/wt/c-d-ref`; lane: `.../wt/c-d`.
-Scratch config `/Users/adham/Developer/bme-impl/scratch/c-d/vite.config.mjs` imports the reference's
-original Vite config, sets its literal `root`, a private `cacheDir`, and an `outDir` selected with
-`BME_OUT` (the HOWTO recipe). Commit the source and scripts before building identities.
-
-In the reference worktree, each build and its identity step share the same build grant:
+In the reference checkout, run each build and its identity step together:
 
 ```sh
-W=/Users/adham/Developer/bme-impl
-L=$W/scratch/bin/bme-lock
-CFG=$W/scratch/c-d/vite.config.mjs
-DRIVER=$W/wt/c-d/verify/core/C-15c
-# Start these slow commands in hc terminals; run sequentially per worktree.
-$L build -- sh -c "BME_OUT=$W/scratch/c-d/production ./node_modules/.bin/vite build --config $CFG && node $DRIVER/build-identity.mjs $W/wt/c-d-ref production $W/scratch/c-d/production $W/scratch/c-d/production.identity.json"
-$L build -- sh -c "BME_OUT=$W/scratch/c-d/benchmark ./node_modules/.bin/vite build --config $CFG --mode benchmark && node $DRIVER/build-identity.mjs $W/wt/c-d-ref benchmark $W/scratch/c-d/benchmark $W/scratch/c-d/benchmark.identity.json"
-node "$DRIVER/build-identity.mjs" "$W/wt/c-d-ref" development - "$W/scratch/c-d/development.identity.json"
+REF=/path/to/clean/reference; LANE=/path/to/this/worktree; S=/path/to/scratch
+CFG=$S/vite.config.mjs
+DRIVER=$LANE/verify/core/C-15c
+BME_OUT=$S/production ./node_modules/.bin/vite build --config $CFG && node $DRIVER/build-identity.mjs $REF production $S/production $S/production.identity.json
+BME_OUT=$S/benchmark ./node_modules/.bin/vite build --config $CFG --mode benchmark && node $DRIVER/build-identity.mjs $REF benchmark $S/benchmark $S/benchmark.identity.json
+node "$DRIVER/build-identity.mjs" "$REF" development - "$S/development.identity.json"
 ```
 
-Start three `bme-lock serve` commands in separate `hc` terminals, all with cwd `c-d-ref`:
+Start three servers in separate terminals, all with cwd `$REF`:
 
 ```sh
-$L serve -- env BME_OUT=$W/scratch/c-d/production ./node_modules/.bin/vite preview --config "$CFG" --port 6340 --strictPort
-$L serve -- env BME_OUT=$W/scratch/c-d/benchmark ./node_modules/.bin/vite preview --config "$CFG" --port 6341 --strictPort
-$L serve -- ./node_modules/.bin/vite --config "$CFG" --port 6343 --strictPort
+BME_OUT=$S/production ./node_modules/.bin/vite preview --config "$CFG" --port 6340 --strictPort
+BME_OUT=$S/benchmark ./node_modules/.bin/vite preview --config "$CFG" --port 6341 --strictPort
+./node_modules/.bin/vite --config "$CFG" --port 6343 --strictPort
 ```
 
-A scratch JSON spec names the same three arms, e.g. `scratch/c-d/candidate.json`:
+A scratch JSON spec names the same three arms (absolute paths), e.g. `$S/candidate.json`:
 
 ```json
 {"arms":[
-  {"kind":"P","url":"http://localhost:6340/","identity":"/Users/adham/Developer/bme-impl/scratch/c-d/production.identity.json"},
-  {"kind":"B","url":"http://localhost:6341/","identity":"/Users/adham/Developer/bme-impl/scratch/c-d/benchmark.identity.json"},
-  {"kind":"D","url":"http://localhost:6343/","identity":"/Users/adham/Developer/bme-impl/scratch/c-d/development.identity.json","serverConfig":"/Users/adham/Developer/bme-impl/scratch/c-d/vite.config.mjs"}
+  {"kind":"P","url":"http://localhost:6340/","identity":"<S>/production.identity.json"},
+  {"kind":"B","url":"http://localhost:6341/","identity":"<S>/benchmark.identity.json"},
+  {"kind":"D","url":"http://localhost:6343/","identity":"<S>/development.identity.json","serverConfig":"<S>/vite.config.mjs"}
 ]}
 ```
 
-From the lane checkout:
+From the lane checkout (the output directory defaults to `C-15c/` under the toolbox scratch folder):
 
 ```sh
-$L run -- node verify/core/C-15c/editor-hooks.mjs "$W/scratch/c-d/candidate.json" "$W/scratch/c-d/candidate-run"
+node verify/core/C-15c/editor-hooks.mjs "$S/candidate.json" "$S/candidate-run"
 ```
 
 The full report (identities, scanned-body hashes, counters, witnesses) and screenshots go to the
 output directory. Stop every server afterward. Mirror hook source into the lane for its unchanged
-`npm run typecheck` and `npm run lint` under `bme-lock static`; do not merge I-0 into the reference.
+`npm run typecheck` and `npm run lint`; do not merge I-0 into the reference.
 
 ## Mutants
 
@@ -119,7 +114,7 @@ create its identity with:
 node "$DRIVER/build-identity.mjs" <mutant-source> <mode> <mutant-outDir> <mutant-identity.json> "$W/wt/c-d-ref" <absolute-patch-file>
 ```
 
-Serve on a spare assigned port. Copy the candidate spec, replacing only the relevant P or B arm's
+Serve on a free port you choose. Copy the candidate spec, replacing only the relevant P or B arm's
 URL/identity and adding its `patch` path. Invoke **the identical driver command shape** with that spec
 and a separate output directory. Check both exit 1 and the exact named reason line. Never treat an
 `INVALID` or a missing report as rejection. Preserve the commands, output and patch SHA alongside the

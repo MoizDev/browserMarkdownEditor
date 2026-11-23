@@ -3,11 +3,12 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { openBrowser } from '../../lib/browser.mjs';
 import { installVault, waitForVault } from '../../lib/vault.mjs';
+import { scratchDir } from '../../lib/paths.mjs';
 
 const args = process.argv.slice(2);
 const option = (name, fallback) => args.includes(name) ? args[args.indexOf(name) + 1] : fallback;
 const url = option('--url', 'http://localhost:6302/');
-const out = option('--out', '/Users/adham/Developer/bme-impl/scratch/c-b/C-17a/run');
+const out = option('--out', scratchDir('C-17a', 'run'));
 const theme = option('--theme', 'light');
 const candidate = args.includes('--mirror');
 const consoleOnly = args.includes('--console-only');

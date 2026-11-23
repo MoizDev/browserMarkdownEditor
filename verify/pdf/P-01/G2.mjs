@@ -4,6 +4,7 @@ import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { createRequire } from 'node:module';
 import { chromium } from 'playwright';
+import { pinnedChrome } from '../../lib/paths.mjs';
 import { ROOT, argumentsOf, portNumber, toolbox, sha256, attributeCanvases, canvasFingerprint, publicGeometry, observedTrigger, covers, waitForCanvasIdle } from './common.mjs';
 import { installPdfObservations, snapshotPdf, releaseForCleanup } from './observe.mjs';
 import { settledReference } from './reference.mjs';
@@ -43,7 +44,7 @@ try {
     const pin = JSON.parse(await readFile(join(ROOT, 'verify/browser-pin.json')));
     const driver = createRequire(import.meta.url)('playwright/package.json').version;
     if (`playwright@${driver}` !== pin.driver) throw new Error('Unpinned driver');
-    browser = await chromium.launch({ headless: true, executablePath: process.env.BME_CHROME_PATH ?? join('/Users/adham/Developer/bme-impl/scratch/browsers', pin.version, pin.executable) });
+    browser = await chromium.launch({ headless: true, executablePath: await pinnedChrome() });
     if (browser.version() !== pin.version) throw new Error('Unpinned browser');
     report.data.browser = { version: browser.version(), driver, viewport: { width: 1440, height: 900 }, dpr: 2, reloadArm: 'native-pinned-chrome' };
     server = await tools.serveApp({ root: prepared.root, scratch: prepared.scratch, port, mode: prepared.mode, build: false });

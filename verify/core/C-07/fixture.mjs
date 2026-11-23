@@ -7,9 +7,10 @@ import { installHelperStandIn } from '../lib/helper.mjs';
 import { installCounters, installWorkerTargets } from '../lib/counters.mjs';
 import { buildIdentity, bindServedBodies } from '../lib/substitute.mjs';
 import { installVault, seedVault } from '../lib/vault.mjs';
+import { pinnedChrome, scratchDir } from '../../lib/paths.mjs';
 
 export const root = fileURLToPath(new URL('../../../', import.meta.url));
-export const scratch = process.env.BME_SCRATCH ?? '/Users/adham/Developer/bme-impl/scratch/c-c/c07b';
+export const scratch = process.env.BME_SCRATCH ?? scratchDir('C-07');
 export const origin = new URL(process.env.BME_ORIGIN ?? 'http://localhost:6320').origin;
 export const mode = process.env.BME_MODE ?? 'benchmark';
 export const dist = process.env.BME_DIST ?? resolve(scratch, `dist/${mode}`);
@@ -30,7 +31,7 @@ export async function openFixture({ id, rules = [], install, cancel = 'after-too
     const consoleErrors = [];
     const lifecycle = [];
     const pin = JSON.parse(await readFile(new URL('../../browser-pin.json', import.meta.url), 'utf8'));
-    const chrome = process.env.BME_CHROME_PATH ?? (await readFile('/Users/adham/Developer/bme-impl/scratch/browsers/CHROME', 'utf8')).trim();
+    const chrome = await pinnedChrome();
     const prepared = JSON.parse(await readFile(resolve(scratch, `prepared/${mode}.json`), 'utf8'));
     assert.equal(prepared.mode, mode, 'HarnessFault: wrong prepared mode');
     assert.equal(prepared.distDir, dist, 'HarnessFault: wrong prepared dist');

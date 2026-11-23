@@ -6,16 +6,15 @@ real UI input and explicitly external OPFS writes.
 
 ## Build and serve
 
-All commands below run through the integrator's `bme-lock`; see the run's
-scratch `HOWTO.md`. Use this seat's ports (6280–6299), separate output folders,
-a scratch Vite config with the proper source `root`, and `--strictPort`.
+Use ports you chose, separate output folders outside the clone, a scratch Vite
+config with the proper source `root`, and `--strictPort`. The pinned browser comes
+from `node verify/install-browser.mjs`.
 
 From a **clean, committed source worktree**, build each mode with provenance:
 
 ```sh
-L=/Users/adham/Developer/bme-impl/scratch/bin/bme-lock
-"$L" build -- node verify/core/C-15a/build.mjs production /path/to/scratch-vite-config.mjs /path/to/prod
-"$L" build -- node verify/core/C-15a/build.mjs benchmark /path/to/scratch-vite-config.mjs /path/to/bench
+node verify/core/C-15a/build.mjs production /path/to/scratch-vite-config.mjs /path/to/prod
+node verify/core/C-15a/build.mjs benchmark /path/to/scratch-vite-config.mjs /path/to/bench
 ```
 
 The helper runs normal `vite build`, verifies the source commit/tree did not
@@ -26,7 +25,7 @@ actual diff SHA-256; its source worktree must differ only at the named App hook.
 A failed build never leaves an old identity file in place.
 
 Serve P (production preview), B (benchmark preview) and D (default-mode Vite
-dev server) through `"$L" serve -- ...`, in hc terminals. D runs the same clean
+dev server) yourself, each with `--strictPort`. D runs the same clean
 committed source worktree; the run verifies its commit, empty `git status`, and
 the served React dev module's absolute App source filename. Stop all servers
 when the run is finished. Neither preview nor dev is started by the script.

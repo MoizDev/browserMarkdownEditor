@@ -6,14 +6,13 @@ user sends a message, and sends recorded `vault_search` calls. It never imports 
 the page or calls an executor directly. It makes no outside requests. Fixtures are fresh named
 OPFS files; no user's vault is opened.
 
-Use Playwright 1.63.0 and Chrome for Testing 157.0.8103.39 from the integrator's HOWTO. Every browser,
-server, build and install goes through `bme-lock`; start the server immediately before the run and
-stop it even if the run fails. `BME_ORIGIN` defaults to `http://localhost:6320`; `BME_OUTPUT` controls
-its JSON/screenshots. `BME_CASE` is `all` (default), `responsive`, `deadline`, `stop`, `controls`,
+Use Playwright 1.63.0 and Chrome for Testing 157.0.8103.39 (`node verify/install-browser.mjs`;
+`BME_CHROME_PATH` overrides). Start the server immediately before the run and stop it even if the
+run fails. `BME_ORIGIN` defaults to `http://localhost:6320`; `BME_OUTPUT` controls
+its JSON/screenshots (default `C-07a/` under the toolbox scratch folder). `BME_CASE` is `all` (default), `responsive`, `deadline`, `stop`, `controls`,
 `output-cap` or `long-query`. Run the last two separately: their large fixture/header would obscure
 which hostile line the normal responsiveness fixture reaches.
-The lane's scratch wrapper acquires the browser grant before starting its separate serve grant,
-then stops that server in an EXIT trap; it is not an app dependency.
+A wrapper that starts the server should stop it in an EXIT trap; it is not an app dependency.
 
 ## The five parts
 

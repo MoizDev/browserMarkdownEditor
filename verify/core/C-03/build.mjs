@@ -4,8 +4,8 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve, relative } from 'node:path';
 
-// Build provenance, not a behavioural test. Run this whole process under the
-// integrator's build grant, from the source worktree whose bytes are built.
+// Build provenance, not a behavioural test. Run it from the source worktree whose bytes are
+// built, as its own phase before any browser run.
 const [mode, configArg, outArg, patchArg] = process.argv.slice(2);
 assert(['production', 'benchmark'].includes(mode) && configArg && outArg,
     'Usage: node build.mjs production|benchmark CONFIG OUT_DIR [MUTANT_PATCH]');

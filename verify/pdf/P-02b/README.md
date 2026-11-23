@@ -1,17 +1,20 @@
 # Classic PDF failure containment (P-02b)
 
-## Implementation acceptance — charter §0
+## Implementation acceptance
 
 The current bar is typecheck + lint and one real-app headless sanity run, with light/dark
 screenshots inspected. No review signature, mutant, identity rerun or fault matrix is a merge
 condition. The existing proof code/evidence below is preserved for the separate post-K7 review.
 
 ```
-node verify/pdf/P-02b/sanity.mjs <production-preview-url/> <fresh-results>
+BME_PDF_POSITIVE_JPX=<readable JPX scan PDF> BME_PDF_UPSTREAM_FIXTURES=<pdf.js upstream test PDFs> \
+  node verify/pdf/P-02b/sanity.mjs <production-preview-url/> <fresh-results>
 ```
 
-Run under bme-lock run, using pinned Playwright 1.63.0 and Chrome for Testing. The preview is
-started within the granted run and stopped at its end. The sanity opens an authored JPX scan,
+It uses pinned Playwright 1.63.0 and Chrome for Testing (`node verify/install-browser.mjs`). Start
+the preview just before the run and stop it after. Neither PDF is in the repo: the damaged one is
+pdf.js's upstream `bug_jpx.pdf` (rights unverified, never committed); each script refuses with one
+sentence naming the variable when it is not set. The sanity opens an authored JPX scan,
 shows the corrupt-image notice and thumbnail placeholder, exercises a document-only Retry,
 closes the worker through CDP and demands another document to show the no-progress notice, then
 explicitly retries onto a fresh renderer. Both themes are checked; source bytes/write counts
@@ -27,7 +30,7 @@ f73e1e6, CfT 157.0.8103.39, actual Open Vault/tree gesture:
 - completed 780×1009 white blit carrying the marker set before the tree click, zero ink;
 - no accessible failure notice. The screenshot was inspected: white paper and working chrome.
 
-Evidence: `W/scratch/p-e/P-02b-baseline/`. This is a failed image, not the genuine blank control.
+Evidence was kept in the scratch folder of that run. This is a failed image, not the genuine blank control.
 
 ## Product behaviour
 

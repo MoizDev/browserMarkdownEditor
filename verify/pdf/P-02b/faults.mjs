@@ -2,7 +2,8 @@
 import { chromium } from 'playwright';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
+import { pinnedChrome, requiredInput } from '../../lib/paths.mjs';
 
 import { CLASSIC_PDF_FAULT_CASES as CASES } from './cases.mjs';
 const [url, identityFile, out, name] = process.argv.slice(2);
@@ -23,7 +24,7 @@ const jpx = JSON.parse(await readFile(process.env.LOCAL_JPX_WITNESS, 'utf8'));
 if (jpx.sha256 !== '8996477e14f43e95fb685733a7ac321cdefc86a37207920657bf20d045143701') throw new Error('Positive JPX witness identity mismatch');
 if (name === 'large-scan' && !process.env.LARGE_SCAN_WITNESS) throw new Error('Large-scan metadata is required');
 const fixture = name === 'large-scan' ? JSON.parse(await readFile(process.env.LARGE_SCAN_WITNESS, 'utf8')) : name === 'decode' ? {
-    file: 'bug_jpx.pdf', path: '/Users/adham/Developer/browserMarkdownEditor/planning/00-evidence/pdf/offscreen/downloads/upstream-fixtures/bug_jpx.pdf',
+    file: 'bug_jpx.pdf', path: join(requiredInput('BME_PDF_UPSTREAM_FIXTURES', 'the folder of pdf.js upstream test PDFs that holds bug_jpx.pdf (sha256 4010d808…)'), 'bug_jpx.pdf'),
     sha256: '4010d808557a72278368c05518367735ed186cbdd04974b8506275f9ac40f999', provenance: 'rights-unverified local witness',
 } : jpx;
 if (name === 'large-scan' && (fixture.sha256 !== '39f23ca9c44cf4f07e469d1c91e3ae8ba39a45a82bcf91a3618504a5ca314d44' || fixture.expected?.sourcePixels !== 69612752 || fixture.expected.width * fixture.expected.height !== fixture.expected.sourcePixels)) throw new Error('Authored A3 scan metadata mismatch');
@@ -31,7 +32,7 @@ const bytes = await readFile(fixture.path);
 if (sha(bytes) !== fixture.sha256) throw new Error('Fixture bytes mismatch');
 await mkdir(out);
 const report = { gate: 'P-02b', case: name, theme, dpr, application: { commit: identity.commit, mutant: identity.mutant, identitySha256: sha(await readFile(identityFile)) }, verifierSha256: sha(await readFile(new URL(import.meta.url))), casesSha256: sha(await readFile(new URL('./cases.mjs', import.meta.url))), fixture: { file: fixture.file, sha256: fixture.sha256, provenance: fixture.provenance }, arms: [], bodies: [], faults: [], errors: [], console: [], mainScripts: [], workerTargets: [] };
-const browser = await chromium.launch({ headless: true, executablePath: `/Users/adham/Developer/bme-impl/scratch/browsers/${pin.version}/${pin.executable}` });
+const browser = await chromium.launch({ headless: true, executablePath: await pinnedChrome() });
 let faultEnabled = true;
 const required = ['open', 'source-unchanged'];
 const arm = value => { if (report.arms.includes(value)) throw new Error(`Duplicate arm ${value}`); report.arms.push(value); };

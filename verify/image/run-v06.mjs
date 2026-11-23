@@ -88,7 +88,7 @@ if (options['--prepare']) {
     const metadataBytes = await readFile(resolve(prepared.data, 'metadata.json'));
     if (hash(metadataBytes) !== prepared.metadataSha256 || hash(await readFile(resolve(prepared.data, 'input.json'))) !== prepared.inputSha256) throw new Error('Prepared input/metadata changed');
     // Binding checks fetched code; freeze ALL emitted files here too, including HTML with
-    // inline code and font/image bytes, before mounting this seat's dist read-only.
+    // inline code and font/image bytes, before mounting this run's dist read-only.
     for (const file of JSON.parse(metadataBytes).build.files) {
         const path = resolve(prepared.dist, file.path);
         if (!path.startsWith(`${prepared.dist}/`)) throw new Error('Emitted path escapes dist');

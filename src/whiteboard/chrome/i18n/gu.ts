@@ -29,6 +29,7 @@ export default defineBoardLanguage({
         "crop.aspect.wide": "વાઇડ (16:9)",
         "crop.altBody": "જે લોકો ચિત્ર જોઈ શકતા નથી તેમના માટે ચિત્રનું વર્ણન કરો.",
         "crop.selectionChanged": "પસંદગી બદલાઈ ગઈ; ચિત્ર ફરીથી પસંદ કરો.",
+        "print.scopeBody": "પસંદ કરેલાં તત્વો છાપવા કે આખી શીટ?",
         "chrome.altLabel": "વૈકલ્પિક ટેક્સ્ટ",
         "chrome.altTooLong": "વર્ણન ખૂબ લાંબું છે.",
         "dialog.linkNewTab": "લિંક નવી ટૅબમાં ખુલશે.",

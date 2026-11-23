@@ -29,6 +29,7 @@ export default defineBoardLanguage({
         "crop.aspect.wide": "عریض (16:9)",
         "crop.altBody": "تصویر را برای افرادی که نمی‌توانند ببینند توصیف کنید.",
         "crop.selectionChanged": "انتخاب تغییر کرد؛ تصویر را دوباره انتخاب کنید.",
+        "print.scopeBody": "موارد انتخاب‌شده چاپ شوند یا کل صفحه؟",
         "chrome.altLabel": "متن جایگزین",
         "chrome.altTooLong": "توضیحات خیلی طولانی است.",
         "dialog.linkNewTab": "پیوندها در یک برگه جدید باز می‌شوند.",

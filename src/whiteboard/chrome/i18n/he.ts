@@ -29,6 +29,7 @@ export default defineBoardLanguage({
         "crop.aspect.wide": "מסך רחב (16:9)",
         "crop.altBody": "תארו את התמונה לאנשים שאינם יכולים לראות אותה.",
         "crop.selectionChanged": "הבחירה השתנתה; בחרו שוב את התמונה.",
+        "print.scopeBody": "להדפיס את הפריטים שנבחרו או את כל הגיליון?",
         "chrome.altLabel": "טקסט חלופי",
         "chrome.altTooLong": "התיאור ארוך מדי.",
         "dialog.linkNewTab": "קישורים ייפתחו בכרטיסייה חדשה.",

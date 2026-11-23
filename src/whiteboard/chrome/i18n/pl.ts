@@ -29,6 +29,7 @@ export default defineBoardLanguage({
         "crop.aspect.wide": "Panoramiczne (16:9)",
         "crop.altBody": "Opisz obraz dla osób, które go nie widzą.",
         "crop.selectionChanged": "Zaznaczenie się zmieniło; zaznacz obraz ponownie.",
+        "print.scopeBody": "Wydrukować zaznaczone elementy czy cały arkusz?",
         "chrome.altLabel": "Tekst alternatywny",
         "chrome.altTooLong": "Opis jest za długi.",
         "dialog.linkNewTab": "Linki otworzą się w nowej karcie.",

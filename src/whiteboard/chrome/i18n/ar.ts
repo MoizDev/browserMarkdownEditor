@@ -29,6 +29,7 @@ export default defineBoardLanguage({
         "crop.aspect.wide": "عريض (16:9)",
         "crop.altBody": "صِف الصورة للأشخاص الذين لا يستطيعون رؤيتها.",
         "crop.selectionChanged": "تغيّرت التحديدات؛ حدّد الصورة مرة أخرى.",
+        "print.scopeBody": "هل تريد طباعة العناصر المحددة أم الورقة كاملة؟",
         "chrome.altLabel": "النص البديل",
         "chrome.altTooLong": "الوصف طويل جدًا.",
         "dialog.linkNewTab": "ستُفتح الروابط في علامة تبويب جديدة.",

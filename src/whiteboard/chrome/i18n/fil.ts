@@ -31,6 +31,7 @@ export default defineBoardLanguage({
         "crop.aspect.wide": "Malapad (16:9)",
         "crop.altBody": "Ilarawan ang larawan para sa mga taong hindi ito makikita.",
         "crop.selectionChanged": "Nagbago ang pagpili; piliin muli ang larawan.",
+        "print.scopeBody": "I-print ang mga napiling item o ang buong sheet?",
         "chrome.altLabel": "Alternatibong teksto",
         "chrome.altTooLong": "Masyadong mahaba ang paglalarawan.",
         "dialog.linkNewTab": "Magbubukas ang mga link sa bagong tab.",

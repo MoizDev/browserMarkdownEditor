@@ -29,6 +29,7 @@ export default defineBoardLanguage({
         "crop.aspect.wide": "Laaja (16:9)",
         "crop.altBody": "Kuvaile kuva ihmisille, jotka eivät voi nähdä sitä.",
         "crop.selectionChanged": "Valinta muuttui; valitse kuva uudelleen.",
+        "print.scopeBody": "Tulostetaanko valitut kohteet vai koko arkki?",
         "chrome.altLabel": "Vaihtoehtoinen teksti",
         "chrome.altTooLong": "Kuvaus on liian pitkä.",
         "dialog.linkNewTab": "Linkit avautuvat uuteen välilehteen.",

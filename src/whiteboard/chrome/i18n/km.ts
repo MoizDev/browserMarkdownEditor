@@ -29,6 +29,7 @@ export default defineBoardLanguage({
         "crop.aspect.wide": "ធំទូលាយ (16:9)",
         "crop.altBody": "ពិពណ៌នារូបភាពសម្រាប់អ្នកដែលមើលមិនឃើញ។",
         "crop.selectionChanged": "ការជ្រើសរើសបានផ្លាស់ប្តូរ; សូមជ្រើសរើសរូបភាពម្តងទៀត។",
+        "print.scopeBody": "បោះពុម្ពធាតុដែលបានជ្រើស ឬសន្លឹកទាំងមូល?",
         "chrome.altLabel": "អត្ថបទជំនួស",
         "chrome.altTooLong": "ការពិពណ៌នាវែងពេក។",
         "dialog.linkNewTab": "តំណភ្ជាប់នឹងបើកក្នុងផ្ទាំងថ្មី។",

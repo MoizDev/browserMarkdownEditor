@@ -29,6 +29,7 @@ export default defineBoardLanguage({
         "crop.aspect.wide": "Ευρεία οθόνη (16:9)",
         "crop.altBody": "Περιγράψτε την εικόνα για άτομα που δεν μπορούν να τη δουν.",
         "crop.selectionChanged": "Η επιλογή άλλαξε· επιλέξτε ξανά την εικόνα.",
+        "print.scopeBody": "Εκτύπωση των επιλεγμένων στοιχείων ή ολόκληρου του φύλλου;",
         "chrome.altLabel": "Εναλλακτικό κείμενο",
         "chrome.altTooLong": "Η περιγραφή είναι πολύ μεγάλη.",
         "dialog.linkNewTab": "Οι σύνδεσμοι θα ανοίγουν σε νέα καρτέλα.",

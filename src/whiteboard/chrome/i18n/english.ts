@@ -431,6 +431,7 @@ export const english = {
     "crop.aspect.wide": "Wide (16:9)",
     "crop.altBody": "Describe the picture for people who cannot see it.",
     "crop.selectionChanged": "The selection changed; select the picture again.",
+    "print.scopeBody": "Print the selected items, or the whole sheet?",
     "chrome.altLabel": "Alt text",
     "chrome.altTooLong": "The description is too long.",
     "dialog.linkNewTab": "Links will open in a new tab.",

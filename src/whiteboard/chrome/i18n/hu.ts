@@ -29,6 +29,7 @@ export default defineBoardLanguage({
         "crop.aspect.wide": "Szélesvásznú (16:9)",
         "crop.altBody": "Írja le a képet azok számára, akik nem látják.",
         "crop.selectionChanged": "A kijelölés megváltozott; jelölje ki újra a képet.",
+        "print.scopeBody": "A kijelölt elemeket vagy a teljes lapot nyomtassuk ki?",
         "chrome.altLabel": "Alternatív szöveg",
         "chrome.altTooLong": "A leírás túl hosszú.",
         "dialog.linkNewTab": "A hivatkozások új lapon nyílnak meg.",

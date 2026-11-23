@@ -29,6 +29,7 @@ export default defineBoardLanguage({
         "crop.aspect.wide": "Widescreen (16:9)",
         "crop.altBody": "Descreva a imagem para pessoas que não podem vê-la.",
         "crop.selectionChanged": "A seleção mudou; selecione a imagem novamente.",
+        "print.scopeBody": "Imprimir os itens selecionados ou a folha inteira?",
         "chrome.altLabel": "Texto alternativo",
         "chrome.altTooLong": "A descrição é longa demais.",
         "dialog.linkNewTab": "Os links serão abertos em uma nova aba.",

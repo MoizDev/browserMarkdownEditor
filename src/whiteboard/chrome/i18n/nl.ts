@@ -31,6 +31,7 @@ export default defineBoardLanguage({
         "crop.aspect.wide": "Breedbeeld (16:9)",
         "crop.altBody": "Beschrijf de afbeelding voor mensen die die niet kunnen zien.",
         "crop.selectionChanged": "De selectie is veranderd; selecteer de afbeelding opnieuw.",
+        "print.scopeBody": "De geselecteerde items of het hele vel afdrukken?",
         "chrome.altLabel": "Alternatieve tekst",
         "chrome.altTooLong": "De beschrijving is te lang.",
         "dialog.linkNewTab": "Koppelingen worden in een nieuw tabblad geopend.",

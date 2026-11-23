@@ -32,6 +32,7 @@ export default defineBoardLanguage({
         "crop.aspect.wide": "Lat (16:9)",
         "crop.altBody": "Descrie imaginea pentru persoanele care nu o pot vedea.",
         "crop.selectionChanged": "Selecția s-a schimbat; selectează din nou imaginea.",
+        "print.scopeBody": "Imprimați elementele selectate sau întreaga foaie?",
         "chrome.altLabel": "Text alternativ",
         "chrome.altTooLong": "Descrierea este prea lungă.",
         "dialog.linkNewTab": "Linkurile se vor deschide într-un tab nou.",

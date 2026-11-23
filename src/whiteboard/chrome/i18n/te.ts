@@ -29,6 +29,7 @@ export default defineBoardLanguage({
         "crop.aspect.wide": "వైడ్ (16:9)",
         "crop.altBody": "చిత్రం చూడలేని వ్యక్తుల కోసం దానిని వివరించండి.",
         "crop.selectionChanged": "ఎంపిక మారింది; చిత్రాన్ని మళ్లీ ఎంచుకోండి.",
+        "print.scopeBody": "ఎంచుకున్న అంశాలను ముద్రించాలా లేదా మొత్తం షీట్‌నా?",
         "chrome.altLabel": "ప్రత్యామ్నాయ వచనం",
         "chrome.altTooLong": "వివరణ చాలా పొడవుగా ఉంది.",
         "dialog.linkNewTab": "లింక్‌లు కొత్త ట్యాబ్‌లో తెరుచుకుంటాయి.",

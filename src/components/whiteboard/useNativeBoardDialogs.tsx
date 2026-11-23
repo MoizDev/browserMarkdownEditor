@@ -79,6 +79,12 @@ export function useNativeBoardDialogs(options: {
         if (!answer.accepted) return null;
         return answer.alt ? 'alt' : { value: answer.value ?? '' };
     }, [ask]);
+    /** Two answers to one question in the app's own dialog: the confirm button ("confirm") or the second button ("alt"), null when backed out. */
+    const chooseOne = useCallback(async (value: BoardQuestion & { readonly altLabel: string }): Promise<'confirm' | 'alt' | null> => {
+        const answer = await ask({ ...value, kind: 'confirm' });
+        if (!answer.accepted) return null;
+        return answer.alt ? 'alt' : 'confirm';
+    }, [ask]);
     const inform = useCallback(async (value: BoardQuestion): Promise<void> => { await ask({ ...value, kind: 'info' }); }, [ask]);
     const dialogs = question && <ConfirmDialog questionId={question.id} title={question.title}
         confirmLabel={question.confirmLabel} danger={question.danger} input={question.input}
@@ -87,5 +93,5 @@ export function useNativeBoardDialogs(options: {
         altLabel={question.altLabel} onAlt={question.altLabel ? () => finish(question.id, { accepted: true, alt: true }) : undefined}>
         {question.body}
     </ConfirmDialog>;
-    return { confirm, requestText, requestTextChoice, inform, cancel, dialogs };
+    return { confirm, requestText, requestTextChoice, chooseOne, inform, cancel, dialogs };
 }

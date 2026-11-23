@@ -29,6 +29,7 @@ export default defineBoardLanguage({
         "crop.aspect.wide": "Široko (16:9)",
         "crop.altBody": "Opiši sliku za osobe koje je ne mogu vidjeti.",
         "crop.selectionChanged": "Odabir se promijenio; ponovno odaberi sliku.",
+        "print.scopeBody": "Ispisati odabrane stavke ili cijeli list?",
         "chrome.altLabel": "Alternativni tekst",
         "chrome.altTooLong": "Opis je predugačak.",
         "dialog.linkNewTab": "Poveznice će se otvoriti u novoj kartici.",

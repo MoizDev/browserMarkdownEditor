@@ -388,7 +388,7 @@ Screenshots taken out of a dark-themed app land on a notebook page or a whiteboa
 Navigation, selection, copying and exporting never edit the file; only drawing and editing do.
 
 ### Saving, reopening and the agent
-Every change is saved to the file a second after you stop; \`Cmd/Ctrl + Z\` undoes and \`Cmd/Ctrl + Shift + Z\` redoes. Drawings and notebooks **reopen where you left them** — the same spot on a drawing, the same page and zoom in a notebook — just as a PDF does, whether you switch tabs, close the file or reload the app.
+Every change is saved to the file a second after you stop; \`Cmd/Ctrl + Z\` undoes and \`Cmd/Ctrl + Shift + Z\` redoes. Drawings and notebooks **reopen where you left them** — the same spot on a drawing, the same page and zoom in a notebook — just as a PDF does, whether you switch tabs, close the file or reload the app. A drawing you open here for the first time shows the view saved in the file, if it has one (an older \`.tldraw\` drawing opens where it was last viewed); otherwise it frames everything on the page with a margin, never zoomed in past 100 %.
 
 A drawing or notebook this version cannot read safely — an unreadable file, one written in a newer format, or one that is not the kind its name says — **opens read-only**: neither drawing on it nor Save can overwrite the original file. An empty file is still a valid new board.
 

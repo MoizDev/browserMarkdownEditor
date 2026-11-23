@@ -35,6 +35,8 @@ export interface UseReaderIntegrationDeps {
   // useTabLifecycle
   closeTab: (path: string) => void;
   reopenClosedTab: () => Promise<string | undefined>;
+  // useOutsideChanges
+  checkOpenDocs: (scope: ReadonlySet<string> | 'all') => Promise<void>;
 }
 
 export function useReaderIntegration(deps: UseReaderIntegrationDeps) {
@@ -42,7 +44,7 @@ export function useReaderIntegration(deps: UseReaderIntegrationDeps) {
     readFileSnapshot, currentVaultIdRef, readerEpochRef, notify, announce,
     tabsRef, setTabs, layoutRef, setLayout, activeTabPathRef, invalidReaderTokens, readerIdentityCache,
     diskStateRef, pdfRebuildRef, setDiskState,
-    closeTab, reopenClosedTab,
+    closeTab, reopenClosedTab, checkOpenDocs,
   } = deps;
 
   useEffect(() => {
@@ -51,8 +53,8 @@ export function useReaderIntegration(deps: UseReaderIntegrationDeps) {
     return () => window.removeEventListener('reading-persistence-unavailable', report);
   }, [announce]);
 
-  const readerDeps = useRef({ readFileSnapshot, notify, announce, closeTab, reopenClosedTab });
-  useLayoutEffect(() => { readerDeps.current = { readFileSnapshot, notify, announce, closeTab, reopenClosedTab }; });
+  const readerDeps = useRef({ readFileSnapshot, notify, announce, closeTab, reopenClosedTab, checkOpenDocs });
+  useLayoutEffect(() => { readerDeps.current = { readFileSnapshot, notify, announce, closeTab, reopenClosedTab, checkOpenDocs }; });
   const readerIntegration = useMemo<ReaderIntegration>(() => {
     const current = (token: ReaderToken) => {
       if (invalidReaderTokens.current.has(`${token.documentId}|${token.byteGeneration}`)) return undefined;
@@ -72,7 +74,21 @@ export function useReaderIntegration(deps: UseReaderIntegrationDeps) {
         if (!tab || tab.dirty || diskStateRef.current.has(tab.id) || getView(tab.file.path)?.hasPendingEdits?.()) return;
         const entry = pdfRebuildRef.current.get(tab.id);
         if (entry && entry.baseline.hash !== version.hash) { setDiskState(tab.id, 'conflict'); return; }
+        const late = !getBaseline(tab.id);
         setBaseline(tab.id, version);
+        // A reader's version can land seconds after its open (a large file's hash), and an outside change in between
+        // was skipped for want of a baseline: the old pages stayed up with no DiskBar (measured, 287 MB textbook
+        // overwritten 0.6 s after the click). Compare once now; an unchanged file costs one stat.
+        if (late) void readerDeps.current.checkOpenDocs(new Set([tab.file.path]));
+      },
+      onReaderSourceLost(token, stat) {
+        const tab = current(token);
+        if (!tab) return;
+        // The snapshot could not be read through, so no hash of it exists: the baseline is its stat with an unknown
+        // hash, which any changed file differs from (reload, or the DiskBar over unsaved work) and an unchanged one
+        // matches by stat (nothing to do).
+        if (!getBaseline(tab.id)) setBaseline(tab.id, { ...stat, hash: '' });
+        void readerDeps.current.checkOpenDocs(new Set([tab.file.path]));
       },
       onReaderStatus(token, status) { if(!current(token))return; setTabs(prev=>{
         if(!current(token))return prev;

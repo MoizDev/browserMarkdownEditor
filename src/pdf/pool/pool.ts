@@ -696,6 +696,20 @@ class Pool implements PdfPool {
         this.pump();
     }
     releaseTile(result: PageTileResult): void { this.credits.release(result); }
+    async adoptSource(doc: Doc, blob: Blob): Promise<void> {
+        if (!(blob instanceof Blob) || (typeof File !== 'undefined' && blob instanceof File) || blob.size !== doc.blob.size) throw new PdfEngineError('RangeError', 'Invalid PDF source copy');
+        if (doc.closing || doc.blob === blob || this.disposed) return;
+        // Swapped first: an open posted from now on (a new worker, a restart) reads the copy. A worker that already opened
+        // the snapshot is told in its serial order, after its open and any render queued before.
+        doc.blob = blob;
+        await Promise.allSettled(this.slots.filter(slot => slot.opens.has(doc.key)).map(async slot => {
+            const generation = slot.client.generation;
+            await slot.opens.get(doc.key);
+            if (slot.client.generation !== generation || !slot.opens.has(doc.key) || doc.closing) return;
+            record(await slot.client.request<unknown>('doc.adoptSource', { docKey: doc.key, source: blob, size: blob.size },
+                { priority: 1, cpu: 'light', signal: doc.controller.signal, deadlineMs: 60_000 }), []);
+        }));
+    }
     async release(lease: Lease): Promise<void> {
         const doc = lease.doc; doc.leases.delete(lease); doc.refs--;
         if (doc.refs > 0) return;
@@ -914,6 +928,7 @@ class Lease implements PdfPoolDocument {
     tile(args: WithoutDocKey<PageTileArgs>, options: PdfRequestOptions) { return this.request('page.tile', args, options); }
     releaseTile(result: PageTileResult): void { this.pool.releaseTile(result); }
     retry(): Promise<void> { return this.closed ? Promise.reject(abortError()) : this.pool.retry(this.docKey); }
+    adoptSource(blob: Blob): Promise<void> { return this.closed ? Promise.reject(abortError()) : this.pool.adoptSource(this.doc, blob); }
     renderPage(page: number, scale: number, options: PdfPageBitmapOptions): Promise<ImageBitmap> { return renderPdfPageBitmap(this, page, scale, options); }
     thumbnail(page: number, maxSidePx: number, options: Omit<PdfPageBitmapOptions, 'priority' | 'maxPixels'>): Promise<ImageBitmap> {
         const geometry = this.info.pages[page];

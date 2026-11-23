@@ -18,13 +18,14 @@ export interface PdfOpenOptions {
     /** App-owned full session token; only its first three fields enter docKey. */
     token: RenderToken;
     source: 'outer' | 'original';
-    /** Already memory-backed, immutable. A disk-backed File is not accepted. */
+    /** Immutable: memory-backed, or a nameless slice of the disk snapshot whose memory-backed copy the caller hands to
+     * `adoptSource` once made. A File itself is refused (its name must not reach the contained engine). */
     blob: Blob;
     password?: string;
     priority: Priority;
     signal?: AbortSignal;
 }
-export type PdfDocumentOp = Exclude<PdfEngineOp, 'engine.init' | 'doc.open' | 'doc.close' | 'font.provide' | 'worker.stats'>;
+export type PdfDocumentOp = Exclude<PdfEngineOp, 'engine.init' | 'doc.open' | 'doc.close' | 'doc.adoptSource' | 'font.provide' | 'worker.stats'>;
 export type WithoutDocKey<T> = T extends unknown ? Omit<T, 'docKey'> : never;
 
 /** A retained, source-explicit document lease. Closing it cannot cancel another
@@ -57,6 +58,9 @@ export interface PdfPoolDocument {
     /** Highest-priority live waiter wins, including already queued/running extraction. */
     reprioritise(request: Promise<unknown>, priority: Priority): void;
     setVisible(visible: boolean): void;
+    /** Moves every worker reading this document from its disk snapshot onto `blob`, a memory-backed copy of the same
+     * bytes; later opens and restarts read the copy. Idempotent per document. */
+    adoptSource(blob: Blob): Promise<void>;
     /** Explicitly clear failures for this lease's document without replacing its source. */
     retry(): Promise<void>;
     close(): Promise<void>;

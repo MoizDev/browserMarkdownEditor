@@ -106,7 +106,7 @@ function SubmenuRows({ entries, activate, direction }: {
                 onClick={() => activate(item.run, item.keepOpen)}>
                 {item.checked !== undefined && <span className="context-menu-item-check" aria-hidden="true">{item.checked && <Check size={14} />}</span>}
                 {item.label}
-                {item.shortcut && <span style={{ marginInlineStart: 'auto' }}>{item.shortcut}</span>}
+                {item.shortcut && <span style={{ marginInlineStart: 'auto', direction: 'ltr', unicodeBidi: 'isolate' }}>{item.shortcut}</span>}
             </button>;
         })}
         {child && <div ref={childPanel} className="context-menu-panel" style={{ position: 'fixed',
@@ -512,7 +512,7 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
                                 </span>
                             )}
                             {entry.label}
-                            {entry.shortcut && <span style={{ marginInlineStart: 'auto' }}>{entry.shortcut}</span>}
+                            {entry.shortcut && <span style={{ marginInlineStart: 'auto', direction: 'ltr', unicodeBidi: 'isolate' }}>{entry.shortcut}</span>}
                         </button>
                     );
                 })}

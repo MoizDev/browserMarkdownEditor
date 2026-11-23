@@ -5,7 +5,7 @@ import { getReadingPreferences,subscribeReadingPreferences,setWordEmphasis,updat
 import { readPdfTextViewState } from '../utils/readerViewState';
 import type { PdfReadingBinding } from '../types/reading';
 import type { ReaderIntegration } from '../types/reading';
-import React, { useEffect, useLayoutEffect, useRef, useState, useMemo, useCallback, lazy, Suspense } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState, useMemo, useCallback } from 'react';
 import BacklinksPanel from './BacklinksPanel';
 import DocumentPane from './DocumentPane';
 import TabBar from './TabBar';
@@ -22,6 +22,7 @@ import type { ActiveFile, ContentChangeOptions, DiskAction, OpenTab, GraphData, 
 
 // Read the same resolved component idle prefetch filled, not a second lazy payload.
 import { getPdfPaneModuleSnapshot, loadPdfPane, subscribePdfPaneModule } from './pdfPaneModule';
+import { canvasPaneSlot } from './paneModules';
 import type { PdfPaneComponent } from './pdfPaneModule';
 import { useActivated, useFloatingSlot } from './floatingSlot';
 
@@ -91,7 +92,7 @@ const PdfPaneHost = React.memo(function PdfPaneHost({
 });
 // Whiteboards and notebooks float over their column for the same reason PDFs
 // do, and through the same geometry — see components/floatingSlot.ts.
-const CanvasPane = lazy(() => import('./CanvasPane'));
+const CanvasPane = canvasPaneSlot.View;
 
 interface EditorPaneProps {
     contentOf(path: string): string | undefined;
@@ -1105,7 +1106,7 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                     }
                     : undefined;
                 return (
-                    <Suspense
+                    <CanvasPane
                         // Keyed as a PDF pane is: by the pane AND the path, so
                         // an overwritten file never inherits the old board's
                         // editor, and on diskRev, so a reload from disk
@@ -1118,8 +1119,6 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                                 </div>
                             </div>
                         ) : null}
-                    >
-                        <CanvasPane
                             file={tab.file}
                             documentId={tab.id}
                             nativeCanvasHost={nativeCanvasHost}
@@ -1137,7 +1136,6 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                             disk={tab.disk}
                             onDiskAction={onDiskAction}
                         />
-                    </Suspense>
                 );
             })}
 

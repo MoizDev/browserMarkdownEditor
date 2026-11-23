@@ -34,6 +34,9 @@ export function loadPdfPane(options: { retry?: boolean } = {}): Promise<PdfPaneC
     const attempt = snapshot.attempt + 1;
     const next = import('./PdfPane').then(
         module => {
+            // The pane is only the first of a chain the open waits on; its routes and the engine's modules are warmed
+            // with it (pdfSurfaceModules.ts), so an idle prefetch leaves nothing for the first click to fetch.
+            void import('./pdfSurfaceModules').then(surfaces => surfaces.warmPdfOpenPath()).catch(() => {});
             publish({ status: 'ready', attempt, Component: module.default });
             return module.default;
         },

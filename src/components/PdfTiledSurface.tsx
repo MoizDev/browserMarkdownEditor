@@ -45,6 +45,10 @@ export default function PdfTiledSurface(props: Props) {
     useEffect(() => {
         if (!key) return;
         const controller = new AbortController();
+        // The platform's entry is needed the moment the source opens: fetched in parallel, not after (it was requested
+        // ~90 ms after the source modules, once engine init and the document open were done). The pane's own import of
+        // it owns any failure.
+        void import('../platform/render/cpuEntry').catch(() => {});
         void Promise.all([import('../pdf/session/sourceRuntime'), import('../pdf/session/passwords')]).then(async ([{ ensurePdfTiledSourceFactory }, store]) => {
             if (!controller.signal.aborted) setPasswords(store);
             const factory = await ensurePdfTiledSourceFactory();

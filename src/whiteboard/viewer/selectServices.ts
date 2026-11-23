@@ -351,7 +351,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
                 await options.preview.waitUntilIdle(controller.signal);
                 if (!active()) throw new DOMException('Keyboard transform became stale', 'AbortError');
                 if (stretch) {
-                    await stretchBoardLeaves({ runtime, ids, axis: stretch, current: active, signal: controller.signal });
+                    await stretchBoardLeaves({ runtime, ids, axis: stretch, current: active, signal: controller.signal, heldGestures: 1 });
                     return;
                 }
                 if (factor !== null) {

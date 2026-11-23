@@ -1,5 +1,7 @@
 import { auditTimed } from '../../platform/render/renderAudit';
 import { cameraChanged, forgetCamera } from './cameraCache';
+import { inverse } from '../geom/affine';
+import { worldPose } from '../change/coordinates';
 import { worldToSurface, type CameraController } from '../../platform/render/camera';
 import type { ScheduledFrame } from '../../platform/render/scheduler';
 import type { RenderToken } from '../../platform/render/types';
@@ -34,7 +36,7 @@ import { createKeyboardContext, type KeyboardContextRequest } from './keyboardCo
 import type { createBoardRenderServices } from '../render/services';
 import type { SelectRegion, SelectToolContext } from '../tools/select';
 import { boardSelectTool, type BoardSelectGestureContext } from '../input/selectGesture';
-import { enterGroupAtPoint } from '../input/groupFocus';
+import { enterGroupAtPoint, leaveGroupAtPoint } from '../input/groupFocus';
 import type { createBoardPointQuery } from './pointQuery';
 import type { createBoardRegionQuery } from './regionQuery';
 import { createBoardAttachmentResolver } from './attachments';
@@ -70,6 +72,8 @@ export interface BoardSelectServicesOptions {
     /** The embed and link-card chips' actions; absent, the cards draw no chips. */
     readonly cards?: BoardCardActions | null;
     readonly alwaysSnap?: () => boolean;
+    /** The wrap-mode preference (utils/boardPreferences.ts `isWrapMode`): a brush then selects only what it fully encloses. */
+    readonly wrapMode?: () => boolean;
     onError(error: unknown): void;
     onKeptLocked?(ids: readonly NodeId[]): void;
     toggleWhiteboardTheme?(): void;
@@ -506,6 +510,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         navigation.present(frame); selectionHandles.write(frame, transformPreview ? transformOffset ?? 'hidden' : null); shapeHandles.write(frame, transformOffset); stickyHandles.write(frame, transformOffset); cardControls.write(frame); backToContent.update(frame);
         writeGuides(frame.view.camera);
         writeRegion(frame.view.camera);
+        writeHover(frame.view.camera);
     };
     // One line per guide, kept and moved: a frame writes a line's ends only when they changed. By reading: the frame used to
     // replace every line with a new element each time it was written, which is what the drag's guides did at every move.
@@ -536,6 +541,46 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         }
         while (guideLines.length > guides.length) guideLines.pop()!.line.remove();
     };
+    // Hover outline (catalogue S§2): the shape a press would pick, outlined while the Select tool is idle and it is not selected.
+    // Its box is the node's own rotated extent from the geometry scope, the same measure the selection frame uses.
+    let hoverNode: NodeId | null = null, hoverCorners: readonly Vec2[] | null = null, hoverController: AbortController | null = null;
+    let hoverSvg: SVGSVGElement | null = null, hoverPath: SVGPathElement | null = null;
+    const writeHover = (camera: ViewState['camera']) => {
+        if (!hoverNode || !hoverCorners || runtime.selection.has(hoverNode)) {
+            hoverSvg?.remove(); hoverSvg = null; hoverPath = null; return;
+        }
+        if (!hoverSvg) {
+            hoverSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            hoverSvg.setAttribute('aria-hidden', 'true'); hoverSvg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible';
+            hoverPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            hoverPath.setAttribute('fill', 'none'); hoverPath.setAttribute('stroke', '#6a9fff'); hoverPath.setAttribute('stroke-width', '1.5');
+            hoverSvg.append(hoverPath); options.overlay.append(hoverSvg);
+        }
+        let d = '';
+        hoverCorners.forEach((corner, i) => { const p = worldToSurface(corner, camera); d += `${i ? 'L' : 'M'}${p.x} ${p.y}`; });
+        hoverPath!.setAttribute('d', `${d}Z`);
+    };
+    const setHoverOutline = (id: NodeId | null) => {
+        if (id === hoverNode) return;
+        hoverController?.abort(); hoverController = null; hoverNode = id; hoverCorners = null;
+        if (!id || !current()) { writeHover(options.camera().camera); requestFrame(); return; }
+        const controller = new AbortController(); hoverController = controller;
+        const pose = worldPose(doc, id), rotation = doc.nodes.get(id)?.kind === 'group' ? 0 : pose.rotation;
+        const c = Math.cos(rotation), s = Math.sin(rotation), target = inverse([c, s, -s, c, 0, 0], 1e12);
+        if (!target) return;
+        void (async () => {
+            const scope = await acquireBoardGeometryScope(runtime, [id], { signal: controller.signal, current: () => current() && hoverNode === id });
+            try {
+                const b = await scope.boundsInSpace(id, target);
+                if (controller.signal.aborted || hoverNode !== id) return;
+                const corner = (x: number, y: number): Vec2 => ({ x: c * x - s * y, y: s * x + c * y });
+                hoverCorners = [corner(b[0], b[1]), corner(b[2], b[1]), corner(b[2], b[3]), corner(b[0], b[3])];
+                requestFrame();
+            } finally { scope.release(); }
+        })().catch(error => {
+            if (!controller.signal.aborted && !(error instanceof DOMException && error.name === 'AbortError')) report(error);
+        });
+    };
     const beginHandle = (sample: RealSample, modifiers: Modifiers): GestureOwner | null => {
         // A card's chips need no write right: consent to load an embed, and opening a link, change no document.
         const chip = cardControls.begin(physicalSurface(sample), sample, modifiers.accel);
@@ -548,6 +593,8 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         const direction = stickyHandles.hit(surface, coarse, sample.time);
         if (!direction) {
             const hit = selectionHandles.hit(surface, coarse, sample.time); if (!hit) return null;
+            // Accel-drag from a resize or rotate handle brushes instead (catalogue S§4.4, S§8.1, S§9): the select gesture takes it.
+            if (modifiers.accel) return null;
             const ids = [...runtime.selection.getSnapshot().selected], host = {
                 hold: () => session.beginGesture(), registerPending, current: mutable,
                 show: (ops: readonly Op[]) => showTransform(ops), waitUntilReady: options.preview.waitUntilReady,
@@ -614,6 +661,18 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         return enterGroupAtPoint({ runtime, point: world, current: mutable, hold: () => session.beginGesture(), registerPending,
             hit: (point, signal) => options.point.hit(point, 'mouse', signal), error: report });
     };
+    /** A secondary click chooses what its menu acts on (catalogue S§17): a press inside the selection keeps it; an unselected
+     * shape under the press is selected alone; empty canvas clears a selection. Runs only in the Select tool, so a press
+     * in Draw or Text never changes the selection. */
+    const secondarySelect = async (world: Vec2, signal: AbortSignal): Promise<void> => {
+        if (!mutable() || runtime.tools.getSnapshot().active.id !== 'select') return;
+        const before = runtime.selection.getSnapshot();
+        if (before.selected.length && selectionHandles.contains(world)) return;
+        const id = await options.point.hit(world, 'mouse', signal);
+        if (signal.aborted || !current() || runtime.selection.getSnapshot() !== before) return;
+        if (id !== null) { if (!before.selected.includes(id)) runtime.selection.replace([id]); }
+        else if (before.selected.length) runtime.selection.clear();
+    };
     const handleCommand = (id: string, sample: RealSample): boolean => {
         if (id !== 'delete' || sample.source !== 'keyboard' || !mutable()) return false;
         const hit = shapeHandles.hit(physicalSurface(sample), false, sample.time);
@@ -642,6 +701,10 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     // The host routes select through this tool so handles win over body picking for both pointer and keyboard input.
     const selectContext: BoardSelectGestureContext = { ...select, sampleToSurface: physicalSurface, beginHandle,
         insideSelection: sample => selectionHandles.contains({ x: sample.x, y: sample.y }, sample.time),
+        selectionHandleAt: sample => selectionHandles.hit(physicalSurface(sample), sample.source === 'touch', sample.time) !== null,
+        leaveFocusAt: point => leaveGroupAtPoint({ runtime, point, zoom: () => options.camera().camera.z, current: mutable,
+            hold: () => session.beginGesture(), registerPending, error: report }),
+        wrapMode: options.wrapMode ?? (() => false),
         // The selection's picture is built at rest when a press lands on it: a drag's first move then only moves that picture,
         // and a build takes frames that the first move cannot wait for.
         prewarm() {
@@ -650,10 +713,12 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             if (rest.length) options.preview.showOps(rest, true);
         } };
     const tool = { id: boardSelectTool.id, begin(sample: RealSample, modifiers: Modifiers) {
+        // A gesture never shows a hover outline: the press owns the pointer until it ends.
+        setHoverOutline(null);
         return boardSelectTool.begin(sample, modifiers, selectContext);
     } };
-    return { select, tool, eraser, beginHandle, doubleClickHandle, handleCommand, keyboardContextMenu, lockedAt, nudge, transform, navigate, command, stickyNeighbour, setGuides, navigation, writeOverlays: (frame: ScheduledFrame) => auditTimed('select-overlay', () => writeOverlays(frame)), cancelPending,
-        dispose() { if (disposed) return; cancelPending(); disposed = true; keyboardContext?.dispose(); backToContent.dispose(); cameraCommands.dispose(); selectionCommands.dispose(); styleShortcuts.dispose(); navigation.dispose(); selectionHandles.dispose(); shapeHandles.dispose(); stickyHandles.dispose(); cardControls.dispose(); scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); guideSvg?.remove(); guideSvg = null; svg = null; shape = null;
+    return { select, tool, eraser, beginHandle, doubleClickHandle, setHover: setHoverOutline, secondarySelect, handleCommand, keyboardContextMenu, lockedAt, nudge, transform, navigate, command, stickyNeighbour, setGuides, navigation, writeOverlays: (frame: ScheduledFrame) => auditTimed('select-overlay', () => writeOverlays(frame)), cancelPending,
+        dispose() { if (disposed) return; cancelPending(); disposed = true; setHoverOutline(null); hoverSvg?.remove(); hoverSvg = null; keyboardContext?.dispose(); backToContent.dispose(); cameraCommands.dispose(); selectionCommands.dispose(); styleShortcuts.dispose(); navigation.dispose(); selectionHandles.dispose(); shapeHandles.dispose(); stickyHandles.dispose(); cardControls.dispose(); scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); guideSvg?.remove(); guideSvg = null; svg = null; shape = null;
             regionPreview = null; scribbleSource = null; scribbleTail = null; scribblePoints = []; scribbleCount = 0; },
     };
 }

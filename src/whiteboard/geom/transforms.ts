@@ -70,6 +70,16 @@ export function snapRotation(orientation: number, shift: boolean): number {
     const step = Math.PI / 12;
     return shift ? Math.round(orientation / step) * step : orientation;
 }
+/** A released rotation lands on whole degrees; a coarse (touch) release also takes the nearest right angle within 5 degrees
+ * (catalogue S§9, S§19). The drag itself stays continuous: only the release commits the rounded angle. */
+export function snapReleasedRotation(orientation: number, coarse: boolean): number {
+    if (!Number.isFinite(orientation)) throw new RangeError('Invalid rotation');
+    const degree = Math.PI / 180, quarter = Math.PI / 2;
+    const whole = Math.round(orientation / degree) * degree;
+    if (!coarse) return whole;
+    const right = Math.round(whole / quarter) * quarter;
+    return Math.abs(whole - right) <= 5 * degree ? right : whole;
+}
 export function commonResizeRotation(rotations: readonly number[]): number | null {
     if (!rotations.length || !rotations.every(Number.isFinite)) return null;
     const reference = rotations[0], quarter = Math.PI / 2;

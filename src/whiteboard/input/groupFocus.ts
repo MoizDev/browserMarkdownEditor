@@ -1,7 +1,7 @@
 import { isLocked } from '../change/commands';
 import type { Vec2 } from '../geom/path';
 import type { BoardRuntime } from '../host/runtime';
-import type { NodeId } from '../model/ids';
+import type { NodeId, ParentId } from '../model/ids';
 import type { SelectionSnapshot } from '../selection';
 
 export interface GroupFocusOptions {
@@ -52,4 +52,61 @@ export function enterGroupAtPoint(options: GroupFocusOptions): boolean {
         try { restore(); } finally { try { unregister?.(); } finally { release(); } }
     }).catch(options.error);
     return true;
+}
+
+export interface LeaveGroupOptions {
+    readonly runtime: BoardRuntime;
+    readonly point: Vec2;
+    /** Surface px per world unit, so the probe reaches what the point query's 8 px margin reaches. */
+    readonly zoom: () => number;
+    readonly current: () => boolean;
+    readonly hold: () => () => void;
+    readonly registerPending: (cancel: () => void) => () => void;
+    readonly error: (error: unknown) => void;
+}
+
+/** A press on empty canvas outside the focused group's bounds leaves its focus layer (catalogue S§4.6, S§22). The bounds test is
+ * the scene's broad phase: any indexed node under the point whose ancestry reaches the group keeps the focus. A press inside
+ * the group's bounds keeps it, so empty space between a group's children still works. */
+export function leaveGroupAtPoint(options: LeaveGroupOptions): void {
+    const { runtime } = options, session = runtime.session, doc = session.doc, owner = session.owner, revision = doc.rev;
+    const before = runtime.selection.getSnapshot();
+    if (!options.current() || before.focus === before.sheet || !doc.nodes.get(before.focus as NodeId)) return;
+    const groupId = before.focus as NodeId, scene = runtime.scene;
+    if (!scene || !scene.ready) return;
+    const controller = new AbortController(), release = options.hold();
+    let unregister: (() => void) | undefined;
+    const validOwner = () => options.current() && session.owner === owner && session.doc === doc && doc.rev === revision
+        && runtime.selection.getSnapshot() === before;
+    try { unregister = options.registerPending(() => controller.abort()); }
+    catch (error) { release(); throw error; }
+    void (async () => {
+        const cursor = scene.spatialCursor({ sheetId: before.sheet, purpose: 'selectable', includeLocked: true,
+            request: { kind: 'point', x: options.point.x, y: options.point.y, maxDistance: 8 / options.zoom() } });
+        let inside = false;
+        try {
+            for (;;) {
+                controller.signal.throwIfAborted();
+                if (!validOwner()) return;
+                const status = cursor.resume({ deadline: performance.now() + 3, maxVisits: 256 }, ref => {
+                    if (inside) return;
+                    const resolved = scene.resolveSpatial(ref);
+                    if (!resolved) return;
+                    let parent: ParentId | undefined = doc.nodes.get(resolved.id)?.parent;
+                    for (let depth = 0; parent !== undefined && depth < 64; depth++) {
+                        if (parent === groupId) { inside = true; return; }
+                        parent = doc.nodes.get(parent as NodeId)?.parent;
+                    }
+                });
+                if (inside || status === 'complete') break;
+                if (status !== 'pending') return;
+                await new Promise<void>(resolve => setTimeout(resolve, 0));
+            }
+        } finally { cursor.cancel(); }
+        if (!inside && validOwner()) runtime.selection.setFocus(before.sheet);
+    })().catch(error => {
+        if (!controller.signal.aborted && !(error instanceof DOMException && error.name === 'AbortError')) options.error(error);
+    }).finally(() => {
+        try { unregister?.(); } finally { unregister = undefined; release(); }
+    });
 }

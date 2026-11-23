@@ -385,10 +385,7 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
             const node = doc.nodes.get(id), text = node && nodeText(node);
             if (!node || !text) return null;
             await prepareMetric(id, signal);
-            const req = request(node, text, 0), textPaint = render.text.layout.layout(req);
-            const back = inverse(clientMatrix(placement(node, textPaint)), 1e12); if (!back) throw new Error('Text hit transform is not invertible');
-            const local = transformPoint(back, { x, y });
-            return { node: id, offset: render.text.layout.caretIndex(req, textPaint).hitTest(local.x, local.y).offset };
+            return { node: id };
         },
     });
     const input = { ...routedInput,

@@ -197,40 +197,28 @@ third-party code included (normally "none") · date.
 |---|---|---|---|---|---|---|
 | `export/png.ts` | lane w-k | F-EXPORT-002/006; E-EXP-4; EX-5/7 | export §§2–3, 7; clipboard §2.4 | Export design; PNG chunk layout, sRGB and pHYs; browser CompressionStream; independent CRC arithmetic and per-row PNG filter choice; no tldraw source | none | 2026-11-13 |
 | `export/tiles.ts` | lane w-k | F-EXPORT-002/006; E-EXP-4; EX-5/7 | export §§2–3, 7 | Export design; bounded bands and a renderer-supplied RGBA tile; no tldraw source | none | 2026-11-13 |
-| `export/rasterTile.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3, 7 | Export design; shared painter, two-pixel tile apron, cancellable pinned resources; no tldraw source | none | 2026-11-13 |
 | `export/displayList.ts` | lane w-k | F-EXPORT-001/003; EX-2/3/4 | export §§2, 4–5; rendering §3 | Sliced paint conversion, world clips, source crop, shared ink outline and explicit TX-6 text port; no tldraw source | none | 2026-11-13 |
 | `export/svg.ts` | lane w-k | F-EXPORT-001/003; EX-2/3/4 | export §§2, 4–5, 7 | Chunkable size-admitted serialization, four-decimal coordinates, self-contained images and clip paths; no tldraw source | none | 2026-11-13 |
 | `export/svgWorkerHandler.ts` | lane w-k | F-EXPORT-001/003; EX-2/3/4 | export §§2, 4–5; platform C5 | Shared worker SVG stream with bounded sliced chunks and abandoned-stream cleanup; no tldraw source | none | 2026-11-13 |
 | `export/pngWorkerHandler.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3, 7; platform C5 | Platform-hosted pull-stream encoder handlers, bounded row transfer and abort propagation; no tldraw source | none | 2026-11-13 |
 | `export/pngWorkerClient.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3, 7; platform C5 | Shared governed export worker, pinned identity and bounded-band row backpressure; no tldraw source | none | 2026-11-13 |
 | `export/prepareRaster.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3, 7; rendering §3 | Shared reference geometry jobs, text passthrough and image leases; cancellable pinned resources; no tldraw source | none | 2026-11-13 |
-| `export/capturePng.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3, 7 | Export design; pinned capture preparation, worker identity and lease cleanup; no tldraw source | none | 2026-11-13 |
 | `export/exportImage.ts` | lane w-k | F-EXPORT-001/003; EX-2/3/4 | export §§2, 4–5; rendering §5 | Export design; admitted origin-clean image leases, embedded source or normalized PNG, baked inversion; no tldraw source | none | 2026-11-13 |
-| `export/captureSvg.ts` | lane w-k | F-EXPORT-001/003; EX-2/3/4 | export §§2, 4–5 | Pinned frame, explicit TX-6 text port, optional background and SVG serialization; no tldraw source | none | 2026-11-13 |
 | `export/capturePdf.ts` | lane w-k | F-EXPORT-004/005; EX-2/3/4 | export §§2, 6; PDF writing §3 | Pinned revision, TX-6 text port, page-local projection and injected PDF domain writer; no tldraw source | none | 2026-11-13 |
-| `export/captureFrame.ts` | lane w-k | F-EXPORT-001/002/003/004; EX-2/3/5 | export §§2–3; rendering §3 | Shared paint stream, immutable scene capture, sliced admission and stale/cancelled partial-frame rejection; no tldraw source | none | 2026-11-13 |
 | `export/streamPage.ts` | lane w-k | F-EXPORT-003/004/005; EX-2/3/4 | export §§2, 6; rendering §3 | Bounded paint chunks, TX-6 worker text, page clipping and ordered one-page output; no tldraw source | none | 2026-11-13 |
 | `export/streamSvg.ts` | lane w-k | F-EXPORT-001/003; EX-2/3/4 | export §§2, 4–5; platform C5 | Bounded paint chunks, TX-6 worker text, transferable images and cancellation cleanup; no tldraw source | none | 2026-11-13 |
 | `export/textResolver.ts` | lane w-k | F-EXPORT-001/003/004; EX-2/3/4 | export §§4, 6; text §8; platform C5 | Revision-pinned TX-6 worker text outline and fallback port; no tldraw source | none | 2026-11-13 |
-| `export/streamPdf.ts` | lane w-k | F-EXPORT-004/005; EX-2/3/4 | export §§2, 6; PDF writing §3 | One pinned revision, incrementally assembled page display lists and injected PDF writer; no tldraw source | none | 2026-11-13 |
 | `export/snapshot.ts` | lane w-k | F-EXPORT-001/002/003/004; EX-2/3/5 | export §2 | One synchronous revision lease, asynchronous pinned source identity validation and cleanup; no tldraw source | none | 2026-11-13 |
-| `export/sceneSnapshot.ts` | lane w-k | F-EXPORT-001/002/003/004; EX-2/3/5 | export §§2–3; rendering §3 | SceneSnapshot pin and frozen paint request with expanded-selection filter; no tldraw source | none | 2026-11-13 |
-| `export/snapshotExport.ts` | lane w-k | F-EXPORT-001/002/003; EX-2/3/5 | export §§2–5 | Asynchronous pinned paint source to shared-worker raster PNG and streamed SVG; no tldraw source | none | 2026-11-13 |
 | `export/scope.ts` | lane w-k | F-EXPORT-001/002/003/005/006; EX-2/3 | export §§1–2, 8 | Menu versus selection scope, paged backdrop choice and deterministic timestamped download names; no tldraw source | none | 2026-11-13 |
 | `export/rasterWire.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3; platform C5 | Cloneable shared-painter geometry, laid-out text and owned bitmap transfer contract; no tldraw source | none | 2026-11-13 |
 | `export/rasterWorkerHandler.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3, 7; platform C5 | Sliced OffscreenCanvas shared painter, pinned loaded/fallback text faces, padded tiles and streaming PNG; no tldraw source | none | 2026-11-13 |
 | `export/streamRaster.ts` | lane w-k | F-EXPORT-002/006; EX-5/7 | export §§2–3; platform C5 | Pinned paint stream, shared ink outline, chunked geometry and owned bitmap transfers; no tldraw source | none | 2026-11-13 |
-| `host/notebookCommands.ts` | lane w-k | F-EXPORT-004/005; C7.2 | export §6; integration §4 | Pinned notebook command, App-authorized staged write and user-clicked print handoff; no tldraw source | none | 2026-11-13 |
 | `host/saveBuildTypes.ts` | lane w-k | C7.1/5; F-INT-004; F-EXPORT-005 | integration §4; export §5 | Revision-pinned media restoration, atomic conditional set-file batch and PDF assembly ports; no tldraw source | none | 2026-11-13 |
 | `host/saveBuild.ts` | lane w-k | C7.1/5; F-INT-004; F-EXPORT-005 | integration §4; export §5 | Revision-pinned restore/build/assembly, location-change refusal, cancellation and release; no tldraw source | none | 2026-11-13 |
 | `host/pinMediaRestore.ts` | lane w-k | C7.1/5; F-INT-004 | integration §4; media §8 | Pinned media leases, revision-fenced restoration and atomic filename-change batch; no tldraw source | none | 2026-11-13 |
 | `host/ownedSessionTypes.ts` | lane w-k | C7.0/1/5; F-INT-004 | integration §4 | Shared session factory and owner-lifetime pinned-build ports; no tldraw source | none | 2026-11-13 |
-| `host/ownedSession.ts` | lane w-k | C7.0/1/5; F-INT-004 | integration §4 | One shared session factory with owner-fenced pinned builds and disposal; no tldraw source | none | 2026-11-13 |
-| `host/prepareSessionTypes.ts` | lane w-k | C7.0/1/5; F-INT-004 | integration §4; native-format §6 | Native admission ownership and App session preparation ports; no tldraw source | none | 2026-11-13 |
-| `host/prepareSession.ts` | lane w-k | C7.0/1/5; F-INT-004 | integration §4; native-format §6 | Single-use C5 admission transfer, read-only authority and session lease cleanup; no tldraw source | none | 2026-11-13 |
 | `host/pdfInkAssemblyTypes.ts` | lane w-k | C2.4; F-EXPORT-005 | export §5; PDF writing §3 | Pinned PDF source, all-sheet ink and attachment writer boundary; no tldraw source | none | 2026-11-13 |
 | `host/pdfInkAssembly.ts` | lane w-k | C2.4; F-EXPORT-005 | export §5; PDF writing §3 | Pinned pristine writer source, all-sheet ordered ink, exact legacy fence and verified revision/write mark; no tldraw source | none | 2026-11-13 |
-| `host/pdfInkCacheTypes.ts` | lane w-k | C2.4; F-EXPORT-005 | export §5 | Revision/font/writer-keyed page list cache and dirty-session eviction contract; no tldraw source | none | 2026-11-13 |
 
 ## Text and history (lane w-n)
 
@@ -265,7 +253,6 @@ third-party code included (normally "none") · date.
 | `change/history.ts` | lane w-n | H-5, H-6, CH-2 | change-and-history §§3–4; text §5.7 | Session-only inverse steps, exact receipt rollback, selection and reveal ports, media/sample retention, 256 MiB byte cap; w-architect's R-19/media rulings | none | 2026-11-13 |
 | `session/factoryTypes.ts` | lane w-n | C7, CH-3, I-1 | change-and-history §5; integration §§2–4 | Canonical core source owner, serializer, journal, retained media, scene, selection and view-reveal composition ports | none | 2026-11-13 |
 | `session/createBoardSession.ts` | lane w-n | C7, CH-1/2/3/4, I-1 | change-and-history §§3–5; integration §§2–4 | Single session composition, ordered apply consumers, pinned serializer sources, history/sample/media leases, gesture queue and journal bridge; no pane camera | none | 2026-11-13 |
-| `host/ownedSession.ts` (C-19 liveness) | lane w-n | C7, I-1 | integration §2; documentSessions registration | App registers the owner after construction; check liveness on use, not before registration | none | 2026-11-13 |
 | `model/samples.ts`, `ink/samples.ts` (W-C6 additions) | lane w-n | H-5, CH-2 | change-and-history §4.5 | Per-record encoded plus decoded byte accounting without forcing decode | none | 2026-11-13 |
 | `change/notices.ts` | lane w-n | H-4, CH-4 | change-and-history §§1, 3; C4.6 | r-a's platform scheduler integration guidance, one frame accumulator per session, hidden timer and reentrant delivery barrier | none | 2026-11-13 |
 | `change/apply.ts`, `change/ops.ts`, `model/validate.ts` (W-C6 additions) | lane w-n | H-2, H-3, H-5, CH-2 | change-and-history §§2–4; w-architect revert ruling | Index-aligned immutable inverse groups and private receipt-verified latest-commit revert; guarded replay origins | none | 2026-11-13 |
@@ -428,13 +415,10 @@ third-party code included (normally "none") · date.
 | `model/pages.ts` | lane w-l | M-6, E-DOC-12/13/14, C1.5, C2.3 | document-model §6 | Design; platform pageStack and geometry contract, cached by paper/page-list identity; no tldraw source | none | 2026-11-13 |
 | `commands/pagesAndSheets.ts` | lane w-l | F-SHEET-002/003/004/005/006, F-NB-002/003/004/006/007/008, R-11, R-24, WB-D29, M-6 | document-model §6; change-and-history §2 | Specs and owned model/apply/locked-deletion interfaces, structured counts for localized confirmation; no tldraw source | none | 2026-11-13 |
 | `host/notebookController.ts` | lane w-l | F-NB-002/003/004/006/007/008, C7 | notebook; change-and-history §2 | Owned notebook commands, session gesture queue and revision-guarded confirmation; no tldraw source | none | 2026-11-13 |
-| `host/sheetController.ts` | lane w-l | F-SHEET-002/003/004/005/006, C7 | sheets; change-and-history §2 | Owned sheet commands, session gesture queue and revision-guarded confirmation; no tldraw source | none | 2026-11-13 |
 | `host/notebookPaper.ts` | lane w-l | F-NB-002/003/004/014, C2.4 | notebook §F-NB-004 | Specs, platform display-list contract and paper.ts; no tldraw source | none | 2026-11-13 |
 | `host/notebookBackdrop.ts` | lane w-l | F-NB-004/005, C2.1 | notebook §F-NB-004; contracts C2.1 | Procedural paper and own paint-stream contracts; no tldraw source | none | 2026-11-13 |
 | `host/notebookExport.ts` | lane w-l | F-NB-011/014, F-SHEET-008, R-12, C2.4 | notebook §§F-NB-011/014; sheets §F-SHEET-008 | Specs, platform display-list contract; no tldraw source | none | 2026-11-13 |
-| `host/pageDisplay.ts` | lane w-l | F-NB-014, F-SHEET-008, C2.4 | notebook §F-NB-014; contracts C2.4 | Specs, platform display list and paint-frame export; no tldraw source | none | 2026-11-13 |
 | `host/pagedView.ts` | lane w-l | F-NB-003/005/009/013, C1.2/1.4/1.5 | notebook §§F-NB-003/005/009/013 | Specs and platform camera/page-stack contracts; no tldraw source | none | 2026-11-13 |
-| `host/conversionInfo.ts` | lane w-l | I-2, D-WB-convert-backup, C7 | import §4; contracts C7 | Owned conversion metadata interface; no tldraw source | none | 2026-11-13 |
 | `host/pdfAttachments.ts` | lane w-l | F-PINK-008, C2.4, R-W15 | pdf-ink §F-PINK-008; native-format §3.6 | Specs, PDF writer attachment/reserved-name contract, owned fence and media hash APIs; no tldraw source | none | 2026-11-13 |
 | `host/pdfInkExport.ts` | lane w-l | F-PINK-008, F-SHEET-008, R-12, C2.4 | pdf-ink §F-PINK-008; sheets §F-SHEET-008 | Specs, platform page geometry/display-list and PDF writer contracts; no tldraw source | none | 2026-11-13 |
 

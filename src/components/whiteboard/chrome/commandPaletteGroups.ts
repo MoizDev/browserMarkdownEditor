@@ -169,7 +169,8 @@ export function paletteGroups(sources: PaletteSources): PaletteGroup[] {
     const language = main.filter((entry): entry is ContextMenuSubmenu => entry.kind === 'submenu' && entry.id === 'language');
     const groups: PaletteGroup[] = [
         { id: 'selection', label: t('palette.selection'), entries: selectionOnly(selection) },
-        { id: 'arrange', label: sources.arrangeLabel, entries: sources.arrange },
+        // The Arrange rows sit directly in the group that is already named Arrange: a submenu of the same name would repeat it.
+        { id: 'arrange', label: sources.arrangeLabel, entries: sources.arrange.flatMap(entry => entry.kind === 'submenu' && entry.id === 'arrange' ? entry.entries : [entry]) },
         { id: 'styles', label: t('palette.styles'), entries: sources.styles ? styleSubmenus(sources.styles, t) : [] },
         { id: 'edit', label: sources.sectionLabel('edit'), entries: section(main, 'edit') },
         { id: 'view', label: sources.sectionLabel('view'), entries: section(main, 'view') },

@@ -8,7 +8,7 @@ import { BoardTextLayout } from '../text/layout';
 import { ReferenceMeasurer } from '../text/measure';
 import type { FaceTable, InkRef, TextLayoutRequest, TextPaint } from '../text/paint';
 import type { RichText } from '../text/richText';
-import { opacity, withOpacity } from './colour';
+import { legibleInk, opacity, withOpacity } from './colour';
 import type { PaintPalette } from './colour';
 import type { TextMaterial } from './material';
 
@@ -166,9 +166,10 @@ export function createBoardTextGeometry(options: { fonts?: BoardFonts; onFontEpo
 }
 
 /** Parallel material arrays follow TextPaint visual order; inherited opacity is applied once. */
-export function textPaintMaterial(paint: TextPaint, palette: PaintPalette, inheritedOpacity: number): TextMaterial {
+/** `backdrop` is the fill the text sits on, when the owner has one (a sticky note): an ink that cannot be read on it is replaced. */
+export function textPaintMaterial(paint: TextPaint, palette: PaintPalette, inheritedOpacity: number, backdrop?: Rgba): TextMaterial {
     opacity(inheritedOpacity);
-    const ink = (value: InkRef): Rgba => withOpacity(palette.stroke[value.swatch], inheritedOpacity);
+    const ink = (value: InkRef): Rgba => withOpacity(backdrop ? legibleInk(backdrop, palette.stroke[value.swatch]) : palette.stroke[value.swatch], inheritedOpacity);
     const backgrounds = paint.backgrounds.map(rect => {
         // TextPaint does not carry a separate code-background token. Use a subtle
         // ink-colour wash for code; regular highlights use the theme highlight pigment.

@@ -34,8 +34,8 @@ export function mainMenuEntries(source: MainMenuSource): ContextMenuEntry[] {
     };
     const action = (id: MainAction): ContextMenuCommand => {
         const state = source.actionState(id);
-        // Keyboard shortcuts… is an opener, not a command with a chord of its own: it keeps the ellipsis and no chord.
-        const shortcut = id === 'keyboardShortcuts' ? undefined : spacedChord(source.actionShortcut(id));
+        // Keyboard shortcuts… is an opener with the chord of its own binding, as the palette's Command palette row shows its ⌘K.
+        const shortcut = spacedChord(source.actionShortcut(id));
         return { kind: 'command', id, label: source.actionLabel(id), shortcut,
             disabled: !state.enabled, reason: state.enabled ? undefined : state.reason, run: () => source.runAction(id) };
     };

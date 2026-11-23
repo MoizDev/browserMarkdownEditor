@@ -17,7 +17,7 @@ import { createText, type Node } from '../model/nodes';
 import { keyBetween } from '../model/orderKey';
 import { boardPageStack, pageOrigin, reanchorPage } from '../model/pages';
 import { prepareBoardVectorGeometryNow } from '../render/vectorGeometry';
-import { colourCss } from '../render/colour';
+import { colourCss, legibleInk, resolveSwatch } from '../render/colour';
 import type { createBoardRenderServices } from '../render/services';
 import { textCreation } from '../text/edit/createText';
 import { createTextEditGrowth } from '../text/edit/growth';
@@ -485,10 +485,14 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
         const fallbackSwatch = edited?.kind === 'text' ? edited.color
             : edited?.kind === 'sticky' || edited?.kind === 'figure' || edited?.kind === 'connector' ? edited.labelColor
                 : edited?.kind === 'frame' ? edited.color ?? 'black' : 'black';
-        let caretColour = colourCss(engine.getSnapshot().palette.stroke[fallbackSwatch]);
+        // The caret takes the ink the note's label is painted in, so it stays visible on a note whose label was made legible.
+        const palette = engine.getSnapshot().palette;
+        const backdrop = edited?.kind === 'sticky' ? resolveSwatch(palette, edited.color, 'fill') : undefined;
+        const inkOf = (swatch: Parameters<typeof resolveSwatch>[1]) => backdrop ? legibleInk(backdrop, palette.stroke[swatch]) : palette.stroke[swatch];
+        let caretColour = colourCss(inkOf(fallbackSwatch));
         outer: for (const line of paint.lines) for (const fragment of line.fragments) {
             if (selection.focus >= fragment.src[0] && selection.focus <= fragment.src[1]) {
-                caretColour = colourCss(engine.getSnapshot().palette.stroke[fragment.ink.swatch]);
+                caretColour = colourCss(inkOf(fragment.ink.swatch));
                 break outer;
             }
         }

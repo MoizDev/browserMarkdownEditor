@@ -57,20 +57,20 @@ export function createTextEditingManager(ports: TextEditingManagerPorts): TextEd
             return false;
         }
     }
-    function create(x: number, y: number, width: number | null): NodeId | null {
+    function create(x: number, y: number, width: number | null, seed?: string): NodeId | null {
         if (disposed) return null;
         close();
         const history = session.history;
         let opened = false;
         try {
-            const { node, transaction } = ports.createText(x, y, width);
+            const { node, transaction } = ports.createText(x, y, width, seed);
             if (node.kind !== 'text' || !transaction.ops.some(op => op.t === 'create' && op.node.id === node.id)) throw new Error('Text creation transaction does not create its node');
             history.open('Create text'); opened = true;
             const receipt = session.apply(transaction);
             receipt.release();
             ports.select(node.id);
             const token = history.close(); opened = false;
-            start(node.id, { anchor: 0, focus: 0 }, token ?? undefined);
+            start(node.id, { anchor: 0, focus: seed?.length ?? 0 }, token ?? undefined);
             return node.id;
         } catch (error) {
             if (opened) {

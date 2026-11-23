@@ -27,7 +27,9 @@ export function paletteLeaves(groups: readonly PaletteGroup[]): PaletteLeaf[] {
             if (entry.kind === 'command') {
                 leaves.push({ key: `${path}/${entry.id}`, label: entry.label, crumb: crumbs.join(' › '), command: entry });
             } else if (entry.kind === 'submenu') {
-                visit(entry.entries, `${path}/${entry.id}`, [...crumbs, entry.label]);
+                // A level never repeats the one above it: "Arrange › Arrange" names nothing new.
+                const next = crumbs[crumbs.length - 1] === entry.label ? crumbs : [...crumbs, entry.label];
+                visit(entry.entries, `${path}/${entry.id}`, next);
             }
         }
     };

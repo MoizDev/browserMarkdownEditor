@@ -60,10 +60,14 @@ export function BoardChrome({ locale, direction, selectedTool, toolLabel, toolSh
             <BoardHeader {...header} locale={locale} direction={direction} />
             {pageControls}
         </div>
-        {palette}
-        {/* The docked panel is a flow column, not a float under the header: it gets the height the bottom row,
-            the notices and an open minimap leave free (chrome.css .board-chrome-pen), so it never runs into them. */}
-        {stylePanel && <div className="board-chrome-pen"><DockedStylePanel {...stylePanel} /></div>}
+        {/* The middle row is what the header and the bottom row leave. The docked panel is a flow column in it, so it gets the height
+            the bottom row, the notices and an open minimap leave free (chrome.css .board-chrome-pen). The palette lays over the
+            row instead of taking a place in the column: as a flow child it shrank the panel, which then jumped and clipped
+            (measured: the panel's box went from y 118, h 562 to y 536, h 144, when the palette opened). */}
+        <div className="board-chrome-middle">
+            {stylePanel && <div className="board-chrome-pen"><DockedStylePanel {...stylePanel} /></div>}
+            {palette}
+        </div>
         <div className="board-chrome-bottom">
             {stylePanel && <StylePopoverAnchor {...stylePanel} />}
             <ToolStrip primary={choices.primary} more={choices.more} selected={selectedTool} lock={lock} onShown={onBarTools}

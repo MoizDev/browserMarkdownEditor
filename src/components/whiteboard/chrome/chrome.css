@@ -86,6 +86,16 @@
     max-width: 100%;
 }
 
+/* The row between the header and the bottom row: the docked panel and the command palette lay over it, never resize it. */
+.board-chrome-middle {
+    position: relative;
+    flex: 1 1 0;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    pointer-events: none;
+}
+
 /* The docked style panel: the overlay's free column, from under the header to the reserved bottom edge. The reserve is
    the bottom row, a notice band and an open minimap (viewerHost.css sets it per state), so the panel stops above them. */
 .board-chrome-pen {
@@ -608,6 +618,11 @@
     padding-top: 10px;
 }
 
+/* A scrolled rows region settles on whole choice rows: each button snaps to its top edge, and the buttons of one row share it,
+   so the view never stops halfway through a swatch row (fitRowsToWholeSections fixes the same stops when the pane is short). */
+.board-style-rows { scroll-snap-type: y proximity; }
+.board-style-rows .board-style-choice { scroll-snap-align: start; }
+
 /* The card keeps its header whatever the room: only the rows scroll (.board-style-rows), so a short pane shows the fold. */
 .board-style-panel {
     box-sizing: border-box;
@@ -850,15 +865,18 @@
     pointer-events: auto;
 }
 
+/* The palette lays over the middle row, 8 px above the tool bar, and is centred in it: it covers the docked panel while open. */
 .board-palette {
+    position: absolute;
+    inset-inline: 0;
+    bottom: 8px;
+    margin-inline: auto;
     display: flex;
     flex-direction: column;
-    align-self: center;
     box-sizing: border-box;
     width: min(440px, 100%);
-    max-height: 100%;
+    max-height: calc(100% - 8px);
     min-width: 0;
-    margin: auto 0 8px;
     padding: 4px;
     border: 1px solid var(--board-bar-border, transparent);
     border-radius: 12px;
@@ -870,7 +888,7 @@
 }
 
 @media (pointer: coarse) {
-    .board-palette { margin: 8px 0 auto; }
+    .board-palette { top: 8px; bottom: auto; }
 }
 
 .board-palette-search {

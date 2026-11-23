@@ -55,6 +55,11 @@ export const EMPTY_RICH_TEXT: RichText = {
 
 export class RichTextLimitError extends RangeError {}
 
+/** Plain text as rich text: one paragraph per line, with no marks. */
+export function plainRichText(text: string): RichText {
+    return { blocks: text.split('\n').map(line => ({ kind: 'p', level: 0, dir: 'auto', runs: [{ text: line, marks: {} }] })) };
+}
+
 function sameMarks(a: Marks, b: Marks): boolean {
     return a.b === b.b && a.i === b.i && a.u === b.u && a.s === b.s && a.code === b.code
         && a.hl === b.hl && a.link === b.link && a.x === b.x;

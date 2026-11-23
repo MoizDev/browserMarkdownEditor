@@ -142,7 +142,11 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
     let hoverPick: AbortController | null = null, hoverSeq = 0;
     const endHoverPick = () => { hoverPick?.abort(); hoverPick = null; };
     const clearHover = () => { sensitive.setHovered(null); select.setHover(null); select.setConnectorHover(null, null, false); };
+    // The last pointer event over the board: the hover re-picks under it when the drawing or the selection changes, so the
+    // outline never stays on a shape that moved or went away under a still pointer. A gesture owns the pointer, so it re-picks nothing.
+    let lastPointer: PointerEvent | null = null;
     const trackHover = (event: PointerEvent) => {
+        lastPointer = event.type === 'pointerout' ? null : event;
         endHoverPick();
         const tool = runtime.tools.getSnapshot().active.id;
         // The arrow tool hovers too: the target an end would bind to is found by the same resolver the drop uses (catalogue a.2).
@@ -167,6 +171,9 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
             if (!controller.signal.aborted && seq === hoverSeq) { sensitive.setHovered(id); if (tool === 'select') select.setHover(id); }
         }, error => { if (!controller.signal.aborted) ui.error(error); });
     };
+    const stopHoverRepick = runtime.session.subscribe(() => {
+        if (lastPointer && !runtime.session.isGestureActive && !disposed) trackHover(lastPointer);
+    });
     const text = createBoardTextEditor({ runtime, render: runtime.render, engine, preview, point, camera, viewport: options.viewport,
         overlay: options.overlay, keyboardTarget: options.surface, current, interaction: options.interaction, inputFrames: options.inputFrames, mac: ui.mac,
         spelling: options.spelling, ui: ui.text, onError: ui.error, editingChanged: id => sensitive.setEditing(id) });
@@ -246,7 +253,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         overviewBox: () => overviewContent && overviewContent.rev === runtime.session.doc.rev ? overviewContent.box : null,
     };
     const textContext = {
-        createText(x: number, y: number, width: number | null) { if (editable()) text.manager.create(x, y, width); },
+        createText(x: number, y: number, width: number | null, seed?: string) { if (editable()) text.manager.create(x, y, width, seed); },
         worldToScreen: (x: number, y: number) => worldToSurface({ x, y }, camera.camera),
         previewTextColumn(x: number, y: number, width: number | null) { column = { x, y, width }; invalidate(); },
         clearTextColumnPreview() { column = null; invalidate(); },
@@ -266,7 +273,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
     const resolveChromeDrag = (choice: ToolChoice, sample: RealSample, _modifiers: Modifiers): PointerRoute<unknown> | null => {
         if (!editable()) return null;
         switch (choice.id) {
-            case 'text': return route(textDropTool, textContext);
+            case 'text': return route(textDropTool(choice.label), textContext);
             case 'figure': case 'sticky': case 'frame': case 'connector': case 'polyline': return creation(choice, sample, true);
             default: return null;
         }
@@ -395,7 +402,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         scheduleTrails();
     };
     const dispose = () => {
-        if (disposed) return; cancelPending(); disposed = true; endHoverPick(); options.surface.removeEventListener('paste', paste);
+        if (disposed) return; cancelPending(); disposed = true; endHoverPick(); stopHoverRepick(); options.surface.removeEventListener('paste', paste);
         deadline?.(); deadline = null; svg?.remove(); svg = null;
         for (const cleanup of [text.dispose, select.dispose, point.dispose, preview.dispose, options.imports.dispose]) {
             try { cleanup(); } catch (error) { ui.error(error); }

@@ -5,6 +5,8 @@ import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
 import { openContextMenu, type ContextMenuEntry } from '../../utils/contextMenu';
 import { createNativeClipboardCommands } from '../../whiteboard/host/clipboardCommands';
+import { getBoardPreferences } from '../../utils/boardPreferences';
+import { loadBoardLanguage, translateBoard } from '../../whiteboard/chrome/language';
 import { BoardPreferenceState, readBoardViewFlags } from '../../whiteboard/chrome/preferences';
 import type { Op } from '../../whiteboard/change/ops';
 import { createBoardMediaIngestor } from '../../whiteboard/host/mediaIngest';
@@ -61,8 +63,9 @@ export interface NativeClipboardService {
     pagePng(page: number, maxSide: number, signal: AbortSignal): Promise<Blob>;
     /** Saves the focused board's whole sheet as a PDF. False when the board is not current or busy. */
     exportPdf(): boolean;
+    /** `print` is the view's own print route (Menu → Print's scope choice); without one, Ctrl/Cmd+P prints the whole document. */
     attach(surface: HTMLElement, lease: NativeViewLease, theme: () => 'light' | 'dark', notice: (message: string) => void,
-        inputHandled?: boolean, writable?: () => boolean): NativeClipboardBinding;
+        inputHandled?: boolean, writable?: () => boolean, print?: () => boolean): NativeClipboardBinding;
 }
 const services = new WeakMap<BoardRuntime, NativeClipboardService>();
 let serial = 0;
@@ -232,7 +235,7 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
             return (await pinPagePrint()).print.pngPage(page, signal, maxSide);
         },
         exportPdf: () => startFocusedTask(signal => focusedPdf(signal, false)),
-        attach(surface, lease, theme, notice, inputHandled = false, writable) {
+        attach(surface, lease, theme, notice, inputHandled = false, writable, print) {
             if (disposed || !current() || lease.runtime !== runtime) throw new Error('Clipboard document is no longer current');
             let detached = false;
             const canWriteView = () => !detached && current() && !!writable?.() && host.canWrite(identity);
@@ -270,7 +273,9 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
                     event.preventDefault(); event.stopPropagation(); void commands.copyAsPng(); return;
                 }
                 if (!inputHandled && (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'p') {
-                    event.preventDefault(); event.stopPropagation(); service.print(); return;
+                    event.preventDefault(); event.stopPropagation();
+                    if (print) print(); else service.print();
+                    return;
                 }
                 if (canWriteView()) {
                     if (event.key === 'Enter' && !event.repeat && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && !crop.get()) {
@@ -303,23 +308,28 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
             const drop = (event: DragEvent) => { if (canWriteView()) { focus(); controller.drop(event); } };
             const menu = (event: MouseEvent) => {
                 event.preventDefault(); event.stopPropagation(); focus();
+                const x = event.clientX, y = event.clientY;
                 const selected = runtime.selection.getSnapshot().selected.length > 0, readonly = !canWriteView();
-                const disabled = !selected, why = 'Select content to copy.';
-                const entries: ContextMenuEntry[] = [
-                    { kind: 'command', id: 'copy', label: 'Copy', disabled, ...(disabled ? { reason: why } : {}), run: commands.copy },
-                    { kind: 'command', id: 'copy-png', label: 'Copy as PNG', run: commands.copyAsPng },
-                    { kind: 'command', id: 'copy-svg', label: 'Copy as SVG', run: commands.copyAsSvg },
-                    // Debug-only, as the board's own menu offers it: the raw document JSON is for developers.
-                    ...(runtime.session.doc.view.debugMode ? [{ kind: 'command' as const, id: 'copy-json', label: 'Copy as JSON', run: commands.copyAsJson }] : []),
-                    { kind: 'command', id: 'export-png', label: 'Export PNG', run: () => commands.exportPng('context') },
-                    { kind: 'command', id: 'export-svg', label: 'Export SVG', run: () => commands.exportSvg('context') },
-                    { kind: 'command', id: 'paste', label: 'Paste', disabled: readonly, ...(readonly ? { reason: 'This canvas is read-only.' } : {}), run: () => controller.paste() },
-                ];
                 const media = mediaActions.selection(!readonly);
-                // This view's menu has no text dialog, so it offers no alternative-text row; the board's own menu does.
-                if (media) entries.push({ kind: 'separator', id: 'media-separator' }, ...mediaRows(media, { actions: mediaActions, fail,
-                    pick: chooseReplacementImage, playback: lease.video, current: () => true, notice: report }));
-                openContextMenu({ x: event.clientX, y: event.clientY, label: 'Canvas', opener: surface, entries });
+                // The rows are the board's own words for its language. The table is cached once loaded, so the menu opens a microtask later.
+                void loadBoardLanguage(getBoardPreferences().locale).then(table => {
+                    const t = (key: string) => translateBoard(table, key);
+                    const disabled = !selected;
+                    const entries: ContextMenuEntry[] = [
+                        { kind: 'command', id: 'copy', label: t('commands.copy'), disabled, ...(disabled ? { reason: t('menu.selectToCopy') } : {}), run: commands.copy },
+                        { kind: 'command', id: 'copy-png', label: t('menu.copyAsPng'), run: commands.copyAsPng },
+                        { kind: 'command', id: 'copy-svg', label: t('menu.copyAsSvg'), run: commands.copyAsSvg },
+                        // Debug-only, as the board's own menu offers it: the raw document JSON is for developers.
+                        ...(runtime.session.doc.view.debugMode ? [{ kind: 'command' as const, id: 'copy-json', label: t('menu.copyAsJson'), run: commands.copyAsJson }] : []),
+                        { kind: 'command', id: 'export-png', label: t('menu.exportPng'), run: () => commands.exportPng('context') },
+                        { kind: 'command', id: 'export-svg', label: t('menu.exportSvg'), run: () => commands.exportSvg('context') },
+                        { kind: 'command', id: 'paste', label: t('commands.paste'), disabled: readonly, ...(readonly ? { reason: t('chrome.readOnly') } : {}), run: () => controller.paste() },
+                    ];
+                    // This view's menu has no text dialog, so it offers no alternative-text row; the board's own menu does.
+                    if (media) entries.push({ kind: 'separator', id: 'media-separator' }, ...mediaRows(media, { actions: mediaActions, fail,
+                        pick: chooseReplacementImage, playback: lease.video, current: () => true, notice: report, text: t }));
+                    openContextMenu({ x, y, label: t('menu.canvas'), opener: surface, entries });
+                }, fail);
             };
             surface.addEventListener('focus', focus); surface.addEventListener('pointermove', move);
             surface.addEventListener('copy', copy); surface.addEventListener('cut', cut); surface.addEventListener('keydown', keydown);

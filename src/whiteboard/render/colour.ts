@@ -35,6 +35,23 @@ export function premultiplyColour(colour: Rgba, coverage = 1): RgbaP {
     const alpha = colour[3] * opacity(coverage);
     return Object.freeze([colour[0] * alpha, colour[1] * alpha, colour[2] * alpha, alpha]);
 }
+// WCAG relative luminance and contrast of opaque sRGB colours. A note's label must read against its fill in both themes.
+function relativeLuminance(colour: Rgba): number {
+    const linear = (channel: number) => channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+    return 0.2126 * linear(colour[0]) + 0.7152 * linear(colour[1]) + 0.0722 * linear(colour[2]);
+}
+function contrastRatio(a: Rgba, b: Rgba): number {
+    const [light, dark] = [relativeLuminance(a), relativeLuminance(b)].sort((x, y) => y - x) as [number, number];
+    return (light + 0.05) / (dark + 0.05);
+}
+const INK_BLACK = rgba(0, 0, 0), INK_WHITE = rgba(1, 1, 1);
+/** The WCAG AA floor for text (4.5:1). Measured: black or white clears it on all 24 note colours (12 per theme); the lowest is red at 4.65. */
+export const LABEL_MIN_CONTRAST = 4.5;
+/** A sticky note's label ink on its fill: the chosen swatch when it reads at AA, else black or white, whichever reads better. */
+export function legibleInk(backdrop: Rgba, ink: Rgba): Rgba {
+    if (contrastRatio(backdrop, ink) >= LABEL_MIN_CONTRAST) return ink;
+    return contrastRatio(backdrop, INK_BLACK) >= contrastRatio(backdrop, INK_WHITE) ? INK_BLACK : INK_WHITE;
+}
 export function colourCss(colour: Rgba): string {
     return `rgba(${colour[0] * 255} ${colour[1] * 255} ${colour[2] * 255} / ${colour[3]})`;
 }

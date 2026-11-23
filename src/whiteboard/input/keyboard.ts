@@ -272,7 +272,7 @@ export function installKeyboard(root: HTMLElement, actions: KeyboardActions, mac
       : (event.altKey || event.shiftKey || accel) && physical[event.code] ? physical[event.code]
       : letter && !/^[\x20-\x7e]$/.test(event.key) ? letter[1].toLowerCase() : key
     const binding = boardBindings.find(item => !item.dialogOnly && item.key === matchingKey && !!item.shift === event.shiftKey && !!item.alt === event.altKey && !!item.accel === accel)
-    // A bound key is a shortcut before it is text: ⇧/ opens the shortcuts dialog and never types '?' into a label.
+    // A bound key is a shortcut before it is text: ⌘⌥/ (Ctrl+Alt+/ off macOS) opens the shortcuts dialog and never types '/' into a label.
     // Space is never the first character of a new label: it holds the camera (K§10.5), so it does not start editing.
     if (actions.enabled() && !accel && !event.altKey && !event.ctrlKey && !event.metaKey && !binding
       && event.key.length === 1 && event.key !== ' ' && actions.typeText?.(event.key)) {

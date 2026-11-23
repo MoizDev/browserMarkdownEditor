@@ -20,7 +20,7 @@ export interface TextCreationPorts {
 export interface TextEditingManagerPorts {
     readonly session: EditableSessionPort;
     /** Produce a normal create transaction, including host page growth/anchoring if needed. */
-    createText(x: number, y: number, width: number | null): { readonly node: TextNode; readonly transaction: Transaction };
+    createText(x: number, y: number, width: number | null, seed?: string): { readonly node: TextNode; readonly transaction: Transaction };
     select(node: NodeId): void;
     /** Returns pane-owned transforms, renderer paint, clipboard/menu and chrome callbacks. */
     binding(node: NodeId, key: 'text' | 'label' | 'name', selection: EditSelection, creationToken?: number): TextEditBindingOptions;
@@ -58,7 +58,8 @@ export interface TextEditingManager {
     /** Double click/Enter on a selected text, sticky, figure, connector, or frame title. */
     start(node: NodeId, selection?: EditSelection): boolean;
     /** Text tool click/column drag; returns the new node id if created. */
-    create(x: number, y: number, width: number | null): NodeId | null;
+    /** `seed` is the new text's first words; they are selected, so typing replaces them. */
+    create(x: number, y: number, width: number | null, seed?: string): NodeId | null;
     /** A printable key on a selected supported node starts editing and types it. */
     type(node: NodeId, text: string): boolean;
     refresh(): void;

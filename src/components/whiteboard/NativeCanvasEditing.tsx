@@ -78,6 +78,8 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
     const contextMenuRef = useRef<ReturnType<typeof createNativeBoardContextMenu> | null>(null), embedControllerRef = useRef<NativeEmbedController | null>(null);
     const [lifetime, setLifetime] = useState<AbortController | null>(null);
     const viewRef = useRef<NativeViewLease | null>(null), chromeMountedRef = useRef(false), styleRef = useRef<Styles | null>(null);
+    // The editing view's keys are bound once per view, so Ctrl/Cmd+P reads the current print route (ConnectedEditor's) through this ref.
+    const printRef = useRef<() => boolean>(() => false);
     // Populated only when the real presentation port AND semantic per-node Load service are attached.
     const embedPortRef = useRef<EmbedPresentationPort | null>(null);
     const [embedPort, setEmbedPort] = useState<EmbedPresentationPort | null>(null);
@@ -93,7 +95,7 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
         void (async () => {
         try {
             const service = documentClipboard(runtime, host, identity);
-            const editing: NativeEditingViewOptions = { clipboard: service, canMutate: canMutateView,
+            const editing: NativeEditingViewOptions = { clipboard: service, canMutate: canMutateView, print: () => printRef.current(),
                 onEmbedInfrastructure(value) {
                     embedControllerRef.current = value?.controller ?? null;
                     embedPortRef.current = value?.port ?? null;
@@ -143,14 +145,15 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
     return <ConnectedEditor props={props} lease={lease} adapter={adapter} clipboard={clipboard} capabilities={capabilities}
         language={language} signal={lifetime.signal} dialogs={dialogs} current={current} report={report} notice={notice}
         setNotice={setNotice} inverted={inverted} setInverted={setInverted} attached={attached} commandRef={commandRef} linksRef={linksRef}
-        canMutateView={canMutateView} onChromeReady={onChromeReady} embedPort={embedPort} contextMenuRef={contextMenuRef}
+        canMutateView={canMutateView} onChromeReady={onChromeReady} embedPort={embedPort} contextMenuRef={contextMenuRef} printRef={printRef}
         embedControllerRef={embedControllerRef} styleRef={styleRef} renderView={renderView} />;
 }
 
 function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, language, signal, dialogs, current: ownerCurrent, report,
     notice, setNotice, inverted, setInverted, attached, commandRef, linksRef, canMutateView, onChromeReady, embedPort,
-    contextMenuRef, embedControllerRef, styleRef, renderView }: {
+    contextMenuRef, embedControllerRef, styleRef, renderView, printRef }: {
     readonly props: NativeEditingViewProps; readonly lease: NativeViewLease; readonly adapter: HostedBoardAdapter<BoardSessionPort>;
+    readonly printRef: RefObject<() => boolean>;
     readonly clipboard: NativeClipboardService; readonly capabilities: NativeEditingCapabilities;
     readonly language: NonNullable<ReturnType<typeof useNativeBoardLanguage>>; readonly signal: AbortSignal;
     readonly dialogs: ReturnType<typeof useNativeBoardDialogs>; readonly current: () => boolean; readonly report: (error: unknown) => void;
@@ -203,6 +206,7 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
         return true;
     }, [clipboard, runtime, dialogs, translate, report]);
     const runExportPdf = useCallback(() => clipboard.exportPdf(), [clipboard]);
+    useLayoutEffect(() => { printRef.current = runPrint; }, [runPrint, printRef]);
     const [owned, setOwned] = useState<{ camera: ReturnType<typeof createNativeCameraOperations>;
         commands: ReturnType<typeof createNativeBoardOperations> } | null>(null);
     useEffect(() => {

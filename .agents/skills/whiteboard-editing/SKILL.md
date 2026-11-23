@@ -114,7 +114,7 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   editing, a text-owned target); the keyboard cursor when active; Escape; paged keys and arrows (arrows nudge a
   selection, Space held pages the view, otherwise they pan); a printable unbound key with a selection starts typing
   into it (`typeText`; Space never does); Space and `z` hold pan and zoom; then the binding. A bound key is a shortcut
-  before it is text (⇧/ opens the dialog, never types `?`). Modifier releases are debounced 150 ms
+  before it is text (⌘⌥/, Ctrl+Alt+/ off macOS, opens the dialog, never types `/`). Modifier releases are debounced 150 ms
   (`input/modifierRelease.ts`). A read-only board runs only the `view` and `accessibility` rows, `select.*`,
   `tool.select`, `tool.hand` and `preferences.*`.
 - Every gesture or shortcut a person can use belongs in the help page (`utils/helpDoc.ts`, owned by AGENTS.md's
@@ -168,7 +168,7 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
 - `components/whiteboard/chrome/`: `ToolStrip.tsx` (the bar, the padlock, the figure slot, More tools;
   `toolChoices.ts` for the figures on the bar and in More tools), `StylePanel.tsx` (+ `styleIcons.tsx`,
   `stylePanelStore.ts`; its row model is `src/whiteboard/chrome/stylePanel.ts`), `CommandPalette.tsx` (+
-  `commandPaletteModel.ts`, `commandPaletteGroups.ts`; `commandPalette.open` opens it), `ZoomControls.tsx`,
+  `commandPaletteModel.ts`, `commandPaletteGroups.ts`; `commandPalette.open` opens it; it lays over the chrome's middle row (`.board-chrome-middle`), so the docked style panel never moves under it), `ZoomControls.tsx`,
   `BoardHeader.tsx`, menus (`mainMenu.ts`, `preferencesMenu.ts`, `themeMenu.ts`, `languageMenu.ts`), `boardCommands.ts`.
 - The minimap is `components/whiteboard/NativeMinimap.tsx`; its open state is `boardPreferences.minimapOpen`.
 - Context menus are the app's own (`openBoardContextMenu.ts`, `nativeBoardContextMenu.ts`; `app-context-menu`).

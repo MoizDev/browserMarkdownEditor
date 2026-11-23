@@ -20,9 +20,8 @@ export interface CreateContext {
 }
 export interface CreatedShape { readonly id: Node['id']; readonly notes: readonly string[] }
 
-export function plainRichText(text: string): RichText {
-    return { blocks: text.split('\n').map(line => ({ kind: 'p', level: 0, dir: 'auto', runs: [{ text: line, marks: {} }] })) };
-}
+import { plainRichText } from '../text/richText';
+export { plainRichText };
 
 // F-AGENT-013: growth is staged in the same savepoint as its shape. The caller
 // validates the whole operation before this function can change the paper.

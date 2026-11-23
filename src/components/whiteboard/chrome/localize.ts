@@ -17,6 +17,7 @@ export function localizeBoardChrome(t: BoardTranslate) {
         actionLabel: (key: MainAction) => t(key === 'exportPng' || key === 'exportSvg' || key === 'exportPdf' || key === 'exportJson' ? `commands.${key}`
             : key === 'keyboardShortcuts' ? 'chrome.keyboardShortcutsMenu' : `chrome.${key}`),
         text: (key: string) => t(`chrome.${key}`),
+        // Only English ships this label so far; other tables fall back to it (translatedOr), never to the raw key.
     };
 }
 

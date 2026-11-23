@@ -97,3 +97,53 @@
 .board-viewer-host[data-chrome-stacked]:has(.native-minimap) .board-viewer-notice,
 .board-viewer-host[data-chrome-stacked]:has(.native-minimap) .board-paint-status-pending,
 .board-viewer-host[data-chrome-stacked]:has(.native-minimap) .board-paint-status-failed { bottom: 270px; }
+
+/* The helper buttons (Exit pen mode, Back to content) stack in one column under the top bar, top left, as tldraw does.
+   Their hidden state must win over the button's own display, or a hidden button still takes its row. */
+.board-helper-stack {
+    position: absolute;
+    left: 8px;
+    top: 47px;
+    z-index: 5;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+    pointer-events: none;
+}
+
+.board-helper-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 12px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    background: var(--background-primary);
+    color: var(--text-normal);
+    font: inherit;
+    cursor: pointer;
+    pointer-events: auto;
+    box-shadow: 0 1px 4px color-mix(in srgb, black 12%, transparent);
+}
+
+.board-helper-button[hidden] {
+    display: none;
+}
+
+.board-helper-button:hover {
+    background: var(--background-modifier-hover);
+}
+
+.board-helper-button:focus-visible {
+    outline: 2px solid var(--interactive-accent);
+    outline-offset: 2px;
+}
+
+.board-helper-exit-pen {
+    order: 0;
+}
+
+.board-helper-back {
+    order: 1;
+}

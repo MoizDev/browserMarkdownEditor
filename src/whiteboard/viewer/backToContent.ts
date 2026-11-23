@@ -1,5 +1,6 @@
 import type { ScheduledFrame } from '../../platform/render/scheduler';
 import type { BoardRuntime } from '../host/runtime';
+import { helperIcon, helperIconPaths, helperStack } from './helperButtons';
 
 export interface BackToContentOptions {
     readonly runtime: BoardRuntime;
@@ -11,15 +12,30 @@ export interface BackToContentOptions {
     cooperate?(): Promise<void>;
 }
 
+/** tldraw shows the button after the content has been off screen for a second, so a brief pan does not flicker it. */
+const SHOW_DELAY_MS = 1000;
+
 /** View chrome only: a bounded spatial query decides whether the sheet's ink
  * intersects the presented viewport. The button never edits or selects nodes. */
 export function createBackToContent(options: BackToContentOptions) {
     const { runtime } = options, session = runtime.session, doc = session.doc, owner = session.owner;
     const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
     let disposed = false, generation = 0, key = '', controller: AbortController | undefined, button: HTMLButtonElement | undefined;
+    let showTimer: ReturnType<typeof setTimeout> | undefined;
+    /** Set by a click: the content is coming back, so the button stays away until it is on screen again. */
+    let suppressed = false;
     const current = () => !disposed && options.current() && runtime.session === session && session.owner === owner && session.doc === doc;
-    const hide = () => { if (button) button.hidden = true; };
-    const click = (event: MouseEvent) => { event.preventDefault(); event.stopPropagation(); if (current()) options.activate(); };
+    const hide = () => {
+        if (showTimer !== undefined) clearTimeout(showTimer);
+        showTimer = undefined;
+        if (button) button.hidden = true;
+    };
+    const click = (event: MouseEvent) => {
+        event.preventDefault(); event.stopPropagation();
+        if (!current()) return;
+        suppressed = true; hide();
+        options.activate();
+    };
     const pointer = (event: PointerEvent) => { event.stopPropagation(); };
     const contextMenu = (event: MouseEvent) => {
         event.preventDefault(); event.stopPropagation();
@@ -33,12 +49,12 @@ export function createBackToContent(options: BackToContentOptions) {
     const blur = () => { if (button) { button.style.outline = ''; button.style.outlineOffset = ''; } };
     const show = () => {
         if (!button) {
-            button = document.createElement('button'); button.type = 'button'; button.textContent = 'Back to content';
+            button = document.createElement('button'); button.type = 'button'; button.className = 'board-helper-button board-helper-back';
+            button.append(helperIcon(helperIconPaths.arrowLeft), 'Back to content');
             button.setAttribute('aria-label', 'Back to content');
-            button.style.cssText = 'position:absolute;right:16px;bottom:16px;pointer-events:auto;z-index:5;padding:7px 10px;border:1px solid var(--background-modifier-border);border-radius:6px;background:var(--background-primary);color:var(--text-normal);';
             button.addEventListener('pointerdown', pointer); button.addEventListener('click', click);
             button.addEventListener('contextmenu', contextMenu); button.addEventListener('focus', focus); button.addEventListener('blur', blur);
-            options.overlay.append(button);
+            helperStack(options.overlay).append(button);
         }
         button.hidden = false;
     };
@@ -74,11 +90,19 @@ export function createBackToContent(options: BackToContentOptions) {
                     await cooperate();
                 }
             } finally { cursor.cancel(); }
-            if (active() && !found) show();
+            if (!active()) return;
+            if (found) { suppressed = false; return; }
+            // The button waits a second, and any later change of view or content cancels the wait (see hide).
+            showTimer = setTimeout(() => {
+                showTimer = undefined;
+                if (current() && generation === turn && key === next && !suppressed) show();
+            }, SHOW_DELAY_MS);
         })().catch(error => { if (active()) options.error(error); }).finally(() => { if (controller === request) controller = undefined; });
     };
     return { update, hide() { generation++; controller?.abort(); controller = undefined; key = ''; hide(); }, dispose() {
         if (disposed) return; disposed = true; generation++; controller?.abort(); controller = undefined;
+        if (showTimer !== undefined) clearTimeout(showTimer);
+        showTimer = undefined;
         if (button) {
             button.removeEventListener('pointerdown', pointer); button.removeEventListener('click', click);
             button.removeEventListener('contextmenu', contextMenu); button.removeEventListener('focus', focus); button.removeEventListener('blur', blur);

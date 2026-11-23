@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState, useSyncExternalStore, type CSSPrope
 import { penScaleFromSlider } from '../../../whiteboard/chrome/penWidth';
 import { MIXED, type Shared, type StyleRow } from '../../../whiteboard/chrome/stylePanel';
 import type { StyleCommands, StylePanelSnapshot } from '../../../whiteboard/host/styleControls';
-import { ARROWHEADS, FIGURE_SHAPES, FILLS, DASHES, FONTS, SIZES, V_ALIGNS, type Arrowhead, type Dash, type Fill,
+import { ARROWHEADS, FIGURE_SHAPES, FILLS, DASHES, FONTS, OPACITIES, SIZES, V_ALIGNS, type Arrowhead, type Dash, type Fill,
     type FigureShape, type Font, type HAlign, type Size, type Swatch, type TextAlign, type VAlign } from '../../../whiteboard/model/styles';
 import { dismissOnEscape } from '../../../utils/escapeDismiss';
 import type { ToolLabel } from './toolChoices';
@@ -26,7 +26,6 @@ const WIDTH_UNDO = 'Change pen width';
 const KEY_STEP: Readonly<Record<string, number>> = { ArrowLeft: -0.02, ArrowDown: -0.02, ArrowRight: 0.02, ArrowUp: 0.02, PageDown: -0.1, PageUp: 0.1 };
 /** Tools that draw with the pointer, not with a style: the popover is not offered for them (tldraw's mobile rule). */
 const NO_STYLE_TOOLS = new Set(['hand', 'zoom', 'eraser', 'laser']);
-const OPACITY_STEPS = [0.1, 0.25, 0.5, 0.75, 1] as const;
 const FONT_FAMILY: Readonly<Record<Font, string>> = { draw: '"WB Draw", system-ui', sans: 'system-ui, sans-serif', serif: 'Georgia, serif', mono: 'ui-monospace, monospace' };
 const HEAD_KEYS: Readonly<Record<Arrowhead, string>> = { none: 'styles.none', arrow: 'styles.headArrow', triangle: 'styles.headTriangle',
     square: 'styles.headSquare', dot: 'styles.headDot', pipe: 'styles.headPipe', diamond: 'styles.headDiamond', inverted: 'styles.headInverted', bar: 'styles.headBar' };
@@ -124,6 +123,8 @@ interface DisclosureProps<T extends string> {
     readonly label: string;
     readonly current: Shared<T>;
     readonly currentIcon: (value: T) => ReactNode;
+    /** The current choice's name, shown beside its icon when the picker has one. */
+    readonly currentText?: (value: T) => string;
     readonly choices: readonly Choice<T>[];
     readonly columns: number;
     readonly disabled: boolean;
@@ -134,7 +135,7 @@ interface DisclosureProps<T extends string> {
 }
 
 /** A picker too long for a row: a button shows the current choice and opens the rest as a grid. */
-function Disclosure<T extends string>({ label, current, currentIcon, choices, columns, disabled, undo, commands, onPick, mixedLabel }: DisclosureProps<T>) {
+function Disclosure<T extends string>({ label, current, currentIcon, currentText, choices, columns, disabled, undo, commands, onPick, mixedLabel }: DisclosureProps<T>) {
     const [open, setOpen] = useState(false);
     const id = useId();
     return <div className="board-style-disclosure">
@@ -142,7 +143,7 @@ function Disclosure<T extends string>({ label, current, currentIcon, choices, co
             data-tooltip={label} disabled={disabled} onClick={() => setOpen(value => !value)}>
             <span className="board-style-disclosure-current">
                 {current === MIXED ? <span className="board-style-mixed-text">{mixedLabel}</span>
-                    : current === null ? null : currentIcon(current)}
+                    : current === null ? null : <>{currentIcon(current)}{currentText && <span className="board-style-disclosure-name">{currentText(current)}</span>}</>}
             </span>
             <span className="board-style-caret" aria-hidden="true"><StyleGlyph kind="caret" /></span>
         </button>
@@ -255,7 +256,7 @@ function StyleRows({ snapshot, commands, toolLabel, subheadings }: StylePanelPro
     }
     if (has('opacity')) {
         sections.push(group(t('styles.opacity'), 'opacity', snapshot.opacity,
-            OPACITY_STEPS.map(value => choice(value, `${Math.round(value * 100)}%`, <span className="board-style-percent">{Math.round(value * 100)}%</span>)),
+            OPACITIES.map(value => choice(value, `${Math.round(value * 100)}%`, <span className="board-style-percent">{Math.round(value * 100)}%</span>)),
             5, value => commands.setOpacity(value), 'Change opacity'));
     }
     if (has('fill')) {
@@ -305,7 +306,7 @@ function StyleRows({ snapshot, commands, toolLabel, subheadings }: StylePanelPro
         sections.push(<Section key="shape" label={label} subheadings={subheadings} mixed={false} mixedLabel={mixedLabel}>
             <Disclosure<FigureShape> label={label} current={snapshot.shape} mixedLabel={mixedLabel} columns={5} disabled={disabled}
                 undo="Change shape" commands={commands} onPick={shape => commands.setShape(shape)}
-                currentIcon={shape => <ToolIcon id="figure" figure={shape} />}
+                currentIcon={shape => <ToolIcon id="figure" figure={shape} />} currentText={shape => toolLabel(shapeToolLabel(shape))}
                 choices={FIGURE_SHAPES.map(shape => choice(shape, toolLabel(shapeToolLabel(shape)), <ToolIcon id="figure" figure={shape} />))} />
         </Section>);
     }
@@ -360,17 +361,22 @@ export function DockedStylePanel(props: StylePanelProps) {
         event.preventDefault(); event.stopPropagation();
         returnToBoard(event.currentTarget);
     }}>
-        <button type="button" className="board-chrome-tool board-style-toggle" aria-label={toggleLabel} data-tooltip={toggleLabel}
-            aria-expanded={!collapsed} onClick={() => setStylePanelCollapsed(!collapsed)}>
-            {collapsed && <span className="board-style-indicator" aria-hidden="true"
-                style={{ background: snapshot.colour === MIXED || snapshot.colour === null ? snapshot.nextColourCss
-                    : snapshot.swatches.find(swatch => swatch.id === snapshot.colour)?.css ?? snapshot.nextColourCss,
-                outlineColor: snapshot.indicatorOutline }} />}
-            {toggleLabel}
-        </button>
-        {!collapsed && <div className="board-style-panel" role="group" aria-label={t('styles.panel')} data-disabled={snapshot.disabled || undefined}>
-            <StyleRows {...props} />
-        </div>}
+        <div className="board-style-panel" role="group" aria-label={t('styles.panel')} data-disabled={snapshot.disabled || undefined}
+            data-collapsed={collapsed || undefined}>
+            {/* The fold is the card's own header: a chevron that turns with the state, and the colour in use while folded. */}
+            <header className="board-style-panel-head">
+                <span className="board-style-panel-title">{t('styles.panel')}</span>
+                {collapsed && <span className="board-style-indicator" aria-hidden="true"
+                    style={{ background: snapshot.colour === MIXED || snapshot.colour === null ? snapshot.nextColourCss
+                        : snapshot.swatches.find(swatch => swatch.id === snapshot.colour)?.css ?? snapshot.nextColourCss,
+                    outlineColor: snapshot.indicatorOutline }} />}
+                <button type="button" className="board-style-toggle" aria-label={toggleLabel} data-tooltip={toggleLabel}
+                    aria-expanded={!collapsed} onClick={() => setStylePanelCollapsed(!collapsed)}>
+                    <StyleGlyph kind="caret" />
+                </button>
+            </header>
+            {!collapsed && <StyleRows {...props} />}
+        </div>
     </div>;
 }
 

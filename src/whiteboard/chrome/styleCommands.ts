@@ -5,11 +5,12 @@ import type { FigureNode } from '../model/nodes';
 import type { BoardDoc } from '../model/doc';
 import type { NodeId } from '../model/ids';
 import type { Node } from '../model/nodes';
-import type { Dash, Fill, Font, HAlign, Size, Swatch, TextAlign, VAlign } from '../model/styles';
+import type { Arrowhead, Dash, Fill, FigureShape, Font, HAlign, Size, Swatch, TextAlign, VAlign } from '../model/styles';
 import type { BoardSession } from '../session/BoardSession';
 import { clampPenScale } from './penWidth';
 
-function selectedNodes(doc: BoardDoc, selected: readonly NodeId[]): Node[] {
+/** The nodes a style applies to: groups give way to their children, and locked nodes are never restyled. */
+export function selectedNodes(doc: BoardDoc, selected: readonly NodeId[]): Node[] {
     const stack = [...selected];
     const seen = new Set<NodeId>();
     const result: Node[] = [];
@@ -38,10 +39,12 @@ function apply(session: BoardSession, label: string, ops: readonly Op[], grouped
     }
 }
 
-/** A slider drag opens one fresh history group; next-tool defaults remain history-silent. */
+interface StyleGesture { readonly label: string; readonly release: () => void }
+
+/** Style changes. Each one is one undo step, except the steps inside a gesture (a slider drag, a held arrow key, a
+ * swatch scrub), which share one step until the gesture ends. Next-shape defaults are history-silent. */
 export class BoardStyleCommands {
-    private widthGesture = false;
-    private releaseGesture: (() => void) | null = null;
+    private gesture: StyleGesture | null = null;
     constructor(
         private readonly session: BoardSession,
         private readonly selection: () => readonly NodeId[],
@@ -54,6 +57,33 @@ export class BoardStyleCommands {
         const growY = this.figureGrowY(node);
         if (growY !== undefined && growY !== node.growY) ops.push({ t: 'set', id: node.id, key: 'growY', value: growY });
     }
+
+    /** A different action ends the open gesture first, so it never joins the gesture's undo step. */
+    private commit(label: string, ops: readonly Op[]): void {
+        if (this.gesture && this.gesture.label !== label) this.end();
+        // Undo or Redo during a gesture closes its group; the rest of the gesture opens a new one, not one step per event.
+        if (this.gesture && !this.session.history.isOpen) this.session.history.open(this.gesture.label);
+        apply(this.session, label, ops, this.gesture !== null);
+    }
+
+    /** Opens one undo step that every change until `end` shares. */
+    begin(label: string): void {
+        if (this.gesture || this.session.isReadOnly) return;
+        const release = this.session.beginGesture();
+        try { this.session.history.open(label); }
+        catch (error) { release(); throw error; }
+        this.gesture = { label, release };
+    }
+
+    end(): void {
+        if (!this.gesture) return;
+        const { release } = this.gesture;
+        this.gesture = null;
+        try { this.session.history.close(); }
+        finally { release(); }
+    }
+
+    get gestureActive(): boolean { return this.gesture !== null; }
 
     currentColor(): Swatch | null {
         const doc = this.session.doc;
@@ -79,7 +109,7 @@ export class BoardStyleCommands {
     }
 
     sampleStyle(id: NodeId): void {
-        this.endWidth();
+        this.end();
         const doc = this.session.doc, node = doc.nodes.get(id);
         if (!node) return;
         const next = { ...doc.ui.next };
@@ -106,7 +136,6 @@ export class BoardStyleCommands {
     }
 
     setColor(color: Swatch): void {
-        this.endWidth();
         const doc = this.session.doc, next = doc.ui.next;
         const key = this.activeTool() === 'highlighter' ? 'highlighterColor' : 'color';
         const ops: Op[] = [];
@@ -114,11 +143,18 @@ export class BoardStyleCommands {
         for (const node of selectedNodes(doc, this.selection())) {
             if ('color' in node && node.color !== color) ops.push({ t: 'set', id: node.id, key: 'color', value: color });
         }
-        apply(this.session, 'Change colour', ops);
+        this.commit('Change colour', ops);
+    }
+
+    setOpacity(value: number): void {
+        const doc = this.session.doc, opacity = Math.min(1, Math.max(0, value)), ops: Op[] = [];
+        for (const node of selectedNodes(doc, this.selection())) {
+            if (node.opacity !== opacity) ops.push({ t: 'set', id: node.id, key: 'opacity', value: opacity });
+        }
+        this.commit('Change opacity', ops);
     }
 
     setFill(fill: Fill): void {
-        this.endWidth();
         const doc = this.session.doc, ops: Op[] = [];
         if (doc.ui.next.fill !== fill) ops.push({ t: 'board', key: 'ui.next', value: { ...doc.ui.next, fill } });
         for (const node of selectedNodes(doc, this.selection())) {
@@ -126,56 +162,95 @@ export class BoardStyleCommands {
                 ops.push({ t: 'set', id: node.id, key: 'fill', value: fill });
             }
         }
-        apply(this.session, 'Change fill', ops);
+        this.commit('Change fill', ops);
     }
 
     setDash(dash: Dash): void {
-        this.endWidth();
         const doc = this.session.doc, ops: Op[] = [];
         if (doc.ui.next.dash !== dash) ops.push({ t: 'board', key: 'ui.next', value: { ...doc.ui.next, dash } });
         for (const node of selectedNodes(doc, this.selection())) {
             if ('dash' in node && node.dash !== dash) ops.push({ t: 'set', id: node.id, key: 'dash', value: dash });
         }
-        apply(this.session, 'Change dash style', ops);
+        this.commit('Change dash style', ops);
     }
 
     setFont(font: Font): void {
-        this.endWidth();
         const doc = this.session.doc, ops: Op[] = [];
         if (doc.ui.next.font !== font) ops.push({ t: 'board', key: 'ui.next', value: { ...doc.ui.next, font } });
         for (const node of selectedNodes(doc, this.selection())) {
             if ('font' in node && node.font !== font) ops.push({ t: 'set', id: node.id, key: 'font', value: font });
         }
-        apply(this.session, 'Change font', ops);
+        this.commit('Change font', ops);
     }
 
-    setAlignment(align: HAlign, textAlign: TextAlign): void {
-        this.endWidth();
+    /** Text's own horizontal alignment: a text node has no label alignment, so the two rows never write each other's key. */
+    setTextAlignment(textAlign: TextAlign): void {
         const doc = this.session.doc, ops: Op[] = [];
-        if (doc.ui.next.align !== align || doc.ui.next.textAlign !== textAlign) {
-            ops.push({ t: 'board', key: 'ui.next', value: { ...doc.ui.next, align, textAlign } });
-        }
+        if (doc.ui.next.textAlign !== textAlign) ops.push({ t: 'board', key: 'ui.next', value: { ...doc.ui.next, textAlign } });
         for (const node of selectedNodes(doc, this.selection())) {
             if (node.kind === 'text' && node.align !== textAlign) ops.push({ t: 'set', id: node.id, key: 'align', value: textAlign });
-            else if ((node.kind === 'figure' || node.kind === 'sticky') && node.align !== align) {
+        }
+        this.commit('Change alignment', ops);
+    }
+
+    /** A figure's or note's label alignment, the horizontal one. */
+    setLabelAlignment(align: HAlign): void {
+        const doc = this.session.doc, ops: Op[] = [];
+        if (doc.ui.next.align !== align) ops.push({ t: 'board', key: 'ui.next', value: { ...doc.ui.next, align } });
+        for (const node of selectedNodes(doc, this.selection())) {
+            if ((node.kind === 'figure' || node.kind === 'sticky') && node.align !== align) {
                 ops.push({ t: 'set', id: node.id, key: 'align', value: align });
             }
         }
-        apply(this.session, 'Change alignment', ops);
+        this.commit('Change label alignment', ops);
     }
 
     setVerticalAlignment(valign: VAlign): void {
-        this.endWidth();
         const doc = this.session.doc, ops: Op[] = [];
         if (doc.ui.next.valign !== valign) ops.push({ t: 'board', key: 'ui.next', value: { ...doc.ui.next, valign } });
         for (const node of selectedNodes(doc, this.selection())) {
             if ('valign' in node && node.valign !== valign) ops.push({ t: 'set', id: node.id, key: 'valign', value: valign });
         }
-        apply(this.session, 'Change vertical alignment', ops);
+        this.commit('Change vertical alignment', ops);
+    }
+
+    /** The geo shape of selected figures. With nothing selected the figure tool's own variant is the next shape. */
+    setShape(shape: FigureShape): void {
+        const ops: Op[] = [];
+        for (const node of selectedNodes(this.session.doc, this.selection())) {
+            if (node.kind === 'figure' && node.shape !== shape) ops.push({ t: 'set', id: node.id, key: 'shape', value: shape });
+        }
+        this.commit('Change shape', ops);
+    }
+
+    setRoute(route: 'arc' | 'elbow'): void {
+        const doc = this.session.doc, ops: Op[] = [];
+        if (doc.ui.next.route !== route) ops.push({ t: 'board', key: 'ui.next', value: { ...doc.ui.next, route } });
+        for (const node of selectedNodes(doc, this.selection())) {
+            if (node.kind === 'connector' && node.route !== route) ops.push({ t: 'set', id: node.id, key: 'route', value: route });
+        }
+        this.commit('Change arrow kind', ops);
+    }
+
+    setArrowhead(end: 'start' | 'end', head: Arrowhead): void {
+        const doc = this.session.doc, ops: Op[] = [], key = end === 'start' ? 'headStart' : 'headEnd';
+        if (doc.ui.next[key] !== head) ops.push({ t: 'board', key: 'ui.next', value: { ...doc.ui.next, [key]: head } });
+        for (const node of selectedNodes(doc, this.selection())) {
+            if (node.kind === 'connector' && node[key] !== head) ops.push({ t: 'set', id: node.id, key, value: head });
+        }
+        this.commit(end === 'start' ? 'Change start arrowhead' : 'Change end arrowhead', ops);
+    }
+
+    setSpline(spline: 'line' | 'cubic'): void {
+        const doc = this.session.doc, ops: Op[] = [];
+        if (doc.ui.next.spline !== spline) ops.push({ t: 'board', key: 'ui.next', value: { ...doc.ui.next, spline } });
+        for (const node of selectedNodes(doc, this.selection())) {
+            if (node.kind === 'polyline' && node.spline !== spline) ops.push({ t: 'set', id: node.id, key: 'spline', value: spline });
+        }
+        this.commit('Change line type', ops);
     }
 
     setSize(size: Size): void {
-        this.endWidth();
         const doc = this.session.doc, ops: Op[] = [];
         if (doc.ui.next.size !== size) ops.push({ t: 'board', key: 'ui.next', value: { ...doc.ui.next, size } });
         for (const node of selectedNodes(doc, this.selection())) {
@@ -201,16 +276,7 @@ export class BoardStyleCommands {
                 if (node.kind === 'figure') this.refitLabel(ops, { ...node, size, width });
             }
         }
-        apply(this.session, 'Change style size', ops);
-    }
-
-    beginWidth(): void {
-        if (this.widthGesture || this.session.isReadOnly) return;
-        const release = this.session.beginGesture();
-        try { this.session.history.open('Change pen width'); }
-        catch (error) { release(); throw error; }
-        this.widthGesture = true;
-        this.releaseGesture = release;
+        this.commit('Change style size', ops);
     }
 
     setWidth(scale: number): void {
@@ -237,15 +303,6 @@ export class BoardStyleCommands {
                 if (node.kind === 'figure') this.refitLabel(ops, { ...node, width });
             }
         }
-        // Undo or Redo during the drag closes its group; the rest of the drag opens a new one, not one step per event.
-        if (this.widthGesture && !this.session.history.isOpen) this.session.history.open('Change pen width');
-        apply(this.session, 'Change pen width', ops, this.widthGesture);
-    }
-
-    endWidth(): void {
-        if (!this.widthGesture) return;
-        this.widthGesture = false;
-        try { this.session.history.close(); }
-        finally { this.releaseGesture?.(); this.releaseGesture = null; }
+        this.commit('Change pen width', ops);
     }
 }

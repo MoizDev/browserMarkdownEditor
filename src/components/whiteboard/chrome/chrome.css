@@ -424,26 +424,72 @@
     outline-offset: 2px;
 }
 
-.board-pen-panel {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    width: 176px;
-    padding: 6px;
+/* The docked panel and the popover share one set of rows. The viewer host is the container (viewerHost.css), so the
+   breakpoint is the pane's own width: 641px is where tldraw docks its style panel, and below it the panel is the
+   bottom bar's button, which opens the same rows as a popover. */
+@container (min-width: 641px) {
+    .board-style-popover-anchor { display: none; }
+}
+
+@container (max-width: 640px) {
+    .board-chrome-pen { display: none; }
+}
+
+.board-style-popover-anchor {
+    position: relative;
+    grid-column: 1;
+    grid-row: 1;
+    justify-self: start;
+    align-self: end;
+    min-width: 0;
+}
+
+.board-style-popover-button {
+    display: grid;
+    place-items: center;
+    width: 36px;
+    height: 36px;
+    min-height: 0;
+    padding: 0;
+    border-radius: 50%;
+    color: var(--style-tint, var(--text-normal));
+}
+
+.board-style-popover-button:disabled { opacity: 0.4; cursor: default; }
+
+.board-style-popover {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    inset-inline-start: 0;
+    box-sizing: border-box;
+    width: 232px;
+    max-width: calc(100vw - 24px);
+    max-height: min(60vh, 460px);
+    overflow-y: auto;
+    padding: 8px;
     border: 1px solid var(--background-modifier-border);
     border-radius: 8px;
     background: var(--background-primary);
     color: var(--text-normal);
+    box-shadow: 0 6px 20px rgb(0 0 0 / 0.22);
     pointer-events: auto;
 }
 
-.board-pen-toggle {
+.board-style-dock {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    width: 184px;
+    max-width: 100%;
+}
+
+.board-style-toggle {
     display: flex;
     align-items: center;
     gap: 8px;
 }
 
-.board-pen-indicator {
+.board-style-indicator {
     display: inline-block;
     width: 15px;
     height: 15px;
@@ -452,32 +498,134 @@
     outline: 1px solid;
 }
 
-.board-pen-swatches {
+.board-style-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.board-style-panel {
+    box-sizing: border-box;
+    max-height: min(70vh, 640px);
+    overflow-y: auto;
+    padding: 8px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    background: var(--background-primary);
+    color: var(--text-normal);
+    pointer-events: auto;
+}
+
+.board-style-section {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+}
+
+.board-style-heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 6px;
+    font-size: 11px;
+    line-height: 1.3;
+    color: var(--text-muted);
+}
+
+.board-style-mixed-text {
+    font-size: 11px;
+    font-style: italic;
+    color: var(--text-muted);
+}
+
+.board-style-pair {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.board-style-choices {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
     gap: 4px;
 }
 
-.board-pen-swatch {
+.board-style-choice {
     display: grid;
     place-items: center;
-    min-width: 32px;
-    min-height: 32px;
+    min-width: 0;
+    height: 32px;
     padding: 4px;
     border: 1px solid transparent;
-    border-radius: 5px;
+    border-radius: 6px;
     background: transparent;
+    color: var(--text-normal);
+    cursor: pointer;
 }
 
-.board-pen-swatch > span {
+.board-style-choice:hover:not(:disabled) { background: var(--background-modifier-hover); }
+/* A five-option grid is 32px a cell in a 184px panel: "100%" needs the padding gone to fit without clipping. */
+.board-style-choices[style*='repeat(5'] .board-style-choice { padding: 4px 0; }
+.board-style-choice[aria-pressed='true'] {
+    border-color: var(--interactive-accent);
+    background: color-mix(in srgb, var(--interactive-accent) 14%, transparent);
+}
+
+.board-style-choice:disabled,
+.board-style-disclosure-button:disabled,
+.board-style-width:disabled { opacity: 0.4; cursor: default; }
+
+.board-style-chip {
     width: 20px;
     height: 20px;
     border: 1px solid var(--background-modifier-border);
     border-radius: 50%;
 }
 
-.board-pen-swatch[aria-pressed='true'] { border-color: var(--interactive-accent); }
-.board-pen-swatch:focus-visible, .board-pen-panel input:focus-visible {
+.board-style-percent {
+    font-size: 10px;
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.board-style-font {
+    font-size: 15px;
+    line-height: 1;
+}
+
+.board-style-disclosure-button {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    box-sizing: border-box;
+    width: 100%;
+    height: 32px;
+    min-height: 0;
+    padding: 0 8px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-normal);
+    cursor: pointer;
+}
+
+.board-style-disclosure-button[aria-expanded='true'] { border-color: var(--interactive-accent); }
+.board-style-disclosure-current { display: inline-flex; align-items: center; min-width: 0; }
+.board-style-caret { display: inline-flex; color: var(--text-muted); }
+.board-style-disclosure-panel { margin-top: 4px; }
+
+.board-style-width {
+    width: 100%;
+    margin: 4px 0;
+    accent-color: var(--interactive-accent);
+}
+
+.board-style-choice:focus-visible,
+.board-style-disclosure-button:focus-visible,
+.board-style-popover-button:focus-visible,
+.board-style-toggle:focus-visible,
+.board-style-panel input:focus-visible {
     outline: 2px solid var(--interactive-accent);
     outline-offset: 2px;
 }

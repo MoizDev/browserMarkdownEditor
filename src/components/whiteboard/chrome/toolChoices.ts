@@ -4,7 +4,8 @@ export type ToolLabel =
     | 'select' | 'hand' | 'draw' | 'eraser' | 'arrow' | 'text' | 'note' | 'media'
     | 'rectangle' | 'ellipse' | 'triangle' | 'diamond' | 'hexagon' | 'oval' | 'rhombus'
     | 'star' | 'cloud' | 'heart' | 'xBox' | 'checkBox' | 'arrowLeft' | 'arrowUp'
-    | 'arrowDown' | 'arrowRight' | 'line' | 'highlight' | 'laser' | 'frame';
+    | 'arrowDown' | 'arrowRight' | 'line' | 'highlight' | 'laser' | 'frame'
+    | 'pentagon' | 'octagon' | 'trapezoid' | 'rhombus2';
 
 /** Every figure, in the order the more-tools popover lists them. Rectangle has its own button on the bar. */
 const figures: readonly [ToolLabel, string][] = [

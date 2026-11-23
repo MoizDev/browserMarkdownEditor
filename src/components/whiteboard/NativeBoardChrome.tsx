@@ -5,11 +5,11 @@ import { createBoardStyleControls } from '../../whiteboard/host/styleControls';
 import type { BoardRuntime } from '../../whiteboard/host/runtime';
 import { boardBindings, shortcutGroups } from '../../whiteboard/input/keyboard';
 import type { ViewerEngine } from '../../whiteboard/viewer/types';
-import { persistLastPenScale } from './chrome/penPanelStore';
+import { persistLastPenScale } from './chrome/stylePanelStore';
 import { SessionBoardChrome, type SessionBoardChromeProps } from './chrome/SessionBoardChrome';
 
 type Supplied = Omit<SessionBoardChromeProps, 'kind' | 'locale' | 'direction' | 'translate' | 'languages' | 'selectLanguage'
-    | 'toolState' | 'toolShortcut' | 'shortcuts' | 'localPreferences' | 'penPanel'>;
+    | 'toolState' | 'toolShortcut' | 'shortcuts' | 'localPreferences' | 'stylePanel'>;
 export interface NativeBoardChromeProps extends Supplied {
     readonly runtime: BoardRuntime;
     readonly engine: ViewerEngine;
@@ -69,5 +69,5 @@ function AttachedNativeBoardChrome({ runtime, language, preferences, mac, onRead
         translate={(key, values) => translateBoard(lang.table, key, values)} languages={availableBoardLocales()}
         selectLanguage={locale => language.select(locale)} toolState={tools} toolShortcut={tooltip} shortcuts={shortcutGroups(mac, runtime.session.doc.kind !== 'whiteboard')}
         localPreferences={{ ...local, setView: (key, value) => { if (props.currentOwner()) preferences.setView(key, value); },
-            setSession: (key, value) => preferences.setSession(key, value) }} penPanel={panel} />;
+            setSession: (key, value) => preferences.setSession(key, value) }} stylePanel={{ snapshot: panel, commands: styles.commands }} />;
 }

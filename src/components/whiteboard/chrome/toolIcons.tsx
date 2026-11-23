@@ -66,6 +66,11 @@ const GLYPHS: Readonly<Record<string, ReactNode>> = {
     'figure:hexagon': <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />,
     'figure:oval': <rect x="2" y="7" width="20" height="10" rx="5" />,
     'figure:rhombus': <path d="M7 5h14l-4 14H3z" />,
+    // The style panel's shape picker offers the types the bar leaves out; drawn on the same grid and stroke.
+    'figure:rhombus-2': <path d="M3 5h14l4 14H7z" />,
+    'figure:pentagon': <path d="M12 3 21 9.5 17.5 20h-11L3 9.5z" />,
+    'figure:octagon': <path d="M8 3h8l5 5v8l-5 5H8l-5-5V8z" />,
+    'figure:trapezoid': <path d="M7 5h10l4 14H3z" />,
     'figure:star': <path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z" />,
     'figure:cloud': <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z" />,
     'figure:heart': <path d="M2 9.5a5.5 5.5 0 0 1 9.591-3.676.56.56 0 0 0 .818 0A5.49 5.49 0 0 1 22 9.5c0 2.29-1.5 4-3 5.5l-5.492 5.313a2 2 0 0 1-3 .019L5 15c-1.5-1.5-3-3.2-3-5.5" />,

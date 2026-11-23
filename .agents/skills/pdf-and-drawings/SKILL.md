@@ -31,6 +31,9 @@ come back to either.
 
 ## Engine
 
+- A vault that holds PDFs boots the broker frame and one render worker at idle (`pool.warm`, from
+  `pdfSurfaceModules.warmPdfOpenPath`); that worker is exempt from the 60 s no-visible-document retirement until a
+  document opens on it, for at most 5 min. Measured: ~77 MB (one renderer process) plus ~12 MB elsewhere.
 - One engine ships: the committed from-source build, loaded the same way in dev and production.
   `build/pdfiumAssets.ts` serves/emits it at `pdfium/<buildId>/` and fails dev and build on any byte that differs from
   `manifest.json`. Swap engine files and manifest together, never edit them, never add a parser fallback: a load
@@ -70,12 +73,21 @@ come back to either.
 - Tiles mirror into the session (`tileMirror.ts`): pixels belong to the document session, not the layer. After a
   byte-generation change, `versionBridge.ts` shows old mirrors as non-current stand-ins; cover "Updating" until a
   current, complete, sharp frame presents. Never replay a raw frame or accept a stale geometry proof.
+- Until its first present, `PdfTiledView` lays blank paper (`.pdf-tiled-paper`, `pagePresentation` boxes) under the
+  canvas, so the picture lands in place; PDF wait labels (`.is-waiting`) fade in only after 400 ms.
+- The wheel (and ctrl+wheel pinch) is taken on `.pdf-tiled-content`, not the surface: links are overlay buttons.
 - `drawnPageRects()` lists pages painted at least once at the current source and layout; a board over the PDF claims
   only those as opaque (`board-gpu-path`).
 - PDF Text uses the same source and pool without mounting Original's compositor. Word emphasis stays in the original
   page view; Text is an explicit separate action, never OCR.
 
 ## Source, authority and lifetime
+
+- The first page is drawn from a nameless `slice()` of the disk snapshot File (the worker envelope refuses a `File`)
+  while `stablePdfBlob` copies it beside the open; every worker then adopts the copy (`doc.adoptSource`). A snapshot
+  read after the file changed fails rather than returning new bytes, so nothing is ever mixed. The version hashes the
+  COPY (one disk read); a copy that fails tells App (`onReaderSourceLost`), which rechecks the file and reloads or
+  raises the DiskBar. App also rechecks once when a PDF's late version first sets its baseline.
 
 - The App-owned source/session outlives views. Hiding, graph trips and view aborts release view work, not source
   ownership (`pdf/session/ownedInkAcquisition.ts`). Retain actual bytes and full tokens.
@@ -165,9 +177,11 @@ come back to either.
 
 ## Module boundaries
 
-- PDF and canvas panes reach the engines only through lazy chunks (`PdfPane`'s `lazy()` routes, `CanvasPane` →
-  `NativeCanvasEntry`); `prefetchPanes.ts` warms them at idle by the kinds the vault holds (markdown-only fetches
-  none). A static engine import from App or a non-listed component defeats the split; the lint dark zone
+- PDF and canvas panes reach the engines only through lazy chunks, rendered through module slots
+  (`components/moduleSlot.ts`: `pdfSurfaceModules.ts`, `paneModules.ts`), never `React.lazy` + `Suspense`, whose
+  reveal React 19 holds until its fallback has been up 300 ms however early the chunk lands. `prefetchPanes.ts` warms
+  them at idle by the kinds the vault holds (markdown-only fetches none); `loadPdfPane` also warms the whole open path
+  (surface, source runtime, passwords, startup, `cpuEntry`) and pre-boots the engine. A static engine import from App or a non-listed component defeats the split; the lint dark zone
   (`rendering-platform`, Boundaries) catches most of them. Filesystem access stays in context; saves in App.
 - No PDF or board may depend on a CDN to draw a line: engine, fonts and renderer assets are local and
   integrity-checked.

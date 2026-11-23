@@ -33,4 +33,7 @@ export interface PaintLayerResources {
     wakeAt?(deadlineMs: number | null): void;
     /** Asks for a new frame from the scene (a new plan), for a picture whose tile level the pool refused. */
     replan?(): void;
+    /** True when the device already holds this picture's texture, so a new snapshot need not decode its bitmap (the GPU route draws
+     * the texture; a CPU draw that needs the bitmap asks for it again, as for one the route released). Absent: always decode. */
+    textureHeld?(imageKey: string): boolean;
 }

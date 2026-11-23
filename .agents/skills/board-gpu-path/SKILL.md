@@ -1,141 +1,172 @@
 ---
 name: board-gpu-path
-description: The board's GPU route — the tile composer and its item routes, zoom (stand-ins, exact tiles, text masks), held nodes during a drag, opaque worlds and modulate, the paper's own adapter, dense (CPU tile) mode on canvas2d only, sized capacity waits, present causes and the no-silent-fallback rule. Load before touching boardLayers.ts, src/whiteboard/render/gpu/, gpuPaintAdapter.ts, src/whiteboard/host/notebookPaperLayer.ts, budgetRefusal.ts, or the board/paper hooks in src/whiteboard/viewer/attachView.ts.
+description: How a whiteboard, notebook or PDF-ink board is drawn — the paint pipeline (scene, paint stream, frame assembler, board layers), the layer stack, the GPU tile composer and its item routes, exact-area coverage, zoom stand-ins, held nodes during a drag, opacity and modulate, the notebook paper's adapter, large pictures, canvas2d's direct and dense modes, sized capacity waits and the no-silent-fallback rule. Load before touching src/whiteboard/render/ (gpu/ and reference/ included), src/whiteboard/viewer/attachView.ts or wetLayer.ts, src/whiteboard/host/notebookPaperLayer.ts or proceduralPaper.ts, or src/whiteboard/media/tilePlan.ts.
 ---
 
-# The board GPU path
+# Drawing a board
 
-Shared rules (layers, frames, the governor) are in `rendering-platform`. This file is the board's own route.
+Shared rules (Layer contract, frames, governor, WebGL2 frame path) are in `rendering-platform`; load it first.
+This is the board's own route. Editing (tools, selection, text) is `whiteboard-editing`.
 
-## Route
-- A pane with a device (`host.device()`) draws the direct paint through the GPU composer. `boardLayers.prepare`'s device branch
-  has no density latch, no estimate walk and no reservation before the build (`boardLayers.ts`, `onDeviceRoute`).
-- Dense (CPU tile) mode is canvas2d's. The dense adapter is built the first time a board enters dense mode (`ensureDense`), so a
-  device never builds one. A route change resets the other route's state.
-- The reference CPU adapter (`direct`) stays on a device: the composer borrows its prepared paths and clips.
-- A board hidden while dense reports `direct` through `onDensityMode`; otherwise the owner keeps asking for live-only frames.
-- A view request (`attachView` `requestPaint`) stands while a new one would open the same stream: on a device, while its world
-  holds the viewport at the same band; on canvas2d, while it holds the viewport at the same ink realisation (`paintRequestScope.ts`),
-  one band across while a zoom is still going (`ZOOM_SETTLE_MS`), and at the exact scale only on a board with pictures (their tiles
-  read it). Asked per step, every pan and zoom step presented twice: the old frame at the new camera, then the same picture rebuilt.
+## Pipeline
 
-## Tiles (`src/whiteboard/render/gpu/`)
-- `tileComposer.ts`: per visible position, one tile per blend-coherent slice (a slice ends where the blend changes or a live
-  part sits). A position is admitted over frames within the frame's budget, acquired from `tileStore`, encoded in
-  `encodeOffscreen` (per band), then drawn.
-- `prepare(view, budget, prepared, omit?)`: `omit` is the nodes a drag previews elsewhere. Their tiles are composed without them;
-  the draw never takes an omit set.
-- Routes: `routePath` (clips admitted through its coverage kit, except a stroke under one evenodd cut clip — convex outer minus convex holes, a connector around its label — which is cut exactly on the area kit: `cutClipOf`), `routeInk` (analytic and union), `routeImage`, `routeText`
-  (with text masks), and `cpu`. A run no GPU route takes is counted `fallback:item-cpu:<kind>:<why>`.
-- `routePath` draws a fill or stroke by EXACT AREA (`areaCoverage.ts`, contours from `areaOutlines.ts`) when its outline is exact
-  (simple contours, nesting only with opposite signs; groups of separated opaque fills as one area), else by the 4x MSAA
-  coverage kit, counted `area:fallback:<why>` (dash, non-simple outline, nesting). The bar for shapes and ink is the exact
-  coverage of the item's own geometry, not canvas2d (which is the inexact one: measured 44-96 levels off on diagonals).
-  Edges are cached per content and band and moved by a uniform (a pan or zoom inside a band uploads nothing); a run's areas
-  share one accumulation pass, then composite from their scratch regions. While a zoom is live an area over a quarter tile takes
-  the coverage route and its run reports inexact (`exact()`), so its tile recomposes exact at rest, as text stand-ins do.
-  A LIVE draw that admitted an inexact run owes the next frame: the composer invalidates `live-inexact`, and that settling
-  frame is not a repeat and answers changed (the paper reads only prepare's answer, never `contentKey`). Else the zoom's last
-  step stays on screen at rest.
-  A live path or ink part is signed by its item (`EXACT_LIVE_ROUTES`), not counted as new content each frame; image and text
-  parts still are (a tile or glyph mask lands under the same item). The board compares the drag offset it presented, not any offset.
-- **Cost on a tiled GPU is render-target switches** (`gpu:target-switch`, audit): each loads and stores an attachment. Lined,
-  grid and blank notebook paper is ONE procedural pass (`host/proceduralPaper.ts`, exact box coverage per item; dotted keeps the
-  composed route, counted `procedural:off:<why>`); a live frame draws each part once over the view, never per tile position; the
-  grid-4 coverage scratch is 8 MiB (a band is a switch and a resolve). Measured: notebook zoom-sat 848 switches -> 51, 14.6 -> 3.3 ms.
-- Union ink is EXACT AREA too: `ink/unionOutline.ts` builds a stroke's union boundary (one offset contour per run, cut by an
-  arrangement where contours cross, kept where the outer winding is zero); a refusal goes to the grid, counted
-  `ink:area:fallback:<why>`. Wet and committed ink share the route, so pen-up hands over identical coverage. A moving view may hold
-  a FINER band's outline, never a coarser one (the board rests on its last live picture). Measured, real DPR 2: notebook draw
-  13.2 -> 1.3 ms per frame. The area shader's per-column share is taken from the run's own width (`tb = ta + d`): two separate
-  differences of pixel-sized coordinates streaked rows on Apple's GPU.
+1. **Scene** (`scene/`): the App-owned runtime's indexed, packed copy of the document (`sessionScene.ts`).
+2. **Request** (`viewer/attachView.ts`, `requestPaint`): asks the paint services for a stream of the view. On a
+   device the first request is the view's world; once that is up, the whole sheet is asked ONCE with no world, keyed
+   by revision, sheet, theme, sensitivity and ink band (`SceneKey`). A camera change inside one band asks nothing:
+   the tiles follow the camera. On canvas2d a request stands while it holds the viewport at the same ink realisation
+   (`paintRequestScope.ts`); while a zoom is still going (moving, or a scale change within `ZOOM_SETTLE_MS` 250) it
+   stands one ink band across, on a board with pictures only while its picture tiles still cover the screen, and
+   the exact scale is asked once the zoom settles. Asked per step, every pan and zoom step presented twice. The 2D
+   adapter's next-scale snapshot shares the presented snapshot's picture leases in the same prepare, so a step
+   completes in its own frame (video frames still ask, for the newest frame).
+3. **Stream** (`paintStream.ts`, `scenePaintStream.ts`): each node yields `underlay` items then `content` items
+   (`PaintBand`); every node's underlay is emitted before any content.
+4. **Assembler** (`frameAssembler.ts`): builds the stream into a `PaintSource` frame under CPU leases.
+5. **Board layers** (`boardLayers.ts`, `createBoardLayers`): two platform layers, one per band, sharing one state.
+   - With a device (`host.device()`): the frame goes to the GPU adapter (`gpuPaintAdapter.ts`) and its tile
+     composer. No density latch, estimate walk or reservation before the build (`onDeviceRoute`). The reference
+     CPU adapter (`direct`, `reference/canvasPaintAdapter.ts`) is still built: the composer borrows its prepared
+     paths and clips.
+   - On canvas2d: the reference adapter draws directly (`direct` mode), or, past the density hysteresis
+     (`density.ts`), CPU tiles (`dense` mode: `densePlan.ts`, `streamingDenseTile.ts`). The dense adapter is built
+     the first time a board enters dense mode (`ensureDense`), so a device never builds one. A route change resets
+     the other route's state. A board hidden while dense reports `direct` via `onDensityMode`.
+
+**Layer stack** (bottom up, `makeSnapshot` in `attachView.ts`): backdrops (a PDF's page layers) → notebook paper →
+board underlay band → preview underlay → interaction underlay (wet ink) → board content band → preview content →
+interaction content → embed port. Rebuilding an identical list must return the same frozen array: a new topology
+seals platform input, and resealing during layout recursed until React error #185.
+
+The board's `backendPreference` is `'auto'` (`BOARD_BACKEND_PREFERENCE`): both routes draw the same prepared paint
+and the platform alone picks the device.
+
+## The tile composer (`render/gpu/`)
+
+- `tileComposer.ts`: per visible position, one tile per blend-coherent slice (a slice ends where the blend changes
+  or a live part sits). Positions are admitted over frames within the frame budget, acquired from `tileStore.ts`,
+  encoded in `encodeOffscreen` (per band), then drawn. `tileParts.ts` indexes parts by position: a change marks the
+  positions under its bounds dirty, and a dirty position is recomposed into the target it already has.
+- `prepare(view, budget, prepared, omit?)`: `omit` is the nodes a drag previews elsewhere; their tiles compose
+  without them. The draw never takes an omit set.
+- **Routes**: `routePath` (fills, strokes, clips), `routeInk`, `routeImage`, `routeText` (glyph masks,
+  `textMasks.ts`), and `cpu`. A run no GPU route takes is counted `fallback:item-cpu:<kind>:<why>`.
+- **Exact area** is the bar for shapes and ink: the exact coverage of the item's own geometry, not canvas2d (which
+  is the inexact one: measured 44–96 levels off on diagonals). `routePath` draws a fill or stroke by exact area
+  (`platform/render/areaCoverage.ts`, contours from `gpu/areaOutlines.ts`) when its outline is exact — simple
+  contours, nesting only with opposite signs, groups of separated opaque fills as one area, and a stroke under one
+  even-odd cut clip (`cutClipOf`: convex outer minus convex holes, a connector around its label). Otherwise the 4x
+  MSAA coverage kit, counted `area:fallback:<why>` (dash, non-simple outline, nesting).
+- Union ink is exact area too: `ink/unionOutline.ts` builds a stroke's union boundary; a refusal goes to the grid,
+  counted `ink:area:fallback:<why>`. Wet and committed ink share the route, so pen-up hands over identical coverage.
+  A moving view may hold a FINER band's outline, never a coarser one. The area shader's per-column share comes from
+  the run's own width (`tb = ta + d`): two separate differences of pixel-sized coordinates streaked rows on Apple GPUs.
+- Edges are cached per content and band and moved by a uniform: a pan or zoom inside a band uploads nothing. A run's
+  areas share one accumulation pass, then composite from their scratch regions.
+- While a zoom is live an area over a quarter tile takes the coverage route and reports inexact (`exact()`); its tile
+  recomposes exact at rest. A live draw that admitted an inexact run invalidates `live-inexact` and the settling
+  frame answers changed, or the zoom's last step stays on screen at rest.
+- A live path or ink part is signed by its item (`EXACT_LIVE_ROUTES`), not counted as new content each frame; image
+  and text parts still are. The board compares the drag offset it presented, not any offset.
+- **Cost on a tiled GPU is render-target switches** (`gpu:target-switch`). Lined, grid and blank notebook paper is
+  ONE procedural pass (`host/proceduralPaper.ts`; dotted keeps the composed route, counted `procedural:off:<why>`);
+  a live frame draws each part once over the view, never per tile position. Measured: notebook zoom 848 switches
+  → 51, 14.6 → 3.3 ms.
 - **Mask clips need planned isolation targets.** The composer learns a shortfall from a refused encode or live draw
-  (`noteShortfall`) and reserves it (`reserveIsolation`) at each prepare that encodes or draws live: unplanned, an arrow's
-  label cut was refused every frame and the label never drew.
-- **Hitches are named by the slow-frame log** (`__bmeRenderAudit.slowFrames()`: each frame over 1000/120 ms GPU with its tape and
-  counter deltas). A frame composes at most one dirty tile a pending region covers (`DIRTY_COVERED_PER_FRAME`), except one the last draw
-  failed to cover (stale: its node is no longer live); deferring only what the last draw covered brings back the commit hitch. A covered position
-  and one whose tile replaced its cover, signs as its position (`coverSignature`), so the swap presents nothing; a refused live draw makes the next prepare answer changed.
-- The wet layer lets go of a stroke when the board reports its node in `drawnInkNodeIds`, which the wet layer reads in its own
-  prepare. A node goes in only once every live part of it was admitted this frame: reported before admission, a deferred
-  re-admission at pen-up left the stroke on neither layer for a frame. With no stroke in flight the wet layer's routes are
-  `evictGpu`-able (16.8 MB): a layer the frame has touched is never released whole, so without it the governor's trim fell short.
-- Fidelity evidence: with `bme.renderAudit=1`, `__bmeRenderAudit.scenes()` gives each board's last presented items and pane
-  matrix (`sceneAudit.ts`): the fidelity kit rasterises the exact coverage of those items and scores the shot against it.
-- **Large pictures** (`media/tilePlan.ts`): a tiled picture's whole-mip item carries `picture` facts; the image route plans the
-  finer tiles of each tile it composes itself (`planPictureTiles`, the screen's byte share via `setScreen`, canvas2d's keys) and
-  skips the stream's `underlaid` tiles. A tile still decoding is left out (the stand-in shows); its entry waits in `awaitingDecode`
-  asking no frames, and recomposes once the decode settles. Only the resting scale's entries are asked (`waiting` starts
-  the uploads of landed tiles): those a zoom composed on its way wait for their scale, or their uploads filled the pool at
-  rest. The tile demand never aborts an acquire someone still waits for.
-- A change marks the positions under its bounds dirty (`tileParts.ts` parts index). A dirty position is recomposed into the
-  target it already has.
-- Coverage (`coverage(view)`): a position is `ok`, `dirty` or `missing`. A position with any picture (its tile, a dirty one, a
-  finished one, or a stand-in of another scale) is complete. `sharp` needs the drawn scale to be the demanded one and every
-  position `ok` there. While zooming, a hole does not hold the frame.
+  (`noteShortfall`) and reserves it at each prepare that encodes or draws live (`reserveIsolation`); unplanned, an
+  arrow's label cut was refused every frame and the label never drew.
+- A frame composes at most one dirty tile a pending region covers (`DIRTY_COVERED_PER_FRAME`), except one the last
+  draw failed to cover. A covered position, and one whose tile replaced its cover, signs as its position
+  (`coverSignature`), so the swap presents nothing.
+- Coverage (`coverage(view)`): a position is `ok`, `dirty` or `missing`; any picture (its tile, a dirty one, a
+  stand-in of another scale) makes it complete. `sharp` needs the drawn scale to be the demanded one and every
+  position `ok`. While zooming, a hole does not hold the frame.
 
 ## Zoom
-- A zoom holds a position at its nearest composed tiles (stand-ins, drawn scaled) when those tiles hold raster content only, or
-  CPU raster (`heldByZoom`). Geometry (path and ink tiles) is composed at the exact scale each frame. Mixed GPU content composes
-  exact: its text route scales its cached masks.
-- A CPU raster is never composed again during a zoom: the CPU route would raster it afresh each frame.
-- Text route (`ZoomRoute.setZoom`): while zooming, a missing exact mask is drawn from its cached stand-in, never rastered. A run
-  that drew one is marked `exact: false`, and its tile recomposes exact once the camera rests.
-- At rest, a position encoded exact supersedes its stand-ins at other scales (`dropScalesExcept`).
-- The rest ring (a viewport each side, one tile while zooming; `ringMargin`) is prefetch: its targets are reserved first with
-  `reserve(bytes, { prefetch: true })`, admitted only if they fit as the pool and grant stand, never reclaiming or freeing own tiles.
-  Two composers' rings that reclaimed each other's undrawn tiles recomposed them every frame at rest. Keep the still-wanted test on the
-  same margin, or ring positions are cancelled and begun again each frame.
-- The notebook paper's revision is its own (paper properties, page count), never `doc.rev`: a stroke must not re-stage the paper.
-- A position the governor refuses is composed one level down (half the scale), which covers four positions; a second refusal
-  waits. At rest a refused position first frees its own composer tiles and is admitted in the same frame (`freeOwn`).
 
-## Held nodes (drag)
-- A node that leaves the omit set while its tiles lack it is drawn live (`heldNodes`). A position stops drawing that node live
-  once an entry encoded since the node left holds it (`heldLive`): the tiles under it are composed by then.
-- Positions under a held node are composed first, so the live draw ends sooner.
+- A zoom holds a position at its nearest composed tiles (stand-ins drawn scaled) when those tiles hold raster content
+  only, or CPU raster (`heldByZoom`). Geometry (path, ink) composes at the exact scale each frame; mixed content
+  composes exact with the text route scaling its cached masks. A CPU raster is never recomposed during a zoom.
+- Text (`ZoomRoute.setZoom`): while zooming, a missing exact mask draws from its cached stand-in, never rasters; the
+  run is marked `exact: false` and recomposes at rest. At rest an exact encode supersedes other scales
+  (`dropScalesExcept`).
+- The rest ring (a viewport each side, one tile while zooming; `ringMargin`) is prefetch, reserved with
+  `reserve(bytes, { prefetch: true })`: admitted only if it fits, never reclaiming tiles. Two composers' rings that
+  reclaimed each other's undrawn tiles recomposed them every frame at rest. Keep the still-wanted test on the same
+  margin, or ring positions are cancelled and begun again each frame.
+- A position the governor refuses is composed one level down (half scale, four positions); a second refusal waits.
+  At rest a refused position first frees its own tiles and is admitted in the same frame (`freeOwn`).
+
+## Drag, wet ink and handover
+
+- A node that leaves the omit set while its tiles lack it is drawn live (`heldNodes`) until an entry encoded since
+  holds it (`heldLive`). Positions under a held node compose first.
+- The wet layer (`viewer/wetLayer.ts`) lets go of a stroke when the board reports it in `drawnInkNodeIds`, read in
+  the wet layer's own prepare. A node goes in only once every live part of it was admitted this frame: reported
+  earlier, a deferred re-admission at pen-up left the stroke on neither layer for a frame.
+- The wet bands answer unchanged from a fingerprint of what they draw: on a device the runs each stroke was admitted
+  as, after a draw2d the pending strokes' sources (canvas2d admits no runs; keyed by runs, a live stroke showed only
+  at pen-up).
+- With no stroke in flight the wet layer's routes are `evictGpu`-able (16.8 MB measured): a layer the frame touched
+  is never released whole, so without it the governor's trim fell short.
 
 ## Opacity and modulate (C1)
-- A multiply slice is laid by fixed-function `modulate` only where the surface beneath is opaque, as `opaqueWorld()` reports.
-  Elsewhere it is isolated (an over-composed copy laid by a multiply group).
-- A whiteboard claims the whole plane (`WHOLE_PLANE`) unless the view is inverted, where it claims nothing.
-- A notebook's paper and a PDF's page layers report `drawnPageRects()`: the pages painted at least once at the current layout.
-  The board claims those pages only (`createDrawnPagesReader`, `attachView.ts`). A page claim resets with the layout, because
-  the paper's record is keyed by stack-rect identity.
 
-## Paper (`src/whiteboard/host/notebookPaperLayer.ts`)
-- The paper has its own GPU adapter (`createGpuPaintAdapter`, audit surface `notebook-paper`). Its `evictGpu` forwards to it.
-- Its refusals wait once, sized (`deny` → `awaitSizedCapacity`), and clear when the waiter fires.
+- A multiply slice is laid by fixed-function `modulate` only where the surface beneath is opaque (`opaqueWorld()`);
+  elsewhere it is isolated (an over-composed copy laid by a multiply group).
+- A whiteboard claims the whole plane (`WHOLE_PLANE`) unless the view is inverted, where it claims nothing. A
+  notebook's paper and a PDF's page layers report `drawnPageRects()` (pages painted at least once at the current
+  layout); the board claims only those (`createDrawnPagesReader`). The claim resets with the layout.
+- The paper's revision is its own (paper properties, page count), never `doc.rev`: a stroke must not re-stage it.
 
-## Memory
-- GPU bytes are leases on the GPU pool. `evictGpu(bytes, frameId)` is the governor's trim: the adapter frees path coverage sets,
-  then image and text textures, then composed tiles, each only what the frame `frameId` did not use (`gpuPaintAdapter.ts`).
-- Only the band that owns the GPU adapter forwards `evictGpu` (`boardLayers.ts`); the other band's trim has nothing of it.
-- CPU bytes on a device are the direct build's leases, in 64 KiB chunks (`DIRECT_CHUNK`), through `allocator.cpu.reserve`.
-- A refused reservation waits once, sized: `awaitSizedCapacity(host, wake, { pool, bytes })` (`budgetRefusal.ts`). The governor
-  drops a sized waiter when it fires, and wakes it only when the bytes fit.
-- The GPU retry after a visible refusal arms a 250 ms deadline (`GPU_RETRY_MS`) as well: the pool can change with no release
-  that reaches the waiter. The deadline only invalidates.
+## Notebook paper (`host/notebookPaperLayer.ts`)
 
-## Frames and presents
-- A layer asks for a frame only for a cause: `host.invalidate(reason)`, or `needsFrame()` true. The composer's `needsFrame` is
-  false while a GPU admission is refused (no per-frame retry), and true while it is indexing, building, or holds finished
-  positions awaiting encode.
-- The scheduler names each present `present:<cause>` (`scheduler.ts`, `presentCause`): `input`, `camera`, `wake`,
-  `invalidate:<reason>`, `needsFrame:<layer>`, `none`. `none` is a fault: nothing requested that frame.
+Its own GPU adapter (`createGpuPaintAdapter`, audit surface `notebook-paper`); its `evictGpu` forwards to it. Its
+refusals wait once, sized (`awaitSizedCapacity`). Ruled paper also has a PDF writer definition: see `pdf-and-drawings`.
+
+## Large pictures (`media/tilePlan.ts`, `gpu/routeImage.ts`)
+
+- A tiled picture's whole-mip item carries `picture` facts; the image route plans the finer tiles of each tile it
+  composes (`planPictureTiles`, the screen's byte share via `setScreen`, canvas2d's keys) and skips the stream's
+  `underlaid` tiles. Tile interior is `mediaTileInteriorPixels` (1024) on both backends.
+- A tile still decoding is left out (the stand-in shows); its entry waits in `awaitingDecode` asking no frames and
+  recomposes once the decode settles. Only the resting scale's entries are asked; tiles a zoom composed on its way
+  wait for their scale. The tile demand never aborts an acquire someone still waits for.
+- A picture is hashed and verification-decoded once: the residency source (`media/residencySource.ts`) admits a Blob
+  once and inspection skips the decode for content already verified in this page. Re-inspecting per raster job
+  queued whole-picture decodes ahead of the tiles (measured: first tile raster 215 → 150 ms).
+
+## Memory and waits
+
+- GPU bytes are leases on the GPU pool. The adapter's `evictGpu(bytes, frameId)` frees path coverage sets, then image
+  and text textures, then composed tiles, each only what `frameId` did not use. Only the band owning the GPU adapter
+  forwards `evictGpu`.
+- **A canvas2d bridge keeps the board's GPU work.** A frame prepared with no device but the same paint (the first
+  CPU picture, a resize bridge) keeps the composer's tiles and picture textures and their ledger, so the governor
+  still counts and can trim them through `evictGpu`; only a lost/released device (the pane's `releaseGpu`) or a
+  paint of another document drops them. Released per bridge frame, a resize dropped and rebuilt every tile
+  (measured: 540 tile releases and 8 picture re-uploads over 8 bridges → 0 and 0).
+- CPU bytes on a device are the direct build's leases in 64 KiB chunks (`DIRECT_CHUNK`).
+- A refused reservation waits once, sized: `awaitSizedCapacity(host, wake, { pool, bytes })`
+  (`budgetRefusal.ts`); the governor wakes it only when the bytes fit. The composer's GPU retry after a visible
+  refusal also arms a 250 ms deadline (`GPU_RETRY_MS`) that only invalidates. `needsFrame` is false while a GPU
+  admission is refused (no per-frame retry).
+- **Unsized waits still exist** (`grep -rn whenAvailable src/whiteboard`): `boardLayers.ts` (per-pool refusal waiter),
+  `densePlan.ts` (four CPU sites), `streamingDenseTile.ts`, `analyticInkBatch.ts` and `gpu/imageTextures.ts` (both
+  pools), `frameAssembler.ts`, and `gpu/tileStore.ts`. Sizing one needs its thrower to report the bytes refused.
 
 ## No silent fallback
-- A CPU raster on a device is counted under its `fallback:` name (`fallback:item-cpu:<kind>:<why>` in `tileComposer.ts`;
-  `fallback:cpu-failed` and `fallback:offset-rebuild` in the board). A silent CPU path is a fault.
-- A budget refusal with no size is reported, never a silent wait. On a device, other errors go to the pane's `reportGpuError`;
-  a budget refusal and canvas2d errors go to `onError`.
 
-## Known gaps (unsized waits)
-These still wait with no byte count, so their refusal cannot be sized (check with `grep -rn whenAvailable src/whiteboard`):
-- `boardLayers.ts` (the per-pool refusal waiter), `densePlan.ts` (four CPU sites), `streamingDenseTile.ts`, `analyticInkBatch.ts`
-  (both pools), `gpu/imageTextures.ts` (both pools), `frameAssembler.ts`.
-Sizing one needs its thrower to report the bytes it refused.
+- Every CPU raster on a device is counted under a `fallback:` name: `fallback:item-cpu:<kind>:<why>`
+  (`tileComposer.ts`), `fallback:cpu-failed` (`gpuPaintAdapter.ts`), `fallback:offset-rebuild` (`boardLayers.ts`).
+  A silent CPU path is a fault.
+- On a device, errors go to `host.reportGpuError` (the pane demotes); a budget refusal and canvas2d errors go to
+  `onError`. A budget refusal with no size is reported, never a silent wait.
 
-## Verification
-- Typecheck and lint are the static gates. Behaviour is checked only in the browser (`verify-in-browser`); the counters above
-  (`present:`, `fallback:`, `trim:`, `evict-partial:`) are the evidence.
+## Evidence
+
+With `bme.renderAudit=1`: `present:` causes, `fallback:`, `area:fallback:`, `trim:`, `evict-partial:` counters;
+`__bmeRenderAudit.slowFrames()` names each frame over 8.33 ms GPU with its tape and counter deltas;
+`__bmeRenderAudit.scenes()` gives each board's last presented items and pane matrix (`sceneAudit.ts`) for fidelity
+kits that rasterise the exact coverage and score a screenshot against it. Running the app on each backend:
+`verify-in-browser`.

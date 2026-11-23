@@ -18,17 +18,29 @@ export interface ResidencySourceOptions {
 
 /** Local session bytes for one picture, hash-verified and checked against its board entry. Never fetches a URL. */
 export function createResidencySource(options: ResidencySourceOptions): (id: MediaId, signal: AbortSignal) => Promise<MediaRasterSource | null> {
+    // Each tile and mip decode asks for its source. A Blob is immutable, so bytes admitted once under this id stay admitted: the
+    // inspection (a SHA-256 of the whole file and a whole-picture verification decode) runs once per Blob, not once per raster.
+    // Inspected per raster, every tile of a large picture cost two decodes in the shared media worker, and the verification decodes
+    // queued ahead of the rasters the picture was waiting for (measured, a 4000x3000 JPEG inserted on a drawing: 4 verification
+    // decodes of the whole picture besides the insert's own, one before each raster).
+    const admitted = new WeakMap<Blob, { readonly id: MediaId; readonly source: MediaRasterSource }>();
     return async (id, signal) => {
         const entry = options.entry(id);
         if (!entry || entry.id !== id || !entry.mime.startsWith('image/')) return null;
-        let blob = options.media.get(id) ?? await options.readBlob(id, signal);
+        const held = options.media.get(id) ?? await options.readBlob(id, signal);
         signal.throwIfAborted();
-        if (!(blob instanceof Blob) || (typeof File !== 'undefined' && blob instanceof File)) throw new TypeError('Media source must be copied Blob bytes');
-        blob = blob.slice(0, blob.size, blob.type);
-        const info = await inspectMedia(blob, { signal, memory: options.memory, identity: options.identity, isCurrent: options.isCurrent });
-        if (info.id !== id) throw new Error('Media bytes do not match their content hash');
-        if (entry.mime !== info.mime || entry.bytes !== blob.size || entry.w !== info.width || entry.h !== info.height
-            || entry.animated !== info.animated) throw new Error('Media bytes do not match their board entry');
-        return { blob, mime: info.mime, width: info.width, height: info.height, animated: info.animated };
+        if (!(held instanceof Blob) || (typeof File !== 'undefined' && held instanceof File)) throw new TypeError('Media source must be copied Blob bytes');
+        let source = admitted.get(held)?.id === id ? admitted.get(held)!.source : null;
+        if (!source) {
+            const blob = held.slice(0, held.size, held.type);
+            const info = await inspectMedia(blob, { signal, memory: options.memory, identity: options.identity, isCurrent: options.isCurrent });
+            if (info.id !== id) throw new Error('Media bytes do not match their content hash');
+            source = { blob, mime: info.mime, width: info.width, height: info.height, animated: info.animated };
+            admitted.set(held, { id, source });
+        }
+        // The board entry can change under the same bytes (an edit of the document): checked on every call.
+        if (entry.mime !== source.mime || entry.bytes !== source.blob.size || entry.w !== source.width || entry.h !== source.height
+            || entry.animated !== source.animated) throw new Error('Media bytes do not match their board entry');
+        return source;
     };
 }

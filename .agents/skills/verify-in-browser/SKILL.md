@@ -1,193 +1,150 @@
 ---
 name: verify-in-browser
-description: How to actually verify a change in this repo — there is no test suite, so verification means Playwright driving the running app in headless Chromium against an OPFS-stubbed vault. Load before writing any verification script, before driving the app, and before claiming a change works.
+description: How to check a change in the real app — there is no test suite, so verification is Playwright driving the production build in the pinned headless Chrome against an OPFS-stubbed vault. Covers the shared-machine lock, preparing and serving a build, seeding notes, boards and PDFs, opening documents, forcing and proving WebGL2 or canvas2d, DPR and themes, waiting for a settled picture, and the traps that make a working change look broken. Load before writing any browser script, before driving the app, and before claiming a change works.
 ---
 
-# Verifying a change
+# Checking a change in the real app
 
-**There are no code-based tests in this repo** — no unit tests, no suites, no test script.
-`npm run typecheck` and `npm run lint` are the static gates; everything behavioural, the helper
-included, is verified by Playwright driving the running app in headless Chromium. A change is not
-verified because it typechecks. During implementation, charter §0 is the merge bar: clean typecheck
-and lint plus one normal real-app headless run, screenshot looked at (both themes if the change
-draws). Reviews, mutant/harness-fault proofs, identity/witness re-runs and qualified timing gates
-are deferred; keep existing arms but do not run them as merge conditions.
+**There are no code-based tests** (AGENTS.md). `npm run typecheck` and `npm run lint` are the static gates;
+everything behavioural is checked by driving the real app in headless Chrome. A change is not verified because it
+typechecks. The bar for a change: reproduce the bug once the way a person meets it, fix, show it once more the same
+way, and look at the screenshots (both themes if it draws; both backends if it renders). For a speed fix, one
+before/after pair.
 
-**The driver is pinned:** import `chromium` from the repo's **playwright@1.63.0** dev dependency,
-never the npx cache. **The browser is pinned separately** in `verify/browser-pin.json`: Chrome for
-Testing **157.0.8103.39**, launched with `executablePath`, never `channel: 'chrome'` or the bundled
-Chromium. Its installed path is the scratch browser root + pin.version + pin.executable (see the
-run's `scratch/HOWTO.md`). `verify/lib/` supplies the shared run toolbox; start with its README.
-Every report records the actual driver/browser version, build identity, fixture hashes and reload arm.
-Use `verify/lib/identity.mjs`'s shared `buildIdentity` and `bindServedBodies`: attach before goto,
-await binding before every assertion and finish. Functional `raw-route` binds APIResponse raw bytes
-then fulfils unchanged (HTTP cache disabled, recorded); timed `node-refetch` never intercepts, using
-server bytes plus the browser URL list, not proof of the cached browser body. Same-origin JS/CSS/wasm
-is fail-closed against emitted files; foreign requests are logged, never blocked by default.
+## The pinned toolchain
 
-## The harness, step by step
+- **Driver**: `playwright@1.63.0` from the repo's own `node_modules`, never the npx cache.
+- **Browser**: Chrome for Testing **157.0.8103.39** (`verify/browser-pin.json`), launched by path. The default path is
+  `/Users/adham/Developer/bme-impl/scratch/browsers/<version>/<executable>`; `BME_CHROME_PATH` overrides it.
+  `verify/lib/browser.mjs`'s `openBrowser` enforces both pins and gives a fresh context. Never use `channel:
+  'chrome'` (installed Chrome updates itself mid-run) or the bundled Chromium (it crashed reading a stored folder
+  handle on reload).
+- **Toolbox** (`verify/lib/`, README there has every option): `serve.mjs` (`prepareApp`, `serveApp`),
+  `browser.mjs`, `vault.mjs` (`installVault`, `seedVault`, `readVaultFile`, `readWitness`, `waitForVault`,
+  `outsideChange`), `identity.mjs` (`bindServedBodies`), `counters.mjs`, `input.mjs`, `reload.mjs`,
+  `fast.mjs` (`openDocument`, `treeRow`), `report.mjs`. Fixture generators are in `verify/fixtures/` (PDFs via
+  `fixtures/lib/pdf.mjs`); generated files live in scratch, never in the repo.
 
-Each step below exists because skipping it produces a *working change that looks broken*.
+## The shared machine (`bme-lock`)
 
-1. **Use your assigned port, `--strictPort`, and scratch-only Vite cache/output.** Read the run's
-   `scratch/HOWTO.md`: installs/builds use `bme-lock build`, static gates `static`, servers `serve`,
-   browsers `run`. Start slow commands in `hc run --bg`. **Never build while holding run/bench**:
-   prepare under build first (`toolbox-smoke.mjs --prepare` / `prepareApp`), then serve the frozen
-   dist/identity with `serveApp({build:false})` under run. Nested preparation fails loudly; it can
-   deadlock the shared pool. Stop the server between runs. Never use Vite's default 5173 or the
-   developer's 5199. Dev startup also compares current HEAD and served source/config content
-   with the prepared snapshot; mismatch is HarnessFault. Reports record `build.devSourceCheck`
-   expected/actual values. Re-prepare after source, config or HEAD changes. Lifecycle uses dev
-   (StrictMode) and production; timing uses benchmark.
+On this machine every build, static check, server and browser run goes through
+`/Users/adham/Developer/bme-impl/scratch/bin/bme-lock` (`build`, `static`, `serve`, `run [-w N]`; `status` shows
+holders). It frees the grant when the command exits. **Never nest grants**: a script holding `run` must not build;
+`prepareApp` refuses under `run`. Start slow commands in `hc run --bg` and `hc wait` them, wrap browser runs in a
+hard `timeout 300`, stop your server when the run ends, use your own port with `--strictPort` (never 5173 or the
+developer's 5199), and delete a build as soon as its evidence is no longer needed.
 
-2. **Stub `window.showDirectoryPicker` with OPFS**, in an `addInitScript` *before* the page loads.
-   The native picker cannot open headless. Use the toolbox's main-window-only installVault and
-   installCounters: context init scripts also enter opaque frames, where probing missing FSA
-   globals can itself cause pageerror. Never grant permissions or install window counters there.
+## Recipe
 
-3. **Patch `queryPermission` / `requestPermission` to return `'granted'`** — on the handle you
-   return *and* on the result of `FileSystemDirectoryHandle.prototype.getDirectoryHandle`.
-   Otherwise a restored vault asks for a user gesture that never comes.
-
-4. **Seed fixture notes into OPFS after `page.goto` has landed on the real origin**, with
-   `getFileHandle` + `createWritable`. `navigator.storage.getDirectory` is `undefined` on
-   `about:blank`, which has no storage bucket. Re-seed every run — OPFS is per browser context.
-
-5. **Press `⌘E` before testing anything about the caret, typing, or cell editing.** Files open in
-   Reading mode by default, where nothing is editable.
-
-6. **Selectors:** the editor is `.cm-content` inside `.cm-scroller`. Chromium only, by design. The
-   welcome screen carries up to **two** `.welcome-btn`s, and the second one opens a *different*
-   vault: `Open Vault` (always — the picker) plus either `Open '<linked vault>'` (a hash naming a
-   known vault whose grant has lapsed) or `Restore '<previous vault>'` (a stored handle whose grant
-   has lapsed). Never both — the linked branch returns before the stored one is reached. Match
-   `{ name: 'Open Vault', exact: true }`; a loose `{ name: 'Open' }` is ambiguous on the linked
-   screen. The vault switcher (`.vault-switcher`, `aria-label="Switch vault — <name>"`, bottom of the
-   sidebar) exists only once a vault is open, and `.vault-menu-row` only inside its menu. Stub the
-   picker with a NAMED OPFS subfolder, not the OPFS root: the root's `name` is `''`, so the switcher
-   shows no name and Trash (keyed on it) is disabled. Tooltips are `.tooltip` (≈400ms hover delay).
-
-7. **Stored OPFS handle reads crashed the bundled Chromium 153.0.8010.12 and installed Chrome
-   153.0.8010.53**, on reload and second-vault opens. This was browser-build-dependent, not an app
-   regression; installed Chrome also updates itself, invalidating comparisons across runs.
-
-   Two explicit reload / restore / two-vault arms — always record which you took:
-   - **Pinned Chrome for Testing by `executablePath`, no shim.** Use the version and executable in
-     `verify/browser-pin.json`. The integrator measured 157.0.8103.39 surviving **3 of 3** stored-
-     handle reload runs. This exercises native structured cloning (`keyval-store` in
-     `indexedDB.databases()`, no `__h_idb:` keys). A crash is a harness fault, not an app failure.
-   - **Dev fallback: route-intercept the `idb-keyval` module** with a localStorage shim storing
-     `{__handle: name}`, re-resolved from the OPFS root — **pack/unpack recursively**, because
-     `recent-vaults` is an array of objects each holding a handle, not a bare handle. Works on the
-     bundled build, but the real structured-clone path then goes unexercised. (Deleting the
-     `keyval-store` database before the reload and re-opening through the picker dodges the read
-     instead — and dodges what you were testing, if that was the restore.)
-
-   **A `goto` that differs only in the `#hash` does not reload** — it navigates in-page, the restore
-   effect never re-runs, and a link-opens-a-note probe silently proves nothing. Force it
-   (`page.reload()`), and assert you did: set a `window` marker before, check it is gone after.
-
-8. **`await document.fonts.ready` before asserting a column width.** Two fonts re-trigger the table fit when
-   they land, and only one of them is a request you could watch for. The app reaches **two** Google hosts:
-   `index.html` links a `fonts.googleapis.com` stylesheet (Fira Code) and preconnects `fonts.gstatic.com`, and
-   a chosen text font adds a second stylesheet at runtime (`useAppSettings` (src/app)'s `google-font-link`) —
-   but the request that moves layout is the **gstatic woff2**, fetched only for a face something actually
-   renders, so a default load makes no font request at all. **KaTeX's faces are bundled locally** and a table
-   holding maths re-fits when they arrive too (`tableFit`'s `mathProbe`). Offline is not an exemption.
-
-9. **Suppressed browser menus are asserted, not screenshotted.** To check the app's own context menu
-   replaced the browser's, assert `defaultPrevented` on the `contextmenu` event — the OS menu never
-   appears in a screenshot either way.
-
-10. **Outside changes are simulated in OPFS, from OUTSIDE the app's code path** — a separate
-    `page.evaluate` (or a Worker) opening fresh `navigator.storage.getDirectory()` handles and writing
-    with `createWritable`, deleting with `removeEntry`, renaming with `handle.move()` (which gives real
-    `moved` records) or copy + delete (which does not — the hash-pairing path). First assert
-    `typeof FileSystemObserver === 'function'` in this Chromium; `delete window.FileSystemObserver` in an
-    init script forces the polling fallback (`liveDetection === 'polling'`) and the save-time check
-    alone. Count the app's own writes with an init-script wrapper on `createWritable`, and tree work
-    with one on `FileSystemDirectoryHandle.prototype.entries` plus a MutationObserver on `.tree-item`s.
-    Real-disk FSEvents (records, `.crswap` handling) differ from OPFS and cannot be driven headless —
-    the native picker is the wall; say so rather than claim them.
-    Use `verify/lib/vault.mjs`'s `readWitness` for bounded NotReadableError-only retries (every
-    retry is reported; exhaustion is a harness fault). **Never retry NotFoundError**: it may be a
-    real deletion. For swap races, readWitness's `afterCompletedCloses:{path,count}` first waits
-    on completed successful counter closes; reset after seeding, pass the expected absolute count.
-    Its bounded wait reports the observed count and fails as HarnessFault. For async conditions use
-    `waitForVault`, **never `page.waitForFunction(async ...)`**: a returned Promise can appear
-    truthy before the native read completes. The helper records its last value and hard deadline.
-
-11. **The terminal needs the real helper:** `npm run helper:dev` (a source run: dev origins allowed,
-    the in-process PTY backend, never the installed macOS PTY host) beside the dev server — loopback to
-    loopback raises no Local Network Access prompt. Set `VAULTAGENT_TERMINAL_SHELL=/bin/sh` for a
-    deterministic shell (test-only; the user's real login shell runs otherwise). Type into
-    `.xterm-helper-textarea`. The WebGL renderer draws to a canvas, so assert through the shell's own
-    side effects (`echo marker > $TMPDIR/x`, read it back from Node) or screenshots; `.xterm-rows` holds
-    text only under the DOM renderer fallback. Kill stray helpers you started; never stop the user's
-    installed one.
-
-## Sketch
+1. **Prepare** once per source change, under `build` — it writes a scratch Vite config, the production `dist`
+   and a frozen identity (`prepared.json`) outside the worktree:
+   `bme-lock build -- node prepare.mjs` with
+   `await prepareApp({ root: WORKTREE, scratch: SCRATCH + '/app', mode: 'production' })`.
+   Use `mode: 'dev'` only to exercise StrictMode; dev refuses to serve if HEAD or sources drifted since preparing.
+2. **Run** under `run`: `bme-lock run -w 2 -- timeout 300 node check.mjs` (weight 2 for a PDF, a large board or
+   several panes; 1 otherwise).
 
 ```js
-import { installVault, seedVault } from './verify/lib/vault.mjs';
-import { installCounters } from './verify/lib/counters.mjs';
-await installVault(context, { name: 'Fixture Vault' });
-await installCounters(context, { vaultName: 'Fixture Vault' });
-const page = await context.newPage();
-await page.goto(`http://127.0.0.1:${PORT}/`);
-await seedVault(page, { name: 'Fixture Vault', files: { 'A.md': '# Fixture\n' } });
+const R = '/abs/path/to/worktree';
+const { openBrowser } = await import(R + '/verify/lib/browser.mjs');
+const { serveApp } = await import(R + '/verify/lib/serve.mjs');
+const { bindServedBodies } = await import(R + '/verify/lib/identity.mjs');
+const { installVault, seedVault } = await import(R + '/verify/lib/vault.mjs');
+const { openDocument } = await import(R + '/verify/lib/fast.mjs');
+const app = await serveApp({ root: R, scratch: SCRATCH + '/app', mode: 'production', build: false, port: PORT });
+const run = await openBrowser({ launchOptions: { args: [] }, contextOptions: { viewport: { width: 1200, height: 800 } } });
+try {
+  await installVault(run.context, { name: 'Fixture' });               // OPFS picker stub + 'granted' permissions
+  await run.context.addInitScript(() => { if (window === window.top) {
+    localStorage.setItem('bme.renderAudit', '1');                     // optional: window.__bmeRenderAudit
+    localStorage.setItem('theme', 'light');                           // 'light' | 'dark' (absent = dark)
+  } });
+  const binding = await bindServedBodies(run.context, { identity: app.identity, origin: app.url.slice(0, -1), buildMode: 'production' });
+  const page = await run.context.newPage();
+  const errors = []; page.on('pageerror', e => errors.push(String(e)));
+  await page.goto(app.url);
+  await seedVault(page, { name: 'Fixture', files: { 'A.md': '# A\n', 'B.drawing': BOARD, 'P.pdf': pdfBytes } });
+  await page.getByRole('button', { name: 'Open Vault', exact: true }).click();
+  await openDocument(page, 'B.drawing');                              // waits for the pane's canvas
+  // ... act as a person would, then screenshot and LOOK at it ...
+  await binding.check();                                              // the served bytes were the prepared build
+} finally { await run.close(); await app.stop(); }
 ```
 
-The smoke's note counter epoch ends before its separate EPUB control. That control opens a real
-book, asserts sandbox=allow-scripts, opaque origin, absent host counters, no pageerror and no write.
-Kept extra arms use the same --prepare/run pair: dev-only `--dev-drift-mutant` changes a scratch
-copy AFTER preparation (`BME_DEV_DRIFT_PATH=src/App.tsx|index.html|vite.config.ts`); dev-only
-`--head-drift-mutant` corrupts prepared HEAD metadata while source bytes stay unchanged (not a
-real Git history change); `--init-mutant` removes guards and hides FSA constructors ONLY in
-subframes, confirms that fault applied, and must fail the no-pageerror assertion. No scratch
-patch ever edits the worktree's source.
+**Fixtures.** Notes are text. A minimal native whiteboard is one text file (the app writes the full form itself on
+save):
 
-## Workers: functional-only target counters
+```
+{"format":"board","version":[1,0],"kind":"whiteboard","fence":"compat-1: compatibility fence, holds no content, so that builds of this app from before the guard release refuse to edit this file","document":{"schema":{"schemaVersion":999},"store":{}},"records":[
+{"type":"sheet","id":"Qm3vL8a0Zt","name":"Page 1","order":"a0"},
+{"type":"end","count":1}
+]}
+```
 
-`verify/lib/targets.mjs` instruments dedicated workers paused at startup through raw flat CDP,
-using the same closure-free wrappers as the main window. Pass an OWN-range debuggingPort to
-openBrowser/instrumentTargets; it binds127.0.0.1, never uses a remote-origin wildcard and closes
-with the browser. Never install paused-target counters under a bench grant. Frames are explicitly
-recorded/resumed but not counted until V-01b part2; unexpected service/shared workers fail.
+Or make one as a person does: the file tree's **New drawing or notebook** button. PDFs: pdf-lib through
+`verify/fixtures/lib/pdf.mjs`, or a small file kept in your scratch.
 
-**Measured CfT157.0.8103.39 fact:** a dedicated MODULE worker (the app's pdf.js worker), auto-attached
-with waitForDebuggerOnStart/flatten, emits executionContextCreated(id1) after Runtime.enable;
-Runtime.evaluate('location.href',contextId1) BEFORE resume crashes its renderer. 1+1 and name controls
-complete the same PDF save without crashing. **Never touch WorkerLocation before resume: take
-worker URLs from TargetInfo.** Any other new pre-resume native getter needs the same isolated
-control first. Minimal sequence/evidence is in `verify/lib/TARGETS.md`; retained diagnostic arms
-belong to the deferred review phase, not implementation merge conditions.
+**Selectors.** File rows `.tree-item[data-path="…"]` (`treeRow`; names show without `.md`); the note editor
+`.cm-content`; a board's surface `.board-viewer-surface`; a PDF's `.pdf-tiled-surface` (Original) or
+`.pdf-reading-scroll` (Text); board tools are buttons named by tool (`getByRole('button', { name: /^Draw/ })`).
 
-File handles can work even when their constructors were unavailable in the prelude. The runtime
-hooks returned/received native prototypes BEFORE the app gets the handle; inspect capability
-transition records rather than assuming global-constructor presence. Actual builder/archive FSA
-counts are0 (bytes/Blob supplied); postMessage/Blob.arrayBuffer witness work. The planted OPFS-read
-worker is labelled a control of the instrument, never an app gate. Logical termination does not
-prove CPU cessation immediately: allow terminate()+2s (Chromium forcible delay, c-c measurement).
+## WebGL2 and canvas2d
 
-## Read the colour off the element the TEXT NODE hangs off
+- **Every pane presents canvas2d first**, then swaps to WebGL2 once the device qualifies (`rendering-platform`). A
+  check of "the GPU path" must look after the swap.
+- **WebGL2**: headless CfT on this Mac with no flags uses the real GPU (`ANGLE Metal Renderer: Apple M4 Pro`).
+- **canvas2d**: launch with `args: ['--disable-webgl']`. The audit then counts `context:creation-failed` and
+  `pane:fallback:pane-2d:creation-failed` once per pane.
+- **Prove the backend, never assume it**: with the audit on, `window.__bmeRenderAudit.presents().records` carries
+  `backend: 'webgl2' | 'canvas2d'` per present, and `snapshot().counters` every `fallback:` count. Record the
+  renderer string (`WEBGL_debug_renderer_info` on a throwaway canvas): a software renderer (SwiftShader, llvmpipe,
+  "Software"/"Basic Render Driver") is CPU work that looks like WebGL2 and is not GPU evidence.
+- **DPR 2** needs a real scale: `args: ['--force-device-scale-factor=2', '--window-size=1200,887']` with
+  `contextOptions: { viewport: null }`. An emulated `deviceScaleFactor` lands raw CDP input at half scale. A
+  screenshot is in device pixels: a point picked from it is `x / scale` in CSS.
+- Headless Chrome ticks a synthetic 60 Hz whatever the flags: judge per-frame cost against 8.33 ms, not cadence.
+  Time questions run alone (`run -w 8`, an exclusive slot); everything else is proved by counters.
 
-`getComputedStyle(el).color` on a wrapper says what that wrapper would paint, not what you see: a
-CodeMirror mark decoration wraps the highlighter's own span, so the inner one wins. Three rounds of
-"measured, it works" missed a bug a screenshot showed in one second. When a check is about what the
-user SEES, walk to the text node's parent — or take the screenshot and look at it.
+## Waiting for a settled picture
 
-## What to check beyond the change itself
+Do not sleep and hope. A board shows `[data-paint-state]` (`loading`, `pending` = "Updating…"/"Waiting for
+memory…", `failed`) until its picture is current; a PDF shows `.pdf-tiled-updating` while tiles land. With the audit
+on, wait until the present count stops moving (`presents().records.length`, or an init-script
+`window.__bmePresentHook = info => …` that sees each present, canvas included), and check `slowFrames()` and the
+`fallback:` counters for what happened on the way.
 
-Per the repo's standing instruction: be picky about the UI. If something on screen is visibly
-wrong — misaligned, flickering, mis-sized — fix it even if it is not what you were sent to do.
+## Traps, each one cost a wrong verdict
 
-Reading integration additionally needs zero EPUB writes/hash equality, disguised-binary refusal, rename/retry/reload/vault identity, fresh/adopt/live/IME emphasis, native PDF/EPUB shared-toggle paint, reversible layout/anchor preservation, inactive-page capability, independent manual PDF Text and lazy-network checks. Isolated worker proofs are not integrated acceptance.
+- **OPFS, not disk.** The native picker cannot open headless; `installVault` stubs it with a NAMED OPFS folder
+  (the OPFS root's name is `''`, which hides the vault name and disables Trash) and patches
+  `queryPermission`/`requestPermission`. Install it (and `installCounters`) before the page; they skip opaque
+  frames. Real-disk FSEvents and `.crswap` cannot be driven headless: say so rather than claim them.
+- **Seed after `goto`**: `navigator.storage.getDirectory` is undefined on `about:blank`. OPFS is per context:
+  re-seed every run.
+- **Notes open in Reading mode**: press ⌘E (`input.mjs` `editMode`) before typing or caret checks.
+- **Welcome screen**: up to two `.welcome-btn`s; match `{ name: 'Open Vault', exact: true }`, never a loose
+  `'Open'`. `.vault-switcher` exists only once a vault is open.
+- **Reload**: a `goto` that changes only the `#hash` does not reload; use `page.reload()` and prove it with a
+  `window` marker. The pinned CfT survives stored-handle reloads natively; `reload.mjs`'s `idb-shim` arm (dev
+  only) replaces structured cloning and then cannot test it. Record which arm you took.
+- **Fonts**: `await document.fonts.ready` (`input.mjs` `fontsReady`) before a width or screenshot; KaTeX faces
+  and a chosen Google text font re-fit tables when they land.
+- **Async waits**: use `waitForVault`, never `page.waitForFunction(async …)` (a returned Promise is truthy at
+  once). `readWitness` retries only `NotReadableError`; never retry `NotFoundError`.
+- **Outside changes** are simulated from a separate `page.evaluate` with fresh OPFS handles (`outsideChange`);
+  `handle.move()` gives real `moved` records, copy+delete does not. `delete window.FileSystemObserver` in an init
+  script forces the polling fallback.
+- **Context menus** are asserted (`defaultPrevented` on `contextmenu`), not screenshotted; tooltips are `.tooltip`
+  after ~400 ms hover.
+- **What the user sees**: read colour off the text node's own parent, not a wrapper (a CodeMirror mark wraps the
+  highlighter's span), or look at the screenshot.
+- **EPUB** runs must not use Playwright's `serviceWorkers: 'block'` (its blocker throws in the opaque frame).
+- **Workers**: `targets.mjs` instruments dedicated workers via raw CDP (functional runs only); never read
+  `WorkerLocation` before resume (it crashed CfT 157's renderer). See `verify/lib/TARGETS.md`.
+- **Terminal** checks need the real helper (`npm run helper:dev`, `VAULTAGENT_TERMINAL_SHELL=/bin/sh`); type into
+  `.xterm-helper-textarea` and assert through the shell's side effects (`integrated-terminal`).
 
-EPUB opaque-frame runs must omit Playwright's `serviceWorkers:'block'`: its injected service-worker
-blocker reads navigator.serviceWorker in a sandboxed realm and throws SecurityError. Use a fresh
-context with no service worker instead; this does not loosen the frame CSP. Select file rows using
-the displayed name (`.md` hidden), scope shared emphasis to `.editor-slot-header`, and compare
-whole canonical words across prefix text nodes. Wait for reader navigation/restore to settle,
-not merely the first `.chapter` attach. Explicit Cmd+S on a clean NOTE intentionally writes it;
-separate that gesture from zero-write display-only tests. EPUB Cmd+S remains a required no-write probe.
+## Beyond the change
+
+Be picky about what is on screen. Anything visibly wrong — misaligned, clipped, flickering, a stale notice — is
+fixed or reported even when it is not what you were sent to do.

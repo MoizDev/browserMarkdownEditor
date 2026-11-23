@@ -55,6 +55,6 @@ export function createNativeViewPlatform(options: {
         writeOverlays: frame => ports.writeOverlays(frame),
         onPresentation: presentation => ports.onPresentation(presentation),
         onError: error => ports.onError(error),
-        onNotice: message => ports.onNotice(message),
+        onNotice: (message, cause) => ports.onNotice(message, cause),
     };
 }

@@ -38,6 +38,7 @@ import { paintKey, type BoardViewLease, type BoardViewParameters, type BoardView
 import { createNativeViewPlatform } from './nativeViewPlatform';
 import { createNativeEditingLease, type NativeEditingToolOptions, type NativeEmbedInfrastructure } from './nativeEditingLease';
 import type { NativeClipboardService } from './useNativeClipboard';
+import { gpuUnavailableText } from '../../utils/renderStatus';
 
 export interface NativePdfBackdrop {
     readonly layers: readonly PlatformLayerDefinition[];
@@ -528,8 +529,8 @@ export function createNativeViewLease(options: {
                     if (qualityTimer) { clearTimeout(qualityTimer); qualityTimer = null; }
                     if (qualityNotice) { const shown = qualityNotice; qualityNotice = null; options.onNoticeCleared?.(shown); }
                 }
-            }, onError: options.onError, onNotice: code => {
-                const text = noticeText(code);
+            }, onError: options.onError, onNotice: (code, cause) => {
+                const text = code === 'gpu-unavailable' ? gpuUnavailableText(cause) : noticeText(code);
                 if (code !== 'memory-pressure' && code !== 'cpu-floor-denied') { options.onNotice(text); return; }
                 // A memory notice describes reduced quality a person could see, so it waits until that has lasted a second.
                 // Measured: shown at once, it stayed in the page 16 ms (one soft frame at a zoom-out) and then the next sharp
@@ -751,5 +752,5 @@ function noticeText(code: string): string {
     return code === 'memory-pressure' ? 'Rendering quality was reduced to fit memory.'
         : code === 'cpu-floor-denied' ? 'Rendering is limited by available memory.'
             : code === 'cpu-pinned' ? 'Rendering is using a compatible mode.'
-                : 'GPU rendering is unavailable; a compatible mode is in use.';
+                : gpuUnavailableText(undefined);
 }

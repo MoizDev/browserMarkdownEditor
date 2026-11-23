@@ -6,6 +6,7 @@ import type { CompositorAppearance, CompositorBackend, CompositorCaptureOptions,
 import type { BorrowedMirror, MirrorSet, MirrorView } from './mirrorSet';
 import type { PageStack } from './pageStack';
 import type { ScheduledFrame, TouchPanSample } from './scheduler';
+import type { GpuUnavailableCause } from './surfaceBroker.types';
 import type { FrameToken, Layer, RenderToken } from './types';
 
 /** Retain a definition object to retain its layer across setLayers; removing it ends the layer once. */
@@ -87,7 +88,7 @@ export interface PlatformPaneOptions<T extends object> {
     /** Generic pressure may reduce quality while CPU remains drawable. Only cpu-floor-denied means
      * the visible CPU working set was refused; consumers must not make transient GPU pressure fatal.
      */
-    onNotice(message: 'memory-pressure' | 'cpu-floor-denied' | 'gpu-unavailable' | 'cpu-pinned'): void;
+    onNotice(message: 'memory-pressure' | 'cpu-floor-denied' | 'gpu-unavailable' | 'cpu-pinned', cause?: GpuUnavailableCause): void;
     /** Report presented quality changes, including recovery; never report an unpresented allocation (§6.4:653). */
     onQualityChange?(report: { readonly qualityScale: number }): void;
     mirrorQuad?(entry: BorrowedMirror<T>, view: MirrorView): CompositorMirrorQuad | null;

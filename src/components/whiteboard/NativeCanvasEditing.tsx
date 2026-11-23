@@ -42,7 +42,8 @@ export interface NativeEditingRenderContext {
     readonly inverted: boolean;
     readonly setInverted: (value: boolean) => void;
     readonly notice: string | null;
-    readonly setNotice: (value: string) => void;
+    /** null dismisses the notice shown. */
+    readonly setNotice: (value: string | null) => void;
     readonly editable: boolean;
     readonly canMutate: () => boolean;
 }
@@ -155,7 +156,7 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
     readonly clipboard: NativeClipboardService; readonly capabilities: NativeEditingCapabilities;
     readonly language: NonNullable<ReturnType<typeof useNativeBoardLanguage>>; readonly signal: AbortSignal;
     readonly dialogs: ReturnType<typeof useNativeBoardDialogs>; readonly current: () => boolean; readonly report: (error: unknown) => void;
-    readonly notice: string | null; readonly setNotice: (message: string) => void; readonly inverted: boolean;
+    readonly notice: string | null; readonly setNotice: (message: string | null) => void; readonly inverted: boolean;
     readonly setInverted: (value: boolean) => void; readonly attached: boolean;
     readonly commandRef: RefObject<((id: string, event: KeyboardEvent) => boolean) | null>; readonly linksRef: RefObject<Links | null>;
     readonly renderView: (context: NativeEditingRenderContext) => ReactNode;

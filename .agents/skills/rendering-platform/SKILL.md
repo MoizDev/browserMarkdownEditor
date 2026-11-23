@@ -1,160 +1,184 @@
 ---
 name: rendering-platform
-description: Shared rendering platform and layer contracts, the WebGL2 backend and its frame-path rules, and the render audit. Load before changing src/platform/render (gfx/webgl2.ts included), implementing a PDF, notebook or whiteboard rendering layer, or writing a browser kit that measures rendering.
+description: The shared rendering platform under src/platform/render — how a pane is attached and picks WebGL2 or canvas2d, the Layer and LayerHost contracts, the scheduler and presents, the memory governor and leases, the WebGL2 frame-path rules, capture, the import zones, and the render audit. Load before changing anything in src/platform/render (gfx/ included), writing or changing a PDF, notebook or whiteboard layer, or writing a browser kit that measures rendering.
 ---
 
 # Rendering platform
 
-The design authority is `planning/40-platform/contracts.md` C4, C7 and
-`planning/40-platform/rendering-design.md` §§3–7, 10, 16 (planning lives in the main checkout).
-The platform is a shared, demand-driven compositor, not a document engine or another source of truth.
+`src/platform/render/` is one app-wide compositor shared by every PDF, notebook and whiteboard pane. It is
+demand-driven and owns no document truth: layers draw the session's CPU truth, and everything on the GPU is a
+rebuildable cache of it. The board's own route is in `board-gpu-path`; PDF tiles and documents in
+`pdf-and-drawings`. The design record is `planning/40-platform/contracts.md` (C1–C9) and `rendering-design.md` in
+the main checkout; the code and its comments are the truth where they differ.
 
-## Layer and lifecycle
+## Map
 
-- Implement `Layer` in `src/platform/render/types.ts`; create it through a pane's
-  `PlatformLayerDefinition` and borrow the stable `LayerHost` in `compositor.types.ts`. A layer
-  supplies both `drawGpu` and the complete `draw2d` path, including normal, hidden-show and loss
-  fallback; 2D is not a placeholder. Compositors borrow layers; the pane lifecycle owns them.
-- `PlatformPaneOptions.backendPreference: 'canvas2d'` fixes an attachment to CPU without requesting a
-  GPU context; omitted/`'auto'` permits normal qualification. An optional `camera` shares the same
-  `CameraController` instance with the pane scheduler; otherwise attachment creates its own.
-- A layer never owns an rAF loop. Call `host.invalidate(reason)` on input or ready async data and
-  `host.wakeAt(deadline)` for real delayed work, cancel with `wakeAt(null)`. `needsFrame()` is false
-  while merely waiting on a worker. The app-wide scheduler coalesces visible panes and sleeps when
-  idle (design §7.1). Import `cpuEntry` from the lazy pane route to register the 2D factory before
-  attaching; registration itself allocates nothing.
-- `releaseGpu(reason)` is the only GPU teardown route; it is idempotent and does not destroy CPU
-  document truth, undo or session-owned mirrors. Only the pane lifecycle calls it and final
-  `dispose()`; a compositor never disposes borrowed layers. On hide, synchronously release all GPU
-  textures, targets, buffers and drawing backing in the same task; a broker may keep only the
-  separately accounted context/program reserve. Hidden panes have no GPU working memory
-  (C4.3–C4.4, design §3.3).
-- `evictGpu(bytes, frameId)` is the governor's partial trim: it returns the bytes it freed and keeps what frame `frameId`
-  uses. A layer with the hook is never released whole by the trim (`trimGpu` in `attachPlatformPane.ts`); one without it is
-  released whole only when its pane was not touched this frame. Board and paper details: `board-gpu-path`.
-- GPU resources are rebuildable caches of session CPU truth. Mirrors and their leases belong to the
-  app-level document session, not to a pane/layer; unmount returns a borrow, not the bitmap owner.
-  Source reload/session closure, not a path rename or graph trip, ends their ownership (design §6.4).
+| File | What it owns |
+|---|---|
+| `cpuEntry.ts` | The lazy entry: registers the canvas2d factory and re-exports `attachPlatformPane`. |
+| `attachPlatformPane.ts` | One pane's attach actor: backend choice, the canvas2d→GPU swap, the resize bridge, metrics, trims. |
+| `gpuPaneCandidate.ts` | A pane's WebGL2 candidate: prepare, ready, draw-time errors and their retry/latch. |
+| `surfaceBroker.ts` | The only code that creates, counts and recovers WebGL2 contexts; the loss circuit. |
+| `paneLifecycle.ts`, `backendSwitch.ts` | Visibility, hide/show, `releaseGpu`, which compositor is on screen. |
+| `scheduler.ts` | The one app-wide rAF loop: prepare, encode, present for every visible pane. |
+| `compositor.ts` / `compositor2d.ts` | The WebGL2 and canvas2d compositors behind one `PaneCompositor`. |
+| `gfx/webgl2*.ts` | The WebGL2 device (`gfx/api.ts` is its backend-neutral interface), frames, pools, coverage. |
+| `memoryGovernor.ts`, `resourceArena.ts` | Grants, leases, pressure, trims, quality steps. |
+| `capture*.ts` | Session-owned capture (thumbnails, PNG/PDF export from a pane). |
+| `mirrorSet.ts`, `mirrorBridge.ts` | Session-owned CPU mirrors that outlive panes. |
+| `camera.ts`, `pageStack.ts`, `compositorProjection.ts` | Camera, paged layout, `pagePresentation`/`projectPage`. |
+| `renderAudit.ts` | `window.__bmeRenderAudit`, off unless `localStorage['bme.renderAudit']='1'`. |
+| `../renderStatus.ts` | The app-wide render notices (pinned, reduced quality). |
 
-## Frames, budgets and drawing
+Constants are in `types.ts` (`RenderConstants`, documented per field) with values in `constants.ts`.
 
-- All layers consume the same frozen view/frame. `RenderToken` carries vault epoch, document id,
-  bytes generation and session; `FrameToken` also carries view lease and device generation. Check
-  the full relevant token, revision and ownership at async publication; stale worker responses,
-  disposed leases and prior-device resources must never update the current view (C7, design §7.1).
-  Rest snapping is presentation only: never write its correction back into the semantic camera.
-  That advanced the epoch every frame and cancelled CPU colour jobs forever; use the common
-  `pagePresentation`/`projectPage` for paint, overlays and measurement geometry.
-- Split `prepare(view, budget)` into bounded resumable work, respect `shouldYield()` and
-  `claimUpload(bytes)` and never perform resource creation or uploads inside draw. Use the host's
-  canonical CPU/GPU allocators; a failed `reserve` means defer or use a lower-quality/2D path, not
-  an unaccounted allocation. Return the same lease to the allocator that issued it; GPU retirement
-  remains charged until complete (C4.3, design §§5.6, 6, 7.1).
-- `host.device()` describes the GPU resources available to the preparing compositor, not a promise
-  about the displayed backend; it can be null. A qualified candidate is not the preparing device
-  during the first CPU picture or resize bridge. Reacquire it after backend/generation changes, and never import the
-  broker or native GL into a layer. `host.uniforms(bytes)` is valid only during `drawGpu` and uses
-  the current encoder's fenced ring. `host.drawTexturedQuad` takes source texels including real
-  gutters and a device-pixel destination for either backend. `host.paintWorld` and `host.paintPage`
-  install the common transform and page clip for 2D; start from the supplied device-identity context
-  (C4.2–C4.3, design §4.1).
-- `encode` and `submit` can return null: do not acknowledge presentation or advance overlays without
-  a complete current frame. Requeue budget/deadline deferrals and null submit; a worker or other
-  external wait instead wakes on completion or a real deadline, never by polling frames.
-  Regular and mirror CPU attempts share ONE canonical scene key for pending source admissions;
-  their back-buffer/presentation keys remain separate. Different pending keys made both attempts
-  evict each other's admitted images forever before the first frame, despite complete PDF tiles.
-- Compose page, committed ink and live stroke as one document-colour group; invert that group once,
-  not each translucent element. Chrome/selection remains outside it. Capture/export bypasses view
-  inversion (C2.5, design §4.2).
-- Pressure is app-wide: allocation refusal and device trouble trim before reducing `q`; recovery
-  waits for sustained low usage and no gesture. Never bypass a denied reservation. Report worker
-  owned/WASM byte estimates (not real JS heap or bytes already leased) with
-  `reportWorkerMemory(worker, bytes)`; `releaseWorkerMemory(worker)` on stop/crash/recycle.
-  Both are lazy render exports keyed by the actual worker incarnation; these estimates are
-  report-only, separate from the decoded-raster CPU budget C (design §6.2; worker-host §5.8).
-- Governor grants (`memoryGovernor.ts`, `plan`): a pane's pinned visible positions (`gpuPinnedBytes`) are granted first and
-  never trimmed while the pane is visible; the rest of the GPU share is split by focus weight. A visible position past its
-  pane's share is refused and composed one level down, never trimmed from the screen. Only `maxVisiblePaneContexts` panes
-  get a GPU context; a sixth keeps its 2D picture and its floor.
-- A slow GPU is timing evidence, not memory. `trouble()` reports `slow-gpu` for a hold after the window; it never trims a
-  cache or steps quality. Layers shed per-frame work instead (the board halves its compose limit).
-- Capture belongs to the session: select an idle GPU route only if its full document/session token
-  matches the immutable snapshot and the scheduler is running/not suspended, otherwise use CPU.
-  Retain content/resources synchronously before awaiting. Async `prepare` may publish the frozen
-  plan's isolation getter; copy it AFTER prepare, never spread its initial empty value or reuse the
-  live viewport inventory. Preserve the getter when composing child snapshots.
-- `captureBlob(rect, maxSide, options)` encodes PNG from the SAME CPU capture target before cleanup;
-  no second canvas repaint or new GPU context. It shares bitmap capture's queue/deadline/admission.
-  Aborting rejects promptly but retains the active slot/storage until native encoding settles.
-  Compose PDF+ink through genuine `PdfInkBackdrop.captureSnapshot` (plain, source/session leased),
-  not nested queued `captureRegion`: two parent captures would occupy both slots and deadlock.
-- CPU coverage witnesses and their helpers are benchmark-only conditional imports. Shadow backing,
-  bitmap staging and counting scratch are charged to the canonical allocators as measurement bytes;
-  they are not a dependency of normal rendering. Raster identity is explicit (`Layer.benchmarkRaster`
-  on canonical PDF layers, declared/assigned only in benchmark builds); procedural notebook paper
-  is not raster. Preserve custom `benchmarkDomain` callbacks when freezing compositor bindings.
-  Vector current waits for its completed authoritative pass; optional witness failure never skips
-  mandatory colour submission. Dev esbuild must bind the false constant BEFORE DCE/import analysis.
+## How a pane gets its backend
 
-## The WebGL2 backend
+1. A React host calls `usePlatformPane` (`components/platformPane/`), which `import()`s `cpuEntry` and calls
+   `attachPlatformPane(host, options)`. Every pane **starts on canvas2d**: the first picture is always the 2D
+   compositor's.
+2. Only after that first CPU picture presents (`cpuPresented`) does `requestGpu` ask the broker for a context —
+   unless `backendPreference: 'canvas2d'`, which never asks. The broker grants one of `maxVisiblePaneContexts` (5)
+   visible-pane contexts (8 app contexts, 1 always reserved for the terminal even when closed). A sixth visible pane
+   stays on canvas2d and upgrades when a slot frees (`onSlotAvailable`); it never evicts a visible neighbour.
+3. The broker creates the context with `RENDER_CONSTANTS.contextAttributes` (`powerPreference: 'default'`,
+   `failIfMajorPerformanceCaveat: true`, no antialias/depth/stencil), then the device qualifies once
+   (`#qualify` in `gfx/webgl2.ts`: a capability shader and a 2x2 readback). The GPU compositor is staged and swapped
+   in when ready (`onReady` → `surfaceHost.stage`).
+4. A null context or failed qualification is `creation-failed`: the pane stays on canvas2d. `deviceHasWebGL2()`
+   tells "this browser has no WebGL2" (a fallback, never pressure) from "this pane got no context" (pressure).
+   Measured (gpu-h13): reported as pressure, every quality raise dropped quality again.
 
-- **Chosen** for a pane with `backendPreference` `'auto'` when the device can make any WebGL2 context (`deviceHasWebGL2` in
-  `surfaceBroker.ts`, only success cached), the broker grants it one of `maxVisiblePaneContexts` (5) slots, and the device
-  qualifies once (`#qualify` in `gfx/webgl2.ts`: a capability shader and a 2x2 readback). A device with no WebGL2 is a fallback,
-  never memory pressure: reported as pressure, every quality raise dropped quality again (gpu-h13).
-- **Falls back** per pane, never per document, to that pane's own `draw2d`: a GPU error demotes it (`fallback:pane-2d:gpu-error:
-  <code>`), retried once after `GPU_RETRY_QUIET_MS` of quiet; the second error of the attach latches canvas2d. Three context losses
-  in 60 s pin the pane on canvas2d (`cpu-pinned`). A resized GL canvas is bridged by a CPU picture while it rebuilds
-  (`fallback:2d-bridge`). Each is counted; canvas2d never changes what it draws because the GPU exists.
-- **GPU target** (`memoryGovernor.ts`, `updatePanes`): base + per visible pane + 24 B per device pixel, floor 64 MB; the fixed terms
-  scale by the largest visible `min(DPR, 2)²`, inside the device class's ceiling (128/256/512 MB). Unscaled, a small DPR 2 pane sat
-  at the floor, a saturated zoom filled it, the trim found nothing more, the surface rebuild was refused every frame and the pane
-  never drew again (doc12 and LARGE=11 draw-sat 0/91). A cache filling that budget is not a leak: it must plateau, stay under the
-  target, and give back everything above the view and its ring on a forced trim (`__bmeRenderAudit.trim('gpu')`).
+**Fallbacks, each counted under `fallback:` in the audit** (`pane:` surface):
+- A draw-time GPU error demotes the pane (`fallback:pane-2d:gpu-error:<code>`), retried once after
+  `GPU_RETRY_QUIET_MS` (1 s) without input; the second error of the attach latches canvas2d
+  (`gpu-error-latched`).
+- Three context losses in 60 s pin the pane's session on canvas2d (`cpu-pinned`, `reportRenderPinned` notice).
+- A resize of a displayed GL canvas is bridged by a detached CPU picture while the same GPU rebuilds
+  (`fallback:2d-bridge`, with its pixel count). A bridge that cannot present within `BRIDGE_WAIT_MS` (300 ms) is
+  skipped (`fallback:2d-bridge-skipped`): the GPU resizes directly and draws from the textures it kept. Measured:
+  waiting on a bridge that could not fit the CPU pool left 'Updating' up for good.
+- A governor refusal of a resize is pressure, not a fallback: the pane keeps its picture and waits.
+- Pane notices go out through `options.onNotice('memory-pressure' | 'cpu-floor-denied' | 'gpu-unavailable' |
+  'cpu-pinned')`; the host shows them in the app's own UI, never a native dialog.
 
-## Frame-path rules (WebGL2)
+canvas2d is a complete path, not a placeholder: a machine without a usable GPU runs everything on it, and it never
+draws differently because a GPU exists.
 
-- **A frame survives only two refusals**: a full uniform ring and an isolation shortfall (`guardIsolation`: a clip or group whose
-  target was not planned opens nothing, its caller defers that draw). Any other throw inside a pass cancels the whole frame, and
-  every pass recorded before it is lost: a route that recorded state-changing work (an atlas conversion) must not count it done.
-- **No synchronous GL read on the frame path.** `getError`, `checkFramebufferStatus`, `getParameter`, `readPixels`,
-  `getBufferSubData` and a blocking `clientWaitSync` are round trips to the GPU process: a frame behind a deep queue waits for all
-  of it (measured: `checkFramebufferStatus` per resize, 17-24 ms at each LARGE=11 drag's start and release). They belong at device
-  creation, once per device or per kind of target, in capture/export, or behind `__BME_BENCH__`. Query and fence polls stay
-  non-blocking (`QUERY_RESULT_AVAILABLE`, `clientWaitSync(fence, 0, 0)`).
-- **Nothing unchanged is redone, nothing per frame is allocated:** no re-raster, re-tessellation or re-upload of unchanged
-  content, no per-frame string keys or snapshot arrays; every GPU byte is a governor lease; every CPU fallback is counted.
-- **A frame presents only a changed picture.** A frame whose layers all answer unchanged is skipped (`presentUnchanged`). So an
-  answer compares what the layer draws (camera, viewport, a picture key), never the view epoch: the epoch also moves when the
-  moving flag flips at a gesture's start and end with the camera still. Keyed on it, the PDF answered changed over the same
-  picture, and the board never saw its view presented and showed 'Updating…' at rest for good.
-- A passed-over layer counts as changed (it proved nothing). A layer's class is read once as its prepare starts; one that turned
-  critical after the critical pass ran is prepared in the optional pass, not sent to a pass that is over.
-- Ask for a frame only for a cause; the scheduler names each present `present:<cause>`, and `none` is a fault.
+## The Layer contract (`types.ts`, `compositor.types.ts`)
 
-## Audit and kits
+- A pane is a set of `PlatformLayerDefinition`s; each creates a `Layer` and borrows a stable `LayerHost`. The pane
+  lifecycle owns layers; compositors borrow them and never dispose them.
+- Every layer implements BOTH `drawGpu` and a full `draw2d`. Optional GPU hooks: `encodeOffscreen` (draw into the
+  layer's own targets before the surface pass), `evictGpu`, `protectFrame`, `atlas`, `twoPhase`, `idle`.
+- **Never own an rAF loop.** Ask with `host.invalidate(reason)` for input or ready async data, `host.wakeAt(ms)` for
+  a real deadline (`wakeAt(null)` cancels). `needsFrame()` is true only for executable work: waiting on a worker is
+  false (the worker's completion invalidates).
+- `prepare(view, budget)` does bounded, resumable work: respect `budget.shouldYield()` and `claimUpload(bytes)`;
+  create and upload resources only here, never in `drawGpu`/`encodeOffscreen`. Return `false` only when nothing the
+  layer draws can differ from its last present; any other answer means changed. A layer the budget skipped counts
+  as changed. Because an all-unchanged frame skips encode and submit (`presentUnchanged`), every change a layer
+  draws, its chrome included, must be counted or it is hidden.
+- Compare what the layer draws (camera, viewport, picture key), **never the view epoch**: the epoch also moves when
+  `moving` flips with the camera still. Keyed on it, the PDF answered changed over the same picture and the board
+  showed 'Updating…' at rest for good.
+- `host.device()` is the GPU preparing this frame, or null; it is null during the first CPU picture and a resize
+  bridge even when a candidate exists. Re-read it after a backend or `generation` change. Never import the broker or
+  native GL into a layer.
+- `host.uniforms(bytes)` / `uniformsInto` are valid only during `drawGpu` (the encoder's fenced ring).
+  `drawTexturedQuad(s)` take source texels including gutters and a device-pixel destination, on either backend.
+  `paintWorld`/`paintPage` install the common transform and page clip for 2D. `host.imageReady(image)` (2D) says
+  whether a draw needs an upload not admitted this frame: draw a stand-in instead, because a canvas2d frame that
+  misses an image is not presented at all.
+- `host.markIncomplete(reason)` during encode: a critical layer's frame is refused (the old picture stays), others
+  present incomplete. `host.reportGpuError(e)` routes a device error to the pane's demotion path.
+- `releaseGpu(reason)` is the only GPU teardown: idempotent, never touches CPU truth, undo or session mirrors.
+  `evictGpu(bytes, frameId)` is the governor's partial trim: free least-recently-used, never what `frameId` uses,
+  return bytes freed. A layer with `evictGpu` is never released whole by a trim; one without it is released whole
+  only when its pane was not touched this frame (`trimGpu`).
+- `memory()` is cheap byte accounting called every frame.
 
-- `localStorage['bme.renderAudit'] = '1'` turns on `window.__bmeRenderAudit`: `snapshot()` (counters `surface:event`, frames,
-  stages with `sum/count/max/over8`, over8 = samples over a 120 Hz frame, 8.33 ms), `presents()` (each present with `why`, the
-  tape of why every layer answered as it did), `gauges()`, `scenes()`, `trim(pool)`. The audit costs nothing off.
-- Kit traps, each measured: headless Chrome ticks a synthetic 60 Hz whatever the flags (the 120 Hz bar is per-frame cost against
-  8.33 ms, not cadence); DPR > 1 needs a REAL scale (`--force-device-scale-factor`, `viewport: null`): on an emulated
-  `deviceScaleFactor` raw CDP `Input.dispatch*` lands at half scale; a screenshot is in device pixels, so a point picked from one is
-  `clip.x + x / scale` in CSS. Time questions (GPU/CPU ms, hitches) run with nothing else on the machine; everything else is proved by counters.
+## Frames and presents
 
-## Boundaries
+- All layers of all visible panes consume one frozen view per frame. Check the full `RenderToken`/`FrameToken`
+  (vault epoch, document id, bytes generation, session; plus view lease and device generation) at every async
+  publication: a stale worker reply, a disposed lease or a prior device's resource must never touch the current view.
+- Rest snapping (`snapCamera`) is presentation only; never write it back into the semantic camera (that advanced the
+  epoch every frame and cancelled CPU colour jobs forever). Use `pagePresentation`/`projectPage` for paint, overlays
+  and measurement alike.
+- `encode`/`submit` may return null: never acknowledge a present or advance overlays without a complete current
+  frame. Budget deferrals requeue; external waits wake on completion or a real deadline, never by polling frames.
+- Ask for a frame only for a cause. With the audit on, each present is named `present:<cause>` (`input`, `camera`,
+  `wake`, `invalidate:<reason>`, `needsFrame:<layer>`); `none` is a fault.
+- A layer passed over by the budget counts as changed. A layer's class (critical/optional) is read once as its
+  prepare starts.
+- Page, committed ink and live stroke compose as ONE document-colour group, inverted once in dark view; chrome and
+  selection stay outside it. Capture/export bypasses view inversion.
 
-- `src/platform` cannot import React, context, editor, components, PDF or whiteboard. PDF and
-  whiteboard import platform runtime only from lazy routes; do not pull a backend, shaders or a heavy
-  engine into App's first chunk for a type. Terminal reservation uses only the tiny import-free
-  telemetry seam; never import terminal/xterm to count it. Capture must not import the PDF writer
-  (design §16.4, import rules).
-- The broker alone allocates/recovers pane contexts; reserve the terminal slot even when closed.
-  Five visible panes share one governor and scheduler: a sixth context request falls back to 2D,
-  never evicts a visible neighbour; insufficient shared memory lowers resolution, never blanks.
-  Respect app visibility separately from focus and window suspension. Rendering and mirror updates
-  must be lease/token checked so a late old pane cannot overwrite a replacement (design §3.3).
-- The benchmark CPU coverage witness reserves `4P` bytes for its transferred immutable bitmap plus
-  `16 * bandArea` for worker scratch (bands of at most 65,536 pixels). Counting yields cooperatively
-  between bands. Accepted observations drain after hide as retirement; hide never starts fresh paint.
+## Memory
+
+- Every GPU and CPU raster byte is a lease from the host allocators (`host.allocator.gpu/cpu.reserve`). A refused
+  reservation means defer or draw lower quality, never an unaccounted allocation; return a lease to the allocator
+  that issued it. GPU retirement stays charged until it completes.
+- GPU target (`memoryGovernor.ts`, `updatePanes`): `base + perPane·N + 24 B·devicePixels`, floor 64 MB, inside the
+  device class ceiling (128/256/512 MB by `navigator.deviceMemory`); fixed terms scale by the largest visible
+  `min(DPR,2)²`. Unscaled, a small DPR 2 pane sat at the floor and never drew again after a saturated zoom.
+- Grants: a visible pane's pinned positions (`gpuPinnedBytes`) first and never trimmed while visible; the rest by
+  focus weight (2:1). A position past its pane's share is composed one level down, never trimmed from the screen.
+- Pressure is app-wide: refusals trim before quality (`q`) drops; recovery waits for sustained low use and no
+  gesture. `trouble()` gives a layer `'slow-gpu'` (timing, never memory: shed per-frame work) or `'pressure'`.
+- A cache filling its budget is not a leak: it must plateau under the target and give back everything above the view
+  and its ring on a forced trim (`__bmeRenderAudit.trim('gpu')`).
+- **A hidden pane holds no GPU working memory**: hide releases every texture, target and buffer in the same task;
+  only the broker's context/program reserve survives. Session mirrors (`mirrorSet.ts`) belong to the App document
+  session, not the pane; unmount returns a borrow. Report worker WASM estimates with `reportWorkerMemory` and
+  `releaseWorkerMemory` on stop/crash.
+
+## WebGL2 frame-path rules
+
+- **A frame survives only two refusals**: a full uniform ring (`ArenaError 'out-of-budget'`) and an isolation
+  shortfall (`guardIsolation`, an unplanned clip/group target). Any other throw cancels the whole frame and every
+  pass recorded before it: work that changed state (an atlas conversion) must not be counted done before submit.
+- **No synchronous GL read on the frame path**: `getError`, `checkFramebufferStatus`, `getParameter`,
+  `readPixels`, `getBufferSubData`, a blocking `clientWaitSync` each wait for the GPU process (measured: 17–24 ms
+  per LARGE drag start/release from one `checkFramebufferStatus`). They belong at device creation, once per kind of
+  target, in capture/export, or behind `__BME_BENCH__`. Fence and query polls stay non-blocking.
+- Nothing unchanged is redone and nothing per frame is allocated: no re-raster, re-tessellation, re-upload, per-frame
+  string keys or snapshot arrays. On a tiled GPU the cost is render-target switches (`gpu:target-switch`).
+- Mask clips and groups need isolation targets planned in prepare (`host.reserveIsolation`).
+- Audit-on builds share pipelines per device exactly as production does (`PerDeviceMap`, `auditViewTarget` in
+  `renderAudit.ts`); a per-layer copy measures the kit, not the product.
+
+## Capture
+
+- Capture belongs to the session (`captureRuntime.ts`), one queue for all panes (`CaptureQueue`). It uses an idle
+  GPU route only when its token matches the snapshot and the scheduler runs; otherwise CPU. Retain content
+  synchronously before awaiting; copy the plan's isolation getter AFTER `prepare`.
+- `captureBlob` encodes PNG from the same CPU capture target, no second repaint or context. Abort rejects promptly
+  but keeps the slot until native encoding settles.
+- PDF+ink compose through `PdfInkBackdrop.captureSnapshot` (`pdf/session/inkBackdrop.types.ts`) under ONE parent
+  capture, never nested queued `captureRegion` calls: two parents hold both slots and deadlock.
+
+## Boundaries (lint-enforced, `bme/import-zones` in `eslint.config.ts`)
+
+- `src/platform` imports nothing app-specific (no utils, types, whiteboard, pdf, epub); `src/platform`,
+  `src/whiteboard` and `src/pdf` import no React and no context/editor/components/App.
+- The engines are a **dark zone**: a file outside them that imports them must be listed in `darkExcept` (reached only
+  through a lazy chunk) or `darkLazy` (dynamic/type-only imports). Adding an importer is a bundle decision; see
+  `pdf-and-drawings` for the lazy routes. No `tldraw`/`perfect-freehand` in the engines.
+- The terminal's context reservation goes through the import-free telemetry seam (`platform/terminalContext.ts`);
+  never import xterm to count it.
+
+## Audit, benchmark build, kits
+
+- `localStorage['bme.renderAudit']='1'` before load turns on `window.__bmeRenderAudit`: `snapshot()` (counters
+  `surface:event`, frames, stages with `sum/count/max/over8`), `presents()` (each present with its cause and every
+  layer's reason tape), `slowFrames()`, `gauges()`, `scenes()` (board scene for fidelity kits), `gpuErrors()`,
+  `arenaErrors()`, `trim(pool)`, `reset()`. Off, every call is one boolean test.
+- `__BME_BENCH__` is true only in `vite build --mode benchmark` (production plus hooks); dev esbuild binds it false
+  before dead-code elimination. Benchmark-only code (CPU coverage witnesses, `Layer.benchmarkRaster`,
+  `benchmarkDomain`) sits behind it and must never become a dependency of normal rendering.
+- Kit traps, each measured: headless Chrome ticks a synthetic 60 Hz whatever the flags (judge per-frame cost against
+  8.33 ms, not cadence); DPR > 1 needs a real `--force-device-scale-factor` with `viewport: null` (an emulated
+  `deviceScaleFactor` lands raw CDP input at half scale); a screenshot is in device pixels. How to run the app and
+  force each backend is in `verify-in-browser`.

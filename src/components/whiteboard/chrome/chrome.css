@@ -550,3 +550,187 @@
 }
 
 .board-shortcut-row dd { margin: 0; }
+
+/* The command palette (CommandPalette.tsx): the main menu's card, opened as the bottom column's neighbour, so it sits
+   8 px above the tool bar. The pointer-coarse case puts it below the header instead: a finger's own keyboard is the
+   on-screen one, which covers the bottom bar. The backdrop is the modal's outside: a press there closes the palette. */
+.board-palette-backdrop {
+    position: fixed;
+    inset: 0;
+    pointer-events: auto;
+}
+
+.board-palette {
+    display: flex;
+    flex-direction: column;
+    align-self: center;
+    box-sizing: border-box;
+    width: min(440px, 100%);
+    max-height: 100%;
+    min-width: 0;
+    margin: auto 0 8px;
+    padding: 4px;
+    border: 1px solid var(--board-bar-border, transparent);
+    border-radius: 12px;
+    background: var(--board-bar-bg, var(--background-primary));
+    color: var(--text-normal);
+    box-shadow: var(--board-bar-shadow, 0 4px 16px rgb(0 0 0 / 12%), 0 1px 3px rgb(0 0 0 / 8%));
+    pointer-events: auto;
+    font-size: 15px;
+}
+
+@media (pointer: coarse) {
+    .board-palette { margin: 8px 0 auto; }
+}
+
+.board-palette-search {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: none;
+    height: 40px;
+    padding: 0 8px;
+    border-bottom: 1px solid var(--board-bar-border, var(--background-modifier-border));
+    color: color-mix(in srgb, var(--text-normal) 55%, var(--background-primary));
+}
+
+.board-palette-input,
+.board-palette-input:focus,
+.board-palette-input:focus-visible {
+    flex: 1;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    outline: none;
+    box-shadow: none;
+    background: transparent;
+    color: var(--text-normal);
+    font: inherit;
+}
+
+.board-palette-input::placeholder {
+    color: color-mix(in srgb, var(--text-normal) 55%, var(--background-primary));
+}
+
+.board-palette-level {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: none;
+    height: 32px;
+    padding: 0 8px;
+    color: color-mix(in srgb, var(--text-normal) 55%, var(--background-primary));
+    font-size: 14px;
+}
+
+.board-palette-back {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 2px 6px 2px 2px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-normal);
+    font: inherit;
+    font-size: 14px;
+    cursor: pointer;
+}
+
+.board-palette-back:hover {
+    background: var(--background-modifier-hover);
+}
+
+.board-palette-list {
+    min-height: 0;
+    max-height: 360px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+.board-palette-heading {
+    padding: 8px 8px 2px;
+    color: color-mix(in srgb, var(--text-normal) 55%, var(--background-primary));
+    font-size: 13px;
+    user-select: none;
+}
+
+.board-palette-separator {
+    height: 1px;
+    margin: 4px;
+    background: var(--board-bar-border, var(--background-modifier-border));
+}
+
+.board-palette-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 36px;
+    padding: 0 8px;
+    border-radius: 8px;
+    color: var(--text-normal);
+    cursor: pointer;
+}
+
+.board-palette-row[data-active] {
+    background: var(--background-modifier-hover);
+}
+
+.board-palette-row[data-disabled] {
+    color: color-mix(in srgb, var(--text-normal) 45%, var(--background-primary));
+    cursor: default;
+}
+
+.board-palette-row > svg {
+    flex: none;
+    color: color-mix(in srgb, var(--text-normal) 55%, var(--background-primary));
+}
+
+.board-palette-check {
+    display: flex;
+    flex: none;
+    justify-content: center;
+    width: 16px;
+}
+
+.board-palette-text {
+    display: flex;
+    flex: 1;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: 8px;
+    min-width: 0;
+    padding: 4px 0;
+}
+
+.board-palette-label,
+.board-palette-crumb {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.board-palette-crumb {
+    min-width: 0;
+    color: color-mix(in srgb, var(--text-normal) 55%, var(--background-primary));
+    font-size: 13px;
+}
+
+.board-palette-reason {
+    flex-basis: 100%;
+    color: color-mix(in srgb, var(--text-normal) 55%, var(--background-primary));
+    font-size: 13px;
+}
+
+.board-palette-chord {
+    flex: none;
+    color: color-mix(in srgb, var(--text-normal) 55%, var(--background-primary));
+    font-size: 14px;
+    white-space: nowrap;
+}
+
+.board-palette-empty {
+    padding: 12px 8px;
+    color: color-mix(in srgb, var(--text-normal) 55%, var(--background-primary));
+    text-align: center;
+}

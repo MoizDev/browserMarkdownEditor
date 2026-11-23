@@ -20,6 +20,13 @@ const ellipsisVertical: IconNode[] = [['circle', { cx: 12, cy: 12, r: 1 }], ['ci
 /** The bar's icon buttons other than the menu and the sheet name. */
 export const headerIcons = { menu, chevronDown, actions: ellipsisVertical } as const;
 
+/** The command palette's glyphs: Lucide's search, chevrons and check, the same node data the bar's icons use. */
+const search: IconNode[] = [['circle', { cx: 11, cy: 11, r: 8 }], ['path', { d: 'm21 21-4.3-4.3' }]];
+const chevronRight: IconNode[] = [['path', { d: 'm9 18 6-6-6-6' }]];
+const chevronLeft: IconNode[] = [['path', { d: 'm15 18-6-6 6-6' }]];
+const check: IconNode[] = [['path', { d: 'M20 6 9 17l-5-5' }]];
+export const paletteIcons = { search, chevronRight, chevronLeft, check } as const;
+
 /** Undo, Redo, Delete and Duplicate in the bar, keyed by the command each one runs. */
 export const headerCommandIcons: Readonly<Record<'undo' | 'redo' | 'delete' | 'duplicate', IconNode[]>> = {
     undo, redo, delete: trash, duplicate: copy,

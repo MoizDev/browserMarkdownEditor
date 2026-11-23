@@ -36,10 +36,11 @@ export function createNativeBoardContextMenu(options: {
 }) {
     const { runtime } = options, session = runtime.session, backend = createPageMoveBackend(runtime);
     const locks = createBoardSelectionCommands({ runtime, current: options.current, zoom: options.zoom });
-    const openAt = (point: { x: number; y: number }, opener: HTMLElement, expected?: KeyboardContextRequest['selection'], locked: NodeId | null = null) => {
-        if (!options.current()) return;
+    /** The rows the board's menu shows for the current selection, or null when the board or selection has moved on. */
+    const entriesAt = (expected?: KeyboardContextRequest['selection'], locked: NodeId | null = null) => {
+        if (!options.current()) return null;
         const selection = runtime.selection.getSnapshot(), revision = session.doc.rev;
-        if (expected && expected !== selection) return;
+        if (expected && expected !== selection) return null;
         const same = () => options.current() && session.doc.rev === revision && runtime.selection.getSnapshot() === selection;
         const safeRun = (id: BoardCommand) => {
             if (!same()) { options.notice('The selection changed; open the menu again.'); return; }
@@ -96,11 +97,22 @@ export function createNativeBoardContextMenu(options: {
                 if (!same() || !options.canWrite()) throw new Error('The board view or selection changed');
                 backend.moveToPage(id);
             } };
-        openContextMenu({ x: point.x, y: point.y, label: 'Board', opener,
-            lang: lang.locale, dir: lang.table.dir, entries: contextEntries(source) });
+        return { lang, entries: contextEntries(source) };
+    };
+    const openAt = (point: { x: number; y: number }, opener: HTMLElement, expected?: KeyboardContextRequest['selection'], locked: NodeId | null = null) => {
+        const built = entriesAt(expected, locked);
+        if (built) openContextMenu({ x: point.x, y: point.y, label: 'Board', opener,
+            lang: built.lang.locale, dir: built.lang.table.dir, entries: built.entries });
     };
     return {
         pointer(request: BoardContextMenuRequest) { openAt(request.point, request.opener, undefined, request.locked); },
         keyboard(request: KeyboardContextRequest) { openAt(request.client, request.opener, request.selection); },
+        /** The selection-scoped rows (Edit, Arrange, Reorder, Move to page and the picture or card rows) for the command palette. */
+        selectionEntries(): ContextMenuEntry[] {
+            const entries = entriesAt()?.entries ?? [];
+            // contextEntries lists the selection rows ahead of the common Cut/Copy/Paste rows: everything before Cut is the selection's.
+            const common = entries.findIndex(entry => entry.kind === 'command' && entry.id === 'cut');
+            return common > 0 ? entries.slice(0, common) : [];
+        },
     };
 }

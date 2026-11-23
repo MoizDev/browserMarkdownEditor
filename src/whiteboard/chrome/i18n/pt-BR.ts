@@ -3,6 +3,8 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
+        { key: "styles.sans", text: "Sans", reason: "The same word in Português - Brasil." },
+        { key: "styles.serif", text: "Serif", reason: "The same word in Português - Brasil." },
         { key: "commands.exportPng", text: "PNG", reason: "International file format or paper size designation." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
         { key: "commands.copyAsSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -387,5 +389,19 @@ export default defineBoardLanguage({
         "commands.fitFrame": "Ajustar ao conteúdo",
         "notice.keptLocked": "{count} itens bloqueados foram mantidos.",
         "commands.toggleAutoSize": "Alternar tamanho automático",
+        "chrome.commandPalette": "Paleta de comandos",
+        "chrome.commandPaletteMenu": "Paleta de comandos…",
+        "shortcuts.commandPalette.open": "Paleta de comandos",
+        "palette.search": "Pesquisar…",
+        "palette.noResults": "Nenhum resultado",
+        "palette.recent": "Recentes",
+        "palette.selection": "Seleção",
+        "palette.styles": "Estilos",
+        "palette.insert": "Inserir",
+        "palette.help": "Ajuda",
+        "palette.back": "Voltar",
+        "styles.sans": "Sans",
+        "styles.serif": "Serif",
+        "styles.mono": "Monoespaçada",
     },
 });

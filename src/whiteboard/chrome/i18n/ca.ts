@@ -3,6 +3,8 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
+        { key: "styles.sans", text: "Sans", reason: "The same word in Català." },
+        { key: "styles.serif", text: "Serif", reason: "The same word in Català." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
         { key: "commands.copyAsJson", text: "JSON", reason: "International file format or paper size designation." },
         { key: "commands.copyAsSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -387,5 +389,19 @@ export default defineBoardLanguage({
         "commands.fitFrame": "Ajusta al contingut",
         "notice.keptLocked": "S'han mantingut {count} elements bloquejats.",
         "commands.toggleAutoSize": "Canvia la mida automàtica",
+        "chrome.commandPalette": "Paleta d'ordres",
+        "chrome.commandPaletteMenu": "Paleta d'ordres…",
+        "shortcuts.commandPalette.open": "Paleta d'ordres",
+        "palette.search": "Cerca…",
+        "palette.noResults": "Cap resultat",
+        "palette.recent": "Recents",
+        "palette.selection": "Selecció",
+        "palette.styles": "Estils",
+        "palette.insert": "Insereix",
+        "palette.help": "Ajuda",
+        "palette.back": "Enrere",
+        "styles.sans": "Sans",
+        "styles.serif": "Serif",
+        "styles.mono": "Monoespai",
     },
 });

@@ -3,6 +3,8 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
+        { key: "styles.sans", text: "Sans", reason: "The same word in Español." },
+        { key: "styles.serif", text: "Serif", reason: "The same word in Español." },
         { key: "commands.copyAsPng", text: "PNG", reason: "Sigla del formato de archivo." },
         { key: "commands.copyAsSvg", text: "SVG", reason: "Sigla del formato de archivo." },
         { key: "commands.copyAsJson", text: "JSON", reason: "Sigla del formato de archivo." },
@@ -387,5 +389,19 @@ export default defineBoardLanguage({
         "commands.fitFrame": "Ajustar al contenido",
         "notice.keptLocked": "Se conservaron {count} elementos bloqueados.",
         "commands.toggleAutoSize": "Alternar tamaño automático",
+        "chrome.commandPalette": "Paleta de comandos",
+        "chrome.commandPaletteMenu": "Paleta de comandos…",
+        "shortcuts.commandPalette.open": "Paleta de comandos",
+        "palette.search": "Buscar…",
+        "palette.noResults": "Sin resultados",
+        "palette.recent": "Recientes",
+        "palette.selection": "Selección",
+        "palette.styles": "Estilos",
+        "palette.insert": "Insertar",
+        "palette.help": "Ayuda",
+        "palette.back": "Atrás",
+        "styles.sans": "Sans",
+        "styles.serif": "Serif",
+        "styles.mono": "Monoespaciada",
     },
 });

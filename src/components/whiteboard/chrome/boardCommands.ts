@@ -1,4 +1,4 @@
-import type { ContextMenuCommand, ContextMenuEntry } from '../../../utils/contextMenu';
+import type { ContextMenuCommand, ContextMenuEntry, ContextMenuSubmenu } from '../../../utils/contextMenu';
 
 export type BoardCommand =
     | 'undo' | 'redo' | 'delete' | 'duplicate' | 'cut' | 'copy' | 'paste' | 'selectAll'
@@ -56,6 +56,21 @@ export interface BoardContextMenuSource extends BoardCommandSource {
     moveToPage(id: string): void;
 }
 
+/** The Arrange submenu's rows, in menu order. Shared by the context menu and the command palette, which lists it even with nothing selected. */
+export const arrangeCommands: readonly BoardCommand[] = [
+    'alignLeft', 'alignHorizontal', 'alignRight', 'alignTop', 'alignVertical', 'alignBottom',
+    'stretchHorizontal', 'stretchVertical', 'distributeHorizontal', 'distributeVertical',
+    'stackHorizontal', 'stackVertical', 'pack',
+];
+export const reorderCommands: readonly BoardCommand[] = ['sendBack', 'sendBackward', 'bringForward', 'bringFront'];
+
+/** The Arrange and Reorder submenus, each row disabled with its reason when the selection cannot take it. */
+export function arrangeSubmenus(source: BoardCommandSource, sectionLabel: (section: ContextSection) => string): ContextMenuSubmenu[] {
+    const submenu = (id: 'arrange' | 'reorder', ids: readonly BoardCommand[]): ContextMenuSubmenu => ({
+        kind: 'submenu', id, label: sectionLabel(id), entries: ids.map(item => commandRow(source, item)) });
+    return [submenu('arrange', arrangeCommands), submenu('reorder', reorderCommands)];
+}
+
 export function contextEntries(source: BoardContextMenuSource): ContextMenuEntry[] {
     const rows = (ids: readonly BoardCommand[]) => ids.map(id => commandRow(source, id));
     const menu = (id: ContextSection, entries: ContextMenuCommand[]): ContextMenuEntry => ({
@@ -79,12 +94,8 @@ export function contextEntries(source: BoardContextMenuSource): ContextMenuEntry
             ...(source.state('fitFrame').enabled ? ['fitFrame' as const] : []),
             'toggleLocked',
         ])),
-        menu('arrange', rows([
-            'alignLeft', 'alignHorizontal', 'alignRight', 'alignTop', 'alignVertical', 'alignBottom',
-            'stretchHorizontal', 'stretchVertical', 'distributeHorizontal', 'distributeVertical',
-            'stackHorizontal', 'stackVertical', 'pack',
-        ])),
-        menu('reorder', rows(['sendBack', 'sendBackward', 'bringForward', 'bringFront'])),
+        menu('arrange', rows(arrangeCommands)),
+        menu('reorder', rows(reorderCommands)),
         menu('moveToPage', source.pages.map(page => ({
             kind: 'command', id: page.id, label: page.label, disabled: !page.enabled,
             reason: page.reason, run: () => source.moveToPage(page.id),

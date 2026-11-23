@@ -29,6 +29,8 @@ export interface BoardChromeProps extends BoardHeaderProps {
     readonly toolLock?: { readonly locked: boolean; readonly toggle: () => void };
     readonly onBarTools?: (shown: readonly ToolChoice[]) => void;
     readonly selectTool: (choice: ToolChoice) => void;
+    /** A bar tool dragged onto the board; the board answers whether it took the press. */
+    readonly dragTool?: (choice: ToolChoice, event: PointerEvent, bar: Element) => boolean;
     readonly zoomControls: ZoomControlsProps;
     readonly stylePanel?: StylePanelProps;
     readonly debug?: DebugOverlayProps;
@@ -41,7 +43,7 @@ export interface BoardChromeProps extends BoardHeaderProps {
 /** The view supplies live session state; these controls do not own a second selection or history. */
 export function BoardChrome({ locale, direction, selectedTool, toolLabel, toolShortcut, toolsLabel, moreLabel,
     readOnly, readOnlyReason, toolDisabledReason, focusMode, focusModeLabel, exitFocusMode, lastFigure, toolLockLabel, toolLock,
-    onBarTools, selectTool, zoomControls, stylePanel, debug, pageControls, palette, ...header }: BoardChromeProps) {
+    onBarTools, selectTool, dragTool, zoomControls, stylePanel, debug, pageControls, palette, ...header }: BoardChromeProps) {
     const choices = toolChoices(toolLabel, toolShortcut, lastFigure);
     const lock: ToolLockView | undefined = toolLock && {
         locked: toolLock.locked, label: toolLockLabel, shortcut: toolShortcut('lock'), toggle: toolLock.toggle,
@@ -65,7 +67,7 @@ export function BoardChrome({ locale, direction, selectedTool, toolLabel, toolSh
             <ToolStrip primary={choices.primary} more={choices.more} selected={selectedTool} lock={lock} onShown={onBarTools}
                 toolsLabel={toolsLabel} moreLabel={moreLabel}
                 disabledReason={choice => readOnly && choice.id !== 'select' && choice.id !== 'hand'
-                    ? (readOnlyReason ?? moreLabel) : toolDisabledReason?.(choice)} select={selectTool} />
+                    ? (readOnlyReason ?? moreLabel) : toolDisabledReason?.(choice)} select={selectTool} dragTool={dragTool} />
             <div className="board-chrome-zoom"><ZoomControls {...zoomControls} /></div>
         </div>
     </div>}

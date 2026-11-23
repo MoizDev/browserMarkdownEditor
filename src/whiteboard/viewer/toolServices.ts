@@ -9,6 +9,7 @@ import type { ViewState, Viewport } from '../../platform/types';
 import type { BoardRuntime } from '../host/runtime';
 import type { BoardInputServices } from '../input/attach';
 import { eraserTool, laserTool, type LaserPoint } from '../input/basicTools';
+import { textDropTool } from '../input/chromeDrag';
 import { LaserTrail } from '../input/laserTrail';
 import type { ToolChoice } from '../input/gesture';
 import type { MappingHistory } from '../input/pointer';
@@ -214,6 +215,26 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         previewTextColumn(x: number, y: number, width: number | null) { column = { x, y, width }; invalidate(); },
         clearTextColumnPreview() { column = null; invalidate(); },
     };
+    // A creation's route. A toolbar drag (`follow`) centres the shape on the pointer and moves it with the pointer until release.
+    const creation = (choice: ToolChoice, sample: RealSample, follow: boolean): PointerRoute<unknown> => {
+        const variant = choice.variant ?? runtime.tools.getSnapshot().lastFigure ?? 'rectangle';
+        if (choice.id === 'figure' && !FIGURE_SHAPES.includes(variant as FigureShape)) throw new RangeError('Invalid figure variant');
+        const kind = choice.id as 'figure' | 'sticky' | 'frame' | 'connector' | 'polyline';
+        return { ...route(boardCreationTool(kind), { runtime, render: runtime.render, camera, kind, registerPending,
+            sampleToSurface: options.sampleToSurface, guides: select.setGuides, alwaysSnap: options.alwaysSnap, dynamicSize: options.dynamicSize,
+            ...(kind === 'figure' ? { figure: variant as FigureShape } : {}), preview, current: editable, follow,
+            editText: async id => { await text.editText(id); }, resolveAttachment: (position, signal, request) => attachments.resolve(position, signal,
+                { ...request, input: sample.source === 'keyboard' ? 'mouse' : sample.source }), onError: ui.error }), completesTool: true };
+    };
+    // A bar tool pressed on the chrome and dragged onto the board. Tools without a toolbar drag return null: the press is then a click.
+    const resolveChromeDrag = (choice: ToolChoice, sample: RealSample, _modifiers: Modifiers): PointerRoute<unknown> | null => {
+        if (!editable()) return null;
+        switch (choice.id) {
+            case 'text': return route(textDropTool, textContext);
+            case 'figure': case 'sticky': case 'frame': case 'connector': case 'polyline': return creation(choice, sample, true);
+            default: return null;
+        }
+    };
     const resolve = (choice: ToolChoice, sample: RealSample, modifiers: Modifiers): PointerRoute<unknown> | null => {
         if (!editable()) return null;
         switch (choice.id) {
@@ -227,16 +248,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
                 if (!media?.tool || typeof media.tool.begin !== 'function') throw new Error('Media import backend did not supply a tool');
                 return media;
             }
-            case 'figure': case 'sticky': case 'frame': case 'connector': case 'polyline': {
-                const variant = choice.variant ?? runtime.tools.getSnapshot().lastFigure ?? 'rectangle';
-                if (choice.id === 'figure' && !FIGURE_SHAPES.includes(variant as FigureShape)) throw new RangeError('Invalid figure variant');
-                const kind = choice.id;
-                return { ...route(boardCreationTool(kind), { runtime, render: runtime.render, camera, kind, registerPending,
-                    sampleToSurface: options.sampleToSurface, guides: select.setGuides, alwaysSnap: options.alwaysSnap, dynamicSize: options.dynamicSize,
-                    ...(kind === 'figure' ? { figure: variant as FigureShape } : {}), preview, current: editable,
-                    editText: async id => { await text.editText(id); }, resolveAttachment: (position, signal, request) => attachments.resolve(position, signal,
-                        { ...request, input: sample.source === 'keyboard' ? 'mouse' : sample.source }), onError: ui.error }), completesTool: true };
-            }
+            case 'figure': case 'sticky': case 'frame': case 'connector': case 'polyline': return creation(choice, sample, false);
             default: throw new Error(`Unsupported routed board tool: ${choice.id}`);
         }
     };
@@ -291,7 +303,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         } },
         ink: ink.ink, continueInk: ink.continueInk,
         resolveTool: (choice, sample, modifiers) => resolve(choice, sample, modifiers),
-        resolveKeyboardTool: (choice, sample, modifiers) => resolve(choice, sample, modifiers), zoomBrush: () => zoom,
+        resolveKeyboardTool: (choice, sample, modifiers) => resolve(choice, sample, modifiers), resolveChromeDrag, zoomBrush: () => zoom,
         keyboardCursorInitial: ui.keyboardCursorInitial, keyboardCursorVisible: ui.keyboardCursorVisible, keyboardNavigation: ui.keyboardNavigation,
         ownsWheel: ui.ownsWheel, cameraChanged: options.interaction.cameraChanged, error: ui.error, pointerChanged: ui.pointerChanged,
         hover: event => { ui.hover?.(event); trackHover(event); }, contextMenu: contextMenuAt, drop: event => options.imports.drop(event), linkAt: ui.linkAt,

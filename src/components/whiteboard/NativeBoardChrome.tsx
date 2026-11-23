@@ -30,7 +30,8 @@ export function NativeBoardChrome(props: NativeBoardChromeProps) {
         setTool(id: string, variant?: string) { if (currentOwner()) runtime.tools.setTool(id, variant); },
         toggleLocked() { if (currentOwner()) runtime.tools.toggleLocked(); },
         lockable: (id: string) => runtime.tools.getRegistration(id)?.persistence === 'single-use',
-        setBarTools: (choices: readonly { readonly id: string; readonly variant?: string }[]) => runtime.tools.setBarTools(choices) }), [runtime, currentOwner]);
+        setBarTools: (choices: readonly { readonly id: string; readonly variant?: string }[]) => runtime.tools.setBarTools(choices),
+        beginDrag: (choice: { readonly id: string; readonly variant?: string }, event: PointerEvent, bar: Element) => currentOwner() && runtime.tools.beginChromeDrag(choice, event, bar) }), [runtime, currentOwner]);
     if (engine.session !== runtime.session) throw new Error('Board chrome needs the attached board session');
     const [owned, setOwned] = useState<{ runtime: BoardRuntime; engine: ViewerEngine; language: BoardLanguageState; styles: Styles } | null>(null);
     useEffect(() => {

@@ -1,6 +1,6 @@
 import { isLocked } from '../change/commands';
 import { selectedRootsAsync } from './selectedRootsAsync';
-import { pageOrigin, poseInParent, worldPose, type ChangeGeometry, type WorldPose } from '../change/coordinates';
+import { normalizedRotation, pageOrigin, poseInParent, worldPose, type ChangeGeometry, type WorldPose } from '../change/coordinates';
 import type { NodeSetOp, Transaction } from '../change/ops';
 import { acquireBoardGeometryScope, type BoardGeometryScope } from '../commands/geometryScope';
 import type { BoardRuntime } from '../host/runtime';
@@ -47,7 +47,7 @@ function provisional(doc: BoardDoc, root: Root, world: WorldPose): NodeSetOp[] {
     } else {
         const parent = worldPose(doc, node.parent), dx = world.x - parent.x, dy = world.y - parent.y;
         const c = Math.cos(parent.rotation), s = Math.sin(parent.rotation);
-        x = c * dx + s * dy; y = -s * dx + c * dy; rotation = world.rotation - parent.rotation;
+        x = c * dx + s * dy; y = -s * dx + c * dy; rotation = normalizedRotation(world.rotation - parent.rotation);
     }
     if (![x, y, rotation].every(Number.isFinite)) throw new RangeError('Rotation pose is not finite');
     return [
@@ -108,7 +108,7 @@ export async function createBoardRotationPlan(options: BoardRotationOptions): Pr
             const assert = () => { check(requestSignal); if (turn !== generation) throw new DOMException('Rotation preview superseded', 'AbortError'); };
             const desired = new Map<NodeId, WorldPose>(), initial: NodeSetOp[] = [];
             for (const root of roots) {
-                const p = rotatePoint(root.pose, centre, resolved), world = { ...p, rotation: root.pose.rotation + resolved };
+                const p = rotatePoint(root.pose, centre, resolved), world = { ...p, rotation: normalizedRotation(root.pose.rotation + resolved) };
                 desired.set(root.node.id, world); initial.push(...provisional(doc, root, world));
             }
             const request = requestSignal ?? signal;

@@ -8,6 +8,9 @@ import { prepareVisibleSnapBounds } from './snapVisibleBounds';
 import { compareSnapMagnitude, exactDuplicateDisplacement, exactGapDisplacement, exactGapSize, exactSnapDisplacement, snapWithin, type ExactSnapDelta } from './snapArithmetic';
 import type { Dyadic } from './numeric';
 import { boardSnapGrid, nearestBoardGridCoordinate } from './gridSnap';
+import { worldPose } from '../change/coordinates';
+import { contourPolylines, nearestOnPolylines, rectOutline, transformPolylines, type OutlinePolyline } from './outlineSnap';
+import { figureOutline } from './figures';
 
 export interface BoardSnapGuide {
     readonly axis: 'x' | 'y';
@@ -20,7 +23,13 @@ export interface BoardSnapGuide {
     /** Points on an alignment line where a feature of the moved box or of its target lands exactly; drawn as crosses. */
     readonly marks?: readonly Vec2[];
 }
-export interface BoardSnapResult { readonly delta: Vec2; readonly guides: readonly BoardSnapGuide[] }
+export interface BoardSnapResult {
+    readonly delta: Vec2;
+    readonly guides: readonly BoardSnapGuide[];
+    /** The exact coordinate each point or outline snap landed on, per axis. `position + delta` can miss it by an ulp, so a
+     * consumer that places a handle on the target reads this instead (measured: 290 + delta gave 290.00000000000006). */
+    readonly landed?: { readonly x?: number; readonly y?: number };
+}
 export interface BoardSnapOptions {
     readonly runtime: BoardRuntime;
     /** Actual proposed logical bounds before applying the snap. */
@@ -44,6 +53,8 @@ export interface BoardSnapOptions {
     readonly points?: boolean;
     /** World positions the handle may snap to besides other boxes (the edited polyline's other vertices). */
     readonly ownPoints?: readonly Vec2[];
+    /** With `points`: when no point is within the threshold, the nearest point on another figure's or line's outline (catalogue b.4). */
+    readonly outline?: boolean;
 }
 type Axis = 'x' | 'y';
 /** A snappable shape as the snap sees it: its visible logical box, and its rank for ties. */
@@ -57,6 +68,8 @@ interface GapFact {
 interface Winner {
     readonly delta: ExactSnapDelta; readonly rank: number; readonly priority: number; readonly source: number; readonly edge: number;
     readonly gap?: GapFact; readonly grid?: { readonly value: number; readonly representable: boolean };
+    /** The exact coordinate this winner lands on, when it lands on a point or an outline. */
+    readonly target?: number;
 }
 /** Object snapping is skipped while the pointer moves at or above this speed (CSS px per ms), so a quick flick is not pulled
  * onto a guide. Measured against the catalogue's gate (0.5); the grid is not gated by it. */
@@ -101,6 +114,29 @@ function crossOverlap(a: Readonly<Rect>, b: Readonly<Rect>, axis: Axis): number 
 function featurePoints(rect: Readonly<Rect>, axis: Axis, value: number): Vec2[] {
     const along = axis === 'x' ? [rect.y, rect.y + rect.height / 2, rect.y + rect.height] : [rect.x, rect.x + rect.width / 2, rect.x + rect.width];
     return along.map(position => axis === 'x' ? { x: value, y: position } : { x: position, y: value });
+}
+
+/** The nearest outline point to `point` among the boxes it could reach. Figures and lines use their real outline in board space;
+ * other boxes (notes, frames) use their box edges. A box whose outline is unknown is skipped rather than guessed. */
+function nearestOutlinePoint(doc: BoardRuntime['session']['doc'], boxes: readonly Box[], point: Vec2, threshold: number):
+    { readonly point: Vec2; readonly rank: number } | undefined {
+    let best: { point: Vec2; rank: number; distance: number } | undefined;
+    for (const box of boxes) {
+        const r = box.rect;
+        if (point.x < r.x - threshold || point.x > r.x + r.width + threshold || point.y < r.y - threshold || point.y > r.y + r.height + threshold) continue;
+        const node = doc.nodes.get(box.id);
+        let outline: readonly OutlinePolyline[] | null = null;
+        if (node?.kind === 'figure') {
+            const pose = worldPose(doc, box.id);
+            outline = transformPolylines(contourPolylines(figureOutline(node.shape, node.w, node.h, node.flipX, node.flipY).primary), pose);
+        } else if (node?.kind === 'polyline') {
+            outline = transformPolylines([{ points: node.points, closed: false }], worldPose(doc, box.id));
+        } else if (node?.kind === 'sticky' || node?.kind === 'frame') outline = rectOutline(r);
+        if (!outline) continue;
+        const near = nearestOnPolylines(point, outline);
+        if (near && near.distance <= threshold && (!best || near.distance < best.distance)) best = { point: near.point, rank: box.rank, distance: near.distance };
+    }
+    return best && { point: best.point, rank: best.rank };
 }
 
 async function snapAttempt(options: BoardSnapOptions, objects: boolean, grid: boolean): Promise<BoardSnapResult> {
@@ -165,8 +201,16 @@ async function snapAttempt(options: BoardSnapOptions, objects: boolean, grid: bo
             }
             if (hit) {
                 const dx = exactSnapDisplacement(hit.point.x, bounds.x), dy = exactSnapDisplacement(hit.point.y, bounds.y);
-                if (dx.representable) offer('x', { delta: dx, rank: hit.rank, priority: 0, source: 0, edge: 0 });
-                if (dy.representable) offer('y', { delta: dy, rank: hit.rank, priority: 0, source: 0, edge: 0 });
+                if (dx.representable) offer('x', { delta: dx, rank: hit.rank, priority: 0, source: 0, edge: 0, target: hit.point.x });
+                if (dy.representable) offer('y', { delta: dy, rank: hit.rank, priority: 0, source: 0, edge: 0, target: hit.point.y });
+            } else if (options.outline) {
+                // No point is in reach, so the handle may land on an edge: the nearest outline point within the same threshold.
+                const edge = nearestOutlinePoint(doc, boxes, bounds, threshold);
+                if (edge) {
+                    const dx = exactSnapDisplacement(edge.point.x, bounds.x), dy = exactSnapDisplacement(edge.point.y, bounds.y);
+                    if (dx.representable) offer('x', { delta: dx, rank: edge.rank, priority: 0, source: 0, edge: 0, target: edge.point.x });
+                    if (dy.representable) offer('y', { delta: dy, rank: edge.rank, priority: 0, source: 0, edge: 0, target: edge.point.y });
+                }
             }
         } else if (objects) {
             for (const box of boxes) {
@@ -258,7 +302,7 @@ async function snapAttempt(options: BoardSnapOptions, objects: boolean, grid: bo
         if (x?.grid) guides.push({ axis: 'x', value: x.grid.value, kind: 'grid', from: bounds.y + dy, to: bounds.y + dy + bounds.height });
         if (y?.grid) guides.push({ axis: 'y', value: y.grid.value, kind: 'grid', from: bounds.x + dx, to: bounds.x + dx + bounds.width });
         if (guides.some(guide => ![guide.value, guide.from, guide.to].every(Number.isFinite))) throw new RangeError('Snap guide overflows');
-        check(); return { delta: { x: dx, y: dy }, guides };
+        check(); return { delta: { x: dx, y: dy }, guides, landed: { x: x?.target, y: y?.target } };
     } finally { scope?.release(); }
 }
 

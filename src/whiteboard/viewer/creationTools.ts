@@ -178,6 +178,13 @@ class CreationGesture implements GestureOwner {
                 color: style.color, labelColor: style.color, fill: style.fill, dash: style.dash, size: style.size, font: style.font, label: null, width });
         }
     }
+    /** The node with its end moved to a world point, exactly: the landing point of a snap (BoardSnapResult.landed). */
+    private endAt(node: Extract<Node, { kind: 'connector' | 'polyline' }>, world: { readonly x: number; readonly y: number }): Extract<Node, { kind: 'connector' | 'polyline' }> {
+        const at = this.local(world);
+        if (node.kind === 'connector') return { ...node, end: { ...node.end, x: at.x - node.x, y: at.y - node.y } };
+        const last = node.points.length - 1;
+        return { ...node, points: node.points.map((p, i) => i === last ? { x: at.x - node.x, y: at.y - node.y } : p) };
+    }
     /** Dynamic size mode (preference isDynamicResizeMode) creates text and notes at 1 / zoom, so they keep their on-screen size. */
     private noteScale(): number {
         const zoom = this.context.camera.camera.z;
@@ -221,10 +228,16 @@ class CreationGesture implements GestureOwner {
             }
             // An end point snaps to points (corners and centres), as a handle does; it has no width, so no gaps.
             const snapped = await snapBoardBounds({ runtime, bounds: { ...point, width: 0, height: 0 }, selected: [],
-                zoom: this.context.camera.camera.z, current: active, signal, points: true, gaps: false });
+                zoom: this.context.camera.camera.z, current: active, signal, points: true, gaps: false,
+                // A line's new end snaps to an outline like its handles (catalogue b.4); an arrow's end follows the bind-or-grid rule.
+                outline: node.kind === 'polyline' });
             if (!active()) throw new DOMException('Creation snap invalidated', 'AbortError');
-            const next = this.node({ ...sample, x: sample.x + snapped.delta.x, y: sample.y + snapped.delta.y }, modifiers);
-            if (next.kind !== 'connector' && next.kind !== 'polyline') throw new Error('Creation kind changed');
+            const moved = this.node({ ...sample, x: sample.x + snapped.delta.x, y: sample.y + snapped.delta.y }, modifiers);
+            if (moved.kind !== 'connector' && moved.kind !== 'polyline') throw new Error('Creation kind changed');
+            // A point or outline snap lands the end on its target exactly; sample + delta can miss it by an ulp.
+            const reached = endpoint(moved), landed = snapped.landed;
+            const next = landed && (landed.x !== undefined || landed.y !== undefined)
+                ? this.endAt(moved, { x: landed.x ?? reached.x, y: landed.y ?? reached.y }) : moved;
             const actual = endpoint(next), zoom = this.context.camera.camera.z;
             this.context.guides?.(snapped.guides.filter(guide => Math.abs((guide.axis === 'x' ? actual.x : actual.y) - guide.value) * zoom <= 0.5));
             return next;

@@ -252,13 +252,17 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         clearTextColumnPreview() { column = null; invalidate(); },
     };
     // A creation's route. A toolbar drag (`follow`) centres the shape on the pointer and moves it with the pointer until release.
+    // Creation commits still preparing: a tool key waits for them (see attach.ts afterCreation).
+    const commits = new Set<Promise<void>>();
+    const settling = (commit: Promise<void>) => { commits.add(commit); void commit.finally(() => { commits.delete(commit); }); };
+    const creationSettling = (): Promise<void> | null => commits.size ? Promise.all([...commits]).then(() => undefined) : null;
     const creation = (choice: ToolChoice, sample: RealSample, follow: boolean): PointerRoute<unknown> => {
         const variant = choice.variant ?? runtime.tools.getSnapshot().lastFigure ?? 'rectangle';
         if (choice.id === 'figure' && !FIGURE_SHAPES.includes(variant as FigureShape)) throw new RangeError('Invalid figure variant');
         const kind = choice.id as 'figure' | 'sticky' | 'frame' | 'connector' | 'polyline';
         return { ...route(boardCreationTool(kind), { runtime, render: runtime.render, camera, kind, registerPending,
             sampleToSurface: options.sampleToSurface, guides: select.setGuides, hint: select.setConnectorTarget, binding: select.setConnectorBinding, alwaysSnap: options.alwaysSnap, dynamicSize: options.dynamicSize,
-            ...(kind === 'figure' ? { figure: variant as FigureShape } : {}), preview, current: editable, follow,
+            ...(kind === 'figure' ? { figure: variant as FigureShape } : {}), preview, current: editable, follow, settling,
             editText: async id => { await text.editText(id); }, resolveAttachment: (position, signal, request) => attachments.resolve(position, signal,
                 { ...request, input: sample.source === 'keyboard' ? 'mouse' : sample.source }), onError: ui.error }), completesTool: true };
     };
@@ -339,7 +343,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         } },
         ink: ink.ink, continueInk: ink.continueInk,
         resolveTool: (choice, sample, modifiers) => resolve(choice, sample, modifiers),
-        resolveKeyboardTool: (choice, sample, modifiers) => resolve(choice, sample, modifiers), resolveChromeDrag, zoomBrush: () => zoom,
+        resolveKeyboardTool: (choice, sample, modifiers) => resolve(choice, sample, modifiers), resolveChromeDrag, creationSettling, zoomBrush: () => zoom,
         keyboardCursorInitial: ui.keyboardCursorInitial, keyboardCursorVisible: ui.keyboardCursorVisible, keyboardNavigation: ui.keyboardNavigation,
         ownsWheel: ui.ownsWheel, cameraChanged: options.interaction.cameraChanged, error: ui.error,
         pointerChanged: sample => { notePointerSource(sample.source); ui.pointerChanged?.(sample); },

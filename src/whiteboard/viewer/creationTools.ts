@@ -33,6 +33,8 @@ type CreationKind = 'figure' | 'text' | 'sticky' | 'frame' | 'connector' | 'poly
 /** Touch hold that drops a pending creation. Measured nowhere: a tap is well under this, a deliberate hold well over it. */
 const LONG_PRESS_MS = 500;
 export interface BoardCreationContext {
+    /** Reports a commit that is still preparing, so a tool change waits for it (a tool write bumps the revision that the commit checks). */
+    readonly settling?: (commit: Promise<void>) => void;
     readonly runtime: BoardRuntime;
     readonly render: ReturnType<typeof createBoardRenderServices>;
     readonly kind: CreationKind;
@@ -332,7 +334,12 @@ class CreationGesture implements GestureOwner {
             this.context.runtime.tools.keepToolOnce(this.toolEpoch); this.cancel('invalidated'); this.completeTool(); return;
         }
         if (this.context.kind === 'polyline' && this.isClick()) this.context.runtime.tools.keepToolOnce(this.toolEpoch);
-        void this.commit().catch(error => { if (!this.controller.signal.aborted) this.context.onError(error); }).finally(() => { this.cleanup(); this.completeTool(); });
+        // The release is taken, so the commit owns the creation. Pending gestures are cancelled by any tool key (measured: an 'x'
+        // pressed straight after a drag aborted the commit, and no figure was made) and by the keyboard cursor's tool completion,
+        // which runs before the async commit has its geometry. The commit's own validity checks still stop a stale creation.
+        this.unregister();
+        const commit = this.commit().catch(error => { if (!this.controller.signal.aborted) this.context.onError(error); }).finally(() => { this.cleanup(); this.completeTool(); });
+        this.context.settling?.(commit);
     }
     private async enclosedFrameChildren(node: Extract<Node, { kind: 'frame' }>, pose: { x: number; y: number; rotation: number }): Promise<NodeId[]> {
         const { runtime } = this.context, doc = runtime.session.doc, signal = this.controller.signal;

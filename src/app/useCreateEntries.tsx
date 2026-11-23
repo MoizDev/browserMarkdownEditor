@@ -4,6 +4,7 @@ import type { FileSystemContextValue, FileTreeFileNode, FileTreeNode, OpenTab } 
 import { placeholderFor } from '../utils/createRequest';
 import { isDrawingFile, isEpubFile, isNativeDrawingFile, isNotebookFile, isPdfFile } from '../utils/fileTypes';
 import { joinVaultPath } from '../utils/paths';
+import { requestDocumentKeyboard } from '../utils/documentKeyboard';
 import { reportVault } from '../utils/perfHooks';
 import type { AppDialogs, Tell } from './useAppDialogs';
 import type { SetTabs } from './types';
@@ -86,6 +87,9 @@ export function useCreateEntries(deps: UseCreateEntriesDeps) {
         };
         await handleFileClick(newNode);
         if (!current()) return;
+        // The name field it was typed into is gone, leaving the keyboard on <body>: a new board's first tool key
+        // went nowhere (measured: New Drawing named, R pressed, still Draw). Hand it over as a tree open does.
+        if (isNativeDrawingFile(createdName) || isNotebookFile(createdName)) requestDocumentKeyboard(newPath);
         setTabs(prev => prev.map(t => t.file.path === newPath ? { ...t, mode: 'edit' } : t));
       }
     } catch (err) {

@@ -50,8 +50,12 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   chosen. `single-use` (text, sticky, figure, frame, connector, polyline, media) return to Select after one use;
   zoom is single-use and **not lockable** (`lockable: false`). `ToolState` (`input/gesture.ts`) keeps a lockable
   single-use tool when the tool lock is on (`Q`, Preferences, the padlock over the bar) or `keepToolOnce` was armed.
-  Escape returns the chosen tool to Select (`ToolState.escape`). Tool choice is session UI state, never history.
-- A tool whose work lands after pointer-up returns to Select itself (`completesTool` in `input/pointerRouter.ts`).
+  Escape returns the chosen tool to Select (`ToolState.escape`). Tool choice is session UI state, never history. Choosing a tool
+  keeps a placed keyboard cursor (only a gesture the cursor owns ends), and a tool key or a keyboard finish waits for a
+  creation commit still preparing (`afterCreation` in `attach.ts`): a tool write bumps the revision that the commit checks.
+- A tool whose work lands after pointer-up returns to Select itself (`completesTool` in `input/pointerRouter.ts`). A creation
+  takes its release out of the pending-gesture registry at finish, so no key cancels its commit; the keyboard cursor does not
+  complete the tool itself for such a route (`keyboardCompletes`).
 - **One gesture owner at a time** (`input/router.ts`, `InputRouter`): tools receive normalised `RealSample`s only,
   stamped with an `InputToken` (vault epoch, tab, session and view generations). A replaced view cannot finish its
   successor's contact; check the token before acting on anything async.
@@ -131,6 +135,9 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   quote are `text/edit/rules.ts`; both are skipped inside code and while a backtick is open.
 - The formatting bar above a selection is `viewer/textFormatToolbar.ts`: it shows a format as on only when every
   character of the selection carries it. Its icons are Lucide data (see `PROVENANCE.md`).
+- Cmd/Ctrl+K in a text edit finishes it and opens the palette (`text/edit/keys.ts`, `commandPalette` port). While editing,
+  a press on another shape's text ends the edit and edits that text on release without a drag (`text/edit/inputBridge.ts`,
+  `editOnRelease`); a press on the editing shape with focus elsewhere ends the edit so a drag moves the shape (`hasFocus`).
 - While a node is being edited its paint is exact (`editingChanged`); a figure's label growth is measured exactly as
   an edit measures it (`text/edit/growth.ts`).
 - Links in text are normalised through `text/edit/format.ts` (`linkUrl`) and opened only by an explicit gesture.

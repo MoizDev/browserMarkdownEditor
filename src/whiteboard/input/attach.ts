@@ -136,7 +136,11 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   const releaseAccelEraser = () => {
     const back = accelTool
     accelTool = null; accelReturn = false
-    if (back && services.tools.getRegistration(back) && services.tools.getSnapshot().active.id === 'eraser') services.tools.setTool(back)
+    // Restoring must not cancel the erase it follows, which may still be committing (the same guard as restoreTool's).
+    if (back && services.tools.getRegistration(back) && services.tools.getSnapshot().active.id === 'eraser') {
+      restoringTool = true
+      try { services.tools.setTool(back) } finally { restoringTool = false }
+    }
   }
   const holdAccelEraser = (modifiers: Modifiers) => {
     accelHeld = modifiers.accel
@@ -279,13 +283,6 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
         return { tool: secondaryPan, context: event }
       }
       if (event.type === 'pointerdown' && event.button !== 0) return null
-      // Cmd/Ctrl pressed over Draw or Highlight erases for as long as it is held, then the tool it came from returns (the
-      // same restoreTool the stylus eraser end uses). Shift keeps the press a stroke, so it never erases.
-      if (event.type === 'pointerdown' && modifiers.accel && !modifiers.shift && (choice.id === 'pen' || choice.id === 'highlighter')
-        && editable() && services.tools.getRegistration('eraser')) {
-        restoreTool = choice.id; services.tools.setTool('eraser')
-        return services.resolveTool({ id: 'eraser' }, sample, modifiers, event)
-      }
       if (spaceHeld) { temporaryPan = true; return { tool: hand, context: undefined } }
       if (zoomHeld) {
         // The overview's press lands the destination and returns to Draw while Z is still held: no gesture follows.
@@ -676,7 +673,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       const tool = TOOLS.find(id => id === snapshot.active.id)
       // A displaced tool is not the person's choice: writing the eraser into the document would bump its revision, and the
       // erase starting from that press would find the scene not ready. Restoring the tool writes nothing either way.
-      if (tool && restoreTool === null && session.doc.ui.tool !== tool) ops.push({ t: 'board', key: 'ui.tool', value: tool })
+      if (tool && restoreTool === null && accelTool === null && session.doc.ui.tool !== tool) ops.push({ t: 'board', key: 'ui.tool', value: tool })
       const lockChanged = session.doc.view.toolLock !== snapshot.locked
       if (lockChanged) ops.push({ t: 'board', key: 'view.toolLock', value: snapshot.locked })
       try {

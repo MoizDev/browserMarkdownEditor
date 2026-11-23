@@ -3,6 +3,9 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
+        { key: "commands.flipHorizontal", text: "Flip H", reason: "Same wording as English in this language until it is translated." },
+        { key: "commands.flipVertical", text: "Flip V", reason: "Same wording as English in this language until it is translated." },
+        { key: "sheet.resizeList", text: "Resize list", reason: "Same wording as English in this language until it is translated." },
         { key: "commands.exportPng", text: "PNG", reason: "International file format or paper size designation." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
         { key: "commands.copyAsSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -234,6 +237,7 @@ export default defineBoardLanguage({
         "sheet.delete": "删除工作表",
         "sheet.create": "新表",
         "sheet.limit": "最大 {count} 张数",
+        "sheet.resizeList": "Resize list",
         "sheet.pageName": "页码 {page}",
         "paper.size": "纸张尺寸",
         "paper.ruling": "纸质裁决",
@@ -387,5 +391,9 @@ export default defineBoardLanguage({
         "commands.fitFrame": "适应内容",
         "notice.keptLocked": "已保留 {count} 个锁定项目。",
         "commands.toggleAutoSize": "切换自动大小",
+        "commands.convertToEmbed": "转换为嵌入",
+        "commands.convertToBookmark": "转换为书签",
+        "commands.flipHorizontal": "Flip H",
+        "commands.flipVertical": "Flip V",
     },
 });

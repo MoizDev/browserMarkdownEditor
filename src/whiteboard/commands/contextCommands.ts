@@ -11,13 +11,13 @@ export type ContextCommandState = { readonly enabled: true } | { readonly enable
 export interface ContextCommandGate { readonly readOnly: boolean; readonly busy: boolean }
 
 /**
- * Minimum selected roots per command. The plan records observed counts only (six align, two
- * distribute), so these are decisions, not rules quoted from the plan: align and stack or pack
- * need two roots, distribute needs three to have a middle item, and every other command needs one.
+ * Minimum selected roots per command, from the catalogue's rules: align, stretch and pack need two roots,
+ * distribute needs three to have a middle item, stack needs three stackable items, and every other command needs one.
  */
 const MINIMUM: Readonly<Record<string, number>> = {
     group: 2, alignLeft: 2, alignRight: 2, alignTop: 2, alignBottom: 2, alignHorizontal: 2, alignVertical: 2,
-    distributeHorizontal: 3, distributeVertical: 3, stackHorizontal: 2, stackVertical: 2, pack: 2,
+    distributeHorizontal: 3, distributeVertical: 3, stackHorizontal: 3, stackVertical: 3, pack: 2,
+    stretchHorizontal: 2, stretchVertical: 2,
 };
 /** Restructuring commands refuse locked or out-of-scope content, exactly as the structural command scope does. */
 const STRUCTURAL = new Set(['group', 'ungroup', 'flatten', 'frameSelection', 'delete', 'cut', 'duplicate', 'alignLeft', 'alignRight',
@@ -25,7 +25,7 @@ const STRUCTURAL = new Set(['group', 'ungroup', 'flatten', 'frameSelection', 'de
     'stackVertical', 'pack', 'stretchHorizontal', 'stretchVertical', 'sendBack', 'sendBackward', 'bringForward', 'bringFront',
     'rotateClockwise', 'rotateCounterclockwise']);
 /** Commands that change the document; a read-only or gesture-busy session refuses them all. */
-const MUTATING = new Set([...STRUCTURAL, 'paste', 'toggleLocked', 'editLink']);
+const MUTATING = new Set([...STRUCTURAL, 'paste', 'toggleLocked', 'editLink', 'convertToEmbed', 'convertToBookmark', 'toggleAutoSize']);
 
 function selected(doc: BoardDoc, ids: Iterable<NodeId>): readonly Node[] {
     try { return selectedRoots(doc, ids); } catch { return []; } // a stale selection has nothing enabled; the next selection event refreshes it.

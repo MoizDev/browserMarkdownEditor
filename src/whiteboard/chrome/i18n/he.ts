@@ -3,6 +3,9 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "rtl",
     englishTerms: [
+        { key: "commands.flipHorizontal", text: "Flip H", reason: "Same wording as English in this language until it is translated." },
+        { key: "commands.flipVertical", text: "Flip V", reason: "Same wording as English in this language until it is translated." },
+        { key: "sheet.resizeList", text: "Resize list", reason: "Same wording as English in this language until it is translated." },
         { key: "commands.exportPng", text: "PNG", reason: "International file format or paper size designation." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
         { key: "commands.copyAsSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -234,6 +237,7 @@ export default defineBoardLanguage({
         "sheet.delete": "מחק גיליון",
         "sheet.create": "גיליון חדש",
         "sheet.limit": "מקסימום גיליונות {count}",
+        "sheet.resizeList": "Resize list",
         "sheet.pageName": "עמוד {page}",
         "paper.size": "גודל נייר",
         "paper.ruling": "פסיקת נייר",
@@ -387,5 +391,9 @@ export default defineBoardLanguage({
         "commands.fitFrame": "התאמה לתוכן",
         "notice.keptLocked": "נשמרו {count} פריטים נעולים.",
         "commands.toggleAutoSize": "החלפת גודל אוטומטי",
+        "commands.convertToEmbed": "המר להטמעה",
+        "commands.convertToBookmark": "המר לסימנייה",
+        "commands.flipHorizontal": "Flip H",
+        "commands.flipVertical": "Flip V",
     },
 });

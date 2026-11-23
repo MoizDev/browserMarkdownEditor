@@ -3,6 +3,9 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
+        { key: "commands.flipHorizontal", text: "Flip H", reason: "Same wording as English in this language until it is translated." },
+        { key: "commands.flipVertical", text: "Flip V", reason: "Same wording as English in this language until it is translated." },
+        { key: "sheet.resizeList", text: "Resize list", reason: "Same wording as English in this language until it is translated." },
         { key: "commands.copyAsPng", text: "PNG", reason: "Sigla del formato de archivo." },
         { key: "commands.copyAsSvg", text: "SVG", reason: "Sigla del formato de archivo." },
         { key: "commands.copyAsJson", text: "JSON", reason: "Sigla del formato de archivo." },
@@ -225,6 +228,7 @@ export default defineBoardLanguage({
         "sheet.delete": "Eliminar hoja",
         "sheet.create": "Nueva hoja",
         "sheet.limit": "Máximo de hojas {count}",
+        "sheet.resizeList": "Resize list",
         "sheet.pageName": "Página {page}",
         "paper.size": "Tamaño del papel",
         "paper.ruling": "fallo en papel",
@@ -387,5 +391,9 @@ export default defineBoardLanguage({
         "commands.fitFrame": "Ajustar al contenido",
         "notice.keptLocked": "Se conservaron {count} elementos bloqueados.",
         "commands.toggleAutoSize": "Alternar tamaño automático",
+        "commands.convertToEmbed": "Convertir en contenido incrustado",
+        "commands.convertToBookmark": "Convertir a marcador",
+        "commands.flipHorizontal": "Flip H",
+        "commands.flipVertical": "Flip V",
     },
 });

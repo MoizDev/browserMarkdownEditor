@@ -57,17 +57,17 @@ function AttachedNativeBoardChrome({ runtime, language, preferences, mac, onRead
         onReady(true); return () => onReady(false); }, [onReady, styles, props.isVisible]);
     useEffect(() => { styles.refresh(); }, [props.readOnly, styles]);
     useEffect(() => { if (!props.isVisible) styles.finish(); }, [props.isVisible, styles]);
-    const tooltip = (id: string, figure?: string) => {
-        const key = id === 'figure' ? `figure.${figure ?? runtime.tools.getSnapshot().lastFigure ?? 'rectangle'}` : `tool.${id}`;
+    const chord = (key: string): string | undefined => {
         const binding = boardBindings.find(item => item.id === key);
         if (!binding) return undefined;
         return [binding.accel ? (mac ? '⌘' : 'Ctrl') : '', binding.alt ? (mac ? '⌥' : 'Alt') : '',
             binding.shift ? (mac ? '⇧' : 'Shift') : '', binding.key.length === 1 ? binding.key.toUpperCase() : binding.key]
             .filter(Boolean).join(mac ? '' : '+');
     };
+    const tooltip = (id: string, figure?: string) => chord(id === 'figure' ? `figure.${figure ?? runtime.tools.getSnapshot().lastFigure ?? 'rectangle'}` : `tool.${id}`);
     return <SessionBoardChrome {...props} kind={runtime.session.doc.kind} locale={lang.locale} direction={lang.table.dir}
         translate={(key, values) => translateBoard(lang.table, key, values)} languages={availableBoardLocales()}
-        selectLanguage={locale => language.select(locale)} toolState={tools} toolShortcut={tooltip} shortcuts={shortcutGroups(mac, runtime.session.doc.kind !== 'whiteboard')}
+        selectLanguage={locale => language.select(locale)} toolState={tools} toolShortcut={tooltip} bindingChord={chord} shortcuts={shortcutGroups(mac, runtime.session.doc.kind !== 'whiteboard')}
         localPreferences={{ ...local, setView: (key, value) => { if (props.currentOwner()) preferences.setView(key, value); },
             setSession: (key, value) => preferences.setSession(key, value) }} penPanel={panel} />;
 }

@@ -30,16 +30,22 @@ const keyCommands: Readonly<Record<string, BoardCommand>> = {
     'distribute.vertical': 'distributeVertical', flatten: 'flatten',
 };
 
+/** The key cap a menu draws: a letter upper-cased, Delete and Backspace as the ⌫ cap, anything else as its name. */
+function keyCap(key: string, mac: boolean): string {
+    if (key.length === 1) return key.toUpperCase();
+    return key === 'Delete' || key === 'Backspace' ? (mac ? '⌫' : 'Del') : key;
+}
 function bindingShortcut(key: string | undefined, mac: boolean): string | undefined {
     const binding = key && boardBindings.find(item => item.id === key);
     if (!binding) return undefined;
     return [binding.accel ? (mac ? '⌘' : 'Ctrl') : '', binding.alt ? (mac ? '⌥' : 'Alt') : '',
-        binding.shift ? (mac ? '⇧' : 'Shift') : '', binding.key.length === 1 ? binding.key.toUpperCase() : binding.key]
+        binding.shift ? (mac ? '⇧' : 'Shift') : '', keyCap(binding.key, mac)]
         .filter(Boolean).join(mac ? '' : '+');
 }
 export function nativeCommandShortcut(command: BoardCommand, mac: boolean): string | undefined {
     const key = Object.entries(keyCommands).find(([, value]) => value === command)?.[0]
-        ?? ({ undo: 'undo', redo: 'redo', frameSelection: 'frame.toggle', removeFrame: 'frame.toggle' } as Partial<Record<BoardCommand, string>>)[command];
+        ?? ({ undo: 'undo', redo: 'redo', frameSelection: 'frame.toggle', removeFrame: 'frame.remove',
+            flipHorizontal: 'flip.horizontal', flipVertical: 'flip.vertical' } as Partial<Record<BoardCommand, string>>)[command];
     return bindingShortcut(key, mac);
 }
 export function nativeActionShortcut(action: MainAction, mac: boolean): string | undefined {
@@ -51,6 +57,8 @@ export function nativeActionShortcut(action: MainAction, mac: boolean): string |
 /** The input router and menus consult the same live command authority. */
 export function createNativeKeyCommands(source: BoardCommandSource, other: (id: string, event: KeyboardEvent) => boolean) {
     return { run(id: string, event: KeyboardEvent): boolean {
+        // Mod+G toggles: a lone group selection is ungrouped, as the catalogue's toggle-group does.
+        if (id === 'group' && !source.state('group').enabled && source.state('ungroup').enabled) { void source.run('ungroup'); return true; }
         const command = keyCommands[id];
         if (!command) return other(id, event);
         if (source.state(command).enabled) void source.run(command);
@@ -61,6 +69,7 @@ export function createNativeKeyCommands(source: BoardCommandSource, other: (id: 
 const commandMutates: Record<BoardCommand, boolean> = {
     undo: true, redo: true, delete: true, duplicate: true, cut: true, copy: false, paste: true, selectAll: false,
     group: true, ungroup: true, flatten: true, editLink: true, frameSelection: true, removeFrame: true, fitFrame: true, toggleLocked: true, toggleAutoSize: true,
+    convertToBookmark: true, convertToEmbed: true, flipHorizontal: true, flipVertical: true,
     alignLeft: true, alignHorizontal: true, alignRight: true, alignTop: true, alignVertical: true, alignBottom: true,
     stretchHorizontal: true, stretchVertical: true, distributeHorizontal: true, distributeVertical: true,
     stackHorizontal: true, stackVertical: true, pack: true, sendBack: true, sendBackward: true,

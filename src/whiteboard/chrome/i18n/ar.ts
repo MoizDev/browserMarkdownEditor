@@ -3,6 +3,9 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "rtl",
     englishTerms: [
+        { key: "commands.flipHorizontal", text: "Flip H", reason: "Same wording as English in this language until it is translated." },
+        { key: "commands.flipVertical", text: "Flip V", reason: "Same wording as English in this language until it is translated." },
+        { key: "sheet.resizeList", text: "Resize list", reason: "Same wording as English in this language until it is translated." },
         { key: "commands.copyAsPng", text: "PNG", reason: "اسم تنسيق الملف." },
         { key: "commands.copyAsSvg", text: "SVG", reason: "اسم تنسيق الملف." },
         { key: "commands.copyAsJson", text: "JSON", reason: "اسم تنسيق الملف." },
@@ -225,6 +228,7 @@ export default defineBoardLanguage({
         "sheet.delete": "حذف الورقة",
         "sheet.create": "ورقة جديدة",
         "sheet.limit": "الحد الأقصى لأوراق {count}",
+        "sheet.resizeList": "Resize list",
         "sheet.pageName": "صفحة {page}",
         "paper.size": "حجم الورق",
         "paper.ruling": "حكم ورقية",
@@ -439,5 +443,9 @@ export default defineBoardLanguage({
         "commands.fitFrame": "ملاءمة للمحتوى",
         "notice.keptLocked": "تم الإبقاء على {count} عناصر مقفلة.",
         "commands.toggleAutoSize": "تبديل الحجم التلقائي",
+        "commands.convertToEmbed": "تحويل إلى محتوى مضمن",
+        "commands.convertToBookmark": "تحويل إلى إشارة مرجعية",
+        "commands.flipHorizontal": "Flip H",
+        "commands.flipVertical": "Flip V",
     },
 });

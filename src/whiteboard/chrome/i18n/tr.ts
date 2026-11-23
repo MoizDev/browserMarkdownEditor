@@ -3,6 +3,9 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
+        { key: "commands.flipHorizontal", text: "Flip H", reason: "Same wording as English in this language until it is translated." },
+        { key: "commands.flipVertical", text: "Flip V", reason: "Same wording as English in this language until it is translated." },
+        { key: "sheet.resizeList", text: "Resize list", reason: "Same wording as English in this language until it is translated." },
         { key: "commands.exportPng", text: "PNG", reason: "International file format or paper size designation." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
         { key: "commands.copyAsSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -234,6 +237,7 @@ export default defineBoardLanguage({
         "sheet.delete": "Sayfayı sil",
         "sheet.create": "Yeni sayfa",
         "sheet.limit": "Maksimum {count} sayfa",
+        "sheet.resizeList": "Resize list",
         "sheet.pageName": "Sayfa {page}",
         "paper.size": "Kağıt boyutu",
         "paper.ruling": "Kağıt kararı",
@@ -387,5 +391,9 @@ export default defineBoardLanguage({
         "commands.fitFrame": "İçeriğe sığdır",
         "notice.keptLocked": "{count} kilitli öğe korundu.",
         "commands.toggleAutoSize": "Otomatik boyutu değiştir",
+        "commands.convertToEmbed": "Yerleştirmeye dönüştür",
+        "commands.convertToBookmark": "Yer imine dönüştür",
+        "commands.flipHorizontal": "Flip H",
+        "commands.flipVertical": "Flip V",
     },
 });

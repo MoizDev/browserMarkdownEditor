@@ -3,6 +3,9 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
+        { key: "commands.flipHorizontal", text: "Flip H", reason: "Same wording as English in this language until it is translated." },
+        { key: "commands.flipVertical", text: "Flip V", reason: "Same wording as English in this language until it is translated." },
+        { key: "sheet.resizeList", text: "Resize list", reason: "Same wording as English in this language until it is translated." },
         { key: "commands.exportPng", text: "PNG", reason: "International file format or paper size designation." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
         { key: "commands.copyAsSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -234,6 +237,7 @@ export default defineBoardLanguage({
         "sheet.delete": "Elimina foglio",
         "sheet.create": "Nuovo foglio",
         "sheet.limit": "Massimo di {count} fogli",
+        "sheet.resizeList": "Resize list",
         "sheet.pageName": "Pagina {page}",
         "paper.size": "Formato carta",
         "paper.ruling": "Sentenza cartacea",
@@ -387,5 +391,9 @@ export default defineBoardLanguage({
         "commands.fitFrame": "Adatta al contenuto",
         "notice.keptLocked": "Conservati {count} elementi bloccati.",
         "commands.toggleAutoSize": "Attiva/disattiva dimensione automatica",
+        "commands.convertToEmbed": "Converti per incorporare",
+        "commands.convertToBookmark": "Converti in segnalibro",
+        "commands.flipHorizontal": "Flip H",
+        "commands.flipVertical": "Flip V",
     },
 });

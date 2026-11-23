@@ -3,6 +3,9 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
+        { key: "commands.flipHorizontal", text: "Flip H", reason: "Same wording as English in this language until it is translated." },
+        { key: "commands.flipVertical", text: "Flip V", reason: "Same wording as English in this language until it is translated." },
+        { key: "sheet.resizeList", text: "Resize list", reason: "Same wording as English in this language until it is translated." },
         { key: "commands.exportPng", text: "PNG", reason: "International file format or paper size designation." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
         { key: "commands.copyAsSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -234,6 +237,7 @@ export default defineBoardLanguage({
         "sheet.delete": "Blad verwijderen",
         "sheet.create": "Nieuw blad",
         "sheet.limit": "Maximaal {count}-vellen",
+        "sheet.resizeList": "Resize list",
         "sheet.pageName": "Pagina {page}",
         "paper.size": "Papierformaat",
         "paper.ruling": "Papieren uitspraak",
@@ -387,5 +391,9 @@ export default defineBoardLanguage({
         "commands.fitFrame": "Aanpassen aan inhoud",
         "notice.keptLocked": "{count} vergrendelde items behouden.",
         "commands.toggleAutoSize": "Automatische grootte wisselen",
+        "commands.convertToEmbed": "Converteren naar insluiten",
+        "commands.convertToBookmark": "Converteren naar bladwijzer",
+        "commands.flipHorizontal": "Flip H",
+        "commands.flipVertical": "Flip V",
     },
 });

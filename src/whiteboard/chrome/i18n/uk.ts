@@ -3,6 +3,9 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
+        { key: "commands.flipHorizontal", text: "Flip H", reason: "Same wording as English in this language until it is translated." },
+        { key: "commands.flipVertical", text: "Flip V", reason: "Same wording as English in this language until it is translated." },
+        { key: "sheet.resizeList", text: "Resize list", reason: "Same wording as English in this language until it is translated." },
         { key: "commands.exportPng", text: "PNG", reason: "International file format or paper size designation." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
         { key: "commands.copyAsSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -234,6 +237,7 @@ export default defineBoardLanguage({
         "sheet.delete": "Видалити аркуш",
         "sheet.create": "Новий аркуш",
         "sheet.limit": "Максимальна кількість аркушів: {count}",
+        "sheet.resizeList": "Resize list",
         "sheet.pageName": "Сторінка {page}",
         "paper.size": "Розмір паперу",
         "paper.ruling": "Паперова постанова",
@@ -387,5 +391,9 @@ export default defineBoardLanguage({
         "commands.fitFrame": "Підігнати до вмісту",
         "notice.keptLocked": "Збережено заблокованих елементів: {count}.",
         "commands.toggleAutoSize": "Перемкнути автоматичний розмір",
+        "commands.convertToEmbed": "Перетворити на вбудовування",
+        "commands.convertToBookmark": "Перетворити на закладку",
+        "commands.flipHorizontal": "Flip H",
+        "commands.flipVertical": "Flip V",
     },
 });

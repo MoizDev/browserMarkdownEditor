@@ -3,6 +3,9 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
+        { key: "commands.flipHorizontal", text: "Flip H", reason: "Same wording as English in this language until it is translated." },
+        { key: "commands.flipVertical", text: "Flip V", reason: "Same wording as English in this language until it is translated." },
+        { key: "sheet.resizeList", text: "Resize list", reason: "Same wording as English in this language until it is translated." },
         { key: "commands.exportPng", text: "PNG", reason: "International file format or paper size designation." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
         { key: "commands.copyAsSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -234,6 +237,7 @@ export default defineBoardLanguage({
         "sheet.delete": "시트 삭제",
         "sheet.create": "새 시트",
         "sheet.limit": "최대 {count} 시트",
+        "sheet.resizeList": "Resize list",
         "sheet.pageName": "페이지 {page}",
         "paper.size": "용지 크기",
         "paper.ruling": "종이 판결",
@@ -387,5 +391,9 @@ export default defineBoardLanguage({
         "commands.fitFrame": "콘텐츠에 맞추기",
         "notice.keptLocked": "잠긴 항목 {count}개를 유지했습니다.",
         "commands.toggleAutoSize": "자동 크기 전환",
+        "commands.convertToEmbed": "삽입으로 변환",
+        "commands.convertToBookmark": "북마크로 변환",
+        "commands.flipHorizontal": "Flip H",
+        "commands.flipVertical": "Flip V",
     },
 });

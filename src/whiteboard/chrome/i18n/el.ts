@@ -3,6 +3,9 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
+        { key: "commands.flipHorizontal", text: "Flip H", reason: "Same wording as English in this language until it is translated." },
+        { key: "commands.flipVertical", text: "Flip V", reason: "Same wording as English in this language until it is translated." },
+        { key: "sheet.resizeList", text: "Resize list", reason: "Same wording as English in this language until it is translated." },
         { key: "commands.exportPng", text: "PNG", reason: "International file format or paper size designation." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
         { key: "commands.copyAsSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -234,6 +237,7 @@ export default defineBoardLanguage({
         "sheet.delete": "Διαγραφή φύλλου",
         "sheet.create": "Νέο φύλλο",
         "sheet.limit": "Μέγιστο ποσό {count} φύλλων",
+        "sheet.resizeList": "Resize list",
         "sheet.pageName": "Σελίδα {page}",
         "paper.size": "Μέγεθος χαρτιού",
         "paper.ruling": "Χάρτινη απόφαση",
@@ -387,5 +391,9 @@ export default defineBoardLanguage({
         "commands.fitFrame": "Προσαρμογή στο περιεχόμενο",
         "notice.keptLocked": "Διατηρήθηκαν {count} κλειδωμένα στοιχεία.",
         "commands.toggleAutoSize": "Εναλλαγή αυτόματου μεγέθους",
+        "commands.convertToEmbed": "Μετατροπή σε ενσωμάτωση",
+        "commands.convertToBookmark": "Μετατροπή σε σελιδοδείκτη",
+        "commands.flipHorizontal": "Flip H",
+        "commands.flipVertical": "Flip V",
     },
 });

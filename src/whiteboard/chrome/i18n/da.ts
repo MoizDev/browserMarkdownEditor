@@ -3,6 +3,9 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
+        { key: "commands.flipHorizontal", text: "Flip H", reason: "Same wording as English in this language until it is translated." },
+        { key: "commands.flipVertical", text: "Flip V", reason: "Same wording as English in this language until it is translated." },
+        { key: "sheet.resizeList", text: "Resize list", reason: "Same wording as English in this language until it is translated." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
         { key: "commands.copyAsJson", text: "JSON", reason: "International file format or paper size designation." },
         { key: "commands.copyAsSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -234,6 +237,7 @@ export default defineBoardLanguage({
         "sheet.delete": "Slet ark",
         "sheet.create": "Nyt ark",
         "sheet.limit": "Maksimalt {count} ark",
+        "sheet.resizeList": "Resize list",
         "sheet.pageName": "Side {page}",
         "paper.size": "Papirstørrelse",
         "paper.ruling": "Papirkendelse",
@@ -387,5 +391,9 @@ export default defineBoardLanguage({
         "commands.fitFrame": "Tilpas til indhold",
         "notice.keptLocked": "{count} låste elementer blev bevaret.",
         "commands.toggleAutoSize": "Skift automatisk størrelse",
+        "commands.convertToEmbed": "Konverter til indlejring",
+        "commands.convertToBookmark": "Konverter til bogmærke",
+        "commands.flipHorizontal": "Flip H",
+        "commands.flipVertical": "Flip V",
     },
 });

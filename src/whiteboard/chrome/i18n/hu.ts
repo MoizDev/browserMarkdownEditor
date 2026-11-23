@@ -3,6 +3,9 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
+        { key: "commands.flipHorizontal", text: "Flip H", reason: "Same wording as English in this language until it is translated." },
+        { key: "commands.flipVertical", text: "Flip V", reason: "Same wording as English in this language until it is translated." },
+        { key: "sheet.resizeList", text: "Resize list", reason: "Same wording as English in this language until it is translated." },
         { key: "commands.exportPng", text: "PNG", reason: "International file format or paper size designation." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
         { key: "commands.copyAsSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -234,6 +237,7 @@ export default defineBoardLanguage({
         "sheet.delete": "Lap törlése",
         "sheet.create": "Új lap",
         "sheet.limit": "Maximum {count} lap",
+        "sheet.resizeList": "Resize list",
         "sheet.pageName": "Oldal {page}",
         "paper.size": "Papírméret",
         "paper.ruling": "Papír határozat",
@@ -387,5 +391,9 @@ export default defineBoardLanguage({
         "commands.fitFrame": "Illesztés a tartalomhoz",
         "notice.keptLocked": "{count} zárolt elem megmaradt.",
         "commands.toggleAutoSize": "Automatikus méret be/ki",
+        "commands.convertToEmbed": "Konvertálás beágyazásra",
+        "commands.convertToBookmark": "Konvertálás könyvjelzővé",
+        "commands.flipHorizontal": "Flip H",
+        "commands.flipVertical": "Flip V",
     },
 });

@@ -3,6 +3,9 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
+        { key: "commands.flipHorizontal", text: "Flip H", reason: "Same wording as English in this language until it is translated." },
+        { key: "commands.flipVertical", text: "Flip V", reason: "Same wording as English in this language until it is translated." },
+        { key: "sheet.resizeList", text: "Resize list", reason: "Same wording as English in this language until it is translated." },
         { key: "commands.exportPng", text: "PNG", reason: "International file format or paper size designation." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
         { key: "commands.copyAsSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -234,6 +237,7 @@ export default defineBoardLanguage({
         "sheet.delete": "Șterge foaia",
         "sheet.create": "Foaie nouă",
         "sheet.limit": "Maximum de {count} coli",
+        "sheet.resizeList": "Resize list",
         "sheet.pageName": "Pagina {page}",
         "paper.size": "Dimensiunea hârtiei",
         "paper.ruling": "Hotărâre de hârtie",
@@ -387,5 +391,9 @@ export default defineBoardLanguage({
         "commands.fitFrame": "Potrivește la conținut",
         "notice.keptLocked": "S-au păstrat {count} elemente blocate.",
         "commands.toggleAutoSize": "Comută dimensiunea automată",
+        "commands.convertToEmbed": "Convertiți în încorporare",
+        "commands.convertToBookmark": "Convertiți în marcaj",
+        "commands.flipHorizontal": "Flip H",
+        "commands.flipVertical": "Flip V",
     },
 });

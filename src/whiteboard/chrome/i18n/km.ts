@@ -3,6 +3,9 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
+        { key: "commands.flipHorizontal", text: "Flip H", reason: "Same wording as English in this language until it is translated." },
+        { key: "commands.flipVertical", text: "Flip V", reason: "Same wording as English in this language until it is translated." },
+        { key: "sheet.resizeList", text: "Resize list", reason: "Same wording as English in this language until it is translated." },
         { key: "commands.exportPng", text: "PNG", reason: "International file format or paper size designation." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
         { key: "commands.copyAsSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -234,6 +237,7 @@ export default defineBoardLanguage({
         "sheet.delete": "លុបសន្លឹក",
         "sheet.create": "សន្លឹកថ្មី។",
         "sheet.limit": "សន្លឹក {count} អតិបរមា",
+        "sheet.resizeList": "Resize list",
         "sheet.pageName": "ទំព័រ {page}",
         "paper.size": "ទំហំក្រដាស",
         "paper.ruling": "សេចក្តីសម្រេចក្រដាស",
@@ -387,5 +391,9 @@ export default defineBoardLanguage({
         "commands.fitFrame": "ផ្គូផ្គងនឹងមាតិកា",
         "notice.keptLocked": "បានរក្សា​ធាតុ​ចាក់សោ {count}។",
         "commands.toggleAutoSize": "បិទ/បើកទំហំស្វ័យប្រវត្តិ",
+        "commands.convertToEmbed": "បំប្លែង​ទៅ​បង្កប់",
+        "commands.convertToBookmark": "បម្លែងទៅជាចំណាំ",
+        "commands.flipHorizontal": "Flip H",
+        "commands.flipVertical": "Flip V",
     },
 });

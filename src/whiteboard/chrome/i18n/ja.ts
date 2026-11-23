@@ -3,6 +3,9 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
+        { key: "commands.flipHorizontal", text: "Flip H", reason: "Same wording as English in this language until it is translated." },
+        { key: "commands.flipVertical", text: "Flip V", reason: "Same wording as English in this language until it is translated." },
+        { key: "sheet.resizeList", text: "Resize list", reason: "Same wording as English in this language until it is translated." },
         { key: "commands.exportPng", text: "PNG", reason: "International file format or paper size designation." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
         { key: "commands.copyAsSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -234,6 +237,7 @@ export default defineBoardLanguage({
         "sheet.delete": "シートの削除",
         "sheet.create": "新しいシート",
         "sheet.limit": "最大 {count} シート",
+        "sheet.resizeList": "Resize list",
         "sheet.pageName": "ページ {page}",
         "paper.size": "用紙サイズ",
         "paper.ruling": "紙裁定",
@@ -387,5 +391,9 @@ export default defineBoardLanguage({
         "commands.fitFrame": "コンテンツに合わせる",
         "notice.keptLocked": "ロックされた項目を{count}件残しました。",
         "commands.toggleAutoSize": "自動サイズを切り替え",
+        "commands.convertToEmbed": "埋め込みに変換",
+        "commands.convertToBookmark": "ブックマークに変換",
+        "commands.flipHorizontal": "Flip H",
+        "commands.flipVertical": "Flip V",
     },
 });

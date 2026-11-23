@@ -3,6 +3,9 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
+        { key: "commands.flipHorizontal", text: "Flip H", reason: "Same wording as English in this language until it is translated." },
+        { key: "commands.flipVertical", text: "Flip V", reason: "Same wording as English in this language until it is translated." },
+        { key: "sheet.resizeList", text: "Resize list", reason: "Same wording as English in this language until it is translated." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
         { key: "commands.copyAsJson", text: "JSON", reason: "International file format or paper size designation." },
         { key: "commands.copyAsSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -234,6 +237,7 @@ export default defineBoardLanguage({
         "sheet.delete": "Esborra el full",
         "sheet.create": "Full nou",
         "sheet.limit": "Màxim de {count} fulls",
+        "sheet.resizeList": "Resize list",
         "sheet.pageName": "Pàgina {page}",
         "paper.size": "Mida del paper",
         "paper.ruling": "Reglament en paper",
@@ -387,5 +391,9 @@ export default defineBoardLanguage({
         "commands.fitFrame": "Ajusta al contingut",
         "notice.keptLocked": "S'han mantingut {count} elements bloquejats.",
         "commands.toggleAutoSize": "Canvia la mida automàtica",
+        "commands.convertToEmbed": "Converteix per incrustar",
+        "commands.convertToBookmark": "Converteix a marcador",
+        "commands.flipHorizontal": "Flip H",
+        "commands.flipVertical": "Flip V",
     },
 });

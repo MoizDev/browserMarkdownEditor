@@ -3,6 +3,9 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
+        { key: "commands.flipHorizontal", text: "Flip H", reason: "Same wording as English in this language until it is translated." },
+        { key: "commands.flipVertical", text: "Flip V", reason: "Same wording as English in this language until it is translated." },
+        { key: "sheet.resizeList", text: "Resize list", reason: "Same wording as English in this language until it is translated." },
         { key: "commands.exportPng", text: "PNG", reason: "International file format or paper size designation." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
         { key: "commands.copyAsSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -234,6 +237,7 @@ export default defineBoardLanguage({
         "sheet.delete": "Tirtir xaashida",
         "sheet.create": "xaashi cusub",
         "sheet.limit": "Ugu badnaan xaashida {count}",
+        "sheet.resizeList": "Resize list",
         "sheet.pageName": "Bogga {page}",
         "paper.size": "Cabbirka warqadda",
         "paper.ruling": "Xukun warqad ah",
@@ -387,5 +391,9 @@ export default defineBoardLanguage({
         "commands.fitFrame": "Ku habee waxa ku jira",
         "notice.keptLocked": "Waxaa la ilaaliyay {count} shay oo quful ah.",
         "commands.toggleAutoSize": "Beddel cabbirka otomaatiga ah",
+        "commands.convertToEmbed": "U beddelo ku dheji",
+        "commands.convertToBookmark": "U beddel bookmark",
+        "commands.flipHorizontal": "Flip H",
+        "commands.flipVertical": "Flip V",
     },
 });

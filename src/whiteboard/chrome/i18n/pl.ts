@@ -3,6 +3,9 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
+        { key: "commands.flipHorizontal", text: "Flip H", reason: "Same wording as English in this language until it is translated." },
+        { key: "commands.flipVertical", text: "Flip V", reason: "Same wording as English in this language until it is translated." },
+        { key: "sheet.resizeList", text: "Resize list", reason: "Same wording as English in this language until it is translated." },
         { key: "commands.exportPng", text: "PNG", reason: "International file format or paper size designation." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
         { key: "commands.copyAsSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -234,6 +237,7 @@ export default defineBoardLanguage({
         "sheet.delete": "Usuń arkusz",
         "sheet.create": "Nowy arkusz",
         "sheet.limit": "Maksymalnie {count} arkuszy",
+        "sheet.resizeList": "Resize list",
         "sheet.pageName": "Strona {page}",
         "paper.size": "Rozmiar papieru",
         "paper.ruling": "Orzeczenie papierowe",
@@ -387,5 +391,9 @@ export default defineBoardLanguage({
         "commands.fitFrame": "Dopasuj do zawartości",
         "notice.keptLocked": "Zachowano {count} zablokowanych elementów.",
         "commands.toggleAutoSize": "Przełącz automatyczny rozmiar",
+        "commands.convertToEmbed": "Konwertuj, aby osadzić",
+        "commands.convertToBookmark": "Konwertuj na zakładkę",
+        "commands.flipHorizontal": "Flip H",
+        "commands.flipVertical": "Flip V",
     },
 });

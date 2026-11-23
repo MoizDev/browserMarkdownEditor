@@ -3,6 +3,9 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
+        { key: "commands.flipHorizontal", text: "Flip H", reason: "Same wording as English in this language until it is translated." },
+        { key: "commands.flipVertical", text: "Flip V", reason: "Same wording as English in this language until it is translated." },
+        { key: "sheet.resizeList", text: "Resize list", reason: "Same wording as English in this language until it is translated." },
         { key: "commands.exportPng", text: "PNG", reason: "International file format or paper size designation." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
         { key: "commands.copyAsSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -234,6 +237,7 @@ export default defineBoardLanguage({
         "sheet.delete": "தாளை நீக்கு",
         "sheet.create": "புதிய தாள்",
         "sheet.limit": "அதிகபட்சம் {count} தாள்கள்",
+        "sheet.resizeList": "Resize list",
         "sheet.pageName": "பக்கம் {page}",
         "paper.size": "காகித அளவு",
         "paper.ruling": "காகித தீர்ப்பு",
@@ -387,5 +391,9 @@ export default defineBoardLanguage({
         "commands.fitFrame": "உள்ளடக்கத்துக்கு ஏற்ப",
         "notice.keptLocked": "{count} பூட்டிய உருப்படிகள் வைக்கப்பட்டன.",
         "commands.toggleAutoSize": "தானியங்கு அளவை மாற்று",
+        "commands.convertToEmbed": "உட்பொதிக்க மாற்றவும்",
+        "commands.convertToBookmark": "புக்மார்க்காக மாற்றவும்",
+        "commands.flipHorizontal": "Flip H",
+        "commands.flipVertical": "Flip V",
     },
 });

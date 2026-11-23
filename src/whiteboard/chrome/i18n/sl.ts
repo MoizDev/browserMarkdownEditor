@@ -3,6 +3,9 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
+        { key: "commands.flipHorizontal", text: "Flip H", reason: "Same wording as English in this language until it is translated." },
+        { key: "commands.flipVertical", text: "Flip V", reason: "Same wording as English in this language until it is translated." },
+        { key: "sheet.resizeList", text: "Resize list", reason: "Same wording as English in this language until it is translated." },
         { key: "commands.exportPng", text: "PNG", reason: "International file format or paper size designation." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
         { key: "commands.copyAsSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -234,6 +237,7 @@ export default defineBoardLanguage({
         "sheet.delete": "Izbriši list",
         "sheet.create": "Nov list",
         "sheet.limit": "Največ {count} listov",
+        "sheet.resizeList": "Resize list",
         "sheet.pageName": "Stran {page}",
         "paper.size": "Velikost papirja",
         "paper.ruling": "Sodba na papirju",
@@ -387,5 +391,9 @@ export default defineBoardLanguage({
         "commands.fitFrame": "Prilagodi vsebini",
         "notice.keptLocked": "Ohranjenih zaklenjenih elementov: {count}.",
         "commands.toggleAutoSize": "Preklopi samodejno velikost",
+        "commands.convertToEmbed": "Pretvori v vdelavo",
+        "commands.convertToBookmark": "Pretvori v zaznamek",
+        "commands.flipHorizontal": "Flip H",
+        "commands.flipVertical": "Flip V",
     },
 });

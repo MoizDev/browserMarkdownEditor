@@ -3,6 +3,9 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
+        { key: "commands.flipHorizontal", text: "Flip H", reason: "Same wording as English in this language until it is translated." },
+        { key: "commands.flipVertical", text: "Flip V", reason: "Same wording as English in this language until it is translated." },
+        { key: "sheet.resizeList", text: "Resize list", reason: "Same wording as English in this language until it is translated." },
         { key: "commands.exportPng", text: "PNG", reason: "International file format or paper size designation." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
         { key: "commands.copyAsSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -234,6 +237,7 @@ export default defineBoardLanguage({
         "sheet.delete": "Ta bort ark",
         "sheet.create": "Nytt blad",
         "sheet.limit": "Maximalt antal {count} ark",
+        "sheet.resizeList": "Resize list",
         "sheet.pageName": "Sida {page}",
         "paper.size": "Pappersstorlek",
         "paper.ruling": "Pappersutslag",
@@ -387,5 +391,9 @@ export default defineBoardLanguage({
         "commands.fitFrame": "Anpassa till innehåll",
         "notice.keptLocked": "{count} låsta objekt behölls.",
         "commands.toggleAutoSize": "Växla automatisk storlek",
+        "commands.convertToEmbed": "Konvertera till inbäddning",
+        "commands.convertToBookmark": "Konvertera till bokmärke",
+        "commands.flipHorizontal": "Flip H",
+        "commands.flipVertical": "Flip V",
     },
 });

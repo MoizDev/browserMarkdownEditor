@@ -3,6 +3,9 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
+        { key: "commands.flipHorizontal", text: "Flip H", reason: "Same wording as English in this language until it is translated." },
+        { key: "commands.flipVertical", text: "Flip V", reason: "Same wording as English in this language until it is translated." },
+        { key: "sheet.resizeList", text: "Resize list", reason: "Same wording as English in this language until it is translated." },
         { key: "commands.exportPng", text: "PNG", reason: "International file format or paper size designation." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
         { key: "commands.copyAsSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -234,6 +237,7 @@ export default defineBoardLanguage({
         "sheet.delete": "ഷീറ്റ് ഇല്ലാതാക്കുക",
         "sheet.create": "പുതിയ ഷീറ്റ്",
         "sheet.limit": "പരമാവധി {count} ഷീറ്റുകൾ",
+        "sheet.resizeList": "Resize list",
         "sheet.pageName": "പേജ് {page}",
         "paper.size": "പേപ്പർ വലിപ്പം",
         "paper.ruling": "പേപ്പർ റൂളിംഗ്",
@@ -387,5 +391,9 @@ export default defineBoardLanguage({
         "commands.fitFrame": "ഉള്ളടക്കത്തിന് ചേർക്കുക",
         "notice.keptLocked": "{count} ലോക്ക് ചെയ്ത ഇനങ്ങൾ നിലനിർത്തി.",
         "commands.toggleAutoSize": "ഓട്ടോ സൈസ് ടോഗിൾ ചെയ്യുക",
+        "commands.convertToEmbed": "എംബഡിലേക്ക് പരിവർത്തനം ചെയ്യുക",
+        "commands.convertToBookmark": "ബുക്ക്‌മാർക്കിലേക്ക് പരിവർത്തനം ചെയ്യുക",
+        "commands.flipHorizontal": "Flip H",
+        "commands.flipVertical": "Flip V",
     },
 });

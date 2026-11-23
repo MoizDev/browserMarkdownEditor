@@ -3,6 +3,9 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
+        { key: "commands.flipHorizontal", text: "Flip H", reason: "Same wording as English in this language until it is translated." },
+        { key: "commands.flipVertical", text: "Flip V", reason: "Same wording as English in this language until it is translated." },
+        { key: "sheet.resizeList", text: "Resize list", reason: "Same wording as English in this language until it is translated." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
         { key: "commands.copyAsJson", text: "JSON", reason: "International file format or paper size designation." },
         { key: "commands.copyAsSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -234,6 +237,7 @@ export default defineBoardLanguage({
         "sheet.delete": "Hapus lembar",
         "sheet.create": "Lembar baru",
         "sheet.limit": "Maksimal {count} lembar",
+        "sheet.resizeList": "Resize list",
         "sheet.pageName": "Halaman {page}",
         "paper.size": "Ukuran kertas",
         "paper.ruling": "Keputusan kertas",
@@ -387,5 +391,9 @@ export default defineBoardLanguage({
         "commands.fitFrame": "Sesuaikan dengan konten",
         "notice.keptLocked": "{count} item terkunci dipertahankan.",
         "commands.toggleAutoSize": "Alihkan ukuran otomatis",
+        "commands.convertToEmbed": "Konversikan menjadi penyematan",
+        "commands.convertToBookmark": "Konversikan ke penanda",
+        "commands.flipHorizontal": "Flip H",
+        "commands.flipVertical": "Flip V",
     },
 });

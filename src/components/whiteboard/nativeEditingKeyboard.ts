@@ -56,6 +56,10 @@ export function createNativeEditingKeyboard(options: {
             case 'sheet.previous': return stepSheet(-1);
             case 'sheet.next': return stepSheet(1);
             // Mod+Alt+G removes a selection of frames and frames any other selection (F-FRAME-004/005).
+            case 'frame.remove': {
+                if (!options.commands.state('removeFrame').enabled) return false;
+                void options.commands.run('removeFrame'); return true;
+            }
             case 'frame.toggle': {
                 const command = options.commands.state('removeFrame').enabled ? 'removeFrame' : 'frameSelection';
                 if (!options.commands.state(command).enabled) return false;

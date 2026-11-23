@@ -3,6 +3,9 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
+        { key: "commands.flipHorizontal", text: "Flip H", reason: "Same wording as English in this language until it is translated." },
+        { key: "commands.flipVertical", text: "Flip V", reason: "Same wording as English in this language until it is translated." },
+        { key: "sheet.resizeList", text: "Resize list", reason: "Same wording as English in this language until it is translated." },
         { key: "commands.exportPng", text: "PNG", reason: "International file format or paper size designation." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
         { key: "commands.copyAsSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -234,6 +237,7 @@ export default defineBoardLanguage({
         "sheet.delete": "Удалить лист",
         "sheet.create": "Новый лист",
         "sheet.limit": "Максимум листов {count}",
+        "sheet.resizeList": "Resize list",
         "sheet.pageName": "Страница {page}",
         "paper.size": "Размер бумаги",
         "paper.ruling": "Бумажное постановление",
@@ -387,5 +391,9 @@ export default defineBoardLanguage({
         "commands.fitFrame": "По содержимому",
         "notice.keptLocked": "Сохранено заблокированных элементов: {count}.",
         "commands.toggleAutoSize": "Переключить автоматический размер",
+        "commands.convertToEmbed": "Преобразовать для встраивания",
+        "commands.convertToBookmark": "Преобразовать в закладки",
+        "commands.flipHorizontal": "Flip H",
+        "commands.flipVertical": "Flip V",
     },
 });

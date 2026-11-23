@@ -3,6 +3,9 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
+        { key: "commands.flipHorizontal", text: "Flip H", reason: "Same wording as English in this language until it is translated." },
+        { key: "commands.flipVertical", text: "Flip V", reason: "Same wording as English in this language until it is translated." },
+        { key: "sheet.resizeList", text: "Resize list", reason: "Same wording as English in this language until it is translated." },
         { key: "commands.exportPng", text: "PNG", reason: "International file format or paper size designation." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
         { key: "commands.copyAsSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -234,6 +237,7 @@ export default defineBoardLanguage({
         "sheet.delete": "షీట్‌ను తొలగించండి",
         "sheet.create": "కొత్త షీట్",
         "sheet.limit": "గరిష్టంగా {count} షీట్‌లు",
+        "sheet.resizeList": "Resize list",
         "sheet.pageName": "పేజీ {page}",
         "paper.size": "కాగితం పరిమాణం",
         "paper.ruling": "పేపర్ రూలింగ్",
@@ -387,5 +391,9 @@ export default defineBoardLanguage({
         "commands.fitFrame": "కంటెంట్‌కు సరిపోల్చు",
         "notice.keptLocked": "{count} లాక్ చేయబడిన అంశాలు ఉంచబడ్డాయి.",
         "commands.toggleAutoSize": "ఆటో సైజ్ టోగుల్ చేయి",
+        "commands.convertToEmbed": "పొందుపరచడానికి మార్చండి",
+        "commands.convertToBookmark": "బుక్‌మార్క్‌గా మార్చండి",
+        "commands.flipHorizontal": "Flip H",
+        "commands.flipVertical": "Flip V",
     },
 });

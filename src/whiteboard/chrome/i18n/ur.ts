@@ -3,6 +3,9 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "rtl",
     englishTerms: [
+        { key: "commands.flipHorizontal", text: "Flip H", reason: "Same wording as English in this language until it is translated." },
+        { key: "commands.flipVertical", text: "Flip V", reason: "Same wording as English in this language until it is translated." },
+        { key: "sheet.resizeList", text: "Resize list", reason: "Same wording as English in this language until it is translated." },
         { key: "commands.exportPng", text: "PNG", reason: "International file format or paper size designation." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
         { key: "commands.copyAsSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -234,6 +237,7 @@ export default defineBoardLanguage({
         "sheet.delete": "شیٹ کو حذف کریں۔",
         "sheet.create": "نئی شیٹ",
         "sheet.limit": "زیادہ سے زیادہ {count} شیٹس",
+        "sheet.resizeList": "Resize list",
         "sheet.pageName": "صفحہ {page}",
         "paper.size": "کاغذ کا سائز",
         "paper.ruling": "کاغذی فیصلہ",
@@ -387,5 +391,9 @@ export default defineBoardLanguage({
         "commands.fitFrame": "مواد کے مطابق کریں",
         "notice.keptLocked": "{count} مقفل آئٹمز برقرار رکھے گئے۔",
         "commands.toggleAutoSize": "خودکار سائز ٹوگل کریں",
+        "commands.convertToEmbed": "ایمبیڈ میں تبدیل کریں۔",
+        "commands.convertToBookmark": "بک مارک میں تبدیل کریں۔",
+        "commands.flipHorizontal": "Flip H",
+        "commands.flipVertical": "Flip V",
     },
 });

@@ -3,6 +3,9 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
+        { key: "commands.flipHorizontal", text: "Flip H", reason: "Same wording as English in this language until it is translated." },
+        { key: "commands.flipVertical", text: "Flip V", reason: "Same wording as English in this language until it is translated." },
+        { key: "sheet.resizeList", text: "Resize list", reason: "Same wording as English in this language until it is translated." },
         { key: "commands.exportPng", text: "PNG", reason: "International file format or paper size designation." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
         { key: "commands.copyAsSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -234,6 +237,7 @@ export default defineBoardLanguage({
         "sheet.delete": "ลบแผ่นงาน",
         "sheet.create": "แผ่นใหม่",
         "sheet.limit": "สูงสุด {count} แผ่นงาน",
+        "sheet.resizeList": "Resize list",
         "sheet.pageName": "หน้า {page}",
         "paper.size": "ขนาดกระดาษ",
         "paper.ruling": "การพิจารณาคดีกระดาษ",
@@ -387,5 +391,9 @@ export default defineBoardLanguage({
         "commands.fitFrame": "พอดีกับเนื้อหา",
         "notice.keptLocked": "เก็บรายการที่ล็อกไว้ {count} รายการ",
         "commands.toggleAutoSize": "สลับขนาดอัตโนมัติ",
+        "commands.convertToEmbed": "แปลงเป็นการฝัง",
+        "commands.convertToBookmark": "แปลงเป็นบุ๊กมาร์ก",
+        "commands.flipHorizontal": "Flip H",
+        "commands.flipVertical": "Flip V",
     },
 });

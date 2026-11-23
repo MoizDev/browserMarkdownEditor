@@ -3,6 +3,9 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
+        { key: "commands.flipHorizontal", text: "Flip H", reason: "Same wording as English in this language until it is translated." },
+        { key: "commands.flipVertical", text: "Flip V", reason: "Same wording as English in this language until it is translated." },
+        { key: "sheet.resizeList", text: "Resize list", reason: "Same wording as English in this language until it is translated." },
         { key: "tools.hand", text: "Hand", reason: "Im Deutschen gleich geschrieben." },
         { key: "tools.text", text: "Text", reason: "Im Deutschen gleich geschrieben." },
         { key: "tools.ellipse", text: "Ellipse", reason: "Im Deutschen gleich geschrieben." },
@@ -238,6 +241,7 @@ export default defineBoardLanguage({
         "sheet.delete": "Blatt löschen",
         "sheet.create": "Neues Blatt",
         "sheet.limit": "Maximal {count} Blätter",
+        "sheet.resizeList": "Resize list",
         "sheet.pageName": "Seite {page}",
         "paper.size": "Papierformat",
         "paper.ruling": "Papierentscheidung",
@@ -400,5 +404,9 @@ export default defineBoardLanguage({
         "commands.fitFrame": "An Inhalt anpassen",
         "notice.keptLocked": "{count} gesperrte Elemente wurden beibehalten.",
         "commands.toggleAutoSize": "Automatische Größe umschalten",
+        "commands.convertToEmbed": "Zum Einbetten konvertieren",
+        "commands.convertToBookmark": "In Lesezeichen konvertieren",
+        "commands.flipHorizontal": "Flip H",
+        "commands.flipVertical": "Flip V",
     },
 });

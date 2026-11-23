@@ -3,6 +3,9 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
+        { key: "commands.flipHorizontal", text: "Flip H", reason: "Same wording as English in this language until it is translated." },
+        { key: "commands.flipVertical", text: "Flip V", reason: "Same wording as English in this language until it is translated." },
+        { key: "sheet.resizeList", text: "Resize list", reason: "Same wording as English in this language until it is translated." },
         { key: "commands.exportPng", text: "PNG", reason: "International file format or paper size designation." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
         { key: "commands.copyAsSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -234,6 +237,7 @@ export default defineBoardLanguage({
         "sheet.delete": "શીટ કાઢી નાખો",
         "sheet.create": "નવી શીટ",
         "sheet.limit": "મહત્તમ {count} શીટ્સ",
+        "sheet.resizeList": "Resize list",
         "sheet.pageName": "પૃષ્ઠ {page}",
         "paper.size": "કાગળનું કદ",
         "paper.ruling": "કાગળ ચુકાદો",
@@ -387,5 +391,9 @@ export default defineBoardLanguage({
         "commands.fitFrame": "સામગ્રી પ્રમાણે ફિટ કરો",
         "notice.keptLocked": "{count} લૉક આઇટમ રાખી.",
         "commands.toggleAutoSize": "ઓટો સાઇઝ ટૉગલ કરો",
+        "commands.convertToEmbed": "એમ્બેડમાં કન્વર્ટ કરો",
+        "commands.convertToBookmark": "બુકમાર્કમાં કન્વર્ટ કરો",
+        "commands.flipHorizontal": "Flip H",
+        "commands.flipVertical": "Flip V",
     },
 });

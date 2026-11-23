@@ -16,7 +16,7 @@ export function boardThemeMenu(
     if (kind !== 'whiteboard') return null;
     return {
         kind: 'submenu', id: 'theme', label,
-        entries: (['dark', 'light', 'system'] as const).map(value => ({
+        entries: (['light', 'dark', 'system'] as const).map(value => ({
             kind: 'command', id: `theme-${value}`, label: labels[value], checked: current === value,
             run: () => setTheme(value),
         })),

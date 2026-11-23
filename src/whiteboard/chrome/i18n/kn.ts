@@ -3,6 +3,9 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
+        { key: "commands.flipHorizontal", text: "Flip H", reason: "Same wording as English in this language until it is translated." },
+        { key: "commands.flipVertical", text: "Flip V", reason: "Same wording as English in this language until it is translated." },
+        { key: "sheet.resizeList", text: "Resize list", reason: "Same wording as English in this language until it is translated." },
         { key: "commands.exportPng", text: "PNG", reason: "International file format or paper size designation." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
         { key: "commands.copyAsSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -234,6 +237,7 @@ export default defineBoardLanguage({
         "sheet.delete": "ಹಾಳೆಯನ್ನು ಅಳಿಸಿ",
         "sheet.create": "ಹೊಸ ಹಾಳೆ",
         "sheet.limit": "ಗರಿಷ್ಠ {count} ಹಾಳೆಗಳು",
+        "sheet.resizeList": "Resize list",
         "sheet.pageName": "ಪುಟ {page}",
         "paper.size": "ಕಾಗದದ ಗಾತ್ರ",
         "paper.ruling": "ಕಾಗದದ ತೀರ್ಪು",
@@ -387,5 +391,9 @@ export default defineBoardLanguage({
         "commands.fitFrame": "ವಿಷಯಕ್ಕೆ ಹೊಂದಿಸಿ",
         "notice.keptLocked": "{count} ಲಾಕ್ ಮಾಡಿದ ಐಟಂಗಳನ್ನು ಉಳಿಸಲಾಗಿದೆ.",
         "commands.toggleAutoSize": "ಸ್ವಯಂ ಗಾತ್ರವನ್ನು ಟಾಗಲ್ ಮಾಡಿ",
+        "commands.convertToEmbed": "ಎಂಬೆಡ್‌ಗೆ ಪರಿವರ್ತಿಸಿ",
+        "commands.convertToBookmark": "ಬುಕ್‌ಮಾರ್ಕ್‌ಗೆ ಪರಿವರ್ತಿಸಿ",
+        "commands.flipHorizontal": "Flip H",
+        "commands.flipVertical": "Flip V",
     },
 });

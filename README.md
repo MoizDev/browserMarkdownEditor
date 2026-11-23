@@ -1,96 +1,149 @@
 # Browser Markdown Editor
 
-A powerful, entirely local-first browser-based Markdown editor inspired by Obsidian. Built tightly around the File System Access API, it allows users to manage and edit local Markdown files directly within their web browser, maintaining file structures and directories seamlessly. The application operates solely on your local device without any backend or database requirements, ensuring maximum privacy and data ownership. The one optional exception is VaultAgent, a small local helper that runs the AI agent panel (an agent CLI you already use) and the built-in terminal.
+A local-first, Obsidian-style editor that runs **entirely in your browser**. Open any folder on your
+computer as a *vault* and the app reads and writes those real files through the
+[File System Access API](https://developer.mozilla.org/docs/Web/API/File_System_API): there is no
+server, no database and no account. Notes stay plain Markdown that any other tool can open.
 
-## Key Features
+Besides notes, the same window opens **PDFs** (read, search, rotate and write on them),
+**notebooks** (ruled pages you write on by hand, exported as real PDFs), **drawings** (an endless
+whiteboard) and **EPUB books** — each drawn by engines built into this repository rather than
+borrowed from a third-party canvas or viewer.
 
-- **Local Vault Integration:** Open a local folder as your "Vault" directly from your machine. Any edits made in the browser are instantly reflected in your local file system, and vice versa.
-- **Robust Markdown Editing & Live Preview:** Powered by CodeMirror 6, the editor hides markdown syntax as you type and seamlessly renders elements such as headings, lists, tables, bold/italic text, and code blocks inline.
-- **Advanced LaTeX Math Support:** Integrated KaTeX rendering allows for both inline mathematical expressions (`$math$`) and block equations (`$$math$$`).
-- **File & Folder Management:** Features a built-in file explorer side panel. You can easily create, delete, and rename notes and directories.
-- **Drag & Drop Organization:** Organize your vault effortlessly using contextual drag-and-drop to move files and folders into different directories natively within your file tree. Supported across subfolders and directly to the vault root.
-- **Integrated Image & Asset Handling:** Automatically saves pasted images to a hidden `.Assets` folder in the same directory as the note, and looks for them nowhere else — so a folder carries its own pictures and stays self-contained wherever it is moved. Delete a picture and its file is retired to that folder's `.Garbage` (kept if another note in the folder still shows it, and reclaimed on undo). Native rendering of standard images and PDFs directly within the markdown preview.
-- **Pictures Behave Like Pictures:** An embedded image is an object, not a piece of syntax — it never turns back into `![[file.png]]` under the cursor. Click it while editing to select it, then resize it with the `+`/`−` buttons on its corner or remove it with the bin (or `Backspace`), confirmation and undo included. The file on disk stays plain Markdown throughout.
-- **Tables Behave Like Tables:** A rendered table is an object too. Click a cell and type in it — the table never collapses back into pipes and dashes under the cursor. `Tab`, `Shift + Tab` and `Enter` walk the cells, two `+` chips at the corners append a row or a column, and right-clicking a cell inserts or deletes rows and columns. Every edit writes back the narrowest change it can, so your alignment colons, your `\|` escapes and the padding you lined up by hand all survive untouched; the file stays ordinary GFM pipe markdown that Obsidian or GitHub reads the same way. New tables come from a Google-Docs-style matrix picker behind *Insert table…*, or from simply typing one.
-- **The App's Own Right-Click Menu:** Right-clicking a note gives Cut/Copy/Paste/Select all and *Insert table…*; right-clicking a table cell gives the table's own row and column commands; right-clicking the file tree gives New note, New folder, Rename and Move to Trash, on the row or on the empty space below it. Unavailable rows stay on the menu and say why rather than disappearing. Native drawings, notebooks and PDFs use the app's own menus too.
-- **Split-Screen Tabs:** Drag any tab out of the strip and drop it onto the page you are reading to put the two side by side in one tab — up to five documents at once, in whatever mix you like (two notes, a note beside a PDF, a whiteboard beside the notes you are taking from it). A purple outline shows which half of the page the tab will take. Every pane is a real editor with its own undo history; a pane's header moves it back to its own tab or closes just that document. Drag the line between two panes to give one of them more room and its neighbour less — only those two move — or double-click that line to even every pane up again.
-- **Session Persistence:** Remembers your open vault, expanded file tree directories, cursor position, last active note, how your tabs were split and how wide you left each pane, and application settings using standard client cache (localStorage).
-- **Systematic Settings Panel:** A native settings modal allows adjustments for editor text width (padding), editor font size, and file tree font size, complete with a "Reset to Defaults" option.
-- **Theme Support:** Clean, intuitive toggle between meticulously designed light and dark themes.
-- **AI Agent Panel (optional):** A chat docked on the right (⌘⇧X) that runs Claude Code, Codex or OpenCode — whichever you have installed and logged in — through **VaultAgent**, a small background helper (macOS, Windows, Linux). The agent always knows what you are looking at (tabs, panes, the exact lines, page or canvas view), can read, search and edit the open vault and draw on drawings, notebooks and PDFs, and can search the web. It runs with the agent's own full tools on your computer, without permission prompts, and is told to make every vault change through the editor, so each one lands live and undoes with ⌘Z.
-- **Built-in Terminal (optional):** A real terminal docked under the editor (⌃\`, or the button beside the agent's), like VS Code's: your own login shell with your profile, PATH, aliases, prompt theme and Nerd Font icons, starting in your home folder, with several tabs, copy/paste and resizing. It runs through the same VaultAgent helper (0.2.0+); on macOS a tiny frozen helper, `vaultagent-pty`, owns the shells so the privacy permissions you grant survive VaultAgent updates. The agent never sees it.
-- **Outside Changes, Handled:** Files changed by anything else — a `git pull`, a formatter, a sync service — reload live in open documents (cursor and scroll kept), and a note with unsaved edits gets a Reload / Keep mine bar instead of being overwritten; whichever version you do not pick is kept as `name (conflict).md`. Every save checks the file is still the one you opened. The file tree updates live, and `.git` is hidden.
+**Chromium only, by design.** The app depends on `showDirectoryPicker`, the Origin Private File
+System and other APIs only Chromium-based browsers (Chrome, Edge, Brave, Arc, …) ship.
 
-## Technical Architecture
+## What it does
 
-The architecture is deliberately chosen to be lightweight and exclusively front-end focused.
+**Notes**
+- CodeMirror 6 live preview: syntax hides as you type and headings, lists, quotes, code blocks,
+  KaTeX maths (`$…$`, `$$…$$`) and mermaid diagrams render in place. ⌘E switches between reading
+  and editing.
+- Tables and pictures behave as objects. Type straight into a table cell (Tab/Enter walk the
+  cells, corner chips add rows and columns) and every edit writes back the narrowest change, so the
+  file stays ordinary GFM. A pasted or dropped picture goes into a hidden `.Assets` folder beside
+  the note and is resized, removed or inverted from the picture itself.
+- Wiki links, backlinks, a graph view, vault-wide search, collapsible headings, code files and
+  `.tex` files with highlighting.
 
-### Core Technologies
-- **React 19:** Functional components, Context API, and Hooks handle complex UI state logic.
-- **Vite:** Next-generation frontend tooling handling rapid Hot Module Replacement (HMR) and optimized build processes.
-- **CodeMirror 6:** An extensible framework providing the foundation for our dynamic text editing experience. It is heavily customized with CodeMirror Lezer extensions and syntax plugins to support real-time "live preview" overlays.
-- **KaTeX:** Efficient and complete mathematical typesetting.
+**PDFs** — Google's PDFium, compiled to WebAssembly and run in workers. Page thumbnails,
+Contents, find across every page, copy of the whole document's text, a reading-text view,
+rotation saved into the file, dark pages, and **Annotate**: your ink is written into that same PDF
+as vector artwork, with a pristine copy and the editable strokes carried inside it, so a mark can be
+moved or erased days later and repeated saves never thicken it.
 
-### How It Works
+**Notebooks** (`.notebook`) — lined, grid, dotted or blank paper in Letter, A4 or Legal, a page
+added as you reach the bottom, and **Export to PDF** as vector pages anything can print.
 
-**File System Access API Interaction**
-The lifeblood of the application is the `useFileSystem` hook which abstracts the experimental browser capability:
-- Navigating native folders via Native File/Directory Pickers.
-- Saving buffers and reading file streams through OS dialogs.
-- Constructing a predictable, reactive file tree model (`fileTree` structure) that maps out nodes and child objects mimicking your actual system.
+**Drawings** (`.drawing`) — an infinite board with pen, highlighter, eraser, laser, sixteen figures,
+arrows, lines, text, sticky notes, frames, pictures, link cards and web embeds; selection,
+grouping, alignment, locking, several sheets, a minimap, export to PNG, SVG, PDF and JSON, and
+a board interface in 49 languages. Older `.tldraw` files convert on open, keeping the original in the
+folder's Trash.
 
-**The Editor Implementation**
-The editor component leverages CodeMirror's state structure to provide split editing paradigms:
-- **Editor Mode vs Reading Mode:** In reading mode, it acts strictly as a static document. In editing mode, active lines show their raw markdown, while inactive text collapses into processed stylings.
-- **Decorators and Widgets:** Utilizing CodeMirror decorators to parse the Lezer syntax tree, selectively hiding tokens and seamlessly injecting CSS styling mimicking standard block elements (indented bullet points, styled quotes, horizontal rules).
-- **Paste/Drop Listeners:** Implemented at the CodeMirror extension level to intercept images natively. It validates the blob, generates unique hash-based filenames, drops it into a sibling-level `.Assets` bucket, and embeds the relative image tag inside the editor cursor position.
+**EPUB books** — read-only, in a sandboxed frame: contents, find, scroll or page layout, and
+reading appearance, without ever writing to the book.
 
-**Styling Approach**
-- **Vanilla CSS:** Entirely reliant on functional raw CSS leveraging root CSS Variables heavily, thus circumventing any preprocessors or bloated utility frameworks. This provides fine-grained control for layout algorithms such as flexbox layouts across the explorer and dynamic responsive padding calculations.
-- **Design Alignment:** Focused deliberately on achieving standard modern note-taking aesthetics, specifically mimicking features found in premium apps like Obsidian.
+**Around the documents**
+- Split panes: drag a tab onto a page to put up to five documents side by side, each pane with its
+  own tabs; the layout, scroll positions and open tabs come back per vault after a reload.
+- Outside changes are handled: a file changed by `git pull`, a formatter or a sync service reloads
+  live, and a note with unsaved edits gets a Reload / Keep mine bar instead of being overwritten.
+  Every save checks the file is still the one you opened.
+- Nothing you made is destroyed outright: deleting moves a file to that folder's `.Garbage`
+  (the in-app Trash), and a file that would be overwritten is renamed aside instead.
+- Light and dark themes, per-file and per-folder icons and colours, custom tree order, and the
+  app's own context menus, dialogs and tooltips throughout.
+- The full user guide is inside the app: **Help** at the bottom of the sidebar.
 
-## Running the Application
+## How the canvases are drawn
 
-### Prerequisites
-- Node.js
-- A Chromium-based browser or supported variant as full, unrestrained File System Access API is strictly required for application functionality.
+PDFs, notebooks and drawings share one rendering platform (`src/platform/render/`). Each pane draws
+with **WebGL2** when the browser provides it and with **canvas2d** otherwise; both are complete
+paths, not a degraded preview. A drop from WebGL2 to canvas2d (no GPU, a lost context, memory
+pressure) is per pane and is counted rather than silent, and a pane that is hidden gives back its
+GPU memory at once. The fonts, the PDF engine and every other renderer asset are bundled with the
+app and integrity-checked at build time: no CDN is needed to draw a line. The only network the
+app itself uses is Google Fonts (the editor's code font, and any text font you pick in Settings),
+and a link card's or embed's own site when you ask it to load.
 
-### Development Setup
-1. Clone the repository to your local machine.
-2. Navigate to the project directory:
-   ```bash
-   cd browserMarkdownEditor
-   ```
-3. Install the required dependencies:
-   ```bash
-   npm install
-   ```
-4. Start the development server:
-   ```bash
-   npm run dev
-   ```
-5. Open the displayed local link in your browser.
+## The optional helper: VaultAgent
 
-### Building for Production
-To generate a streamlined, minified set of static assets optimized for standard web hosting environments:
+Everything above works with nothing installed. **VaultAgent** is a small local helper (macOS,
+Windows, Linux) that adds two things:
+
+- **The AI agent panel** (⌘⇧X): a chat that runs Claude Code, Codex or OpenCode — whichever you
+  already have and are logged into. It sees what you are looking at, and every change it makes to
+  the vault goes through the editor, so it lands live and undoes with ⌘Z.
+- **The terminal** (⌃\`): your own login shell docked under the editor, starting in the folder of
+  the file you are in, with several tabs.
+
+The panel's guide links the installer for your system, and the helper updates itself from this
+repository's GitHub Releases.
+
+## Running it
+
+You need Node.js with npm, and a Chromium-based browser.
+
 ```bash
-npm run build
+npm install
+npm run dev        # Vite dev server with React Fast Refresh; open the printed link
+npm run build      # production build into dist/
+npm run preview    # serve that build
+npm run typecheck  # TypeScript for the app, shared/ and the helper
+npm run lint       # ESLint
 ```
-This generates the relevant application bundle dynamically inside the `dist/` directory, which can subsequently be deployed to platforms like Vercel, Netlify, or standard Apache/Nginx web servers.
 
-### The VaultAgent helper (`helper/`)
-A Bun program, bundled with the dev dependencies:
+`dist/` is a static site: any static host works, as long as it serves the app over HTTPS (or
+`localhost`), which the File System Access API requires.
+
+There is no unit-test suite. Behaviour is checked by driving the real app in headless Chromium with
+Playwright against a stubbed vault (`verify/`); `typecheck` and `lint` are the static gates.
+
+### The helper (`helper/`)
+
+A Bun program; Bun comes with the dev dependencies.
+
 ```bash
 npm run helper:dev    # run it from source; allows http://localhost:* origins
 npm run helper:build  # compile a standalone binary for this OS into helper/dist
 ```
-Installers are built and published by `.github/workflows/vaultagent-release.yml` when a `vaultagent-v*` tag is pushed; the panel downloads them from this repository's latest GitHub Release, and an installed helper (0.1.3+) updates itself from the same release when the user clicks **Update** in the panel.
 
-To test self-update without publishing, build helpers against a local fake release with `bun helper/scripts/build.ts --releases-base http://127.0.0.1:<port>/releases`; `bun helper/scripts/update-smoke.ts --replace-installed` does exactly that end to end. It replaces the helper installed for your user, which the flag acknowledges (CI runs it as `CI=true`); back yours up first, or reinstall it afterwards.
+Pushing a `vaultagent-v*` tag builds and publishes the installers
+(`.github/workflows/vaultagent-release.yml`); an installed helper updates itself from the latest
+release when the person clicks **Update** in the panel. To test self-update without publishing,
+build against a local fake release with
+`bun helper/scripts/build.ts --releases-base http://127.0.0.1:<port>/releases`;
+`bun helper/scripts/update-smoke.ts --replace-installed` does that end to end and **replaces the
+helper installed for your user** (back it up first).
 
-The macOS PTY host (`helper/ptyhost/vaultagent-pty`) is a committed, pinned binary that CI never rebuilds — every change to it costs each macOS user one privacy re-grant. Rebuild it only deliberately, with `helper/ptyhost/build.sh`.
+The macOS PTY host (`helper/ptyhost/vaultagent-pty`) is a committed, pinned binary that CI never
+rebuilds: each change to it costs every macOS user one privacy re-grant. Rebuild it only
+deliberately, with `helper/ptyhost/build.sh`.
 
-## Future Context & Limitations
-- The underlying architecture heavily depends on browser edge permissions. Users must initially and explicitly grant OS-level prompt access to their chosen folder.
-- Deleted items are structured to avoid destructive irreversible permanent OS actions, moving natively to parallel relative `.Garbage` container directories.
+### The PDF engine
 
+`src/pdf/vendor/pdfium/` holds the committed PDFium WebAssembly build. Dev and production load
+exactly those bytes, and the build fails if any of them differs from its manifest.
+`build/pdfium/README.md` explains how it was built and how to rebuild or replace it.
+
+## Where things are
+
+| Path | What lives there |
+|---|---|
+| `src/app/` | The app's state, one hook per concern, composed by `App.tsx` |
+| `src/components/` | React UI: panes, tab strip, file tree, panels, dialogs |
+| `src/context/` | The only code that touches the File System Access API, plus the vault index worker |
+| `src/editor/` | CodeMirror extensions for the Markdown editor (React-free) |
+| `src/whiteboard/` | The board engine behind drawings, notebooks and PDF ink |
+| `src/pdf/` | PDF reading, layout, text, writing and the PDFium engine |
+| `src/platform/` | Rendering platform (WebGL2 and canvas2d) and sandboxed frames |
+| `src/epub/` | The EPUB reader |
+| `src/utils/` | Pure helpers; `helpDoc.ts` is the in-app user guide |
+| `shared/` | Types and data shared by the app and the helper |
+| `helper/` | VaultAgent |
+| `build/` | Vite plugins: asset integrity, generated frames, third-party notices |
+| `verify/` | Headless-browser verification toolbox and fixtures |
+
+`AGENTS.md` holds the rules every change must respect, and `.agents/skills/` the deeper notes on
+each subsystem.

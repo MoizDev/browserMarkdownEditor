@@ -39,6 +39,7 @@ import { usePdfTiledSelection } from './usePdfTiledSelection';
 import { usePdfTiledCopyMenu } from './usePdfTiledCopyMenu';
 import { usePdfTiledOutline } from './usePdfTiledOutline';
 import { registerView, type PdfViewInfo } from '../utils/viewRegistry';
+import { gpuUnavailableText } from '../utils/renderStatus';
 import '../pdf/overlay/links.css';
 import './PdfTiledView.css';
 
@@ -593,9 +594,9 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
             if (currentSharp.current && updatingRef.current) { updatingRef.current = false; setUpdating(false); }
             if (currentSharp.current) clearQualityNotice();
         }, onError: () => reportRenderNotice('The PDF viewer encountered a rendering error.', true),
-        onNotice: message => reportRenderNotice(message === 'memory-pressure' ? 'PDF rendering quality was reduced to fit memory.'
+        onNotice: (message, cause) => reportRenderNotice(message === 'memory-pressure' ? 'PDF rendering quality was reduced to fit memory.'
             : message === 'cpu-floor-denied' ? 'PDF rendering is limited by available memory.'
-                : message === 'cpu-pinned' ? 'PDF rendering is using a compatible mode.' : 'GPU rendering is unavailable; a compatible mode is in use.'),
+                : message === 'cpu-pinned' ? 'PDF rendering is using a compatible mode.' : gpuUnavailableText(cause)),
     }), [lease, mirror, capturer, mirrorView, onNotice, pageLayer, pdf, session, stack, updateTextMirrorView, onFindView, filePath, persist, correctReveal, clamp, refreshSelectionPointer, capabilities, reportRenderNotice, clearQualityNotice]);
     const platformPane = usePlatformPane<PdfMirrorPixels>({ host, isVisible, isFocused, vaultEpoch: session.token.vaultEpoch,
         documentId: session.token.documentId, layers, services });
@@ -800,8 +801,8 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         {visibleNotice && <div className="pdf-tiled-notice" role="status">
             <div>{visibleNotice}</div>
             <div className="pdf-tiled-notice-actions">
-                <button onClick={() => { void retry(); }} disabled={!retryDocument || retryBusy === session}>Retry</button>
-                {!pageNotice && <button onClick={() => { sessionNotices.delete(session); setNoticeState({ session, notice: undefined }); }}>Dismiss</button>}
+                <button type="button" className="disk-bar-btn" onClick={() => { void retry(); }} disabled={!retryDocument || retryBusy === session}>Retry</button>
+                {!pageNotice && <button type="button" className="disk-bar-btn" onClick={() => { sessionNotices.delete(session); setNoticeState({ session, notice: undefined }); }}>Dismiss</button>}
             </div>
             {!retryDocument && <div className="pdf-tiled-notice-hint">Retry is unavailable.</div>}
         </div>}
@@ -818,7 +819,7 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
                 <PdfCapabilitiesNotice capabilities={capabilities} nativeFontPolicy />
             </div>
             <PdfTiledPageField page={page} pageCount={pdf.pages.length} onNavigate={goPage} />
-            <div className="pdf-viewer-pill"><button aria-label="Zoom out" onClick={() => zoomBy(1 / 1.2)}>−</button><span>{Math.round(zoom * 100)}%</span><button aria-label="Zoom in" onClick={() => zoomBy(1.2)}>+</button></div>
+            <div className="pdf-viewer-pill pdf-viewer-zoom"><button type="button" aria-label="Zoom out" data-tooltip="Zoom out" onClick={() => zoomBy(1 / 1.2)}>−</button><span className="pdf-viewer-zoom-value">{Math.round(zoom * 100)}%</span><button type="button" aria-label="Zoom in" data-tooltip="Zoom in" onClick={() => zoomBy(1.2)}>+</button></div>
         </div>
     </div>;
 }

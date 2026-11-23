@@ -194,7 +194,7 @@ Under each pane's tabs is a row belonging to that pane: its file's name in the m
 
 - **←** and **→** walk that pane back and forward through the documents it has shown, the way a browser's do. Each pane remembers its own, and only for as long as the app is open — after a reload both arrows start out greyed, because there is nowhere yet to go back to.
 - The **eye** button switches that pane between Read Mode and Edit Mode (\`Cmd + E\` / \`Ctrl + E\` does the same to the pane you last clicked in). On a PDF you can annotate, it switches between reading and drawing on it instead. A whiteboard, a notebook, this guide and a note that could not be read have no such button.
-- **⋯** holds what is left: **Insert table…** in a note, **Export to PDF** on a notebook, and **Close this pane**, which closes the pane and everything open in it.
+- **⋯** holds what is left: **Insert table…** in a note, **Read extracted text** and **Original PDF** on a PDF, **Export to PDF** on a notebook, and **Close this pane**, which closes the pane and everything open in it.
 
 With more than one pane, the pane you last clicked in is the one with the coloured underline, and it is the one that ⌘E, ⌘F and ⌘S act on. Every pane is a real editor: you can type in all of them, and each keeps its own undo history.
 
@@ -312,164 +312,165 @@ A **drawing** keeps its canvas controls. PDFs use their in-app reader and annota
 
 ---
 
-## 5. Notebooks, Drawings, and PDFs
+## 5. Drawings, Notebooks, and PDFs
 
-Three kinds of file open on a canvas instead of in the text editor. All three use
-the same board: pen, highlighter, eraser, shapes, arrows, text, notes, pictures and
-frames, saved a second after you stop. A board is editable whenever its file can be
-written.
+Three kinds of file open on a canvas instead of in the text editor: **drawings**, **notebooks** and **PDFs** you write on. All three use the same **board** — the same tools, menus and shortcuts, described first below — and are saved a second after you stop. A board is editable whenever its file can be written; otherwise it opens read-only with a notice that says why.
+
+Make a drawing or a notebook with the **pencil** button at the top of the sidebar (**New drawing or notebook**), then **New Drawing** or **New Notebook**, and type its name.
+
+### The tool bar
+The bar at the bottom centre holds **Select** (\`V\`), **Hand** (\`H\`), **Draw** (\`D\`, also \`B\` or \`X\`), **Eraser** (\`E\`), **Arrow** (\`A\`), **Text** (\`T\`), **Note** (\`N\`, a sticky note), **Media** (a picture or video from your computer, \`Cmd/Ctrl + U\`) and **Rectangle** (\`R\`). The chevron at its end opens the rest: fifteen more figures (ellipse \`O\`, triangle, diamond, hexagon, oval, rhombus, star, cloud, heart, x box, check box and four block arrows), **Line** (\`L\`), **Highlight** (\`Shift + D\`), **Laser** (\`K\`) and **Frame** (\`F\`). While one of those is the active tool, the chevron shows it filled in blue. \`G\` picks the figure you used last. Hover any button for its name and key.
+
+**Tool lock** (\`Q\`, or Menu → Preferences) keeps the tool you picked after each use.
+
+### Moving around
+- **Pan:** scroll or swipe, drag with the Hand tool, or hold \`Space\` and drag. The arrow keys pan when nothing is selected (\`Shift\` for bigger steps).
+- **Zoom:** pinch, or hold \`Ctrl\` and scroll; \`=\` and \`-\` zoom in and out (\`Shift + =\` / \`Shift + -\` at the pointer). \`Shift + 0\` goes back to 100%, \`Shift + 1\` fits everything on screen and \`Shift + 2\` fits the selection. The **zoom box** at the bottom right shows the zoom; click it for the same commands.
+- **Zoom to an area:** hold \`Z\` and drag a rectangle to zoom into it; hold \`Z\` and \`Alt\`-click to zoom out a step.
+- **Quick overview:** while holding \`Z\`, press \`Shift\`. The board zooms out and a rectangle follows the pointer; let go to land there, or press \`Escape\` to go back where you were.
+- If you wander far from everything, a **Back to content** button brings you back.
+- Menu → Preferences → **Input device** says whether a scroll is a trackpad swipe (pan) or a mouse wheel (zoom); it detects this by itself unless you choose. **Edge scrolling** pans when you drag something to the edge of the board.
+
+### Drawing
+- **Draw** follows your pen, mouse or finger. Hold \`Shift\` while drawing to make the next part straight; press \`Shift\` and click with Draw to continue your last stroke with a straight line from its end.
+- **Highlight** draws a broad see-through stroke. **Laser** draws a trail that fades by itself and is never saved — for pointing while you share your screen.
+- **Eraser** removes whatever it touches.
+- **Figures**, **Arrow** and **Line**: drag to draw. An arrow that starts or ends on a shape stays attached to it when the shape moves; double-click an arrow's end to switch its arrowhead on or off.
+- **Text**: click to start typing; **Note** puts a sticky note where you click. To change the words of a selected text or note, press \`Enter\` or double-click it; \`Escape\` finishes.
+- **Frame**: drag to draw a named frame. It clips what sits inside it and takes in anything fully inside the box; \`Cmd/Ctrl + Alt + G\` frames the selection, or removes the frames when only frames are selected (their contents stay put). **Fit to content** (Menu → Edit) shrinks or grows a frame around what it holds.
+
+**Text on a board** takes \`Cmd/Ctrl + B\` (bold), \`I\` (italic), \`U\` (underline), \`Cmd/Ctrl + Shift + S\` (strikethrough), \`Cmd/Ctrl + Shift + H\` (highlight), \`Cmd/Ctrl + E\` (inline code), \`Cmd/Ctrl + Shift + 8\` / \`7\` (bulleted / numbered list) and \`Cmd/Ctrl + Alt + 1\` to \`6\` for headings (\`0\` for plain text). Misspelt words are underlined; right-click one for suggestions or **Add to dictionary**. The words you add are listed, and can be removed, under **Settings → Editing → Board dictionary**.
+
+### The pen panel
+Colour and thickness live in the panel at the top right; it is the same panel in a drawing, a notebook and an annotated PDF. Pick one of twelve colours. The **slider is the pen's width**, and it is continuous rather than a set of sizes — it starts at a normal writing width and goes down to a hairline, which is what small handwriting on ruled paper needs. Double-click it to come back to the default. Drag the slider or pick a colour with something selected and it re-inks that instead of only the next stroke.
+
+**Hide colours and pen width**, at the top of the panel, folds it down to a single swatch in your current colour; **Show colours and pen width** opens it again. **Every file keeps its own pen.** A notebook you annotate in fine red stays fine and red; the PDF you were marking up in thick blue is still thick and blue when you come back to it. A brand new file starts at the width you were last using.
+
+Style keys for the selection: \`Alt + F\` fills a figure, \`Alt + Shift + F\` gives it a lined fill, \`Alt + T\` makes it white, and \`Shift + Q\` copies the style of what is under the pointer.
+
+### Selecting and arranging
+- Click to select; \`Shift\`-click adds or removes; drag a box on empty space to select what is in it. Hold \`Alt\` and drag on empty space to draw a free path that selects what it crosses. \`Cmd/Ctrl + A\` selects everything on the sheet, and \`Tab\` / \`Shift + Tab\` step through items.
+- Drag to move (\`Shift\` keeps the move straight), drag a corner or edge to resize (\`Shift\` keeps the proportions, \`Alt\` resizes from the centre), drag the rotate handle to turn (\`Shift\` snaps the angle). \`Alt\`-drag moves a copy and leaves the original.
+- Arrow keys nudge the selection (\`Shift\` for farther). \`Cmd/Ctrl + D\` duplicates, \`Delete\` or \`Backspace\` removes.
+- \`Cmd/Ctrl + G\` groups and \`Cmd/Ctrl + Shift + G\` ungroups; double-click inside a selected group to select one thing in it. \`Shift + L\` locks the selection so it can't be moved by accident (right-click a locked item to unlock it; Menu → Edit → **Unlock all** unlocks everything).
+- \`[\` / \`]\` send to the back / bring to the front, and \`Alt + [\` / \`Alt + ]\` one step. \`Shift + H\` and \`Shift + V\` flip; \`Shift + .\` and \`Shift + ,\` rotate (with \`Alt\` in finer steps). \`Alt\` with \`A\`, \`H\`, \`D\`, \`W\`, \`V\` or \`S\` aligns left, centre, right, top, middle or bottom.
+- \`Shift + F\` **flattens** the selection into a single picture.
+
+### The board's menus
+The strip in the top-left corner holds the **Menu** (☰), the **sheet** drop-down, **Undo**, **Redo**, **Delete**, **Duplicate** and **Actions** (⋮). Undo, Redo, Delete and Duplicate are dimmed when they cannot act, and say why when you hover them.
+
+- **Menu** has **Edit** (undo, cut, copy, paste, duplicate, delete, select all, **Copy as**, group, flatten, frames, locking, and **Convert to bookmark / embed** for links), **View** (the zoom commands and **Toggle minimap**), **Export**, **Insert embed…** (\`Cmd/Ctrl + I\`), **Upload media…** (\`Cmd/Ctrl + U\`), **Preferences**, **Language** (the board's own buttons and menus come in 49 languages) and **Keyboard shortcuts…** (\`Cmd/Ctrl + Alt + /\`), which lists every key.
+- **Actions** opens a grid of buttons for the selection: align, stretch, distribute and stack; send to back, backward, forward and to front; rotate; **Edit link…**; and **Group**, which becomes **Ungroup** when the selection is a group.
+- **Right-click** the board for the same commands where you clicked: Cut, Copy, Paste, Duplicate, Delete, Copy as and Select all, plus, with something selected, **Edit**, **Arrange**, **Reorder**, **Move to page** and **Export as**. A row that cannot run now stays on the menu and says why — a locked picture, a read-only board, nothing selected. \`Cmd/Ctrl + Shift + Enter\` opens the same menu from the keyboard.
+- **Preferences**: Always snap, Tool lock, Show grid (\`Cmd/Ctrl + '\`), Select when wrapped, Focus mode (\`Cmd/Ctrl + .\`, hides the board's controls), Edge scrolling, Dynamic size, Paste at cursor, Input device, Accessibility (reduce motion, turn the board's keyboard shortcuts off, enhanced accessibility), a drawing's **Theme** (dark, light or system; \`Cmd/Ctrl + /\` toggles it), and Debug mode.
+
+**Sheets.** A board can hold several sheets — separate canvases in one file. The sheet drop-down lists them: click one to go there, **New sheet** adds one, and the **⋯** beside a sheet renames, duplicates, moves or deletes it. With the board focused, \`Alt + ←\` or \`↑\` goes to the previous sheet and \`Alt + →\` or \`↓\` to the next; on the last sheet, a forward step adds a new sheet once that sheet has content. A notebook's or a PDF's sheets all share its paper or pages (a PDF calls them **Annotation sheets**).
+
+### Pictures, videos, links and embeds
+Drop or paste a picture or video onto a board, or use **Media** / \`Cmd/Ctrl + U\`. Right-click a selected picture for **Replace media…** (the new one keeps the old one's centre and longer side; on a PDF page it is embedded in that PDF), **Crop image**, **Crop to aspect ratio** (original, square, circle, 4:3, 3:4 or 16:9), **Invert image colours**, **Download original** and **Alternative text…**. A video adds **Play** / **Pause**.
+
+A pasted web address becomes a **link card** showing its address. **Fetch link preview** (on the card, or in its right-click menu) contacts the link's site only when you ask, and keeps the title, description, picture and icon the page declares in the board's pictures folder. **Open link** (or \`Cmd/Ctrl\`-click on the card) opens the address in a new tab.
+
+**Embeds.** **Menu → Insert embed** places a web embed (a video link, say) on the board as an inert poster. Nothing loads until you ask: press **Load** on the card (or right-click → **Load embed**); **Stop** on the card, or **Unload embed**, puts the card back. A loaded embed plays in place. If something drawn on top of it is see-through, the board keeps showing its true picture and the embed opens in a panel of its own above the board instead, with an **Unload** button; \`Escape\` closes it too. Closing the tab or switching documents always unloads it.
+
+### Inverting a Picture You Brought Over
+Screenshots taken out of a dark-themed app land on a notebook page or a whiteboard as a black rectangle. Select the picture and press \`I\` to invert it, so it sits on the page like everything else drawn there, and press \`I\` again to put it back. It applies to every picture you have selected, undoes with \`Cmd + Z\`, is saved with the file, and comes out inverted in a notebook's exported PDF too. Only that picture changes; the image file in your vault is untouched.
+
+### Copying, exporting and printing
+\`Cmd/Ctrl + X\`, \`C\` and \`V\` cut, copy and paste the selection. **Copy as → PNG / SVG** copies a picture of the selection (or the whole sheet when nothing is selected), drawn from the artwork rather than a screenshot of the controls; tick **Transparent** for no background. SVG is copied as text.
+
+**Menu → Export** saves **PNG**, **SVG**, **PDF** or **JSON**: PDF puts a drawing's sheet on one page and a notebook or PDF board on all its pages, and JSON is the board's own records, with pictures referenced by hash rather than bundled. A selection's **Export as** offers PNG, SVG and JSON of just those items. **Print** (\`Cmd/Ctrl + P\` with the board focused) prints the open board the same way.
+
+Navigation, selection, copying and exporting never edit the file; only drawing and editing do.
+
+### Saving, reopening and the agent
+Every change is saved to the file a second after you stop; \`Cmd/Ctrl + Z\` undoes and \`Cmd/Ctrl + Shift + Z\` redoes. Drawings and notebooks **reopen where you left them** — the same spot on a drawing, the same page and zoom in a notebook — just as a PDF does, whether you switch tabs, close the file or reload the app.
+
+A drawing or notebook this version cannot read safely — an unreadable file, one written in a newer format, or one that is not the kind its name says — **opens read-only**: neither drawing on it nor Save can overwrite the original file. An empty file is still a valid new board.
+
+The agent's **canvas tools** work on the document rather than its view: they can change a drawing or notebook while its pane is hidden, each batch is one undo step, and a disk conflict or a read-only file still refuses them.
+
+For drawing without a pointer, the **Use keyboard drawing cursor** button gives the board a cursor you move with the arrow keys and press and lift with \`Enter\`. \`Alt + R\` repeats the board's last announcement for a screen reader.
+
+### Drawings
+A **drawing** (\`.drawing\`) is a canvas with no pages at all — an endless sheet in every direction, for diagrams and thinking rather than for a page you intend to hand in. Its **Minimap** (bottom right) shows the artwork and your current view: click or drag in it to move there; with the minimap focused, the arrow keys move a quarter of the view (a full view with \`Shift\`), and \`Home\` / \`End\` go to the artwork's top-left / bottom-right. A drawing has no paper, and its own **Theme**.
+
+An older \`.tldraw\` drawing is converted when opened: the original is kept in the folder's Trash before the first save. Elbow connectors from earlier versions keep their ends, their attachments, their arrowheads and their label; this app draws their bends itself, so an elbow may bend in a different place than it did before, still joining the same shapes by the same sides. A legacy canvas must pass conversion before it can be edited; a refusal keeps the original file as it was.
 
 ### Notebooks
-A **notebook** (\`.notebook\`) is ruled paper you can write on: the closest thing
-here to a paper pad, and what to reach for when you are doing an assignment by
-hand rather than taking notes in Markdown. Make one with **New Notebook**, in
-the pencil button's menu at the top of the sidebar. Its drawing tools are the
-board's, described under *Drawings*.
+A **notebook** (\`.notebook\`) is ruled paper you can write on: the closest thing here to a paper pad, and what to reach for when you are doing an assignment by hand rather than taking notes in Markdown.
 
-A notebook has the same dark pages a PDF does: the button beside the thumbnails
-one turns the paper black and the writing light, for working at night. It only
-changes how the notebook looks on screen, and a PDF exported from it is still
-printed on white paper.
-
-A notebook scrolls like a PDF: swipe up and down to move through the pages, and
-pinch to zoom. At full width the page fills the screen edge to edge, and the
-pages can never be swiped off screen. The page box at the bottom right jumps to
-a page, and the button beside it opens a **strip of page thumbnails** down the
-left, showing what is written on each one. The canvas sheet menu offers separate
-sheets of ink; each sheet shows the notebook's same paper underneath. PDF
-annotation sheets similarly share the original PDF pages.
+A notebook scrolls like a PDF: swipe up and down to move through the pages, and pinch to zoom. At full width the page fills the screen edge to edge, and the pages can never be swiped off screen. \`Page Up\` / \`Page Down\`, \`Space\` / \`Shift + Space\`, \`Home\` and \`End\` move by pages.
 
 The bar across the top of a notebook is its paper:
 
-- **Paper ruling** — lined, grid, dotted or blank. Changing it re-papers what you
-  have already written; nothing you have drawn moves.
-- **Paper size** and **Portrait / Landscape** — the page size.
-- **Add page** adds a page at the bottom. You rarely need it: writing near the
-  bottom of the last page adds the next one for you, before you run out of room.
-- **Delete last page** removes the last one. An empty page just goes; one with
-  writing on it asks first, because that writing goes with it.
-- **Page thumbnails**, **Invert page colours** and the page box (jump to a page).
+- **Paper size** — Letter, A4 or Legal — and **Portrait / Landscape** (the button names the current way round; click it to turn the paper).
+- **Paper ruling** — lined, grid, dotted or blank. Changing it re-papers what you have already written; nothing you have drawn moves.
+- **Add page** adds a page at the bottom. You rarely need it: writing near the bottom of the last page adds the next one for you, before you run out of room.
+- **Delete last page** removes the last one. An empty page just goes; one with writing on it asks first, because that writing goes with it.
+- **Page thumbnails** opens a strip of pages down the left, showing what is written on each; click one to go there.
+- **Invert page colours** turns the paper black and the writing light, for working at night. It only changes how the notebook looks on screen; a PDF exported from it is still printed on white.
+- The **page box** shows the page you are on; type a number and press \`Enter\` to jump.
 
-### Exporting a notebook to PDF
-Choose **⋯ → Export to PDF** in the notebook pane (or use its download button) to
-write a PDF beside the notebook — \`Assignment 3.notebook\` becomes \`Assignment 3.pdf\`. The ruling and your handwriting are both
-drawn into it as real vector artwork, so it stays sharp printed or zoomed in, and
-the pages are ordinary PDF pages that anything can open. Native notebooks can
-also export from their native board: every logical sheet is included on the
-physical pages, in order. If preserved content cannot be rendered faithfully,
-the export stops rather than silently leaving that artwork out.
+#### Exporting a notebook to PDF
+Choose **⋯ → Export to PDF** in the notebook's pane header to write a PDF beside the notebook — \`Assignment 3.notebook\` becomes \`Assignment 3.pdf\`. The ruling and your handwriting are both drawn into it as real vector artwork, so it stays sharp printed or zoomed in, and the pages are ordinary PDF pages that anything can open. Every sheet is included, in order. If some content cannot be drawn faithfully, the export stops rather than silently leaving that artwork out.
 
-The notebook stays the original you keep writing in. Exporting again uses the
-same PDF name rather than leaving a pile of copies. An existing PDF is kept in
-the folder's Trash before replacement. The app asks first unless it is this
-notebook's unchanged last export; if the target changes during export, it asks
-again. Close the target PDF tab before replacing it, so an open document cannot
-lose unsaved annotations. A folder with the PDF's name cannot be replaced.
+The notebook stays the original you keep writing in. Exporting again uses the same PDF name rather than leaving a pile of copies. An existing PDF is kept in the folder's Trash before it is replaced. The app asks first unless it is this notebook's unchanged last export; if the target changes during export, it asks again. Close the target PDF's tab before replacing it, so an open document cannot lose unsaved annotations. A folder with the PDF's name cannot be replaced.
 
-The exported PDF remembers which notebook it came from, so pressing the pen on
-it **opens that notebook** instead of annotating the PDF as if it were someone
-else's. That is what you want: annotating the export would make a third file
-holding marks the notebook knew nothing about, and your next export would
-neither include them nor replace it. The link survives renaming the PDF, and if
-the notebook itself is gone the app says so rather than quietly forking.
+The exported PDF remembers which notebook it came from, so pressing the pen on it **opens that notebook** instead of annotating the PDF as if it were someone else's. That is what you want: annotating the export would make a third file holding marks the notebook knew nothing about, and your next export would neither include them nor replace it. The link survives renaming the PDF, and if the notebook itself is gone the app says so rather than quietly forking.
 
-### The pen
-Colour and thickness live in the panel at the top right, and it is the same
-panel in a notebook, a drawing and an annotated PDF.
+Everything around a page — the toolbars, the pen panel, the space the pages sit on — follows the app's theme. The **pages themselves stay white** in either theme, because that is paper: it is what the exported PDF prints on, and ink that changed colour with the theme would come out invisible in the file. Notebook and PDF ink therefore use a paper palette and do not offer the board's Theme menu or its theme shortcut.
 
-The **slider is the pen's width**, and it is continuous rather than a set of
-sizes — it starts at a normal writing width and goes down to a hairline, which is
-what small handwriting on ruled paper needs. Double-click it to come back to the
-default. The dot beside it is the actual width, in the actual colour, so you can
-see what you are about to draw with. Drag the slider or pick a colour with
-something selected and it re-inks that instead of only the next stroke.
+### PDFs
+PDFs open **inside the app** in their own pane, in a reader: scroll them, select and copy their text, search every page, follow their links, and write on them. The pane header's **⋯** switches between **Original PDF** (the pages as they are) and **Read extracted text** (an optional text view), and the pen beside it — or \`Cmd + E\` / \`Ctrl + E\` — switches between reading and **Annotate**, the same toggle every other file has.
 
-**The pen panel hides.** The arrow at its top folds it down to a single swatch in your current colour; click the swatch to open it again. **Every file keeps its own pen.** A notebook you annotate in fine red stays fine
-and red; the PDF you were marking up in thick blue is still thick and blue when
-you come back to it, however many other things you drew in between. A brand new
-file starts at the width you were last using, since that is usually the one you
-want again.
+#### Reading a PDF
+- **Moving:** scroll, or use \`Page Up\` / \`Page Down\` (a screenful), \`Home\` and \`End\` (first and last page). The **page box** at the bottom right shows the physical page you are on; type a number and press \`Enter\` to jump.
+- **Zoom:** pinch or hold \`Ctrl\` and scroll, use the \`+\` and \`-\` keys, or the **−** / **+** beside the zoom percentage at the bottom right.
+- The buttons at the bottom right, from the left: **Contents** (the PDF's bookmarks, when it has them — click a heading to jump there, arrow keys move through and open the tree, \`Enter\` follows a heading, \`Escape\` closes it), **Page thumbnails** (a strip of pages down the left, using the same page numbers as the page box, with the current page highlighted), **Invert page colours** (dark pages for reading at night, while reading and while writing on them — only how they look, never the file), the two **rotate** arrows (below), and **PDF feature limitations**, which lists the file's known restrictions.
+- **Right-click** the page for **Copy**, **Copy as quote**, **Search vault for selection**, **Find selection in this PDF**, **Copy page text**, **Select all** and **Read extracted text**.
+- If a page cannot be rendered completely, a notice stays on that page (an error whose page is unknown appears above the document) and its thumbnail says **Thumbnail unavailable** rather than pretending to be blank. **Try again** reopens the PDF; it never changes the original file. In Annotate, switch to View to retry without disturbing your ink. If rendering makes no progress for a while, **This PDF is taking longer than usual** lets you keep waiting or **Try again**; a renderer restart can affect other open PDFs, and each says so. If the PDF reader itself cannot load, its column offers **Retry**; if the browser keeps the failure, reload the app. Very long PDFs start with estimated page sizes, which settle as you visit pages.
+- Screen readers find a landmark for every physical page; moving to one brings that page into view. **Read this PDF as text**, at the start of the viewer, opens the whole-document accessible view.
 
-### Drawings
-A **drawing** is a canvas with no pages at all — an endless sheet in every
-direction, for diagrams and thinking rather than for a page you intend to hand
-in. New drawings are \`.drawing\` files. An older \`.tldraw\` drawing is converted
-when opened: the original is kept in the folder's Trash before the first save.
+#### Finding and copying text
+In **Original PDF**, press \`Cmd + F\` / \`Ctrl + F\` to search every page, including pages you have never opened. A short single-line selection pre-fills the bar; otherwise it keeps this pane's last query. Matching ignores case and accents, folds ligatures, and matches across line breaks, hyphenated line ends and PDF text-item boundaries. The count shows progress and stops at **10,000+** matches. Scans without selectable text are not OCR'd.
+- In the input, \`Enter\` / \`Shift + Enter\` move to the next / previous match. \`Cmd + G\` / \`Ctrl + G\` and their Shift forms do the same from the bar or the page. Next waits for an unfinished scan rather than wrapping early.
+- \`Escape\` or **×** closes the bar and leaves the current match selected, ready to copy. Switching tabs keeps each pane's query and results.
+- Chrome's own **Edit → Find** sees only the pages whose text is built, not necessarily every page. Use the keyboard shortcut for a complete search.
 
-Native drawings and notebooks open on the native board: you can
-pan the canvas, select a sheet when there is more than one, use the page box to
-jump through a notebook, zoom with − / +, and invert the view. With the canvas
-focused, **Alt/Option+←** or **↑** goes to the previous sheet and **Alt/Option+→**
-or **↓** to the next; on the last sheet, a forward step adds a new sheet once that
-sheet has content. Drag with the **Frame** tool to draw a named frame: it clips
-what sits inside it and takes in content fully enclosed by the box. **Cmd/Ctrl+Alt+G**
-frames the selection, or removes the frames when only frames are selected (their
-contents stay where they are). A selected frame's menu offers **Fit to content**,
-which shrinks or grows it around its contents. **Thumbnails**
-opens a notebook's page strip; click a preview to jump to that page. A drawing's
-**Minimap** shows its artwork and your current viewport. Click or drag in it to
-navigate; with the minimap focused, arrow keys move a quarter viewport (a full
-viewport with Shift), and Home / End go to the artwork's upper-left / lower-right.
-An empty board has no invented overview.
+**Copying.** Select a passage and press \`Cmd + C\` / \`Ctrl + C\`. With a page focused, \`Cmd + A\` / \`Ctrl + A\` visibly selects the built text and marks **the whole document** for copying; follow it with \`Cmd + C\` / \`Ctrl + C\` to gather every physical page, including pages you have never opened, separated by a newline. A notice shows progress or a blocked clipboard write. Changing the selection returns to ordinary passage copying. Whole-document text above **16 MiB** is refused rather than silently cut off. A PDF that forbids copying cannot be selected, copied, searched as text or read as text by the agent.
 
-The tool bar sits at the bottom centre: select, hand, pen, eraser, arrow, text, sticky note, image and rectangle, in that order. The chevron at its end opens the rest: the other shapes, line, highlighter, laser and frame. While one of those is the active tool, the chevron shows it filled in blue.
+**Read extracted text** (in **⋯**) is a separate reading view with physical page labels, its own Find (\`Cmd/Ctrl + F\` while it is focused), Copy and the shared **Aa** reading controls. Text is extracted by the PDF engine, with no OCR: scans may have no text, existing OCR may differ from the pixels, and columns, tables and maths may come out in an imperfect order — the text-order warning means that, not necessarily missing text. Copy across pages puts a separator between them. Word emphasis is inactive there; choose **Original PDF** to use it on the page itself. Choosing Original returns to the page images to check layout, pictures, links and annotations; an unchanged round trip restores where you were. Reading positions and an explicit Text choice are remembered per vault and file; a Text passage saved by an older version is matched by its words and labelled when the match is approximate.
 
-A native board is editable when its file can be written and the emergency
-read-only switch is off. Then the toolbar's pen, highlighter, eraser, shapes,
-text, sticky notes and frames change the sheet, **Cmd/Ctrl+X** cuts, **Cmd/Ctrl+C**
-copies and **Cmd/Ctrl+V** pastes the selection, and strokes are saved to the file
-and are there when you reopen it. Otherwise the board opens read-only, with a
-notice that says why.
+**Word emphasis** in the pane header paints supported glyphs directly on the original page, including while annotating, and keeps the same layout, links and annotations (see *Word emphasis* below). Image-only scans, hidden OCR, clipped or covered text, missing font mappings and unsupported painting routes stay original, and the header says why. **Aa** does not replace a native PDF's fonts or geometry.
 
-Elbow connectors from earlier versions keep their ends, their attachments, their arrowheads
-and their label. This app draws their bends itself, so an elbow may bend in a different place
-than it did before; it still joins the same shapes by the same sides.
+#### Turning a sideways scan the right way up
+The two curved arrows at the bottom turn the pages a quarter at a time — \`]\` turns right, \`[\` turns left. They turn the whole document; hold \`Alt\` (\`Option\`) while clicking an arrow to turn only the page you are reading, which is what a single crooked page in an otherwise straight scan wants. Unlike inverting, this is a real change to the file: the PDF is saved the way round you left it and opens that way here and in anything else. Four turns bring it back where it started. After a turn, a low-resolution picture labelled **Loading rotated PDF…** may show while the new pages are read.
 
-With the canvas focused, **Cmd/Ctrl+A** selects the current sheet's items for
-copying. Right-click for **Copy**, **Copy as PNG / SVG / board data**, or image
-exports; **Cmd/Ctrl+Shift+C** copies a PNG. PNG and SVG copies use the captured
-artwork, not a screenshot of the controls. SVG is copied as text; board data is
-native JSON records, with media referenced by hash rather than a portable asset
-bundle. Context-menu image exports use the selection, or the whole sheet when
-nothing is selected. With exactly one picture selected, the same menu offers
-**Replace picture…** (the new image keeps the old one's centre and longer side; on a PDF annotation
-page it is embedded in that PDF), **Crop picture** with six presets,
-and **Invert picture**. A link card shows its address and, once fetched, its
-title and description; its **Fetch preview** chip contacts the link's site only
-when you ask (its title, description, and the picture and icon the page declares, which are then kept in the board's pictures folder), and **Open link** (or ⌘-click on the card) opens the address in a
-new tab. With one link card selected the menu offers **Fetch link
-preview** too. A row that cannot
-run now stays on the menu and says why, such as a locked picture or a read-only
-canvas.
+A PDF you have already written on is left alone, with a note saying so: your marks are drawn against the pages as they are, and turning the paper would move every one of them — so straighten a scan before you annotate it. A notebook's export, a PDF whose attachments this app cannot read, and an encrypted PDF are left alone too, and the note says what to do instead.
 
-The board's main menu has an **Export** section with **PNG**, **SVG**, **PDF** and **JSON**. **PDF** saves the board as a PDF: a whiteboard's sheet as one page, and a notebook or a PDF-backed board every page. **JSON** saves the sheet's native records, with media referenced by hash rather than bundled. A selection's **Export as** menu offers **JSON** for just the selected items. **Print** (**Cmd/Ctrl+P** with the board focused) prints the open board the same way.
+#### Writing on a PDF
+Press the pen in the pane header (or \`Cmd + E\` / \`Ctrl + E\`) and the PDF opens on the board, **on the page you were reading**, with the same tools, pen panel and menus as a notebook. The bar at the top holds **Page thumbnails**, **Invert page colours** and the page box. Swiping scrolls the pages up and down and pinching zooms; at full width the page fills the screen edge to edge, and you can zoom in past that. Switching back to reading returns you to wherever you stopped writing. Save with \`Cmd + S\` / \`Ctrl + S\`, or let autosave finish. **Menu → Export → PNG** captures the pages and the ink together, without inversion.
 
-The strip in the board's top-left corner holds the **menu** (**Edit**, **View**, **Export**, **Insert embed** (\`Cmd + I\`), **Upload media** (\`Cmd + U\`), then **Preferences**, **Language** and **Keyboard shortcuts**), the sheet's name with its drop-down, **Undo**, **Redo**, **Delete** (the bin), **Duplicate** and **Actions** (the three dots). Undo, Redo, Delete and Duplicate are dimmed when they cannot act. **Actions** opens a grid of icon buttons for the selection: align, stretch, distribute and stack; send backward or forward; rotate; **Edit link**; and **Group**, which becomes **Ungroup** when the selection is a group. Hover any button for its name.
+**The marks go into that PDF, not into a copy.** There is no second "(annotated)" file to keep track of: the file you annotated is the file you annotate again. It is still a real PDF that opens anywhere, with your marks drawn in as vector artwork and the document's own text still selectable underneath.
 
-**Embeds.** **Menu → Insert embed** places a web embed (for example a video link) on the board as an inert poster. Nothing loads until you ask: press **Load** on the card (or right-click and choose **Load embed**); **Stop** on the card, or **Unload embed**, puts the card back. A loaded embed plays in place. If something drawn on top of it is see-through, the board keeps showing its true picture and the embed opens in a panel of its own above the board instead, with an **Unload** button; **Escape** closes it too. Closing the tab or switching documents always unloads it.
+Your original is not lost. The file quietly carries a pristine copy of the PDF as it was before you touched it, alongside the editable form of your strokes — which is what lets you come back days later and move, recolour or erase a mark rather than being stuck with it. It is also why annotating never builds up: every save redraws from that pristine copy, so the marks never thicken or double no matter how many times you edit. Returning to Original after saving shows the actual saved pages with the ink.
 
-Navigation, selection, copy and export never edit the file; only the editing
-described above does.
+Annotated saves also carry a write mark. If another program changes the file after a marked save, Annotate stays read-only and explains that rebuilding from your last editable version would drop those changes. **Keep the file as it is** (the default, or \`Escape\` while the notice is focused) leaves it unchanged. **Annotate from my last version** first keeps the exact current PDF in that folder's **Trash**, then enables editing. A malformed or unsupported mark offers the same safe choice. A changed or deleted file must be resolved before this can continue; a failed copy enables nothing and offers Retry.
 
-The agent's **canvas tools** use the document session rather than its viewer.
-They can change an eligible native drawing or notebook while its pane is hidden
-or unmounted; a batch is one undo step and follows the normal save path. A disk
-conflict, emergency read-only setting or unsupported native document still
-refuses changes.
+Older annotated PDFs without a mark can still be edited: before their first save here, a copy of the current file is kept in **Trash** and the saved PDF gains the mark. For annotations in the older Classic format, Annotate offers **Convert legacy annotations…**: it checks the source, asks first, and keeps the exact original in **Trash** before native editing starts; cancelling or a refused conversion leaves the original unchanged.
 
-Drawings and notebooks **reopen where you left them** — the same spot on a
-drawing, the same page and zoom in a notebook — just as a PDF does, whether you
-switch tabs, close the file or reload the app.
+Editable annotations are limited to **32 MiB**: beyond that the save is refused without changing the PDF, and the unsaved annotations stay open. A refused save is never reported as Saved and cannot be dropped by closing its tab or switching vaults; closing or switching waits for a pending save. A browser or system crash cannot wait for an unfinished save.
 
-A drawing or notebook this version cannot read safely — an unreadable file, one
-written in a newer format, or one that is not the kind its name says — **opens
-read-only**: neither drawing on it nor Save can overwrite the original file. An
-empty file is still a valid new board. A supported legacy canvas must pass
-conversion and native admission before it can be edited; a refusal preserves
-the original file rather than replacing its contents.
+#### PDFs that stay read-only
+**A PDF that cannot be written on safely stays in the reader.** Before the pen opens, the app checks what the file actually carries, not its name. A PDF holding an unrelated \`original.pdf\`, attachments that cannot be read or that contradict each other, or annotations written by a newer version stays read-only, with a note saying why; drawing and saving change nothing in it, and you can still read, select, copy and find in it. Choose **Retry** if an attachment could not be read; otherwise open it in the version of the app that wrote it. Never delete attachments from your only copy just to make the note go away. Existing attachments are kept when you save; if two have the same name, a notice gives the names used to keep both.
 
-### Inverting a Picture You Brought Over
-Screenshots taken out of a dark-themed app land on a notebook page or a whiteboard as a black rectangle. Select the picture and press \`i\` to invert it, so it sits on the page like everything else drawn there, and press \`i\` again to put it back. It applies to every picture you have selected, undoes with \`Cmd + Z\`, is saved with the file, and comes out inverted in a notebook's exported PDF too. Only that picture changes; the image file in your vault is untouched.
+**Signed or certified PDFs** — and PDFs whose write safety cannot be established — are read-only for annotation and rotation. Where available, **Save unsigned annotated copy** asks first and creates a different file; it never overwrites the signed original or claims its signatures cover the copy. **Encrypted PDFs** ask for their password (kept only while the PDF is open, never saved; cancel leaves the file unchanged and Retry asks again) and cannot be annotated or rotated, so the encrypted file is never rewritten. Form fields show their saved appearance and cannot be filled in; XFA forms may be missing; PDF scripts, form submission and launch actions never run. A rare PDF using \`/UserUnit\` may show at a different relative size in another viewer.
+
+**Fonts.** When a PDF uses fonts it does not include, the reader substitutes bundled Noto faces where supported; ambiguous Chinese uses Simplified Chinese, and a known character set takes precedence over a conflicting language hint. **PDF feature limitations** states this policy for every PDF, not only those that needed it.
+
+#### Printing a PDF
+Use **Print…** at the top of the PDF (or \`Cmd + P\` / \`Ctrl + P\` while it has focus), choose **Prepare PDF** to save any pending annotations, then **Open PDF** to open the exact saved file in a new browser tab, and print from the browser's PDF viewer there. A blocked pop-up or a changed file is reported; allow pop-ups or resolve the notice and try again. An encrypted PDF may ask for its password again there. To print a notebook, press \`Cmd + P\` / \`Ctrl + P\` on its board, or export it to PDF first.
 
 ### EPUB books
 
@@ -488,142 +489,6 @@ Position and reading layout live only in this browser, separately for each vault
 The **Word emphasis** button in a reading header, its **⋯** row, and **Settings → Reading** share one preference, initially Off, across supported reading views. There are no per-file overrides. It visually emphasizes prefixes of eligible Latin prose, including rendered table body prose. In Markdown and EPUB, authored bold, code, math, URLs and unsupported scripts remain ordinary. PDF emphasis follows its original glyph mappings and supported painting routes. This optional visual heuristic makes no reading-speed or accessibility claim.
 
 It leaves the source, save state, undo history and copied text intact. PDF and EPUB emphasis paints eligible glyphs in the same document view, preserving original layout, artwork and reading position. Switching it Off restores the original paint. Image-only pages and unsupported text profiles remain unchanged and show why the control is inactive, while retaining your preference. Source editing and code/TeX keep their existing presentation. Notes, TXT and extensionless files keep their existing Markdown presentation and editor typography. Toggle with Enter/Space or a pointer; no new global shortcut is added. Reading preferences are stored in your browser, never in the vault.
-
-### PDFs
-PDFs open **inside the app** in their own pane. **Original PDF** shows the original page layout, **Read extracted text** is an optional text view, and **Annotate** lets you draw on eligible PDFs. Returning to Original after saving shows the actual saved pages with ink; Annotate rebuilds them from the embedded pristine source and editable marks, not from an already-stamped copy.
-
-Use **Print…** in a PDF pane (or \`Cmd + P\` / \`Ctrl + P\` while the PDF has focus), choose **Prepare PDF** to save pending annotations, then **Open PDF** to open the exact saved file in a new browser tab. Print from the browser’s PDF viewer there. A blocked pop-up or changed file is reported; resolve the notice or allow pop-ups and try again. An encrypted PDF may ask for its password again in that viewer. To print a notebook, press \`Cmd + P\` / \`Ctrl + P\` while it is focused on the board, or export it to PDF first.
-
-The pane header’s **Word emphasis** toggle paints supported glyphs directly on the original PDF page, including while annotating. It keeps the same tab, page layout, camera, links and annotations; switching Off restores the original paint. It never opens extracted text or performs OCR. Image-only scans, hidden OCR, fully clipped or covered text, missing font mappings and unsupported painting routes stay original. The header reports availability for the current page. **Aa** does not replace the native PDF’s fonts or geometry.
-
-The **⋯ → Read extracted text** action is a separate, manual reading choice with physical page labels, Find, Copy and shared Aa controls. Word emphasis is inactive there; choose **Original PDF** to use the native toggle. Copy across Text pages contains extracted prose with a page separator, excluding page controls and quality notices. Text is extracted by the selected PDF engine, with no new OCR: scans may have no text, existing OCR may differ from the pixels, and columns/tables/math may have imperfect ordering. Find searches all physical pages, folds case, accents and ligatures, and matches across line breaks, line-end hyphens and adjacent PDF text runs. It reports coverage and stops at 10,000 hits.
-
-**Original PDF** returns to the page image to check the source layout, images, links and annotations. Text navigation can map approximately; an unchanged round trip restores the original camera. Aa changes browser-local PDF Text/EPUB defaults; Markdown keeps its editor typography. Reading locations and explicit Text choices are remembered per vault and file. Older unmarked Text choices reopen on Original because older Word emphasis actions selected Text automatically.
-
-The tiled PDF reader's **PDF feature limitations** notice explains its font policy: when it substitutes non-embedded fonts, it uses bundled Noto faces where supported. Ambiguous Chinese uses Simplified Chinese (SC), and a known character set takes precedence over a conflicting language hint. This is a general policy, not a claim that a particular page needed a substitute.
-
-In the tiled PDF reader, **Contents** in the bottom controls opens the PDF's bookmarks when it has them. Click a heading to jump there; use the arrow keys to move through or expand the tree, and Enter to follow a heading. Escape closes Contents and returns focus to its button. Page thumbnails use the same physical page numbers as the page box.
-
-In the tiled PDF reader, screen-reader landmarks name every physical page. Moving to a page landmark brings that page into view and loads its text and the neighboring pages; use **Read this PDF as text** at the start of the viewer for the whole-document accessible view.
-
-When restoring a Text passage saved by an older PDF engine, it is matched by its words and surrounding context; an approximate match is labelled. A position from a newer app restores only its page and surface, with a notice. Merely opening, resizing or hiding a PDF does not replace another engine's saved position: it is updated only after you navigate.
-
-**Cmd/Ctrl+F** opens the PDF's own find bar in Original, or searches extracted text while Text is focused. An image of Text cannot be sent to the agent; it receives bounded canonical text instead.
-
-If the PDF reader's code cannot load, its column offers **Retry**. This retries
-the reader, not your files. If the browser retains the loading failure, reload
-the app to try again. PDFs use the contained native reader; a missing engine is reported, never replaced with another parser. A password-protected PDF asks for its password; cancelling leaves the file unchanged, and Retry lets you enter it again. The password is kept only in that open source session, never saved. Editing and rotation of encrypted PDFs are refused so the encrypted file is not rewritten.
-
-Signed or certified PDFs—and PDFs whose write safety cannot be established—are read-only for in-place annotation and rotation in the native reader. The outer PDF and any embedded pristine original must both pass the safety check before an editor can open or a save can write. Keeping a foreign write mark does not override this protection. Where available, **Save unsigned annotated copy** asks first and creates a different file; it never overwrites the signed original or claims that its signatures cover the new copy. Unsupported copies are refused without changing the original.
-
-**Annotate** opens eligible PDFs with the native drawing tools. Choose **Draw**, drag on a page, and save with **Cmd + S / Ctrl + S** (or let autosave finish). The document briefly covers its view while rebinding the verified saved file; its camera and undo history remain with the document. Reopening Annotate restores editable marks. **Menu → Export → PNG** captures the pristine pages and current ink together, without view inversion.
-
-For annotations in the older Classic format, Annotate offers **Convert legacy annotations…**. Conversion is explicit: it checks the source, asks for confirmation, warns about an unverifiable foreign write mark, and keeps the exact original in the folder's **Trash** before enabling native editing. Draw and save to migrate the file; subsequent opens use native annotations. Cancelling or a refused conversion leaves the original unchanged.
-
-In **Original PDF**, press \`Cmd + F\` / \`Ctrl + F\` to search every page, including pages you have never opened. A short single-line selection pre-fills the bar; otherwise it keeps this pane's last query. Matching ignores case and accents, folds ligatures, and matches across line breaks, hyphenated line ends and PDF text-item boundaries. The count shows progress and stops at **10,000+** matches. Scans without selectable text are not OCR'd.
-- In the input, \`Enter\` / \`Shift + Enter\` move to the next / previous match. \`Cmd + G\` / \`Ctrl + G\` and their Shift forms do the same from the bar or PDF page. Next waits for an unfinished scan rather than wrapping early.
-- \`Escape\` or **×** closes the bar and leaves the current match selected, ready for \`Cmd + C\` / \`Ctrl + C\`. Switching tabs keeps each pane's query and results.
-- Chrome's **Edit → Find** menu still opens Chrome's own bar, which sees only built text layers, not necessarily every page. Use the keyboard shortcut for complete PDF find.
-
-A PDF opens in a reader: scroll it, select its text, search every page with the
-app's \`Cmd + F\` / \`Ctrl + F\`, follow its links, and jump to a physical page by typing its number in the box at the bottom and pressing \`Enter\`. The thumbnails use those same page numbers; the current page is highlighted. \`Home\` and \`End\` go to the first and last page, and \`Page Up\` / \`Page Down\` scroll by a screenful.
-Pinch or hold \`Ctrl\` and scroll to zoom, or use the \`+\` and \`-\` keys. The button
-beside the page box opens a **strip of page thumbnails** down the left; click one
-to go to that page. The button next to it **inverts the pages** so they are easy on the
-eyes in the dark, while reading and while writing on them. It only changes how
-they look: the file, and any PDF made from it, keeps its real colours.
-
-The turn buttons (or \`[\` and \`]\`) rotate the PDF itself and save the new orientation;
-Option-click a button to turn just the current page. PDFs annotated in this app cannot be
-rotated because their ink was placed against the original pages. After a successful turn,
-a low-resolution picture may appear labelled **Loading rotated PDF…** while the new pages
-are read; it is only a temporary preview, not the finished page.
-
-**Copying PDF text.** Select a passage and press \`Cmd + C\` / \`Ctrl + C\` to copy it.
-With a PDF page focused, \`Cmd + A\` / \`Ctrl + A\` visibly selects the built text and marks
-**the whole document** for copying. Follow with \`Cmd + C\` / \`Ctrl + C\` to gather every
-physical page, including pages you have never opened, separated by a newline. A notice
-shows progress or a blocked clipboard write. Changing the selection returns to ordinary
-passage copying. Whole-document text above **16 MiB** is refused rather than silently
-cut off; select a smaller passage instead. The text-order/extraction warning can mean
-columns or unusual reading order, not necessarily missing text; compare the original.
-
-If a page cannot be rendered completely, a notice stays on that page; an error
-whose page is unknown appears above the document. Its thumbnail says
-**Thumbnail unavailable**, rather than pretending to be a blank page.
-**Try again** reopens the PDF; it does not repair or change the original file.
-In Annotate, switch to View to retry without disturbing your ink.
-
-**PDF navigation.** Original PDF has page thumbnails and a **Contents** panel for the document’s outline. Use arrow keys to navigate Contents and Escape to close it and return focus. **PDF limitations.** Open **PDF features** or **PDF limitations** for the file's known restrictions. Encrypted files are read-only; a PDF that forbids copying cannot be selected, copied, searched as text or read as text by the agent. Form fields show saved appearances and cannot be edited; XFA may be missing. PDF scripts, form submission and launch actions do not run. Scanned pictures are not OCR'd. An unusual PDF using \`/UserUnit\` may display at a different relative size in another PDF engine; check its Original pages when comparing viewers.
-
-If rendering makes no progress for a while, **This PDF is taking longer than usual**
-lets you keep waiting or choose **Try again** to restart the renderer. Slow scans
-are not cancelled just because the notice appears, and the notice clears when
-work progresses. A renderer restart can affect other open PDFs; each says so
-and can be retried separately. No file is changed by this.
-
-**Turning a sideways scan the right way up.** The two curved arrows beside the
-invert button turn the pages a quarter at a time — \`]\` turns right, \`[\` turns
-left. It turns the whole document; hold \`Alt\` (\`Option\`) while clicking an
-arrow to turn only the page you are reading, which is what a single crooked page
-in an otherwise straight scan wants. Unlike inverting, this is a real change to
-the file: the PDF is saved the way round you left it, and it opens that way
-here, in your browser and in anything else you open it with. Four turns bring it
-back where it started.
-
-A PDF you have already written on is left alone, with a note saying so. Your
-marks are drawn against the pages as they are, and turning the paper would move
-every one of them — so straighten a scan before you start annotating it. Only a
-plain PDF turns: a notebook's export, or a PDF whose embedded attachments are not
-ones this app can read, is left alone too, and its note says what to do instead.
-Encrypted PDFs are left unchanged rather than rewritten without their encryption.
-
-\`Cmd + E\` (or the pen in the top bar) switches between reading a PDF and
-**writing on it** — the same toggle every other file has. Draw on it as you would
-on a notebook. It opens **on the page you were reading**, with the same page box
-and thumbnail strip, and switching back to reading returns you to wherever you
-stopped writing. Swiping scrolls the page up and down like a PDF, and pinching
-zooms — at full width the page fills the screen edge to edge, and you can zoom in
-past that. The page can never be swiped off screen.
-
-**The marks go into that PDF, not into a copy.** There is no second
-"(annotated)" file to keep track of, and nothing to remember to open next time:
-the file you annotated is the file you annotate again. It is still a real PDF
-that opens anywhere, with your marks drawn in as vector artwork and the
-document's own text still selectable underneath.
-
-Your original is not lost. The file quietly carries a pristine copy of the PDF
-as it was before you touched it, alongside the editable form of your strokes —
-which is what lets you come back days later and move, recolour or erase a mark
-rather than being stuck with it. It is also why annotating never builds up:
-every save redraws from that pristine copy, so the marks never thicken or
-double no matter how many times you edit.
-
-Annotated saves also carry a write mark. If another program changes the file after a marked save, Annotate stays read-only and explains that rebuilding from your last editable version would drop those changes. **Keep the file as it is** (the default, or Escape while the notice is focused) leaves it unchanged. **Annotate from my last version** first keeps the exact current PDF in that folder’s **Trash**, then enables editing. If the mark is malformed or belongs to an unsupported version, the notice says it cannot be verified and offers the same safe choice. A changed or deleted file must be resolved before this choice can continue; a failed copy enables nothing and offers Retry.
-
-Older annotated PDFs without a mark can still be edited. Before their first save here, a copy of the current file is kept in **Trash**; the saved PDF gains the mark. The notice names the retained copy. Editable annotations are limited to **32 MiB of UTF-8 JSON**: exceeding that limit refuses the save without changing the PDF. Keep those unsaved annotations open, or reduce them before saving. A refused revision is not reported as Saved and cannot be silently dropped by closing its tab or switching vaults. After a stroke, annotations are pending until the versioned write completes; closing or switching vaults waits for the pending checkpoint. If an export fails, keep the tab open and retry. A browser or operating-system termination cannot wait for an unfinished save.
-
-**A PDF that cannot be written on safely stays read-only.** Before the pen opens,
-the app checks what the file actually carries, not its name. A PDF holding an
-unrelated \`original.pdf\`, attachments that cannot be read or that contradict each
-other, or annotations written by a newer version stays in the reader with a note
-saying it is read-only; drawing and saving change nothing in it. You can still
-read, select, copy and find in it, and open its Text. Choose **Retry** if an
-attachment could not be read; otherwise open it in a version of the app that wrote
-it, or recover the annotations first. Never delete attachments from your only copy
-just to make the note go away. If one PDF page cannot be rendered, its notice offers
-Retry while the other pages remain available. Very long PDFs initially use estimated
-page sizes; those estimates adjust as you visit pages. Existing attachments are retained when you save;
-if different attachments have the same name, a notice gives the recovered names
-used to keep both. If attachment repair or its verification fails, nothing is written.
-
-Everything around a page — the toolbars, the pen panel, the space the pages sit
-on — follows the app's theme, so a notebook or a PDF is dark at night like the
-rest of the app. The **pages themselves stay white** in either theme, because
-that is paper: it is what the exported PDF prints on, and ink that changed colour
-with the theme would come out invisible in the file. Notebook and PDF ink use a
-light ink palette and do not offer the board's Theme menu or its theme shortcut;
-a drawing has its own Theme menu and no paper.
 
 ---
 

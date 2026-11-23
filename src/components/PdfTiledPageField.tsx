@@ -20,6 +20,7 @@ export default function PdfTiledPageField({ page, pageCount, onNavigate }: Props
     const restore = () => setDraft(String(current.current + 1));
     return <div className="pdf-viewer-pill pdf-viewer-pages">
         <input className="pdf-viewer-page-input" aria-label="Current page" type="text" inputMode="numeric" value={draft}
+            style={{ width: `${Math.max(2, String(pageCount).length)}ch` }} data-tooltip="Current page: type a number and press Enter to jump"
             onFocus={() => { editing.current = true; }}
             onChange={event => setDraft(event.target.value)}
             onBlur={() => { editing.current = false; restore(); }}
@@ -36,6 +37,6 @@ export default function PdfTiledPageField({ page, pageCount, onNavigate }: Props
                 onNavigate(target - 1);
                 event.currentTarget.blur();
             }} />
-        <span>/ {pageCount}</span>
+        <span className="pdf-viewer-page-total">/ {pageCount}</span>
     </div>;
 }

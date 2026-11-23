@@ -27,6 +27,16 @@
     color: var(--text-normal);
 }
 
+/* A notice the person can put away: text and its Dismiss in one row, the button kept to its own width. */
+.board-viewer-notice-dismissible {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    z-index: 3;
+}
+.board-viewer-notice-dismissible > span { flex: 1 1 auto; min-width: 0; }
+.board-viewer-notice-dismissible > button { flex: none; }
+
 /* Renderer status: display only, so it never takes pointer events from the board or its input. */
 .board-paint-status { position: absolute; z-index: 2; pointer-events: none; }
 .board-paint-status-loading {

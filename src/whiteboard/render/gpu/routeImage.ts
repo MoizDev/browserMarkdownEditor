@@ -31,6 +31,8 @@ export interface ImageRoute extends ItemRoute<PaintImageItem> {
     waiting(keys: readonly string[]): boolean;
     /** Frees picture textures nobody holds, least recently used first; returns bytes freed. For the governor (h9). */
     evictTextures(bytes: number, frameId: number): number;
+    /** True when this device holds the picture's texture and no item of it is drawn on the CPU: its bitmap need not be decoded. */
+    textureHeld(key: string): boolean;
 }
 
 /** One draw: a picture's texture over its device rect, its uniforms packed for the shader below. A pooled record, rewritten by
@@ -574,6 +576,9 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
             return waits;
         },
         evictTextures(bytes: number, frameId: number): number { return textures.evict(bytes, frameId); },
+        // A video's texture is one frame of a picture that moves: its frame is always read. A key some item of which the CPU route
+        // draws needs its bitmap (the route keeps those held).
+        textureHeld(key: string): boolean { return !key.startsWith(VIDEO_FRAME_PREFIX) && !cpuKeys.has(key) && !textures.needsSource(key); },
     };
 }
 

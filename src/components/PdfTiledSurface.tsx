@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import type { PdfReadingBinding, ReaderCapabilities } from '../types/reading';
 import type { PdfFindMemory } from '../utils/pdfFindHighlight';
-import type { PdfRotationPicture } from '../utils/pdfRotationPreview';
 import { getSessionIdentity, subscribeSessionIdentity } from '../utils/sessionIdentity';
 import type { PdfTiledPresentation, PdfTiledSource } from '../pdf/session/hostTypes';
 import PdfTiledView from './PdfTiledView';
@@ -17,7 +16,7 @@ interface Props {
     sourceHash?: string;
     findMemory: PdfFindMemory;
     searchVault(query: string): void;
-    rotate(delta: number, page?: number, picture?: PdfRotationPicture): void;
+    rotate(delta: number, page?: number): void;
     openText(page?: number): void;
     onSource(source: PdfTiledSource): void;
     onPresentation?(presentation: PdfTiledPresentation): void;

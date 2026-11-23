@@ -2,7 +2,7 @@ import React, { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo
 import type { ReactNode } from 'react';
 import { useFileSystem } from '../context/FileSystemContext';
 import { readPdfRole } from '../utils/pdfRoleRead';
-import { clearPdfRotationPicture, peekPdfRotation, stagePdfRotation, type PdfRotationPicture } from '../utils/pdfRotationPreview';
+import { dropPdfStandInFrame, pdfStandInFrame, presentedPdfRotation, subscribePdfRotationStandIn, type PdfStandInFrame } from '../utils/pdfRotationStandIn';
 import { ClassicPdfError, classicPdfFailureIsFatal, createClassicPdfHealth } from '../utils/pdfClassicHealth';
 import PdfRenderNotice from './PdfRenderNotice';
 import ConfirmDialog from './ConfirmDialog';
@@ -276,14 +276,6 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
             current?.onReaderVersion(token, version);
         },
     } : undefined, [reading]);
-    const [rotationPreview, setRotationPreview] = useState(() => documentId ? peekPdfRotation(documentId) : undefined);
-    const discardRotationPreview = useCallback(() => {
-        setRotationPreview(previous => {
-            if (documentId && previous) clearPdfRotationPicture(documentId, previous);
-            return undefined;
-        });
-    }, [documentId]);
-    useEffect(() => { if (!isVisible && rotationPreview) discardRotationPreview(); }, [isVisible, rotationPreview, discardRotationPreview]);
     const pageDigest = useRef<string | undefined>(undefined);
     const restoredRecord = useRef(false);
     const [roleRetry, setRoleRetry] = useState(0);
@@ -693,46 +685,28 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
         if (!isVisible) { actions.current.publishLocation('layout'); flushPdfTextViewState(); }
     }, [isVisible]);
 
+    // A turn's picture over this pane (utils/pdfRotationStandIn.ts), from the press until the turned file is drawn sharp.
+    const standIn = useSyncExternalStore(subscribePdfRotationStandIn,
+        () => documentId ? pdfStandInFrame(documentId, root.current) : undefined, () => undefined);
+    const standInShown = !!standIn && isVisible && mode === 'read' && !textSurface;
+    useEffect(() => {
+        const pane = root.current;
+        if (documentId && pane && standIn && (!isVisible || mode !== 'read' || textSurface)) dropPdfStandInFrame(documentId, pane);
+    }, [documentId, standIn, isVisible, mode, textSurface]);
     // Bound to this pane's path once: a fresh arrow per render would re-render
     // the memoized viewer on every keystroke anywhere in the app.
-    const rotateThis = useCallback(
-        (delta: number, pageIndex?: number, picture?: PdfRotationPicture) => {
-            const hash = displayedVersion.current?.hash;
-            if (documentId) stagePdfRotation(documentId, picture && hash ? { ...picture, sourceHash: hash } : undefined);
-            onRotate(file.path, delta, pageIndex);
-        }, [onRotate, file.path, documentId]);
-    const presentationOwner = useRef({ source: currentTiledSource, preview: rotationPreview, identity: reading?.identity,
-        appSession, documentId, path: file.path, tiled, isVisible, mode, textSurface });
-    presentationOwner.current = { source: currentTiledSource, preview: rotationPreview, identity: reading?.identity,
-        appSession, documentId, path: file.path, tiled, isVisible, mode, textSurface };
+    const rotateThis = useCallback((delta: number, pageIndex?: number) => onRotate(file.path, delta, pageIndex), [onRotate, file.path]);
+    const presentationOwner = useRef({ source: currentTiledSource, appSession, documentId });
+    presentationOwner.current = { source: currentTiledSource, appSession, documentId };
     const tiledPresented = useCallback((report: PdfTiledPresentation) => {
-        const owner = presentationOwner.current, { source, preview, identity, appSession: app } = owner;
-        if (!owner.tiled || !owner.isVisible || owner.mode !== 'read' || owner.textSurface || !source || source !== currentTiledSource || !preview || !identity || !app ||
-            report.complete !== true || report.sharp !== true || report.staleVersion !== false || report.resultHash !== preview.resultHash ||
-            ![report.frameId, report.viewEpoch, report.token.viewLease, report.token.deviceGeneration].every(value => Number.isSafeInteger(value) && value >= 0) ||
-            !report.pages.includes(preview.page) || !source.session.isCurrent() || source.document.poolDocument.closed ||
-            source.session.source !== 'outer' || source.document.poolDocument.source !== 'outer' ||
-            getSessionIdentity(owner.documentId) !== app || identity.documentId !== owner.documentId || identity.path !== owner.path) return;
-        const token = source.session.token, poolToken = source.document.poolDocument.token, frame = report.token;
-        if (identity.vaultEpoch !== token.vaultEpoch ||
-            app.serial !== token.session || app.bytesGeneration !== token.bytesGeneration || token.documentId !== owner.documentId ||
-            frame.vaultEpoch !== token.vaultEpoch || frame.documentId !== token.documentId || frame.bytesGeneration !== token.bytesGeneration || frame.session !== token.session ||
-            poolToken.vaultEpoch !== token.vaultEpoch || poolToken.documentId !== token.documentId ||
-            poolToken.bytesGeneration !== token.bytesGeneration || poolToken.session !== token.session) return;
-        setRotationPreview(previous => {
-            const now = presentationOwner.current;
-            if (previous !== preview || now.source !== source || now.preview !== preview || !now.identity ||
-                now.identity.vaultId !== identity.vaultId || now.identity.vaultEpoch !== identity.vaultEpoch ||
-                now.identity.documentId !== identity.documentId || now.identity.byteGeneration !== identity.byteGeneration ||
-                now.identity.path !== identity.path || now.identity.diskRev !== identity.diskRev ||
-                now.identity.rawVersion?.hash !== identity.rawVersion?.hash || now.identity.rawVersion?.size !== identity.rawVersion?.size ||
-                now.identity.rawVersion?.lastModified !== identity.rawVersion?.lastModified || !now.tiled || !now.isVisible || now.mode !== 'read' || now.textSurface ||
-                getSessionIdentity(owner.documentId) !== app || !source.session.isCurrent() || source.document.poolDocument.closed) return previous;
-            clearPdfRotationPicture(owner.documentId, preview);
-            return undefined;
-        });
-    }, [currentTiledSource]);
-    const showRotationPreview = !!rotationPreview && !fatalRenderIssue && !error && mode === 'read' && !textSurface;
+        const { source, appSession: app, documentId: id } = presentationOwner.current, pane = root.current;
+        if (!pane || !source || !app || report.complete !== true || report.sharp !== true || report.staleVersion !== false ||
+            !source.session.isCurrent() || source.document.poolDocument.closed || getSessionIdentity(id) !== app) return;
+        const token = source.session.token, frame = report.token;
+        if (app.serial !== token.session || app.bytesGeneration !== token.bytesGeneration || frame.documentId !== token.documentId ||
+            frame.bytesGeneration !== token.bytesGeneration || frame.session !== token.session) return;
+        presentedPdfRotation(id, pane, report.resultHash);
+    }, []);
 
     let body: ReactNode = null;
     if (activated) {
@@ -894,19 +868,28 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
                 </div>}
             {/* Always wrapped, bar or no bar: toggling the wrapper would remount
                 the viewer and lose the reading position. */}
-            <div className="pdf-pane-body" inert={showRotationPreview}>
+            <div className="pdf-pane-body">
                 {body}
                 {!fatalRenderIssue && !error && (documentRenderIssue || renderDelayIssue) && <div className="pdf-render-document-notice"><PdfRenderNotice
                     issue={(documentRenderIssue || renderDelayIssue)!} annotation={annotationMode} onRetry={retryRendering}
                     retryDisabled={retryBusy || isDirty || flushing || !!disk} /></div>}
             </div>
-            {showRotationPreview && rotationPreview && <div className="pdf-rotation-preview" role="status"
-                onContextMenu={event => event.preventDefault()} onDragOver={event => event.preventDefault()} onDrop={event => event.preventDefault()}>
-                <img src={rotationPreview.dataUrl} alt="" draggable={false} />
-                <span>Loading rotated PDF…</span>
-            </div>}
+            {standInShown && standIn && <PdfRotationStandIn frame={standIn} />}
         </div>
     );
+}
+
+/** Shows the canvas the PDF view drew for a turn, where its page area is. */
+function PdfRotationStandIn({ frame }: { frame: PdfStandInFrame }) {
+    const host = useRef<HTMLDivElement>(null);
+    useLayoutEffect(() => {
+        const element = host.current;
+        if (!element) return;
+        element.replaceChildren(frame.canvas);
+        return () => { if (frame.canvas.parentNode === element) element.removeChild(frame.canvas); };
+    }, [frame]);
+    return <div ref={host} className="pdf-rotation-standin" aria-hidden="true"
+        style={{ left: frame.left, top: frame.top, width: frame.width, height: frame.height }} />;
 }
 
 // Memoized: EditorPane re-renders on every keystroke anywhere in the app and

@@ -11,7 +11,7 @@ import type { Notify } from './useAppDialogs';
 import type { Tell } from './useAppDialogs';
 import { clearNotebookRenderData } from '../utils/notebookRenderCache';
 import { clearPdfRenderData } from '../utils/pdfRenderCache';
-import { clearPdfRotation } from '../utils/pdfRotationPreview';
+import { clearPdfRotationStandIn } from '../utils/pdfRotationStandIn';
 import { flushPdfTextViewState, flushReaderViewState } from '../utils/readerViewState';
 import { dropBaseline, setBaseline } from '../utils/docBaselines';
 import { notifySearchChanges } from '../utils/searchChanges';
@@ -106,7 +106,7 @@ export function useTabLifecycle(deps: UseTabLifecycleDeps) {
       void recoveryEvent({ type: 'release', documentId: doc.id });
       syncExitGuard();
       invalidReaderTokens.current.add(`${doc.id}|${doc.representation.generation}`);
-      clearPdfRotation(doc.id);
+      clearPdfRotationStandIn(doc.id);
       flushReaderViewState(); flushPdfTextViewState();
       readerIdentityCache.current.forEach((value,key)=>{if(value.documentId===doc.id)readerIdentityCache.current.delete(key)});
       dropBaseline(doc.id);

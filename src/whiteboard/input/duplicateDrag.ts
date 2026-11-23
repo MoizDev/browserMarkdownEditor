@@ -15,11 +15,15 @@ import { keysBetween } from '../model/orderKey';
 import { createAddedBoardDoc } from '../model/overlayDoc';
 import { boardPageStack } from '../model/pages';
 import { prepareFrameDrop, type FrameDropPlan } from './frameDrop';
+import { createBoardEncoderBounds } from '../host/encoderBounds';
+import { rememberDuplicate, type DuplicateSourceOrigin } from '../clipboard/duplicateRepeat';
 
 export interface DuplicateDragPreview {
     readonly ops: readonly Op[];
     readonly roots: readonly NodeId[];
     readonly guides: readonly BoardSnapGuide[];
+    /** Where the originals sat (top-left of their bounds): a drop that clones stores its offset from this (catalogue S§7.4). */
+    readonly sourceOrigin: DuplicateSourceOrigin | null;
 }
 export interface DuplicateDragPlan {
     preview(point: Vec2, shift: boolean, accel: boolean, signal: AbortSignal, commit?: boolean, speed?: number): Promise<DuplicateDragPreview>;
@@ -71,6 +75,14 @@ export async function createDuplicateDragPlan(options: BoardTranslationOptions):
         for (let i = 0; i < values.length; i++) { order.set(values[i], keys[i]); await tick(); }
     }
     const translation = await createBoardTranslationPlan({ ...options, signal });
+    // The copy's bounds come from the encoder, which sits a stroke's width off the scene's logical box. The source is measured with
+    // the same bounds, so a Cmd+D after a clone drop repeats the drop's offset exactly (measured: 1 unit short with the logical box).
+    const encoder = await createBoardEncoderBounds({ doc, sources: [], local: runtime.render.encoderLocal, realize: runtime.render.realize,
+        cooperate, geometryEpoch: () => runtime.render.text.fonts.epoch });
+    await encoder.prepare(roots.map(root => root.id), signal);
+    let sourceX = Infinity, sourceY = Infinity;
+    for (const root of roots) { const [x, y] = encoder.bounds(root); sourceX = Math.min(sourceX, x); sourceY = Math.min(sourceY, y); }
+    const sourceOrigin: DuplicateSourceOrigin = Object.freeze({ x: sourceX, y: sourceY });
     let latest: { readonly value: DuplicateDragPreview; readonly scope: BoardGeometryScope | null; readonly drop: FrameDropPlan | null;
         readonly request: AbortSignal; readonly serial: number } | undefined;
     const clear = () => { try { latest?.scope?.release(); } finally { latest?.drop?.release(); latest = undefined; } };
@@ -91,7 +103,7 @@ export async function createDuplicateDragPlan(options: BoardTranslationOptions):
             const base = await translation.preview(point, shift, accel, request, speed); check(request);
             if (turn !== serial) throw new DOMException('Duplicate drag superseded', 'AbortError');
             if (!base.ops.length) {
-                clear(); const value = Object.freeze({ ops: Object.freeze([]), roots: clonedRoots, guides: base.guides });
+                clear(); const value = Object.freeze({ ops: Object.freeze([]), roots: clonedRoots, guides: base.guides, sourceOrigin: null });
                 latest = { value, scope: null, drop: null, request, serial: turn }; return value;
             }
             let drop: FrameDropPlan | null = null, scope: BoardGeometryScope | undefined;
@@ -151,7 +163,7 @@ export async function createDuplicateDragPlan(options: BoardTranslationOptions):
                 }
                 const ops: Op[] = [...(growth ? [growth] : []), ...final.map(node => ({ t: 'create' as const, node }))];
                 check(request); if (turn !== serial) throw new DOMException('Duplicate drag superseded', 'AbortError');
-                const value = Object.freeze({ ops: Object.freeze(ops), roots: clonedRoots, guides: base.guides });
+                const value = Object.freeze({ ops: Object.freeze(ops), roots: clonedRoots, guides: base.guides, sourceOrigin });
                 clear(); latest = { value, scope, drop, request, serial: turn }; scope = undefined; drop = null; return value;
             } finally { try { scope?.release(); } finally { drop?.release(); } }
         },
@@ -162,6 +174,8 @@ export async function createDuplicateDragPlan(options: BoardTranslationOptions):
                 if (value.ops.length) {
                     const applied = session.apply({ origin: 'tool', label: 'Duplicate and move', ops: value.ops });
                     try { runtime.selection.replace(value.roots); } finally { applied.release(); }
+                    // The clones are selected now: a Cmd+D repeats the offset the drop moved them by (catalogue S§7.4).
+                    if (value.sourceOrigin) rememberDuplicate(session, value.roots, value.sourceOrigin);
                 }
             } finally { close(); }
         },

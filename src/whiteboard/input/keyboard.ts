@@ -43,7 +43,9 @@ export const boardBindings: readonly KeyBinding[] = [
   { id: 'accessibility.repeat', group: 'accessibility', label: 'Repeat announcement', key: 'r', alt: true },
   { id: 'accessibility.contextMenu', group: 'accessibility', label: 'Open context menu', key: 'Enter', accel: true, shift: true },
   { id: 'edit.start', group: 'edit', label: 'Edit selected text', key: 'Enter' },
-  { id: 'edit.start', group: 'edit', label: 'Edit selected text', key: 'Enter', accel: true },
+  // K§10.8: Cmd/Ctrl+Enter moves focus into the style panel. Enter (above) is the edit key, so this replaces the old
+  // Cmd/Ctrl+Enter alias for editing. It is a required accessibility action, so the shortcuts preference does not stop it.
+  { id: 'style.adjust', group: 'accessibility', label: 'Adjust shape styles', key: 'Enter', accel: true },
   { id: 'undo', group: 'edit', label: 'Undo', key: 'z', accel: true },
   { id: 'redo', group: 'edit', label: 'Redo', key: 'z', accel: true, shift: true },
   { id: 'delete', group: 'edit', label: 'Delete', key: 'Delete' },
@@ -206,7 +208,7 @@ export function installKeyboard(root: HTMLElement, actions: KeyboardActions, mac
       return
     }
     if (!binding || binding.group === 'text-formatting' || (event.repeat && !binding.repeat)) return
-    if (actions.shortcutsEnabled?.() === false && binding.id !== 'accessibility.repeat') return
+    if (actions.shortcutsEnabled?.() === false && binding.id !== 'accessibility.repeat' && binding.id !== 'style.adjust') return
     if (!actions.enabled() && !(['view', 'accessibility'].includes(binding.group) || binding.id === 'tool.select' || binding.id === 'tool.hand' || binding.id.startsWith('select.') || binding.id.startsWith('preferences.'))) return
     if (actions.run(binding.id, event)) { event.preventDefault(); event.stopPropagation() }
   }

@@ -8,8 +8,7 @@ description: The shared rendering platform under src/platform/render — how a p
 `src/platform/render/` is one app-wide compositor shared by every PDF, notebook and whiteboard pane. It is
 demand-driven and owns no document truth: layers draw the session's CPU truth, and everything on the GPU is a
 rebuildable cache of it. The board's own route is in `board-gpu-path`; PDF tiles and documents in
-`pdf-and-drawings`. The design record is `planning/40-platform/contracts.md` (C1–C9) and `rendering-design.md` in
-the main checkout; the code and its comments are the truth where they differ.
+`pdf-and-drawings`. The code and its comments are the design record.
 
 ## Map
 

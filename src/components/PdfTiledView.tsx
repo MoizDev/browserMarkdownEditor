@@ -148,6 +148,12 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         sessionNotices.delete(session);
         setNoticeState({ session, notice: undefined });
     }, [session]);
+    /** Withdraws the notice shown only if it is still `message` (another notice since then stays). */
+    const clearRenderNotice = useCallback((message: string) => {
+        if (!mounted.current || liveSession.current !== session || sessionNotices.get(session)?.message !== message) return;
+        sessionNotices.delete(session);
+        setNoticeState({ session, notice: undefined });
+    }, [session]);
     const notice = noticeState.session === session ? noticeState.notice : sessionNotices.get(session);
     const retryDocument = pdf.poolDocument.retry;
     const retry = useCallback(async () => {
@@ -597,7 +603,8 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         onNotice: (message, cause) => reportRenderNotice(message === 'memory-pressure' ? 'PDF rendering quality was reduced to fit memory.'
             : message === 'cpu-floor-denied' ? 'PDF rendering is limited by available memory.'
                 : message === 'cpu-pinned' ? 'PDF rendering is using a compatible mode.' : gpuUnavailableText(cause)),
-    }), [lease, mirror, capturer, mirrorView, onNotice, pageLayer, pdf, session, stack, updateTextMirrorView, onFindView, filePath, persist, correctReveal, clamp, refreshSelectionPointer, capabilities, reportRenderNotice, clearQualityNotice]);
+        onNoticeCleared: (_message, cause) => clearRenderNotice(gpuUnavailableText(cause)),
+    }), [lease, mirror, capturer, mirrorView, onNotice, pageLayer, pdf, session, stack, updateTextMirrorView, onFindView, filePath, persist, correctReveal, clamp, refreshSelectionPointer, capabilities, reportRenderNotice, clearQualityNotice, clearRenderNotice]);
     const platformPane = usePlatformPane<PdfMirrorPixels>({ host, isVisible, isFocused, vaultEpoch: session.token.vaultEpoch,
         documentId: session.token.documentId, layers, services });
     paneRef.current = platformPane;

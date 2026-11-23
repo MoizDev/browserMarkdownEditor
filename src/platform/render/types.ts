@@ -127,7 +127,7 @@ export interface RenderConstants {
         depth: false;
         stencil: false;
         preserveDrawingBuffer: false;
-        powerPreference: 'default';
+        powerPreference: 'high-performance';
         desynchronized: false;
         failIfMajorPerformanceCaveat: true;
     }>;

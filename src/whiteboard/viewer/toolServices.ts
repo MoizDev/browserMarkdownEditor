@@ -5,7 +5,7 @@ import type { ScheduledFrame, TouchPanSample } from '../../platform/render/sched
 import type { RenderToken } from '../../platform/render/types';
 import type { PaintSource } from '../render/paintStream';
 import { keptLockedMessage } from '../commands/delete';
-import type { ViewState, Viewport } from '../../platform/types';
+import type { Camera, ViewState, Viewport } from '../../platform/types';
 import type { BoardRuntime } from '../host/runtime';
 import type { BoardInputServices } from '../input/attach';
 import { eraserTool, laserTool, type LaserPoint } from '../input/basicTools';
@@ -62,7 +62,7 @@ export interface BoardToolServicesOptions {
     readonly sampleToSurface: (sample: RealSample) => Point;
     readonly clientToSurface: (x: number, y: number) => Point;
     readonly interaction: { invalidate(): void; cameraChanged(): void };
-    readonly platform: () => { animateZoom(targetZ: number, anchor?: Point): void; animatePan(delta: Point): void; startFling(samples: readonly TouchPanSample[]): void; cancelMotion(): void };
+    readonly platform: () => { animateZoom(targetZ: number, anchor?: Point): void; animatePan(delta: Point): void; glideTo(target: Camera, durationMs: number): void; startFling(samples: readonly TouchPanSample[]): void; cancelMotion(): void };
     readonly ui: {
         readonly mac: boolean;
         readonly text: BoardTextEditorOptions['ui'];
@@ -125,6 +125,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
     // Editing activation: the overlay's kits compile now, not at the first drag's request.
     preview.warm();
     const select = createBoardSelectServices({ runtime, render: runtime.render, camera: options.view, cameraController: camera,
+        motion: { glideTo: (target, durationMs) => options.platform().glideTo(target, durationMs), cancel: () => options.platform().cancelMotion() },
         surface: options.surface, inputToken, cameraChanged: options.interaction.cameraChanged, sampleToSurface: options.sampleToSurface, point, region, preview,
         overlay: options.overlay, token, current: t => current() && options.current(t), canMutateView: () => options.editable() && !runtime.session.isReadOnly,
         inputFrames: options.inputFrames, alwaysSnap: options.alwaysSnap, wrapMode: options.wrapMode,

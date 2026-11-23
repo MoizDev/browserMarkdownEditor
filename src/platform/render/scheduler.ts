@@ -1,5 +1,5 @@
 import { auditCount, auditFrame, auditTape, auditTapeStart, renderAuditEnabled } from './renderAudit';
-import type { Viewport, ViewState } from '../types';
+import type { Camera, Viewport, ViewState } from '../types';
 import { cameraAtAnchor, surfaceToWorld } from './camera';
 import type { CameraAnchor, CameraController, Point } from './camera';
 import { RENDER_CONSTANTS } from './constants';
@@ -112,6 +112,8 @@ export interface ScheduledPaneLease {
     animateZoom(targetZ: number, anchor?: Point): void;
     /** A camera glide by a screen-space delta (ease-out, 320 ms); reduced motion moves at once. */
     animatePan(delta: Point): void;
+    /** A camera glide to `target`, pan and zoom together, eased over durationMs; a zero duration or reduced motion jumps. */
+    glideTo(target: Camera, durationMs: number): void;
     cancelMotion(): void;
     dispose(): void;
 }
@@ -153,8 +155,9 @@ interface ZoomMotion {
 interface GlideMotion {
     kind: 'glide';
     startedAt: number;
-    from: Point;
-    to: Point;
+    durationMs: number;
+    from: Camera;
+    to: Camera;
 }
 
 type Motion = FlingMotion | ZoomMotion | GlideMotion;
@@ -464,6 +467,7 @@ export class FrameScheduler {
             startFling: (samples: readonly TouchPanSample[]) => this.startFling(entry, samples),
             animateZoom: (targetZ: number, anchor?: Point) => this.animateZoom(entry, targetZ, anchor),
             animatePan: (delta: Point) => this.animatePan(entry, delta),
+            glideTo: (target: Camera, durationMs: number) => this.glideTo(entry, target, durationMs),
             // Settling a camera that is not moving changes nothing; only a motion that was running is a change.
             cancelMotion: () => {
                 if (!this.live(entry)) return;
@@ -545,7 +549,7 @@ export class FrameScheduler {
                     const z = entry.pane.camera.clampZoom(zoom.targetZ);
                     entry.pane.camera.setCamera(cameraAtAnchor(zoom.world, this.zoomAnchor(entry, zoom), z));
                 }
-                if (entry.motion?.kind === 'glide') entry.pane.camera.setCamera({ x: entry.motion.to.x, y: entry.motion.to.y, z: entry.pane.camera.camera.z });
+                if (entry.motion?.kind === 'glide') entry.pane.camera.setCamera({ ...entry.motion.to });
                 this.cancelMotion(entry);
                 this.mark(entry, 'reduced-motion');
             });
@@ -1519,11 +1523,20 @@ export class FrameScheduler {
     private animatePan(entry: PaneEntry, delta: Point): void {
         if (!this.running || this.suspended || !this.live(entry)) return;
         if (!finitePoint(delta)) throw new RangeError('Pan delta must be finite');
+        const { x, y, z } = entry.pane.camera.camera;
+        this.glideTo(entry, { x: x + delta.x / z, y: y + delta.y / z, z }, GLIDE_MS);
+    }
+
+    /** One camera glide, pan and zoom together. Reduced motion, a zero duration and a pane that cannot animate all jump:
+     * a caller's move (back to content, the minimap) lands even where no frame will run. */
+    private glideTo(entry: PaneEntry, target: Camera, durationMs: number): void {
+        if (!finitePoint(target) || !(Number.isFinite(target.z) && target.z > 0) || !Number.isFinite(durationMs) || durationMs < 0) {
+            throw new RangeError('Glide target must be a finite camera with a positive zoom, and its duration nonnegative');
+        }
         this.cancelMotion(entry);
-        const camera = entry.pane.camera, z = camera.camera.z;
-        const from = { x: camera.camera.x, y: camera.camera.y };
-        if (this.reducedMotion) camera.panBy(delta);
-        else entry.motion = { kind: 'glide', startedAt: performance.now(), from, to: { x: from.x + delta.x / z, y: from.y + delta.y / z } };
+        const camera = entry.pane.camera;
+        if (this.reducedMotion || durationMs === 0 || !this.running || this.suspended || !this.live(entry)) camera.setCamera({ ...target });
+        else entry.motion = { kind: 'glide', startedAt: performance.now(), durationMs, from: { ...camera.camera }, to: { ...target } };
         entry.inputPriority = true;
         this.mark(entry, 'animation');
     }
@@ -1553,9 +1566,9 @@ export class FrameScheduler {
             // versus ~1.8px at30Hz. Speed<5 alone keeps the exact integrated tail refresh-independent.
             if (Math.hypot(motion.velocity.x, motion.velocity.y) < 5) entry.motion = null;
         } else if (motion.kind === 'glide') {
-            const u = clamp((timestamp - motion.startedAt) / GLIDE_MS, 0, 1);
-            const eased = 1 - (1 - u) ** 3, z = camera.camera.z;
-            camera.setCamera({ x: motion.from.x + (motion.to.x - motion.from.x) * eased, y: motion.from.y + (motion.to.y - motion.from.y) * eased, z });
+            const u = clamp((timestamp - motion.startedAt) / motion.durationMs, 0, 1);
+            const eased = 1 - (1 - u) ** 3, at = (from: number, to: number) => from + (to - from) * eased;
+            camera.setCamera({ x: at(motion.from.x, motion.to.x), y: at(motion.from.y, motion.to.y), z: at(motion.from.z, motion.to.z) });
             if (u === 1) entry.motion = null;
         } else {
             if (camera.viewport !== motion.lastViewport) {

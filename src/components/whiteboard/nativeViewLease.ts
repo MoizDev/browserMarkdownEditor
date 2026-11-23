@@ -3,6 +3,7 @@ import { isTransientPictureFailure } from '../../whiteboard/media/transientFailu
 import { recordBoardPresentation } from './debugStats';
 import { encodeTiledPngInWorker } from '../../whiteboard/export/pngWorkerClient';
 import type { PlatformLayerDefinition, PlatformPane, PlatformPresentation } from '../../platform/render/attachPlatformPane.types';
+import type { Camera } from '../../platform/types';
 import { cameraForPagedPosition, fitWidthZ, pagedPosition, surfaceToWorld, type CameraController, type ViewportInsets, type ZoomLimits } from '../../platform/render/camera';
 import type { Rect, ViewState } from '../../platform/types';
 import type { RenderToken } from '../../platform/render/types';
@@ -104,6 +105,9 @@ export interface NativeViewLease extends BoardViewLease<object> {
     zoomStep(direction: 1 | -1, anchor?: { x: number; y: number }): void;
     /** Zoom to 100%: on a paged host this toggles between natural 1 and fit-width (camera.md F-CAM-008). */
     resetZoom(): void;
+    /** A camera glide to `target` over durationMs, in the pane's own motion; zero jumps. */
+    glideTo(target: Camera, durationMs: number): void;
+    cancelGlide(): void;
     reveal(rect: Rect): void;
     captureRegion(rect: Rect, maxSide: number, signal: AbortSignal): Promise<ImageBitmap>;
     captureBlob(rect: Rect, maxSide: number, signal: AbortSignal): Promise<Blob>;
@@ -613,6 +617,11 @@ export function createNativeViewLease(options: {
             if (platformPane) platformPane.animateZoom(camera.camera.z * factor, point);
             else { camera.zoomTo(camera.camera.z * factor, point); cameraOwner.changed(); }
         },
+        glideTo(target, durationMs) {
+            if (platformPane) platformPane.glideTo(target, durationMs);
+            else { camera.setCamera(target); cameraOwner.changed(); }
+        },
+        cancelGlide() { platformPane?.cancelMotion(); },
         zoomStep(direction, anchor) {
             // Paged hosts step their ladder from fit-width, so "1" is the page filling the viewport, not 100%.
             const stack = boardPageStack(board.doc.host);

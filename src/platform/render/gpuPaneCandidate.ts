@@ -158,12 +158,13 @@ export class GpuPaneCandidate {
             const refusal = typeof error === 'object' && error !== null && 'code' in error &&
                 (error.code === 'out-of-budget' || error.code === 'allocation');
             if (!preparation.signal.aborted && !refusal) reportGpuFallback('setup', error, this.options.paneId);
-            // Only a capability failure and a real context loss reach the runtime. A refused creation is already accounted by
-            // the governor's reservation; signalling it as trouble degraded the whole app's quality and showed the
-            // 'reduced to fit memory' notice for one pane's forced failure (by reading: signalTrouble → degrade → onPressureChange).
-            if (!preparation.signal.aborted && typeof error === 'object' && error !== null && 'code' in error) {
-                const code = error.code;
-                if (code === 'unsupported' || code === 'lost') this.reportTrouble(generation, code);
+            // Only a real context loss reaches the runtime. A refused creation is already accounted by the governor's reservation;
+            // signalling it as trouble degraded the whole app's quality and showed the 'reduced to fit memory' notice for one pane's
+            // forced failure (by reading: signalTrouble → degrade → onPressureChange). A device that fails qualification
+            // ('unsupported') is no usable GPU, which the broker tells the person: as capability pressure, the second showing of
+            // such a pane degraded every pane's quality over a device fact, the gpu-h13 fault again.
+            if (!preparation.signal.aborted && typeof error === 'object' && error !== null && 'code' in error && error.code === 'lost') {
+                this.reportTrouble(generation, 'lost');
             }
             generation.disposed = true;
             generation.services.close();

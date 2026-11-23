@@ -451,6 +451,8 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                     },
                     onSlotAvailable: () => { gpuRequested = false; requestGpu(); },
                     onPinned: () => { reportRenderPinned(); options.onNotice('cpu-pinned'); },
+                    // No usable GPU for this pane (the broker says it once per cause): the person sees why it draws in a compatible mode.
+                    onGpuUnavailable: cause => options.onNotice('gpu-unavailable', cause),
                 } },
             session: options.session, layers: layerSet.layers, presenter: created.presenter,
             registerFrames: () => {

@@ -39,6 +39,7 @@ import { usePdfTiledSelection } from './usePdfTiledSelection';
 import { usePdfTiledCopyMenu } from './usePdfTiledCopyMenu';
 import { usePdfTiledOutline } from './usePdfTiledOutline';
 import { registerView, type PdfViewInfo } from '../utils/viewRegistry';
+import { gpuUnavailableText } from '../utils/renderStatus';
 import '../pdf/overlay/links.css';
 import './PdfTiledView.css';
 
@@ -593,9 +594,9 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
             if (currentSharp.current && updatingRef.current) { updatingRef.current = false; setUpdating(false); }
             if (currentSharp.current) clearQualityNotice();
         }, onError: () => reportRenderNotice('The PDF viewer encountered a rendering error.', true),
-        onNotice: message => reportRenderNotice(message === 'memory-pressure' ? 'PDF rendering quality was reduced to fit memory.'
+        onNotice: (message, cause) => reportRenderNotice(message === 'memory-pressure' ? 'PDF rendering quality was reduced to fit memory.'
             : message === 'cpu-floor-denied' ? 'PDF rendering is limited by available memory.'
-                : message === 'cpu-pinned' ? 'PDF rendering is using a compatible mode.' : 'GPU rendering is unavailable; a compatible mode is in use.'),
+                : message === 'cpu-pinned' ? 'PDF rendering is using a compatible mode.' : gpuUnavailableText(cause)),
     }), [lease, mirror, capturer, mirrorView, onNotice, pageLayer, pdf, session, stack, updateTextMirrorView, onFindView, filePath, persist, correctReveal, clamp, refreshSelectionPointer, capabilities, reportRenderNotice, clearQualityNotice]);
     const platformPane = usePlatformPane<PdfMirrorPixels>({ host, isVisible, isFocused, vaultEpoch: session.token.vaultEpoch,
         documentId: session.token.documentId, layers, services });

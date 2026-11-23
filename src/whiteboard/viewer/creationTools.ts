@@ -8,7 +8,7 @@ import { acquireBoardGeometryScope } from '../commands/geometryScope';
 import { figureClickBox, figureDragBox } from '../geom/figures';
 import { snapBoardBounds, type BoardSnapGuide } from '../geom/runtimeSnap';
 import { boardSnapGrid, nearestBoardGridCoordinate } from '../geom/gridSnap';
-import { gridAnchored, gridRectangle } from '../input/gridCreation';
+import { gridAnchored, gridBox, gridPoint } from '../input/gridCreation';
 import { findStickyPit } from '../geom/stickyNeighbours';
 import { notebookGrowthOp } from '../commands/pagesAndSheets';
 import { styleGeometryMetrics } from '../geom/styleMetrics';
@@ -26,10 +26,14 @@ import type { createBoardRenderServices } from '../render/services';
 import { EMPTY_RICH_TEXT } from '../text/richText';
 import type { AttachmentRequest } from './attachments';
 import { PRECISE_HOLD_MS, PRECISE_SPEED } from '../input/bindingPrecision';
-import { bindingSegments, type BindingSegment } from './connectorHints';
+import { bindingSegments, elbowHintOf, type BindingSegment, type ElbowHint } from './connectorHints';
+import { bindingContainer } from '../geom/connectorParent';
 import type { BoardPreview } from './preview';
 
 type CreationKind = 'figure' | 'text' | 'sticky' | 'frame' | 'connector' | 'polyline';
+/** An arrow shorter than this (board units, catalogue B§ constants: "Arrow min length 10 (× scale)") is not created: a too-short drag
+ * is a click, so the arrow tool stays armed for another try. */
+const CONNECTOR_MIN_LENGTH = 10;
 /** Touch hold that drops a pending creation. Measured nowhere: a tap is well under this, a deliberate hold well over it. */
 const LONG_PRESS_MS = 500;
 export interface BoardCreationContext {
@@ -43,7 +47,7 @@ export interface BoardCreationContext {
     readonly preview: Pick<BoardPreview, 'show' | 'showOps' | 'waitUntilReady' | 'armCommit' | 'finishCommit' | 'cancelCommit' | 'clear'>;
     readonly guides?: (guides: readonly BoardSnapGuide[]) => void;
     /** The arrow target hint, shown while the pointer is over a shape an arrow end would bind to. */
-    readonly hint?: (target: NodeId | null) => void;
+    readonly hint?: (target: NodeId | null, elbow?: ElbowHint | null) => void;
     /** The bound end's stub while the pointer is over a target, or null: where the release would bind the end (catalogue §7 a.9). */
     readonly binding?: (segments: readonly BindingSegment[] | null) => void;
     readonly alwaysSnap?: () => boolean;
@@ -204,10 +208,22 @@ class CreationGesture implements GestureOwner {
         return this.context.dynamicSize?.() && zoom > 0 ? 1 / zoom : 1;
     }
     private async snapped(sample: RealSample, modifiers: Modifiers, signal: AbortSignal): Promise<Node> {
+        const node = await this.snappedNode(sample, modifiers, signal);
+        return node.kind === 'connector' ? this.gridStart(node) : node;
+    }
+    /** An arrow's start is the press point: on the grid when grid mode is on, as a box's origin is (catalogue b.6, the arrow start point).
+     * A bound start is replaced by its anchor when the release resolves it, so only a free start shows the rounded point. */
+    private gridStart(node: Extract<Node, { kind: 'connector' }>): Node {
+        if (!boardSnapGrid(this.document) || this.parentPose.rotation !== 0) return node;
+        const pose = this.parentPose, grid = gridPoint({ x: pose.x + node.x + node.start.x, y: pose.y + node.y + node.start.y });
+        return { ...node, start: { ...node.start, x: grid.x - pose.x - node.x, y: grid.y - pose.y - node.y } };
+    }
+    private async snappedNode(sample: RealSample, modifiers: Modifiers, signal: AbortSignal): Promise<Node> {
         const node = this.node(sample, modifiers), surface = sampleSurface(sample, this.context.sampleToSurface);
         const moved = this.follows || Math.hypot(surface.x - this.downSurface.x, surface.y - this.downSurface.y) >= CLICK_SLOP_CSS;
-        if (moved && this.context.runtime.session.doc.view.grid && node.kind === 'figure' && node.shape === 'rectangle' && this.parentPose.rotation === 0) {
-            this.context.guides?.([]); return gridRectangle(node, this.parentPose);
+        // Every box is created on the grid, clicked or dragged: its origin and dimensions round (catalogue b.6, maybeSnapToGrid).
+        if (this.context.runtime.session.doc.view.grid && (node.kind === 'figure' || node.kind === 'frame') && this.parentPose.rotation === 0) {
+            this.context.guides?.([]); return gridBox(node, this.parentPose);
         }
         // A click's note takes an empty adjacent slot within 10 screen px of the pointer before any grid rounding (tldraw's order).
         if (node.kind === 'sticky' && (!moved || this.follows)) {
@@ -243,7 +259,7 @@ class CreationGesture implements GestureOwner {
                     const attached = await this.context.resolveAttachment(point, signal, { precise: endPrecise, exact: modifiers.alt, route: node.route,
                         input: sample.source === 'keyboard' ? 'mouse' : sample.source });
                     if (!active()) throw new DOMException('Creation snap invalidated', 'AbortError');
-                    this.context.hint?.(attached?.target ?? null);
+                    this.context.hint?.(attached?.target ?? null, elbowHintOf(node.route, attached));
                     if (attached) {
                         this.context.guides?.([]);
                         // The stub comes from the candidate's geometry, as a handle drag's does. The preview stays free: the release binds it.
@@ -328,7 +344,7 @@ class CreationGesture implements GestureOwner {
         this.ended = true;
         this.previewGeneration++; this.previewRequest?.abort();
         if (reason !== 'up' || !this.valid()) { this.cancel('invalidated'); return; }
-        if (this.context.kind === 'connector' && this.isClick()) {
+        if (this.context.kind === 'connector' && (this.isClick() || connectorTooShort(this.node(this.sample, this.modifiers)))) {
             this.context.runtime.tools.keepToolOnce(this.toolEpoch); this.cancel('invalidated'); this.completeTool(); return;
         }
         if (this.context.kind === 'polyline' && this.isClick()) this.context.runtime.tools.keepToolOnce(this.toolEpoch);
@@ -402,6 +418,13 @@ class CreationGesture implements GestureOwner {
                 end = { ...end, precise: true, anchor: { x: end.anchor.x + 0.05 <= 1 ? end.anchor.x + 0.05 : end.anchor.x - 0.05, y: end.anchor.y } };
             }
             node = { ...node, start: { ...node.start, attach: start }, end: { ...node.end, attach: end } };
+            // An arrow bound at both ends joins the container its two shapes share (catalogue a.5), unless that container is locked.
+            const sessionDoc = runtime.session.doc, container = bindingContainer(sessionDoc, start, end);
+            const holder = container !== null && !isSheetParent(sessionDoc, container) ? sessionDoc.nodes.get(container as Node['id']) : undefined;
+            if (container !== null && container !== node.parent && (isSheetParent(sessionDoc, container) || (holder && !isLocked(sessionDoc, holder)))) {
+                const children = sessionDoc.children.get(container) ?? [];
+                node = { ...node, parent: container, order: keyBetween(children.at(-1)?.order ?? null, null) };
+            }
         }
         if ('font' in node && !await render.text.fonts.load({ family: node.font, bold: false, italic: false })) throw new Error('The creation font could not be loaded');
         // Every face its text uses is loaded before the epoch is fixed: a frame has no font of its own, and its title's face loaded later,
@@ -465,6 +488,10 @@ class CreationGesture implements GestureOwner {
         this.clearWake();
         try { this.context.guides?.([]); this.context.hint?.(null); this.context.binding?.(null); this.context.preview.clear(); } finally { this.unregister(); this.release(); }
     }
+}
+function connectorTooShort(node: Node): boolean {
+    if (node.kind !== 'connector') return false;
+    return Math.hypot(node.end.x - node.start.x, node.end.y - node.start.y) < CONNECTOR_MIN_LENGTH;
 }
 export function boardCreationTool(id: CreationKind): Tool<BoardCreationContext> {
     return { id, begin(sample, modifiers, context) {

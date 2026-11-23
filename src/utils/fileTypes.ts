@@ -1,12 +1,13 @@
-// `.tldraw` and `.notebook` can contain legacy text canvases; `.drawing` is
-// reserved for native whiteboards and must never be decoded as a text buffer.
+// `.tldraw` (the old drawing format, opened only to be converted) and `.notebook`
+// can contain legacy text canvases; `.drawing` is reserved for native boards and
+// must never be decoded as a text buffer.
 // Canvas documents are not prose and must not be content-indexed by search.
 
 export const DRAWING_EXT = '.tldraw';
 export const NATIVE_DRAWING_EXT = '.drawing';
 
-/** A notebook is a drawing on ruled pages, with an export to PDF. Its own
- *  extension rather than a flag inside a `.tldraw`, so the file tree can say
+/** A notebook is a board on ruled pages, with an export to PDF. Its own
+ *  extension rather than a flag inside a drawing, so the file tree can say
  *  which is which and "New notebook" makes something unambiguous. */
 export const NOTEBOOK_EXT = '.notebook';
 
@@ -25,11 +26,6 @@ export function isNotebookFile(name: string): boolean {
 /** Canvas document, including native binary whiteboards. */
 export function isCanvasFile(name: string): boolean {
     return isDrawingFile(name) || isNativeDrawingFile(name) || isNotebookFile(name);
-}
-
-/** Append `.tldraw` unless the user already typed it. */
-export function ensureDrawingExt(name: string): string {
-    return isDrawingFile(name) ? name : `${name}${DRAWING_EXT}`;
 }
 
 /** Append `.notebook` unless the user already typed it. */
@@ -128,11 +124,12 @@ export function isImageFile(name: string): boolean {
 
 /* ── PDFs ────────────────────────────────────────────────────────────────
  * A PDF opens in a pane with two modes: View (the real PDF — scrollable,
- * text selectable) and Annotate (a tldraw canvas over rasterized pages).
- * Annotating writes into THAT FILE: it stays a genuine PDF, strokes stamped
- * onto its pages, and gains the pristine original and the tldraw snapshot as
- * embedded attachments — so it opens in any viewer AND the strokes stay
- * editable here. See utils/pdfAnnotation.ts.
+ * text selectable) and Annotate (the app's own board over the pages).
+ * Annotating writes into THAT FILE: it stays a genuine PDF, the ink drawn into
+ * its pages, and gains the pristine original and the board's ink as embedded
+ * attachments — so it opens in any viewer AND the ink stays editable here. See
+ * src/pdf/writing/ and pdf/session/inkAcquisition.ts. A PDF annotated in the
+ * older format is converted explicitly before it can be annotated again.
  *
  * There is deliberately NO name test for "is this annotated". A PDF's role is
  * read from its attachments, so a renamed one of ours is still ours and a file

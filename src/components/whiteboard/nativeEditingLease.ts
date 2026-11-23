@@ -4,6 +4,7 @@ import { createBoardAccessibilityDom } from '../../whiteboard/viewer/accessibili
 import { createBoardKeyboardNavigation } from '../../whiteboard/viewer/keyboardNavigation';
 import { createBoardToolServices, type BoardToolServicesOptions } from '../../whiteboard/viewer/toolServices';
 import { addBoardDictionaryWord, getBoardDictionary, subscribeBoardDictionary } from '../../utils/boardDictionary';
+import { MAX_USER_WORD_LENGTH } from '../../whiteboard/text/spell/dictionary';
 import { closeContextMenu, getContextMenu, openContextMenu, type ContextMenuRequest } from '../../utils/contextMenu';
 import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
 import { createEmbedPresentationPort } from '../../platform/render/embedPresentation';
@@ -189,6 +190,7 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
                             entries: [...rows.suggestions.map((word, index) => ({ kind: 'command' as const, id: `suggestion-${index}`,
                                 label: word, run: () => { try { rows.choose(word); } catch (error) { options.onError(error); } } })),
                             { kind: 'command', id: 'add-word', label: 'Add to dictionary', disabled: !rows.canAdd,
+                                reason: rows.canAdd ? undefined : `Only a word of letters, apostrophes and hyphens, up to ${MAX_USER_WORD_LENGTH} characters, can be added`,
                                 run: () => { try { rows.add(); } catch (error) { options.onError(error); } } }],
                             onClose() { if (spellingMenu === request) spellingMenu = null; } };
                         spellingMenu = request; openContextMenu(request);

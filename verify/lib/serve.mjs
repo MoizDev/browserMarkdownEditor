@@ -123,7 +123,7 @@ export async function prepareApp({ root = sourceRoot, scratch, mode = 'productio
     if (scratch === root || scratch.startsWith(`${root}/`)) throw new Error('Vite scratch must be outside the source root');
     await mkdir(scratch, { recursive: true });
     const config = join(scratch, 'vite.config.mjs'), dist = join(scratch, 'dist');
-    await writeFile(config, `import original from ${JSON.stringify(join(root, 'vite.config.ts'))};\nexport default {...original,root:${JSON.stringify(root)},cacheDir:${JSON.stringify(join(scratch, 'vite-cache'))},optimizeDeps:{...original.optimizeDeps,exclude:[...(original.optimizeDeps?.exclude||[]),'@tldraw/assets/imports.vite']},build:{...original.build,outDir:${JSON.stringify(dist)},emptyOutDir:true${manifest ? ',manifest:true' : ''}${sourcemap ? ",sourcemap:'hidden'" : ''}}};\n`);
+    await writeFile(config, `import original from ${JSON.stringify(join(root, 'vite.config.ts'))};\nexport default {...original,root:${JSON.stringify(root)},cacheDir:${JSON.stringify(join(scratch, 'vite-cache'))},build:{...original.build,outDir:${JSON.stringify(dist)},emptyOutDir:true${manifest ? ',manifest:true' : ''}${sourcemap ? ",sourcemap:'hidden'" : ''}}};\n`);
     let mutant;
     try { mutant = JSON.parse(await readFile(join(root, '.bme-mutant.json'), 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
     const repository = mutant?.sourceRoot ?? root;

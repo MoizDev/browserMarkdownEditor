@@ -38,7 +38,7 @@ export function toolList() {
     return VAULT_TOOLS.map(t => ({
         name: t.name,
         description: t.name === 'canvas_shapes' && compareVersions(HELPER_VERSION, CANVAS_PAGING_VERSION) < 0
-            ? 'List the shapes on a .tldraw drawing, a .notebook, or a PDF\'s annotation layer: id, type, position and size, text, colour and style. On notebooks and PDFs coordinates are page-relative: x/y in page units from that page\'s top-left corner, with `page` saying which page.'
+            ? 'List the shapes on a drawing (.drawing), a .notebook, or a PDF\'s annotation layer: id, type, position and size, text, colour and style. On notebooks and PDFs coordinates are page-relative: x/y in page units from that page\'s top-left corner, with `page` saying which page.'
             : t.description,
         inputSchema: t.name === 'canvas_shapes' && compareVersions(HELPER_VERSION, CANVAS_PAGING_VERSION) < 0
             ? { ...t.inputSchema, properties: { path: (t.inputSchema.properties as Record<string, unknown>).path,

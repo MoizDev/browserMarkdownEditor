@@ -26,7 +26,7 @@
 // Bundle discipline: this module is on the agent panel's lazy path and imports
 // no renderer. PDF access is supplied by the App-owned contained source for a PDF
 // that is not open; open documents are read through their panes' reporters
-// (utils/viewRegistry.ts); tldraw is never imported — closed canvases are read
+// (utils/viewRegistry.ts); no board engine is imported — closed canvases are read
 // from their JSON (canvasFileSummary.ts), and changes go through the live
 // canvas the host opens.
 
@@ -976,7 +976,7 @@ async function vaultCreate(a: Args, ctx: Ctx): Promise<ToolExecution> {
         // selected; arbitrary agent-authored snapshots never become editor input.
         if (content.trim()) throw new ToolError(`create the ${isNotebookFile(name) ? 'notebook' : 'drawing'} empty (no content), then add to it with canvas_apply.`);
     } else if (isPdfFile(name) || (isImageFile(name) && !/\.svg$/i.test(name)) || !isTextFile(name)) {
-        throw new ToolError(`vault_create makes text files (notes are .md), empty drawings (.drawing or .tldraw) and empty notebooks (.notebook); it cannot make "${name}".`);
+        throw new ToolError(`vault_create makes text files (notes are .md), empty drawings (.drawing) and empty notebooks (.notebook); it cannot make "${name}".`);
     }
     await requireParentFolder(ctx, path);
     ctx.ensureLive();
@@ -1040,7 +1040,7 @@ function assertCanvasPath(path: string, supportsNative: boolean): void {
     assertSupportedCanvasFormat(path);
     const name = baseName(path);
     if (!isCanvasFile(name) && !isPdfFile(name)) {
-        throw new ToolError(`"${path}" is not a drawing (.tldraw), notebook (.notebook) or PDF; canvas tools work only on those.`);
+        throw new ToolError(`"${path}" is not a drawing (.drawing), notebook (.notebook) or PDF; canvas tools work only on those.`);
     }
 }
 

@@ -93,7 +93,7 @@ export const VAULT_TOOLS: readonly ToolDef[] = [
     {
         name: 'vault_read',
         mutates: false,
-        description: 'Read a file in the vault. Text and markdown come back as numbered lines ("<n>\\t<line>") — from the open tab\'s live buffer when the file is open, so unsaved edits are included — plus a `hash` of the whole current text, which vault_write needs. Long files are paginated with offset/limit (lines, 1-based). An open EPUB returns bounded visible/selected canonical text with a locator, without writable text hashes or line numbers; unopened EPUB extraction is unavailable. A PDF returns the text of a page range; an image returns the image; a .tldraw drawing or .notebook returns a summary of its shapes (use canvas_shapes for full detail).',
+        description: 'Read a file in the vault. Text and markdown come back as numbered lines ("<n>\\t<line>") — from the open tab\'s live buffer when the file is open, so unsaved edits are included — plus a `hash` of the whole current text, which vault_write needs. Long files are paginated with offset/limit (lines, 1-based). An open EPUB returns bounded visible/selected canonical text with a locator, without writable text hashes or line numbers; unopened EPUB extraction is unavailable. A PDF returns the text of a page range; an image returns the image; a drawing (.drawing) or .notebook returns a summary of its shapes (use canvas_shapes for full detail).',
         inputSchema: {
             type: 'object', additionalProperties: false, required: ['path'],
             properties: { path: PATH, offset: { type: 'integer', minimum: 1, description: 'First line (text) or first page (PDF).' }, limit: { type: 'integer', minimum: 1, description: 'How many lines (text) or pages (PDF).' } },
@@ -140,7 +140,7 @@ export const VAULT_TOOLS: readonly ToolDef[] = [
     {
         name: 'vault_create',
         mutates: true,
-        description: 'Create a NEW file (a note is a .md file) with optional content. Refused if a file or folder already has that name. Parent folders must exist (see vault_mkdir). Create an empty .drawing native drawing, .tldraw drawing or .notebook by name, then add to it with canvas_apply.',
+        description: 'Create a NEW file (a note is a .md file) with optional content. Refused if a file or folder already has that name. Parent folders must exist (see vault_mkdir). Create an empty drawing (.drawing) or notebook (.notebook) by name, then add to it with canvas_apply.',
         inputSchema: {
             type: 'object', additionalProperties: false, required: ['path'],
             properties: { path: PATH, content: { type: 'string', default: '' } },
@@ -188,7 +188,7 @@ export const VAULT_TOOLS: readonly ToolDef[] = [
     {
         name: 'canvas_apply',
         mutates: true,
-        description: 'Draw on a .tldraw drawing, a .notebook, or a PDF (as annotations): create text, sticky notes, geometric shapes, lines, arrows/connectors (bound to shapes by id) and freehand strokes; move, resize, restyle or delete shapes. All ops apply as ONE undo step. Notebook/PDF coordinates are page-relative (x/y from the top-left of `page`, which defaults to the page the user is looking at); drawing coordinates are the canvas\'s own. An op may refer to a shape created earlier in the same call as "$N" (N = that op\'s 1-based position in `ops`), e.g. an arrow from "$1" to "$2". An update with only `page` moves the shape to the same spot on that page. A document that is not open is opened beside the user\'s current tab. Returns the ids of created shapes, in op order.',
+        description: 'Draw on a drawing (.drawing), a .notebook, or a PDF (as annotations): create text, sticky notes, geometric shapes, lines, arrows/connectors (bound to shapes by id) and freehand strokes; move, resize, restyle or delete shapes. All ops apply as ONE undo step. Notebook/PDF coordinates are page-relative (x/y from the top-left of `page`, which defaults to the page the user is looking at); drawing coordinates are the canvas\'s own. An op may refer to a shape created earlier in the same call as "$N" (N = that op\'s 1-based position in `ops`), e.g. an arrow from "$1" to "$2". An update with only `page` moves the shape to the same spot on that page. A document that is not open is opened beside the user\'s current tab. Returns the ids of created shapes, in op order.',
         inputSchema: {
             type: 'object', additionalProperties: false, required: ['path', 'ops'],
             properties: { path: PATH, ops: { type: 'array', items: CANVAS_OP, minItems: 1, maxItems: 200 } },

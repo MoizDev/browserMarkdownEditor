@@ -265,8 +265,9 @@ const RULE_WIDTH = 0.75;
  *
  * The ruling is drawn, not rasterized — so an exported notebook is vector
  * through and through, prints at any size, and costs a few hundred bytes a page
- * rather than an image. It deliberately mirrors `paperSvg`, because what is
- * exported has to be the paper that was written on.
+ * rather than an image. It deliberately mirrors the board's paper
+ * (whiteboard/host/notebookPaper.ts), because what is exported has to be the
+ * paper that was written on.
  *
  * No attachments and no round trip: unlike an annotated PDF this is an OUTPUT,
  * and the `.notebook` file beside it stays the editable original.

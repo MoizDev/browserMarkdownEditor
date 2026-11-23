@@ -1,4 +1,5 @@
 import { selectableAtFocus } from '../selection';
+import { childrenOf } from '../model/doc';
 import { planDelete } from '../commands/delete';
 import { createBoardSelectionCommands, type SelectionOrder } from '../commands/selection';
 import { createBoardArrangementCommands } from '../commands/arrangement';
@@ -92,13 +93,33 @@ export function createSelectionCommandDriver(options: SelectionCommandDriverOpti
         'align.top': 'top', 'align.middle': 'middle', 'align.bottom': 'bottom' };
     const orders: Readonly<Record<string, SelectionOrder>> = { 'arrange.back': 'back', 'arrange.backward': 'backward',
         'arrange.forward': 'forward', 'arrange.front': 'front' };
-    const owned = (id: string): boolean => id === 'delete' || id === 'group' || id === 'ungroup' || id === 'lock' || id === 'frame.toggle'
+    /** Enter on a selection of one group selects its children, the children reachable from the group's own focus (K§10.2). */
+    const enterGroup = (): boolean => {
+        if (!live() || session.isGestureActive) return false;
+        const state = runtime.selection.getSnapshot();
+        const group = state.selected.length === 1 ? doc.nodes.get(state.selected[0]) : undefined;
+        if (!group || group.kind !== 'group') return false;
+        const children = childrenOf(doc, group.id).filter(child => selectableAtFocus(doc, child.id, group.id, state.sheet) === child.id).map(child => child.id);
+        if (!children.length) return false;
+        runtime.selection.setScope(group.id, children);
+        return true;
+    };
+    const owned = (id: string): boolean => id === 'delete' || id === 'group' || id === 'ungroup' || id === 'lock' || id === 'frame.toggle' || id === 'frame.remove'
         || id === 'distribute.horizontal' || id === 'distribute.vertical' || Object.hasOwn(alignments, id) || Object.hasOwn(orders, id);
     const run = (id: string): boolean => {
         if (id === 'select.all') return selectAll();
-        // Escape clears the selection (F-SEL-007): session state only, so it is never a document step or a write.
+        if (id === 'edit.start') return enterGroup();
+        // Escape unwinds one layer at a time (K§10.1): a focused group with something selected pops out to its parent with the group selected;
+        // otherwise it clears the selection. Session state only, so it is never a document step or a write.
         if (id === 'escape') {
-            if (!runtime.selection.getSnapshot().selected.length) return false;
+            const state = runtime.selection.getSnapshot();
+            const focus = doc.nodes.get(state.focus as NodeId);
+            if (focus?.kind === 'group' && state.selected.length) {
+                if (selectableAtFocus(doc, focus.id, focus.parent, state.sheet) === focus.id) runtime.selection.setScope(focus.parent, [focus.id]);
+                else runtime.selection.setFocus(focus.parent);
+                return true;
+            }
+            if (!state.selected.length) return false;
             runtime.selection.clear();
             return true;
         }
@@ -107,13 +128,22 @@ export function createSelectionCommandDriver(options: SelectionCommandDriverOpti
         const count = runtime.selection.getSnapshot().selected.length;
         if (!count) return false;
         if (id === 'delete') return schedule(remove);
-        if (id === 'group') return count < 2 ? false : schedule((ids, signal) => selection.group(ids, signal).then(() => {}));
+        // Cmd/Ctrl+G groups two or more selected items and ungroups a single selected group (K§4.4).
+        if (id === 'group') {
+            if (count >= 2) return schedule((ids, signal) => selection.group(ids, signal).then(() => {}));
+            return doc.nodes.get(runtime.selection.getSnapshot().selected[0])?.kind === 'group' ? schedule((ids, signal) => selection.ungroup(ids, signal).then(() => {})) : false;
+        }
         if (id === 'ungroup') return schedule((ids, signal) => selection.ungroup(ids, signal).then(() => {}));
         if (id === 'lock') return schedule((ids, signal) => selection.toggleLocked(ids, signal));
         if (id === 'frame.toggle') return schedule((ids, signal) => {
             const allFrames = ids.every(value => doc.nodes.get(value)?.kind === 'frame');
             return allFrames ? selection.removeFrames(ids, signal).then(() => {}) : selection.frameSelection(ids, '', signal).then(() => {});
         });
+        if (id === 'frame.remove') {
+            const ids = runtime.selection.getSnapshot().selected;
+            if (!ids.every(value => doc.nodes.get(value)?.kind === 'frame')) return false;
+            return schedule((target, signal) => selection.removeFrames(target, signal).then(() => {}));
+        }
         if (Object.hasOwn(orders, id)) return schedule((ids, signal) => selection.reorderSelection(ids, orders[id], signal));
         if (Object.hasOwn(alignments, id)) return count < 2 ? false : schedule((ids, signal, active) => doc.kind === 'notebook'
             ? arrangeNotebook({ runtime, ids, action: { kind: 'align', mode: alignments[id] }, signal, current: active, cooperate })

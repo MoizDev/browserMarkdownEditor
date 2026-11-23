@@ -18,7 +18,8 @@ const figures: readonly [ToolLabel, string][] = [
     ['diamond', 'diamond'], ['hexagon', 'hexagon'], ['oval', 'oval'], ['rhombus', 'rhombus'],
     ['star', 'star'], ['cloud', 'cloud'], ['heart', 'heart'], ['xBox', 'x-box'],
     ['checkBox', 'check-box'], ['arrowLeft', 'arrow-left'], ['arrowUp', 'arrow-up'],
-    ['arrowDown', 'arrow-down'], ['arrowRight', 'arrow-right'],
+    ['arrowDown', 'arrow-down'], ['arrowRight', 'arrow-right'], ['pentagon', 'pentagon'], ['octagon', 'octagon'],
+    ['trapezoid', 'trapezoid'], ['rhombus2', 'rhombus-2'],
 ];
 
 export interface ToolChoices {

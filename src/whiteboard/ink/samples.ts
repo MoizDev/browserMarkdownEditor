@@ -1,6 +1,7 @@
 import type { SampleRef, SampleLease, SamplePressure, SampleChunk as ModelSampleChunk, SampleBlockView, SampleStoreReader, SampleSummary } from '../model/samples';
 import { nextUp } from '../geom/numeric';
 import { decodePoints, POINT_LIMITS } from '../format/points';
+import { CurveReach } from './reach';
 export type { SampleRef, SampleLease, SamplePressure, SampleBlockView, SampleStoreReader } from '../model/samples';
 
 // D-13, F-INK-006/007/010; architecture/ink.md §2.1. No event/time/device data enters this store.
@@ -37,6 +38,8 @@ export interface EncodedSampleHeader {
     readonly hasPressure: boolean;
     readonly runCount: number; // 0 is an absent source run channel, not a synthetic storage run.
     readonly localBounds: readonly [number, number, number, number];
+    readonly curveBounds: readonly [number, number, number, number];
+    readonly maxReach: number;
     readonly maxPressure: number | null;
 }
 
@@ -205,6 +208,7 @@ export class SampleBuilder implements SampleSequence {
     private exactTail = false;
     private minX = Infinity; private minY = Infinity; private maxX = -Infinity; private maxY = -Infinity;
     private maximumPressure: number | null = null;
+    private reach = new CurveReach();
     readonly options: SampleBuilderOptions;
     constructor(options: SampleBuilderOptions) {
         this.options = Object.freeze({ ...options });
@@ -227,6 +231,7 @@ export class SampleBuilder implements SampleSequence {
         this.minX = Math.min(this.minX, x, px); this.minY = Math.min(this.minY, y, py);
         this.maxX = Math.max(this.maxX, x, px); this.maxY = Math.max(this.maxY, y, py);
         if (pressure !== undefined) this.maximumPressure = Math.max(this.maximumPressure ?? 0, pressure, Math.round(pressure * 65535) / 65535);
+        this.reach.add(x, y);
         this.length++;
     }
     summary(): SampleSummary | null {
@@ -235,7 +240,12 @@ export class SampleBuilder implements SampleSequence {
         if (!Number.isFinite(w) || !Number.isFinite(h)) return null;
         const width = w ? nextUp(w) : 0, height = h ? nextUp(h) : 0;
         if (!Number.isFinite(width) || !Number.isFinite(height)) return null;
-        return Object.freeze({ localBounds: Object.freeze([this.minX, this.minY, width, height] as const), maxPressure: this.maximumPressure });
+        // The curve is built from the STORED coordinates, each within maxErrorWorld of the exact one fed
+        // to the reach: an endpoint moves by e and a control by e + 2e/3, so 2e covers both.
+        const curveBounds = this.reach.box(2 * this.maxErrorWorld);
+        if (!curveBounds.every(Number.isFinite)) return null;
+        return Object.freeze({ localBounds: Object.freeze([this.minX, this.minY, width, height] as const),
+            curveBounds, maxReach: this.reach.maxReach(2 * this.maxErrorWorld), maxPressure: this.maximumPressure });
     }
     private locate(index: number): SampleChunk | ChunkBuilder {
         if (this.sealed) throw new Error('Sample ownership has already transferred');
@@ -268,6 +278,7 @@ export class SampleBuilder implements SampleSequence {
         if (this.sealed) throw new Error('Sample ownership has already transferred');
         const length = this.length, frozenCount = this.frozen.length, active = this.active, exactTail = this.exactTail;
         const minX = this.minX, minY = this.minY, maxX = this.maxX, maxY = this.maxY, maximumPressure = this.maximumPressure;
+        const reach = this.reach.clone();
         const restoreActive = active?.checkpoint();
         let restored = false;
         return () => {
@@ -276,6 +287,7 @@ export class SampleBuilder implements SampleSequence {
             restoreActive?.();
             this.length = length; this.frozen.length = frozenCount; this.active = active; this.exactTail = exactTail;
             this.minX = minX; this.minY = minY; this.maxX = maxX; this.maxY = maxY; this.maximumPressure = maximumPressure;
+            this.reach = reach.clone();
         };
     }
     beginBoundedChunk(): void {
@@ -318,6 +330,7 @@ type SampleRecord = {
     chunks: readonly SampleChunk[] | null; bytes: number;
     encoded: string | null; k: number; hasPressure: boolean; runCount: number;
     nativeBounds: readonly [number, number, number, number] | null; maxPressure: number | null;
+    curveBounds: readonly [number, number, number, number] | null; maxReach: number;
 };
 // Handles are unique across stores in this realm; worker bridges re-admit encoded payloads into
 // their owning store rather than treating another realm's numeric handles as portable references.
@@ -342,7 +355,8 @@ export class SampleStore implements SampleStoreReader {
             ref, count: builder.count, chunks, owners: 0,
             bytes: chunks.reduce((sum, c) => sum + c.byteLength, 0),
             encoded: null, k: 0, hasPressure: builder.options.pressure, runCount: 0,
-            nativeBounds: summary?.localBounds ?? null, maxPressure: summary?.maxPressure ?? null
+            nativeBounds: summary?.localBounds ?? null, maxPressure: summary?.maxPressure ?? null,
+            curveBounds: summary?.curveBounds ?? null, maxReach: summary?.maxReach ?? 0
         });
     }
     admitEncoded(pts: string, header: EncodedSampleHeader): SampleLease {
@@ -358,15 +372,23 @@ export class SampleStore implements SampleStoreReader {
             || header.localBounds[0] < -POINT_LIMITS.world || header.localBounds[1] < -POINT_LIMITS.world
             || header.localBounds[0] + header.localBounds[2] > POINT_LIMITS.world
             || header.localBounds[1] + header.localBounds[3] > POINT_LIMITS.world
+            // The curve box must enclose the sample box; it may reach past the coordinate limit by a third of a chord.
+            || header.curveBounds.length !== 4 || !header.curveBounds.every(Number.isFinite)
+            || header.curveBounds[2] < 0 || header.curveBounds[3] < 0
+            || header.curveBounds[0] > header.localBounds[0] || header.curveBounds[1] > header.localBounds[1]
+            || header.curveBounds[0] + header.curveBounds[2] < header.localBounds[0] + header.localBounds[2]
+            || header.curveBounds[1] + header.curveBounds[3] < header.localBounds[1] + header.localBounds[3]
+            || !Number.isFinite(header.maxReach) || header.maxReach < 0
             || (header.hasPressure ? header.maxPressure === null || !Number.isFinite(header.maxPressure)
                 || header.maxPressure < 0 || header.maxPressure > MAX_PRESSURE : header.maxPressure !== null)) {
             throw new RangeError('Invalid validated ink payload header');
         }
         const nativeBounds = Object.freeze([...header.localBounds]) as EncodedSampleHeader['localBounds'];
+        const curveBounds = Object.freeze([...header.curveBounds]) as EncodedSampleHeader['curveBounds'];
         return this.add({
             ref: sampleRef(), count: header.count, chunks: null, owners: 0, bytes: 0,
             encoded: pts, k: header.k, hasPressure: header.hasPressure, runCount: header.runCount,
-            nativeBounds, maxPressure: header.maxPressure
+            nativeBounds, maxPressure: header.maxPressure, curveBounds, maxReach: header.maxReach
         });
     }
     /** Share only sealed backing, never the source's mutable lease counters or cache slot.
@@ -388,7 +410,8 @@ export class SampleStore implements SampleStoreReader {
     has(ref: SampleRef): boolean { return this.records.has(ref); }
     summary(ref: SampleRef): SampleSummary | null {
         const record = this.record(ref);
-        return record.nativeBounds === null ? null : Object.freeze({ localBounds: record.nativeBounds, maxPressure: record.maxPressure });
+        return record.nativeBounds === null || record.curveBounds === null ? null : Object.freeze({ localBounds: record.nativeBounds,
+            curveBounds: record.curveBounds, maxReach: record.maxReach, maxPressure: record.maxPressure });
     }
     count(ref: SampleRef): number { return this.record(ref).count; }
     pressureMode(ref: SampleRef): 'real' | 'none' { return this.record(ref).hasPressure ? 'real' : 'none'; }
@@ -411,7 +434,7 @@ export class SampleStore implements SampleStoreReader {
                 if (--record.owners === 0) {
                     this.records.delete(record.ref); this.bytes -= record.bytes;
                     this.encodedBytes -= record.encoded === null ? 0 : 2 * record.encoded.length;
-                    record.chunks = null; record.bytes = 0; record.encoded = null; record.nativeBounds = null;
+                    record.chunks = null; record.bytes = 0; record.encoded = null; record.nativeBounds = null; record.curveBounds = null;
                 }
             }
         });
@@ -420,13 +443,13 @@ export class SampleStore implements SampleStoreReader {
     }
     readEncoded(ref: SampleRef): Readonly<{ pts: string; header: EncodedSampleHeader; }> | null {
         const record = this.record(ref);
-        if (record.encoded === null || record.nativeBounds === null) return null;
+        if (record.encoded === null || record.nativeBounds === null || record.curveBounds === null) return null;
         // R-W34: native truth belongs to the immutable record, not an ExtBag/by-id copy. Borrowing
         // this payload needs the same caller-held SampleLease as read(); no samples are decoded.
         return Object.freeze({
             pts: record.encoded, header: Object.freeze({
                 count: record.count, k: record.k, hasPressure: record.hasPressure, runCount: record.runCount,
-                localBounds: record.nativeBounds, maxPressure: record.maxPressure,
+                localBounds: record.nativeBounds, curveBounds: record.curveBounds, maxReach: record.maxReach, maxPressure: record.maxPressure,
             })
         });
     }

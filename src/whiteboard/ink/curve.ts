@@ -5,8 +5,10 @@ import type { SampleBuilder, SampleBuilderOptions, SampleSequence, SegmentKind }
 
 export const CURVE_VERSION = 1;
 export const CURVE_CORNER_DOT = -0.5;
+export const CURVE_SMOOTH_DOT = 0;
 export const CURVE_MIN_CHORD_WORLD = 1e-12;
 export const CURVE_CHUNK_SPANS = 256;
+// Bounds only the VALIDATION of a saved stroke's `fairTol`; the curve no longer reads it (see writeControl).
 export const FAIRING_CONTROL_ERROR_DEVICE_PX = 0.25;
 // Product-design cap, NOT a main parity witness. M-INK-ZOOM-CAP still needs a current-app run.
 export const INK_ZOOM_CAP_CALIBRATION = Object.freeze({ id: 'M-INK-ZOOM-CAP', status: 'pending' as const });
@@ -57,46 +59,60 @@ function validateParameters(p: CurveParameters): void {
         || p.fairingToleranceWorld > FAIRING_CONTROL_ERROR_DEVICE_PX / scale) throw new RangeError('Invalid saved v1 ink curve parameters');
 }
 
-// Derivation: a cubic Bézier has P(t)=Σ B_i^3(t)P_i. Moving only its end control by Δ moves
-// the curve by 3t²(1-t)Δ, whose maximum is 4|Δ|/9. No causal filter or inherited tangent.
-// architecture/ink.md §3.2; standard Bernstein/Hermite identities, derived here from first principles.
+// Every freehand span is a cubic through its two samples whose end tangents are shared with the
+// neighbouring spans, so the stroke is tangent-continuous through each sample at any sample spacing.
+// Until this rule the controls were clamped to the saved fairing tolerance (about 0.01 world px), so
+// each span was its own chord: measured, a quick loop arrives as 10–12 samples 30–100 px apart and
+// was drawn as a decagon (the user's "sharp corners on faster strokes"). Dense slow input hid it.
+//
+// Tangent at a sample: the direction from its previous to its next sample (the chord-weighted sum
+// of the two unit chords), so a short jittery neighbour chord cannot swing the tangent of a long
+// span. Handle: one third of the span's OWN chord, which is the circular-arc handle to within 3%
+// for turns up to 40° per sample (7% at 60°) and can never loop a short span behind a long one.
+// Corners: a turn of 120° or more (CURVE_CORNER_DOT) is a real corner, the span leaves along its
+// chord (the straight third). Between a 90° turn (CURVE_SMOOTH_DOT) and that, the tangent eases
+// from the shared one to the chord, so the picture never jumps as a turn crosses the corner rule
+// and a quick zig-zag keeps pointed tips instead of loops.
+//
+// Bound used by every enclosure (stroke bounds, notebook growth): each control lies EXACTLY one
+// third of its span's chord from that span's endpoint, whatever the branch, and a cubic lies in the
+// hull of its four controls, so a span never leaves the discs of radius chord/3 around its samples
+// (CURVE_CONTROL_REACH, accumulated by `CurveReach` in ink/reach.ts).
+//
+// The saved fairing tolerance no longer limits the curve. It is still read, validated and written
+// as before (geomVersion stays 1), so files open both ways; old saved ink now draws smooth too.
+
 function writeControl(out: Float64Array, offset: number, ax: number, ay: number, bx: number, by: number,
-    neighbourX: number, neighbourY: number, hasNeighbour: boolean, isEnd: boolean, tolerance: number): boolean {
+    neighbourX: number, neighbourY: number, hasNeighbour: boolean, isEnd: boolean): boolean {
     const dx = bx - ax, dy = by - ay, length = Math.hypot(dx, dy);
     const baseX = isEnd ? bx - dx / 3 : ax + dx / 3;
     const baseY = isEnd ? by - dy / 3 : ay + dy / 3;
     if (!Number.isFinite(baseX) || !Number.isFinite(baseY) || !Number.isFinite(length)) throw new RangeError('Ink control overflow');
     out[offset] = baseX; out[offset + 1] = baseY;
     if (!hasNeighbour || length <= CURVE_MIN_CHORD_WORLD) return length <= CURVE_MIN_CHORD_WORLD;
+    // The neighbour chord, oriented along the stroke: into A for the start control, out of B for the end.
     const nx = isEnd ? neighbourX - bx : ax - neighbourX;
     const ny = isEnd ? neighbourY - by : ay - neighbourY;
     const neighbourLength = Math.hypot(nx, ny);
     if (neighbourLength <= CURVE_MIN_CHORD_WORLD) return true;
-    const ux = dx / length, uy = dy / length, vx = nx / neighbourLength, vy = ny / neighbourLength;
-    if (ux * vx + uy * vy <= CURVE_CORNER_DOT) return true;
-    const sumX = ux + vx, sumY = uy + vy, sumLength = Math.hypot(sumX, sumY);
-    if (sumLength <= CURVE_MIN_CHORD_WORLD) return true;
-    const tangentX = sumX / sumLength, tangentY = sumY / sumLength;
-    // A control's projection never goes behind its endpoint or past the straight-third distance.
-    const projected = Math.max(0, Math.min(length / 3, (tangentX * ux + tangentY * uy) * length / 3));
-    const perpendicular = Math.max(-tolerance, Math.min(tolerance, (-tangentX * uy + tangentY * ux) * length / 3));
-    const sign = isEnd ? -1 : 1;
-    let controlX = (isEnd ? bx : ax) + sign * (projected * ux - perpendicular * uy);
-    let controlY = (isEnd ? by : ay) + sign * (projected * uy + perpendicular * ux);
-    if (isEnd) {
-        // This is the actual Euclidean revision from the displayed provisional control, not merely
-        // a perpendicular clamp. At a cusp we keep the provisional straight-third instead.
-        const movement = Math.hypot(controlX - baseX, controlY - baseY);
-        if (movement > tolerance) {
-            const factor = tolerance / movement;
-            controlX = baseX + (controlX - baseX) * factor;
-            controlY = baseY + (controlY - baseY) * factor;
-        }
+    const ux = dx / length, uy = dy / length;
+    const dot = ux * nx / neighbourLength + uy * ny / neighbourLength;
+    if (dot <= CURVE_CORNER_DOT) return true;
+    const sumX = dx + nx, sumY = dy + ny, sumLength = Math.hypot(sumX, sumY);
+    if (!(sumLength > CURVE_MIN_CHORD_WORLD)) return true;
+    let tangentX = sumX / sumLength, tangentY = sumY / sumLength;
+    if (dot < CURVE_SMOOTH_DOT) {
+        const t = (CURVE_SMOOTH_DOT - dot) / (CURVE_SMOOTH_DOT - CURVE_CORNER_DOT), w = t * t * (3 - 2 * t);
+        const blendX = tangentX + (ux - tangentX) * w, blendY = tangentY + (uy - tangentY) * w;
+        const blendLength = Math.hypot(blendX, blendY);
+        // Both are unit vectors less than 120° apart, so the blend cannot vanish; guard rounding anyway.
+        if (!(blendLength > 0)) return true;
+        tangentX = blendX / blendLength; tangentY = blendY / blendLength;
     }
+    const sign = isEnd ? -1 : 1, handle = length / 3;
+    const controlX = (isEnd ? bx : ax) + sign * tangentX * handle;
+    const controlY = (isEnd ? by : ay) + sign * tangentY * handle;
     if (!Number.isFinite(controlX) || !Number.isFinite(controlY)) throw new RangeError('Ink control overflow');
-    // At large anchors, rounding the clamp itself can exceed a tiny saved tolerance. Inconclusive
-    // means keep the straight-third, not silently spend a larger revision budget.
-    if (isEnd && Math.hypot(controlX - baseX, controlY - baseY) > tolerance) return false;
     out[offset] = controlX; out[offset + 1] = controlY;
     return false;
 }
@@ -118,9 +134,9 @@ export function writeCurveSpan(samples: SampleSequence, index: number, p: CurveP
     const before = !straight && index > 0 && samples.segmentKind(index - 1) === 'freehand';
     const after = !straight && index + 2 < endpointLimit && samples.segmentKind(index + 1) === 'freehand';
     if (writeControl(output, offset + 2, ax, ay, bx, by,
-        before ? samples.x(index - 1) : 0, before ? samples.y(index - 1) : 0, before, false, p.fairingToleranceWorld)) flags |= CurveFlag.CornerBefore;
+        before ? samples.x(index - 1) : 0, before ? samples.y(index - 1) : 0, before, false)) flags |= CurveFlag.CornerBefore;
     if (writeControl(output, offset + 4, ax, ay, bx, by,
-        after ? samples.x(index + 2) : 0, after ? samples.y(index + 2) : 0, after, true, p.fairingToleranceWorld)) flags |= CurveFlag.CornerAfter;
+        after ? samples.x(index + 2) : 0, after ? samples.y(index + 2) : 0, after, true)) flags |= CurveFlag.CornerAfter;
     if (straight || endpointLimit === 2) flags |= CurveFlag.Straight;
     return flags;
 }

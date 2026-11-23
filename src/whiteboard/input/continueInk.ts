@@ -102,12 +102,15 @@ export function createInkContinuation(options: InkContinuationOptions): (sample:
                     check(); wet = samples.retain(lease.ref);
                     const growth = (() => {
                         if (doc.host.kind !== 'notebook' || !summary) return null;
-                        const [sx, sy, w, h] = summary.localBounds, pose = worldPose(doc, node.id);
+                        // The curve's enclosure, grown for a non-uniform scale as scene/bounds.ts derives.
+                        const [sx, sy, w, h] = summary.curveBounds, pose = worldPose(doc, node.id);
+                        const k = Math.max(Math.abs(node.sx), Math.abs(node.sy));
+                        const ex = (k - Math.abs(node.sx)) * summary.maxReach, ey = (k - Math.abs(node.sy)) * summary.maxReach;
                         const c = Math.cos(pose.rotation), s = Math.sin(pose.rotation), box = new Float64Array(4);
                         const x0 = sx * node.sx, y0 = sy * node.sy, x1 = (sx + w) * node.sx, y1 = (sy + h) * node.sy;
-                        transformBox(box, 0, [Math.min(x0, x1), Math.min(y0, y1), Math.max(x0, x1), Math.max(y0, y1)],
+                        transformBox(box, 0, [Math.min(x0, x1) - ex, Math.min(y0, y1) - ey, Math.max(x0, x1) + ex, Math.max(y0, y1) + ey],
                             0, [c, s, -s, c, pose.x, pose.y]);
-                        return notebookGrowthOp(doc, box[3] + node.width + node.fairTol);
+                        return notebookGrowthOp(doc, box[3] + node.width);
                     })();
                     check();
                     const applied = session.apply({ origin: 'tool', label: 'Continue stroke', ops: [

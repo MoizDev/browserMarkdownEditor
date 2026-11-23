@@ -832,6 +832,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         },
         startFling(samples) { if (!disposed && visible) frameLease?.startFling(samples); },
         animateZoom(targetZ, anchor) { if (!disposed && visible) frameLease?.animateZoom(targetZ, anchor); },
+        animatePan(delta) { if (!disposed && visible) frameLease?.animatePan(delta); },
         cancelMotion() { if (!disposed && visible) frameLease?.cancelMotion(); },
         captureRegion(worldRect, maxSidePx, captureOptions) {
             if (disposed) return Promise.reject(new Error('Pane capture is unavailable'));

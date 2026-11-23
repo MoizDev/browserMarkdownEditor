@@ -7,13 +7,18 @@ export interface ZoomBrushContext {
   toSurface(sample: RealSample): ZoomPoint
   preview(box: ZoomBox): void
   clearPreview(): void
-  fitBox(box: ZoomBox): void
-  zoomAt(point: ZoomPoint, factor: number): void
+  /** Zooms to the box, centred on it. `cap` limits the zoom to a fraction of the current zoom (Alt: half). */
+  fitBox(box: ZoomBox, cap?: number): void
+  /** One zoom step in (+1) or out (-1) at the point, along the board's zoom steps. */
+  stepZoom(direction: -1 | 1, point: ZoomPoint): void
   /** The live camera and viewport: the quick overview zooms out from them and restores them. */
   view(): { readonly camera: ZoomCamera; readonly viewport: { readonly width: number; readonly height: number } }
   setCamera(camera: ZoomCamera): void
   clampZoom(z: number): number
 }
+
+/** A brush smaller than 8 screen px in either direction is a click (catalogue T§4). */
+const BRUSH_MIN_PX = 8
 
 class ZoomBrushGesture implements GestureOwner {
   readonly kind = 'zoom-brush' as const
@@ -37,9 +42,8 @@ class ZoomBrushGesture implements GestureOwner {
     this.ended = true
     try {
       const box = this.box()
-      if (this.alt) this.context.zoomAt(this.point, 0.5)
-      else if (box.width >= 4 && box.height >= 4) this.context.fitBox(box)
-      else this.context.zoomAt(this.point, 2)
+      if (box.width >= BRUSH_MIN_PX && box.height >= BRUSH_MIN_PX) this.context.fitBox(box, this.alt ? 0.5 : undefined)
+      else this.context.stepZoom(this.alt ? -1 : 1, this.point)
     } finally { this.context.clearPreview() }
   }
   cancel(): void { if (!this.ended) { this.ended = true; this.context.clearPreview() } }

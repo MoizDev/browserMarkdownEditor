@@ -20,11 +20,16 @@ import { InputRouter } from './router'
 import { sessionInkTool, type SessionInkServices } from './sessionInk'
 import { zoomBrushTool, type ZoomBrushContext } from './zoomBrush'
 import { QuickOverview } from './quickOverview'
+import { ModifierRelease } from './modifierRelease'
+import { oneFingerZoomTool, type OneFingerZoomContext } from './oneFingerZoom'
+import { stepBoardZoom } from './cameraZoom'
 import { sampleSurface, type GestureOwner, type InputToken, type Modifiers, type RealSample, type Tool } from './tool'
 import type { KeyboardNavigationPriority } from './scrollKeysTypes'
 import type { TextInputBridge } from '../text/edit/managerTypes'
 
 export type BoardInputMode = 'edit' | 'view'
+/** A touch within this many px of a window side is the OS's navigation gesture, not the board's (catalogue I§4.1). */
+const TOUCH_EDGE_GUARD_PX = 10
 export type Detach = () => void
 export interface BoardWetLayer {
   attach(handover: WetInkHandover): Detach
@@ -73,6 +78,11 @@ export interface BoardInputServices {
   cancelMotion?(): void
   edgeScrolling?(): boolean
   invertMouseZoom?(): boolean
+  mouseWheel?(): boolean
+  /** Animated zoom to an absolute zoom at the anchor (double-tap and the zoom tool's steps). */
+  animateZoom?(zoom: number, anchor: Point): void
+  /** A glide of the camera by a screen-space delta (Space+arrow pages one screen). */
+  animatePan?(delta: Point): void
   error(error: unknown): void
   pointerChanged?(sample: RealSample): void
   hover?(event: PointerEvent): void
@@ -119,6 +129,38 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     if (!zoomHeld) return
     if (held) { if (!router.activeOwner) overview.enter() } else overview.leave()
   }
+  // Cmd/Ctrl held over Draw or Highlight erases until it is released (catalogue T§14). The eraser's own Cmd means "top-most
+  // item only", so the temporary eraser takes whole items: accel is stripped from its gestures. The displaced tool returns
+  // on release, after a stroke already in progress has ended.
+  let accelHeld = false, accelTool: string | null = null, accelReturn = false
+  const releaseAccelEraser = () => {
+    const back = accelTool
+    accelTool = null; accelReturn = false
+    if (back && services.tools.getRegistration(back) && services.tools.getSnapshot().active.id === 'eraser') services.tools.setTool(back)
+  }
+  const holdAccelEraser = (modifiers: Modifiers) => {
+    accelHeld = modifiers.accel
+    if (!editable() || !services.tools.getRegistration('eraser')) return
+    const active = services.tools.getSnapshot().active.id
+    if (modifiers.accel) {
+      if (accelTool === null && !router.activeOwner && (active === 'pen' || active === 'highlighter')) { accelTool = active; services.tools.setTool('eraser') }
+    } else if (accelTool !== null) {
+      if (router.activeOwner) accelReturn = true
+      else releaseAccelEraser()
+    }
+  }
+  const modifierRelease = new ModifierRelease(modifiers => { trackShift(modifiers.shift); holdAccelEraser(modifiers); pointer.modifiersChanged(modifiers) })
+  const wholeItems = (owner: GestureOwner): GestureOwner => ({
+    kind: owner.kind, pointerIds: owner.pointerIds,
+    update: (samples, modifiers) => owner.update(samples, { ...modifiers, accel: false }),
+    suspend: owner.suspend ? () => owner.suspend!() : undefined,
+    discard: owner.discard ? () => owner.discard!() : undefined,
+    finish: reason => owner.finish(reason), cancel: reason => owner.cancel(reason),
+  })
+  const wholeItemsRoute = <C,>(route: PointerRoute<C> | null): PointerRoute<C> | null => route && { ...route, tool: {
+    id: route.tool.id, holdsNoGesture: route.tool.holdsNoGesture,
+    begin: (sample, modifiers, context) => { const owner = route.tool.begin(sample, { ...modifiers, accel: false }, context); return owner && wholeItems(owner) },
+  } }
   let temporaryPan = false
   /** A right (or Ctrl) press in progress: its native menu is the app's to decide, on release, once it is known to be a click (F-INPUT-012). */
   let rightPressActive = false
@@ -132,12 +174,29 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     return pending.length > 0
   }
   const physicalSurface = (sample: RealSample) => sampleSurface(sample, view.sampleToSurface)
+  // Every hand pan flings on release, mouse included: the wheel's middle button and the Hand tool slide the same way a touch does.
   const handContext: HandContext = {
     toSurface: physicalSurface,
     panBy: delta => view.camera.panBy(delta),
     invalidate: services.cameraChanged,
     startFling: services.startFling,
+    flingEnabled: true,
   }
+  // One zoom step in, animated when the host can. A double tap's release and the zoom tool's click share this rule.
+  const zoomInOneStep = (point: Point) => {
+    const target = stepBoardZoom(session.doc, view.camera, 1)
+    if (services.animateZoom) services.animateZoom(target, point)
+    else view.camera.zoomTo(target, point)
+    services.cameraChanged()
+  }
+  const oneFingerContext: OneFingerZoomContext = {
+    toSurface: physicalSurface,
+    zoomNow: () => view.camera.camera.z,
+    zoomTo: (zoom, anchor) => { view.camera.zoomTo(zoom, anchor); services.cameraChanged() },
+    zoomIn: zoomInOneStep,
+    clamp: zoom => view.camera.clampZoom(zoom),
+  }
+  const fingerZoom: Tool<unknown> = oneFingerZoomTool(oneFingerContext)
   const hand: Tool<unknown> = { id: handTool.id, begin: (sample, modifiers) => handTool.begin(sample, modifiers, handContext) }
   // Right-button drag pans and never opens a menu on release; a stationary press opens the board menu on release (F-INPUT-012).
   const secondaryPan: Tool<PointerEvent | undefined> = {
@@ -160,7 +219,11 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
         },
         finish(reason) {
           pan.finish(reason); release()
-          if (reason === 'up' && !dragging && press) services.contextMenu?.(press)
+          // A static right-click acts on the selection, so a non-Select tool gives way to Select first (catalogue I§2.3).
+          if (reason === 'up' && !dragging && press) {
+            if (editable() && services.tools.getSnapshot().active.id !== 'select') services.tools.setTool('select')
+            services.contextMenu?.(press)
+          }
         },
         cancel(reason) { pan.cancel(reason); release() },
       }
@@ -197,6 +260,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     claim, releaseClaim,
     resolve(sample, modifiers, event) {
       if (!current() || (sample.source === 'touch' && !touchAdmission.get(sample.pointerId))) return null
+      // Pen mode takes only the pen: a mouse or a palm pressed on the canvas is rejected before any state changes (catalogue I§5.2).
+      if (touch.penMode && sample.source !== 'pen') return null
       start = services.tools.getSnapshot()
       activeSource = sample.source
       const choice = start.active
@@ -257,15 +322,20 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
           return { tool: link, context: undefined }
         }
       }
+      if (sample.source === 'touch' && choice.id === 'hand' && doubleTap.claimHold(sample.pointerId)) return { tool: fingerZoom, context: undefined }
       if (mode === 'view' || choice.id === 'hand') return { tool: hand, context: undefined }
       if (!editable()) return null
+      if ((choice.id === 'pen' || choice.id === 'highlighter') && modifiers.accel && services.tools.getRegistration('eraser')) {
+        return wholeItemsRoute(services.resolveTool({ id: 'eraser' }, sample, modifiers, event))
+      }
       completeTool = true
       if (choice.id === 'pen' && modifiers.shift) {
         const commit = services.continueInk?.(sample)
         if (commit) return { tool: continuationTool(sample, commit), context: undefined }
       }
       if (choice.id === 'pen' || choice.id === 'highlighter') return { tool: ink(choice.id), context: undefined }
-      const routed = services.resolveTool(choice, sample, modifiers, event)
+      const routed = accelTool !== null && choice.id === 'eraser' ? wholeItemsRoute(services.resolveTool(choice, sample, modifiers, event))
+        : services.resolveTool(choice, sample, modifiers, event)
       // A creation's commit is still running after up; the single-use return to Select writes ui.tool,
       // which bumps the revision and cancels pending gestures, so it would abort that commit.
       if (routed?.completesTool) completeTool = false
@@ -273,6 +343,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     },
     ended(reason) {
       delegated?.clear()
+      if (accelReturn && !accelHeld) releaseAccelEraser()
       // A non-editable view must not write the single-use reset: complete() can persist ui.tool to the shared document.
       if (reason === 'up' && start && completeTool && editable()) services.tools.complete(start)
       completeTool = false
@@ -329,9 +400,9 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     if (event.pointerType !== 'touch' && Number.isFinite(event.clientX) && Number.isFinite(event.clientY)) pointerClient = { x: event.clientX, y: event.clientY }
   }
   const forgetPointer = () => { pointerClient = null; overview.track(null) }
-  const doubleTap = new TouchDoubleTap({ doc: session.doc, camera: view.camera,
+  const doubleTap = new TouchDoubleTap({
     eligible: () => current() && !touch.penMode && !services.editing() && !services.modalOpen() && services.tools.getSnapshot().active.id === 'hand',
-    changed: services.cameraChanged })
+    zoomIn: zoomInOneStep, changed: services.cameraChanged })
   const contact = (event: PointerEvent): ContactPoint => ({ ...view.mappings.surface(event.timeStamp, event.clientX, event.clientY),
     id: event.pointerId, time: event.timeStamp, width: event.width, height: event.height })
   const down = (event: PointerEvent) => {
@@ -339,11 +410,16 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     services.textInput?.cancelPending()
     if (!current()) return
     services.cancelMotion?.()
+    // A key released a moment ago must not count as held at the start of this press (catalogue I§1.4).
+    modifierRelease.flush()
     if (!router.activeOwner) { dismissKeyboardCursor(); cancelContinuations(); services.cancelPendingGestures() }
     let focusSurface = event.pointerType !== 'touch'
     if (event.pointerType === 'pen') { doubleTap.clear(); services.tools.penDown(owner, event.pointerId, services.isDirectPen(event), event.timeStamp) }
     else if (event.pointerType === 'touch') {
-      const point = contact(event), admitted = touch.touchDown(point); touchAdmission.set(event.pointerId, admitted); focusSurface = admitted
+      const point = contact(event)
+      // A touch at a window's edge belongs to the OS (back and forward swipes) and is never admitted (catalogue I§4.1).
+      const edge = event.clientX < TOUCH_EDGE_GUARD_PX || event.clientX > window.innerWidth - TOUCH_EDGE_GUARD_PX
+      const admitted = !edge && touch.touchDown(point); touchAdmission.set(event.pointerId, admitted); focusSurface = admitted
       const target = event.target
       const control = target instanceof Element && !!target.closest('button, input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="menu"], [role="dialog"], [role="listbox"]')
       doubleTap.down(event.pointerId, point, event.timeStamp, admitted && !control)
@@ -423,13 +499,26 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     }
   })
   const stopWheel = installWheel(view.surface, {
-    camera: view.camera, paged: view.paged, toSurface: view.clientToSurface, invertZoom: () => services.invertMouseZoom?.() ?? false,
+    camera: view.camera, paged: view.paged, toSurface: view.clientToSurface, invertZoom: () => services.invertMouseZoom?.() ?? false, mouseWheel: () => services.mouseWheel?.() ?? false,
     owns: event => current() && services.ownsWheel(event),
     changed: () => {
       cancelForCamera()
       services.cameraChanged()
     },
   })
+  // Space held turns an arrow into a page: one screen in that direction, glided, even with a selection (catalogue I§2.1).
+  const spaceNavigation = (navigation: KeyboardNavigationPriority): KeyboardNavigationPriority => {
+    if (!spaceHeld) return navigation
+    return { ...navigation, hasSelection: false, pan(direction) {
+      const viewport = view.camera.viewport
+      const delta = direction === 'ArrowLeft' ? { x: -viewport.width, y: 0 } : direction === 'ArrowRight' ? { x: viewport.width, y: 0 }
+        : direction === 'ArrowUp' ? { x: 0, y: -viewport.height } : direction === 'ArrowDown' ? { x: 0, y: viewport.height } : null
+      if (!delta) return false
+      if (services.animatePan) services.animatePan(delta); else view.camera.panBy(delta)
+      services.cameraChanged()
+      return true
+    } }
+  }
   let keyboardStart: ToolStateSnapshot | null = null
   const cursor = createKeyboardCursor({
     token: view.token, current: () => current(),
@@ -485,10 +574,10 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   const stopKeys = installKeyboard(view.surface, {
     visible: current, enabled: editable, shortcutsEnabled: services.shortcutsEnabled,
     modalOpen: services.modalOpen, editing: services.editing,
-    cursor, navigation: services.keyboardNavigation ? () => services.keyboardNavigation!(cursor.active) : undefined, gestureActive: () => router.activeOwner !== null,
+    cursor, navigation: services.keyboardNavigation ? () => spaceNavigation(services.keyboardNavigation!(cursor.active)) : undefined, gestureActive: () => router.activeOwner !== null || zoomHeld,
     typeText: text => !!services.textInput?.type(text),
-    modifierChanged: modifiers => { trackShift(modifiers.shift); pointer.modifiersChanged(modifiers) },
-    clearLatches: () => { services.textInput?.cancelPending(); cancelContinuations(); services.cancelPendingGestures(); spaceHeld = false; zoomHeld = false; shiftHeld = false; overview.leave(); cursor.escape(); pointer.interrupt('flush'); services.clearLatches?.() },
+    modifierChanged: modifiers => modifierRelease.update(modifiers),
+    clearLatches: () => { services.textInput?.cancelPending(); cancelContinuations(); services.cancelPendingGestures(); spaceHeld = false; zoomHeld = false; shiftHeld = false; overview.leave(); cursor.escape(); pointer.interrupt('flush'); modifierRelease.releaseAll(); services.clearLatches?.() },
     run(id, event) {
       if (!current()) return false
       if (id === 'accessibility.repeat' && view.a11y.repeatAnnouncement?.()) return true
@@ -615,7 +704,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     if (!live) return
     flush()
     window.removeEventListener('pagehide', pagehide)
-    stopFlush?.(); delegated?.dispose(); unbindPointer(); doubleTap.dispose(); edgeScroll.dispose(); cursor.dispose(); stopCursor?.()
+    stopFlush?.(); delegated?.dispose(); unbindPointer(); doubleTap.dispose(); edgeScroll.dispose(); cursor.dispose(); stopCursor?.(); modifierRelease.dispose()
     pointer.dispose()
     live = false
     view.surface.removeEventListener('keydown', keyActivity, true)

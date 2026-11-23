@@ -1,4 +1,4 @@
-import { getBoardPreferences, mouseZoomInverted } from '../../utils/boardPreferences';
+import { getBoardPreferences, mouseInputChosen, mouseZoomInverted } from '../../utils/boardPreferences';
 import { isTransientPictureFailure } from '../../whiteboard/media/transientFailure';
 import { recordBoardPresentation } from './debugStats';
 import { encodeTiledPngInWorker } from '../../whiteboard/export/pngWorkerClient';
@@ -395,7 +395,7 @@ export function createNativeViewLease(options: {
     const navigation = editing ?? createBoardNavigationHost({ camera, viewport: refreshViewport, platform: () => platformPane,
         visible: () => parameters.visible && !!platformPane, current,
         changed: () => cameraOwner.changed(), onUserNavigation: markUserNavigation, invalidate, onError: options.onError,
-        mac: /Mac|iPhone|iPad/.test(navigator.platform), invertMouseZoom: mouseZoomInverted });
+        mac: /Mac|iPhone|iPad/.test(navigator.platform), invertMouseZoom: mouseZoomInverted, mouseWheel: mouseInputChosen });
     const withCapturer = <T,>(run: (capturer: ReturnType<typeof createPlatformCapturer>) => Promise<T>): Promise<T> => {
         if (!current()) return Promise.reject(new Error('Native view capture is unavailable'));
         const sheetId = runtime.selection.getSnapshot().sheet;

@@ -82,7 +82,7 @@ export function createBoardAccessibilityDom(options: BoardAccessibilityDomOption
     const cursorClick = () => { if (active()) activate?.(); };
     const exitPen = () => {
         if (!active()) return;
-        options.runtime.tools.setPenMode(false);
+        options.runtime.tools.exitPenMode();
     };
     const menu = (event: MouseEvent) => {
         if (!active()) return;

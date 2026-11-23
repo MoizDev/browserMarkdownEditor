@@ -14,13 +14,15 @@ export interface BoardPreferences {
     enhancedA11yMode: boolean;
     inputMode: 'mouse' | 'trackpad' | null;
     isZoomDirectionInverted: boolean;
+    /** Edge scrolling while a move, marquee or resize drags against a board edge. A user preference, so it survives reloads. */
+    edgeScrolling: boolean;
     locale: string;
     colorScheme: 'light' | 'dark' | 'system';
 }
 const defaults: BoardPreferences = {
     version: 1, isSnapMode: false, isWrapMode: false, isDynamicResizeMode: false,
     animationSpeed: 1, areKeyboardShortcutsEnabled: true, enhancedA11yMode: false,
-    inputMode: null, isZoomDirectionInverted: false, locale: 'en', colorScheme: 'system',
+    inputMode: null, isZoomDirectionInverted: false, edgeScrolling: true, locale: 'en', colorScheme: 'system',
 };
 // Until the user chooses, motion follows the OS: a reduced-motion request starts at speed 0 (camera.md F-A11Y-005).
 function osAnimationSpeed(): number {
@@ -43,6 +45,7 @@ function clamp(value: unknown): BoardPreferences {
         enhancedA11yMode: flag('enhancedA11yMode', defaults.enhancedA11yMode),
         inputMode: input.inputMode === 'mouse' || input.inputMode === 'trackpad' ? input.inputMode : null,
         isZoomDirectionInverted: flag('isZoomDirectionInverted', defaults.isZoomDirectionInverted),
+        edgeScrolling: flag('edgeScrolling', defaults.edgeScrolling),
         locale,
         colorScheme: input.colorScheme === 'light' || input.colorScheme === 'dark' || input.colorScheme === 'system' ? input.colorScheme : defaults.colorScheme,
     };
@@ -67,6 +70,10 @@ export function getBoardPreferences(): BoardPreferences {
 export function mouseZoomInverted(): boolean {
     const preferences = getBoardPreferences();
     return preferences.inputMode === 'mouse' && preferences.isZoomDirectionInverted;
+}
+/** The Input device preference names the mouse: the wheel's plain turn zooms and Ctrl/Cmd+wheel pans, as tldraw does. */
+export function mouseInputChosen(): boolean {
+    return getBoardPreferences().inputMode === 'mouse';
 }
 export function updateBoardPreferences(patch: Partial<BoardPreferences>): BoardPreferences {
     const next = clamp({ ...getBoardPreferences(), ...patch });

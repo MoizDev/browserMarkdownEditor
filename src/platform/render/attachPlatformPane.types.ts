@@ -111,6 +111,7 @@ export interface PlatformPane {
     invalidate(reason: string, damage?: DamageRecord): void;
     startFling(samples: readonly TouchPanSample[]): void;
     animateZoom(targetZ: number, anchor?: Point): void;
+    animatePan(delta: Point): void;
     cancelMotion(): void;
     captureRegion(worldRect: Rect, maxSidePx: number, options: CompositorCaptureOptions): Promise<ImageBitmap>;
     captureBlob(worldRect: Rect, maxSidePx: number, options: CompositorCaptureOptions): Promise<Blob>;

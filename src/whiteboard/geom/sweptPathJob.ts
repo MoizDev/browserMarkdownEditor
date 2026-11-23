@@ -124,7 +124,11 @@ export function createSweptPathJob(paths: readonly (readonly PathOp[])[], query:
                     const a = pair.path.points, b = pair.sweep.points;
                     const upper = Math.min(upperIntervalPairDistance(a[0], b[0]), upperIntervalPairDistance(a[0], b[b.length - 1]),
                         upperIntervalPairDistance(a[a.length - 1], b[0]), upperIntervalPairDistance(a[a.length - 1], b[b.length - 1]));
-                    if (upper <= pair.radius.lo) return finish({ status: 'hit' });
+                    // A sweep point at exactly the stroke's radius from a corner (integer pointer positions make this common) is never
+                    // certified either way: the upper bound lands a rounding error above radius.lo, every split leaves both halves
+                    // undecided, and the pairs double from depth ~56 until the node limit ends the whole query. Within a float
+                    // tolerance it is a touch, and a touch is a hit, as the eraser's and lasso's tangency already counts.
+                    if (upper <= pair.radius.hi + 1e-9 * Math.max(1, pair.radius.hi)) return finish({ status: 'hit' });
                     if (pair.path.depth >= maxDepth && pair.sweep.depth >= maxDepth) { curveUncertain = true; continue; }
                     if (nodes + 2 > maxNodes) return finish({ status: 'uncertain', reason: 'Swept path node limit exhausted' });
                     if (pair.path.depth <= pair.sweep.depth && pair.path.depth < maxDepth) {

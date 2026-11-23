@@ -19,6 +19,8 @@ export interface BoardSelectGestureContext extends SelectToolContext {
     leaveFocusAt?(point: Vec2): void;
     /** A Cmd press on an arrow endpoint or label brushes, even though the node under it is the selected arrow (catalogue S§11.1). */
     brushOverHandle?(sample: RealSample): boolean;
+    /** A click, without a drag, on the sole selected text edits it with the caret where the press landed (catalogue S§4.2). */
+    editTextAt?(node: NodeId, point: Vec2, pointerId: number): void | Promise<void>;
 }
 
 /** A selection contact owns its hit preflight, optional exact sweep and final
@@ -87,6 +89,8 @@ class BoardSelectGesture implements GestureOwner {
             preview: ids => {
                 this.sweepPreview = ids;
                 if (this.hit === null && this.dragging && this.valid()) this.context.scribble.preview(ids);
+                // The scribble's hits are the sweep's visible set, cumulative over the path so far: they select as they arrive.
+                if (this.hit === null && this.dragging) this.showSelection([...ids]);
             } };
         this.sweep = new SweepQueue(services);
         this.sweep.add(this.sweepLast, this.sweepLast, false);
@@ -136,9 +140,8 @@ class BoardSelectGesture implements GestureOwner {
             this.refreshMarquee();
         }
     }
-    /** Writes the brush's hits to the selection as it moves, so a shape the brush reaches is selected while the drag
-     * is still going (catalogue S§5). Shift keeps the starting selection, as the release does. Scribble hits are not
-     * live yet: its swept query stalls or reports a node limit (see the escalation in the report). */
+    /** Writes the brush's hits to the selection as it moves, so a shape the brush or scribble reaches is selected while the
+     * drag is still going (catalogue S§5, S§6). Shift keeps the starting selection, as the release does. */
     private showSelection(ids: readonly NodeId[]): void {
         if (this.ended || this.cleaned || !this.valid()) return;
         const next = [...new Set(this.keys.shift ? [...this.initial, ...ids] : ids)];
@@ -231,7 +234,11 @@ class BoardSelectGesture implements GestureOwner {
                 }
                 else if (this.hit !== undefined) {
                     if (additive) this.context.selection.toggle(this.hit);
-                    else this.context.selection.replace([this.hit]);
+                    else {
+                        const sole = this.hit !== null && !this.keys.alt && this.initial.length === 1 && this.initial[0] === this.hit;
+                        this.context.selection.replace([this.hit]);
+                        if (sole) void this.context.editTextAt?.(this.hit, { x: this.down.x, y: this.down.y }, this.down.pointerId);
+                    }
                 }
                 this.cleanup(); return;
             }
@@ -246,6 +253,8 @@ class BoardSelectGesture implements GestureOwner {
     }
     cancel(reason: CancelReason): void {
         if (this.cleaned) return;
+        // Set before the sweep is drained: its empty preview must not write the selection while the cancel gives it back.
+        this.ended = true;
         this.restoreShown();
         try { this.sweep?.cancel(); }
         finally { try { this.transform?.cancel(reason); } finally { this.transform = null; this.cleanup(); } }

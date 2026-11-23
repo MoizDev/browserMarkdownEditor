@@ -655,8 +655,10 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
         if (textSurfaceRef.current) { const input = root.current?.querySelector<HTMLInputElement>('.pdf-reading-find input'); input?.focus(); input?.select(); }
         else { findMemory.open = true; viewerActions.current?.openFind(); }
     }
-    const actions = useRef({ showText, showOriginal, focusReading, findReading, capabilities, publishLocation });
-    useLayoutEffect(() => { actions.current = { showText, showOriginal, focusReading, findReading, capabilities, publishLocation }; });
+    // The pane's ⋯ menu raises Print… (DocumentPane); Annotate prints from its Original view, so only reading offers it.
+    const requestPrint = () => { if (mode === 'read') setPrint(value => value === 'closed' ? 'confirm' : value); };
+    const actions = useRef({ showText, showOriginal, focusReading, findReading, capabilities, publishLocation, requestPrint });
+    useLayoutEffect(() => { actions.current = { showText, showOriginal, focusReading, findReading, capabilities, publishLocation, requestPrint }; });
     const identity = reading?.identity;
     const registerKeyboardTarget = reading?.registerKeyboardTarget;
     useEffect(() => {
@@ -672,6 +674,7 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
             },
             showPdfText: () => actions.current.showText(),
             showPdfOriginal: () => actions.current.showOriginal(),
+            printPdf: () => actions.current.requestPrint(),
             findReading: () => actions.current.findReading(),
             focusReading: () => actions.current.focusReading(),
         });
@@ -846,9 +849,8 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
                 }
             }}
         >
-            {/* The reader's own print route. Annotate mode prints from its Original view (see preparePrint),
-                so this pill must not float over the native board's page there. */}
-            {mode === 'read' && <button className="pdf-pane-print" onClick={() => setPrint(value => value === 'closed' ? 'confirm' : value)}>Print…</button>}
+            {/* Print… is a row of the pane's ⋯ menu (printPdf above): a pill floating over the page under the
+                title read as a tooltip stuck there. */}
             {print !== 'closed' && <ConfirmDialog title="Open PDF for printing" confirmLabel={print === 'ready' ? 'Open PDF' : print === 'preparing' ? 'Preparing…' : 'Prepare PDF'}
                 onCancel={cancelPrint} onConfirm={() => { if (print === 'ready') void openPrint(); else void preparePrint(); }}>
                 {print === 'ready' ? 'Open the saved PDF in a new tab, then print from the browser’s PDF viewer. An encrypted PDF may ask for its password again.' : 'Any pending annotations will be saved first. The saved PDF opens in the browser’s PDF viewer for printing.'}

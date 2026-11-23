@@ -2,6 +2,7 @@ import { selectedRootsAsync } from '../geom/selectedRootsAsync';
 import { acquireBoardGeometryScope } from './geometryScope';
 import { createBoardLeafResizePlan } from '../geom/runtimeLeafPlan';
 import { createBoardRotationPlan } from '../geom/runtimeTransforms';
+import { rotationCentre } from '../geom/rotationCentre';
 import { createBoardTranslationPlan } from '../geom/runtimeTranslation';
 import { nextDown, nextUp } from '../geom/numeric';
 import type { Vec2 } from '../geom/path';
@@ -47,15 +48,12 @@ export function createBoardKeyboardTransforms(options: BoardKeyboardTransformOpt
                 const stable = () => current() && session.doc === doc && doc.rev === revision && session.owner === owner
                     && runtime.selection.getSnapshot() === selection;
                 const roots = await selectedRootsAsync(doc, selected, { signal, current: stable, cooperate: options.cooperate }); if (!roots.length) return;
-                const scope = await acquireBoardGeometryScope(runtime, roots.map(node => node.id), { signal, current: stable, cooperate: options.cooperate });
+                const movable = roots.filter(node => !node.locked).map(node => node.id);
+                if (!movable.length) return;
+                const scope = await acquireBoardGeometryScope(runtime, movable, { signal, current: stable, cooperate: options.cooperate });
                 let centre: Vec2;
-                try {
-                    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-                    for (const root of roots) { const b = scope.logicalBounds(root.id); x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y);
-                        x1 = Math.max(x1, b.x + b.width); y1 = Math.max(y1, b.y + b.height); }
-                    centre = { x: x0 / 2 + x1 / 2, y: y0 / 2 + y1 / 2 };
-                    if (![centre.x, centre.y].every(Number.isFinite)) throw new RangeError('Invalid rotation centre');
-                } finally { scope.release(); }
+                try { centre = await rotationCentre(scope, movable); } finally { scope.release(); }
+                if (!stable()) return;
                 const radians = (clockwise ? 1 : -1) * Math.PI / (fine ? 192 : 12);
                 const adjacent = nextUp(centre.x), down = { x: Number.isFinite(adjacent) ? adjacent : nextDown(centre.x), y: centre.y };
                 const plan = await createBoardRotationPlan({ runtime, ids: selected, centre, down, orientation: 0,

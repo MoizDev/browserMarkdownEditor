@@ -73,6 +73,33 @@ function frames(value: unknown): value is readonly LegacyPageRect[] {
     return Array.isArray(value) && value.length <= 100_000 && value.every(rect => rect && typeof rect === 'object'
         && [rect.x, rect.y, rect.w, rect.h].every(Number.isFinite) && rect.w > 0 && rect.h > 0);
 }
+// How long a conversion waits for another one (or a board's passing working set) to give the pool back.
+const MEMORY_WAIT_MS = 60_000;
+
+/** Reserves `bytes`, waiting for the pool to have room instead of refusing at once. The third legacy board opened in
+ * one session failed "Insufficient shared memory" with each file ~15 KB: every conversion reserves 16 MB + 12 × size
+ * of a 32–41 MB CPU pool, and the next board's conversion asked while the previous one (or the board it had just
+ * opened, building its first tiles) still held its share (measured: 16.9 MB held, then refused, then released 450 ms
+ * later). Nothing leaked; the request was simply refused instead of waiting for that release. */
+async function reserveWhenAvailable(memory: MemoryAllocator, bytes: number, check: () => void, signal: AbortSignal) {
+    const deadline = performance.now() + MEMORY_WAIT_MS;
+    for (;;) {
+        check();
+        const lease = memory.reserve(bytes);
+        if (lease) return lease;
+        const left = deadline - performance.now();
+        if (!memory.whenAvailable || left <= 0) {
+            throw new Error('Not enough memory is free to convert this board right now. Close another board and open it again.');
+        }
+        await new Promise<void>(resolve => {
+            const timer = setTimeout(done, Math.min(left, 5_000));
+            function done() { clearTimeout(timer); signal.removeEventListener('abort', done); resolve(); }
+            signal.addEventListener('abort', done, { once: true });
+            memory.whenAvailable!(done, bytes);
+        });
+    }
+}
+
 export async function acquireLegacyBoard(options: LegacyAcquisitionOptions): Promise<LegacyBoardAcquisition> {
     const { bytes, memory } = options;
     if (!(bytes instanceof Blob) || (typeof File !== 'undefined' && bytes instanceof File) || bytes.size > 256 * 1024 * 1024
@@ -84,8 +111,7 @@ export async function acquireLegacyBoard(options: LegacyAcquisitionOptions): Pro
     check();
     // Original text, legacy object graph, two admitted sample representations and
     // native assembly coexist. The shared allocator must admit that peak first.
-    const reservation = memory.reserve(16 * 1024 * 1024 + original.size * 12);
-    if (!reservation) throw new Error('Insufficient shared memory for legacy conversion');
+    const reservation = await reserveWhenAvailable(memory, 16 * 1024 * 1024 + original.size * 12, check, signal);
     let owned: NativeBoardAcquisition | undefined;
     const resourceReservations: ReturnType<MemoryAllocator['reserve']>[] = [];
     try {
@@ -108,8 +134,7 @@ export async function acquireLegacyBoard(options: LegacyAcquisitionOptions): Pro
                     blob = new Blob([read], { type: read.type }); resolved.set(asset.src, blob);
                 }
                 if (blob.size > 10 * 1024 * 1024 || blob.size > 256 * 1024 * 1024 - relativeBytes) throw new RangeError('Legacy resource bytes exceed the source limits');
-                const resource = memory.reserve(blob.size * 12);
-                if (!resource) throw new Error('Insufficient shared memory for legacy resources');
+                const resource = await reserveWhenAvailable(memory, blob.size * 12, check, signal);
                 resourceReservations.push(resource); relativeBytes += blob.size;
                 relativeAssets.push({ sourceOrdinal: asset.sourceOrdinal, src: asset.src, blob });
             } else blob = new Blob([asset.blob], { type: asset.blob.type });
@@ -128,7 +153,8 @@ export async function acquireLegacyBoard(options: LegacyAcquisitionOptions): Pro
             || (value.status === 'prepared' ? !(value.bytes instanceof Blob) || value.bytes.size > 512 * 1024 * 1024 : value.bytes !== null)) {
             throw new TypeError('Invalid legacy preparation reply');
         }
-        if (value.status === 'prepared' && value.report.unrepresentable.length) throw new Error('Legacy conversion reported content that cannot be represented');
+        // A prepared board may report items it left out (each preserved as written in the native bytes): they cost
+        // those items, never the board. The host shows them once in the board's notice.
         if (value.status !== 'prepared' || !value.bytes) return { status: 'read-only', original, legacyReport: value.report, conversionPending: true, dispose() {} };
         const nativeBytes = new Blob([value.bytes], { type: value.bytes.type });
         owned = await acquireNativeBoard({ bytes: nativeBytes, kind: options.kind,
@@ -191,8 +217,7 @@ export async function rehostLegacyBoard(source: EditableLegacy,
         || source.native.report.bytesRead !== source.bytes.size || !source.native.report.complete) throw new Error('Native R0 HOST has no exact admitted source span');
     const encoded = encodeHost(finalHost);
     if (!encoded.ok) throw new Error(encoded.error.reason);
-    const reservation = options.memory.reserve(16 * 1024 * 1024 + source.bytes.size * 12);
-    if (!reservation) throw new Error('Insufficient shared memory for native PDF host admission');
+    const reservation = await reserveWhenAvailable(options.memory, 16 * 1024 * 1024 + source.bytes.size * 12, check, signal);
     let owned: NativeBoardAcquisition | undefined;
     try {
         const cooperate = async () => {

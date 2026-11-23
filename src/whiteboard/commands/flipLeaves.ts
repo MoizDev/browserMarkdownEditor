@@ -21,6 +21,9 @@ export interface FlipLeavesOptions {
     readonly current: () => boolean;
     readonly signal?: AbortSignal;
     readonly cooperate?: () => Promise<void>;
+    /** Gesture holds the caller keeps open around this flip (the keyboard transform holds one). A flip refuses only holds it
+     * does not own: a pointer gesture that starts meanwhile would otherwise commit ops staged against the old geometry. */
+    readonly heldGestures?: number;
 }
 export interface FlipLeavesPlan {
     readonly doc: BoardRuntime['session']['doc'];
@@ -51,7 +54,7 @@ export async function prepareFlipBoardLeaves(options: FlipLeavesOptions): Promis
     const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
     let font: number | undefined, released = false, source: BoardGeometryScope | undefined, final: BoardGeometryScope | undefined;
     const current = () => !released && !signal.aborted && options.current() && session.owner === owner && session.doc === doc && doc.rev === revision
-        && !session.isReadOnly && !session.isGestureActive && runtime.selection.getSnapshot() === selection
+        && !session.isReadOnly && session.gestureHolds === (options.heldGestures ?? 0) && runtime.selection.getSnapshot() === selection
         && (font === undefined || runtime.render.text.fonts.epoch === font);
     const check = () => { signal.throwIfAborted(); if (!current()) throw new DOMException('Flip source changed', 'AbortError'); };
     const release = () => {

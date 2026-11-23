@@ -8,6 +8,8 @@ export interface SessionGestureQueueOptions {
 }
 export interface SessionGestureQueue {
     readonly isGestureActive: boolean;
+    /** How many gesture holds are open. A caller that holds one of its own can tell its hold apart from a foreign gesture. */
+    readonly gestureHolds: number;
     /** Admission/readiness and external I/O finish before enqueue. Task is synchronous. */
     enqueueAfterGesture<T>(signal: AbortSignal, task: () => T): Promise<T>;
     /** Pointer gesture/IME start. Release on EVERY end/cancel/flush path, idempotently. */
@@ -70,6 +72,7 @@ export function createSessionGestureQueue(options: SessionGestureQueueOptions): 
     };
     return {
         get isGestureActive() { return holds > 0 && !disposed; },
+        get gestureHolds() { return disposed ? 0 : holds; },
         enqueueAfterGesture<T>(signal: AbortSignal, task: () => T): Promise<T> {
             let work: (() => T) | undefined = task;
             return new Promise<T>((resolve, reject) => {
@@ -154,6 +157,7 @@ export class GestureMutationQueue implements SessionGestureQueue {
         });
     }
     get isGestureActive(): boolean { return this.queue.isGestureActive; }
+    get gestureHolds(): number { return this.queue.gestureHolds; }
     beginGesture(): () => void { return this.queue.beginGesture(); }
     subscribeGesture(listener: () => void): () => void { return this.queue.subscribeGesture(listener); }
     enqueueAfterGesture<T>(signal: AbortSignal, task: () => T): Promise<T> { return this.queue.enqueueAfterGesture(signal, task); }

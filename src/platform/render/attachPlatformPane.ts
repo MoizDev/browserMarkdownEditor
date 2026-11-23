@@ -832,7 +832,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         },
         startFling(samples) { if (!disposed && visible) frameLease?.startFling(samples); },
         animateZoom(targetZ, anchor) { if (!disposed && visible) frameLease?.animateZoom(targetZ, anchor); },
-        animatePan(delta) { if (!disposed && visible) frameLease?.animatePan(delta); },
+        animatePan(delta, durationMs) { if (!disposed && visible) frameLease?.animatePan(delta, durationMs); },
         glideTo(target, durationMs) { if (!disposed && visible) frameLease?.glideTo(target, durationMs); },
         cancelMotion() { if (!disposed && visible) frameLease?.cancelMotion(); },
         captureRegion(worldRect, maxSidePx, captureOptions) {

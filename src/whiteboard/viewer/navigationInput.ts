@@ -2,8 +2,10 @@ import type { CameraController, Point } from '../../platform/render/camera';
 import type { PlatformPane } from '../../platform/render/attachPlatformPane.types';
 import type { TouchPanSample } from '../../platform/render/scheduler';
 import type { Viewport } from '../../platform/types';
+import { getBoardPreferences } from '../../utils/boardPreferences';
 import { installKeyboard } from '../input/keyboard';
 import { installWheel, TouchArbiter, type ContactPoint } from '../input/navigation';
+import { PAGE_GLIDE_MS } from './keyboardNavigation';
 
 // Provenance: shared camera, touch arbiter, keyboard and scheduler contracts;
 // independent read-only navigation adapter, no third-party source.
@@ -65,7 +67,7 @@ export function attachBoardNavigation(options: BoardNavigationOptions): () => vo
         if (!delta || !active() || !(view.width > 0 && view.height > 0)) return false;
         const platform = options.platform();
         cancelMotion();
-        if (options.reducedMotion?.() || !platform) { camera.panBy(delta); options.changed(); } else platform.animatePan(delta);
+        if (options.reducedMotion?.() || !platform) { camera.panBy(delta); options.changed(); } else platform.animatePan(delta, PAGE_GLIDE_MS * getBoardPreferences().animationSpeed);
         return true;
     };
     const release = (id: number) => { try { if (surface.hasPointerCapture(id)) surface.releasePointerCapture(id); } catch { /* The browser may already have released it. */ } };

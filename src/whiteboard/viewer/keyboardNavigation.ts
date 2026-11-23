@@ -3,6 +3,10 @@ import type { Viewport } from '../../platform/types';
 import type { BoardRuntime } from '../host/runtime';
 import type { KeyboardNavigationPriority, PagedScrollKey } from '../input/scrollKeysTypes';
 import { boardPageStack } from '../model/pages';
+import { getBoardPreferences } from '../../utils/boardPreferences';
+
+/** Catalogue I§2.1: a Space+arrow page is one 320 ms glide at the board's animation speed, like back-to-content and the minimap. */
+export const PAGE_GLIDE_MS = 320;
 
 export interface BoardKeyboardNavigationOptions {
     readonly runtime: BoardRuntime;
@@ -14,7 +18,7 @@ export interface BoardKeyboardNavigationOptions {
     readonly nudge: (direction: string, coarse: boolean) => boolean;
     readonly cancelMotion: () => void;
     /** The shared scheduler's glide: a Space page moves through it, never a loop of its own. */
-    readonly animatePan: (delta: { readonly x: number; readonly y: number }) => void;
+    readonly animatePan: (delta: { readonly x: number; readonly y: number }, durationMs: number) => void;
     readonly cancelReveal: () => void;
     readonly changed: () => void;
     readonly error: (error: unknown) => void;
@@ -67,7 +71,7 @@ export function createBoardKeyboardNavigation(options: BoardKeyboardNavigationOp
             if (!delta || !(viewport.width > 0 && viewport.height > 0)) return false;
             if (options.reducedMotion()) return cameraAction(() => camera.panBy(delta));
             if (!active()) return false;
-            options.cancelReveal(); halt(); options.animatePan(delta); options.changed(); return true;
+            options.cancelReveal(); halt(); options.animatePan(delta, PAGE_GLIDE_MS * getBoardPreferences().animationSpeed); options.changed(); return true;
         },
     });
 }

@@ -110,8 +110,8 @@ export interface ScheduledPaneLease {
     wakeAt(layer: Layer, deadlineMs: number | null): void;
     startFling(samples: readonly TouchPanSample[]): void;
     animateZoom(targetZ: number, anchor?: Point): void;
-    /** A camera glide by a screen-space delta (ease-out, 320 ms); reduced motion moves at once. */
-    animatePan(delta: Point): void;
+    /** A camera glide by a screen-space delta, eased over durationMs; a zero duration or reduced motion jumps. */
+    animatePan(delta: Point, durationMs: number): void;
     /** A camera glide to `target`, pan and zoom together, eased over durationMs; a zero duration or reduced motion jumps. */
     glideTo(target: Camera, durationMs: number): void;
     cancelMotion(): void;
@@ -161,9 +161,6 @@ interface GlideMotion {
 }
 
 type Motion = FlingMotion | ZoomMotion | GlideMotion;
-
-/** Catalogue I§2.1: a Space+arrow page takes 320 ms. */
-const GLIDE_MS = 320;
 
 function finitePoint(point: Point): boolean { return Number.isFinite(point.x) && Number.isFinite(point.y); }
 
@@ -466,7 +463,7 @@ export class FrameScheduler {
             wakeAt: (layer: Layer, deadlineMs: number | null) => this.wakeAt(entry, layer, deadlineMs),
             startFling: (samples: readonly TouchPanSample[]) => this.startFling(entry, samples),
             animateZoom: (targetZ: number, anchor?: Point) => this.animateZoom(entry, targetZ, anchor),
-            animatePan: (delta: Point) => this.animatePan(entry, delta),
+            animatePan: (delta: Point, durationMs: number) => this.animatePan(entry, delta, durationMs),
             glideTo: (target: Camera, durationMs: number) => this.glideTo(entry, target, durationMs),
             // Settling a camera that is not moving changes nothing; only a motion that was running is a change.
             cancelMotion: () => {
@@ -1520,11 +1517,11 @@ export class FrameScheduler {
         this.mark(entry, 'animation');
     }
 
-    private animatePan(entry: PaneEntry, delta: Point): void {
+    private animatePan(entry: PaneEntry, delta: Point, durationMs: number): void {
         if (!this.running || this.suspended || !this.live(entry)) return;
         if (!finitePoint(delta)) throw new RangeError('Pan delta must be finite');
         const { x, y, z } = entry.pane.camera.camera;
-        this.glideTo(entry, { x: x + delta.x / z, y: y + delta.y / z, z }, GLIDE_MS);
+        this.glideTo(entry, { x: x + delta.x / z, y: y + delta.y / z, z }, durationMs);
     }
 
     /** One camera glide, pan and zoom together. Reduced motion, a zero duration and a pane that cannot animate all jump:

@@ -65,7 +65,7 @@ export interface BoardToolServicesOptions {
     readonly sampleToSurface: (sample: RealSample) => Point;
     readonly clientToSurface: (x: number, y: number) => Point;
     readonly interaction: { invalidate(): void; cameraChanged(): void };
-    readonly platform: () => { animateZoom(targetZ: number, anchor?: Point): void; animatePan(delta: Point): void; glideTo(target: Camera, durationMs: number): void; startFling(samples: readonly TouchPanSample[]): void; cancelMotion(): void };
+    readonly platform: () => { animateZoom(targetZ: number, anchor?: Point): void; animatePan(delta: Point, durationMs: number): void; glideTo(target: Camera, durationMs: number): void; startFling(samples: readonly TouchPanSample[]): void; cancelMotion(): void };
     readonly ui: {
         readonly mac: boolean;
         readonly text: BoardTextEditorOptions['ui'];

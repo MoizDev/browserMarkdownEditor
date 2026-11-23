@@ -228,7 +228,9 @@ export function useTabLifecycle(deps: UseTabLifecycleDeps) {
         if (result === 'written') await drain(tab.id);
         const pending = documentSessions.hasPendingEdits(tab.id);
         if (rootHandleRef.current !== root || !tabsRef.current.some(t => t.id === tab.id && t.file.path === path)) return;
-        if (result === 'failed' || result === 'changed' || result === 'deleted' || (result === 'skipped' && (pending || (tab.representation.loadedKind !== 'pdf' && tab.dirty))) || pending) {
+        // The tab as it is NOW: the one captured when the close began may still say dirty for a write that has since landed.
+        const dirtyNow = tabsRef.current.find(t => t.id === tab.id)?.dirty ?? tab.dirty;
+        if (result === 'failed' || result === 'changed' || result === 'deleted' || (result === 'skipped' && (pending || (tab.representation.loadedKind !== 'pdf' && dirtyNow))) || pending) {
           setLayout(l => openTabIn(l, path));
           notifyRef.current(`Could not save “${tab.file.name}”; its tab remains open.`);
           return;

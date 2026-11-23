@@ -677,8 +677,25 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
     void run.finally(() => { if (checkpointRef.current === run) checkpointRef.current = null; });
     return run;
   }, [flushTab, getVaultActivation, documentSessions, tabsRef]);
+  // A write clears `dirty` only when nothing is pending at that moment (above), but a board acknowledges its write while
+  // its after-write step is still tracked work, so that check always saw it pending and nothing cleared it afterwards:
+  // every drawing drawn on kept `dirty` for good, and closing it said "Could not save" although its file held every
+  // stroke (measured: 3 strokes saved, close refused, every time). When the session's pending work settles, a tab with
+  // nothing left to write is clean. PDFs keep their own rule (an annotation snapshot is dirty until rebuilt).
+  const settleCleanTabs = useCallback(() => {
+    if (!tabsRef.current.some(t => t.dirty && t.representation.loadedKind !== 'pdf' && !documentSessions.hasPendingEdits(t.id))) return;
+    setTabs(prev => {
+      let changed = false;
+      const next = prev.map(t => {
+        if (!t.dirty || t.readError || t.representation.loadedKind === 'pdf' || documentSessions.hasPendingEdits(t.id)) return t;
+        changed = true;
+        return { ...t, dirty: false };
+      });
+      return changed ? next : prev;
+    });
+  }, [documentSessions, setTabs, tabsRef]);
   useEffect(() => {
-    const unsubscribe = subscribePending(syncExitGuard);
+    const unsubscribe = subscribePending(() => { syncExitGuard(); settleCleanTabs(); });
     syncExitGuard();
     const visibility = () => { if (document.visibilityState === 'hidden') { void recoveryEvent({ type: 'checkpoint' }); void checkpointAll(); } };
     const pagehide = () => {
@@ -699,7 +716,7 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
       window.removeEventListener('beforeunload', beforeUnload);
       guardedRef.current = false;
     };
-  }, [beforeUnload, checkpointAll, documentBuffers, syncExitGuard, recoveryEvent, sessionReportRef]);
+  }, [beforeUnload, checkpointAll, documentBuffers, syncExitGuard, settleCleanTabs, recoveryEvent, sessionReportRef]);
 
   return {
     writeFileRef, writeFileVersionedRef, clearSaveTimer, flushChainsRef, syncExitGuard, flushTab,

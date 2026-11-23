@@ -17,6 +17,8 @@ export interface BoardSelectGestureContext extends SelectToolContext {
     selectionHandleAt?(sample: RealSample): boolean;
     /** An empty press that clears the selection leaves a focused group whose bounds it lies outside (catalogue S§4.6). */
     leaveFocusAt?(point: Vec2): void;
+    /** A click, without a drag, on the sole selected text edits it with the caret where the press landed (catalogue S§4.2). */
+    editTextAt?(node: NodeId, point: Vec2, pointerId: number): void | Promise<void>;
 }
 
 /** A selection contact owns its hit preflight, optional exact sweep and final
@@ -229,7 +231,11 @@ class BoardSelectGesture implements GestureOwner {
                 }
                 else if (this.hit !== undefined) {
                     if (additive) this.context.selection.toggle(this.hit);
-                    else this.context.selection.replace([this.hit]);
+                    else {
+                        const sole = this.hit !== null && !this.keys.alt && this.initial.length === 1 && this.initial[0] === this.hit;
+                        this.context.selection.replace([this.hit]);
+                        if (sole) void this.context.editTextAt?.(this.hit, { x: this.down.x, y: this.down.y }, this.down.pointerId);
+                    }
                 }
                 this.cleanup(); return;
             }

@@ -69,6 +69,8 @@ export interface BoardSelectServicesOptions {
     canMutateView(): boolean;
     readonly inputFrames: { schedule(callback: () => void, onDrop?: () => void): () => void };
     readonly editSticky: (id: NodeId) => void | Promise<void>;
+    /** A click on the sole selected text: edits it with the caret at the press (see `BoardSelectGestureContext.editTextAt`). */
+    readonly editTextAt?: (id: NodeId, point: Vec2, pointerId: number) => void | Promise<void>;
     /** The embed and link-card chips' actions; absent, the cards draw no chips. */
     readonly cards?: BoardCardActions | null;
     readonly alwaysSnap?: () => boolean;
@@ -703,7 +705,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         return navigate(id) || transform(id);
     };
     // The host routes select through this tool so handles win over body picking for both pointer and keyboard input.
-    const selectContext: BoardSelectGestureContext = { ...select, sampleToSurface: physicalSurface, beginHandle,
+    const selectContext: BoardSelectGestureContext = { ...select, sampleToSurface: physicalSurface, beginHandle, editTextAt: options.editTextAt,
         insideSelection: sample => selectionHandles.contains({ x: sample.x, y: sample.y }, sample.time),
         selectionHandleAt: sample => selectionHandles.hit(physicalSurface(sample), sample.source === 'touch', sample.time) !== null,
         leaveFocusAt: point => leaveGroupAtPoint({ runtime, point, zoom: () => options.camera().camera.z, current: mutable,

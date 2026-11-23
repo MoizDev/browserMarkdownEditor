@@ -538,7 +538,23 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
         if (!command('finish')) return false;
         return options.ui.stickyNeighbour(direction);
     };
-    return { manager, input, editText, writeOverlays, captureText, command, stickyNeighbour,
+    /** A click on selected text: starts editing, then gives the editor the press so the caret lands where it was (catalogue S§4.2). */
+    const editTextAt = async (id: NodeId, point: { x: number; y: number }, pointerId: number): Promise<void> => {
+        if (!current()) return;
+        const revision = doc.rev, generation = ++editingEpoch;
+        try {
+            await prepareMetric(id, controller.signal);
+            if (!current() || revision !== doc.rev || generation !== editingEpoch || !manager.start(id)) return;
+            const binding = manager.current;
+            if (!binding) return;
+            const client = worldClient(point.x, point.y);
+            const press = { id: pointerId, kind: 'mouse' as const, x: client.x, y: client.y, clicks: 1, shift: false, accel: false };
+            binding.editor.pointerDown(press);
+            binding.editor.pointerUp(pointerId);
+        }
+        catch (error) { if (!(error instanceof DOMException && error.name === 'AbortError')) report(error); }
+    };
+    return { manager, input, editText, editTextAt, writeOverlays, captureText, command, stickyNeighbour,
         selectAll(): boolean {
             const editor = manager.current?.editor;
             if (!current() || !editor || !active || !doc.nodes.has(active)) return false;

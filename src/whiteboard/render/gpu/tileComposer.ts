@@ -1825,11 +1825,18 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                     inexactPending.clear();
                 }
                 // At rest, an entry whose finer picture tiles have all settled (landed, or refused and replanned) recomposes, once.
+                // Only the resting scale's entries are asked: asking starts the upload of each landed tile (PictureRoute.waiting), and
+                // the entries a zoom composed on its way asked for textures no frame at this scale draws, filling the pool at rest
+                // (measured, a 4000x3000 picture zoomed to 400% on a WebGL2 PDF at DPR 2, 4 runs: canvas2d bridges 4/1/3/3 and quality
+                // down to 0.64 in 3; asked at the resting scale only, 2/2/2/2 and 0.64 in 1). Another scale's entry waits, asked
+                // again once the view rests at its scale; one that left the store leaves the map.
                 if (!zooming && awaitingDecode.size && routes.image?.waiting) {
                     for (const [entry, keys] of awaitingDecode) {
+                        if (!entry.target) { awaitingDecode.delete(entry); continue; }
+                        if (entry.key.scale !== target) continue;
                         if (routes.image.waiting(keys)) continue;
                         awaitingDecode.delete(entry);
-                        if (entry.target && entry.key.scale === target) { entry.dirty = true; auditCount(audit, 'image:await:recompose'); }
+                        entry.dirty = true; auditCount(audit, 'image:await:recompose');
                     }
                 }
                 // The armed retry is due and the refused position still waits on the GPU: it is advanced again this frame, after the

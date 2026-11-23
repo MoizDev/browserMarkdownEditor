@@ -7,6 +7,7 @@ import { childrenOf } from '../../whiteboard/model/doc';
 import type { createNativeCameraOperations } from './nativeCameraOperations';
 import type { createNativeCommandSource } from './nativeCommandSource';
 import type { NativeViewLease } from './nativeViewLease';
+import { focusStylePanel } from './chrome/stylePanelStore';
 
 /** Additional keyboard bindings use the same live commands, camera and preferences as chrome. */
 export function createNativeEditingKeyboard(options: {
@@ -53,6 +54,7 @@ export function createNativeEditingKeyboard(options: {
                 const variant = id === 'figure.last' ? options.runtime.tools.getSnapshot().lastFigure ?? 'rectangle' : id.slice('figure.'.length);
                 options.runtime.tools.setTool('figure', variant); return true;
             }
+            case 'style.adjust': return focusStylePanel();
             case 'sheet.previous': return stepSheet(-1);
             case 'sheet.next': return stepSheet(1);
             // Mod+Alt+G removes a selection of frames and frames any other selection (F-FRAME-004/005).

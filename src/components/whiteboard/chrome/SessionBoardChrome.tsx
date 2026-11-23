@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState, useSyncExternalStore, type ReactNode 
 import { getBoardPreferences, subscribeBoardPreferences, updateBoardPreferences } from '../../../utils/boardPreferences';
 import type { BoardCommand, BoardCommandSource, CommandState } from './boardCommands';
 import { ConnectedBoardChrome, type ToolStateView } from './ConnectedBoardChrome';
-import type { ConnectedPenPanelProps } from './ConnectedPenPanel';
+import type { StylePanelProps } from './StylePanel';
 import type { DebugOverlayProps } from './DebugOverlay';
 import { getBoardDebugStats, subscribeBoardDebugStats } from '../debugStats';
 import { boardLanguageMenu, type LanguageOption } from './languageMenu';
@@ -40,7 +40,8 @@ export interface SessionBoardChromeProps {
     readonly readOnlyReason: string;
     readonly zoom: number;
     readonly minimapVisible: boolean;
-    readonly penPanel?: ConnectedPenPanelProps;
+    /** The style panel's model and commands, from the attached board session. */
+    readonly stylePanel?: Pick<StylePanelProps, 'snapshot' | 'commands'>;
     /** The paged host's paper controls, rendered inside the chrome column under the header. */
     readonly pageControls?: ReactNode;
 }
@@ -128,7 +129,9 @@ export function SessionBoardChrome(props: SessionBoardChromeProps) {
             }} focusMode={props.localPreferences.view.focusMode}
             focusModeLabel={labels.preferenceLabel('focusMode')} exitFocusMode={() => props.localPreferences.setView('focusMode', false)}
             toolLockLabel={labels.preferenceLabel('toolLock')}
-            penPanel={props.penPanel ? { ...props.penPanel, disabled: props.readOnly || props.penPanel.disabled } : undefined}
+            stylePanel={props.stylePanel ? { snapshot: { ...props.stylePanel.snapshot, disabled: props.readOnly || props.stylePanel.snapshot.disabled },
+                commands: props.stylePanel.commands, toolLabel: labels.toolLabel, subheadings: global.enhancedA11yMode,
+                history: id => { void commandSource.run(id); } } : undefined}
             debug={debugOverlay} pageControls={props.pageControls}
             zoomControls={{ zoom: props.zoom, locale: props.locale, direction: props.direction,
                 zoomLabel: labels.text('zoom'), minimapLabel: labels.text('minimap'),

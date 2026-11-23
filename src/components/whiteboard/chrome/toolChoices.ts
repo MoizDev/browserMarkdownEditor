@@ -4,7 +4,8 @@ export type ToolLabel =
     | 'select' | 'hand' | 'draw' | 'eraser' | 'arrow' | 'text' | 'note' | 'media'
     | 'rectangle' | 'ellipse' | 'triangle' | 'diamond' | 'hexagon' | 'oval' | 'rhombus'
     | 'star' | 'cloud' | 'heart' | 'xBox' | 'checkBox' | 'arrowLeft' | 'arrowUp'
-    | 'arrowDown' | 'arrowRight' | 'line' | 'highlight' | 'laser' | 'frame';
+    | 'arrowDown' | 'arrowRight' | 'line' | 'highlight' | 'laser' | 'frame'
+    | 'pentagon' | 'octagon' | 'trapezoid' | 'rhombus2';
 
 /** A label with its chord after an em dash ("Draw — D"); the chord is already platform-formatted. */
 export function chordLabel(label: string, shortcut: string | undefined): string {

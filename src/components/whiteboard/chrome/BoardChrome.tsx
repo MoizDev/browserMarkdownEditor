@@ -3,7 +3,7 @@ import { BoardHeader, type BoardHeaderProps } from './BoardHeader';
 import { ToolStrip, type ToolChoice, type ToolLockView } from './ToolStrip';
 import { chordLabel, toolChoices, type ToolLabel } from './toolChoices';
 import { ZoomControls, type ZoomControlsProps } from './ZoomControls';
-import { ConnectedPenPanel, type ConnectedPenPanelProps } from './ConnectedPenPanel';
+import { DockedStylePanel, StylePopoverAnchor, type StylePanelProps } from './StylePanel';
 import { DebugOverlay, type DebugOverlayProps } from './DebugOverlay';
 import './chrome.css';
 
@@ -30,7 +30,7 @@ export interface BoardChromeProps extends BoardHeaderProps {
     readonly onBarTools?: (shown: readonly ToolChoice[]) => void;
     readonly selectTool: (choice: ToolChoice) => void;
     readonly zoomControls: ZoomControlsProps;
-    readonly penPanel?: ConnectedPenPanelProps;
+    readonly stylePanel?: StylePanelProps;
     readonly debug?: DebugOverlayProps;
     /** Paper controls of a paged host; they sit under the header, never over it. */
     readonly pageControls?: ReactNode;
@@ -39,7 +39,7 @@ export interface BoardChromeProps extends BoardHeaderProps {
 /** The view supplies live session state; these controls do not own a second selection or history. */
 export function BoardChrome({ locale, direction, selectedTool, toolLabel, toolShortcut, toolsLabel, moreLabel,
     readOnly, readOnlyReason, toolDisabledReason, focusMode, focusModeLabel, exitFocusMode, lastFigure, toolLockLabel, toolLock,
-    onBarTools, selectTool, zoomControls, penPanel, debug, pageControls, ...header }: BoardChromeProps) {
+    onBarTools, selectTool, zoomControls, stylePanel, debug, pageControls, ...header }: BoardChromeProps) {
     const choices = toolChoices(toolLabel, toolShortcut, lastFigure);
     const lock: ToolLockView | undefined = toolLock && {
         locked: toolLock.locked, label: toolLockLabel, shortcut: toolShortcut('lock'), toggle: toolLock.toggle,
@@ -55,9 +55,10 @@ export function BoardChrome({ locale, direction, selectedTool, toolLabel, toolSh
         <div className="board-chrome-top">
             <BoardHeader {...header} locale={locale} direction={direction} />
             {pageControls}
-            {penPanel && <div className="board-chrome-pen"><ConnectedPenPanel {...penPanel} /></div>}
+            {stylePanel && <div className="board-chrome-pen"><DockedStylePanel {...stylePanel} /></div>}
         </div>
         <div className="board-chrome-bottom">
+            {stylePanel && <StylePopoverAnchor {...stylePanel} />}
             <ToolStrip primary={choices.primary} more={choices.more} selected={selectedTool} lock={lock} onShown={onBarTools}
                 toolsLabel={toolsLabel} moreLabel={moreLabel}
                 disabledReason={choice => readOnly && choice.id !== 'select' && choice.id !== 'hand'

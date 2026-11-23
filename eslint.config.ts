@@ -200,7 +200,9 @@ export default defineConfig([
             // so it is the single non-view importer of the dark PDF session (same reach as NativePdfEntry).
             'src/components/whiteboard/preparePdfInkAttempt.ts',
             'src/components/whiteboard/nativeImportAdapter.ts', 'src/components/whiteboard/nativeLinkOperations.ts', 'src/components/whiteboard/nativeTextClipboard.ts',
-            'src/components/whiteboard/useNativeBoardLanguage.ts', 'src/components/whiteboard/useNativeSheetControls.tsx'],
+            'src/components/whiteboard/useNativeBoardLanguage.ts', 'src/components/whiteboard/useNativeSheetControls.tsx',
+            // The style panel is the board chrome's own switch: NativeBoardChrome renders it, and only the lazy board chunk does.
+            'src/components/whiteboard/chrome/StylePanel.tsx', 'src/components/whiteboard/chrome/styleIcons.tsx'],
           // Switch-wiring files: the platform preview (bme.pdf.platformLayer, P-PL) and the generic
           // platform pane hook. Dynamic or type-only imports only, so the chunk stays lazy.
           // App's closed-PDF agent seam (src/app/useAgentCanvasAccess) imports the contained host only on an

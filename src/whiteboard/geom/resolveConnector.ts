@@ -1,11 +1,11 @@
 import type { Affine, Rect } from '../../platform/types';
-import type { ConnectorNode } from '../model/nodes';
+import type { ConnectorEnd, ConnectorNode } from '../model/nodes';
 import type { Arrowhead } from '../model/styles';
 import { transformPoint } from './affine';
 import { connectorBody } from './connectors';
 import { bodyCrossingSteps, bodyLength, pointAtLength, tangentAtLength, trimBodyPath } from './connectorPath';
 import type { AttachmentSurface, ConnectorBody, ConnectorGeometryRequest, ConnectorGeometryResult, ConnectorLabelPaint, ResolvedConnectorEnd } from './connectorTypes';
-import { routeElbowSteps } from './elbow';
+import { elbowLeg, routeElbowSteps } from './elbow';
 import { connectorSurfaceContains, connectorSurfaceIntervals } from './connectorContourProbe';
 import { connectorHeadScale, headGeometry } from './heads';
 import type { PathOp, Vec2 } from './path';
@@ -26,6 +26,28 @@ function union(a: Rect | null, b: Rect): Rect {
     return { x, y, width: Math.max(a.x + a.width, b.x + b.width) - x, height: Math.max(a.y + a.height, b.y + b.height) - y };
 }
 function closedHead(kind: Arrowhead): boolean { return !['none', 'arrow', 'pipe'].includes(kind); }
+
+const EDGE_EPSILON = 1e-9;
+/** A precise end anchored on its target's outline is an edge end: it is reached from outside, never through the shape. Its
+ * direction is the outward normal of the box edge it sits on, as a world axis (the dominant one, for a rotated target). A corner
+ * sits on two edges and has no single direction. An interior anchor (the centre, an imprecise end) is null and is reached through
+ * the shape, as a closed shape's centre binding is. The normal is the inverse transpose of the target's linear part, so it stays
+ * perpendicular to its edge under rotation and scale. */
+function edgePort(end: ConnectorEnd, surface: AttachmentSurface): { readonly direction: Vec2 | undefined } | null {
+    const attach = end.attach;
+    if (!attach || attach.exact || !attach.precise) return null;
+    const { x, y } = attach.anchor, sides: Vec2[] = [];
+    if (Math.abs(x) <= EDGE_EPSILON) sides.push({ x: -1, y: 0 });
+    if (Math.abs(x - 1) <= EDGE_EPSILON) sides.push({ x: 1, y: 0 });
+    if (Math.abs(y) <= EDGE_EPSILON) sides.push({ x: 0, y: -1 });
+    if (Math.abs(y - 1) <= EDGE_EPSILON) sides.push({ x: 0, y: 1 });
+    if (!sides.length) return null;
+    if (sides.length > 1) return { direction: undefined };
+    const [m0, m1, m2, m3] = surface.localToWorld, det = m0 * m3 - m1 * m2, n = sides[0];
+    if (!det) return { direction: undefined };
+    const nx = (m3 * n.x - m1 * n.y) / det, ny = (m0 * n.y - m2 * n.x) / det;
+    return { direction: Math.abs(nx) >= Math.abs(ny) ? { x: Math.sign(nx), y: 0 } : { x: 0, y: Math.sign(ny) } };
+}
 
 /** One independent provider for free/attached arcs and received rectilinear
  * routes. It returns an explicit refusal for a route without a valid candidate;
@@ -52,16 +74,23 @@ function* connectorSteps(request: ConnectorGeometryRequest, resolveLabel: boolea
             const x = Math.min(...corners.map(p => p.x)) - gap, y = Math.min(...corners.map(p => p.y)) - gap;
             escape = union(escape, { x, y, width: Math.max(...corners.map(p => p.x)) + gap - x, height: Math.max(...corners.map(p => p.y)) + gap - y });
         }
+        const startEdge = startTarget ? edgePort(node.start, startTarget) : null, endEdge = endTarget ? edgePort(node.end, endTarget) : null;
         const selected = yield* routeElbowSteps({ start: a, end: b, mid: node.elbowMid, escape,
+            startDirection: startEdge?.direction, endDirection: endEdge?.direction, leg: elbowLeg(node.width),
             *validPort(points, terminal) {
                 const target = terminal === 'start' ? startTarget : endTarget, end = node[terminal];
                 if (!target || end.attach?.exact) return true;
                 return yield* connectorSurfaceContains(target, terminal === 'start' ? points[0] : points[points.length - 1], maxPieces);
             },
             *crossesForbidden(points) {
-                for (const [target, terminal] of [[startTarget, 'start'], [endTarget, 'end']] as const) {
+                for (const [target, terminal, edge] of [[startTarget, 'start', startEdge], [endTarget, 'end', endEdge]] as const) {
                     if (!target || node[terminal].attach?.exact) continue;
                     const value = yield* connectorSurfaceIntervals(target, points, error, maxPieces);
+                    // An edge end is reached from outside: a run through its shape, however short it ends, passes the outline first.
+                    if (edge) {
+                        if (value.parts.some(part => part.to - part.from > error)) return true;
+                        continue;
+                    }
                     if (value.parts.length > 1) return true;
                     if (value.parts.length && (terminal === 'start' ? value.parts[0].from > error : value.length - value.parts[0].to > error)) return true;
                 }

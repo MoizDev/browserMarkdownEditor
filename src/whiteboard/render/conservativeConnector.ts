@@ -2,6 +2,7 @@ import type { Affine } from '../../platform/types';
 import { worldPose } from '../change/coordinates';
 import { inverse, transformPoint } from '../geom/affine';
 import { arcBounds, transformBox } from '../geom/bounds';
+import { elbowLeg } from '../geom/elbow';
 import { connectorBody } from '../geom/connectors';
 import type { BoardDoc } from '../model/doc';
 import type { NodeId } from '../model/ids';
@@ -53,7 +54,8 @@ export function conservativeConnectorBounds(node: ConnectorNode, doc: BoardDoc, 
         : [Math.min(a.x, b.x), Math.min(a.y, b.y), Math.max(a.x, b.x), Math.max(a.y, b.y)];
     if (node.route === 'elbow') {
         for (const box of boxes) bounds = [Math.min(bounds[0], box[0]), Math.min(bounds[1], box[1]), Math.max(bounds[2], box[2]), Math.max(bounds[3], box[3])];
-        const escape = Math.max(12, node.width * 6);
+        // The route's perpendicular legs reach elbowLeg past an edge end, so the envelope covers them too.
+        const escape = Math.max(12, node.width * 6, elbowLeg(node.width));
         bounds = [bounds[0] - escape, bounds[1] - escape, bounds[2] + escape, bounds[3] + escape];
     }
     let xPad = node.width * 6 + approximate, yPad = xPad;

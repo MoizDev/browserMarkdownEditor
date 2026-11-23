@@ -16,7 +16,7 @@ third-party code included (normally "none") · date.
 | Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
 |---|---|---|---|---|---|---|
 | `chrome/penWidth.ts` | w-j | F-STYLE-006/008, R-2 | integration §6; geometry §3.2 | Style specification endpoints and w-h's public StyleGeometryMetrics; no tldraw or old canvas source | none | 2026-11-13 |
-| `chrome/penPanel.ts` | w-j | F-STYLE-001/002/003/006/008/009, WB-D25 | integration §6; rendering §5 | Renderer-owned PaintPalette, authoritative active tool, shared geometry metrics and sRGB luminance for contrasting indicator; no tldraw or old canvas source | none | 2026-11-13 |
+| `chrome/stylePanel.ts` | uxp (successor of w-j's penPanel.ts) | F-STYLE-001/002/003/006/008/009, WB-D25; UX parity catalogue (style panel) | integration §6; rendering §5 | Renderer-owned PaintPalette, authoritative active tool, shared geometry metrics and sRGB luminance for contrasting indicator; the row set per selection and the Mixed value; no tldraw or old canvas source | none | 2026-11-23 |
 | `chrome/theme.ts` | w-j | F-THEME-001/002/003/006, R-26, WB-D28 | integration §6; rendering §5 | Theme specification and host scope ruling; no tldraw or old canvas source | none | 2026-11-13 |
 | `chrome/preferences.ts` | w-j | F-PREF-002/003/005/006/008/012, WB-D30 | integration §§6–7 | Preference specification and public model view flags; session/view changes delegated to host persistence, with external-view reconciliation and persistence-before-notify; no tldraw or old canvas source | none | 2026-11-13 |
 | `chrome/viewFlags.ts` | w-j | F-PREF-002/003/005/012, WB-D30 | integration §§6–7; change-and-history §2 | Model's public session/apply and per-kind dirty policies, PDF browser-record callback and dirtying result; no tldraw or old canvas source | none | 2026-11-13 |
@@ -447,3 +447,24 @@ third-party code included (normally "none") · date.
 | `host/conversionInfo.ts` | lane w-l | I-2, D-WB-convert-backup, C7 | import §4; contracts C7 | Owned conversion metadata interface; no tldraw source | none | 2026-11-13 |
 | `host/pdfAttachments.ts` | lane w-l | F-PINK-008, C2.4, R-W15 | pdf-ink §F-PINK-008; native-format §3.6 | Specs, PDF writer attachment/reserved-name contract, owned fence and media hash APIs; no tldraw source | none | 2026-11-13 |
 | `host/pdfInkExport.ts` | lane w-l | F-PINK-008, F-SHEET-008, R-12, C2.4 | pdf-ink §F-PINK-008; sheets §F-SHEET-008 | Specs, platform page geometry/display-list and PDF writer contracts; no tldraw source | none | 2026-11-13 |
+
+## Board UX parity (uxp)
+
+Rows for the modules the tldraw UX parity pass added. Their behaviour comes from the parity catalogue's written
+descriptions of the observed behaviour (its `§` and `I§`/`T§`/`U§` ids are cited in the code comments); none of
+them was written from tldraw source.
+
+| Module | Author | Spec ids | Design section | Sources consulted | Third-party code | Date |
+|---|---|---|---|---|---|---|
+| `input/bindingPrecision.ts` | uxp | catalogue §7 (arrow binding precision: 320 ms press, 600 ms hover, fast entry imprecise) | catalogue §7 | Catalogue behaviour description; no tldraw source | none | 2026-11-23 |
+| `input/chromeDrag.ts` | uxp | catalogue U§10, U§23.1 (a bar tool dragged onto the board creates its shape; a click only selects) | catalogue U§10, U§23.1 | Catalogue behaviour description; touch slop of 25 px from the catalogue's measured value; no tldraw source | none | 2026-11-23 |
+| `input/modifierRelease.ts` | uxp | catalogue I§1.4 (modifier releases held 150 ms) | catalogue I§1.4 | Catalogue behaviour description; no tldraw source | none | 2026-11-23 |
+| `input/oneFingerZoom.ts` | uxp | catalogue T§2 (double tap and hold, then drag to zoom) | catalogue T§2 | Catalogue behaviour description; no tldraw source | none | 2026-11-23 |
+| `input/pointerPace.ts` | uxp | catalogue §7 (object snaps pause on a fast pointer) | catalogue §7 | Catalogue behaviour description; no tldraw source | none | 2026-11-23 |
+| `geom/outlineSnap.ts` | uxp | catalogue b.4 (a handle snaps to the nearest outline point) | catalogue b.4 | Catalogue behaviour description; flattening tolerance from the engine's own geometry; no tldraw source | none | 2026-11-23 |
+| `clipboard/duplicateRepeat.ts` | uxp | UX parity catalogue (Cmd/Ctrl+D repeats the last copy's offset) | catalogue, duplicate section | Catalogue behaviour description; no tldraw source | none | 2026-11-23 |
+| `viewer/connectorHints.ts` | uxp | catalogue §7 a.2, a.9 (arrow binding hints: stub, cross, ring) | catalogue §7 | Catalogue behaviour description; no tldraw source | none | 2026-11-23 |
+| `viewer/frameBorderFit.ts` | uxp | UX parity catalogue (frame border double-click fits the frame to its children) | catalogue, frame section | Catalogue behaviour description; no tldraw source | none | 2026-11-23 |
+| `viewer/helperButtons.ts` | uxp | UX parity catalogue (Back to content, Exit pen mode) | catalogue, navigation section | Catalogue behaviour description; no tldraw source | none | 2026-11-23 |
+| `viewer/pointerKind.ts` | uxp | catalogue I§4.5 (the last pointer type decides; coarse handles 20/12 of fine size) | catalogue I§4.5 | Catalogue behaviour description; no tldraw source | none | 2026-11-23 |
+| `viewer/textFormatToolbar.ts` | uxp | UX parity catalogue (formatting bar over a text selection) | catalogue, text section | Catalogue behaviour description; the bar's icons are Lucide node data (next column) | Lucide icon data, ISC licence (lucide-static 1.43.0), the same family as `components/whiteboard/chrome/toolIcons.tsx` | 2026-11-23 |

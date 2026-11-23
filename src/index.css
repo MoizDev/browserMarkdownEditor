@@ -3568,6 +3568,16 @@ body.is-resizing-panes * {
   color: var(--text-normal);
 }
 
+.pdf-viewer-zoom-value {
+  min-width: 4ch;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+
 /* Padding/font/line-height match .pdf-viewer-zoom button exactly so both pills
    come out the same height. The input's width is set inline from the page
    count; everything else is shared. */
@@ -3708,6 +3718,8 @@ body.is-resizing-panes * {
 /* The pill's icon buttons: thumbnails, invert, and the two quarter turns. One
    rule, because they sit shoulder to shoulder in the same pill and any
    difference between them would read as a mistake. */
+.pdf-viewer-outline-toggle,
+.pdf-capabilities-toggle,
 .pdf-viewer-thumbs-toggle,
 .pdf-viewer-invert-toggle,
 .pdf-viewer-rotate-btn {
@@ -3722,6 +3734,8 @@ body.is-resizing-panes * {
   cursor: pointer;
 }
 
+.pdf-viewer-outline-toggle:hover,
+.pdf-capabilities-toggle:hover,
 .pdf-viewer-thumbs-toggle:hover,
 .pdf-viewer-invert-toggle:hover,
 .pdf-viewer-rotate-btn:hover {
@@ -3729,6 +3743,8 @@ body.is-resizing-panes * {
   color: var(--text-normal);
 }
 
+.pdf-viewer-outline-toggle.is-on,
+.pdf-capabilities-toggle.is-on,
 .pdf-viewer-thumbs-toggle.is-on,
 .pdf-viewer-invert-toggle.is-on {
   color: var(--interactive-accent);

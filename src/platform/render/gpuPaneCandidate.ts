@@ -83,7 +83,8 @@ export class GpuPaneCandidate {
         const id = `${this.options.paneId}:${this.options.viewLease}:gpu:${preparation.generation}:${++this.serial}`;
         const now = performance.now();
         const backing = new SurfaceBacking({ governor: this.options.runtime.governor, paneId: this.options.paneId,
-            owner: this.options.owner, id, canvas: preparation.canvas, displayed: false, now });
+            owner: this.options.owner, id, canvas: preparation.canvas, displayed: false, now,
+            wake: () => this.options.invalidate('surface-capacity') });
         const generationRef: { current: Generation | null } = { current: null };
         const defer = (action: () => void): void => {
             const expected = generationRef.current;
@@ -223,7 +224,12 @@ export class GpuPaneCandidate {
         const generation = this.current;
         if (!generation || generation.preparation.canvas !== canvas) return;
         generation.backing.releaseZeroed();
-        if (generation.disposed) generation.backing.close();
+        if (generation.disposed) { generation.backing.close(); return; }
+        // A zeroed backing is no longer the display: the pane shows its 2D picture first when it is shown again, and the kept GPU
+        // rebuilds behind it as scratch until selectGpu promotes it, as a new generation's does. Left 'displayed', its rebuild was
+        // charged as a second display beside the 2D one and refused, and the 2D display goes only when the GPU presents: a PDF shown
+        // again after a tab switch stayed on its blurred 2D picture for good (measured, WebGL2 DPR 2, doc12).
+        generation.backing.stage();
     }
 
     private reportTrouble(generation: Generation, code: GfxError): void {

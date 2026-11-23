@@ -1634,7 +1634,6 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             frameComposed = 0;
             frameDirtyCovered.clear();
             liveInkDropped.clear();
-            drawnLive.underlay.clear(); drawnLive.content.clear();
             plannedLive.underlay.clear(); plannedLive.content.clear();
             // The interned scales only name the positions in progress: with none in progress they are forgotten now, so a zoom's
             // scales are not kept after it ends (gpu: the churn cannot hold memory). The restart at 60 stays for a long zoom.
@@ -1962,6 +1961,10 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
         },
         drawGpu(pass: GpuPass, view: ViewState, band: PaintBand): void {
             if (drawnInkFrame !== frame) { drawnInkFrame = frame; drawnInk.clear(); }
+            // Cleared where the set is filled, not at prepare: the base layer reads it between the overlay's prepare and its draw. Cleared
+            // at prepare, the base read an empty set on every frame of a drag, so it never omitted the dragged node's original (measured:
+            // the overlay planned the node, drawn=0 at each base read, base omission none; the original stayed on screen until release).
+            drawnLive[band].clear();
             drewAny[band] = false;
             if (!drawCount) return;
             if (!listUsable(view)) { auditCount(audit, 'draw:stale-list'); wantFrame = true; return; }

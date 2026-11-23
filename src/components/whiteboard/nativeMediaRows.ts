@@ -1,4 +1,4 @@
-import type { ContextMenuEntry } from '../../utils/contextMenu';
+import type { MenuRow } from './chrome/boardCommands';
 import type { NativeViewLease } from './nativeViewLease';
 import type { BoardTextQuestion } from './useNativeBoardDialogs';
 
@@ -61,7 +61,7 @@ export interface MediaRowOptions {
 }
 
 /** Rows for the one picture or card the menu was raised over. A blocked row stays on screen and says why. */
-export function mediaRows(selection: MediaRowSelection, options: MediaRowOptions): ContextMenuEntry[] {
+export function mediaRows(selection: MediaRowSelection, options: MediaRowOptions): MenuRow[] {
     const { actions, fail, pick, requestText, playback, current, notice, openCrop } = options;
     const label = (key: string, fallback: string) => options.text ? options.text(key, fallback) : fallback;
     const attempt = (action: () => void | Promise<void>) => () => {
@@ -73,7 +73,7 @@ export function mediaRows(selection: MediaRowSelection, options: MediaRowOptions
         return [{ kind: 'command', id: 'media-card-preview', label: 'Fetch link preview', ...rowState,
             run: attempt(() => actions.cardPreview(selection.id)) }];
     }
-    const rows: ContextMenuEntry[] = [];
+    const rows: MenuRow[] = [];
     if (selection.replaceable) {
         rows.push({ kind: 'command', id: 'media-replace', label: label('chrome.replaceMedia', 'Replace picture…'), ...rowState,
             run: attempt(async () => { const file = await pick(); if (file) await actions.replace(selection.id, file, file.name); }) });

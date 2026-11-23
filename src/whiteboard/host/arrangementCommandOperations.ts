@@ -61,7 +61,8 @@ export function createArrangementCommandOperations(options: {
     });
     const align = (mode: Align) => operation(2, ids => commands.align(ids, mode));
     const distribute = (axis: Axis) => operation(3, ids => commands.distribute(ids, axis));
-    const stack = (axis: Axis) => operation(2, ids => commands.stack(ids, axis));
+    // Stack needs three items: with two it is only a move, which Align already does.
+    const stack = (axis: Axis) => operation(3, ids => commands.stack(ids, axis));
     return {
         alignLeft: align('left'), alignHorizontal: align('center'), alignRight: align('right'),
         alignTop: align('top'), alignVertical: align('middle'), alignBottom: align('bottom'),

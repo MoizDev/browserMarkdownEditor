@@ -62,15 +62,15 @@ function AttachedNativeBoardChrome({ runtime, language, preferences, mac, onRead
     useEffect(() => { styles.refresh(); }, [props.readOnly, styles]);
     useEffect(() => { if (!props.isVisible) styles.finish(); }, [props.isVisible, styles]);
     // A tool's chord is its binding's; the media tool's is Insert media's (⌘U), and an id with a dot names its binding.
-    const tooltip = (id: string, figure?: string) => {
-        const key = id === 'figure' ? `figure.${figure ?? runtime.tools.getSnapshot().lastFigure ?? 'rectangle'}`
-            : id === 'media' ? 'media.insert' : id.includes('.') ? id : `tool.${id}`;
+    const chord = (key: string): string | undefined => {
         const binding = boardBindings.find(item => item.id === key);
         return binding ? bindingChord(binding, mac) : undefined;
     };
+    const tooltip = (id: string, figure?: string) => chord(id === 'figure' ? `figure.${figure ?? runtime.tools.getSnapshot().lastFigure ?? 'rectangle'}`
+        : id === 'media' ? 'media.insert' : id.includes('.') ? id : `tool.${id}`);
     return <SessionBoardChrome {...props} kind={runtime.session.doc.kind} locale={lang.locale} direction={lang.table.dir}
         translate={(key, values) => translateBoard(lang.table, key, values)} languages={availableBoardLocales()}
-        selectLanguage={locale => language.select(locale)} toolState={tools} toolShortcut={tooltip} shortcuts={shortcutGroups(mac, runtime.session.doc.kind !== 'whiteboard')}
+        selectLanguage={locale => language.select(locale)} toolState={tools} toolShortcut={tooltip} bindingChord={chord} shortcuts={shortcutGroups(mac, runtime.session.doc.kind !== 'whiteboard')}
         localPreferences={{ ...local, setView: (key, value) => { if (props.currentOwner()) preferences.setView(key, value); },
             setSession: (key, value) => preferences.setSession(key, value) }} stylePanel={{ snapshot: panel, commands: styles.commands }} />;
 }

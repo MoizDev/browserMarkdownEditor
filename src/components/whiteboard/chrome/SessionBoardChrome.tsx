@@ -29,6 +29,8 @@ export interface SessionBoardChromeProps {
     readonly toolStateFor: (id: string, figure?: string) => CommandState;
     readonly commands: Omit<BoardCommandSource, 'label'>;
     readonly actionShortcut: (id: MainAction) => string | undefined;
+    /** The displayed chord of a keyboard binding by id (the Preferences rows show Tool lock, Show grid and Focus mode chords). */
+    readonly bindingChord?: (bindingId: string) => string | undefined;
     readonly actionState: (id: MainAction) => CommandState;
     readonly runAction: (id: MainAction) => void | Promise<void>;
     readonly shortcuts: readonly ShortcutGroup[];
@@ -82,7 +84,7 @@ export function SessionBoardChrome(props: SessionBoardChromeProps) {
     }, colorScheme => updateBoardPreferences({ colorScheme }));
     const language = boardLanguageMenu(labels.text('language'), props.locale, props.languages,
         props.selectLanguage, props.reportError);
-    const preferences = preferenceEntries({ local: props.localPreferences, label: labels.preferenceLabel, theme });
+    const preferences = preferenceEntries({ local: props.localPreferences, label: labels.preferenceLabel, theme, chord: props.bindingChord });
     const editAction = (id: MainAction) => id === 'uploadMedia' || id === 'insertEmbed' || id === 'unlockAll'
         || id === 'convertToBookmark' || id === 'convertToEmbed';
     const actionState = (id: MainAction): CommandState => {

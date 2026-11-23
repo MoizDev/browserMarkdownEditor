@@ -1,4 +1,4 @@
-import { openContextMenu, type ContextMenuEntry } from '../../utils/contextMenu';
+import { openContextMenu } from '../../utils/contextMenu';
 import { createBoardSelectionCommands } from '../../whiteboard/commands/selection';
 import { createPageMoveBackend } from '../../whiteboard/commands/moveSelectionPage';
 import { ungroupEligibility } from '../../whiteboard/commands/selection';
@@ -10,9 +10,10 @@ import type { NativeEmbedController } from '../../whiteboard/host/nativeEmbeds';
 import type { NodeId } from '../../whiteboard/model/ids';
 import type { KeyboardContextRequest } from '../../whiteboard/viewer/keyboardContext';
 import type { BoardContextMenuRequest } from '../../whiteboard/viewer/toolServices';
-import { contextEntries, type BoardCommand, type BoardCommandSource } from './chrome/boardCommands';
+import { contextEntries, type BoardCommand, type BoardCommandSource, type MenuRow } from './chrome/boardCommands';
 import { localizeBoardChrome } from './chrome/localize';
 import { mediaRows, type MediaRowOptions, type MediaRowSelection } from './nativeMediaRows';
+import { NEW_SHEET_NAME } from '../../whiteboard/host/structureControls';
 
 export interface MediaMenuSource extends Omit<MediaRowOptions, 'current' | 'notice' | 'text'> {
     readonly selection: (writable: boolean) => MediaRowSelection | null;
@@ -49,7 +50,7 @@ export function createNativeBoardContextMenu(options: {
         const labels = localizeBoardChrome(t), selected = selection.selected;
         const preferences = options.preferences.getSnapshot(), embed = options.embed();
         const node = selected.length === 1 ? session.doc.nodes.get(selected[0]) : undefined;
-        const extra: ContextMenuEntry[] = [];
+        const extra: MenuRow[] = [];
         if (embed && node?.kind === 'embed') {
             const state = embed.state(node.id);
             extra.push({ kind: 'command', id: 'embed-load', label: state === 'loaded' ? 'Unload embed' : state === 'loading' ? 'Loading embed…' : 'Load embed',
@@ -83,11 +84,18 @@ export function createNativeBoardContextMenu(options: {
             } });
         const pages = backend.targets().map(page => ({ id: page.id, label: page.label,
             enabled: page.enabled && options.canWrite(), ...(!page.enabled || !options.canWrite() ? { reason: page.reason ?? 'Board view is read-only' } : {}) }));
+        const newSheetBlock = backend.newSheetBlock();
+        const newSheetReason = !options.canWrite() ? 'Board view is read-only' : newSheetBlock === 'sheet-limit' ? 'Maximum pages reached' : newSheetBlock;
+        const newPage = { label: labels.text('newSheet'), enabled: newSheetReason === undefined, reason: newSheetReason,
+            run() {
+                if (!same() || !options.canWrite()) throw new Error('The board view or selection changed');
+                backend.moveToNewSheet(NEW_SHEET_NAME);
+            } };
         const source = { ...options.commands, run: safeRun, sectionLabel: labels.contextSectionLabel,
             selectedCount: selected.length, textSelected: selected.some(id => session.doc.nodes.get(id)?.kind === 'text'), canUngroup: ungroupEligibility(session.doc, selected, selection).enabled,
             debugMode: preferences.view.debugMode, transparent: preferences.view.transparent,
             transparentLabel: labels.text('transparent'), ...(!options.canWrite() ? { transparentDisabledReason: 'Board view is read-only' } : {}),
-            noPagesReason: 'No eligible pages', pages, extraEntries: extra,
+            noPagesReason: 'No eligible pages', pages, newPage, extraEntries: extra,
             toggleTransparent() {
                 if (!same() || !options.canWrite()) throw new Error('The board view or selection changed');
                 options.preferences.setView('transparent', !options.preferences.getSnapshot().view.transparent);

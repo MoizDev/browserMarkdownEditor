@@ -20,11 +20,16 @@ export interface BoardPreferences {
     colorScheme: 'light' | 'dark' | 'system';
     /** The navigation panel's minimap, shared by every board and tab. Collapsed until the person opens it. */
     minimapOpen: boolean;
+    /** The sheet menu's list height once the person has dragged its grip; null follows the content. */
+    sheetListHeight: number | null;
 }
+/** Bounds of the sheet list's pinned height: one row at least, and the page menu's auto-fit cap (800px). */
+export const SHEET_LIST_MIN_HEIGHT = 36;
+export const SHEET_LIST_MAX_HEIGHT = 800;
 const defaults: BoardPreferences = {
     version: 1, isSnapMode: false, isWrapMode: false, isDynamicResizeMode: false,
     animationSpeed: 1, areKeyboardShortcutsEnabled: true, enhancedA11yMode: false,
-    inputMode: null, isZoomDirectionInverted: false, edgeScrolling: true, locale: 'en', colorScheme: 'system', minimapOpen: false,
+    inputMode: null, isZoomDirectionInverted: false, edgeScrolling: true, locale: 'en', colorScheme: 'system', minimapOpen: false, sheetListHeight: null,
 };
 // Until the user chooses, motion follows the OS: a reduced-motion request starts at speed 0 (camera.md F-A11Y-005).
 function osAnimationSpeed(): number {
@@ -51,6 +56,8 @@ function clamp(value: unknown): BoardPreferences {
         locale,
         colorScheme: input.colorScheme === 'light' || input.colorScheme === 'dark' || input.colorScheme === 'system' ? input.colorScheme : defaults.colorScheme,
         minimapOpen: flag('minimapOpen', defaults.minimapOpen),
+        sheetListHeight: typeof input.sheetListHeight === 'number' && Number.isFinite(input.sheetListHeight)
+            ? Math.max(SHEET_LIST_MIN_HEIGHT, Math.min(SHEET_LIST_MAX_HEIGHT, input.sheetListHeight)) : null,
     };
 }
 let current: BoardPreferences | undefined;

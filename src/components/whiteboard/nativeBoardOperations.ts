@@ -85,6 +85,8 @@ export function createNativeBoardOperations(options: {
         flatten: options.flatten, editLink: options.editLink, toggleAutoSize: toggleAutoSize(),
         stretchHorizontal: transform('stretch.horizontal', 2), stretchVertical: transform('stretch.vertical', 2),
         rotateClockwise: transform('rotate.clockwise', 1), rotateCounterclockwise: transform('rotate.counterclockwise', 1),
+        flipHorizontal: transform('flip.horizontal', 1), flipVertical: transform('flip.vertical', 1),
+        convertToBookmark: options.actions.convertToBookmark, convertToEmbed: options.actions.convertToEmbed,
     };
     return createNativeCommandSource({ commands, actions: { ...options.actions, unlockAll: edit.unlockAll }, current: options.current,
         readOnly: () => session.isReadOnly || !options.canWrite(), readOnlyReason: () => session.readOnlyReason ?? 'The document cannot currently be changed',

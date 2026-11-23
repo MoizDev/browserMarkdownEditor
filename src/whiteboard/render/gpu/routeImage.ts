@@ -534,8 +534,11 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
             const current = host.device(), paint = resources, own = hold;
             if (!current || !paint || !own || current.generation !== budget.token.deviceGeneration || host.generation !== budget.token.deviceGeneration) return;
             for (const key of uploading) {
-                // A tile whose bitmap is gone (released, or a new snapshot) is asked for again by the next compose that plans it.
-                if (own.imageState(key) !== 'ready') { uploading.delete(key); continue; }
+                // A tile whose bitmap went before its upload finished (a CPU trim, a new snapshot) is asked for again now: its landing
+                // invalidates, and the composer's wait for it (awaitingDecode) starts the upload again. Left to the next compose that
+                // plans it, at rest none came: a drawing shown again after a tab switch kept its picture's stand-in for good (measured,
+                // a 4000x3000 picture at DPR 2: 5 tile uploads started, 2 finished, one CPU trim of the board's pictures between).
+                if (own.imageState(key) !== 'ready') { uploading.delete(key); own.reacquireImage(key); auditCount(audit, 'image:tile:upload-lost'); continue; }
                 const admitted = textures.acquire(key, paint.image(key), budget);
                 if (admitted.status === 'deferred') continue;
                 uploading.delete(key);

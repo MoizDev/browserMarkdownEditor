@@ -83,8 +83,8 @@ export const attachView: AttachView = options => {
     let viewWorld: { key: SceneKey; world: Rect } | null = null;
     /** canvas2d's standing view request (see requestPaint): its key, its world, the world its picture tiles cover and its exact scale. */
     let view2d: { key: SceneKey; world: Rect; tiles: Readonly<Rect>; scale: number } | null = null;
-    // canvas2d's zoom settling (see requestPaint): the last device scale seen, when it was first seen, and the wake that asks for the
-    // exact ink band once it has held for ZOOM_SETTLE_MS.
+    // The zoom settling of both routes (see requestPaint): the last device scale seen, when it was first seen, and the wake that asks
+    // for the exact ink band once it has held for ZOOM_SETTLE_MS.
     let zoom2d: { scale: number; at: number } | null = null, settle2d: ReturnType<typeof setTimeout> | null = null;
     const ZOOM_SETTLE_MS = 250;
     const cancelSettle2d = () => { if (settle2d !== null) { clearTimeout(settle2d); settle2d = null; } };
@@ -339,9 +339,29 @@ export const attachView: AttachView = options => {
         const moving = !!viewNow?.moving;
         if (carriedBand !== null && !moving) { carriedBand = null; viewWorld = null; viewAsked = null; sceneAsked = null; sceneDue = false; }
         const key: SceneKey = { revision: runtime.scene.revision, sheet: sheet(), theme: view.theme, sensitive, band };
+        // Every scale the camera shows starts the zoom's settle window, a request that stands included: tracked only past the standing
+        // checks, a wheel zoom alternating across a band let the settle wake fire mid-zoom and ask again (measured: 10 of 40 steps).
+        if (onDevice && viewNow) { const scale = viewNow.camera.z * viewNow.viewport.dpr; if (zoom2d?.scale !== scale) zoom2d = { scale, at: performance.now() }; }
         // The whole scene is already asked for this key: a camera change needs no request (checked before the abort below, so the
         // scene asked in flight is not cancelled).
         if (onDevice && sameSceneKey(sceneAsked, key)) return;
+        // A request at a band up to one finer than the camera's stands while a zoom is still going (moving, or a new scale in the last
+        // ZOOM_SETTLE_MS: a wheel's steps never mark the camera moving); the camera's own band is asked once the scale has held that
+        // long. The GPU route draws a finer band's outline at a coarser scale (never a coarser one at a finer scale: a zoom in across a
+        // band still asks). Asked at each crossing, a paced wheel zoom whose steps alternate across the band at 100% asked the whole
+        // scene anew on every step and presented each step three times (measured, WebGL2, DPR 2, a drawing holding a 4000x3000
+        // picture: 40 scene requests and 120 presents for 40 steps).
+        if (onDevice && viewNow && zoom2d && key.band !== null) {
+            const now = performance.now();
+            const held = (asked: SceneKey | null): boolean => !!asked && asked.band !== null && sameSceneKey(asked, { ...key, band: asked.band })
+                && asked.band >= key.band! && asked.band <= key.band! * Math.SQRT2 * (1 + 1e-9);
+            if ((moving || now - zoom2d.at < ZOOM_SETTLE_MS) && (held(sceneAsked) || (!sceneDue && densityMode !== 'dense' && !!viewWorld
+                && held(viewWorld.key) && containsRect(viewWorld.world, viewportOf(viewNow))))) {
+                cancelSettle2d();
+                settle2d = setTimeout(() => { settle2d = null; requestPaint(); }, Math.max(0, zoom2d.at + ZOOM_SETTLE_MS - now) + 1);
+                return;
+            }
+        }
         // A view request whose world still holds the viewport, at the same key (band), stands: a pan or a zoom inside the band asks nothing new.
         if (onDevice && !sceneDue && densityMode !== 'dense' && viewNow && viewWorld && sameSceneKey(viewWorld.key, key)
             && containsRect(viewWorld.world, viewportOf(viewNow))) return;

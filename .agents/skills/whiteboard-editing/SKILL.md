@@ -115,7 +115,9 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   More-tools menu), `PenPanel.tsx` (colours and width), `BoardHeader.tsx`, `ZoomControls.tsx`, menus
   (`mainMenu.ts`, `preferencesMenu.ts`, `themeMenu.ts`, `languageMenu.ts`), `boardCommands.ts`.
 - Context menus are the app's own (`openBoardContextMenu.ts`, `nativeBoardContextMenu.ts`; `app-context-menu`).
-  Dialogs and notices are the app's own UI; no native confirm/alert/prompt/tooltip.
+  Dialogs and notices are the app's own UI; no native confirm/alert/prompt/tooltip. A board's notices (the render
+  notices included) show in its own `.board-viewer-notice` box with Dismiss, in viewing and editing alike: a bare
+  `role="status"` element with no place in the layout is in the DOM and nowhere on screen.
 - Board preferences persist in `localStorage['bme.whiteboard.preferences']` (`utils/boardPreferences.ts`).
 - Copy/cut/paste are listened on the board surface (`useNativeClipboard.ts`); paste classifies native records,
   legacy, Excalidraw and HTML (`clipboard/paste.ts`), each admitted as an external source.

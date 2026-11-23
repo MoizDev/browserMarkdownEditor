@@ -93,8 +93,10 @@ Or make one as a person does: the file tree's **New drawing or notebook** button
 - **Every pane presents canvas2d first**, then swaps to WebGL2 once the device qualifies (`rendering-platform`). A
   check of "the GPU path" must look after the swap.
 - **WebGL2**: headless CfT on this Mac with no flags uses the real GPU (`ANGLE Metal Renderer: Apple M4 Pro`).
-- **canvas2d**: launch with `args: ['--disable-webgl']`. The audit then counts `context:creation-failed` and
-  `pane:fallback:pane-2d:creation-failed` once per pane.
+- **canvas2d**: launch with `args: ['--disable-webgl']`. The audit then counts `context:unavailable:no-webgl2`
+  and `pane:fallback:pane-2d:gpu-unavailable`, and the app shows its `gpu-unavailable` notice once.
+- **Software WebGL2**: `--use-angle=swiftshader` gives a SwiftShader context; the app refuses it and runs canvas2d,
+  counting `context:unavailable:software` and showing the `gpu-unavailable` notice once.
 - **Prove the backend, never assume it**: with the audit on, `window.__bmeRenderAudit.presents().records` carries
   `backend: 'webgl2' | 'canvas2d'` per present, and `snapshot().counters` every `fallback:` count. Record the
   renderer string (`WEBGL_debug_renderer_info` on a throwaway canvas): a software renderer (SwiftShader, llvmpipe,

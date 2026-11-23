@@ -25,6 +25,11 @@ interface WorkerInspection {
     readonly decodePixels: number;
 }
 const worker = boardWorker('decode');
+/** Content ids whose bytes passed the whole-picture verification decode in this page. The id is the worker's SHA-256 of the
+ * actual bytes, so the same id is the same bytes and the same answer: a picture is verified once, not again at each later
+ * inspection (the insert, then the paint's first frame and its first tile source). Bounded; forgetting one only costs a decode. */
+const verifiedIds = new Set<MediaId>();
+const VERIFIED_LIMIT = 4096;
 const inspected = new WeakMap<InspectedMedia, { input: Blob; bytes: Blob; identity: BoardJobIdentity; current(): boolean }>();
 
 /** Storage consumes the actual verified immutable bytes, never a descriptor-shaped claim. */
@@ -125,7 +130,7 @@ export async function inspectMedia(blob: Blob, options: { signal?: AbortSignal; 
                 duration = probed;
             } finally { options.memory.release(transport); options.memory.release(frame); }
         }
-        if (duration === null) {
+        if (duration === null && !verifiedIds.has(result.id)) {
             try {
                 await call<boolean>('probe', { blob, width: result.width, height: result.height, animated: result.animated, mime: result.mime }, 10000);
             } catch (error) {
@@ -133,6 +138,8 @@ export async function inspectMedia(blob: Blob, options: { signal?: AbortSignal; 
                 if (signal.aborted) await worker.recycle('cancelled image probe').catch(() => undefined);
                 throw error;
             }
+            if (verifiedIds.size >= VERIFIED_LIMIT) verifiedIds.clear();
+            verifiedIds.add(result.id);
         }
         signal.throwIfAborted();
         return attest({ id: result.id, mime: result.mime, width: result.width, height: result.height, animated: result.animated, duration });

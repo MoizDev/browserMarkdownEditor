@@ -3,6 +3,7 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
+        { key: "dialog.embedProviders", text: "Supported providers", reason: "Not translated yet: this board language shows the English heading." },
         { key: "dialog.url", text: "URL", reason: "URL is the standard abbreviation, used unchanged in this language." },
         { key: "commands.exportPng", text: "PNG", reason: "International file format or paper size designation." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -16,6 +17,7 @@ export default defineBoardLanguage({
     strings: {
         "dialog.insertEmbed": "임베드 삽입",
         "dialog.embedBody": "지원되는 임베드 제공업체의 링크를 입력하세요. 불러오기를 선택하기 전까지 임베드는 로드되지 않습니다.",
+        "dialog.embedProviders": "Supported providers",
         "dialog.url": "URL",
         "crop.aspect": "가로세로 비율",
         "crop.zoom": "확대",

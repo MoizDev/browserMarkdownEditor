@@ -92,12 +92,17 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   selection. Handles: `viewer/selectionHandles.ts`, `shapeHandles.ts`, `stickyHandles.ts`; a coarse pointer draws
   them larger (`viewer/pointerKind.ts`).
 - Creation: `viewer/creationTools.ts` (`boardCreationTool`: figure, text, sticky, frame, connector, polyline) and the
-  text tool in `text/edit/tool.ts`. A frame's border double-click fits it to its children (`viewer/frameBorderFit.ts`).
+  text tool in `text/edit/tool.ts`. With grid mode on, every figure and frame rounds its origin and size, and a note its
+  centre; an arrow's free start rounds to the grid (`input/gridCreation.ts` `gridBox`, `gridPoint`). A frame's border double-click fits it to its children (`viewer/frameBorderFit.ts`).
 - Arrow ends (`input/connectorHandles.ts`, `input/bindingPrecision.ts`, `viewer/connectorHints.ts`): precise after
   320 ms of rest, 600 ms of arrow-tool hover, or on a slow entry; a fast entry binds to the centre. Alt is exact,
   Cmd/Ctrl skips binding. A figure changing shape re-snaps its precise ends that its new outline leaves outside to
   the nearest outline point (`geom/attachments.ts` `resnappedShapeAnchors`, called by `chrome/styleCommands.ts`
   `setShape`; the same transaction). Route changes (arc/elbow) keep the anchors as they are.
+  A bound arrow's container is the nearest ancestor its two shapes share (`geom/connectorParent.ts` `bindingContainer`), set by
+  creation and by the end drag's commit; a release keeps an arc's radius (`geom/connectorBend.ts`). Creation drops a drag under 10
+  units (`CONNECTOR_MIN_LENGTH`, `viewer/creationTools.ts`). An elbow's target hint draws its edge dots and anchor circle
+  (`viewer/connectorHints.ts` `elbowHintOf`, `setTarget`); its arrow-tool hover draws the dots without an anchor.
 - Translation commits positions rounded to 1e-6 board units (`geom/runtimeTranslation.ts`, `cleanPlacement`); the
   live preview keeps exact arithmetic, so a grid-snapped drop no longer commits 119.99999999999994.
 - Navigation: `input/navigation.ts` and the wheel, touch and pinch modules (`cameraZoom.ts`, `oneFingerZoom.ts`,
@@ -105,7 +110,8 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   `viewer/keyboardNavigation.ts`: the glide lasts `PAGE_GLIDE_MS` (320 ms) times the board's animation speed, and
   jumps under reduced motion (speed 0). It glides on the platform scheduler (`rendering-platform`).
 - Holding Z (zoom) sets the surface cursor to zoom-in, zoom-out while Alt is held, and the default cursor during the
-  quick overview (Shift+Z); `input/attach.ts` `showZoomCursor` owns it and restores the saved cursor on release.
+  quick overview (Shift+Z); `input/attach.ts` `showZoomCursor` owns it and restores the saved cursor on release. The overview
+  zooms about the pointer (`input/quickOverview.ts`), so the point under it stays fixed.
 
 ## Keyboard
 

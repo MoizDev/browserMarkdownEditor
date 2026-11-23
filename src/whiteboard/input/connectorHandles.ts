@@ -4,12 +4,16 @@ import type { NodeSetOp, Op } from '../change/ops';
 import { prepareNotebookTransform } from './notebookTranslation';
 import { acquireBoardGeometryScope, type BoardGeometryScope } from '../commands/geometryScope';
 import { boardSnapGrid, nearestBoardGridCoordinate } from '../geom/gridSnap';
+import { bindingContainer } from '../geom/connectorParent';
+import { bendKeepingCurvature } from '../geom/connectorBend';
+import { keyBetween } from '../model/orderKey';
+import { isSheetParent } from '../model/doc';
 import type { BoardRuntime } from '../host/runtime';
 import type { NodeId } from '../model/ids';
 import type { Attachment } from '../model/nodes';
 import { projectBoardGeometrySets } from '../model/overlayDoc';
 import type { AttachmentRequest } from '../viewer/attachments';
-import { bindingSegments, type BindingSegment } from '../viewer/connectorHints';
+import { bindingSegments, elbowHintOf, type BindingSegment, type ElbowHint } from '../viewer/connectorHints';
 import { BindingPrecision, PRECISE_HOLD_MS } from './bindingPrecision';
 import type { CancelReason, FinishReason, GestureOwner, Modifiers, RealSample } from './tool';
 
@@ -20,7 +24,7 @@ export interface ConnectorEndHandleOptions {
     readonly current: () => boolean;
     readonly sampleToSurface: (sample: RealSample) => { readonly x: number; readonly y: number };
     readonly resolveAttachment: (point: { x: number; y: number }, signal: AbortSignal, request?: AttachmentRequest) => Promise<Attachment | null>;
-    readonly hint?: (target: NodeId | null) => void;
+    readonly hint?: (target: NodeId | null, elbow?: ElbowHint | null) => void;
     readonly binding?: (segments: readonly BindingSegment[] | null) => void;
     readonly show: (ops: readonly Op[]) => void;
     readonly waitUntilReady: (signal: AbortSignal) => Promise<void>;
@@ -49,6 +53,9 @@ export function connectorEndHandleGesture(first: RealSample, modifiers: Modifier
     const precision = new BindingPrecision(PRECISE_HOLD_MS, lastAt);
     let request: AbortController | undefined, scope: BoardGeometryScope | undefined, unregister: (() => void) | undefined;
     let font: number | undefined, wake: ReturnType<typeof setTimeout> | undefined;
+    // An arc end that leaves its shape keeps the arc's curvature: the bend is derived once, for the first free position (catalogue a.5).
+    const releasing = node[options.terminal].attach !== null;
+    let freeBend: number | undefined;
     const release = options.hold();
     const current = () => !controller.signal.aborted && options.current() && session.owner === owner && session.doc === doc && doc.rev === revision
         && !session.isReadOnly && runtime.selection.getSnapshot() === selection && (font === undefined || runtime.render.text.fonts.epoch === font);
@@ -79,7 +86,7 @@ export function connectorEndHandleGesture(first: RealSample, modifiers: Modifier
             check();
             if (!attachment) precision.leave(now);
             // Two ends on one shape at one precise anchor would be a zero-length arrow: this end steps 0.05 along x and is precise.
-            options.hint?.(attachment?.target ?? null);
+            options.hint?.(attachment?.target ?? null, elbowHintOf(node.route, attachment));
             const duplicate = !!attachment && otherEnd?.target === attachment.target && otherEnd.anchor.x === attachment.anchor.x && otherEnd.anchor.y === attachment.anchor.y;
             const bound = duplicate ? { ...attachment!, precise: true, anchor: { x: attachment!.anchor.x + 0.05 <= 1 ? attachment!.anchor.x + 0.05 : attachment!.anchor.x - 0.05, y: attachment!.anchor.y } } : attachment;
             let target = { x: point.x, y: point.y };
@@ -99,6 +106,11 @@ export function connectorEndHandleGesture(first: RealSample, modifiers: Modifier
             }
             const local = worldToLocal(doc, node, target), terminal = options.terminal;
             const ops: NodeSetOp[] = [{ t: 'set', id: node.id, key: terminal, value: { x: local.x, y: local.y, attach: bound ?? null } }];
+            if (!bound && releasing && node.route === 'arc') {
+                const other = node[otherTerminal], committed = node[terminal];
+                freeBend ??= bendKeepingCurvature(node.bend, Math.hypot(committed.x - other.x, committed.y - other.y), Math.hypot(local.x - other.x, local.y - other.y));
+                ops.push({ t: 'set', id: node.id, key: 'bend', value: freeBend });
+            }
             const candidate = await projectBoardGeometrySets(doc, ops, { signal: localRequest.signal, current: active, cooperate: options.cooperate }); check();
             preview = await acquireBoardGeometryScope(runtime, [node.id], { doc: candidate, signal: localRequest.signal, current: active, cooperate: options.cooperate }); check();
             // The bound ends' stubs follow the drag: they are read from the candidate's geometry, not the committed one. A failed read
@@ -111,7 +123,18 @@ export function connectorEndHandleGesture(first: RealSample, modifiers: Modifier
             const bounds = preview.logicalBounds(node.id), pose = worldPose(candidate, node.id);
             const geometry: ChangeGeometry = { resolvedTip: (d, connector, side) => runtime.render.changeGeometry.resolvedTip(d, connector, side),
                 worldBoundsCenter: () => ({ x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 }) };
-            const placement = poseInParent(doc, node, node.parent, pose, geometry);
+            // A bound arrow joins the container its two shapes share (catalogue a.5). The parent and its last order key change in the
+            // same transaction as the end, so the arrow is never left in a container its ends do not share.
+            const startAttach = terminal === 'start' ? bound : otherEnd, endAttach = terminal === 'end' ? bound : otherEnd;
+            const container = bindingContainer(doc, startAttach, endAttach);
+            const holder = container !== null && !isSheetParent(doc, container) ? doc.nodes.get(container as NodeId) : undefined;
+            const reparent = container !== null && container !== node.parent && (isSheetParent(doc, container) || (!!holder && !isLocked(doc, holder)));
+            const parent = reparent ? container : node.parent;
+            const placement = poseInParent(doc, node, parent, pose, geometry);
+            if (reparent) {
+                ops.push({ t: 'set', id: node.id, key: 'parent', value: parent });
+                ops.push({ t: 'set', id: node.id, key: 'order', value: keyBetween((doc.children.get(parent) ?? []).at(-1)?.order ?? null, null) });
+            }
             if (placement.page !== node.page) ops.push({ t: 'set', id: node.id, key: 'page', value: placement.page });
             if (placement.x !== node.x) ops.push({ t: 'set', id: node.id, key: 'x', value: placement.x });
             if (placement.y !== node.y) ops.push({ t: 'set', id: node.id, key: 'y', value: placement.y });

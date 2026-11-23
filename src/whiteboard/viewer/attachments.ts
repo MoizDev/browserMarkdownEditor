@@ -93,8 +93,9 @@ export function createBoardAttachmentResolver(options: BoardAttachmentOptions): 
                 return Math.max(0, Math.min(1, raw));
             };
             const raw = { x: coordinate(local.x, box.x, box.width), y: coordinate(local.y, box.y, box.height) };
-            // Exact keeps the pointer's point unsnapped: Alt is the way to bind where the pointer is without any snapping.
-            const snapped = precise && !exact && !open && route === 'elbow' ? elbowSnap(hit, point, view.camera.z, box) : null;
+            // Exact keeps the pointer's point unsnapped: Alt is the way to bind where the pointer is without any snapping. An open outline
+            // (a line) snaps its edges as an elbow's precise end does (catalogue a.3, the open-shape rule), whatever the route.
+            const snapped = precise && !exact && (open || route === 'elbow') ? elbowSnap(hit, point, view.camera.z, box) : null;
             const anchor = precise || exact ? snapped?.anchor ?? raw : { x: 0.5, y: 0.5 };
             check();
             return { target: hit.id, anchor, exact, precise, snap: snapped?.snap ?? 'none' };

@@ -3,6 +3,7 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
+        { key: "dialog.embedProviders", text: "Supported providers", reason: "Not translated yet: this board language shows the English heading." },
         { key: "preferences.autoTrackpad", text: "Default (trackpad)", reason: "Same wording as English in this language." },
         { key: "dialog.url", text: "URL", reason: "URL is the standard abbreviation, used unchanged in this language." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -17,6 +18,7 @@ export default defineBoardLanguage({
     strings: {
         "dialog.insertEmbed": "Sisipkan sematan",
         "dialog.embedBody": "Masukkan tautan dari penyedia sematan yang didukung. Sematan tidak akan dimuat sampai Anda memilih Muat.",
+        "dialog.embedProviders": "Supported providers",
         "dialog.url": "URL",
         "crop.aspect": "Rasio aspek",
         "crop.zoom": "Perbesaran",

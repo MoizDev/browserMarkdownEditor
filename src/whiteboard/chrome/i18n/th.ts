@@ -3,6 +3,7 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
+        { key: "dialog.embedProviders", text: "Supported providers", reason: "Not translated yet: this board language shows the English heading." },
         { key: "dialog.url", text: "URL", reason: "URL is the standard abbreviation, used unchanged in this language." },
         { key: "commands.exportPng", text: "PNG", reason: "International file format or paper size designation." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -16,6 +17,7 @@ export default defineBoardLanguage({
     strings: {
         "dialog.insertEmbed": "แทรกการฝัง",
         "dialog.embedBody": "ป้อนลิงก์จากผู้ให้บริการการฝังที่รองรับ การฝังจะยังไม่โหลดจนกว่าคุณจะเลือกโหลด",
+        "dialog.embedProviders": "Supported providers",
         "dialog.url": "URL",
         "crop.aspect": "อัตราส่วนภาพ",
         "crop.zoom": "ซูม",

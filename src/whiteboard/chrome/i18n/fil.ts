@@ -4,6 +4,7 @@ export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
         { key: "menu.canvas", text: "Canvas", reason: "Parehong salita sa Ingles." },
+        { key: "dialog.embedProviders", text: "Supported providers", reason: "Not translated yet: this board language shows the English heading." },
         { key: "preferences.autoTrackpad", text: "Default (trackpad)", reason: "Same wording as English in this language." },
         { key: "dialog.url", text: "URL", reason: "URL is the standard abbreviation, used unchanged in this language." },
         { key: "styles.headBar", text: "Bar", reason: "Same wording as English in this language." },
@@ -20,6 +21,7 @@ export default defineBoardLanguage({
     strings: {
         "dialog.insertEmbed": "Ipasok ang embed",
         "dialog.embedBody": "Maglagay ng link mula sa suportadong embed provider. Hindi pa maglo-load ang embed hangga't hindi mo piniling I-load.",
+        "dialog.embedProviders": "Supported providers",
         "dialog.url": "URL",
         "crop.aspect": "Proporsyon",
         "crop.zoom": "Antas ng zoom",

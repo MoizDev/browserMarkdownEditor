@@ -90,9 +90,13 @@ function checkResult(info: InspectedMedia): void {
     }
 }
 
+const STATIC_PICTURE_MIMES: ReadonlySet<string> = new Set(['image/jpeg', 'image/png', 'image/webp']);
 function box(info: InspectedMedia, pixelsPerWorldUnit?: number): { w: number; h: number } {
     if (pixelsPerWorldUnit !== undefined && (info.mime !== 'image/png' || !Number.isFinite(pixelsPerWorldUnit) || pixelsPerWorldUnit <= 0)) throw new RangeError('Invalid private PNG density');
-    const scale = pixelsPerWorldUnit === undefined ? Math.min(1, 5000 / Math.max(info.width, info.height)) : 1 / pixelsPerWorldUnit;
+    // Only static pictures are capped at 5000 units; a video, an animated picture or a vector keeps its natural size (catalogue c.9,
+    // isStaticImageType): a long clip is not shrunk on insert.
+    const capped = STATIC_PICTURE_MIMES.has(info.mime);
+    const scale = pixelsPerWorldUnit === undefined ? (capped ? Math.min(1, 5000 / Math.max(info.width, info.height)) : 1) : 1 / pixelsPerWorldUnit;
     return { w: info.width * scale, h: info.height * scale };
 }
 

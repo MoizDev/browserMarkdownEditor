@@ -3,6 +3,7 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
+        { key: "dialog.embedProviders", text: "Supported providers", reason: "Not translated yet: this board language shows the English heading." },
         { key: "paper.legal", text: "Legal", reason: "Same wording as English in this language." },
         { key: "styles.font", text: "Font", reason: "Same wording as English in this language." },
         { key: "styles.semi", text: "Semi-transparent", reason: "Same wording as English in this language." },
@@ -23,6 +24,7 @@ export default defineBoardLanguage({
     strings: {
         "dialog.insertEmbed": "Inserează încorporarea",
         "dialog.embedBody": "Introduceți un link de la un furnizor de încorporări acceptat. Încorporarea nu se încarcă până nu alegeți Încarcă.",
+        "dialog.embedProviders": "Supported providers",
         "dialog.url": "URL",
         "crop.aspect": "Raport de aspect",
         "crop.zoom": "Mărire",

@@ -162,10 +162,10 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         if (arrow) {
             // Ctrl (on macOS too) and Cmd are the no-target keys for an arrow end (catalogue a.2), so they show no hover at all.
             if (event.ctrlKey || event.metaKey) { select.setConnectorHover(null, null, false); return; }
-            const world = surfaceToWorld(at, camera.camera), exact = event.altKey;
+            const world = surfaceToWorld(at, camera.camera), exact = event.altKey, elbow = runtime.session.doc.ui.next.route === 'elbow';
             // A hint, as the hover pick below: a failed resolve clears it, and the next move asks again.
             attachments.resolve(world, controller.signal, { precise: false, exact, route: 'arc', input }).then(attached => {
-                if (!controller.signal.aborted && seq === hoverSeq) select.setConnectorHover(attached?.target ?? null, world, exact);
+                if (!controller.signal.aborted && seq === hoverSeq) select.setConnectorHover(attached?.target ?? null, world, exact, elbow);
             }, () => { if (!controller.signal.aborted && seq === hoverSeq) select.setConnectorHover(null, null, false); });
             return;
         }

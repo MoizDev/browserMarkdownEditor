@@ -449,6 +449,7 @@ export const english = {
     "dialog.create": "Create",
     "dialog.insertEmbed": "Insert embed",
     "dialog.embedBody": "Enter a link from a supported embed provider. The embed stays unloaded until you choose Load.",
+    "dialog.embedProviders": "Supported providers",
     "dialog.url": "URL",
     "chrome.commandPalette": "Command palette",
     "chrome.commandPaletteMenu": "Command palette…",

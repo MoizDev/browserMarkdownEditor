@@ -6,6 +6,8 @@ export interface BoardQuestion {
     readonly body: string;
     readonly confirmLabel: string;
     readonly danger?: boolean;
+    /** A short list shown under the body, such as the providers an embed link may come from. */
+    readonly list?: { readonly label: string; readonly items: readonly string[] };
 }
 export interface BoardTextQuestion extends BoardQuestion {
     /** A second answer drawn beside the confirm button (for example Remove link), reported as `alt`. */
@@ -92,6 +94,10 @@ export function useNativeBoardDialogs(options: {
         onCancel={question.kind === 'info' ? undefined : () => finish(question.id, { accepted: false })}
         altLabel={question.altLabel} onAlt={question.altLabel ? () => finish(question.id, { accepted: true, alt: true }) : undefined}>
         {question.body}
+        {question.list && <span className="confirm-list" role="list" aria-label={question.list.label}>
+            <span className="confirm-list-label" aria-hidden="true">{question.list.label}</span>
+            {question.list.items.map(item => <span className="confirm-list-item" role="listitem" key={item}>{item}</span>)}
+        </span>}
     </ConfirmDialog>;
     return { confirm, requestText, requestTextChoice, chooseOne, inform, cancel, dialogs };
 }

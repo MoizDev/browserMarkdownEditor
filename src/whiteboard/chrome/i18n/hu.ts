@@ -3,6 +3,7 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
+        { key: "dialog.embedProviders", text: "Supported providers", reason: "Not translated yet: this board language shows the English heading." },
         { key: "dialog.url", text: "URL", reason: "URL is the standard abbreviation, used unchanged in this language." },
         { key: "commands.exportPng", text: "PNG", reason: "International file format or paper size designation." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -16,6 +17,7 @@ export default defineBoardLanguage({
     strings: {
         "dialog.insertEmbed": "Beágyazás beszúrása",
         "dialog.embedBody": "Adjon meg egy támogatott beágyazásszolgáltató hivatkozását. A beágyazás nem töltődik be, amíg a Betöltés gombot meg nem nyomja.",
+        "dialog.embedProviders": "Supported providers",
         "dialog.url": "URL",
         "crop.aspect": "Képarány",
         "crop.zoom": "Nagyítás",

@@ -43,12 +43,14 @@ export class QuickOverview {
     const fit = Math.min(viewport.width / (x1 - x0), viewport.height / (y1 - y0));
     if (!(fit > 0 && Number.isFinite(fit))) return;
     const z = ctx.clampZoom(fit * OVERVIEW_FACTOR);
-    const centre = { x: (x0 + x1) / 2, y: (y0 + y1) / 2 };
-    const overview = { x: centre.x - viewport.width / 2 / z, y: centre.y - viewport.height / 2 / z, z };
+    // The zoom is cursor-anchored (catalogue T§4, ZoomQuick): the world point under the pointer on entry stays under it, so the
+    // overview zooms about the pointer rather than about the content's centre.
+    const pointer = this.pointer ?? { x: viewport.width / 2, y: viewport.height / 2 };
+    const anchor = surfaceToWorld(pointer, camera);
+    const overview = { x: anchor.x - pointer.x / z, y: anchor.y - pointer.y / z, z };
     this.state = {
       entry: { camera: { ...camera }, width: viewport.width, height: viewport.height },
-      overview, ratio: z / camera.z,
-      pointer: this.pointer ?? { x: viewport.width / 2, y: viewport.height / 2 },
+      overview, ratio: z / camera.z, pointer,
     };
     ctx.setCamera(overview);
     this.draw();

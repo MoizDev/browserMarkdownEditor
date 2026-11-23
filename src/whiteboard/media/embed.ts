@@ -13,6 +13,9 @@ export type EmbedManifest = EmbedFrameManifest;
 export type EmbedProvider = 'youtube' | 'vimeo' | 'figma' | 'canva' | 'google-maps' | 'val-town' | 'codesandbox' | 'codepen'
     | 'scratch' | 'google-calendar' | 'google-slides' | 'replit' | 'felt' | 'spotify' | 'observable' | 'desmos' | 'tldraw';
 export interface EmbedCandidate { readonly provider: EmbedProvider; readonly url: string }
+/** The providers the Insert embed dialog lists (catalogue c.7's provider table), in its order, by the name each one goes by. */
+export const EMBED_PROVIDER_NAMES: readonly string[] = Object.freeze(['YouTube', 'Vimeo', 'Figma', 'Canva', 'Google Maps', 'Val Town',
+    'CodeSandbox', 'CodePen', 'Scratch', 'Google Calendar', 'Google Slides', 'Replit', 'Felt', 'Spotify', 'Observable', 'Desmos', 'tldraw']);
 /** The size a pasted embed opens at, in world units. Most provider pages are 16:9; Spotify's player is a fixed-height strip,
  * which at 16:9 would leave most of the card empty. */
 // Default size of a new embed per provider, in world units (the catalogue's per-provider table); Spotify opens at its

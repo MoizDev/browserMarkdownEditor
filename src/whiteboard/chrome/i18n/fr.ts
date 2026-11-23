@@ -3,6 +3,7 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
+        { key: "dialog.embedProviders", text: "Supported providers", reason: "Not translated yet: this board language shows the English heading." },
         { key: "dialog.url", text: "URL", reason: "URL is the standard abbreviation, used unchanged in this language." },
         { key: "crop.aspect.portrait", text: "Portrait (3:4)", reason: "Same wording as English in this language." },
         { key: "styles.headTriangle", text: "Triangle", reason: "Same wording as English in this language." },
@@ -34,6 +35,7 @@ export default defineBoardLanguage({
     strings: {
         "dialog.insertEmbed": "Insérer un contenu intégré",
         "dialog.embedBody": "Saisissez un lien d'un fournisseur de contenus intégrés pris en charge. Le contenu reste non chargé jusqu'à ce que vous choisissiez Charger.",
+        "dialog.embedProviders": "Supported providers",
         "dialog.url": "URL",
         "crop.aspect": "Proportions",
         "crop.zoom": "Agrandissement",

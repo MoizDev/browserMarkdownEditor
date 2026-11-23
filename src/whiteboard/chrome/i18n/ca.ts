@@ -3,6 +3,7 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
+        { key: "dialog.embedProviders", text: "Supported providers", reason: "Not translated yet: this board language shows the English heading." },
         { key: "chrome.debugNodes", text: "Nodes", reason: "Same wording as English in this language." },
         { key: "paper.legal", text: "Legal", reason: "Same wording as English in this language." },
         { key: "kinds.text.one", text: "{count} text", reason: "Same wording as English in this language." },
@@ -24,6 +25,7 @@ export default defineBoardLanguage({
     strings: {
         "dialog.insertEmbed": "Insereix una incrustació",
         "dialog.embedBody": "Introdueix un enllaç d'un proveïdor d'incrustacions compatible. La incrustació no es carrega fins que triïs Carrega.",
+        "dialog.embedProviders": "Supported providers",
         "dialog.url": "URL",
         "crop.aspect": "Relació d'aspecte",
         "crop.zoom": "Ampliació",

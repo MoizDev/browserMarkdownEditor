@@ -17,6 +17,8 @@ export interface BoardSelectGestureContext extends SelectToolContext {
     selectionHandleAt?(sample: RealSample): boolean;
     /** An empty press that clears the selection leaves a focused group whose bounds it lies outside (catalogue S§4.6). */
     leaveFocusAt?(point: Vec2): void;
+    /** A Cmd press on an arrow endpoint or label brushes, even though the node under it is the selected arrow (catalogue S§11.1). */
+    brushOverHandle?(sample: RealSample): boolean;
 }
 
 /** A selection contact owns its hit preflight, optional exact sweep and final
@@ -55,7 +57,7 @@ class BoardSelectGesture implements GestureOwner {
     private liveBusy = false;
     private liveDirty = false;
 
-    constructor(private readonly down: RealSample, keys: Modifiers, private readonly context: BoardSelectGestureContext) {
+    constructor(private readonly down: RealSample, keys: Modifiers, private readonly context: BoardSelectGestureContext, private readonly brushOnly = false) {
         this.pointerIds = new Set([down.pointerId]); this.last = down; this.keys = keys; this.startKeys = keys;
         this.downSurface = sampleSurface(down, context.sampleToSurface);
         this.selectionFence = context.selection.getSnapshot(); this.initial = this.selectionFence.selected;
@@ -66,9 +68,10 @@ class BoardSelectGesture implements GestureOwner {
             if (keys.alt) this.startSweep();
             void context.hit(down, this.controller.signal).then(id => {
                 if (!this.valid()) { this.cancel('invalidated'); return; }
-                this.hit = id;
+                // A brush press never moves what it lands on: the hit is taken as empty space, so the press is a marquee.
+                this.hit = this.brushOnly ? null : id;
                 // A selection handle is not a body press: accel-drag from a handle brushes (crop and resize are the handle's own gestures).
-                this.body = id === null && !this.startKeys.shift && !this.startKeys.alt && this.initial.length > 0
+                this.body = !this.brushOnly && id === null && !this.startKeys.shift && !this.startKeys.alt && this.initial.length > 0
                     && context.insideSelection(down) && !(this.startKeys.accel && context.selectionHandleAt?.(down));
                 if (this.body || (id !== null && this.initial.includes(id))) context.prewarm?.();
                 if (id !== null && this.sweep) { this.sweep.cancel(); this.sweep = null; this.points.length = 1; }
@@ -252,6 +255,7 @@ class BoardSelectGesture implements GestureOwner {
 export const boardSelectTool: Tool<BoardSelectGestureContext> = {
     id: 'select',
     begin(sample, modifiers, context) {
-        return context.beginHandle(sample, modifiers) ?? new BoardSelectGesture(sample, modifiers, context);
+        return context.beginHandle(sample, modifiers) ?? new BoardSelectGesture(sample, modifiers, context,
+            modifiers.accel && !!context.brushOverHandle?.(sample));
     },
 };

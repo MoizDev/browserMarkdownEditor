@@ -6,6 +6,7 @@ import { isLocked } from '../change/commands';
 import { worldPose } from '../change/coordinates';
 import { acquireBoardGeometryScope } from '../commands/geometryScope';
 import { connectorBody, connectorBodyPoint } from '../geom/connectors';
+import { bindingSegments, type BindingSegment } from './connectorHints';
 import type { ConnectorControl } from '../geom/connectorControls';
 import type { Vec2 } from '../geom/path';
 import type { BoardSnapGuide } from '../geom/runtimeSnap';
@@ -49,6 +50,11 @@ export interface ShapeHandleOptions {
     readonly cancelCommit: () => void;
     readonly clear: () => void;
     readonly resolveAttachment: (point: Vec2, signal: AbortSignal, request?: AttachmentRequest) => Promise<Attachment | null>;
+    /** The arrow target hint: the shape an endpoint drag would bind to, or null. */
+    readonly hint: (target: NodeId | null) => void;
+    /** The bound ends' stubs of the selected arrow, or null. */
+    readonly binding: (segments: readonly BindingSegment[] | null) => void;
+    readonly editText: (id: NodeId) => void | Promise<void>;
     readonly error: (error: unknown) => void;
     readonly cooperate?: () => Promise<void>;
 }
@@ -67,7 +73,7 @@ export function createShapeHandles(options: ShapeHandleOptions) {
     const presented = new PresentedHistory<{ camera: ViewState['camera']; handles: readonly Handle[]; count: number }>();
     let controlPending: AbortController | undefined, headBusy = false;
     const current = () => !disposed && options.current() && options.visible() && session.doc === doc;
-    const clear = () => { handles = []; selected = null; svg?.remove(); svg = undefined; group = undefined;
+    const clear = () => { handles = []; selected = null; svg?.remove(); svg = undefined; group = undefined; options.binding(null);
         rendered = null; renderedCount = 0; forgetCamera(renderedCamera); presented.clear(); options.invalidate(); };
     const refresh = () => {
         const turn = ++generation; controller?.abort(); controller = new AbortController(); const signal = controller.signal;
@@ -113,6 +119,7 @@ export function createShapeHandles(options: ShapeHandleOptions) {
                 } else {
                     const prepared = await runtime.render.prepareForPick(node, signal, doc);
                     const geometry = prepared.connector; if (!geometry) throw new Error('Connector geometry is unavailable');
+                    options.binding(bindingSegments(node, geometry));
                     next.push({ hit: { kind: 'connector-end', terminal: 'start' }, point: geometry.start.tipWorld },
                         { hit: { kind: 'connector-end', terminal: 'end' }, point: geometry.end.tipWorld });
                     const a = geometry.start.aimWorld, b = geometry.end.aimWorld;
@@ -185,6 +192,11 @@ export function createShapeHandles(options: ShapeHandleOptions) {
             }
             return null;
         },
+        /** Whether a press here is on an endpoint or a label: the handles a Cmd press brushes over. */
+        isEndOrLabel(surface: Vec2, time?: number): boolean {
+            const hit = this.hit(surface, false, time);
+            return !!hit && (hit.kind === 'connector-end' || (hit.kind === 'connector-control' && hit.control === 'label'));
+        },
         begin(hit: ShapeHandleHit, sample: RealSample, modifiers: Modifiers): GestureOwner | null {
             if (!current() || !selected) return null;
             const common = { runtime, id: selected, current, hold: options.hold, registerPending: options.registerPending,
@@ -192,11 +204,14 @@ export function createShapeHandles(options: ShapeHandleOptions) {
                 finishCommit: options.finishCommit, cancelCommit: options.cancelCommit,
                 clear: options.clear, error: options.error, cooperate: options.cooperate };
             const snap = { zoom: () => options.view().camera.z, alwaysSnap: options.alwaysSnap, guides: options.guides };
+            // Cmd (or Ctrl) pressed on an endpoint or a label starts a brush, as on any handle (catalogue S§11.1, S§11.3): the select
+            // gesture takes the press. Pressed later, during the drag, Cmd only stops the end from binding (catalogue a.4).
+            if (modifiers.accel && (hit.kind === 'connector-end' || (hit.kind === 'connector-control' && hit.control === 'label'))) return null;
             if (hit.kind === 'polyline-vertex' || hit.kind === 'polyline-midpoint') return polylineHandleGesture(sample, modifiers,
                 { ...common, index: hit.index, insert: hit.kind === 'polyline-midpoint', snap });
-            if (hit.kind === 'connector-end') return connectorEndHandleGesture(sample, modifiers, { ...common, terminal: hit.terminal, snap,
+            if (hit.kind === 'connector-end') return connectorEndHandleGesture(sample, modifiers, { ...common, terminal: hit.terminal, hint: options.hint, binding: options.binding,
                 sampleToSurface: options.sampleToSurface, resolveAttachment: options.resolveAttachment });
-            return connectorControlGesture(sample, modifiers, { ...common, control: hit.control, zoom: () => options.view().camera.z });
+            return connectorControlGesture(sample, modifiers, { ...common, control: hit.control, zoom: () => options.view().camera.z, editText: options.editText });
         },
         toggleHead(hit: ShapeHandleHit): boolean {
             if (!current() || !selected || hit.kind !== 'connector-end') return false;

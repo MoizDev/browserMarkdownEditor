@@ -52,6 +52,11 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
 - **One gesture owner at a time** (`input/router.ts`, `InputRouter`): tools receive normalised `RealSample`s only,
   stamped with an `InputToken` (vault epoch, tab, session and view generations). A replaced view cannot finish its
   successor's contact; check the token before acting on anything async.
+- The ink curve is ONE function, `ink/curve.ts` `writeCurveSpan`: every freehand span is a tangent-continuous cubic
+  through its samples (a turn of 120°+ is a corner; `'straight'` runs stay straight), whatever the stroke's saved
+  `fairTol` (validated, never a limit). Wet, dry, both backends, picking, export and omission all read it; a span
+  depends on samples i−1…i+2, so the wet tail is replaceable (`finalizedSpanCount`). Anything that bounds a stroke
+  without building cubics uses the curve enclosure (`ink/reach.ts`, `SampleSummary.curveBounds`), never the sample box.
 - Ink: `input/liveInk.ts` (wet curve), `sessionInk.ts`, `continueInk*.ts`, `straightInk.ts`; delegated ink
   (`delegatedInk.ts`) uses the browser's ink presenter when present. Pen mode (`ToolState.penMode`) and
   `penTransitions.ts` route a stylus to ink or eraser while touch pans. The eraser removes whole items

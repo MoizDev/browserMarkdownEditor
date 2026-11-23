@@ -36,6 +36,10 @@ export interface SampleLease {
 
 export interface SampleSummary {
     readonly localBounds: readonly [x: number, y: number, w: number, h: number];
+    // A proven enclosure of the freehand CURVE through the samples (ink/reach.ts), which bulges
+    // outside the sample box, and the farthest any control lies from its sample, both unscaled local.
+    readonly curveBounds: readonly [x: number, y: number, w: number, h: number];
+    readonly maxReach: number;
     readonly maxPressure: number | null;
 }
 

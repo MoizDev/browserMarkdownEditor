@@ -65,7 +65,7 @@ const CANVAS_OP = {
         {
             type: 'object', additionalProperties: false,
             required: ['op', 'type', 'points'],
-            properties: { op: { const: 'create' }, type: { const: 'draw' }, page: PAGE, points: { type: 'array', items: POINT, minItems: 2, maxItems: 5000 }, color: COLOR, size: SIZE, closed: { type: 'boolean' } },
+            properties: { op: { const: 'create' }, type: { const: 'draw' }, page: PAGE, points: { type: 'array', items: POINT, minItems: 2, maxItems: 5000, description: 'Joined in order by straight lines, exactly as given: for a curve, give points a few units apart.' }, color: COLOR, size: SIZE, closed: { type: 'boolean' } },
         },
         {
             type: 'object', additionalProperties: false,

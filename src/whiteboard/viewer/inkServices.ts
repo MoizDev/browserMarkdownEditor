@@ -64,8 +64,9 @@ export function createBoardInkServices(options: BoardInkServicesOptions): Pick<B
                 planStroke(node, summary) {
                     if (session.doc.host.kind !== 'notebook' || !summary) return [];
                     // Use only the sealed real-sample prefix, so a page grows only for sealed ink.
-                    const [, y, , height] = summary.localBounds;
-                    const deepest = offset.y + node.y + y + height + node.width + node.fairTol;
+                    // The curve's enclosure, not the sample box: a smooth stroke bulges past its lowest sample.
+                    const [, y, , height] = summary.curveBounds;
+                    const deepest = offset.y + node.y + y + height + node.width;
                     const growth = notebookGrowthOp(session.doc, deepest);
                     return growth ? [growth] : [];
                 },

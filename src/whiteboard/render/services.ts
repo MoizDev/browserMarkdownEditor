@@ -493,8 +493,9 @@ export function createBoardRenderServices(options: {
         stroke(node) {
             const summary = options.samples.summary?.(node.samples);
             if (!summary) return undefined;
-            const [x, y, w, h] = summary.localBounds;
-            return { minX: x, minY: y, maxX: x + w, maxY: y + h, maxPressure: summary.maxPressure };
+            const [x, y, w, h] = summary.localBounds, [cx, cy, cw, ch] = summary.curveBounds;
+            return { minX: x, minY: y, maxX: x + w, maxY: y + h, curve: [cx, cy, cx + cw, cy + ch],
+                maxReach: summary.maxReach, maxPressure: summary.maxPressure };
         },
     };
     const asyncPaintPorts = (doc: BoardDoc, request: ScenePaintRequest, orderedIds?: PaintNodeOrder, shared?: SharedResolution): ScenePaintPorts => {

@@ -4,6 +4,7 @@ import type { Vec2 } from '../geom/path';
 import { polylineWorldSemanticBounds } from '../geom/providers';
 import { curveParameters, writeCurveSpan } from '../ink/curve';
 import type { SampleStore } from '../ink/samples';
+import { realizeStrokePoints } from '../ink/width';
 import type { Node, StrokeNode } from '../model/nodes';
 import type { LegacyGeometry } from './worldBounds';
 
@@ -17,18 +18,20 @@ function expand(box: Box, radius: number): Box {
     return [box[0] - radius, box[1] - radius, box[2] + radius, box[3] + radius];
 }
 function inkBounds(node: StrokeNode, m: Affine, samples: SampleStore): Box {
-    const sequence = samples.sequence(node.samples);
+    // The drawn curve is built from the REALIZED points (render/inkGeometry.ts); with a non-uniform
+    // sx/sy that is not the stored curve scaled afterwards, so bound the same curve that is drawn.
+    const sequence = realizeStrokePoints(samples.sequence(node.samples), node.sx, node.sy);
     if (!sequence.count) throw new Error('Empty imported stroke');
     let box: Box | undefined, pressure = 0;
     for (let i = 0; i < sequence.count; i++) pressure = Math.max(pressure, sequence.pressure(i) ?? 0);
     if (sequence.count === 1) {
-        const p = point(sequence.x(0) * node.sx, sequence.y(0) * node.sy, m);
+        const p = point(sequence.x(0), sequence.y(0), m);
         box = [p.x, p.y, p.x, p.y];
     } else {
         const data = new Float64Array(8), parameters = curveParameters(8, node.fairTol);
         for (let i = 0; i < sequence.count - 1; i++) {
             writeCurveSpan(sequence, i, parameters, data);
-            const p = (j: number) => point(data[j] * node.sx, data[j + 1] * node.sy, m);
+            const p = (j: number) => point(data[j], data[j + 1], m);
             box = union(box, cubicBounds({ p0: p(0), p1: p(2), p2: p(4), p3: p(6) }));
         }
     }

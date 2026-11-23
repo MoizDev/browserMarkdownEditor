@@ -21,15 +21,16 @@ export function localizeBoardChrome(t: BoardTranslate) {
 }
 
 function translatedOr(t: BoardTranslate, key: string, fallback: string): string {
-    try { return t(key); } catch { return fallback; }
+    // translateBoard answers a key its table lacks with the key itself (measured: the dialog showed
+    // "shortcuts.embed.insert" and "shortcuts.media.invert" in English), so that answer means "untranslated" too.
+    try { const text = t(key); return text === key ? fallback : text; } catch { return fallback; }
 }
 
 export function localizeShortcutGroups(groups: readonly ShortcutGroup[], t: BoardTranslate): readonly ShortcutGroup[] {
     return groups.map(group => ({
         ...group,
         label: t(`shortcutGroups.${group.id === 'style' ? 'transform' : group.id === 'text-formatting' ? 'textFormatting' : group.id}`),
-        // translateBoard throws on a key a language table lacks. A binding whose translation has not shipped yet keeps
-        // its English label, so one new shortcut cannot take the whole dialog down in the other languages.
+        // A binding whose translation has not shipped yet keeps its English label rather than showing its key.
         bindings: group.bindings.map(binding => ({
             ...binding, label: translatedOr(t, `shortcuts.${binding.id.split(':', 1)[0]}`, binding.label),
         })),

@@ -382,8 +382,10 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
             path.setAttribute('stroke-width', '12'); path.style.stroke = 'var(--text-muted)'; path.setAttribute('opacity', '0.5'); svg.append(path);
         }
         if (brush || column) {
-            const box = brush ?? (() => { const p = worldToSurface(column!, frame.view.camera); return { x: p.x, y: p.y,
-                width: (column!.width ?? 1 / frame.view.camera.z) * frame.view.camera.z, height: 22 }; })();
+            // An auto-size text is created centred on the pointer's height (text/edit/createText.ts), so its mark is too; a dragged
+            // width is anchored at its top edge and its mark starts there.
+            const box = brush ?? (() => { const p = worldToSurface(column!, frame.view.camera); return { x: p.x,
+                y: column!.width === null ? p.y - 11 : p.y, width: (column!.width ?? 1 / frame.view.camera.z) * frame.view.camera.z, height: 22 }; })();
             const rect = document.createElementNS(svgNS, 'rect');
             rect.setAttribute('x', String(box.x)); rect.setAttribute('y', String(box.y)); rect.setAttribute('width', String(box.width)); rect.setAttribute('height', String(box.height));
             rect.setAttribute('fill', 'rgba(80,145,255,0.12)'); rect.setAttribute('stroke', '#6a9fff'); rect.setAttribute('stroke-width', '1.5'); svg.append(rect);

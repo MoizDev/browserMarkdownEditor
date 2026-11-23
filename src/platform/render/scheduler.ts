@@ -110,6 +110,8 @@ export interface ScheduledPaneLease {
     wakeAt(layer: Layer, deadlineMs: number | null): void;
     startFling(samples: readonly TouchPanSample[]): void;
     animateZoom(targetZ: number, anchor?: Point): void;
+    /** A camera glide by a screen-space delta (ease-out, 320 ms); reduced motion moves at once. */
+    animatePan(delta: Point): void;
     cancelMotion(): void;
     dispose(): void;
 }
@@ -148,7 +150,17 @@ interface ZoomMotion {
     lastZ: number;
 }
 
-type Motion = FlingMotion | ZoomMotion;
+interface GlideMotion {
+    kind: 'glide';
+    startedAt: number;
+    from: Point;
+    to: Point;
+}
+
+type Motion = FlingMotion | ZoomMotion | GlideMotion;
+
+/** Catalogue I§2.1: a Space+arrow page takes 320 ms. */
+const GLIDE_MS = 320;
 
 function finitePoint(point: Point): boolean { return Number.isFinite(point.x) && Number.isFinite(point.y); }
 
@@ -451,6 +463,7 @@ export class FrameScheduler {
             wakeAt: (layer: Layer, deadlineMs: number | null) => this.wakeAt(entry, layer, deadlineMs),
             startFling: (samples: readonly TouchPanSample[]) => this.startFling(entry, samples),
             animateZoom: (targetZ: number, anchor?: Point) => this.animateZoom(entry, targetZ, anchor),
+            animatePan: (delta: Point) => this.animatePan(entry, delta),
             // Settling a camera that is not moving changes nothing; only a motion that was running is a change.
             cancelMotion: () => {
                 if (!this.live(entry)) return;
@@ -532,6 +545,7 @@ export class FrameScheduler {
                     const z = entry.pane.camera.clampZoom(zoom.targetZ);
                     entry.pane.camera.setCamera(cameraAtAnchor(zoom.world, this.zoomAnchor(entry, zoom), z));
                 }
+                if (entry.motion?.kind === 'glide') entry.pane.camera.setCamera({ x: entry.motion.to.x, y: entry.motion.to.y, z: entry.pane.camera.camera.z });
                 this.cancelMotion(entry);
                 this.mark(entry, 'reduced-motion');
             });
@@ -1502,6 +1516,18 @@ export class FrameScheduler {
         this.mark(entry, 'animation');
     }
 
+    private animatePan(entry: PaneEntry, delta: Point): void {
+        if (!this.running || this.suspended || !this.live(entry)) return;
+        if (!finitePoint(delta)) throw new RangeError('Pan delta must be finite');
+        this.cancelMotion(entry);
+        const camera = entry.pane.camera, z = camera.camera.z;
+        const from = { x: camera.camera.x, y: camera.camera.y };
+        if (this.reducedMotion) camera.panBy(delta);
+        else entry.motion = { kind: 'glide', startedAt: performance.now(), from, to: { x: from.x + delta.x / z, y: from.y + delta.y / z } };
+        entry.inputPriority = true;
+        this.mark(entry, 'animation');
+    }
+
     private cancelMotion(entry: PaneEntry): void {
         entry.motion = null; entry.pane.camera.setMoving(false); recordPaneMotion(entry.pane.paneId, false);
     }
@@ -1526,6 +1552,11 @@ export class FrameScheduler {
             // vr-lead resolves §7.3's conflict: stopping at <0.25px/frame discards ~7.2px at120Hz
             // versus ~1.8px at30Hz. Speed<5 alone keeps the exact integrated tail refresh-independent.
             if (Math.hypot(motion.velocity.x, motion.velocity.y) < 5) entry.motion = null;
+        } else if (motion.kind === 'glide') {
+            const u = clamp((timestamp - motion.startedAt) / GLIDE_MS, 0, 1);
+            const eased = 1 - (1 - u) ** 3, z = camera.camera.z;
+            camera.setCamera({ x: motion.from.x + (motion.to.x - motion.from.x) * eased, y: motion.from.y + (motion.to.y - motion.from.y) * eased, z });
+            if (u === 1) entry.motion = null;
         } else {
             if (camera.viewport !== motion.lastViewport) {
                 const ratio = camera.camera.z / motion.lastZ;

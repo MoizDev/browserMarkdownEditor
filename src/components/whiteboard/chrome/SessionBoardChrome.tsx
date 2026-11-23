@@ -57,6 +57,9 @@ export function SessionBoardChrome(props: SessionBoardChromeProps) {
     const closeShortcuts = useCallback(() => setShortcutsOpen(false), []);
     const { isVisible, registerShortcuts } = props;
     useEffect(() => { if (!isVisible) setShortcutsOpen(false); }, [isVisible]);
+    // Focus mode clears dialogs, as tldraw's does (actions.tsx:1837-1846): the board goes to one dot, with nothing open over it.
+    const focusMode = props.localPreferences.view.focusMode;
+    useEffect(() => { if (focusMode) setShortcutsOpen(false); }, [focusMode]);
     useEffect(() => {
         if (!isVisible) return;
         return registerShortcuts?.(() => {
@@ -125,7 +128,8 @@ export function SessionBoardChrome(props: SessionBoardChromeProps) {
             toolDisabledReason={choice => {
                 const state = props.toolStateFor(choice.id, choice.figure);
                 return state.enabled ? undefined : state.reason;
-            }} focusMode={props.localPreferences.view.focusMode}
+            }} focusMode={focusMode} focusToggleLabel={labels.focusToggle}
+            onExitFocus={() => props.localPreferences.setView('focusMode', false)}
             penPanel={props.penPanel ? { ...props.penPanel, disabled: props.readOnly || props.penPanel.disabled } : undefined}
             debug={debugOverlay} pageControls={props.pageControls}
             zoomControls={{ zoom: props.zoom, locale: props.locale, direction: props.direction,

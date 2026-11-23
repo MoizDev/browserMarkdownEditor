@@ -19,6 +19,9 @@ export interface BoardChromeProps extends BoardHeaderProps {
     readonly readOnlyReason?: string;
     readonly toolDisabledReason?: (choice: ToolChoice) => string | undefined;
     readonly focusMode?: boolean;
+    /** Focus mode keeps one dot that turns it off; the label is the same toggle the menu and the shortcut use. */
+    readonly focusToggleLabel?: string;
+    readonly onExitFocus?: () => void;
     readonly selectTool: (choice: ToolChoice) => void;
     readonly zoomControls: ZoomControlsProps;
     readonly penPanel?: ConnectedPenPanelProps;
@@ -29,10 +32,12 @@ export interface BoardChromeProps extends BoardHeaderProps {
 
 /** The view supplies live session state; these controls do not own a second selection or history. */
 export function BoardChrome({ locale, direction, selectedTool, toolLabel, toolShortcut, toolsLabel, moreLabel,
-    readOnly, readOnlyReason, toolDisabledReason, focusMode, selectTool, zoomControls, penPanel, debug, pageControls, ...header }: BoardChromeProps) {
+    readOnly, readOnlyReason, toolDisabledReason, focusMode, focusToggleLabel, onExitFocus, selectTool, zoomControls, penPanel, debug, pageControls, ...header }: BoardChromeProps) {
     const choices = toolChoices(toolLabel, toolShortcut);
     return <>
         {debug && <DebugOverlay {...debug} />}
+        {focusMode && onExitFocus && <button type="button" className="board-chrome-focus-dot" aria-label={focusToggleLabel}
+            data-tooltip={focusToggleLabel} onClick={onExitFocus}><span aria-hidden="true" /></button>}
         {!focusMode && <div className="board-chrome-overlay" lang={locale} dir={direction}>
         <div className="board-chrome-top">
             <BoardHeader {...header} locale={locale} direction={direction} />

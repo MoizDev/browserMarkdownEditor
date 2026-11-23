@@ -17,6 +17,8 @@ export interface FitFrameOptions {
     readonly current: () => boolean;
     readonly signal?: AbortSignal;
     readonly cooperate?: () => Promise<void>;
+    /** Which sides of the frame the fit may move: a frame's edge fits its own axis, a corner (and the menu) both. */
+    readonly axes?: 'both' | 'x' | 'y';
 }
 export interface FrameFitPlan {
     readonly ops: readonly NodeSetOp[];
@@ -79,7 +81,9 @@ export async function prepareBoardFrameFit(options: FitFrameOptions): Promise<Fr
         }
         if (!bounds) return plan([], doc);
         // Default, calibration cut by owner: fitting uses 50 world units on every side.
-        const left = bounds[0] - 50, top = bounds[1] - 50, width = bounds[2] - bounds[0] + 100, height = bounds[3] - bounds[1] + 100;
+        const fitX = options.axes !== 'y', fitY = options.axes !== 'x';
+        const left = fitX ? bounds[0] - 50 : 0, width = fitX ? bounds[2] - bounds[0] + 100 : frame.w;
+        const top = fitY ? bounds[1] - 50 : 0, height = fitY ? bounds[3] - bounds[1] + 100 : frame.h;
         if (![left, top, width, height].every(Number.isFinite) || width < 1 || height < 1 || width > 1_000_000 || height > 1_000_000)
             throw new RangeError('Fitted frame exceeds model bounds');
         const cr = Math.cos(frame.rotation), sr = Math.sin(frame.rotation), x = frame.x + cr * left - sr * top, y = frame.y + sr * left + cr * top;

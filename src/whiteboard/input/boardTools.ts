@@ -7,7 +7,8 @@ export const BOARD_TOOL_REGISTRATIONS: readonly ToolRegistration[] = Object.free
     { id: 'select', persistence: 'persistent' }, { id: 'pen', persistence: 'persistent' },
     { id: 'highlighter', persistence: 'persistent' }, { id: 'eraser', persistence: 'persistent' },
     { id: 'hand', persistence: 'persistent' }, { id: 'laser', persistence: 'persistent' },
-    { id: 'zoom', persistence: 'single-use' }, { id: 'text', persistence: 'single-use' },
+    // Zoom never stays chosen: a locked zoom would turn every later press into a zoom brush.
+    { id: 'zoom', persistence: 'single-use', lockable: false }, { id: 'text', persistence: 'single-use' },
     { id: 'sticky', persistence: 'single-use' }, { id: 'figure', persistence: 'single-use', hasVariants: true },
     { id: 'frame', persistence: 'single-use' }, { id: 'connector', persistence: 'single-use' },
     { id: 'polyline', persistence: 'single-use' }, { id: 'media', persistence: 'single-use' },

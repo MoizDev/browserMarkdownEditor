@@ -59,12 +59,48 @@ export function createTextInputBridge(ports: TextInputRoutingPorts): TextInputBr
             return resolve(target);
         } catch (error) { report(error); return false; }
     }
+    function editOnRelease(event: PointerEvent): void {
+        const down = { x: event.clientX, y: event.clientY }, pointerId = event.pointerId;
+        const release = (up: PointerEvent) => {
+            if (up.pointerId !== pointerId) return;
+            window.removeEventListener('pointerup', release, true);
+            window.removeEventListener('pointercancel', cancel, true);
+            if (Math.hypot(up.clientX - down.x, up.clientY - down.y) > 8) return;
+            // Next task: Select's own release has finished first, so it cannot undo the selection the label edit needs.
+            setTimeout(() => {
+                if (!ports.isCurrent()) return;
+                const controller = new AbortController();
+                void Promise.resolve(ports.locate(down.x, down.y, controller.signal)).then(target => {
+                    if (target && typeof target === 'object' && ports.isCurrent()) manager.start(target.node);
+                }).catch(error => { if (!controller.signal.aborted) ports.error(error); });
+            }, 0);
+        };
+        const cancel = (gone: PointerEvent) => {
+            if (gone.pointerId !== pointerId) return;
+            window.removeEventListener('pointerup', release, true);
+            window.removeEventListener('pointercancel', cancel, true);
+        };
+        window.addEventListener('pointerup', release, true);
+        window.addEventListener('pointercancel', cancel, true);
+    }
     function pointer(sample: RealSample, modifiers: Modifiers, event: PointerEvent): PointerRoute<unknown> | null {
         cancelPending();
         const binding = manager.current;
         if (!ports.isCurrent() || !binding) return null;
         const handle = event.pointerType === 'touch' ? ports.hitHandle(event.clientX, event.clientY) : null;
-        if (!handle && !ports.containsActive(event.clientX, event.clientY)) { manager.close(); return null; }
+        // With the input blurred (focus left for a chrome control, measured: the caret stayed and a drag from the shape only
+        // selected text), a press on the editing shape ends the edit and goes to Select, so a drag moves the shape (catalogue S§16).
+        const inside = ports.containsActive(event.clientX, event.clientY);
+        if (!handle && (!inside || !binding.editor.hasFocus())) {
+            manager.close();
+            // A release without a drag on another shape's label edits that label (catalogue S§16): Select takes the press
+            // and selects the shape, then the label opens once that press has finished.
+            if (!inside) editOnRelease(event);
+            return null;
+        }
+        // A press the editor keeps keeps focus too: the browser's mousedown default would move it to the board root, and the next
+        // press on the text would then read as a blurred editor (measured: a drag inside the label dropped the typing focus).
+        if (event.pointerType !== 'touch') event.preventDefault();
         const convert = (point: RealSample, keys: Modifiers): TextPointer => {
             const client = ports.worldToClient(point.x, point.y);
             return { id: point.pointerId, kind: point.source === 'touch' ? 'touch' : point.source === 'pen' ? 'pen' : 'mouse',

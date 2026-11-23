@@ -50,7 +50,9 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   chosen. `single-use` (text, sticky, figure, frame, connector, polyline, media) return to Select after one use;
   zoom is single-use and **not lockable** (`lockable: false`). `ToolState` (`input/gesture.ts`) keeps a lockable
   single-use tool when the tool lock is on (`Q`, Preferences, the padlock over the bar) or `keepToolOnce` was armed.
-  Escape returns the chosen tool to Select (`ToolState.escape`). Tool choice is session UI state, never history.
+  Escape returns the chosen tool to Select (`ToolState.escape`). Tool choice is session UI state, never history. Choosing a tool
+  keeps a placed keyboard cursor (only a gesture the cursor owns ends), and the keyboard cursor does not complete the tool
+  for a `completesTool` route (`keyboardCompletes`), which completes itself once it lands.
 - A tool whose work lands after pointer-up returns to Select itself (`completesTool` in `input/pointerRouter.ts`).
 - **A released gesture lands; it is not pending work.** After pointer-up an erase or a box keeps a `settling` session hold
   (`session.beginGesture('settling')`, and so does the preview's commit hold) and registers with `registerSettling`, not
@@ -156,6 +158,9 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   quote are `text/edit/rules.ts`; both are skipped inside code and while a backtick is open.
 - The formatting bar above a selection is `viewer/textFormatToolbar.ts`: it shows a format as on only when every
   character of the selection carries it. Its icons are Lucide data (see `PROVENANCE.md`).
+- Cmd/Ctrl+K in a text edit finishes it and opens the palette (`text/edit/keys.ts`, `commandPalette` port). While editing,
+  a press on another shape's text ends the edit and edits that text on release without a drag (`text/edit/inputBridge.ts`,
+  `editOnRelease`); a press on the editing shape with focus elsewhere ends the edit so a drag moves the shape (`hasFocus`).
 - While a node is being edited its paint is exact (`editingChanged`); a figure's label growth is measured exactly as
   an edit measures it (`text/edit/growth.ts`).
 - Links in text are normalised through `text/edit/format.ts` (`linkUrl`) and opened only by an explicit gesture.

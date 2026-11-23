@@ -534,6 +534,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     },
   })
   let keyboardStart: ToolStateSnapshot | null = null
+  // A creation's commit returns the tool itself after it lands (completesTool), so the keyboard finish must not complete it early.
+  let keyboardCompletes = false
   let commaHeld = false
   const cursor = createKeyboardCursor({
     token: view.token, current: () => current(),
@@ -557,13 +559,14 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
             ? { tool: ink(choice.id), context: undefined }
             : services.resolveKeyboardTool?.(choice, sample, modifiers)
         if (!route || !router.begin(view.token, route.tool, sample, modifiers, route.context)) { keyboardStart = null; releaseClaim(); return false }
+        keyboardCompletes = route.completesTool === true
         return true
       } catch (error) { keyboardStart = null; releaseClaim(); services.error(error); return false }
     },
     update: (sample, modifiers) => router.update(view.token, sample.pointerId, [sample], modifiers),
     finish() {
-      try { router.finish(view.token, -1, 'up'); if (keyboardStart && editable()) services.tools.complete(keyboardStart) }
-      finally { keyboardStart = null; releaseClaim() }
+      try { router.finish(view.token, -1, 'up'); if (keyboardStart && editable() && !keyboardCompletes) services.tools.complete(keyboardStart) }
+      finally { keyboardStart = null; keyboardCompletes = false; releaseClaim() }
     },
     escape() { try { router.interrupt(view.token, 'escape') } finally { keyboardStart = null; releaseClaim() } },
     undo() { try { router.interrupt(view.token, 'undo') } finally { keyboardStart = null; releaseClaim() } },
@@ -731,7 +734,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       if (!restoringTool) {
         services.textInput?.cancelPending()
         cancelContinuations(); services.cancelPendingGestures()
-        if (cursor.active) cursor.escape()
+        // Choosing a tool with the keyboard cursor placed keeps the cursor for the new tool; only a gesture it owns ends.
+        if (cursor.gesture) cursor.escape()
         pointer.interrupt('flush')
       }
     }

@@ -57,6 +57,10 @@ export function handleEditKey(event: KeyboardEvent, services: KeyServices, mac: 
     if (mod && event.key === 'Enter' && !event.altKey && services.neighbour(event.shiftKey ? 'up' : 'down')) {
         consume(event); return true;
     }
+    // Cmd/Ctrl+K finishes the edit and opens the command palette; plain K is not a text key, so it never types.
+    if (mod && !event.altKey && !event.shiftKey && lower === 'k') {
+        consume(event); services.command('palette'); return true;
+    }
     if (event.key === 'Escape' || (mod && event.key === 'Enter')) {
         consume(event); services.command('finish'); return true;
     }

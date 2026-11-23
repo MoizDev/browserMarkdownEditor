@@ -83,6 +83,8 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
     const [lease, setLease] = useState<NativeViewLease | null>(null), [clipboard, setClipboard] = useState<NativeClipboardService | null>(null);
     const [capabilities, setCapabilities] = useState<NativeEditingCapabilities | null>(null), [attached, setAttached] = useState(false);
     const commandRef = useRef<((id: string, event: KeyboardEvent) => boolean) | null>(null), linksRef = useRef<Links | null>(null);
+    // The palette's opener is registered by ConnectedEditor; the text editor reaches it through this ref (Cmd/Ctrl+K in a text edit).
+    const paletteRef = useRef<(() => void) | null>(null);
     const contextMenuRef = useRef<ReturnType<typeof createNativeBoardContextMenu> | null>(null), embedControllerRef = useRef<NativeEmbedController | null>(null);
     const [lifetime, setLifetime] = useState<AbortController | null>(null);
     const viewRef = useRef<NativeViewLease | null>(null), chromeMountedRef = useRef(false), styleRef = useRef<Styles | null>(null);
@@ -127,7 +129,8 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
                         error: report, notice: setNotice, contextMenu(request) { const menu = contextMenuRef.current; if (!menu) throw new Error('Board context menu is unavailable'); menu.pointer(request); },
                         openKeyboardContextMenu(request) { const menu = contextMenuRef.current; if (!menu) throw new Error('Board context menu is unavailable'); menu.keyboard(request); },
                         penModeChanged(enabled) { viewRef.current?.editing?.announce(enabled ? 'Pen mode enabled.' : 'Pen mode disabled.'); },
-                        text: { openLink(url) { const target = linksRef.current; if (!target) throw new Error('Link actions are unavailable'); target.openLink(url); },
+                        text: { commandPalette() { if (!paletteRef.current) throw new Error('The command palette is not ready'); paletteRef.current(); },
+                            openLink(url) { const target = linksRef.current; if (!target) throw new Error('Link actions are unavailable'); target.openLink(url); },
                             command(name) { const target = linksRef.current; if (name !== 'link' || !target) throw new Error('Text command is unavailable'); void target.editText().catch(report); },
                             touchHandles(show) { viewRef.current?.editing?.announce(show ? 'Text selection handles shown.' : 'Text selection handles hidden.'); },
                             reducedMotion: () => getBoardPreferences().animationSpeed === 0,
@@ -152,13 +155,13 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
     if (!lease || !clipboard || !capabilities || !language || !lifetime) return <>{dialogs.dialogs}<div role="status">Preparing canvas editor…{notices.list.map(message => ` ${message}`).join('')}</div></>;
     return <ConnectedEditor props={props} lease={lease} adapter={adapter} clipboard={clipboard} capabilities={capabilities}
         language={language} signal={lifetime.signal} dialogs={dialogs} current={current} report={report} notices={notices}
-        inverted={inverted} setInverted={setInverted} attached={attached} commandRef={commandRef} linksRef={linksRef}
+        inverted={inverted} setInverted={setInverted} attached={attached} commandRef={commandRef} linksRef={linksRef} paletteRef={paletteRef}
         canMutateView={canMutateView} onChromeReady={onChromeReady} embedPort={embedPort} contextMenuRef={contextMenuRef} printRef={printRef}
         embedControllerRef={embedControllerRef} styleRef={styleRef} renderView={renderView} />;
 }
 
 function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, language, signal, dialogs, current: ownerCurrent, report,
-    notices, inverted, setInverted, attached, commandRef, linksRef, canMutateView, onChromeReady, embedPort,
+    notices, inverted, setInverted, attached, commandRef, linksRef, paletteRef, canMutateView, onChromeReady, embedPort,
     contextMenuRef, embedControllerRef, styleRef, renderView, printRef }: {
     readonly props: NativeEditingViewProps; readonly lease: NativeViewLease; readonly adapter: HostedBoardAdapter<BoardSessionPort>;
     readonly printRef: RefObject<() => boolean>;
@@ -167,7 +170,7 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
     readonly dialogs: ReturnType<typeof useNativeBoardDialogs>; readonly current: () => boolean; readonly report: (error: unknown) => void;
     readonly notices: BoardNotices; readonly inverted: boolean;
     readonly setInverted: (value: boolean) => void; readonly attached: boolean;
-    readonly commandRef: RefObject<((id: string, event: KeyboardEvent) => boolean) | null>; readonly linksRef: RefObject<Links | null>;
+    readonly commandRef: RefObject<((id: string, event: KeyboardEvent) => boolean) | null>; readonly linksRef: RefObject<Links | null>; readonly paletteRef: RefObject<(() => void) | null>;
     readonly renderView: (context: NativeEditingRenderContext) => ReactNode;
     readonly canMutateView: () => boolean; readonly onChromeReady: (ready: boolean) => void;
     readonly embedPort: EmbedPresentationPort | null;
@@ -182,8 +185,7 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
     const mac = /Mac|iPhone|iPad/.test(navigator.platform);
     const shortcutRef = useRef<(() => void) | null>(null);
     // The chrome registers its palette opener while mounted; the keyboard and the actions reach it through here.
-    const paletteRef = useRef<(() => void) | null>(null);
-    const openCommandPalette = useCallback(() => { if (!paletteRef.current) return false; paletteRef.current(); return true; }, []);
+    const openCommandPalette = useCallback(() => { if (!paletteRef.current) return false; paletteRef.current(); return true; }, [paletteRef]);
     const [chromeReady, setChromeReady] = useState(false), [thumbnails, setThumbnails] = useState(false);
     const [admissionFailed, setAdmissionFailed] = useState(false);
     const [servicesEpoch, refreshServices] = useState(0);
@@ -271,7 +273,7 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
     const registerCommandPalette = useCallback((open: () => void) => {
         paletteRef.current = open;
         return () => { if (paletteRef.current === open) paletteRef.current = null; };
-    }, []);
+    }, [paletteRef]);
     const paletteSelection = useCallback(() => contextMenuRef.current?.selectionEntries() ?? [], [contextMenuRef]);
     const onStyles = useCallback((value: Styles | null) => {
         styleRef.current = value; refreshServices(epoch => epoch + 1);

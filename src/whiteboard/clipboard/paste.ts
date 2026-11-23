@@ -111,7 +111,8 @@ export async function pasteBoardClipboardInJob(host: BoardClipboardPasteHost, in
             plain: copied.text ?? '', cache, readBlob: host.readBlob, storeMedia: host.storeMedia }, context);
         if (classification.kind === 'text' || classification.kind === 'url') {
             const id = await pasteClipboardTextInJob({ ...base, content: classification.kind === 'text'
-                ? { kind: 'plain', text: classification.text } : { kind: 'url', url: classification.url }, signal: context.signal }, context);
+                ? { kind: 'plain', text: classification.text } : { kind: 'url', url: classification.url },
+                aimAtSelectedLink: intent !== 'drop', signal: context.signal }, context);
             return id ? [id as NodeId] : [];
         }
         if (classification.kind === 'html') return pasteClipboardHtmlInJob({ ...base, memory: host.memory, frame: host.html,

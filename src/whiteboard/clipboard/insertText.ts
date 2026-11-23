@@ -1,5 +1,6 @@
 import { pageAt } from '../../platform/render/pageStack';
 import { normalizedRotation, worldPose } from '../change/coordinates';
+import { isLocked } from '../change/commands';
 import type { Op } from '../change/ops';
 import { acquireBoardGeometryScope } from '../commands/geometryScope';
 import { notebookGrowthOp } from '../commands/pagesAndSheets';
@@ -8,7 +9,7 @@ import { isSheetParent } from '../model/doc';
 import { newNodeId } from '../model/ids';
 import type { MediaId } from '../model/media';
 import { createEmbed, createLinkcard, createText, type Node } from '../model/nodes';
-import { resolveEmbedCandidate, type EmbedManifest } from '../media/embed';
+import { resolveEmbedCandidate, type EmbedCandidate, type EmbedManifest } from '../media/embed';
 import type { UrlEnvironment } from '../security/urlPolicy';
 import { createAddedBoardDoc } from '../model/overlayDoc';
 import { keyBetween } from '../model/orderKey';
@@ -20,6 +21,16 @@ import { checkContentUrl } from '../security/urlPolicy';
 import type { Block, RichFragment } from '../text/richText';
 import { planBoardClipboardPlacement } from './placement';
 import type { ClipboardIntent, ClipboardTarget } from './types';
+
+/** Text pasted from the top edge of the view keeps this many screen pixels clear of it (catalogue c.8). */
+const TEXT_TOP_CLEARANCE_PX = 40;
+/** Default size of a new embed per provider, in world units (the catalogue's per-provider table); unlisted providers use the common size. */
+const EMBED_SIZE: Readonly<Partial<Record<EmbedCandidate['provider'], { readonly w: number; readonly h: number }>>> = Object.freeze({
+    youtube: { w: 800, h: 450 }, vimeo: { w: 640, h: 360 }, codepen: { w: 520, h: 400 }, scratch: { w: 520, h: 400 }, desmos: { w: 700, h: 450 },
+});
+const EMBED_SIZE_DEFAULT = { w: 720, h: 500 };
+/** The nodes that carry a link address, the same set the Edit link command reaches. */
+const LINKABLE_KINDS: ReadonlySet<string> = new Set(['figure', 'sticky', 'picture', 'linkcard', 'embed']);
 
 // Provenance: external clipboard placement, text-layout and atomic change
 // contracts; independent authoring path, no third-party source.
@@ -38,6 +49,8 @@ export interface InsertClipboardTextOptions {
     readonly embedManifest?: EmbedManifest;
     readonly intent: ClipboardIntent;
     readonly content: ExternalClipboardContent;
+    /** A pasted address goes into the one selected link-carrying node instead of making a new card (paste, not drop or embed insertion). */
+    readonly aimAtSelectedLink?: boolean;
     readonly signal?: AbortSignal;
     cooperate?(): Promise<void>;
 }
@@ -101,6 +114,21 @@ export async function insertClipboardText(options: InsertClipboardTextOptions): 
             url = decision.url;
         } else throw new TypeError('Unsupported clipboard content');
         check();
+        if (url !== undefined && options.aimAtSelectedLink) {
+            const selection = runtime.selection.getSnapshot().selected, aimed = selection.length === 1 ? doc.nodes.get(selection[0]!) : undefined;
+            if (aimed && LINKABLE_KINDS.has(aimed.kind) && !isLocked(doc, aimed)) {
+                const value = url, linked = aimed.id;
+                return session.enqueueAfterGesture(signal, () => {
+                    check();
+                    session.history.open('Paste link');
+                    try {
+                        const applied = session.apply({ origin: 'paste', label: 'Paste link', ops: [{ t: 'set', id: linked, key: 'url', value } as Op] });
+                        applied.release();
+                        return linked;
+                    } finally { session.history.close(); }
+                });
+            }
+        }
         const id = newNodeId(doc), initialSiblings = doc.children.get(target.sheet) ?? [];
         const initialOrder = keyBetween(initialSiblings.at(-1)?.order ?? null, null);
         const stack = boardPageStack(doc.host), first = stack?.rects[0];
@@ -109,7 +137,8 @@ export async function insertClipboardText(options: InsertClipboardTextOptions): 
         // These are persisted card dimensions, not a placement estimate; the renderer
         // supplies the actual painted geometry used below and never fetches a preview.
         const embed = url !== undefined && options.embedEnvironment ? resolveEmbedCandidate(url, options.embedEnvironment, options.embedManifest) : null;
-        let node: Node = url !== undefined ? embed ? createEmbed({ ...base, w: 800, h: 450, url })
+        const embedSize = embed ? EMBED_SIZE[embed.provider] ?? EMBED_SIZE_DEFAULT : EMBED_SIZE_DEFAULT;
+        let node: Node = url !== undefined ? embed ? createEmbed({ ...base, w: embedSize.w, h: embedSize.h, url })
             : createLinkcard({ ...base, w: 320, h: 180, url, preview: null }) : createText({ ...base, text: text!, color: style.color, size: style.size, font: style.font,
                 align: style.textAlign, autoSize: true, w: 1, scale: 1 });
         const preserved = new Map<MediaId, number>();
@@ -125,7 +154,10 @@ export async function insertClipboardText(options: InsertClipboardTextOptions): 
             if (!prepared) throw new Error('Clipboard text layout is unavailable');
             const width = Math.max(1, prepared.paint.box.w);
             if (!Number.isFinite(width)) throw new RangeError('Clipboard text is too wide');
-            node = width > 1200 ? { ...node, autoSize: false, w: 600 } : { ...node, w: width };
+            // A single line that fits keeps its natural width; a longer line or several lines wrap at 0.9 of the view's width.
+            const wrap = Math.max(1, 0.9 * target.viewport.w), autoWidth = Math.min(920, Math.max(200, wrap));
+            const singleLine = text!.blocks.length === 1;
+            node = singleLine && width <= autoWidth ? { ...node, w: width } : { ...node, autoSize: false, w: wrap };
             scope.release(); scope = undefined;
             candidate = createAddedBoardDoc(doc, [node], [], preserved);
             scope = await acquireBoardGeometryScope(runtime, [id], { doc: candidate, signal, current: () => { check(); return true; }, cooperate });
@@ -136,7 +168,10 @@ export async function insertClipboardText(options: InsertClipboardTextOptions): 
             intent: options.intent, containsFrame: false, source: { from: null,
                 bounds: { x: measured.x, y: measured.y, w: measured.width, h: measured.height } } });
         const parent = placement.parent, siblings = doc.children.get(parent) ?? [], order = keyBetween(siblings.at(-1)?.order ?? null, null);
-        const wx = placement.delta.x, wy = placement.delta.y;
+        // Text is lifted, never moved down, so its top stays clear of the view's top edge.
+        const floor = target.viewport.y + TEXT_TOP_CLEARANCE_PX / options.cameraZoom;
+        const lift = node.kind === 'text' ? Math.max(0, floor - (measured.y + placement.delta.y)) : 0;
+        const wx = placement.delta.x, wy = placement.delta.y + lift;
         if (isSheetParent(doc, parent)) node = { ...node, parent, order, x: wx - (first?.x ?? 0), y: wy - (first?.y ?? 0), page: stack ? 0 : -1 };
         else {
             const pose = worldPose(doc, parent), dx = wx - pose.x, dy = wy - pose.y, c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);

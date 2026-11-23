@@ -1,15 +1,16 @@
-// Prepare the reference source before starting a browser; never build under a run grant.
+// Prepare the reference source before starting a browser; building is its own phase, never inside a run.
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { scratchDir } from '../../lib/paths.mjs';
 import { buildMutant } from '../harness/mutant-build.mjs';
 import { markerSpecs } from '../harness/today/markers.mjs';
 
 const { values } = parseArgs({ options: {
-  scratch: { type: 'string', default: '/Users/adham/Developer/bme-impl/scratch/w-b/b39/reference' },
+  scratch: { type: 'string', default: scratchDir('w-b', 'b39', 'reference') },
   'reference-commit': { type: 'string' },
   'tool-mutant': { type: 'boolean', default: false },
 } });

@@ -2,9 +2,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { runArm, hash, delay, until } from './lib/browser.mjs';
+import { requiredInput } from '../../lib/paths.mjs';
 import { saved, document } from './lib/files.mjs';
 
-const corpus = process.env.CORPUS ?? '/Users/adham/Developer/browserMarkdownEditor/planning/10-whiteboard/formats/corpus';
+const corpus = requiredInput('CORPUS', 'the whiteboard formats corpus folder (with growth/whiteboard-10000.tldraw and growth/notebook-10000.notebook)');
 for (const host of ['whiteboard', 'notebook']) await runArm('WB-D5', host, async h => {
   const name = host === 'whiteboard' ? 'whiteboard-10000.tldraw' : 'notebook-10000.notebook';
   const bytes = await fs.readFile(path.join(corpus, 'growth', name));

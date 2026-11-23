@@ -3,10 +3,11 @@ import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
+import { scratchDir } from '../../lib/paths.mjs';
 import { launch, frames } from '../harness/index.mjs';
 const { values } = parseArgs({ options: {
   url: { type: 'string', default: 'http://localhost:6520/' },
-  out: { type: 'string', default: '/Users/adham/Developer/bme-impl/scratch/w-b/b39/sanity' },
+  out: { type: 'string', default: scratchDir('w-b', 'b39', 'sanity') },
 } });
 await mkdir(values.out, { recursive: true });
 const h = await launch({ baseURL: values.url, blockOffOrigin: true });

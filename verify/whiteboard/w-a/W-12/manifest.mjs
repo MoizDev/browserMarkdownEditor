@@ -2,8 +2,9 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { scratchDir } from '../../../lib/paths.mjs';
 
-const root = process.env.W12_BUILD_ROOT ?? '/Users/adham/Developer/bme-impl/scratch/w-a/w12';
+const root = process.env.W12_BUILD_ROOT ?? scratchDir('w-a', 'w12');
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 async function files(dir) {
   const found = [];

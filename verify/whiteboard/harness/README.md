@@ -20,7 +20,7 @@ try {
 } finally { await h.close() }
 ```
 
-The implementation sanity command is `L run -w 2 -- node verify/whiteboard/w-b/b39-sanity.mjs`.
+The implementation sanity command is `node verify/whiteboard/w-b/b39-sanity.mjs --url <served app>`.
 It reads tool/selection through actual input on all three hosts and saves light/dark captures.
 The stricter recipes below are deferred proof tooling, not the implementation merge bar.
 
@@ -49,38 +49,38 @@ including re-exports, to ensure no reference module/legacy decoder is reached. A
 ## Pins, storage and resource rules
 
 - Installed Playwright **1.63.0** is asserted from this worktree's package, never npx.
-- Browser: exact CfT **157.0.8103.39**, launched by the physical path under
-  `/Users/adham/Developer/bme-impl/scratch/browsers/`. No `channel` fallback. Actual path/version enter
+- Browser: exact CfT **157.0.8103.39**, launched by the physical path the toolbox resolves
+  (`BME_CHROME_PATH`, else the cache `node verify/install-browser.mjs` fills). No `channel` fallback. Actual path/version enter
   identity; post-launch failures close the owned context/browser. The planning CDP/installed-browser
   transport is explicitly NOT RUN here: matching a remote version cannot prove its executable path.
   Physical-device and pinned-picture-image transport need their separately verified harness.
 - Named OPFS vault, permissions granted on every descendant; seed only after navigation. The pinned
   browser survives native handle restore. Native IDB is default; the old dev shim is opt-in and its
   loss is explicit. `theme:null` avoids setup reseeding when observing storage destruction.
-- All installs/builds/static checks/servers/browsers use `bme-lock`. **Never nest memory grants**:
-  build first, then run against that artifact. Stop preview between runs and for every timing window.
-  w-b ports are 6520–6539; other seats use their own charter ranges. Scratch is outside the repo.
+- **Build first, then run against that artifact**; never build from inside a browser run. Stop
+  preview between runs. Ports are yours to choose (`--port`, strict). Scratch is outside the repo:
+  `w-b/` under the toolbox scratch root (`BME_SCRATCH`, else a per-clone OS temp folder).
 
 ## Prepare, serve, run (no server is silently started by a helper)
 
 From a clean, committed harness checkout with its own `npm ci`:
 
 ```sh
-W=/Users/adham/Developer/bme-impl; L=$W/scratch/bin/bme-lock
-H=$(git rev-parse HEAD); R=$(git rev-parse impl/reference)
-node verify/whiteboard/w-b/b39-build.mjs --reference-commit "$R" --scratch "$W/scratch/w-b/b39/reference"
+S=/absolute/scratch/w-b   # outside the clone
+H=$(git rev-parse HEAD); R=<the reference commit>
+node verify/whiteboard/w-b/b39-build.mjs --reference-commit "$R" --scratch "$S/b39/reference"
 # Read reference/latest.json: CONFIG and RECEIPT are its config and receipt paths.
-# Start via hc run --bg in a separate terminal:
-$L serve -- ./node_modules/.bin/vite preview --config "$CONFIG" --port 6520 --strictPort
-$L run -w 2 -- node verify/whiteboard/w-b/b39-run.mjs --url http://localhost:6520/ \
+# Start the preview in a separate terminal, on a port you choose:
+./node_modules/.bin/vite preview --config "$CONFIG" --port 6520 --strictPort
+node verify/whiteboard/w-b/b39-run.mjs --url http://localhost:6520/ \
   --receipt "$RECEIPT" --reference-commit "$R" --harness-commit "$H" \
-  --mode clean --out "$W/scratch/w-b/b39/clean"
+  --mode clean --out "$S/b39/clean"
 # Stop preview immediately after the run.
 ```
 
 The builder archives the exact reference git object into a fresh scratch source tree; it copies
 independent dependency files (preserving relative symlinks), never shares node_modules or copies
-.git. Archive/copy/patch/build all hold one build grant. It emits the hashes of **all emitted JS,
+.git. Archive/copy/patch/build run as one build-only process. It emits the hashes of **all emitted JS,
 including worker assets**, source/harness commits and exact source-patch hash. The run independently
 requires the expected commits, a clean reviewed harness, expected variant and the committed patch.
 It compares the server receipt to the local artifact and hashes actual script response bodies.

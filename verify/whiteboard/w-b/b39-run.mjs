@@ -2,6 +2,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
+import { scratchDir } from '../../lib/paths.mjs';
 import { launch } from '../harness/index.mjs';
 import { prepareConsistentMarker } from '../harness/today/markers.mjs';
 
@@ -11,7 +12,7 @@ const { values } = parseArgs({ options: {
   'reference-commit': { type: 'string' },
   'harness-commit': { type: 'string' },
   mode: { type: 'string', default: 'clean' },
-  out: { type: 'string', default: '/Users/adham/Developer/bme-impl/scratch/w-b/b39/run' },
+  out: { type: 'string', default: scratchDir('w-b', 'b39', 'run') },
 } });
 if (!['clean', 'tool', 'object', 'version'].includes(values.mode)) throw Error('Unknown B-39 arm');
 if (!values.receipt) throw Error('--receipt must name the independently built local reference manifest');

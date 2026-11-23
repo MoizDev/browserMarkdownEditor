@@ -8,11 +8,12 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { chromium } from 'playwright';
+import { pinnedChrome, scratchDir } from '../../lib/paths.mjs';
 
 const { values } = parseArgs({ options: {
   url: { type: 'string', default: 'http://localhost:6520/' },
-  out: { type: 'string', default: '/Users/adham/Developer/bme-impl/scratch/w-b/w-01' },
-  chrome: { type: 'string', default: '/Users/adham/Developer/bme-impl/scratch/browsers/157.0.8103.39/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing' },
+  out: { type: 'string', default: scratchDir('w-b', 'w-01') },
+  chrome: { type: 'string' },
   theme: { type: 'string', default: 'dark' },
   dpr: { type: 'string', default: '1' },
   'expected-commit': { type: 'string' },
@@ -117,8 +118,8 @@ try {
   assert.equal(driver.version, '1.63.0', 'Installed Playwright pin changed');
   assert.equal(pin.driver, 'playwright@1.63.0');
   assert.equal(pin.version, '157.0.8103.39');
-  const expectedChrome = await realpath(resolve('/Users/adham/Developer/bme-impl/scratch/browsers', pin.version, pin.executable));
-  const actualChrome = await realpath(values.chrome);
+  const expectedChrome = await realpath(await pinnedChrome());
+  const actualChrome = await realpath(values.chrome ?? expectedChrome);
   assert.equal(actualChrome, expectedChrome, 'Wrong CfT executable path');
   report.runtime = { playwright: driver.version, playwrightPackage: driverPath, expectedChrome, launchedChrome: actualChrome, expectedBrowserVersion: pin.version };
   browser = await chromium.launch({ headless: true, executablePath: actualChrome });

@@ -9,7 +9,7 @@ import { createSticky } from '../model/nodes';
 import { keyBetween } from '../model/orderKey';
 import { createAddedBoardDoc } from '../model/overlayDoc';
 import { EMPTY_RICH_TEXT } from '../text/richText';
-import { findStickyNeighbour, stickyWorldCentre } from '../geom/stickyNeighbours';
+import { findStickyNeighbour, stickyNeighbourOffset, stickyWorldCentre } from '../geom/stickyNeighbours';
 
 export type StickyDirection = 'left' | 'right' | 'up' | 'down';
 export interface StickyNeighbourOptions {
@@ -40,8 +40,7 @@ export async function addStickyNeighbour(options: StickyNeighbourOptions): Promi
     if (!source || source.kind !== 'sticky' || isLocked(doc, source) || sheetOf(doc, source.id) !== selection.sheet)
         throw new Error('Sticky neighbour requires an unlocked note on the active sheet');
     const scale = source.scale, c = Math.cos(source.rotation), s = Math.sin(source.rotation);
-    const dx = options.direction === 'right' ? 210 * scale : options.direction === 'left' ? -210 * scale : 0;
-    const dy = options.direction === 'down' ? (210 + source.growY) * scale : options.direction === 'up' ? -210 * scale : source.growY * scale / 2;
+    const offset = stickyNeighbourOffset(scale, source.growY, options.direction), dx = offset.x, dy = offset.y;
     const x = source.x + c * dx - s * dy, y = source.y + s * dx + c * dy;
     if (![scale, c, s, dx, dy, x, y].every(Number.isFinite) || scale <= 0) throw new RangeError('Sticky neighbour position overflows');
     const siblings = doc.children.get(source.parent) ?? [], id = newNodeId(doc), order = keyBetween(siblings.at(-1)?.order ?? null, null);

@@ -60,9 +60,10 @@ export async function openDocument(page, path) {
         if (await parent.getAttribute('aria-expanded') !== 'true') await parent.click();
     }
     await treeRow(page, path).click();
-    if (/\.pdf$/i.test(path)) await page.locator('.pdf-viewer-page canvas:visible').first().waitFor();
+    // The platform pane's canvas sits in the PDF's tiled surface and in a board's viewer surface (PdfTiledView, ViewerHost).
+    if (/\.pdf$/i.test(path)) await page.locator('.pdf-tiled-surface:visible canvas').first().waitFor();
     else if (/\.epub$/i.test(path)) await page.frameLocator('.epub-pane iframe').locator('.chapter').first().waitFor();
-    else if (/\.(tldraw|notebook)$/i.test(path)) await page.locator('.tl-container:visible').waitFor();
+    else if (/\.(drawing|tldraw|notebook)$/i.test(path)) await page.locator('.board-viewer-surface:visible canvas').first().waitFor();
     else await page.locator('.cm-content:visible').waitFor();
 }
 

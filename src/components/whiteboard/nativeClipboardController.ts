@@ -84,8 +84,11 @@ export function createNativeClipboardController(options: NativeClipboardControll
     const targetCurrent = (target: Readonly<ClipboardTarget>) => current() && options.canWriteView() && !session.isReadOnly
         && target.session === `${identity.documentId}:${identity.session}` && target.vaultEpoch === identity.vaultActivation
         && target.generation === identity.bytesGeneration && runtime.selection.getSnapshot().sheet === target.sheet;
+    // The selection's ids as one key, and the last Cmd+D's copies with the origin of what it copied (world units).
+    const selectionKey = () => [...runtime.selection.getSnapshot().selected].sort().join(',');
+    let lastDuplicate: { copies: string; sourceOrigin: { x: number; y: number } } | null = null;
     const execute = (input: Promise<ClipboardInput> | null, captured: ReturnType<typeof targetNow>, intent: ClipboardIntent,
-        duplicate?: { snapshot: CopySnapshot; media: ReadonlyMap<MediaId, Blob> },
+        duplicate?: { snapshot: CopySnapshot; media: ReadonlyMap<MediaId, Blob>; repeatFrom: { x: number; y: number } | null },
         imageRead?: Promise<ClipboardInput | null>, externalSignal?: AbortSignal, capturedPin?: ClipboardCachePin | null) => {
         const pin = capturedPin === undefined ? (duplicate ? null : options.pinClipboard()) : capturedPin;
         const controller = new AbortController();
@@ -102,7 +105,7 @@ export function createNativeClipboardController(options: NativeClipboardControll
             const workerIdentity: BoardJobIdentity = { session: context.job.session, epoch: context.job.vaultEpoch, revision };
             const workerCurrent = (job: BoardJobIdentity) => job.session === workerIdentity.session && job.epoch === workerIdentity.epoch
                 && job.revision === revision && runtime.jobs.isCurrent(context.job) && targetCurrent(target) && doc.rev === revision;
-            const insertAcquisition = async (acquired: BoardClipboardAcquisition, copied?: { snapshot: CopySnapshot; readMedia?: CachedClipboard['readMedia'] }) => {
+            const insertAcquisition = async (acquired: BoardClipboardAcquisition, copied?: { snapshot: CopySnapshot; readMedia?: CachedClipboard['readMedia'] }, duplicateOffset?: { x: number; y: number } | null) => {
                 let staged: Awaited<ReturnType<typeof prepareBoardClipboardMediaInJob>> | undefined, transferred = false;
                 try {
                     check();
@@ -113,7 +116,7 @@ export function createNativeClipboardController(options: NativeClipboardControll
                         storeMedia: options.storeMedia }, context);
                     check();
                     const placement = planBoardClipboardPlacement({ receivingBoardId: identity.documentId, target, source: acquired.payload,
-                        containsFrame: [...acquired.load.doc.nodes.values()].some(node => node.kind === 'frame'), doc, cameraZoom: zoom, intent });
+                        containsFrame: [...acquired.load.doc.nodes.values()].some(node => node.kind === 'frame'), doc, cameraZoom: zoom, intent, duplicateOffset });
                     transferred = true;
                     await insertNativeClipboard({ runtime, acquisition: acquired, media: staged, placement, target,
                         receivingBoardId: identity.documentId, external: false, current: targetCurrent, signal: context.signal });
@@ -123,7 +126,11 @@ export function createNativeClipboardController(options: NativeClipboardControll
             if (duplicate) {
                 const acquired = await acquireCopiedBoardClipboard(duplicate.snapshot, { identity: workerIdentity, isCurrent: workerCurrent,
                     signal: context.signal, media: duplicate.media });
-                await insertAcquisition(acquired, { snapshot: duplicate.snapshot });
+                // The copies the last duplicate left selected, and where its source was: the next Cmd+D repeats their offset.
+                const origin = { x: acquired.payload.bounds.x, y: acquired.payload.bounds.y };
+                const offset = duplicate.repeatFrom ? { x: origin.x - duplicate.repeatFrom.x, y: origin.y - duplicate.repeatFrom.y } : null;
+                await insertAcquisition(acquired, { snapshot: duplicate.snapshot }, offset);
+                lastDuplicate = { copies: selectionKey(), sourceOrigin: origin };
                 return;
             }
             if (!input) throw new Error('Clipboard input is unavailable');
@@ -226,11 +233,12 @@ export function createNativeClipboardController(options: NativeClipboardControll
         },
         duplicate(snapshot: CopySnapshot): Promise<void> {
             const target = targetNow(), media = new Map<MediaId, Blob>();
+            const repeating = lastDuplicate !== null && lastDuplicate.copies === selectionKey() ? lastDuplicate.sourceOrigin : null;
             for (const entry of snapshot.media) {
                 const blob = readNativeClipboardMedia(snapshot, entry.id);
                 if (blob) media.set(entry.id, blob);
             }
-            return execute(null, target, 'duplicate', { snapshot, media });
+            return execute(null, target, 'duplicate', { snapshot, media, repeatFrom: repeating });
         },
         capturePaste(input: ClipboardInput, intent: ClipboardIntent) {
             const target = capturePasteTarget(intent);

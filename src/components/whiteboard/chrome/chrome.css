@@ -835,7 +835,8 @@
 .board-shortcut-row dd { margin: 0; }
 
 /* Key caps read as the UI's own text: the default monospace made "Delete" and "Tab" look like code next to the symbols. */
-.board-shortcuts-dialog kbd { font-family: inherit; }
+/* A chord is keys, not prose: in an RTL dialog its modifier glyphs and letters reorder ("⌘Z" read as "Z⌘"), so it stays LTR. */
+.board-shortcuts-dialog kbd { font-family: inherit; direction: ltr; unicode-bidi: isolate; }
 
 /* The command palette (CommandPalette.tsx): the main menu's card, opened as the bottom column's neighbour, so it sits
    8 px above the tool bar. The pointer-coarse case puts it below the header instead: a finger's own keyboard is the
@@ -1010,6 +1011,8 @@
 
 .board-palette-chord {
     flex: none;
+    direction: ltr;
+    unicode-bidi: isolate;
     color: color-mix(in srgb, var(--text-normal) 55%, var(--background-primary));
     font-size: 14px;
     white-space: nowrap;

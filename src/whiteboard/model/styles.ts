@@ -12,6 +12,8 @@ export const SWATCH_INDEX: Readonly<Record<Swatch, number>> = Object.freeze({
     yellow: 6, orange: 7, green: 8, 'light-green': 9, 'light-red': 10, red: 11, white: 12,
 });
 
+/** The opacity steps the style panel's row and the command palette's submenu offer. */
+export const OPACITIES = [0.1, 0.25, 0.5, 0.75, 1] as const;
 export const SIZES = ['s', 'm', 'l', 'xl'] as const;
 export type Size = typeof SIZES[number];
 export const FONTS = ['draw', 'sans', 'serif', 'mono'] as const;

@@ -146,6 +146,12 @@ export class BoardStyleCommands {
         this.commit('Change colour', ops);
     }
 
+    /** The opacity every selected node shares, or null when none is selected or they differ. */
+    currentOpacity(): number | null {
+        const values = selectedNodes(this.session.doc, this.selection()).map(node => node.opacity);
+        return values.length && values.every(value => value === values[0]) ? values[0] : null;
+    }
+
     setOpacity(value: number): void {
         const doc = this.session.doc, opacity = Math.min(1, Math.max(0, value)), ops: Op[] = [];
         for (const node of selectedNodes(doc, this.selection())) {

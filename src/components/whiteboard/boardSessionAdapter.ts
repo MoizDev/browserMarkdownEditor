@@ -14,6 +14,9 @@ export interface HostedBoardAdapter<S extends BoardSessionPort> extends SessionA
     readonly board: S;
     /** Called only after the real editing view has installed its required services. */
     activateEditing?(): void;
+    /** What an old board's conversion left out or repaired. Held with the session, not the pane, so it is shown once:
+     * a pane remounted by a tab switch does not bring back a notice the person put away. */
+    readonly importNotice?: { readonly text: string; isDismissed(): boolean; dismiss(): void };
     dispose(): void | Promise<void>;
 }
 

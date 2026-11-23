@@ -5,6 +5,7 @@ import { insertClipboardText } from '../../whiteboard/clipboard/insertText';
 import { flattenNativeSelection } from '../../whiteboard/host/nativeFlatten';
 import { convertMediaCard } from '../../whiteboard/media/cards';
 import { resolveEmbedCandidate } from '../../whiteboard/media/embed';
+import { isCancellation } from '../../platform/workers/envelope';
 
 /** One view borrows the document's actual media pipeline; no new job queue or asset store. */
 export function createNativeEditingCapabilities(context: NativeEditingCapabilityContext): NativeEditingCapabilities {
@@ -15,7 +16,7 @@ export function createNativeEditingCapabilities(context: NativeEditingCapability
     const environment = { appOrigin: location.origin };
     const manifest = host.embeds.manifest;
     const fail = (error: unknown) => {
-        if (!(error instanceof DOMException && error.name === 'AbortError')) context.notice(error instanceof Error ? error.message : String(error));
+        if (!isCancellation(error)) context.notice(error instanceof Error ? error.message : String(error));
     };
     const operation = (eligible: () => boolean, run: () => void | Promise<void>): NativeCommandOperation => ({
         state: () => writable() && eligible() ? { enabled: true } : { enabled: false, reason: 'This action is unavailable for the current selection or source.' },

@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useBoardNotices, type BoardNotices } from './boardNotices';
+import { BoardNoticeStack } from './BoardNoticeStack';
 import type { ViewportInsets, ZoomLimits } from '../../platform/render/camera';
 import type { ActiveFile, Theme } from '../../types';
 import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
@@ -72,7 +74,8 @@ function NativeViewer({ props, identity, board, onError }: {
     const latest = useRef(props);
     useLayoutEffect(() => { latest.current = props; }, [props]);
     const [inverted, setInverted] = useState(false);
-    const [notice, setNotice] = useState<string | null>(null);
+    const notices = useBoardNotices();
+    const { show: setNotice, clear: clearNotice } = notices;
     const [lease, setLease] = useState<NativeViewLease | null>(null);
     const { nativeCanvasHost, zoomLimits: { min, max }, insets: { left, right, top, bottom } } = props;
     useEffect(() => {
@@ -82,13 +85,13 @@ function NativeViewer({ props, identity, board, onError }: {
             view = createNativeViewLease({ host: nativeCanvasHost, identity, board,
                 parameters: { mode: 'view', visible: current.isVisible, focused: current.isFocused, theme: current.theme, inverted: false },
                 limits: { min, max }, insets: { left, right, top, bottom }, onError, onNotice: setNotice,
-                onNoticeCleared: message => setNotice(shown => shown === message ? null : shown) });
+                onNoticeCleared: clearNotice });
         } catch (error) { onError(error); return; }
         setLease(view);
         return () => { setLease(previous => previous === view ? null : previous); view.dispose(); };
-    }, [board, identity, nativeCanvasHost, min, max, left, right, top, bottom, onError]);
+    }, [board, identity, nativeCanvasHost, min, max, left, right, top, bottom, onError, setNotice, clearNotice]);
     if (!lease) return <div role="status">Preparing canvas view…</div>;
-    return <AttachedViewer props={props} identity={identity} lease={lease} inverted={inverted} setInverted={setInverted} notice={notice} setNotice={setNotice} />;
+    return <AttachedViewer props={props} identity={identity} lease={lease} inverted={inverted} setInverted={setInverted} notices={notices} />;
 }
 
 export interface NativeEditingChromeContext {
@@ -98,12 +101,14 @@ export interface NativeEditingChromeContext {
     readonly setInverted: (value: boolean) => void;
     readonly zoom: number;
 }
-export function AttachedViewer({ props, identity, lease, inverted, setInverted, notice, setNotice, editingChrome, editingWritable }: {
+export function AttachedViewer({ props, identity, lease, inverted, setInverted, notices, editingChrome, editingWritable, editingAdmitting }: {
     props: NativeCanvasEntryProps; identity: NativeCanvasIdentity; lease: NativeViewLease; inverted: boolean;
-    setInverted(value: boolean): void; notice: string | null; setNotice(message: string | null): void;
+    setInverted(value: boolean): void; notices: BoardNotices;
     editingChrome?: (context: NativeEditingChromeContext) => ReactNode;
     editingWritable?: boolean;
+    editingAdmitting?: boolean;
 }) {
+    const setNotice = notices.show;
     const view = useSyncExternalStore(lease.subscribe, lease.getSnapshot, lease.getSnapshot);
     const navigation = useSyncExternalStore(lease.subscribe, lease.getNavigationSnapshot, lease.getNavigationSnapshot);
     const selection = lease.runtime.selection;
@@ -214,7 +219,7 @@ export function AttachedViewer({ props, identity, lease, inverted, setInverted, 
     return <ViewerHost name={props.file.name} documentId={props.documentId} vaultEpoch={props.identity.vaultActivation}
         isVisible={props.isVisible} isFocused={props.isFocused} theme={props.theme} inverted={inverted}
         view={editingChrome ? lease.view : viewer} layers={view.layers} platform={view.platform} readiness={view.readiness} paint={view.paint} reason={view.reason ?? (editingChrome ? '' : VIEW_REASON)}
-        readOnly={editingChrome ? board.isReadOnly || !editingWritable : true} externalAccessibility={!!editingChrome}
+        readOnly={editingChrome ? board.isReadOnly || !editingWritable : true} admitting={!!editingChrome && !!editingAdmitting} externalAccessibility={!!editingChrome}
         readOnlyNotice={editingChrome ? (board.readOnlyReason ?? VIEW_REASON) : VIEW_REASON} registerKeyboardTarget={register} onFocus={onFocus}
         chrome={<>{editingChrome ? editingChrome({ minimapOpen, setMinimapOpen, inverted, setInverted, zoom: navigation.zoom }) : <div className="native-canvas-navigation" role="toolbar" aria-label="Canvas navigation">
             {sheets.length > 1 && <label>Sheet <select value={selected.sheet} onChange={event => {
@@ -233,14 +238,11 @@ export function AttachedViewer({ props, identity, lease, inverted, setInverted, 
             {board.doc.kind === 'whiteboard' && <button type="button" aria-pressed={minimapOpen} onClick={() => setMinimapOpen(!minimapOpen)}>Minimap</button>}
             {stack && <NativeNotebookThumbnails pages={stack.rects} revision={revision} page={navigation.page} isVisible={props.isVisible}
                 current={current} currentRevision={getRevision} capturePage={capturePage} jump={jump} onError={reportThumbnailError} />}
-            {notice && <span role="status">{notice}</span>}
+            {notices.list.map(message => <span key={message} role="status">{message}</span>)}
         </div>}
         {/* The editing board's notices (a picture that could not be shown, no usable GPU, ...): a bare span here sat unstyled in the
-            chrome fragment and never appeared on screen. They persist until replaced, so the person can put one away. */}
-        {editingChrome && notice && <div className="board-viewer-notice board-viewer-notice-dismissible" role="status">
-            <span>{notice}</span>
-            <button type="button" className="disk-bar-btn" onClick={() => setNotice(null)}>Dismiss</button>
-        </div>}
+            chrome fragment and never appeared on screen. They persist until the person puts each away. */}
+        {editingChrome && <BoardNoticeStack notices={notices} />}
         {board.doc.kind === 'whiteboard' && <NativeMinimap thumbnail={thumbnail?.key === thumbnailKey ? thumbnail : null} currentCamera={cameraState.camera} viewport={cameraState.viewport}
             isVisible={props.isVisible && minimapOpen} currentOwner={minimapCurrent} highlights={highlights} onNavigate={navigateMinimap} onFocus={onFocus} />}
         {minimapOpen && minimapNotice && <div className="board-viewer-notice" role="status">{minimapNotice}</div>}</>} />;
@@ -261,8 +263,8 @@ function NativeDrawingEditing({ props, board, adapter, onError, onUnavailable }:
             editing, onError, onNotice: notice, onNoticeCleared: clearNotice });
     }, [host, identity, board, min, max, left, right, top, bottom, onError]);
     const renderView = useCallback((context: NativeEditingRenderContext) => <AttachedViewer props={props} identity={identity}
-        lease={context.lease} inverted={context.inverted} setInverted={context.setInverted} notice={context.notice}
-        setNotice={context.setNotice} editingChrome={context.chrome} editingWritable={context.editable} />, [props, identity]);
+        lease={context.lease} inverted={context.inverted} setInverted={context.setInverted} notices={context.notices}
+        editingChrome={context.chrome} editingWritable={context.editable} editingAdmitting={context.admitting} />, [props, identity]);
     return <NativeCanvasEditing props={props} board={board} adapter={adapter} factory={host.createEditingCapabilities}
         createLease={createLease} renderView={renderView} onError={onError} onUnavailable={onUnavailable} />;
 }

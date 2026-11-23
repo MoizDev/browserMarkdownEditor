@@ -41,7 +41,6 @@ export async function legacyScan(payload: unknown, context: WorkerContext): Prom
     const isAppearance = Object.keys(envelope.extras).some(key => key === 'paper' || key === 'ui' || key === 'session');
     if (!isDocument && !isAppearance) return result('unrecognized', null);
     const form = isDocument ? 'document' : 'appearance';
-    if (report.finish().unrepresentable.some(issue => issue.reason.startsWith('Unsupported record schema'))) return result('refused', form, envelope.records.length);
     const assets: LegacyScanAsset[] = [], backdropAssets = new Set<string>(), ordinaryAssets = new Set<string>();
     if (kind !== 'whiteboard') for (let index = 0; index < envelope.records.length; index++) {
         if ((index & 255) === 0) { context.signal.throwIfAborted(); await context.slice(); }

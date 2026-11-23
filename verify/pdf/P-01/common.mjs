@@ -22,7 +22,7 @@ export function argumentsOf(argv, allowed, required = []) {
 }
 export function portNumber(value = '6384') {
     const port = Number(value);
-    if (!Number.isInteger(port) || port < 1024 || port > 65535 || [5173, 5199].includes(port)) throw new Error('Use an explicitly assigned private port');
+    if (!Number.isInteger(port) || port < 1024 || port > 65535 || port === 5173) throw new Error('Use a free port you chose (1024–65535), not Vite\'s default 5173');
     return port;
 }
 export async function toolbox(directory) {

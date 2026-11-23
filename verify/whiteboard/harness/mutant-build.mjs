@@ -1,11 +1,10 @@
-// Source logic mutants are real production builds, prepared BEFORE a browser grant.
+// Source logic mutants are real production builds, prepared BEFORE any browser run starts.
 import fs from 'node:fs/promises';
 import { constants } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-const LOCK = '/Users/adham/Developer/bme-impl/scratch/bin/bme-lock';
 const modulePath = fileURLToPath(import.meta.url);
 const sha = value => createHash('sha256').update(value).digest('hex');
 const inside = (parent, child) => child === parent || child.startsWith(parent + path.sep);
@@ -17,7 +16,7 @@ const cleanEnv = () => {
 const command = (file, args, options = {}) => new Promise((done, reject) => {
   const child = spawn(file, args, { stdio: 'inherit', env: cleanEnv(), ...options });
   child.on('error', reject);
-  child.on('exit', code => code === 0 ? done() : reject(Error(`${file} exited ${code}; build before acquiring a run grant`)));
+  child.on('exit', code => code === 0 ? done() : reject(Error(`${file} exited ${code}`)));
 });
 
 export async function buildMutant({ sourceTree, sourceCommit, scratchRoot, name, patch = '', identity = {}, markerSpecs = [], receiptName = 'mutant-build.json' }) {
@@ -30,9 +29,9 @@ export async function buildMutant({ sourceTree, sourceCommit, scratchRoot, name,
   const directory = await fs.mkdtemp(path.join(root, `${name}-`));
   const jobPath = path.join(directory, 'job.json');
   await fs.writeFile(jobPath, JSON.stringify({ source, sourceCommit, directory, patch, identity, markerSpecs, receiptName }));
-  // The lock covers the archive, independent dependency copy and Vite. Calling
-  // this from inside a run grant is deliberately refused by the shared lock.
-  await command(LOCK, ['build', '--', process.execPath, modulePath, '--job', jobPath]);
+  // The archive, independent dependency copy and Vite build run in their own process, so a
+  // failed build leaves only its scratch directory and never the caller's state.
+  await command(process.execPath, [modulePath, '--job', jobPath]);
   return JSON.parse(await fs.readFile(path.join(directory, 'manifest.json'), 'utf8'));
 }
 

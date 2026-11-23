@@ -26,6 +26,7 @@ import type { NodeId } from '../model/ids';
 import type { AttachmentRequest } from './attachments';
 import type { Attachment } from '../model/nodes';
 import type { Op } from '../change/ops';
+import { isCancellation } from '../../platform/workers/envelope';
 
 export type ShapeHandleHit = Readonly<{ kind: 'connector-end'; terminal: 'start' | 'end' }>
     | Readonly<{ kind: 'connector-control'; control: ConnectorControl }>
@@ -258,7 +259,7 @@ export function createShapeHandles(options: ShapeHandleOptions) {
                     catch (error) { options.cancelCommit(); throw error; }
                 } finally { preview.release(); }
             })().catch(error => {
-                if (!request.signal.aborted && !(error instanceof DOMException && error.name === 'AbortError')) options.error(error);
+                if (!request.signal.aborted && !isCancellation(error)) options.error(error);
             }).finally(() => {
                 if (controlPending === request) controlPending = undefined;
                 try { options.clear(); } finally { try { unregister?.(); } finally { release(); } }

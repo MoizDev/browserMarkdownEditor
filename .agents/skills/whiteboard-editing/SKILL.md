@@ -52,9 +52,28 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   single-use tool when the tool lock is on (`Q`, Preferences, the padlock over the bar) or `keepToolOnce` was armed.
   Escape returns the chosen tool to Select (`ToolState.escape`). Tool choice is session UI state, never history.
 - A tool whose work lands after pointer-up returns to Select itself (`completesTool` in `input/pointerRouter.ts`).
+- **A released gesture lands; it is not pending work.** After pointer-up an erase or a box keeps a `settling` session hold
+  (`session.beginGesture('settling')`, and so does the preview's commit hold) and registers with `registerSettling`, not
+  `registerPending`: the next press is admitted (`claimInput` reads `isInputGestureActive`), Escape/Delete/tool keys wait for it
+  (`attach.ts` queues them with `enqueueAfterGesture`), only the view's end or — for an erase — an undo cancels it, and a
+  revision that moves meanwhile is prepared again, not abandoned. A new gesture that reads the selection waits for `settled()`.
+  The creation tools (figure, frame, connector, polyline, text/sticky placement) follow the same rule: released shapes land
+  in the order drawn (`creationTurn`), each prepared again on a moved revision (`CreationGesture.rebase`); an undo while
+  work settles cancels only the latest undoable one; an arrow key waits behind settling work, then nudges or pans.
 - **One gesture owner at a time** (`input/router.ts`, `InputRouter`): tools receive normalised `RealSample`s only,
   stamped with an `InputToken` (vault epoch, tab, session and view generations). A replaced view cannot finish its
   successor's contact; check the token before acting on anything async.
+- The ink curve is ONE function, `ink/curve.ts` `writeCurveSpan`: every freehand span is a tangent-continuous cubic
+  through its samples (a turn of 120°+ is a corner; `'straight'` runs stay straight), whatever the stroke's saved
+  `fairTol` (validated, never a limit). Wet, dry, both backends, picking, export and omission all read it; a span
+  depends on samples i−1…i+2, so the wet tail is replaceable (`finalizedSpanCount`). Anything that bounds a stroke
+  without building cubics uses the curve enclosure (`ink/reach.ts`, `SampleSummary.curveBounds`), never the sample box.
+  A `closed` stroke's caller passes `curveClosure(points, node.closed)` (its last span arrives along its first).
+  LIVE pointer samples are first moved within their pointer-grid cell (`ink/dequantize.ts`, a provisional wet tail);
+  replayed, imported or agent samples never are.
+- A superseded hover pick, a marquee the person ended, any async step a newer one replaced: its rejection is never
+  shown. Report only `!isCancellation(error) && !signal.aborted` (`platform/workers/envelope.ts`; it covers the worker
+  host's own `'Cancelled'`, which a DOM-`AbortError`-only check showed as "bme-worker-host-v1: Request aborted").
 - Draw and highlight: `input/liveInk.ts` (wet curve), `sessionInk.ts`, `continueInk*.ts` (Shift-click continues the
   last stroke), `straightInk.ts` (Shift: a straight run whose direction snaps to 15°; Cmd/Ctrl turns the snap off);
   delegated ink (`delegatedInk.ts`) uses the browser's ink presenter when present. Cmd/Ctrl held over Draw or
@@ -68,8 +87,8 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   pen click only selects the tool on release; a finger's press selects it at once (touch-start). Bar buttons carry
   `touch-action: none` (`chrome.css`), else the browser pans and cancels the finger drag. In pen mode a finger drag
   off the bar creates nothing (`attach.ts` resolve gate); the tap still selects.
-- Select (`tools/select.ts`, `input/selectGesture.ts`, `viewer/selectServices.ts`): click, marquee (`isWrapMode`
-  makes Cmd/Ctrl the full-containment key), Alt-drag scribble; both select live and Escape restores the start
+- Select (`tools/select.ts`, `input/selectGesture.ts`, `viewer/selectServices.ts`): click, marquee (the accelerator,
+  ⌘ on macOS and Ctrl elsewhere, inverts `isWrapMode` full containment; a mac Ctrl press is a right click), Alt-drag scribble; both select live and Escape restores the start
   selection. Handles: `viewer/selectionHandles.ts`, `shapeHandles.ts`, `stickyHandles.ts`; a coarse pointer draws
   them larger (`viewer/pointerKind.ts`).
 - Creation: `viewer/creationTools.ts` (`boardCreationTool`: figure, text, sticky, frame, connector, polyline) and the
@@ -173,7 +192,8 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
 - The minimap is `components/whiteboard/NativeMinimap.tsx`; its open state is `boardPreferences.minimapOpen`.
 - Context menus are the app's own (`openBoardContextMenu.ts`, `nativeBoardContextMenu.ts`; `app-context-menu`).
   Dialogs and notices are the app's own UI; no native confirm/alert/prompt/tooltip. A board's notices (the render
-  notices included) show in its own `.board-viewer-notice` box with Dismiss, in viewing and editing alike: a bare
+  notices included) show together in its own `.board-viewer-notice` box, each with Dismiss, newest last (`useBoardNotices`,
+  `BoardNoticeStack`): a new notice never replaces one, and only Dismiss counts as dismissing. In viewing and editing alike, a bare
   `role="status"` element with no place in the layout is in the DOM and nowhere on screen.
 - Board preferences persist in `localStorage['bme.whiteboard.preferences']` (`utils/boardPreferences.ts`).
 - Copy/cut/paste are listened on the board surface (`useNativeClipboard.ts`); paste classifies native records,

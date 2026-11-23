@@ -10,6 +10,7 @@ import { chromium } from 'playwright';
 import { loadIdentityToolbox } from '../lib/identityToolbox.mjs';
 import { pdfFixtureManifest, readPdfFixture } from '../lib/fixtures.mjs';
 import { analysisVersion, summarizeTrace, summarizeCosts } from '../lib/textCostTrace.mjs';
+import { pinnedChrome } from '../../lib/paths.mjs';
 
 const options = {};
 for (let i = 2; i < process.argv.length; i += 2) {
@@ -17,7 +18,7 @@ for (let i = 2; i < process.argv.length; i += 2) {
     if (!process.argv[i]?.startsWith('--') || !['fixed-root', 'fixed-dist', 'omit-root', 'omit-dist', 'book', 'dense', 'out', 'chrome', 'sessions', 'phase', 'port'].includes(key) || value === undefined || key in options) throw new Error('Unknown, repeated or missing option');
     options[key] = value;
 }
-for (const key of ['fixed-root', 'fixed-dist', 'omit-root', 'omit-dist', 'book', 'dense', 'out', 'chrome']) if (!options[key]) throw new Error(`Missing --${key}`);
+for (const key of ['fixed-root', 'fixed-dist', 'omit-root', 'omit-dist', 'book', 'dense', 'out']) if (!options[key]) throw new Error(`Missing --${key}`);
 const phase = options.phase ?? 'advisory', sessions = Number(options.sessions ?? 2), port = Number(options.port ?? 6484);
 if (!['advisory', 'calibration', 'window'].includes(phase) || !Number.isInteger(sessions) || sessions < 2 || sessions > 40 || sessions % 2 || !Number.isInteger(port) || port < 6000 || port > 6799) throw new Error('Invalid phase, even sessions/arm (2–40), or allocated run port');
 const driver = createRequire(import.meta.url)('playwright/package.json').version;
@@ -53,7 +54,7 @@ const environment = () => {
     return { load1: loadavg()[0], freeBytes: freemem(), swapIns, power: execFileSync('pmset', ['-g', 'batt'], { encoding: 'utf8' }).trim() };
 };
 try {
-    browser = await chromium.launch({ headless: true, executablePath: options.chrome, args: ['--host-resolver-rules=MAP fonts.googleapis.com ~NOTFOUND, MAP fonts.gstatic.com ~NOTFOUND'] });
+    browser = await chromium.launch({ headless: true, executablePath: options.chrome ?? await pinnedChrome(), args: ['--host-resolver-rules=MAP fonts.googleapis.com ~NOTFOUND, MAP fonts.gstatic.com ~NOTFOUND'] });
     if (browser.version() !== '157.0.8103.39') throw new Error('Wrong Chrome');
     report.browser = browser.version();
     // ABBA blocks balance browser/OS cache history. Every session has a fresh

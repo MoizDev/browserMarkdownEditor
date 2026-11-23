@@ -71,6 +71,10 @@ export interface StagedWriterResult {
 }
 
 /** Each save gets a separate mutable writer session; a session id is not a native pointer. */
+/** Why the writer would not turn a PDF's pages; App words each one for the person. */
+export type RotationRefusal = 'signed' | 'encrypted' | 'annotated' | 'notebook-source' | 'missing-attachment' | 'unsafe-policy'
+    | 'unsupported-format' | 'unsupported-rotation';
+
 export interface WriterOperations {
     'writer.prepareSource': {
         args: { source: WriterSource };
@@ -106,13 +110,16 @@ export interface WriterOperations {
         args: { bytes: ArrayBuffer; notebookSource: { path: string } };
         result: { bytes: ArrayBuffer; sha256: string; path: string; geometries: PageGeometry[] };
     };
+    /** Plans an incremental /Rotate update (rotationUpdate.ts): the appendix to write after `base` source bytes. */
     'writer.rotate': {
-        args: { source: WriterSource; delta: number; pageIndices?: number[] };
-        result: { bytes: ArrayBuffer; sourceFingerprint: string; geometries: PageGeometry[] };
+        args: { source: Blob; turns: { all: number; pages: Array<[number, number]> } };
+        result: { kind: 'refused'; cause: RotationRefusal } | { kind: 'unchanged' }
+            | { kind: 'update'; appendix: ArrayBuffer; base: number; pageCount: number; before: number[]; rotations: number[] };
     };
+    /** A fresh writer proves `bytes` (the source's first `base` bytes plus the appendix) before App writes it. */
     'writer.verifyRotation': {
-        args: { source: WriterSource; delta: number; pageIndices?: number[]; bytes: ArrayBuffer; expected: PageGeometry[] };
-        result: { bytes: ArrayBuffer; sourceFingerprint: string; outputSha: string; geometries: PageGeometry[] };
+        args: { source: Blob; bytes: ArrayBuffer; base: number; rotations: number[] };
+        result: { bytes: ArrayBuffer; pageCount: number };
     };
     'writer.inspect': {
         args: { source: WriterSource; includeAttachments: boolean; signaturePolicy: 'refuse' | 'inspect' };

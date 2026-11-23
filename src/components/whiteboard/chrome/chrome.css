@@ -116,7 +116,7 @@
 }
 
 /* The top bar sits flush in the pane's corner. The overlay is inset 8px for its floating bars, so the header
-   takes that inset back; the page controls and the pen panel still start from the overlay's edge. */
+   takes that inset back; the page controls and the style panel still start from the overlay's edge. */
 .board-chrome-header {
     display: flex;
     align-self: flex-start;

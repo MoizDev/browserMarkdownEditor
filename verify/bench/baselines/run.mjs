@@ -53,7 +53,7 @@ export async function runBaseline({ preparedPath, scenario, temperature = 'cold'
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
     const [preparedPath, scenario, temperature = 'cold', buildMode = 'benchmark', field = 'readableMs'] = process.argv.slice(2);
-    if (!preparedPath) throw new Error('Usage: bme-lock run -- node verify/bench/baselines/run.mjs <prepared.json> <scenario> [cold|warm] [production|benchmark|compare] [startup-field]');
+    if (!preparedPath) throw new Error('Usage: node verify/bench/baselines/run.mjs <prepared.json> <scenario> [cold|warm] [production|benchmark|compare] [startup-field]');
     const result = await runBaseline({ preparedPath, scenario, temperature, buildMode, field });
     console.log(JSON.stringify({ label: 'UNQUALIFIED — NOT A BASELINE', scenario, temperature, buildMode,
         status: result.status, reportPath: result.reportPath }, null, 4));

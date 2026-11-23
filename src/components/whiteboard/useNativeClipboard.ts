@@ -30,6 +30,7 @@ import { createPictureCropStore, type PictureCropStore } from './pictureCropStor
 import { worldToLocal } from '../../whiteboard/change/coordinates';
 import { isLocked } from '../../whiteboard/change/commands';
 import type { NodeId } from '../../whiteboard/model/ids';
+import { isCancellation } from '../../platform/workers/envelope';
 
 interface ViewBinding {
     readonly controller: ReturnType<typeof createNativeClipboardController>;
@@ -90,7 +91,7 @@ export function documentClipboard(runtime: BoardRuntime, host: NativeCanvasHost,
         release(value) { cache.release(value); live -= value.bytes; },
     };
     const report = (message: string) => { const target = active ?? bindings.values().next().value; target?.notice(message); };
-    const fail = (error: unknown) => { if (!(error instanceof DOMException && error.name === 'AbortError')) report(error instanceof Error ? error.message : String(error)); };
+    const fail = (error: unknown) => { if (!isCancellation(error)) report(error instanceof Error ? error.message : String(error)); };
     const preferenceLifetime = new AbortController();
     const preferences = new BoardPreferenceState(readBoardViewFlags(runtime.session.doc.view), flags => {
         if (!current() || runtime.session.isReadOnly) throw new Error(runtime.session.readOnlyReason ?? 'Board is read-only');

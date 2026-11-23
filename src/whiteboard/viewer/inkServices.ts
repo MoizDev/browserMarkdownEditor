@@ -51,7 +51,7 @@ export function createBoardInkServices(options: BoardInkServicesOptions): Pick<B
             const captureDeviceScale = camera.camera.z * camera.viewport.dpr;
             const declaredMaxScale = Math.max(8, camera.camera.z * 8);
             return {
-                sheet, page, color, width, captureDeviceScale, declaredMaxScale,
+                sheet, page, color, width, captureDeviceScale, declaredMaxScale, inputPixelWorld: 1 / camera.camera.z,
                 rememberStroke: id => runtime.tools.rememberStroke(id),
                 nextSequence: () => runtime.tools.nextInkSequence(),
                 admit: builder => samples.commit(builder),
@@ -64,8 +64,9 @@ export function createBoardInkServices(options: BoardInkServicesOptions): Pick<B
                 planStroke(node, summary) {
                     if (session.doc.host.kind !== 'notebook' || !summary) return [];
                     // Use only the sealed real-sample prefix, so a page grows only for sealed ink.
-                    const [, y, , height] = summary.localBounds;
-                    const deepest = offset.y + node.y + y + height + node.width + node.fairTol;
+                    // The curve's enclosure, not the sample box: a smooth stroke bulges past its lowest sample.
+                    const [, y, , height] = summary.curveBounds;
+                    const deepest = offset.y + node.y + y + height + node.width;
                     const growth = notebookGrowthOp(session.doc, deepest);
                     return growth ? [growth] : [];
                 },

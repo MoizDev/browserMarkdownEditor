@@ -10,9 +10,10 @@ import { opaqueFrameEpub } from '../lib/epubFixture.mjs';
 import { bindServedBodies } from '../lib/identity.mjs';
 import { createReport } from '../lib/report.mjs';
 import { fontsReady } from '../lib/input.mjs';
+import { scratchDir } from '../lib/paths.mjs';
 
 const options = { root: resolve(process.env.BME_ROOT ?? '.'),
-    scratch: resolve(process.env.BME_SCRATCH ?? '/Users/adham/Developer/bme-impl/scratch/v-a-targets'),
+    scratch: resolve(process.env.BME_SCRATCH ?? scratchDir('worker-targets-smoke')),
     port: Number(process.env.BME_PORT ?? 6165), mode: process.env.BME_MODE ?? 'production' };
 const debuggingPort = Number(process.env.BME_DEBUG_PORT ?? 6166);
 const vaultName = 'Worker Counter Vault';

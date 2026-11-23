@@ -209,6 +209,13 @@ export function startPdfWorker(binding: PdfWorkerBinding): () => void {
                 try { const doc = backend.open(source, { password: args.password as string | undefined }); docs.set(args.docKey, { doc, source, sourceBlob: args.source, raw: new Map(), geometry: new Map(), loaded: new Map(), password: args.password as string | undefined, needsReopen: false }); return doc.info(); }
                 catch (error) { source.close(); throw error; }
             }),
+            'doc.adoptSource': serial(value => {
+                const args = record(value);
+                if (typeof args.docKey !== 'string' || !(args.source instanceof Blob) || args.source instanceof File || args.source.size !== args.size) throw bad('RangeError', 'Invalid PDF source copy');
+                const item = docs.get(args.docKey);
+                if (item && item.sourceBlob.size === args.source.size) { item.source.adopt(args.source); item.sourceBlob = args.source; }
+                return {};
+            }),
             'doc.close': serial(value => { const args = record(value); if (typeof args.docKey !== 'string') throw bad('RangeError', 'Invalid PDF document key');
                 fontProfiles.delete(args.docKey);
                 const item = docs.get(args.docKey); if (item) { docs.delete(args.docKey); dropInspection(args.docKey); item.clone?.close(); item.doc.close(); item.source.close(); } return {}; }),

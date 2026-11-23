@@ -301,7 +301,7 @@ export default function App() {
   const {
     handleUnsignedPdfCopy, preparePdfPrint, rotatePdf, preparePdfDeparture, canLeavePdfVault
   } = usePdfActions({
-    getVaultActivation, readFileBytes, readFileSnapshot, readBytesVersioned, writeDistinctCopy, ask,
+    getVaultActivation, readFileSnapshot, readBytesVersioned, writeDistinctCopy, ask,
     tell, notifyRef, rootHandleRef, currentVaultIdRef, readerEpochRef, tabsRef, activeTabPathRef,
     documentBuffers, documentSessions, setTabs, nativePoliciesRef, bytesGenerationsRef,
     bumpBytesGeneration, flushingRef, flushTab, flushChainsRef, writeFileVersionedRef, diskStateRef,
@@ -385,7 +385,7 @@ export default function App() {
   });
 
   const {
-    hasUnsaved, reloadFromDisk
+    hasUnsaved, reloadFromDisk, checkOpenDocs
   } = useOutsideChanges({
     rootHandleRef, tabsRef, setTabs, setDiskState, documentBuffers, documentSessions, markdownSessions,
     invalidReaderTokens, saveTimersRef, flushingRef, diskStateRef, pdfRebuildRef, bytesGenerationsRef,
@@ -447,7 +447,7 @@ export default function App() {
   } = useReaderIntegration({
     readFileSnapshot, currentVaultIdRef, readerEpochRef, notify, announce, tabsRef, setTabs, layoutRef,
     setLayout, activeTabPathRef, invalidReaderTokens, readerIdentityCache, diskStateRef, pdfRebuildRef,
-    setDiskState, closeTab, reopenClosedTab
+    setDiskState, closeTab, reopenClosedTab, checkOpenDocs
   });
 
   useGlobalShortcuts({

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { args, launch, openFile, activePath, backlinks, graph, saveText, reload } from './browser.mjs';
+import { scratchDir } from '../../lib/paths.mjs';
 
 const files = {
     'source.md': '# Source\n\n[[Note]]\n',
@@ -11,7 +12,7 @@ const files = {
     'Unique.md': '# UNIQUE NOTE\n',
     '.appearance.json': JSON.stringify({ version: 2, entries: {}, icons: {}, order: { '': ['z', 'a', 'source.md', 'Unique.md', 'unique-source.md'] } }),
 };
-const out = args.out ?? '/Users/adham/Developer/bme-impl/scratch/c-e/C-11-D08';
+const out = args.out ?? scratchDir('C-11-D08');
 const probe = args['resolver-probe'] === 'last';
 const initialPath = probe ? 'z/Note.md' : 'a/Note.md';
 const initialMarker = probe ? 'LAST NOTE' : 'FIRST NOTE';

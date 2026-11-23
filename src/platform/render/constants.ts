@@ -87,6 +87,10 @@ export const RENDER_CONSTANTS: RenderConstants = Object.freeze({
     // The cool window after the governor made the room itself (it trimmed what no frame draws): the rest is already there, and the
     // full window held a WebGL2 PDF at 0.8, its editing cover up, for 5 s after every such step (t21: back to 1 within 3 s).
     memoryMadeRoomRecoveryDelayMs: 1000,
+    // A memory notice describes a state the person can see, so it waits until that state has lasted. Measured on a 40-page PDF at
+    // DPR 2: the CPU floor moved with tile alignment as the view scrolled, a few KB either side of the grant, and announced at once
+    // the notice was raised 10-16 times per run; on a board, a notice shown at once stayed 16 ms (one soft zoom frame).
+    memoryNoticeDelayMs: 1000,
     qualityStepSettleMs: 300,
     // A real trouble at a level (a device limit, an allocation refusal) re-fires whenever the level is retried at once, a raise/drop
     // cycle every ~5 s. The back-off spaces the retries 5, 10, 20, 40, 60 s and forgets them once the level holds 30 s. Measured with

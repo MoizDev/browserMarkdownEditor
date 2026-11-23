@@ -10,6 +10,9 @@ import type { Box } from '../geom/bounds';
 
 export interface StrokeSummary {
     readonly minX: number; readonly minY: number; readonly maxX: number; readonly maxY: number;
+    // The freehand curve's enclosure and its farthest control reach (model/samples.ts SampleSummary).
+    readonly curve: readonly [minX: number, minY: number, maxX: number, maxY: number];
+    readonly maxReach: number;
     readonly maxPressure: number | null;
 }
 export interface LocalGeometryBounds {
@@ -33,8 +36,8 @@ export function placement(out: Float64Array, offset: number, node: Readonly<Node
 // R-W38/39: cold b is WORLD space (PAGE-LOCAL for a paged root AND descendants), never
 // transformed by the node chain twice. Only layout-dependent kinds use that temporary cache;
 // an offscreen-capable idle layout pass must replace it, so a stale finite b cannot hide a node.
-// Strokes NEVER trust b: min/max + pressure from full reader inspection bound the surviving
-// samples and all bounded local controls without decoding. New strokes supply their geometry.
+// Strokes NEVER trust b: the curve box + pressure from full reader inspection bound the surviving
+// samples and every control of the curve through them without decoding. New strokes supply their geometry.
 export function localBounds(node: Readonly<Node>, provider: BoundsProvider, out: Float64Array,
     dotMetric: DotMetric = DOT_METRIC_PROVISIONAL): BoundsQuality {
     const exact = provider.local(node);
@@ -50,7 +53,18 @@ export function localBounds(node: Readonly<Node>, provider: BoundsProvider, out:
             if (!s) return BoundsQuality.Pending;
             if (!Number.isFinite(s.minX) || !Number.isFinite(s.minY) || !Number.isFinite(s.maxX) || !Number.isFinite(s.maxY)
                 || s.maxX < s.minX || s.maxY < s.minY) throw new RangeError('Invalid inspected stroke bounds');
-            const ax = node.sx * s.minX, bx = node.sx * s.maxX, ay = node.sy * s.minY, by = node.sy * s.maxY;
+            const [cx0, cy0, cx1, cy1] = s.curve;
+            if (![cx0, cy0, cx1, cy1, s.maxReach].every(Number.isFinite) || cx0 > s.minX || cy0 > s.minY
+                || cx1 < s.maxX || cy1 < s.maxY || s.maxReach < 0) throw new RangeError('Invalid inspected stroke curve bounds');
+            // The curve is built from the REALIZED samples (sx, sy applied), where each control lies
+            // within a third of its realized chord of its sample, and a realized chord is at most
+            // k = max(|sx|, |sy|) times the stored one. On the x axis a control is therefore within
+            // |sx|·reach + (k − |sx|)·reach of sx·x, and the scaled curve box already holds |sx|·reach:
+            // the stroke's curve lies in that box grown by (k − |s|)·maxReach per axis (0 when uniform).
+            const k = Math.max(Math.abs(node.sx), Math.abs(node.sy));
+            const extraX = (k - Math.abs(node.sx)) * s.maxReach, extraY = (k - Math.abs(node.sy)) * s.maxReach;
+            const ax = node.sx * cx0, bx = node.sx * cx1, ay = node.sy * cy0, by = node.sy * cy1;
+            const dot = s.minX === s.maxX && s.minY === s.maxY;
             let radius = node.width / 2;
             if (node.widthModel.id === 'pressure-linear-v1') {
                 const pressure = s.maxPressure ?? 16; // Domain enclosure, never a guessed pen signal.
@@ -58,10 +72,10 @@ export function localBounds(node: Readonly<Node>, provider: BoundsProvider, out:
                 const atMaximum = node.widthModel.rMin + (node.widthModel.rMax - node.widthModel.rMin) * pressure;
                 radius = Math.max(node.widthModel.rMin, atMaximum);
             }
-            if (ax === bx && ay === by) radius = dotMetric.radius(node.width, radius, node.widthModel);
-            const outset = radius + node.fairTol;
-            if (!Number.isFinite(outset) || outset < 0) throw new RangeError('Stroke bound radius overflows');
-            writeBox(out, 0, Math.min(ax, bx) - outset, Math.min(ay, by) - outset, Math.max(ax, bx) + outset, Math.max(ay, by) + outset);
+            if (dot) radius = dotMetric.radius(node.width, radius, node.widthModel);
+            const outsetX = radius + extraX, outsetY = radius + extraY;
+            if (!Number.isFinite(outsetX) || !Number.isFinite(outsetY) || outsetX < 0 || outsetY < 0) throw new RangeError('Stroke bound radius overflows');
+            writeBox(out, 0, Math.min(ax, bx) - outsetX, Math.min(ay, by) - outsetY, Math.max(ax, bx) + outsetX, Math.max(ay, by) + outsetY);
             return BoundsQuality.Conservative;
         }
         case 'figure': {

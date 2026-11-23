@@ -3,7 +3,7 @@
 ## Result and provenance
 
 Captured GEN-08 and GEN-11 through the **unchanged P-00 capture script**, each at DPR 1 and 2,
-from the same pre-Part-A production app as P-00a. Both complete runs exited 0 (hc t2jj); their
+from the same pre-Part-A production app as P-00a. Both complete runs exited 0; their
 4-case `functional.json` files are **byte-identical**, SHA-256
 `365fc90b097376e170be0ad669debe8eeb81cd28b858b63b4988851f52e401c9`.
 
@@ -18,7 +18,7 @@ from the same pre-Part-A production app as P-00a. Both complete runs exited 0 (h
   The parent's `9c19a5a6…` identity is GEN-11's **PDF SHA**, not a Git commit.
 
 The generator inputs are frozen locally at `9672efc`. With Node26.0.0/zlib1.2.12 and seed1346651697,
-two fresh generations (`W/scratch/p-a/p00b-corpus-a`, `p00b-corpus-b`) produced identical PDF and
+two fresh generations (`<run scratch>/p00b-corpus-a`, `p00b-corpus-b`) produced identical PDF and
 oracle JSON bytes. Their four manifest entries were imported from p-f's manifest; no unrelated P-11
 fixture entries were imported.
 
@@ -83,7 +83,7 @@ Both image-hash manifests are retained, not retried until a chosen image happene
 - `../baselines/P-00b-landmarks-b.json`:
   `3ae57148f82fd16a0dfae0f4a80b593b23d9fc6808b75c2f0f9bba18775e258b`.
 
-PNG bytes stay in `W/scratch/p-a/p00b-capture-{1,2}`. This is **not** a pixel-exact screenshot or
+PNG bytes stay in `<run scratch>/p00b-capture-{1,2}`. This is **not** a pixel-exact screenshot or
 hardware-GPU acceptance claim; the difference is explicitly handed to p-lead with this report.
 
 ## Replay and checks
@@ -97,9 +97,9 @@ node verify/fixtures/pdf/generators/type3-tagged-text.mjs --out "$CORPUS" --seed
 # --only rtl-cjk-unicode,type3-tagged-text
 ```
 
-Completed local pair: `sh W/scratch/p-a/capture-b.sh a 1` and `... b 2`, each under `bme-lock run`
-(weight1), with the static server owned/closed by that run. `typecheck` and `lint` both passed after
-the fixture import and domain merge (hc t2jk). No p-a listener remained on6380–6399. The runner's
+Completed local pair: the capture above for corpus a at DPR 1 and corpus b at DPR 2, with the static
+server owned/closed by each run. `typecheck` and `lint` both passed after the fixture import and
+domain merge. No listener remained on the run's ports. The runner's
 unchanged whole-PdfPane-boot-fault prerequisite control is documented by P-00a; no new product
 logic mutant or semantic acceptance gate is claimed by this data-only capture.
 

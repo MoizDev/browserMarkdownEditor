@@ -93,17 +93,17 @@ patch is shipped product code.
 
 ## Commands and current evidence status
 
-`W=/Users/adham/Developer/bme-impl`, `L=$W/scratch/bin/bme-lock`.
-Build through L with scratch config `W/scratch/c-e/c11-vite.config.mjs`; root is
-this lane, cache/output stay in scratch. Serve only immediately before a run:
-`L serve -- ./node_modules/.bin/vite preview --config <cfg> --outDir <output>
+`W/scratch/…` below is the scratch folder the recorded run used. Build with a scratch
+config whose root is this worktree and whose cache/output stay outside it. Serve only
+immediately before a run: `./node_modules/.bin/vite preview --config <cfg> --outDir <output>
 --port 6364 --strictPort`. Stop the preview as soon as the run ends.
 
-From the lane, the same invocation is used on clean and matching mutant outputs:
+From the worktree, the same invocation is used on clean and matching mutant outputs
+(`--out` defaults to `C-11-D07`/`C-11-D08` under the toolbox scratch folder):
 
 ```sh
-L run -- node verify/core/C-11/d07.mjs --url=http://localhost:6364/ --out=<report-dir>
-L run -- node verify/core/C-11/d08.mjs --url=http://localhost:6364/ --out=<report-dir>
+node verify/core/C-11/d07.mjs --url=http://localhost:6364/ --out=<report-dir>
+node verify/core/C-11/d08.mjs --url=http://localhost:6364/ --out=<report-dir>
 ```
 
 D07 candidate PASS cold/save/reload: `W/scratch/c-e/C-11-D07-after/report.json`.

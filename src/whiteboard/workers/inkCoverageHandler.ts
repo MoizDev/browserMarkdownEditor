@@ -39,7 +39,9 @@ export async function inkCoverage(payload: unknown, context: WorkerContext): Pro
     for (const buffer of inputBuffers) inputBytes += buffer.byteLength;
     reportBoardMemory(context, owner, inputBytes);
     try {
-        const geometry = materializeCurveRange(sequence, range, parameters);
+        const closure = options.closure ?? null;
+        if (closure && ![closure.beforeX, closure.beforeY, closure.afterX, closure.afterY].every(Number.isFinite)) throw new TypeError('Invalid ink closure');
+        const geometry = materializeCurveRange(sequence, range, parameters, closure);
         const job = new InkCoverageJob(sequence, geometry, style, { ...options, dotMetric: DOT_METRIC_PROVISIONAL });
         reportBoardMemory(context, owner, inputBytes + job.byteLength);
         try {

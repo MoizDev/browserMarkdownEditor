@@ -1,4 +1,4 @@
-// Build preparation only: no browser and no baseline numbers. Invoke with bme-lock build.
+// Build preparation only: no browser and no baseline numbers. Never run it during a timed run.
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
@@ -6,15 +6,15 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { buildIdentity } from '../../lib/identity.mjs';
-import { lockState, scratch } from '../../lib/bench/lock.mjs';
+import { scratch } from '../../lib/bench/lock.mjs';
+import { requiredInput } from '../../lib/paths.mjs';
 import { invocations, SEED } from '../../fixtures/catalog.mjs';
 const exec = promisify(execFile);
-const [referenceArg = '/Users/adham/Developer/bme-impl/wt/v-c-reference', reuseArg] = process.argv.slice(2);
+const [referenceArg, reuseArg] = process.argv.slice(2);
 const reuse = reuseArg ? JSON.parse(await readFile(resolve(reuseArg), 'utf8')) : null;
-const reference = resolve(referenceArg);
+// The frozen reference is a separate, clean checkout of the commit to compare against.
+const reference = requiredInput('BME_REFERENCE_WORKTREE', 'a clean checkout of the frozen reference commit (or pass its path as the first argument)', referenceArg ?? process.env.BME_REFERENCE_WORKTREE);
 const root = fileURLToPath(new URL('../../../', import.meta.url));
-const state = await lockState();
-if (!state.holders.some(h => h.cls === 'build' && h.pid === process.ppid)) throw new Error('Direct bme-lock build parent required');
 const git = async (...args) => (await exec('git', args, { cwd: reference })).stdout.trim();
 const commit = await git('rev-parse', 'HEAD');
 if (reuse ? commit !== reuse.referenceCommit : commit !== await git('rev-parse', 'impl/reference')) throw new Error('Reference checkout differs from the selected frozen reference; update its detached HEAD first');

@@ -93,7 +93,8 @@ export async function importLegacy<T>(text: string, options: LegacyImportOptions
                 if (raw && Object.keys(paper).some(key => Object.hasOwn(raw, key)
                     && raw[key] !== paper[key as keyof NotebookPaper])) report.repair(null, 'Notebook paper settings normalized');
                 if (raw) for (const key of Object.keys(raw)) {
-                    if (!Object.hasOwn(paper, key)) report.refuse(null, `Unknown notebook paper field ${key}`);
+                    // The raw paper object is kept whole in the converted file (legacyEnvelope).
+                    if (!Object.hasOwn(paper, key)) report.repair(null, `Unknown notebook paper field ${key} preserved`);
                 }
                 host = { ...host, paper };
             }
@@ -126,7 +127,9 @@ export async function importLegacy<T>(text: string, options: LegacyImportOptions
     }
     const result = report.finish();
     let disposed = false;
-    return { source: text, board, media, report: result, readOnly: !board || result.unrepresentable.length > 0,
+    // Items that could not be represented are left out (each preserved as written) and the board still converts:
+    // one refused shape used to fail the user's whole board. Only a board that could not be made at all is read-only.
+    return { source: text, board, media, report: result, readOnly: !board,
         converted: false, savedView,
         dispose() {
             if (disposed) return;

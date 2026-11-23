@@ -1,19 +1,19 @@
 # First-font selection repair (P-11b)
 
 The pinned classic text layer resets its ascent-measuring canvas while retaining a cached 30px
-font entry. Source and real-app diagnosis: `scratch/p-f/P-11b-finding.md`; published newer-package
-comparison: `scratch/p-f/P-11b-options.md`. Product uses only public `TextLayer.update` and viewport
+font entry (diagnosed in the source and in the real app, and compared with the newer published
+package). Product uses only public `TextLayer.update` and viewport
 clone, after render completion; it neither replaces nodes nor substitutes selection/copy strings.
 Delete it when the classic pin reaches at least pdfjs-dist 6.4.299.
 
 ## Functional gate
 
 Generate `first-font-title` with `--out <fresh-dir> --seed 1346651697`; use the admitted GEN-18-876
-from P-00. Run through `bme-lock run` with a production preview started only for this run:
+from P-00. Run with a production preview started only for this run:
 
 ```sh
-BUILD_WORKTREE=<fixed-source> BUILD_DIST=<its-production-output> CHROME=<pinned-CfT> \
-  <bme-lock> run -- node verify/pdf/P-11b/title-selection.mjs \
+BUILD_WORKTREE=<fixed-source> BUILD_DIST=<its-production-output> \
+  node verify/pdf/P-11b/title-selection.mjs \
   http://localhost:6480 <book-corpus> <first-font-corpus> <fresh-results>
 ```
 
@@ -54,7 +54,6 @@ All unlocked results are **advisory**, not acceptance. Source traces remain immu
 synthetic samples; the initial advisory analyzer missed `v8.callFunction` and duplicated nested long
 tasks, so only `analysis-v2.json` superseding it is used. Its raw traces are unchanged.
 
-Formal timing belongs to v-c under `planning/60-implementation/amendments/timing-window-bound.md`:
-V-04 window-opening calibration, this metric's own same-build calibration, VM down, no other run
+Formal timing needs: V-04 window-opening calibration, this metric's own same-build calibration, VM down, no other run
 process, free≥6GiB, zero swap-ins, load1≤3, AC/lid/thermal checks. The runner itself never grants a
-performance pass. See `scratch/p-f/P-11b-v-c-queue.md` for the predeclared sessions and commands.
+performance pass.

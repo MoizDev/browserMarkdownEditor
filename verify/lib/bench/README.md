@@ -1,35 +1,38 @@
 # One benchmark method (V-04): note-input dispatch to visible text
 
 Plain Node ESM driving the real built app with Playwright, not a test runner. No app imports,
-paused targets, private statistics, or native picker claims. Follow the run's scratch HOWTO.
+paused targets, private statistics, or native picker claims. The pinned browser comes from
+`node verify/install-browser.mjs`; scratch is `BME_SCRATCH` (set it explicitly for bench work:
+every output must stay under it, outside the clone).
 
 ## Running the method witness
 
-First merge the domain branch and install the worktree's own pinned dependencies through
-`bme-lock build`. Build the ordinary production bundle through the same lock with a scratch
-Vite config (`outDir` and `cacheDir` outside the worktree). Never build in a timing window.
+Install the worktree's own pinned dependencies (`npm ci`) and build the ordinary production bundle
+with a scratch Vite config (`prepareApp` in `verify/lib/serve.mjs`: `outDir` and `cacheDir` outside
+the worktree). Never build during a timed run.
 
 ```sh
-W=/Users/adham/Developer/bme-impl
-L=$W/scratch/bin/bme-lock
-DIST=$W/scratch/v-c/dist
-# Development only:10+10 then20+20, all explicitly MACHINE SHARED, never accepted floors.
-"$L" run -- node verify/bench/floor-calibration.mjs "$DIST" 10 "$W/scratch/measure/note-open-exploratory-10.json" exploratory
-"$L" run -- node verify/bench/floor-calibration.mjs "$DIST" 20 "$W/scratch/measure/note-open-exploratory-20.json" exploratory
-# After those are reviewed, a scratch App.handleFileClick mutant is sized to10% of the NEW median.
+export BME_SCRATCH=/absolute/scratch
+DIST=$BME_SCRATCH/v-c/dist
+# Development only: 10+10 then 20+20, all explicitly MACHINE SHARED, never accepted floors.
+node verify/bench/floor-calibration.mjs "$DIST" 10 "$BME_SCRATCH/measure/note-open-exploratory-10.json" exploratory
+node verify/bench/floor-calibration.mjs "$DIST" 20 "$BME_SCRATCH/measure/note-open-exploratory-20.json" exploratory
+# After those are reviewed, a scratch App.handleFileClick mutant is sized to 10% of the NEW median.
 # The old pickDirectory wait is OUTSIDE this interval and cannot witness this metric.
-# Both bundles must be built through the build lock before a timing window.
+# Both bundles are built before the timed run starts.
 ```
 
-After lead review, request a window through vr-lead. Only the integrator opens/closes it.
-Budget cool-down, an opening20+20 block,80 sessions per comparison, and20% margin. The opening
-block must precede both arms; a first definition RECORDS its floor, never compares it with itself.
-During the same window run calibration, same-build, then mutant with the passing noise report:
+An accepted run needs a quiet machine for its whole length, which only you can promise: declare
+it with `BME_BENCH_WINDOW_MINUTES`. Budget cool-down, an opening 20+20 block, 80 sessions per
+comparison, and 20% margin. The opening block must precede both arms; a first definition RECORDS
+its floor, never compares it with itself. In the same window run calibration, same-build, then
+mutant with the passing noise report:
 
 ```sh
-"$L" bench -- node verify/bench/floor-calibration.mjs "$DIST" 20 "$W/scratch/measure/note-open-window-calibration.json" window
-"$L" bench -- node verify/bench/open-vault.mjs "$DIST" "$DIST" accepted cold
-"$L" bench -- node verify/bench/open-vault.mjs "$DIST" /absolute/mutant/dist accepted cold /absolute/noise/report.json
+export BME_BENCH_WINDOW_MINUTES=120
+node verify/bench/floor-calibration.mjs "$DIST" 20 "$BME_SCRATCH/measure/note-open-window-calibration.json" window
+node verify/bench/open-vault.mjs "$DIST" "$DIST" accepted cold
+node verify/bench/open-vault.mjs "$DIST" /absolute/mutant/dist accepted cold /absolute/noise/report.json
 ```
 
 The first must **pass**, the second must **fail its measured regression rule**, with no app,
@@ -67,17 +70,17 @@ this is not photon latency. Mutant marks are accepted only INSIDE this interval.
   `error.invalidCause`; an app/witness/identity failure MUST NOT. All close paths run in finally.
 - `browser.mjs` is the small, replaceable browser/toolbox adapter. It currently needs persistent
   profiles, which V-01a does not supply. It uses the shared browser pin, creates no counters and
-  serves already-built files itself under its parent's grant (6200/6201, strict bind). There are
-  no nested build/serve grants that could deadlock during a window. Adopt V-01a's seed/picker
+  serves already-built files itself (6200/6201, strict bind). Nothing is built or served by a
+  child process during a window. Adopt V-01a's seed/picker
   helpers when that prelude is merged; the statistical method does not depend on their shape.
   A rejecting loopback proxy blocks remote requests without Playwright routing, which would
   disable the HTTP cache and make the warm claim false. Cache-hit events are retained.
 - Generic host/session seam (same module): `servePreparedApp(dist,port,buildIdentity)` returns
   `{url,close}`; `openPreparedBrowser({profile,url,contextOptions})` returns
   `{context,browser,page,identity,benchProcessAssociations,close}`; `drainTrace(cdp,path)` drains
-  a ReturnAsStream trace. Caller holds run/bench, owns the scratch profile and its retention/deletion,
+  a ReturnAsStream trace. Caller holds the bench lock, owns the scratch profile and its retention/deletion,
   and closes both browser and server. Pin/proxy/headless/launch flags cannot be overridden. Other
-  scenario adapters may compose these without copying note setup or acquiring a nested grant.
+  scenario adapters may compose these without copying note setup or taking the lock twice.
 
 ## Inference and pass rules
 
@@ -123,22 +126,22 @@ once before measurement, so there is no cold-disk claim.
 
 ## Machine validity, locking and reports
 
-`bme-lock` is authoritative. Accepted mode requires an ancestor's bench grant, an unexpired
-integrator window, and no other live grant (even serve); exploratory mode needs a run grant.
-`locks/bench.lock` is only extra serialization, created with `wx`, with PID/holder/time/token.
-A dead PID is reported STALE, never automatically stolen (unlink/recreate races new holders).
-Explicit recovery: `node verify/bench/v-c.mjs reclaim <exact-token> <cause>` rechecks a dead PID
-and matching token, serializes reclaimers and logs time/PID/token/cause in
-`scratch/v-c/reports/lock-recoveries.jsonl`. A live PID/mismatched token is never removed.
-Every session checks ownership/window before and after.
+Accepted mode requires a declared, unexpired window (`BME_BENCH_WINDOW_MINUTES`, counted from the
+run's start); exploratory mode needs nothing. `<scratch>/locks/bench.lock` serializes bench runs,
+created with `wx`, with PID/time/token, and marks the process `BME_TIMED_RUN` so the paused-target
+observer refuses it. A dead PID is reported STALE, never automatically stolen (unlink/recreate
+races new holders). Explicit recovery: `node verify/bench/v-c.mjs reclaim <exact-token> <cause>`
+rechecks a dead PID and matching token, serializes reclaimers and logs time/PID/token/cause in
+`<scratch>/v-c/reports/lock-recoveries.jsonl`. A live PID/mismatched token is never removed.
+Every session checks the lock and window before and after.
 
 `machine.mjs` implements the evidence-based `timing-window-bound.md` §4 amendment: no run-owned
 build/typecheck/lint/server/other Chrome/VM beside the bench PID tree; VM down; free memory >=6GiB;
 zero swap-ins; **start** load1 <=3.0 (measured shed maximum2.15 +0.85 daemon-burst margin); AC,
 lid open (ioreg), no thermal throttling. Raw vm_stat/pmset, load and top CPU consumers are recorded
-before/after. Process ownership is checked during the session too, from authoritative grants,
-executable/CWD/run-root argv match. Argv itself is never retained. Agent roots come from hc; another
-runtime never inherits agent status. Unknown runtime ownership is invalid, not silently ignored.
+before/after. Process ownership is checked during the session too, from executable/CWD/run-root
+(this clone or its scratch) argv match. Argv itself is never retained. Agent roots are the ones you
+declare in `BME_BENCH_AGENT_PIDS=label:pid,…`; another runtime never inherits agent status. Unknown runtime ownership is invalid, not silently ignored.
 CfT Crashpad reparents toPID1. Only handlers under the pinned CfT install whose native kernel
 birth lies inside OUR launch→first-page interval are registered as bench processes; their PID,
 executable and microsecond birth are reverified and recorded per session (`benchProcesses.mjs`,

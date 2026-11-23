@@ -7,6 +7,7 @@ import type { createBoardTextEditor } from '../../whiteboard/viewer/textEditor';
 import type { BoardJobIdentity } from '../../whiteboard/workers/protocol';
 import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
 import type { NativeClipboardBinding, NativeClipboardService } from './useNativeClipboard';
+import { isCancellation } from '../../platform/workers/envelope';
 
 /** Inline text borrows the document's one ClipboardCopy, cache, allocator and paste controller. */
 export function createNativeTextClipboard(options: {
@@ -53,7 +54,7 @@ export function createNativeTextClipboard(options: {
             },
         });
     };
-    const report = (error: unknown) => { if (!(error instanceof DOMException && error.name === 'AbortError')) options.onError(error); };
+    const report = (error: unknown) => { if (!isCancellation(error)) options.onError(error); };
     const inlineEvent = (event: ClipboardEvent) => event.target instanceof Element && !!event.target.closest('.wb-edit-host');
     const forwardBoard: Parameters<typeof createTextClipboardAdapter>[0]['pasteBoard'] = (input, intent, signal, cache) => {
         const forward = binding.controller.capturePasteTarget(intent, cache);

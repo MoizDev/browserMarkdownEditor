@@ -85,12 +85,14 @@ export interface PlatformPaneOptions<T extends object> {
     writeOverlays(frame: ScheduledFrame): void;
     onPresentation(presentation: PlatformPresentation | null): void;
     onError(error: unknown): void;
-    /** Generic pressure may reduce quality while CPU remains drawable. Only cpu-floor-denied means
-     * the visible CPU working set was refused; consumers must not make transient GPU pressure fatal.
+    /** 'memory-pressure': THIS pane's grant has drawn it below full quality for memoryNoticeDelayMs (never a cache trim, never
+     * another pane's quality). 'cpu-floor-denied': its visible CPU working set has been refused for as long. Both are withdrawn
+     * through onNoticeCleared when the state ends; consumers must not make either fatal.
      */
     onNotice(message: 'memory-pressure' | 'cpu-floor-denied' | 'gpu-unavailable' | 'cpu-pinned', cause?: GpuUnavailableCause): void;
-    /** A notice that described a passing state is over: the pane that showed 'too-many-panes' now draws on the GPU. */
-    onNoticeCleared?(message: 'gpu-unavailable', cause: GpuUnavailableCause): void;
+    /** A notice that described a passing state is over: the pane that showed 'too-many-panes' now draws on the GPU (with its
+     * cause), or a memory notice's state ended (no cause). */
+    onNoticeCleared?(message: 'gpu-unavailable' | 'memory-pressure' | 'cpu-floor-denied', cause?: GpuUnavailableCause): void;
     /** Report presented quality changes, including recovery; never report an unpresented allocation (§6.4:653). */
     onQualityChange?(report: { readonly qualityScale: number }): void;
     mirrorQuad?(entry: BorrowedMirror<T>, view: MirrorView): CompositorMirrorQuad | null;

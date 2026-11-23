@@ -5,6 +5,7 @@ import PdfTiledRotateControls from './PdfTiledRotateControls';
 import PdfCapabilitiesNotice from './PdfCapabilitiesNotice';
 import { assertPdfCaptureAllowed, assertPdfCopyAllowed, assertPdfRenderAllowed, PDF_ENCRYPTED_READ_ONLY, tiledPdfCapabilities } from '../utils/pdfCapabilities';
 import { cameraForPagedPosition, fitWidthZ, pageAt, pagePresentation, pageStack, pagedConstraint, pagedPosition } from '../platform/render';
+import type { PageStack } from '../platform/render';
 import type { Camera, PlatformPaneOptions, Rect, Viewport, ViewState } from '../platform/render';
 import type { PlatformPresentation } from '../platform/render/attachPlatformPane.types';
 import type { PdfTiledPresentation } from '../pdf/session/hostTypes';
@@ -26,8 +27,8 @@ import type { PdfHighlightPalette } from '../pdf/overlay/textHighlight';
 import type { PdfFindMemory } from '../utils/pdfFindHighlight';
 import type { PdfReadingBinding, ReaderCapabilities } from '../types/reading';
 import { pdfAgentPages } from '../pdf/text/agentText';
-import { captureTiledRotationPreview } from '../utils/pdfTiledRotationPreview';
-import type { PdfRotationPicture } from '../utils/pdfRotationPreview';
+import { addPdfRotationBackdrop, beginPdfRotationTurn, pdfRotationActive, pdfRotationDrawSerial, pdfRotationHasPicture, pdfRotationView,
+    pdfRotationWantsBackdrop, pdfStandInFrame, setPdfStandInFrame, subscribePdfRotationStandIn, type PdfPagePicture } from '../utils/pdfRotationStandIn';
 import { flushPdfViewPositions, getPdfInverted, readPdfNavigationRevision, readPdfViewPos, readThumbnailsOpen, recordPdfNavigation, subscribePdfInverted,
     writePdfViewPos, writeThumbnailsOpen } from '../utils/pdfViewState';
 import PdfInvertToggle from './PdfInvertToggle';
@@ -40,6 +41,7 @@ import { usePdfTiledCopyMenu } from './usePdfTiledCopyMenu';
 import { usePdfTiledOutline } from './usePdfTiledOutline';
 import { registerView, type PdfViewInfo } from '../utils/viewRegistry';
 import { gpuUnavailableText } from '../utils/renderStatus';
+import { isCancellation } from '../platform/workers/envelope';
 import '../pdf/overlay/links.css';
 import './PdfTiledView.css';
 
@@ -81,7 +83,7 @@ interface Props {
     readonly capturer: PdfSessionCapturer;
     readonly sourceHash?: string;
     readonly onPresentation?: (presentation: PdfTiledPresentation) => void;
-    readonly onRotate?: (delta: number, pageIndex?: number, picture?: PdfRotationPicture) => void;
+    readonly onRotate?: (delta: number, pageIndex?: number) => void;
     readonly onSearchVault: (query: string) => void;
     readonly findMemory: PdfFindMemory;
     readonly selectionState: PdfSelectionState;
@@ -93,8 +95,14 @@ interface Props {
 
 /** The pane is a camera and DOM chrome around one shared-platform page layer.
  * The document/pool and CPU mirror belong to App's session, not this mount. */
-/** The governor's memory notices, which clear when the pane is back at full quality. */
-const QUALITY_NOTICES = new Set(['PDF rendering quality was reduced to fit memory.', 'PDF rendering is limited by available memory.']);
+/** The platform's memory notices for this pane: raised once its own grant has kept it below full quality (or refused its CPU floor)
+ * for a second, withdrawn when that ends. */
+const MEMORY_NOTICES = { 'memory-pressure': 'PDF rendering quality was reduced to fit memory.', 'cpu-floor-denied': 'PDF rendering is limited by available memory.' } as const;
+const RETRY_REQUESTED = 'Retry requested. Pages may remain unavailable until rendering completes.';
+/** Notices about a state a sharp frame ends, so they clear on the next sharp frame: a sharp frame is full quality. The retry message is
+ * one: posted as an error, it stayed over sharp pages for good after a retry (seen at 1440x900, b2). A refused CPU floor is not: it
+ * can hold under a sharp frame of tiles already drawn, and cleared by that frame it flashed for one frame; the platform withdraws it. */
+const PASSING_NOTICES = new Set<string>([MEMORY_NOTICES['memory-pressure'], RETRY_REQUESTED]);
 
 export default function PdfTiledView({ reading, session, document: pdf, filePath, isVisible, isFocused,
     mirror, transition, bridge, capturer, findMemory, selectionState, sourceHash, onPresentation, onSearchVault, onRotate, onOpenTextView, onNotice, onCapabilities }: Props) {
@@ -120,6 +128,11 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         return () => pdf.emphasis.setVisiblePages([], -1, false);
     }, [pdf, page, isVisible, isFocused]);
     const [thumbs, setThumbs] = useState(readThumbnailsOpen);
+    // Blank pages at their final size and place from the moment the geometry is known until the first frame presents.
+    // Without them the pane sat empty and dark between the source opening and the first picture (measured on a cold open of a small
+    // PDF: 400 -> 505 ms); with them the picture lands in the paper it was waiting in, with no layout change.
+    const [paper, setPaper] = useState<readonly { left: number; top: number; width: number; height: number }[] | null>(null);
+    const paperShown = useRef(false);
     const [noticeState, setNoticeState] = useState<{ session: PdfTiledDocumentSession; notice: RenderNotice | undefined }>(() =>
         ({ session, notice: sessionNotices.get(session) }));
     const [retryBusy, setRetryBusy] = useState<PdfTiledDocumentSession | null>(null);
@@ -144,7 +157,7 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
     const clearQualityNotice = useCallback(() => {
         if (!mounted.current || liveSession.current !== session) return;
         const current = sessionNotices.get(session);
-        if (!current || current.error || !QUALITY_NOTICES.has(current.message)) return;
+        if (!current || current.error || !PASSING_NOTICES.has(current.message)) return;
         sessionNotices.delete(session);
         setNoticeState({ session, notice: undefined });
     }, [session]);
@@ -164,7 +177,9 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
             await retryDocument.call(pdf.poolDocument);
             if (!mounted.current || liveSession.current !== session || !session.isCurrent()) return;
             setRetryGeneration(value => value + 1);
-            reportRenderNotice('Retry requested. Pages may remain unavailable until rendering completes.', true);
+            // The retry answers the error it was asked for: that notice gives way to one the next sharp frame clears.
+            sessionNotices.delete(session);
+            reportRenderNotice(RETRY_REQUESTED);
         } catch {
             reportRenderNotice('PDF retry failed. The current document and annotations were retained.', true);
         } finally {
@@ -215,9 +230,10 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
     active.current = { isVisible, isFocused };
     const velocity = useRef({ x: 0, y: 0 });
     const previousInput = useRef({ x: 0, y: 0, time: 0 });
-    const rotationQueue = useRef<Promise<void>>(Promise.resolve());
-    const rotationIdentity = useRef({ sourceHash, geometryDigest, session });
-    rotationIdentity.current = { sourceHash, geometryDigest, session };
+    // While a turn's stand-in is up (utils/pdfRotationStandIn.ts) the camera holds still: the picture was laid out for
+    // this camera, and the turned view is remounted on the position written for it.
+    const documentId = session.token.documentId;
+    const turning = useCallback(() => pdfRotationActive(documentId), [documentId]);
     const frameView = useRef<ViewState | null>(null);
     const pendingPresentation = useRef<PlatformPresentation | null>(null);
     const presentationPort = useRef({ sourceHash, onPresentation });
@@ -233,7 +249,7 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
     const revealMotion = useRef<{ from: Camera; to: Camera; start: number; revision: number; correction?: { page: number; box: Readonly<Rect> } } | null>(null);
 
     const persist = useCallback(() => {
-        if (!initialized.current) return;
+        if (!initialized.current || turning()) return;
         const pos = pagedPosition(camera.current, viewport.current, stack, INSETS);
         if (!pos) return;
         writePdfViewPos(filePath, pos, false);
@@ -242,7 +258,7 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         setPage(previous => previous === pos.page ? previous : pos.page);
         setZoom(previous => Math.abs(previous - pos.zoom) < 0.001 ? previous : pos.zoom);
         thumbsRef.current?.setCurrentPage(pos.page);
-    }, [filePath, stack]);
+    }, [filePath, stack, turning]);
 
     const clamp = useCallback((next: Camera): Camera => {
         const z = constraint.clampZoom(next.z, viewport.current);
@@ -253,6 +269,7 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
     }, [constraint]);
 
     const updateCamera = useCallback((next: Camera, moving = false) => {
+        if (turning()) return;
         camera.current = clamp(next);
         interacting.current = moving;
         persist();
@@ -262,7 +279,7 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
             interacting.current = false; velocity.current = { x: 0, y: 0 };
             paneRef.current?.current?.invalidate('pdf-camera-settled');
         }, 180);
-    }, [clamp, persist]);
+    }, [clamp, persist, turning]);
 
     useEffect(() => {
         if (thumbs && isVisible) return;
@@ -299,22 +316,151 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         updateCamera({ ...camera.current, y: target.y });
     }, [filePath, stack, updateCamera]);
 
+    /** Each wanted page's pixels from the session's tile mirrors, as one page-sized picture (sharpest tiles on top). */
+    const capturePictures = useCallback((wanted: ReadonlySet<number>, applied: (page: number) => number): Map<number, PdfPagePicture> => {
+        const pictures = new Map<number, PdfPagePicture>(), view = mirror.lastView();
+        if (!view || !wanted.size) return pictures;
+        const borrow = mirror.mirrors.borrow(view, performance.now());
+        try {
+            const scale = view.view.camera.z * view.view.viewport.dpr;
+            const byPage = new Map<number, ReturnType<typeof borrow.read>[number][]>();
+            for (const item of borrow.read(view)) {
+                const page = Number(item.entry.key.pageOrRegion);
+                if (!wanted.has(page) || String(page) !== item.entry.key.pageOrRegion) continue;
+                const list = byPage.get(page) ?? [];
+                list.push(item); byPage.set(page, list);
+            }
+            for (const [page, items] of byPage) {
+                const box = items[0].pixels.page, width = Math.max(1, Math.ceil(box.width * scale)), height = Math.max(1, Math.ceil(box.height * scale));
+                const draw = (canvas: HTMLCanvasElement, tiles: typeof items) => {
+                    const context = canvas.getContext('2d');
+                    for (const { pixels } of tiles) {
+                        const { bitmap, source, world } = pixels;
+                        context?.drawImage(bitmap, source.x, source.y, source.width, source.height,
+                            (world.x - box.x) * scale, (world.y - box.y) * scale, world.width * scale, world.height * scale);
+                    }
+                };
+                const sized = () => { const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height; return canvas; };
+                // Transparent where no tile was. Low-resolution stand-in tiles go under the exact ones, and are what a
+                // whole-page backdrop replaces (addPdfRotationBackdrop): only the exact tiles are kept as `top`.
+                const exact = items.filter(item => item.entry.tier === 'exact'), low = items.filter(item => item.entry.tier !== 'exact');
+                low.sort((a, b) => a.pixels.source.width / a.pixels.world.width - b.pixels.source.width / b.pixels.world.width);
+                const top = sized(), image = sized();
+                draw(top, exact); draw(image, low); image.getContext('2d')?.drawImage(top, 0, 0);
+                pictures.set(page, { image, top, turns: applied(page) });
+            }
+        } finally { borrow.release(); }
+        return pictures;
+    }, [mirror]);
+
+    /** Draws this pane's turned picture and writes the position the turned view will open on.
+     * Returns the pages it shows, with the device size each is drawn at. */
+    const drawStandIn = useCallback((): Array<{ page: number; side: number }> => {
+        const root = contentHost?.closest('.pdf-pane'), size = viewport.current;
+        const turn = pdfRotationView(documentId, session.token.bytesGeneration, pdf.pages.length);
+        if (!turn || !root || !contentHost || !size.width || !size.height) return [];
+        const turned: PageStack = pageStack(pdf.pages.map((page, i) => turn.pending(i) % 2 ? { width: page.height, height: page.width } : page));
+        const position = pagedPosition(camera.current, size, stack, INSETS) ?? { page: 0, offset: 0, zoom: 1 };
+        const fresh = cameraForPagedPosition(position, size, turned, INSETS, LIMITS);
+        if (!fresh) return [];
+        // Exactly where the turned view will open: the same page, offset and zoom, clamped as its camera is.
+        const constraint = pagedConstraint(turned, LIMITS, INSETS), z = constraint.clampZoom(fresh.z, size);
+        const bounds = constraint.bounds({ ...fresh, z }, size);
+        const next = { z, x: Math.max(bounds.minX, Math.min(bounds.maxX, fresh.x)), y: Math.max(bounds.minY, Math.min(bounds.maxY, fresh.y)) };
+        const canvas = document.createElement('canvas'), dpr = size.dpr, scale = next.z * dpr;
+        canvas.width = Math.round(size.width * dpr); canvas.height = Math.round(size.height * dpr);
+        const context = canvas.getContext('2d'), shown: Array<{ page: number; side: number }> = [];
+        if (!context) return [];
+        const [r, g, b] = paneBackground();
+        context.fillStyle = `rgb(${Math.round(r * 255)} ${Math.round(g * 255)} ${Math.round(b * 255)})`;
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        // The page view inverts in encoded sRGB after composition (platform/render/colour.ts): the same filter.
+        if (getPdfInverted()) context.filter = 'invert(1) hue-rotate(180deg)';
+        const bottom = next.y + size.height / next.z;
+        for (let index = Math.max(0, pageAt(turned, next.y)); index < turned.rects.length && turned.rects[index].y < bottom; index++) {
+            const rect = turned.rects[index], x = (rect.x - next.x) * scale, y = (rect.y - next.y) * scale;
+            const width = rect.width * scale, height = rect.height * scale, picture = turn.picture(index);
+            shown.push({ page: index, side: Math.max(width, height) });
+            context.save();
+            context.fillStyle = '#fff'; context.fillRect(x, y, width, height);
+            if (picture) {
+                // Clockwise quarter turns from what the picture shows to what the page will show.
+                context.translate(x + width / 2, y + height / 2);
+                context.rotate(picture.quarter * Math.PI / 2);
+                const [w, h] = picture.quarter % 2 ? [height, width] : [width, height];
+                context.drawImage(picture.image, -w / 2, -h / 2, w, h);
+            }
+            context.restore();
+        }
+        const host = contentHost.getBoundingClientRect(), pane = root.getBoundingClientRect();
+        setPdfStandInFrame(documentId, root, { canvas, left: host.left - pane.left, top: host.top - pane.top, width: size.width, height: size.height });
+        const turnedPosition = pagedPosition(next, size, turned, INSETS);
+        if (turnedPosition) writePdfViewPos(filePath, turnedPosition);
+        return shown;
+    }, [contentHost, documentId, filePath, pdf, session, stack]);
+
+    // Only what was on screen was captured; the rest of a turned page that comes into view is rendered whole, once,
+    // from the bytes on screen, and laid under the capture (measured on a portrait page turned to landscape: the
+    // bottom half, off screen before the turn, stayed blank until the written file was drawn sharp).
+    const backdrops = useRef(new Map<number, AbortController>());
+    useEffect(() => () => { for (const task of backdrops.current.values()) task.abort(); backdrops.current.clear(); }, [session]);
+    const fillBackdrops = useCallback((pages: ReadonlyArray<{ page: number; side: number }>) => {
+        const generation = session.token.bytesGeneration;
+        for (const { page, side } of pages) {
+            if (!pdfRotationWantsBackdrop(documentId, page) || backdrops.current.has(page)) continue;
+            const turn = pdfRotationView(documentId, generation, pdf.pages.length);
+            if (!turn) return;
+            const shown = turn.shown(page), controller = new AbortController();
+            backdrops.current.set(page, controller);
+            void pdf.poolDocument.thumbnail(page, Math.max(64, Math.min(2048, Math.ceil(side))), { variant: 'plain', profileKey: 'plain', signal: controller.signal })
+                .then(bitmap => {
+                    try { if (!controller.signal.aborted) addPdfRotationBackdrop(documentId, page, bitmap, shown); }
+                    finally { bitmap.close(); }
+                }, () => { /* A stand-in without a backdrop still turns; the written file follows. */ })
+                .finally(() => { if (backdrops.current.get(page) === controller) backdrops.current.delete(page); });
+        }
+    }, [documentId, pdf, session]);
+
+    const drawnTurn = useRef(pdfRotationDrawSerial(documentId));
     const rotate = useCallback((delta: number, index?: number) => {
-        if (!onRotate || capabilities.encrypted) return;
-        const shownPage = Math.max(0, pageAt(stack, camera.current.y));
-        const capturePage = index ?? shownPage, rect = stack.rects[capturePage];
-        const identity = rotationIdentity.current;
-        rotationQueue.current = rotationQueue.current.catch(() => {}).then(async () => {
-            const pane = paneRef.current?.current;
-            const picture = capabilities.capture === true && identity.session === rotationIdentity.current.session && identity.session.isCurrent() && pane && rect && identity.sourceHash ? await captureTiledRotationPreview(pane, rect, capturePage, delta,
-                { sourceHash: identity.sourceHash, geometryDigest: identity.geometryDigest }, () => {
-                    const live = rotationIdentity.current;
-                    return live.session === identity.session && live.session.isCurrent() && live.sourceHash ?
-                        { sourceHash: live.sourceHash, geometryDigest: live.geometryDigest } : null;
-                }) : undefined;
-            if (identity.session === rotationIdentity.current.session && identity.session.isCurrent()) onRotate(delta, index, picture);
+        if (!onRotate) return;
+        // The buttons are disabled with this reason; a key press says it too rather than doing nothing.
+        if (capabilities.encrypted) { onNotice(PDF_ENCRYPTED_READ_ONLY); return; }
+        // A file the writer will refuse outright is not turned on screen: App says why, and nothing moves.
+        if (capabilities.signed !== true && capabilities.write !== false && initialized.current && isVisible) {
+            const size = viewport.current, top = camera.current.y, bottom = top + size.height / camera.current.z;
+            const visible = new Set<number>();
+            for (let page = Math.max(0, pageAt(stack, top)); page < stack.rects.length && stack.rects[page].y < bottom; page++) {
+                if (!pdfRotationHasPicture(documentId, page)) visible.add(page);
+            }
+            const before = readPdfViewPos(filePath);
+            beginPdfRotationTurn(documentId, { generation: session.token.bytesGeneration, pageCount: pdf.pages.length, delta, page: index,
+                capture: applied => capturePictures(visible, applied),
+                restore: () => { if (before) writePdfViewPos(filePath, before); } });
+            drawnTurn.current = pdfRotationDrawSerial(documentId);
+            fillBackdrops(drawStandIn());
+        }
+        onRotate(delta, index);
+    }, [capabilities.encrypted, capabilities.signed, capabilities.write, capturePictures, documentId, drawStandIn, fillBackdrops, filePath, isVisible, onNotice, onRotate, pdf, session, stack]);
+    // A turn remounts this view on the written bytes, and the old view's surface took keyboard focus away with it:
+    // the next `]` then reached nothing (measured: the fifth of five quick presses, after the first write, was lost).
+    useEffect(() => {
+        if (host && isFocused && pdfRotationActive(documentId) && (!document.activeElement || document.activeElement === document.body)) host.focus({ preventScroll: true });
+    }, [host, isFocused, documentId]);
+    // Another pane of the same document turned it, or a page's picture improved: draw this pane's picture again.
+    useEffect(() => {
+        if (!isVisible) return;
+        drawnTurn.current = pdfRotationDrawSerial(documentId);
+        // Back on screen while the file is still being written (its picture went when the pane hid): draw it again.
+        const root = contentHost?.closest('.pdf-pane');
+        if (initialized.current && root && pdfRotationActive(documentId) && !pdfStandInFrame(documentId, root)) fillBackdrops(drawStandIn());
+        return subscribePdfRotationStandIn(() => {
+            const serial = pdfRotationDrawSerial(documentId);
+            if (!serial || serial === drawnTurn.current || !initialized.current) return;
+            drawnTurn.current = serial;
+            fillBackdrops(drawStandIn());
         });
-    }, [capabilities.encrypted, capabilities.capture, onRotate, stack]);
+    }, [contentHost, documentId, drawStandIn, fillBackdrops, isVisible]);
 
     const navigate = useCallback((target: Exclude<PdfLinkTarget, { kind: 'uri' }>) => {
         const current = Math.max(0, pageAt(stack, camera.current.y));
@@ -582,7 +728,7 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
                     // link cleanup. Cancellation is not a modal reader failure.
                     if (controller.signal.aborted || !mounted.current || liveSession.current !== session ||
                         !session.isCurrent() || pdf.poolDocument.closed || !active.current.isVisible ||
-                        error instanceof Error && error.name === 'AbortError') return;
+                        isCancellation(error)) return;
                     onNotice(error instanceof Error && error.message.trim() ? error.message : 'PDF links are unavailable.');
                 })
                     .finally(() => { if (linkTasks.current.get(index) === controller) linkTasks.current.delete(index); });
@@ -592,6 +738,7 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
             for (const [index, task] of linkTasks.current) if (!visible.has(index)) { task.abort(); linkTasks.current.delete(index); }
         },
         onPresentation: presentation => {
+            if (presentation && paperShown.current) { paperShown.current = false; setPaper(null); }
             pendingPresentation.current = presentation;
             const token = presentation?.token;
             currentSharp.current = !!presentation && presentation.complete && presentation.sharp && !presentation.staleVersion && session.isCurrent() &&
@@ -600,10 +747,9 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
             if (currentSharp.current && updatingRef.current) { updatingRef.current = false; setUpdating(false); }
             if (currentSharp.current) clearQualityNotice();
         }, onError: () => reportRenderNotice('The PDF viewer encountered a rendering error.', true),
-        onNotice: (message, cause) => reportRenderNotice(message === 'memory-pressure' ? 'PDF rendering quality was reduced to fit memory.'
-            : message === 'cpu-floor-denied' ? 'PDF rendering is limited by available memory.'
-                : message === 'cpu-pinned' ? 'PDF rendering is using a compatible mode.' : gpuUnavailableText(cause)),
-        onNoticeCleared: (_message, cause) => clearRenderNotice(gpuUnavailableText(cause)),
+        onNotice: (message, cause) => reportRenderNotice(message === 'memory-pressure' || message === 'cpu-floor-denied' ? MEMORY_NOTICES[message]
+            : message === 'cpu-pinned' ? 'PDF rendering is using a compatible mode.' : gpuUnavailableText(cause)),
+        onNoticeCleared: (message, cause) => clearRenderNotice(message === 'gpu-unavailable' ? gpuUnavailableText(cause) : MEMORY_NOTICES[message]),
     }), [lease, mirror, capturer, mirrorView, onNotice, pageLayer, pdf, session, stack, updateTextMirrorView, onFindView, filePath, persist, correctReveal, clamp, refreshSelectionPointer, capabilities, reportRenderNotice, clearQualityNotice, clearRenderNotice]);
     const platformPane = usePlatformPane<PdfMirrorPixels>({ host, isVisible, isFocused, vaultEpoch: session.token.vaultEpoch,
         documentId: session.token.documentId, layers, services });
@@ -619,7 +765,19 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
             if (!initialized.current) {
                 const pos = initial.current ?? { page: 0, offset: 0, zoom: 1 };
                 const restored = cameraForPagedPosition({ ...pos, zoom: pos.zoom ?? 1 }, next, stack, INSETS, LIMITS);
-                if (restored) { camera.current = clamp(restored); initialized.current = true; }
+                if (restored) {
+                    camera.current = clamp(restored); initialized.current = true;
+                    if (!paperShown.current) {
+                        // The same projection the page layer paints with (pagePresentation), so no page moves when it lands.
+                        const view = { camera: camera.current, viewport: next, epoch: 0, moving: false };
+                        const bottom = view.camera.y + next.height / view.camera.z, sheets = [];
+                        for (let index = Math.max(0, pageAt(stack, view.camera.y)); index < stack.rects.length && stack.rects[index].y < bottom; index++) {
+                            const box = stack.rects[index], matrix = pagePresentation(box, view).surface;
+                            sheets.push({ left: matrix[4], top: matrix[5], width: box.width * matrix[0], height: box.height * matrix[3] });
+                        }
+                        paperShown.current = true; setPaper(sheets);
+                    }
+                }
             } else camera.current = clamp(constraint.resize(camera.current, previous, next));
             persist(); platformPane.current?.observeSize(); platformPane.current?.invalidate('pdf-resize');
         };
@@ -654,7 +812,7 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
             if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
             const old = camera.current;
             if (event.code === 'BracketLeft' || event.code === 'BracketRight') {
-                if (!onRotate || capabilities.encrypted) return;
+                if (!onRotate) return;
                 rotate(event.code === 'BracketLeft' ? -90 : 90);
             } else if (event.key === '+' || event.key === '=' || event.key === '-') {
                 recordPdfNavigation(filePath, 'user-navigation');
@@ -707,7 +865,11 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
             else if (phase === 'move') pointerMove(event);
             else pointerEnd(event);
         };
-        host.addEventListener('wheel', wheel, { passive: false });
+        // The wheel (and a trackpad pinch, which arrives as ctrl+wheel) is taken on the content, not the surface: links are buttons in the
+        // overlay, a sibling of the surface, so over a table of contents or a citation every wheel event missed the handler and the page
+        // stood still under the cursor until the link left it (measured: zero presents while 40 wheel events reached the window).
+        const wheelTarget = contentHost ?? host;
+        wheelTarget.addEventListener('wheel', wheel, { passive: false });
         host.addEventListener('keydown', keydown);
         if (capabilities.copy !== true) {
             host.addEventListener('pointerdown', pointerDown); host.addEventListener('pointermove', pointerMove);
@@ -715,11 +877,11 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         }
         return () => {
             touchHandler.current = () => {}; pointers.clear();
-            observer.disconnect(); host.removeEventListener('wheel', wheel); host.removeEventListener('keydown', keydown);
+            observer.disconnect(); wheelTarget.removeEventListener('wheel', wheel); host.removeEventListener('keydown', keydown);
             host.removeEventListener('pointerdown', pointerDown); host.removeEventListener('pointermove', pointerMove);
             host.removeEventListener('pointerup', pointerEnd); host.removeEventListener('pointercancel', pointerEnd);
         };
-    }, [host, clamp, constraint, capabilities, filePath, find.find, goPage, onNotice, onRotate, persist, platformPane, rotate, stack, updateCamera]);
+    }, [host, contentHost, clamp, constraint, capabilities, filePath, find.find, goPage, onNotice, onRotate, persist, platformPane, rotate, stack, updateCamera]);
 
     useEffect(() => {
         const renderPageWithInfo = async (pageNumber: number, maxSide: number) => {
@@ -802,26 +964,32 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         : pageStatus.state === 'slow' ? `Still drawing page ${page + 1}…`
             : pageStatus.state === 'failed' || pageStatus.state === 'quarantined' ? pageStatus.reason ?? 'This page could not be drawn.' : undefined;
     const visibleNotice = pageNotice ?? notice?.message;
+    // Retry reloads the document, so it is offered only for a page or render that failed. A memory or mode notice gets Dismiss only:
+    // retrying one reloaded every page and left an error-class message over sharp pages.
+    const offerRetry = !!pageNotice || !!notice?.error;
     return <div className={`pdf-viewer pdf-tiled-view${thumbs ? ' has-thumbs' : ''}`}>
         {find.bar}
         {outline.panel}
         {visibleNotice && <div className="pdf-tiled-notice" role="status">
             <div>{visibleNotice}</div>
             <div className="pdf-tiled-notice-actions">
-                <button type="button" className="disk-bar-btn" onClick={() => { void retry(); }} disabled={!retryDocument || retryBusy === session}>Retry</button>
+                {offerRetry && <button type="button" className="disk-bar-btn" onClick={() => { void retry(); }} disabled={!retryDocument || retryBusy === session}>Retry</button>}
                 {!pageNotice && <button type="button" className="disk-bar-btn" onClick={() => { sessionNotices.delete(session); setNoticeState({ session, notice: undefined }); }}>Dismiss</button>}
             </div>
-            {!retryDocument && <div className="pdf-tiled-notice-hint">Retry is unavailable.</div>}
+            {offerRetry && !retryDocument && <div className="pdf-tiled-notice-hint">Retry is unavailable.</div>}
         </div>}
         {thumbs && isVisible && <PdfThumbnails ref={thumbsRef} sizes={pdf.pages} renderThumbnail={renderThumbnail} onSelect={goPage} initialPage={page} />}
-        <div className="pdf-tiled-content" ref={setContentHost}><div className="pdf-tiled-surface" ref={setHost} tabIndex={0} aria-label="PDF pages" />
+        <div className="pdf-tiled-content" ref={setContentHost}>
+            {paper && <div className={`pdf-tiled-paper${inverted ? ' is-inverted' : ''}`} aria-hidden="true">
+                {paper.map((sheet, index) => <div key={index} style={sheet} />)}</div>}
+            <div className="pdf-tiled-surface" ref={setHost} tabIndex={0} aria-label="PDF pages" />
             <div className="pdf-tiled-overlays" ref={setOverlay} />
             {updating && <div className="pdf-tiled-updating" role="status">Updating PDF…</div>}</div>
         <div className="pdf-viewer-controls">
             {copyMenu.copyStatus && <div className="pdf-tiled-copy-status" role="status" aria-live="polite">{copyMenu.copyStatus}</div>}
             <div className="pdf-viewer-pill">{outline.button}<ThumbnailsToggle open={thumbs} onToggle={() => setThumbs(previous => { writeThumbnailsOpen(!previous); return !previous; })} />
                 <PdfInvertToggle />
-                {onRotate && <PdfTiledRotateControls path={filePath} page={page} onRotate={rotate}
+                {onRotate && <PdfTiledRotateControls page={page} onRotate={rotate}
                     disabledReason={capabilities.encrypted ? PDF_ENCRYPTED_READ_ONLY : undefined} />}
                 <PdfCapabilitiesNotice capabilities={capabilities} nativeFontPolicy />
             </div>

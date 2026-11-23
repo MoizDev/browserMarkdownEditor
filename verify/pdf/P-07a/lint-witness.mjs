@@ -1,6 +1,7 @@
 import { ESLint } from 'eslint';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { scratchDir } from '../../lib/paths.mjs';
 
 // This is the static gate's deliberately violating source, not an app-module
 // invocation. The rule must reject every regex syntax even with a literal query.
@@ -13,7 +14,7 @@ for (const filePath of ['src/utils/pdfFind.ts', 'src/utils/pdfTextAnchors.ts']) 
     const pass = errors.length === 3 && errors.every(message => message.ruleId === 'no-restricted-syntax');
     observations.push({ filePath, pass, messages: errors });
 }
-const out = resolve(process.env.BME_OUT ?? '/Users/adham/Developer/bme-impl/scratch/p-b/lint-witness');
+const out = resolve(process.env.BME_OUT ?? scratchDir('P-07a', 'lint-witness'));
 await mkdir(out, { recursive: true });
 await writeFile(resolve(out, 'results.json'), JSON.stringify({ source, observations }, null, 2) + '\n');
 if (observations.some(observation => !observation.pass)) process.exitCode = 1;

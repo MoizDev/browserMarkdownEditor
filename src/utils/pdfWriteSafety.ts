@@ -44,10 +44,18 @@ export function inspectPdfDocumentWriteSafety(doc: PDFDocument): PdfWriteSafety 
                 } else if (!type) return unknown('The PDF field type cannot be established.');
             }
         }
-        // Signatures can sit outside AcroForm, including direct objects inside indirect containers.
+        // Signatures can sit outside AcroForm, including direct objects inside indirect containers. Every indirect
+        // object is a root of its own, so a reference is only checked to resolve, never followed: following them made
+        // `depth` count a chain of references rather than nesting, and refused a 370-page book whose outline is a /Next
+        // chain of several hundred items ("exceeds its safety bound") though no object in it nests deeply.
         const seen = new Set<PDFObject>(), stack: Array<{ raw: PDFObject; depth: number }> = doc.context.enumerateIndirectObjects().map(([, raw]) => ({ raw, depth: 0 }));
         while (stack.length) {
-            const { raw, depth } = stack.pop()!, value = raw instanceof PDFRef ? doc.context.lookup(raw) : raw;
+            const { raw, depth } = stack.pop()!;
+            if (raw instanceof PDFRef) {
+                if (!doc.context.lookup(raw)) return unknown('A PDF object reference is unreadable.');
+                if (depth > 0) continue;
+            }
+            const value = raw instanceof PDFRef ? doc.context.lookup(raw) : raw;
             if (!value) return unknown('A PDF object reference is unreadable.');
             if (seen.has(value)) continue;
             if (depth > DEPTH || seen.size >= MAX) return unknown('The PDF object inventory exceeds its safety bound.');

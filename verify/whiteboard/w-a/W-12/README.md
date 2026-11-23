@@ -21,20 +21,19 @@ source files, applies the startup patch with `git apply --check`, installs that 
 and builds with the normal production Vite configuration. A logic mutant is a checked source patch
 on that scratch copy, never a production-minified logic substitution or product flag. The recorded
 metadata contains the source commit, overlay hashes, exact install/mutant patches and served index hash.
-It refuses to overwrite earlier build evidence. All heavy commands use bme-lock in an hc terminal.
+It refuses to overwrite earlier build evidence. Build first; start a browser run only once it is done.
 
 ```sh
-L=/Users/adham/Developer/bme-impl/scratch/bin/bme-lock
-S=/Users/adham/Developer/bme-impl/scratch/w-a/w12
-# From this worktree. Give every build an unused W12_BUILD_NAME; variants are candidate /
+S=/absolute/scratch/w12   # outside the clone; also the W12_BUILD_ROOT default's role
+# From the clone. Give every build an unused W12_BUILD_NAME; variants are candidate /
 # no-filter / forget-touches / up-only / eager-canvas / always-touch.
-W12_BUILD_NAME=candidate-dynamic "$L" build -- node verify/whiteboard/w-a/W-12/build.mjs candidate
+W12_BUILD_ROOT="$S" W12_BUILD_NAME=candidate-dynamic node verify/whiteboard/w-a/W-12/build.mjs candidate
 # Serve only while about to run or actually running; stop between runs.
-# From $S/candidate-dynamic/source, on an owned port:
-"$L" serve -- ./node_modules/.bin/vite preview --config "$S/candidate-dynamic/vite.config.mjs" --port 6500 --strictPort
-# From this worktree:
+# From $S/candidate-dynamic/source, on a port you choose:
+./node_modules/.bin/vite preview --config "$S/candidate-dynamic/vite.config.mjs" --port 6500 --strictPort
+# From the clone:
 WA_SCRATCH="$S/evidence/candidate-dynamic-r2" BUILD_META="$S/candidate-dynamic/build.json" PHASE=gate \
-  "$L" run -w 2 -- node verify/whiteboard/w-a/W-12/pen-priority.mjs
+  node verify/whiteboard/w-a/W-12/pen-priority.mjs
 ```
 
 Use `BASE_URL` for another port, `DPR`, `HOSTS`, `ORDERS`, `REPEAT` as needed. All runs use pinned
@@ -97,5 +96,5 @@ real startup call, and records `sourceMode: unmodified-seam-ref` and the filter 
 requires this source mode/hash. Never call the scratch-patched candidate the integrated seam.
 
 M7 removes this module, its startup import/call and all three `data-legacy-board` attributes with the
-old engine. Suggested user-doc sentence for the integrator: “Touches that begin on a canvas while
+old engine. Suggested user-guide sentence: “Touches that begin on a canvas while
 the pen is down stay ignored until those contacts lift, even if the pen lifts first.”

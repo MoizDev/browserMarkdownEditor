@@ -43,17 +43,11 @@ export function stageInkCreate(op: InkCreate, context: InkCreateContext): Create
         const points = op.points.map(p => ({ ...target.clamp({ x: p[0], y: p[1] }), p: p[2] }));
         const origin = points[0], pressure = points.some(p => p.p !== undefined);
         const samples = new SampleBuilder({ pressure, declaredMaxScale: 1, precision: 'float64' });
-        const add = (x: number, y: number, p: number | undefined) => samples.append(x - origin.x, y - origin.y, pressure ? p ?? 0.5 : undefined);
-        add(origin.x, origin.y, origin.p);
-        for (let i = 1; i < points.length; i++) {
-            const a = points[i - 1], b = points[i];
-            const steps = Math.min(64, Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / 8)));
-            for (let j = 1; j <= steps; j++) {
-                const t = j / steps;
-                add(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t,
-                    pressure ? (a.p ?? 0.5) + ((b.p ?? 0.5) - (a.p ?? 0.5)) * t : undefined);
-            }
-        }
+        // The agent's points are joined by exactly straight runs, as its tool describes. Freehand spans
+        // are now smoothed through their samples, which would round the agent's corners and bow its
+        // edges; a 'straight' run keeps every corner and edge where the agent put it. The radius is
+        // interpolated linearly along a span, so the old 8 px densification added nothing but points.
+        for (const p of points) samples.append(p.x - origin.x, p.y - origin.y, pressure ? p.p ?? 0.5 : undefined, 'straight');
         // F-AGENT-015: every stored coordinate and the bounds must be finite, or the op is refused whole (never a nonfinite node).
         const summary = samples.summary();
         if (!summary) throw new AgentOpRefused('the stroke is too long or too spread out to store exactly; split it into shorter strokes');

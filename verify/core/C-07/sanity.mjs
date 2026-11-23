@@ -10,9 +10,10 @@ import { fontsReady } from '../../lib/input.mjs';
 import { createReport } from '../../lib/report.mjs';
 import { installHelperStandIn, toolText } from '../lib/helper.mjs';
 import { installWorkerTargets } from '../lib/counters.mjs';
+import { scratchDir } from '../../lib/paths.mjs';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
-const scratch = process.env.BME_SCRATCH ?? '/Users/adham/Developer/bme-impl/scratch/c-c/c07b/sanity';
+const scratch = process.env.BME_SCRATCH ?? scratchDir('C-07', 'sanity');
 const port = Number(process.env.BME_PORT ?? 6320);
 const mode = 'benchmark';
 if (process.argv.includes('--prepare')) {

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import { chromium } from 'playwright';
 import { assertIdentity, fail, observe } from './observe.mjs';
+import { pinnedChrome, scratchDir } from '../../lib/paths.mjs';
 
 const driverVersion = createRequire(import.meta.url)('playwright/package.json').version;
 
@@ -270,7 +271,7 @@ async function runArm(browser, arm, identity, reportDir) {
     }
 }
 
-const [specPath, output = '/Users/adham/Developer/bme-impl/scratch/c-d/C-15c'] = process.argv.slice(2);
+const [specPath, output = scratchDir('C-15c')] = process.argv.slice(2);
 await mkdir(output, { recursive: true });
 const report = { gate: 'C-15c-editor-PBD', browser: null, playwright: driverVersion, node: process.version, identities: [], arms: [] };
 let browser;
@@ -281,10 +282,10 @@ try {
     assert.equal(driverVersion, '1.63.0', 'the driver must be the I-0 pin');
     for (const arm of spec.arms) report.identities.push(await assertIdentity(arm));
     assert.equal(new Set(report.identities.map(identity => identity.commit)).size, 1, 'P/B/D derive from the same commit');
-    const executablePath = (await readFile('/Users/adham/Developer/bme-impl/scratch/browsers/CHROME', 'utf8')).trim();
+    const executablePath = process.env.BME_CHROME_PATH ?? await pinnedChrome();
     browser = await chromium.launch({ headless: true, executablePath });
     report.browser = browser.version();
-    assert.equal(report.browser, '157.0.8103.39', 'the browser must be the integrator-pinned build');
+    assert.equal(report.browser, '157.0.8103.39', 'the browser must be the pinned build (verify/browser-pin.json)');
     for (let i = 0; i < spec.arms.length; i++) {
         report.arms.push(await runArm(browser, spec.arms[i], report.identities[i], output));
     }

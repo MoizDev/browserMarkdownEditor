@@ -3318,25 +3318,16 @@ body.is-resizing-panes * {
   min-height: 0;
 }
 
-.pdf-rotation-preview {
+/* The turned picture a PDF shows from the click until the turned file is drawn
+   sharp (utils/pdfRotationStandIn.ts). Over the page view and its overlays (the
+   view's "Updating" cover is z 2), under the reader's controls (z 6), find bar
+   and notices, which keep working: another press turns it further. */
+.pdf-rotation-standin {
   position: absolute;
-  inset: 0;
   z-index: 4;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  padding: 20px;
-  background: var(--background-primary);
-  color: var(--text-muted);
+  pointer-events: none;
 }
-.pdf-rotation-preview img {
-  max-width: 100%;
-  max-height: calc(100% - 36px);
-  object-fit: contain;
-  box-shadow: 0 1px 8px #0003;
-}
+.pdf-rotation-standin canvas { display: block; width: 100%; height: 100%; }
 
 /* ── DiskBar: a document's file changed or vanished on disk ──
    Between a pane's header and its body (inside a PDF's pane, which floats over
@@ -3430,6 +3421,24 @@ body.is-resizing-panes * {
   padding: 24px;
   text-align: center;
 }
+
+/* A wait label shows only once the wait has lasted: a PDF that fills in within a few hundred ms (most do, measured
+   ~0.1-0.3 s from the click) flashed "Loading PDF…" for one or two frames. Still in the DOM for assistive tech. */
+.pdf-pane-message.is-waiting {
+  animation: pdf-pane-waiting 160ms ease-out 400ms both;
+}
+@keyframes pdf-pane-waiting {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pdf-pane-message.is-waiting { animation-duration: 0s; }
+}
+
+.pdf-tiled-paper { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.pdf-tiled-paper > div { position: absolute; background: #fff; }
+/* Inverted pages: white maps to black under the page inversion (platform/render/colour.ts). */
+.pdf-tiled-paper.is-inverted > div { background: #000; }
 
 .pdf-pane-action {
   padding: 6px 12px;
@@ -3776,26 +3785,6 @@ body.is-resizing-panes * {
    itself is the only feedback the button can give. */
 .pdf-viewer-rotate-btn:active {
   color: var(--interactive-accent);
-}
-
-/* A turn is being written (utils/pdfRotating.ts) — over a second on a big book,
-   during which nothing else on screen moves, and an unmoving button read as
-   "rotate does nothing". Each arrow spins the way it turns. The button stays
-   live: another click queues another quarter turn. */
-.pdf-viewer-rotate-btn.is-busy {
-  color: var(--interactive-accent);
-}
-
-.pdf-viewer-rotate-btn.is-busy svg {
-  animation: pdf-viewer-rotate-spin 0.9s linear infinite;
-}
-
-.pdf-viewer-rotate-btn.is-busy .pdf-viewer-rotate-ccw {
-  animation-direction: reverse;
-}
-
-@keyframes pdf-viewer-rotate-spin {
-  to { transform: rotate(360deg); }
 }
 
 /* Without the motion, the accent colour alone still says "working". */

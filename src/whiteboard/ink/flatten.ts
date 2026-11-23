@@ -5,6 +5,11 @@
 export const INK_CENTRELINE_ERROR_DEVICE_PX = 1 / 16;
 export const INK_RADIUS_ERROR_DEVICE_PX = 1 / 16;
 export const INK_CAP_ERROR_DEVICE_PX = 1 / 16;
+// How far a dash or point motif may slide along the curve from its exact arc position, over a whole
+// stroke (ink/outline.ts): half a device pixel ALONG the stroke, which no one can see. Measured on a
+// 260-sample dashed spiral: 1/64 px needed 42k segments, 1/4 px 11k (the board's CPU estimate then
+// passed its 32 MB floor and showed the memory notice), 1/2 px 8.1k, the solid stroke 6.4k.
+export const INK_DASH_PHASE_ERROR_DEVICE_PX = 1 / 2;
 export const INK_MAX_FLAT_PIECES = 262144;
 export const INK_MAX_FLAT_DEPTH = 32;
 export interface CubicArcMap {

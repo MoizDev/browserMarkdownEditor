@@ -7,9 +7,10 @@ import { createRequire } from 'node:module';
 import { chromium } from 'playwright';
 import { loadIdentityToolbox } from '../lib/identityToolbox.mjs';
 import { pdfFixtureManifest, readPdfFixture } from '../lib/fixtures.mjs';
+import { pinnedChrome } from '../../lib/paths.mjs';
 
 const [url, corpus, out, mode = 'verify'] = process.argv.slice(2);
-if (process.argv.length > 6 || !url || !corpus || !out || !['record', 'verify'].includes(mode) || !process.env.CHROME || !process.env.BUILD_WORKTREE || !process.env.BUILD_DIST) throw new Error('URL corpus output [record|verify]; set CHROME, BUILD_WORKTREE, BUILD_DIST');
+if (process.argv.length > 6 || !url || !corpus || !out || !['record', 'verify'].includes(mode) || !process.env.BUILD_WORKTREE || !process.env.BUILD_DIST) throw new Error('URL corpus output [record|verify]; set BUILD_WORKTREE, BUILD_DIST (CHROME overrides the pinned browser)');
 const driver = createRequire(import.meta.url)('playwright/package.json').version;
 if (driver !== '1.63.0') throw new Error('Wrong Playwright');
 const { buildIdentity, bindServedBodies, toolboxIdentity } = await loadIdentityToolbox();
@@ -20,7 +21,7 @@ const pane = identity.files.filter(file => /\/PdfPane-[^/]+\.js$/.test(file.path
 if (pane.length !== 1) throw new Error('Missing unique PdfPane chunk');
 await mkdir(out, { recursive: true });
 const report = { build: identity, toolbox: toolboxIdentity, driver, fixture: fixture.admission, mode, cases: [], failures: [], loss: 'Functional unlocked first-read/fallback reproduction. First-pixel timings are advisory; no calibrated open-path or sharpness claim.' };
-const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROME });
+const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROME ?? await pinnedChrome() });
 try {
     report.browser = browser.version();
     if (report.browser !== '157.0.8103.39') throw new Error('Wrong Chrome');

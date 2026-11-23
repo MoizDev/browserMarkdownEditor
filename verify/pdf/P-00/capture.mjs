@@ -1,6 +1,6 @@
 // P-00 functional baseline: real production app, user gestures, named OPFS vault.
 // No app module imports or calls. Generated expected records are authored inputs,
-// never reconstructed from pdf.js output. Run under bme-lock run (HOWTO.md).
+// never reconstructed from pdf.js output. Install the pinned browser first: node verify/install-browser.mjs.
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
@@ -8,6 +8,7 @@ import { createRequire } from 'node:module';
 import { readFile, writeFile, mkdir, readdir } from 'node:fs/promises';
 import { resolve, extname, sep } from 'node:path';
 import { chromium } from 'playwright';
+import { pinnedChrome } from '../../lib/paths.mjs';
 
 const options = {};
 for (let i = 2; i < process.argv.length; i += 2) {
@@ -18,7 +19,7 @@ for (let i = 2; i < process.argv.length; i += 2) {
 }
 if (options.dpr && !['1', '2', '1,2'].includes(options.dpr)) throw new Error('DPR must be 1, 2, or 1,2');
 if (options.mutant && options.mutant !== 'pdf-pane-boot-throw') throw new Error('Unknown mutant');
-for (const key of ['dist', 'corpus', 'out', 'chrome', 'app-commit']) if (!options[key]) throw new Error(`Missing --${key}`);
+for (const key of ['dist', 'corpus', 'out', 'app-commit']) if (!options[key]) throw new Error(`Missing --${key}`);
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const git = (...args) => execFileSync('git', args, { encoding: 'utf8' }).trim();
 const appCommit = git('rev-parse', options['app-commit']);
@@ -54,7 +55,7 @@ const diagnostics = [];
 try {
     const driverPackage = createRequire(import.meta.url)('playwright/package.json');
     if (driverPackage.version !== '1.63.0') throw new Error(`Driver is ${driverPackage.version}, not 1.63.0`);
-    browser = await chromium.launch({ headless: true, executablePath: options.chrome });
+    browser = await chromium.launch({ headless: true, executablePath: options.chrome ?? await pinnedChrome() });
     if (browser.version() !== '157.0.8103.39') throw new Error(`Unpinned browser: ${browser.version()}`);
     const results = [], screenshotHashes = [], networks = [];
     const manifest = JSON.parse(await readFile(new URL('../../fixtures/pdf/manifest.json', import.meta.url)));

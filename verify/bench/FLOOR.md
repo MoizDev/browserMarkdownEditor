@@ -17,11 +17,10 @@ endpoint/witness. `noteOpenMetric.mjs` hashes the implementation, fixture, pin a
 For exploration (vr-lead-approved, MACHINE SHARED, never an accepted floor):
 
 ```sh
-W=/Users/adham/Developer/bme-impl
-L=$W/scratch/bin/bme-lock
-DIST=$W/scratch/v-c/dist
-"$L" run -- node verify/bench/floor-calibration.mjs "$DIST" 10 "$W/scratch/measure/note-open-exploratory-10.json" exploratory
-"$L" run -- node verify/bench/floor-calibration.mjs "$DIST" 20 "$W/scratch/measure/note-open-exploratory-20.json" exploratory
+export BME_SCRATCH=/absolute/scratch            # outputs must stay under it; outside the clone
+DIST=$BME_SCRATCH/v-c/dist
+node verify/bench/floor-calibration.mjs "$DIST" 10 "$BME_SCRATCH/measure/note-open-exploratory-10.json" exploratory
+node verify/bench/floor-calibration.mjs "$DIST" 20 "$BME_SCRATCH/measure/note-open-exploratory-20.json" exploratory
 ```
 
 Counts are PER ARM, ABBA, fresh cold profiles. Exploratory machine-invalid samples remain labelled
@@ -30,9 +29,9 @@ The quiet window must meet session bounds and the actual measured-shift witness.
 overwrite; preserve old evidence before an explicitly approved repeat.
 
 After reviewing exploration and prebuilding the App.handleFileClick mutant at10% of its new median,
-vr-lead requests ONE window. In it: opening20+20 calibration, control, mutant (bench README commands).
+declare ONE quiet window (`BME_BENCH_WINDOW_MINUTES`). In it: opening20+20 calibration, control, mutant (bench README commands).
 `floor-calibration.mjs <dist> 20 <new-output.json> window` enforces session bounds1–5 and publishes
-a window opening record. Do NOT use an ordinary run grant for that recording.
+a window opening record; it needs `BME_BENCH_WINDOW_MINUTES` (the quiet window you declare).
 
 Floors are keyed by metric id+definition hash. First window/no compiled floor = RECORD mode:
 the opening block is not compared with itself, and the two timing arms follow in that same window.

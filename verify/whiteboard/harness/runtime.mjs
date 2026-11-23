@@ -1,9 +1,9 @@
 // Outside-app browser instrumentation; no engine implementation is reproduced here.
 import fs from 'node:fs';
-import path from 'node:path';
 import { chromium } from 'playwright';
 import { createRequire } from 'node:module';
 import { prepareMutation } from './control.mjs';
+import { pinnedChrome } from '../../lib/paths.mjs';
 
 export const browserPin = JSON.parse(fs.readFileSync(new URL('../../browser-pin.json', import.meta.url), 'utf8'));
 export function playwright() {
@@ -98,7 +98,7 @@ export async function launchRuntime(options = {}) {
   const attached=false;
   if (options.connectOverCDP) throw Error('HARNESS_NOT_RUN: physical/CDP transport is outside the pinned local W-B2 gate; use a separately verified device harness');
   if (options.channel) throw Error('HARNESS_BROWSER_ASSERT: use the pinned CfT executable, not a browser channel');
-  const executablePath = fs.realpathSync(path.resolve('/Users/adham/Developer/bme-impl/scratch/browsers', browserPin.version, browserPin.executable));
+  const executablePath = fs.realpathSync(await pinnedChrome());
   if (options.executablePath && fs.realpathSync(options.executablePath) !== executablePath) throw Error('HARNESS_BROWSER_ASSERT: wrong CfT path');
   const browser = await chromium.launch({ headless: !(options.headed || process.argv.includes('--headed')), executablePath });
   let context;

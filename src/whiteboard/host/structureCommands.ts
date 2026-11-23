@@ -6,6 +6,7 @@ import { childrenOf } from '../model/doc';
 import { newSheetId, type SheetId } from '../model/ids';
 import type { BoardRuntime } from './runtime';
 import type { Node } from '../model/nodes';
+import { isCancellation } from '../../platform/workers/envelope';
 
 export interface StructureCommandsOptions {
     readonly runtime: BoardRuntime;
@@ -27,7 +28,7 @@ export function createStructureCommands(options: StructureCommandsOptions) {
         receipt.release();
         return true;
     };
-    const report = (error: unknown) => { if (!(error instanceof DOMException && error.name === 'AbortError')) options.onError(error); };
+    const report = (error: unknown) => { if (!isCancellation(error)) options.onError(error); };
     const run = (action: () => Applied | undefined): boolean => {
         try { guard(); return apply(action()); } catch (error) { report(error); return false; }
     };

@@ -2,11 +2,11 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 
-/** Docker commands are local-only and use the integrator's one charged VM.
- * Never inherit credentials, credential helpers or a person's active remote context.
+/** Docker commands are local-only: the image's bytes are evidence, so a remote engine (or a person's
+ * active remote context) must never build or run them. Never inherit credentials or credential helpers.
  */
 export async function isolatedDockerEnv(scratch) {
-    if (!process.env.DOCKER_HOST?.startsWith('unix://') || !process.env.DOCKER_HOST.endsWith('/bme/docker.sock')) throw new Error('Use scratch/bin/bme-vm run --; no remote Docker endpoint or user context is allowed');
+    if (process.env.DOCKER_HOST && !/^(?:unix|npipe):\/\//.test(process.env.DOCKER_HOST)) throw new Error('Use a local Docker engine (DOCKER_HOST unset, or a unix:// or npipe:// socket); no remote Docker endpoint is allowed');
     const config = resolve(scratch, 'docker-config');
     await mkdir(config, { recursive: true });
     const clean = JSON.stringify({ auths: {}, cliPluginsExtraDirs: [resolve(homedir(), '.docker/cli-plugins'), '/opt/homebrew/lib/docker/cli-plugins', '/usr/local/lib/docker/cli-plugins', '/usr/libexec/docker/cli-plugins'] });

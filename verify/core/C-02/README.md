@@ -34,28 +34,25 @@ The 10,000-entry fixture gets a 60-second functional deadline but the same exact
 
 ## Commands
 
-Use the integrator's HOWTO. Every install/build/static/server/browser command needs bme-lock, and
-slow commands run in an hc background terminal. Previews run ONLY around their browser invocation.
-Ports6301 here belong to c-b. The scratch config imports this lane's normal Vite config, sets this
-worktree as root and private cacheDir/outDir; never npm run build or a shared node_modules.
+Previews run ONLY around their browser invocation, on a port you chose (6301 below). The scratch
+config imports this worktree's normal Vite config, sets this worktree as root and a private
+cacheDir/outDir outside it; never npm run build or a shared node_modules. The pinned browser comes
+from `node verify/install-browser.mjs`.
 
 ```sh
-L=/Users/adham/Developer/bme-impl/scratch/bin/bme-lock
-S=/Users/adham/Developer/bme-impl/scratch/c-b/C-02
-# Run builds from the lane checkout; --outDir selects the artifact to preserve.
-"$L" build -- ./node_modules/.bin/vite build --config "$S/vite.config.mjs" --outDir "$S/candidate-dist"
+S=/path/to/scratch/outside/the/clone
+# Run builds from the worktree; --outDir selects the artifact to preserve.
+./node_modules/.bin/vite build --config "$S/vite.config.mjs" --outDir "$S/candidate-dist"
 # Start matching preview separately, with --strictPort:
-"$L" serve -- ./node_modules/.bin/vite preview --config "$S/vite.config.mjs" --outDir "$S/candidate-dist" --host 127.0.0.1 --port 6301 --strictPort
-# Then, from the installed lane checkout:
-"$L" run -w 2 -- node verify/core/C-02/repro.mjs --all --url http://localhost:6301/ --result "$S/candidate-repro.json"
-"$L" run -- node verify/core/C-02/watcher.mjs --url http://localhost:6301/ --result "$S/candidate-watcher.json"
-"$L" run -- node verify/core/C-02/adversarial.mjs --url http://localhost:6301/ --result "$S/candidate-adversarial.json"
-"$L" run -w 2 -- node verify/core/C-02/order.mjs --url http://localhost:6301/ --result "$S/candidate-order.json" --reference "$S/baseline-order.json"
+./node_modules/.bin/vite preview --config "$S/vite.config.mjs" --outDir "$S/candidate-dist" --host 127.0.0.1 --port 6301 --strictPort
+# Then:
+node verify/core/C-02/repro.mjs --all --url http://localhost:6301/ --result "$S/candidate-repro.json"
+node verify/core/C-02/watcher.mjs --url http://localhost:6301/ --result "$S/candidate-watcher.json"
+node verify/core/C-02/adversarial.mjs --url http://localhost:6301/ --result "$S/candidate-adversarial.json"
+node verify/core/C-02/order.mjs --url http://localhost:6301/ --result "$S/candidate-order.json" --reference "$S/baseline-order.json"
 ```
 
-The scratch scoped controllers start an hc serve child AFTER the run grant, wait for Vite readiness,
-run these unchanged invocations, then stop/remove that server in finally. They never occupy a serve
-slot while waiting for the run grant. The 10,000-node flows use weight2 conservatively.
+Stop the preview when the runs end, even on failure.
 
 ## Unfixed witness and mutants
 

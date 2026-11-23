@@ -103,6 +103,7 @@ export interface PdfEngineOps {
     'engine.init': { args: EngineInitArgs; result: BackendInfo & { initMs: number; heapBytes: number } };
     'doc.open': { args: DocOpenArgs; result: DocInfo };
     'doc.close': { args: { docKey: PdfDocKey }; result: Record<string, never> };
+    'doc.adoptSource': { args: { docKey: PdfDocKey; source: Blob; size: number }; result: Record<string, never> };
     'page.tile': { args: PageTileArgs; result: PageTileResult };
     'page.text': { args: PageArgs & { detail: PdfTextDetail }; result: PageTextReply };
     'page.geometry': { args: PageArgs; result: PageGeometry };

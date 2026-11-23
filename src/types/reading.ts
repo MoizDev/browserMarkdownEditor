@@ -29,6 +29,9 @@ export type ReaderHostCommand='next-document'|'previous-document'|'close-documen
 export interface ReadingTypography {family:'serif'|'sans'|'publisher';size:number;leading:number;measure:'compact'|'comfortable'|'wide';margins:'small'|'medium'|'large';theme:'follow-app'|'light'|'sepia'|'dark'}
 export interface ReaderCallbacks {
  onReaderVersion(token:ReaderToken,version:DiskVersion):void;
+ /** The reader's disk snapshot could not be read through (the file changed or went during the open): the owner checks
+  * the file against the snapshot's stat and reloads or raises the DiskBar. */
+ onReaderSourceLost?(token:ReaderToken,stat:{lastModified:number;size:number}):void;
  onReaderStatus(token:ReaderToken,status:ReaderStatus):void;
  onReaderCapabilities(token:ReaderToken,caps:ReaderCapabilities):void;
  onReaderLocation(token:ReaderToken,location:ReaderLocation,cause:LocationCause):void;

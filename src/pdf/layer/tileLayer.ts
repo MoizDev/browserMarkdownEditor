@@ -13,6 +13,7 @@ import { pdfDocKey } from '../worker/protocol';
 import { consumePdfTileArrival, forgetPdfTileArrival, isPdfTileUniform, pdfTileUniformColour } from '../pool/arrivalWindow';
 import { auditCount, auditDrawn, auditTape, renderAuditEnabled } from '../../platform/render/renderAudit';
 import { QuadList } from './quadList';
+import { isCancellation } from '../../platform/workers/envelope';
 
 /** The pool returns the requested cell plus its one-pixel apron. Ownership of
  * every returned bitmap transfers to this layer, including cancelled replies. */
@@ -495,7 +496,12 @@ export class PdfTileLayer implements Layer {
             // farthest prefetch tile to admit it, and the next frame asked for that one again (734 evictions, 3,776 rasters in 30 s).
             const ahead = request.priority === 'prefetch' ? { prefetch: true } : undefined;
             if (ahead && aheadRefused) continue;
-            let lease = this.host.allocator.cpu.reserve(bytes, ahead);
+            // A tile the view needs asks quietly first: the layer's own idle tiles, prefetch and covered stand-ins are its room, and the
+            // governor cannot take them during this frame (the pane's evict hook waits for a frame it has not touched). Asked as need
+            // first, the refusal was counted as pool pressure and stepped quality down although the room was this layer's to give
+            // (measured, canvas2d, DPR 2, doc40 at 300%, fast scroll: a 1 MB visible tile refused with 30-40 MB of the layer's
+            // off-view tiles held, quality below 1 for 6.5 s and "quality was reduced" shown; the same on the baseline).
+            let lease = this.host.allocator.cpu.reserve(bytes, ahead ?? { quiet: true });
             if (!lease) {
                 this.evictUnneeded(input.viewport, bytes, !ahead);
                 lease = this.host.allocator.cpu.reserve(bytes, ahead);
@@ -534,7 +540,10 @@ export class PdfTileLayer implements Layer {
             }, error => {
                 this.slotFreed();
                 const current = this.entries.get(key) === entry;
-                const cancelled = entry.controller.signal.aborted || (error instanceof Error && error.name === 'AbortError');
+                // A pool-side cancellation ('Cancelled': a recycled or restarted engine, e.g. "Worker recycled: …") is not this tile's
+                // failure either: marked failed, a page that was still wanted showed "A PDF page could not be rendered" over a page that
+                // renders fine. Removed without a mark, the invalidate below asks for it again if the view still needs it.
+                const cancelled = entry.controller.signal.aborted || isCancellation(error);
                 if (current) this.remove(key, entry);
                 this.finishRetiring(entry);
                 if (!current) return;
@@ -603,7 +612,11 @@ export class PdfTileLayer implements Layer {
         const snapshot = this.mirror?.view(view);
         // One key per call: it is a JSON string, and the expression below hashed the same snapshot up to twice.
         const snapshotKey = snapshot ? mirrorViewKey(snapshot) : '';
-        const mirrored = !snapshot || snapshotKey === this.mirrorKey || snapshotKey === this.mirrorSkipped;
+        // A view whose mirror was trimmed and waits for room (mirrorTrimmed) lets go too: the bitmaps held for it were the room it
+        // waited for, so neither ever came. Measured, doc40 at 300% on WebGL2, DPR 2, at rest: 26.7 MB of tiles already on the GPU
+        // kept beside a 15 MB older mirror, the CPU pool at 42.7 of 47.9 MB 8 s later, one 10.6 MB mirror:trimmed-wait never woken.
+        // The view keeps its older mirror (the mirror is only a stand-in, see prepareMirror's fallback:mirror-kept-older).
+        const mirrored = !snapshot || snapshotKey === this.mirrorKey || snapshotKey === this.mirrorSkipped || snapshotKey === this.mirrorTrimmed;
         for (const [key, entry] of this.entries) {
             if (!entry.bitmap || entry.texture?.device !== device) continue;
             // Only the current plan's visible tiles feed the mirror; an older scale kept as a stand-in never does

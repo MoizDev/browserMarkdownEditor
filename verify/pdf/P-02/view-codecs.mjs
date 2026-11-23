@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { chromium } from 'playwright';
 import { fileURLToPath } from 'node:url';
+import { pinnedChromePath, requiredInput } from '../../lib/paths.mjs';
 
 const [url, fixtureDir, outDir, identityFile, mode] = process.argv.slice(2);
 if (process.argv.length !== 7 || !url || !fixtureDir || !outDir || !identityFile || !['generated', 'local'].includes(mode)) throw new Error('Usage: node view-codecs.mjs <built-app-url> <generated-fixture-dir> <result-dir> <artifact-identity.json> <generated|local>');
@@ -17,7 +18,7 @@ if (identity.schema !== 1 || !/^[a-f0-9]{40}$/.test(identity.commit) || !identit
 const pin = JSON.parse(await readFile(new URL('../../browser-pin.json', import.meta.url), 'utf8'));
 const driverVersion = JSON.parse(await readFile(new URL('../../../node_modules/playwright/package.json', import.meta.url), 'utf8')).version;
 if (`playwright@${driverVersion}` !== pin.driver) throw new Error('Driver does not match the run pin');
-const executablePath = process.env.CHROME_PATH || `/Users/adham/Developer/bme-impl/scratch/browsers/${pin.version}/${pin.executable}`;
+const executablePath = process.env.CHROME_PATH || pinnedChromePath();
 const oracleBytes = await readFile(resolve(fixtureDir, 'codecs-minimal.oracle.json'));
 const generated = JSON.parse(oracleBytes.toString('utf8'));
 const manifest = JSON.parse(await readFile(new URL('../../fixtures/pdf/manifest.json', import.meta.url), 'utf8'));
@@ -29,7 +30,7 @@ for (const fixture of fixtures) {
     if (!entry || entry.sha256 !== fixture.sha256) throw new Error(`Committed fixture identity mismatch: ${fixture.file}`);
 }
 if (mode === 'local') {
-    const source = '/Users/adham/Developer/browserMarkdownEditor/planning/00-evidence/pdf/offscreen/downloads/upstream-fixtures';
+    const source = requiredInput('BME_PDF_UPSTREAM_FIXTURES', 'the folder of pdf.js upstream test PDFs that holds the jbig2_*.pdf and ccitt_EndOfBlock_false.pdf witnesses');
     for (const [file, sha256] of [
         ['jbig2_symbol_offset.pdf', '305b71c67829ef0bb8bddab9fa3ee763dcecd173f5fd996740d17212888fa97d'],
         ['jbig2_file_header.pdf', '5edb6045fc86ee5fa8e837685a35a57014764d1f72518e136e5e8f13fcf92c8d'],

@@ -6,10 +6,10 @@ import path from 'node:path';
 import { armRoleWorkerDeath } from './worker-death.mjs';
 import { bindServedBodies, toolboxIdentity } from './toolbox.mjs';
 import { inspectPdfOutput } from './pdf-output.mjs';
+import { pinnedChrome } from '../../lib/paths.mjs';
 const require = createRequire(import.meta.url);
 const { chromium } = await import('playwright');
 const pin = JSON.parse(await readFile(new URL('../../browser-pin.json', import.meta.url)));
-if (!process.env.CHROME_PATH) throw new Error('CHROME_PATH must name the pinned Chrome for Testing executable');
 const [origin, fixtures, output, variant = 'portfolio', entry = 'toolbar', expectation = 'refused'] = process.argv.slice(2);
 if (!origin || !fixtures || !output) throw new Error('Usage: run.mjs ORIGIN FIXTURES OUT [VARIANT] [toolbar|keyboard|restore|reload|retry] [refused|editable|reproduce|funnel]');
 if (!['toolbar', 'keyboard', 'restore', 'reload', 'retry'].includes(entry) || !['refused', 'editable', 'reproduce', 'funnel'].includes(expectation) || !/^[a-z0-9-]+$/.test(variant)) throw new Error('Unknown entry, expectation or fixture variant');
@@ -61,7 +61,7 @@ async function verifyServedArtifacts() {
   }
 }
 let deathFault;
-const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROME_PATH, args: ['--disable-background-networking'] });
+const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROME_PATH ?? await pinnedChrome(), args: ['--disable-background-networking'] });
 try {
   report.browser = browser.version();
   if (report.browser !== pin.version) throw new Error(`Wrong browser: ${report.browser}, expected ${pin.version}`);

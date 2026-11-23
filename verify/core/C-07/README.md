@@ -33,19 +33,15 @@ that this query reuses the replacement, and that the real vault switch ends all 
 and removes its owner. It captures dark/light screenshots; inspect them. Fresh named OPFS only,
 no real vault, no helper CLI, no outside request. Browser/driver are the shared pinned versions.
 
-Run from this worktree, in hc terminals, with assigned port 6320 (or `BME_PORT`):
+Run from this worktree on port 6320 (or `BME_PORT`), after `node verify/install-browser.mjs` once:
 
 ```sh
-L=/Users/adham/Developer/bme-impl/scratch/bin/bme-lock
-"$L" build -- node verify/core/C-07/sanity.mjs --prepare
-"$L" static -- npm run typecheck
-"$L" static -- npm run lint
-"$L" run -- node verify/core/C-07/sanity.mjs
+node verify/core/C-07/sanity.mjs --prepare
+node verify/core/C-07/sanity.mjs
 ```
 
-Preparation and execution are separate. The run holds a memory-costing grant and only nests a
-memory-free serve grant; it stops browser/server in finally. Default artefacts:
-`/Users/adham/Developer/bme-impl/scratch/c-c/c07b/sanity/` (`reports/`, `screenshots/`).
+Preparation and execution are separate; the run stops browser/server in finally. Artefacts go to
+`BME_SCRATCH`, else `C-07/sanity/` under the toolbox scratch folder (`reports/`, `screenshots/`).
 
 ## Kept work, owed to the review phase
 

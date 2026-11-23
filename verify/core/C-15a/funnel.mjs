@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { chromium } from 'playwright';
+import { pinnedChrome } from '../../lib/paths.mjs';
 
 const require = createRequire(import.meta.url);
 const driver = require('playwright/package.json').version;
@@ -115,7 +116,7 @@ async function runFlow(id) {
     } else identity = await buildIdentity(id, arm);
     assert.equal(driver, '1.63.0', 'Wrong Playwright driver');
     const browser = await chromium.launch({ headless: true, executablePath: config.chrome
-        ?? '/Users/adham/Developer/bme-impl/scratch/browsers/157.0.8103.39/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing' });
+        ?? await pinnedChrome() });
     metadata.browser = browser.version();
     try {
         assert.equal(browser.version(), browserPin, 'Wrong Chrome for Testing version');

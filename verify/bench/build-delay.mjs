@@ -1,18 +1,16 @@
 // A source mutant, never a production flag or an injected browser timer.
-// Invoke through bme-lock build; copies tracked sources and installs its OWN deps.
+// Preparation only (no browser): copies tracked sources and installs its OWN deps.
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readFile, writeFile, mkdir, mkdtemp, realpath } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
-import { scratch, lockState } from '../lib/bench/lock.mjs';
+import { scratch } from '../lib/bench/lock.mjs';
 import { noteOpenDefinition } from '../lib/bench/noteOpenMetric.mjs';
 const exec = promisify(execFile);
 const [controlPath] = process.argv.slice(2);
-if (!controlPath) throw new Error('Usage: bme-lock build -- node verify/bench/build-delay.mjs <same-build-control-report.json>');
-const state = await lockState();
-if (!state.holders.some(h => h.cls === 'build' && h.pid === process.ppid)) throw new Error('A direct bme-lock build parent is required');
+if (!controlPath) throw new Error('Usage: node verify/bench/build-delay.mjs <same-build-control-report.json>');
 const control = JSON.parse(await readFile(resolve(controlPath), 'utf8'));
 const calibration = control.purpose === 'metric-version opening calibration'
     && ['calibration-complete-NOT-A-GATE', 'exploratory-complete-MACHINE-SHARED'].includes(control.status);

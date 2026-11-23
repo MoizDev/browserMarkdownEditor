@@ -4,11 +4,12 @@ import { createRequire } from 'node:module';
 import { chromium } from 'playwright';
 import { loadIdentityToolbox } from '../lib/identityToolbox.mjs';
 import { pdfFixtureManifest, readPdfFixture } from '../lib/fixtures.mjs';
+import { pinnedChrome } from '../../lib/paths.mjs';
 const { buildIdentity, bindServedBodies, toolboxIdentity } = await loadIdentityToolbox();
 
 const [url, bookDirectory, fontDirectory, out] = process.argv.slice(2);
 const mutant = process.env.BUILD_MUTANT ?? 'none';
-if (process.argv.length !== 6 || !url || !bookDirectory || !fontDirectory || !out || !process.env.CHROME || !process.env.BUILD_WORKTREE || !process.env.BUILD_DIST || !['none', 'omit-remeasure'].includes(mutant)) throw new Error('URL book-corpus first-font-corpus output; set CHROME, BUILD_WORKTREE, BUILD_DIST, optional BUILD_MUTANT=omit-remeasure');
+if (process.argv.length !== 6 || !url || !bookDirectory || !fontDirectory || !out || !process.env.BUILD_WORKTREE || !process.env.BUILD_DIST || !['none', 'omit-remeasure'].includes(mutant)) throw new Error('URL book-corpus first-font-corpus output; set BUILD_WORKTREE, BUILD_DIST, optional BUILD_MUTANT=omit-remeasure (CHROME overrides the pinned browser)');
 const manifest = await pdfFixtureManifest();
 const bookManifest = process.env.PDF_BOOK_MANIFEST_COMMIT ? await pdfFixtureManifest(process.env.PDF_BOOK_MANIFEST_COMMIT) : manifest;
 const patch = mutant === 'none' ? undefined : await readFile(resolve(process.env.BUILD_WORKTREE, 'verify/pdf/P-11b/mutants/omit-remeasure.patch'));
@@ -35,7 +36,7 @@ const driver = createRequire(import.meta.url)('playwright/package.json').version
 if (driver !== '1.63.0') throw new Error('Wrong Playwright');
 await mkdir(out, { recursive: true });
 const report = { build: identity, toolbox: toolboxIdentity, driver, mutant, requiredBodies, cases: [], failures: [] };
-const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROME });
+const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROME ?? await pinnedChrome() });
 try {
     report.browser = browser.version();
     if (report.browser !== '157.0.8103.39') throw new Error('Wrong Chrome');

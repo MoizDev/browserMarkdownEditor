@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import type { PdfReadingBinding, ReaderCapabilities } from '../types/reading';
 import type { PdfFindMemory } from '../utils/pdfFindHighlight';
-import type { PdfRotationPicture } from '../utils/pdfRotationPreview';
 import { getSessionIdentity, subscribeSessionIdentity } from '../utils/sessionIdentity';
 import type { PdfTiledPresentation, PdfTiledSource } from '../pdf/session/hostTypes';
 import PdfTiledView from './PdfTiledView';
@@ -17,7 +16,7 @@ interface Props {
     sourceHash?: string;
     findMemory: PdfFindMemory;
     searchVault(query: string): void;
-    rotate(delta: number, page?: number, picture?: PdfRotationPicture): void;
+    rotate(delta: number, page?: number): void;
     openText(page?: number): void;
     onSource(source: PdfTiledSource): void;
     onPresentation?(presentation: PdfTiledPresentation): void;
@@ -45,6 +44,10 @@ export default function PdfTiledSurface(props: Props) {
     useEffect(() => {
         if (!key) return;
         const controller = new AbortController();
+        // The platform's entry is needed the moment the source opens: fetched in parallel, not after (it was requested
+        // ~90 ms after the source modules, once engine init and the document open were done). The pane's own import of
+        // it owns any failure.
+        void import('../platform/render/cpuEntry').catch(() => {});
         void Promise.all([import('../pdf/session/sourceRuntime'), import('../pdf/session/passwords')]).then(async ([{ ensurePdfTiledSourceFactory }, store]) => {
             if (!controller.signal.aborted) setPasswords(store);
             const factory = await ensurePdfTiledSourceFactory();
@@ -91,7 +94,7 @@ export default function PdfTiledSurface(props: Props) {
     if (error?.key === key && !source) return <>{passwordPrompt}<div className="pdf-pane-message" role="alert">{error.message}
         <button className="pdf-pane-action" onClick={() => { setError(null); setRetry(value => value + 1); }}>Retry</button>
         </div></>;
-    if (!source) return <>{passwordPrompt}<div className="pdf-pane-message" role="status">{props.sourceOnly ? 'Opening extracted text…' : 'Loading PDF…'}</div></>;
+    if (!source) return <>{passwordPrompt}<div className="pdf-pane-message is-waiting" role="status">{props.sourceOnly ? 'Opening extracted text…' : 'Loading PDF…'}</div></>;
     if (props.sourceOnly) return null;
     return <PdfTiledView reading={reading} session={source.session} document={source.document}
         mirror={source.mirror} capturer={source.capturer} selectionState={source.selection} transition={source.transition} bridge={source.bridge}

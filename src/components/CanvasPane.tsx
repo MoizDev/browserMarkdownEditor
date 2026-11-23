@@ -1,6 +1,7 @@
 // Panes float over their layout slots so tab switches do not replace their
 // document-owned runtime, input history or camera. Hidden work is explicitly gated.
-import React, { Suspense, lazy, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { nativeCanvasEntrySlot } from './paneModules';
 import DiskBar from './DiskBar';
 import { useActivated, useFloatingSlot } from './floatingSlot';
 import { routeEngines } from '../utils/engineRouting';
@@ -28,7 +29,7 @@ function useWhiteboardTheme(appTheme: Theme): Theme {
     return scheme === 'system' ? appTheme : scheme;
 }
 
-const NativeCanvasEntry = lazy(() => import('./whiteboard/NativeCanvasEntry'));
+const NativeCanvasEntry = nativeCanvasEntrySlot.View;
 const DRAWING_VIEW_LIMITS = Object.freeze({ min: 0.01, max: 100 });
 const PAGED_VIEW_LIMITS = Object.freeze({ min: 0.4, max: 4 });
 const DRAWING_VIEW_INSETS = Object.freeze({ left: 0, right: 0, top: 0, bottom: 0 });
@@ -73,14 +74,14 @@ function CanvasPane({ file, documentId, nativeCanvasHost, representation, onNati
         onPointerDownCapture={() => { if (isVisible) onFocusPane(file.path); }}>
         {disk && <DiskBar name={file.name} state={disk} path={file.path} onAction={onDiskAction} />}
         <div className="canvas-pane-body">
-            {activated && identity && attachCanvasSession ? <Suspense fallback={<div role="status">{label}</div>}>
-                <NativeCanvasEntry file={file} documentId={documentId} identity={identity} nativeCanvasHost={nativeCanvasHost}
+            {activated && identity && attachCanvasSession ?
+                <NativeCanvasEntry fallback={<div role="status">{label}</div>} file={file} documentId={documentId} identity={identity} nativeCanvasHost={nativeCanvasHost}
                     attachCanvasSession={attachCanvasSession} onNativeCanvasReady={onNativeCanvasReady}
                     isVisible={isVisible} isFocused={isFocused} theme={isNotebook ? theme : boardTheme} emergencyReadOnly={route.emergencyReadOnly}
                     zoomLimits={isNotebook ? PAGED_VIEW_LIMITS : DRAWING_VIEW_LIMITS}
                     insets={isNotebook ? PAGED_VIEW_INSETS : DRAWING_VIEW_INSETS}
                     zMax={BOARD_Z_MAX} deadlineMs={30_000} registerKeyboardTarget={registerKeyboardTarget} onFocusPane={onFocusPane} />
-            </Suspense> : activated && <div role="status">Preparing canvas document…</div>}
+            : activated && <div role="status">Preparing canvas document…</div>}
         </div>
     </div>;
 }

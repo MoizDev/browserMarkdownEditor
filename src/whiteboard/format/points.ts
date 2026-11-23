@@ -1,3 +1,4 @@
+import { CurveReach } from '../ink/reach';
 // FMT-2; native-format §4. R-W2 fixes the pressure ceiling; R-W3 fixes coordinate ties.
 export const POINT_LIMITS = Object.freeze({
     count: 1_000_000,
@@ -43,6 +44,8 @@ export interface PointHeader {
 }
 export interface PointInspectionHeader extends PointHeader {
     readonly localBounds: readonly [number, number, number, number]; // R-W39: point min/max after /2^k, before node transforms.
+    readonly curveBounds: readonly [number, number, number, number]; // The curve's enclosure (ink/reach.ts), same space.
+    readonly maxReach: number;
     readonly maxPressure: number | null;
 }
 export interface PointInspection {
@@ -331,6 +334,7 @@ function* readPayloadSteps(pts: string, materialize: boolean): Generator<void, P
     const xy = materialize ? new Float64Array(2 * count) : null;
     let x = 0, y = 0, dx = 0, dy = 0;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    const reach = new CurveReach();
     for (let i = 0; i < count; i++) {
         const ex = unzigzag(coords.varint()), ey = unzigzag(coords.varint());
         if (Math.abs(ex) > POINT_LIMITS.quantized || Math.abs(ey) > POINT_LIMITS.quantized) refuse('coordinate', 'Point difference exceeds ±2^50');
@@ -344,6 +348,7 @@ function* readPayloadSteps(pts: string, materialize: boolean): Generator<void, P
         const worldX = x / scale, worldY = y / scale;
         minX = Math.min(minX, worldX); minY = Math.min(minY, worldY);
         maxX = Math.max(maxX, worldX); maxY = Math.max(maxY, worldY);
+        reach.add(worldX, worldY);
         if (xy) { xy[2 * i] = worldX; xy[2 * i + 1] = worldY; }
         if ((i & 511) === 511) yield;
     }
@@ -389,6 +394,7 @@ function* readPayloadSteps(pts: string, materialize: boolean): Generator<void, P
         header: {
             count, k, hasPressure: pressureBlock !== undefined, runCount,
             localBounds: [minX, minY, maxX - minX, maxY - minY],
+            curveBounds: reach.box(), maxReach: reach.maxReach(),
             maxPressure: pressureBlock === undefined ? null : maxPressureQuanta / POINT_LIMITS.pressureQuantum,
         }, hasUnknownChannels
     };

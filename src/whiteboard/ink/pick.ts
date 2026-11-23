@@ -81,13 +81,13 @@ export class ConvexDistance {
             const numeric = 256 * Number.EPSILON * magnitude * (iteration + 1);
             if (!Number.isFinite(distance) || !Number.isFinite(numeric)) throw new RangeError('Ink pick transform overflows');
             this.upper = Math.min(this.upper, distance + numeric);
-            if (distance <= numeric) { this.lower = 0; return; }
+            if (distance <= numeric) { this.lower = 0; if (count === 2) this.straddle(numeric * magnitude * 8); return; }
             const dx = -s[6] / distance, dy = -s[7] / distance;
             this.support(dx, dy);
             const px = this.supportPoint[0], py = this.supportPoint[1];
             if (!Number.isFinite(px) || !Number.isFinite(py)) throw new RangeError('Ink pick support overflows');
             this.lower = Math.max(this.lower, -px * dx - py * dy - numeric, 0);
-            if (this.upper - this.lower <= this.tolerance) return;
+            if (this.upper - this.lower <= this.tolerance) { if (this.lower === 0 && count === 2) this.straddle(numeric * magnitude * 8); return; }
             s[2 * count] = px; s[2 * count + 1] = py; count++;
             if (count === 3) {
                 const abx = s[2] - s[0], aby = s[3] - s[1], bcx = s[4] - s[2], bcy = s[5] - s[3];
@@ -118,6 +118,31 @@ export class ConvexDistance {
             s[6] = cx; s[7] = cy;
         }
         // No convergence is not a miss. Bounds remain available and the caller refines/retries.
+    }
+    /** The origin lies on (or within the bound of) the segment simplex s0–s1. The search direction (1, 0) makes that
+     * happen whenever the shapes are mirror-symmetric about it: the second support lands exactly opposite the first and
+     * the triangle test never runs. Measured: an eraser sample exactly on a stroke's end point (a radius-1 disc against
+     * a radius-8 capsule ending at its centre) answered "no witness", and one such stroke rejected the whole erase with
+     * "Ink region intersection is numerically ambiguous". The set is convex, so the origin is strictly inside it when
+     * the supports along BOTH normals of the segment reach past the origin and the origin is strictly inside the two
+     * triangles they make with the segment, the shared edge included. A support that does not reach past it is a real
+     * tangency (the whole set lies on one side), and that alone stays inconclusive. */
+    private straddle(margin: number): void {
+        const s = this.simplex, x0 = s[0], y0 = s[1], x1 = s[2], y1 = s[3], ex = x1 - x0, ey = y1 - y0;
+        if (Math.hypot(ex, ey) <= margin) return;
+        this.support(-ey, ex);
+        const px = this.supportPoint[0], py = this.supportPoint[1];
+        this.support(ey, -ex);
+        const qx = this.supportPoint[0], qy = this.supportPoint[1];
+        if (![px, py, qx, qy].every(Number.isFinite)) throw new RangeError('Ink pick support overflows');
+        // cross(e, point - s0): positive on the side of the first normal.
+        if (ex * (py - y0) - ey * (px - x0) <= margin || ex * (qy - y0) - ey * (qx - x0) >= -margin) return;
+        const side = ex * -y0 - ey * -x0;
+        // Triangle (s0, s1, p) is counter-clockwise: the origin is left of s1→p and p→s0.
+        const plus = (px - x1) * -y1 - (py - y1) * -x1 > margin && (x0 - px) * -py - (y0 - py) * -px > margin;
+        // Triangle (s1, s0, q) is counter-clockwise: the origin is left of s0→q and q→s1.
+        const minus = (qx - x0) * -y0 - (qy - y0) * -x0 > margin && (x1 - qx) * -qy - (y1 - qy) * -qx > margin;
+        if (side > margin ? plus : side < -margin ? minus : plus && minus) { this.lower = 0; this.inside = true; }
     }
 }
 

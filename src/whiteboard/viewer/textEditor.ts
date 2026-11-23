@@ -38,6 +38,7 @@ import type { ViewerEngine } from './types';
 import type { BoardPreview } from './preview';
 import type { createBoardPointQuery } from './pointQuery';
 import { createFormatToolbar, formatStateIn } from './textFormatToolbar';
+import { isCancellation } from '../../platform/workers/envelope';
 
 export interface BoardTextEditorOptions {
     /** The node whose text is being edited, or null: its paint is exact while the editor holds it. */
@@ -363,7 +364,7 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
         if (!current()) return false;
         const revision = doc.rev, generation = ++editingEpoch;
         try { await prepareMetric(id, controller.signal); if (!current() || revision !== doc.rev || generation !== editingEpoch) return false; return manager.start(id); }
-        catch (error) { if (!(error instanceof DOMException && error.name === 'AbortError')) report(error); return false; }
+        catch (error) { if (!isCancellation(error)) report(error); return false; }
     };
     const routedInput = createTextInputBridge({ manager, selected: () => runtime.selection.getSnapshot().active,
         isCurrent: current, error: report, clientToWorld: clientWorld, worldToClient: worldClient,
@@ -414,7 +415,7 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
     const refreshConnector = (id: NodeId, settled?: () => void) => {
         void prepareMetric(id, controller.signal).then(() => {
             if (current() && active === id && manager.current) { manager.refresh(); requestFrame(); }
-        }, error => { if (!(error instanceof DOMException && error.name === 'AbortError')) report(error); }).finally(settled);
+        }, error => { if (!isCancellation(error)) report(error); }).finally(settled);
     };
     const stopFonts = render.text.fonts.subscribe(() => {
         lineHeights.clear(); void lineHeight();

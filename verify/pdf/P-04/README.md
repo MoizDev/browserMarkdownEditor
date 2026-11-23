@@ -12,7 +12,7 @@ EditorPane/prefetch wiring; its exact proposed diff is in
 byte-identical GEN-P11-dense40 files. Playwright 1.63.0 / CfT157.0.8103.39, DPR1/2:
 first reads **303.60 / 303.70ms**, second reads **3.00 / 2.70ms**. The loading root mutation
 preceded a >200ms read plateau. Actual first native canvas blits contained ink and matched three
-subsequent canvas hashes. Raw results/captures: `scratch/p-f/p04-baseline/`.
+subsequent canvas hashes. Raw results/captures: `<run scratch>/p04-baseline/`.
 
 That was an unlocked functional reproduction, not a calibrated timing claim. The original
 report binds the served app to its source/build through committed V-01a 527faea. Afterwards the
@@ -20,7 +20,7 @@ retained driver was tightened to use the native event timestamp and to distingui
 reads by their actual PdfPane caller stack; that refinement has **not** been rerun.
 
 The old driver's full invocation is positional `URL corpus output [record|verify]`, with
-`CHROME`, `BUILD_WORKTREE`, `BUILD_DIST` set and, now that V-01a is merged, the default in-tree
+`BUILD_WORKTREE`, `BUILD_DIST` set (optional `CHROME` overrides the pinned browser) and, now that V-01a is merged, the default in-tree
 verification toolbox. It remains a review-phase tool, not a merge prerequisite.
 
 ## Owner's revised sanity bar
@@ -45,11 +45,11 @@ The seam is uncommitted there; neither core file was edited on the lane branch. 
   correctly sized PDF surface, legible controls and no overlay on the sidebar.
 
 These are **unqualified single-run quick readings**, not a calibrated performance claim.
-Results/captures: `scratch/p-f/p04-sanity-build/sanity.json` and its PNGs. Server/browser closed in
+Results/captures: `<run scratch>/p04-sanity-build/sanity.json` and its PNGs. Server/browser closed in
 finally; no server is retained between runs. `sanity.mjs --prepare` runs under build; normal mode
 runs under run, using in-tree serve/browser/vault helpers. Set BME_ROOT to the detached source,
 BME_SCRATCH to the prepared output directory, BME_PDF to the authored dense40 PDF, BME_PATCH to
-the exact seam patch and BME_PORT to an assigned port.
+the exact seam patch and BME_PORT to a free port you choose.
 
 ## Stated loss
 

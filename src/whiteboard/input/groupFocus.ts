@@ -3,6 +3,7 @@ import type { Vec2 } from '../geom/path';
 import type { BoardRuntime } from '../host/runtime';
 import type { NodeId, ParentId } from '../model/ids';
 import type { SelectionSnapshot } from '../selection';
+import { isCancellation } from '../../platform/workers/envelope';
 
 export interface GroupFocusOptions {
     readonly runtime: BoardRuntime;
@@ -47,7 +48,7 @@ export function enterGroupAtPoint(options: GroupFocusOptions): boolean {
         if (!child || child === group.id) return;
         runtime.selection.setScope(group.id, [child]); committed = true;
     })().catch(error => {
-        if (!controller.signal.aborted && !(error instanceof DOMException && error.name === 'AbortError')) options.error(error);
+        if (!controller.signal.aborted && !isCancellation(error)) options.error(error);
     }).finally(() => {
         try { restore(); } finally { try { unregister?.(); } finally { release(); } }
     }).catch(options.error);

@@ -28,6 +28,8 @@ import type { createNativeViewLease, NativeViewLease } from './nativeViewLease';
 import { documentClipboard, type NativeClipboardService } from './useNativeClipboard';
 import { useNativeBoardDialogs } from './useNativeBoardDialogs';
 import { useNativeBoardLanguage } from './useNativeBoardLanguage';
+import { isCancellation } from '../../platform/workers/envelope';
+import { useBoardNotices, type BoardNotices } from './boardNotices';
 
 
 type Links = ReturnType<typeof createNativeLinkOperations>;
@@ -39,10 +41,11 @@ export interface NativeEditingRenderContext {
     readonly chrome: (context: NativeEditingChromeContext) => ReactNode;
     readonly inverted: boolean;
     readonly setInverted: (value: boolean) => void;
-    readonly notice: string | null;
-    /** null dismisses the notice shown. */
-    readonly setNotice: (value: string | null) => void;
+    /** The board's notices, shown together (boardNotices.tsx). */
+    readonly notices: BoardNotices;
     readonly editable: boolean;
+    /** Editing is still being admitted: the session is sealed read-only only until its services connect (or admission fails). */
+    readonly admitting: boolean;
     readonly canMutate: () => boolean;
 }
 
@@ -70,7 +73,12 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
     const languageRef = useRef(language);
     useLayoutEffect(() => { languageRef.current = language; }, [language]);
     const dialogs = useNativeBoardDialogs({ documentId: identity.documentId, session: identity.session, isVisible: props.isVisible, currentOwner: current });
-    const [notice, setNotice] = useState<string | null>(null), [localInverted, setLocalInverted] = useState(false);
+    const importNotice = adapter.importNotice;
+    // Dismissed, the conversion notice is done for this session; another notice beside it no longer counts as dismissing it.
+    const dismissImport = useCallback((message: string) => { if (importNotice && message === importNotice.text) importNotice.dismiss(); }, [importNotice]);
+    const notices = useBoardNotices(importNotice && !importNotice.isDismissed() ? [importNotice.text] : [], dismissImport);
+    const setNotice = notices.show, clearNotice = notices.clear;
+    const [localInverted, setLocalInverted] = useState(false);
     const inverted = inversion?.value ?? localInverted, setInverted = inversion?.set ?? setLocalInverted;
     const [lease, setLease] = useState<NativeViewLease | null>(null), [clipboard, setClipboard] = useState<NativeClipboardService | null>(null);
     const [capabilities, setCapabilities] = useState<NativeEditingCapabilities | null>(null), [attached, setAttached] = useState(false);
@@ -86,8 +94,8 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
     const canMutateView = useCallback(() => !!viewRef.current?.editing?.isAttached() && chromeMountedRef.current && !!styleRef.current && !!embedPortRef.current, []);
     const onChromeReady = useCallback((ready: boolean) => { chromeMountedRef.current = ready; }, []);
     const report = useCallback((error: unknown) => {
-        if (!(error instanceof DOMException && error.name === 'AbortError')) setNotice(error instanceof Error ? error.message : String(error));
-    }, []);
+        if (!isCancellation(error)) setNotice(error instanceof Error ? error.message : String(error));
+    }, [setNotice]);
     useEffect(() => {
         if (!props.isVisible) return;
         const controller = new AbortController(); setLifetime(controller);
@@ -124,7 +132,7 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
                             touchHandles(show) { viewRef.current?.editing?.announce(show ? 'Text selection handles shown.' : 'Text selection handles hidden.'); },
                             reducedMotion: () => getBoardPreferences().animationSpeed === 0,
                             dynamicTextSize: () => getBoardPreferences().isDynamicResizeMode } } };
-            view = await createLease(editing, controller.signal, setNotice, message => setNotice(shown => shown === message ? null : shown));
+            view = await createLease(editing, controller.signal, setNotice, clearNotice);
             if (!live || controller.signal.aborted || !current()) { view.dispose(); return; }
             viewRef.current = view; setClipboard(service); setLease(view);
             const acquired = view;
@@ -139,25 +147,25 @@ export function NativeCanvasEditing({ props, board, adapter, factory, createLeas
         return () => { live = false; controller.abort(); setLifetime(previous => previous === controller ? null : previous); owned?.dispose();
             setCapabilities(null); setAttached(false); setLease(previous => previous === view ? null : previous); setClipboard(null);
             if (viewRef.current === view) viewRef.current = null; view?.dispose(); };
-    }, [props.isVisible, runtime, host, identity, factory, createLease, current, canMutateView, dialogs.requestText, report, onUnavailable]);
+    }, [props.isVisible, runtime, host, identity, factory, createLease, current, canMutateView, dialogs.requestText, report, onUnavailable, setNotice, clearNotice]);
     if (!props.isVisible) return null;
-    if (!lease || !clipboard || !capabilities || !language || !lifetime) return <>{dialogs.dialogs}<div role="status">Preparing canvas editor…{notice && ` ${notice}`}</div></>;
+    if (!lease || !clipboard || !capabilities || !language || !lifetime) return <>{dialogs.dialogs}<div role="status">Preparing canvas editor…{notices.list.map(message => ` ${message}`).join('')}</div></>;
     return <ConnectedEditor props={props} lease={lease} adapter={adapter} clipboard={clipboard} capabilities={capabilities}
-        language={language} signal={lifetime.signal} dialogs={dialogs} current={current} report={report} notice={notice}
-        setNotice={setNotice} inverted={inverted} setInverted={setInverted} attached={attached} commandRef={commandRef} linksRef={linksRef}
+        language={language} signal={lifetime.signal} dialogs={dialogs} current={current} report={report} notices={notices}
+        inverted={inverted} setInverted={setInverted} attached={attached} commandRef={commandRef} linksRef={linksRef}
         canMutateView={canMutateView} onChromeReady={onChromeReady} embedPort={embedPort} contextMenuRef={contextMenuRef} printRef={printRef}
         embedControllerRef={embedControllerRef} styleRef={styleRef} renderView={renderView} />;
 }
 
 function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, language, signal, dialogs, current: ownerCurrent, report,
-    notice, setNotice, inverted, setInverted, attached, commandRef, linksRef, canMutateView, onChromeReady, embedPort,
+    notices, inverted, setInverted, attached, commandRef, linksRef, canMutateView, onChromeReady, embedPort,
     contextMenuRef, embedControllerRef, styleRef, renderView, printRef }: {
     readonly props: NativeEditingViewProps; readonly lease: NativeViewLease; readonly adapter: HostedBoardAdapter<BoardSessionPort>;
     readonly printRef: RefObject<() => boolean>;
     readonly clipboard: NativeClipboardService; readonly capabilities: NativeEditingCapabilities;
     readonly language: NonNullable<ReturnType<typeof useNativeBoardLanguage>>; readonly signal: AbortSignal;
     readonly dialogs: ReturnType<typeof useNativeBoardDialogs>; readonly current: () => boolean; readonly report: (error: unknown) => void;
-    readonly notice: string | null; readonly setNotice: (message: string | null) => void; readonly inverted: boolean;
+    readonly notices: BoardNotices; readonly inverted: boolean;
     readonly setInverted: (value: boolean) => void; readonly attached: boolean;
     readonly commandRef: RefObject<((id: string, event: KeyboardEvent) => boolean) | null>; readonly linksRef: RefObject<Links | null>;
     readonly renderView: (context: NativeEditingRenderContext) => ReactNode;
@@ -167,6 +175,7 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
     readonly embedControllerRef: RefObject<NativeEmbedController | null>;
     readonly styleRef: RefObject<Styles | null>;
 }) {
+    const setNotice = notices.show;
     const runtime = lease.runtime, host = props.nativeCanvasHost, identity = props.identity;
     useBoardDebugSampler(runtime, lease);
     const current = useCallback(() => ownerCurrent() && lease.isCurrent(), [ownerCurrent, lease]);
@@ -176,6 +185,7 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
     const paletteRef = useRef<(() => void) | null>(null);
     const openCommandPalette = useCallback(() => { if (!paletteRef.current) return false; paletteRef.current(); return true; }, []);
     const [chromeReady, setChromeReady] = useState(false), [thumbnails, setThumbnails] = useState(false);
+    const [admissionFailed, setAdmissionFailed] = useState(false);
     const [servicesEpoch, refreshServices] = useState(0);
     const minimapRef = useRef(false), setMinimapRef = useRef<((value: boolean) => void) | null>(null);
     const minimapVisible = useCallback(() => minimapRef.current, []);
@@ -189,7 +199,7 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
     const canWrite = useCallback(() => canMutateView() && host.canWrite(identity), [canMutateView, host, identity]);
     // The menu's crop row starts the same crop the picture's own toolbar and double-click start: one session per document.
     const openCrop = useCallback((id: MediaRowId) => {
-        clipboard.crop.open(id).catch(error => { if (!(error instanceof DOMException && error.name === 'AbortError')) report(error); });
+        clipboard.crop.open(id).catch(error => { if (!isCancellation(error)) report(error); });
     }, [clipboard, report]);
     const translate = useCallback((key: string) => translateBoard(language.getSnapshot().table, key), [language]);
     const link = useMemo(() => createNativeLinkOperations({ runtime, lease, current, canWrite,
@@ -302,14 +312,17 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
             if (!host.canWrite(identity) || adapter.board.isReadOnly) throw new Error(adapter.board.readOnlyReason ?? 'The canvas source is not writable');
             lease.refreshAuthority();
             if (wasReadOnly) refreshServices(epoch => epoch + 1);
-        } catch (error) { report(error); }
+        } catch (error) { setAdmissionFailed(true); report(error); }
     }, [props.isVisible, signal, current, attached, chromeReady, owned, embedPort, lease, styleRef, commandRef,
         contextMenuRef, canMutateView, host, identity, adapter, servicesEpoch, report]);
 
     if (!owned) return <>{dialogs.dialogs}<div role="status">Preparing board commands…</div></>;
-    return <>{dialogs.dialogs}{renderView({ lease, chrome: editingChrome, inverted, setInverted, notice, setNotice,
-            editable: attached && chromeReady && !!embedPort && !adapter.board.isReadOnly && host.canWrite(identity),
-            canMutate: lease.canMutateView })}</>;
+    const editable = attached && chromeReady && !!embedPort && !adapter.board.isReadOnly && host.canWrite(identity);
+    // A writable source is sealed read-only only until the services above connect and the effect admits it; saying "read-only"
+    // meanwhile flashed on every board load (measured: 34 ms, under "Loading drawing…"). A refused admission says so.
+    const admitting = !editable && !admissionFailed && host.canWriteSource(identity);
+    return <>{dialogs.dialogs}{renderView({ lease, chrome: editingChrome, inverted, setInverted, notices,
+            editable, admitting, canMutate: lease.canMutateView })}</>;
 }
 
 function NativeChromeAttachment({ context, bind, children }: { readonly context: NativeEditingChromeContext;

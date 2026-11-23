@@ -21,6 +21,18 @@ export class WorkerHostError extends Error {
     }
 }
 
+/** Whether a rejection means the work was called off rather than failed: a DOM `AbortError` (a signal, or an engine error
+ * that kept its name across the worker boundary, e.g. the PDF engine's `PdfEngineError('AbortError')` relayed as a
+ * `WorkerHostError`), or the worker host's own `'Cancelled'` (an aborted signal, `cancelAll`, a recycle, a dispose).
+ * Cancellation is never shown to the person: whoever called it off already has, or no longer wants, the answer. A
+ * `'Deadline'` is NOT a cancellation (the work was wanted and did not come) and stays its caller's decision. One
+ * predicate on purpose: the board checked only the DOM `AbortError`, so a hover pick or marquee the person superseded
+ * reached them as "bme-worker-host-v1: Request aborted" (measured: 3 of 6 marquee rounds ended by click, ⌘Z or Escape). */
+export function isCancellation(error: unknown): boolean {
+    if (typeof DOMException !== 'undefined' && error instanceof DOMException) return error.name === 'AbortError';
+    return error instanceof Error && (error.name === 'AbortError' || error.name === 'Cancelled');
+}
+
 export interface ContainedPort {
     port: MessagePort;
     terminate(): void;

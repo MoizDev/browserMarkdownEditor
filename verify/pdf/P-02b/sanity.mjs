@@ -1,20 +1,21 @@
-// Charter §0 sanity: one real-app run, light + dark. No mutant, identity,
+// Sanity: one real-app run, light + dark. No mutant, identity,
 // eval-guard or fault-matrix proof. The worker close exercises the user-facing
 // no-progress/explicit-Retry path; no app internals are imported or invoked.
 import { chromium } from 'playwright';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
+import { pinnedChrome, requiredInput } from '../../lib/paths.mjs';
 
 const [url, out] = process.argv.slice(2);
 if (process.argv.length !== 4 || !url || !out) throw new Error('Usage: sanity.mjs <preview-url/> <fresh-out>');
 const target = new URL(url);
 if (target.protocol !== 'http:' || !['localhost', '127.0.0.1'].includes(target.hostname) || !target.pathname.endsWith('/')) throw new Error('Expected a loopback preview URL');
 const pin = JSON.parse(await readFile(new URL('../../browser-pin.json', import.meta.url), 'utf8'));
-const positive = await readFile('/Users/adham/Developer/bme-impl/scratch/p-e/local-positive-jpx.pdf');
-const damaged = await readFile('/Users/adham/Developer/browserMarkdownEditor/planning/00-evidence/pdf/offscreen/downloads/upstream-fixtures/bug_jpx.pdf');
+const positive = await readFile(requiredInput('BME_PDF_POSITIVE_JPX', 'a readable PDF holding a JPX (JPEG 2000) scan, the positive control'));
+const damaged = await readFile(join(requiredInput('BME_PDF_UPSTREAM_FIXTURES', 'the folder of pdf.js upstream test PDFs that holds bug_jpx.pdf (sha256 4010d808…)'), 'bug_jpx.pdf'));
 await mkdir(out);
 const report = { purpose: 'P-02b real-app sanity', cases: [], losses: ['Corrupt JPX is a rights-unverified local witness', 'Silent worker close is reachable via CDP; a real Chrome worker crash often takes the renderer with it', 'No review-phase proof or performance qualification'] };
-const browser = await chromium.launch({ headless: true, executablePath: `/Users/adham/Developer/bme-impl/scratch/browsers/${pin.version}/${pin.executable}` });
+const browser = await chromium.launch({ headless: true, executablePath: await pinnedChrome() });
 try {
     if (browser.version() !== pin.version) throw new Error('Wrong browser');
     report.browser = browser.version();

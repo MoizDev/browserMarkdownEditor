@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { chromium } from 'playwright';
 import { serveApp } from '../../lib/serve.mjs';
+import { pinnedChrome, scratchDir } from '../../lib/paths.mjs';
 import { bindServedBodies } from '../../lib/identity.mjs';
 import { installVault, seedVault, readWitness } from '../../lib/vault.mjs';
 
@@ -12,10 +13,10 @@ if (!['dev', 'production'].includes(mode)) throw new Error('BME_MODE must be dev
 const port = Number(process.env.BME_PORT ?? 6404), dpr = Number(process.env.BME_DPR ?? 1), theme = process.env.BME_THEME ?? 'dark';
 const focus = process.env.BME_FOCUS ?? 'viewer', portfolioArm = process.env.BME_PORTFOLIO ?? '0', inspectQuality = process.env.BME_QUALITY ?? '0';
 if (!['viewer', 'header'].includes(focus) || !['0', '1'].includes(portfolioArm) || !['0', '1'].includes(inspectQuality)) throw new Error('Invalid focus/portfolio/quality arm');
-if (!Number.isInteger(port) || port < 6400 || port > 6419 || ![1, 2].includes(dpr) || !['dark', 'light'].includes(theme)) throw new Error('Invalid assigned port/theme/DPR');
-const root = resolve(process.env.BME_ROOT ?? '.'), scratch = resolve(process.env.BME_SCRATCH ?? '/Users/adham/Developer/bme-impl/scratch/p-b/p07b1-app');
-const out = resolve(process.env.BME_OUT ?? '/Users/adham/Developer/bme-impl/scratch/p-b/p07b1-baseline');
-const fixtures = resolve(process.env.BME_FIXTURES ?? '/Users/adham/Developer/bme-impl/scratch/p-b/textbook876-v2');
+if (!Number.isInteger(port) || port < 1024 || port > 65535 || ![1, 2].includes(dpr) || !['dark', 'light'].includes(theme)) throw new Error('Invalid port (1024–65535)/theme/DPR');
+const root = resolve(process.env.BME_ROOT ?? '.'), scratch = resolve(process.env.BME_SCRATCH ?? scratchDir('P-07a', mode));
+const out = resolve(process.env.BME_OUT ?? scratchDir('P-07b1', 'result'));
+const fixtures = resolve(process.env.BME_FIXTURES ?? scratchDir('P-07b1', 'book'));
 const catalog = JSON.parse(await readFile(process.env.BME_FIXTURE_MANIFEST ?? new URL('../../fixtures/pdf/manifest.json', import.meta.url), 'utf8'));
 const pdfRecord = catalog.fixtures.find(entry => entry.id === 'GEN-18-876');
 const oracleRecord = catalog.fixtures.find(entry => entry.id === 'GEN-18-876-oracle');
@@ -27,14 +28,14 @@ let portfolio, portfolioRecord;
 if (portfolioArm === '1') {
     portfolioRecord = catalog.fixtures.find(entry => entry.id === 'GEN-25/portfolio');
     if (!portfolioRecord) throw new Error('Portfolio fixture is not admitted');
-    portfolio = await readFile(resolve(process.env.BME_ROLE_FIXTURES ?? '/Users/adham/Developer/bme-impl/scratch/p-b/p07b2-role-fixtures', portfolioRecord.file));
+    portfolio = await readFile(resolve(process.env.BME_ROLE_FIXTURES ?? scratchDir('P-07b1', 'roles'), portfolioRecord.file));
     if (hash(portfolio) !== portfolioRecord.sha256 || portfolio.length !== portfolioRecord.bytes) throw new Error('Portfolio fixture differs');
 }
 const oracle = JSON.parse(oracleBytes.toString('utf8'));
 const queries = oracle.expected.queries.filter(item => item.neverBuiltOnOpen);
 if (queries.length !== 4 || !queries.some(item => item.pages[0] === 450)) throw new Error('Expected four independent remote sentinel arms');
 const pin = JSON.parse(await readFile(new URL('../../browser-pin.json', import.meta.url), 'utf8'));
-const chrome = resolve('/Users/adham/Developer/bme-impl/scratch/browsers', pin.version, pin.executable);
+const chrome = await pinnedChrome();
 const driver = JSON.parse(await readFile(new URL('../../../node_modules/playwright/package.json', import.meta.url), 'utf8'));
 if (`playwright@${driver.version}` !== pin.driver) throw new Error('Driver is not pinned');
 await mkdir(out, { recursive: true });

@@ -590,7 +590,10 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
         const gesture = snapshot.identity.gestureSequence;
         let stable = stables.get(gesture);
         // Finalized geometry is specific to its device scale and node: any change starts the prefix again.
-        if (stable && (stable.nodeId !== snapshot.identity.nodeId || stable.scale !== scale)) { dropStable(gesture); stable = undefined; }
+        // So does a publication that finalizes fewer spans than are cached: a stroke closing at pen up turns its first span
+        // (ink/curve.ts closeCurvePublication), re-tessellated once while the open picture stays shown.
+        if (stable && (stable.nodeId !== snapshot.identity.nodeId || stable.scale !== scale
+            || stable.spans > snapshot.curve.finalizedSpanCount)) { dropStable(gesture); stable = undefined; }
         if (!stable) {
             const samples = snapshot.curve.samples;
             stable = { nodeId: snapshot.identity.nodeId, scale, origin: [samples.x(0), samples.y(0)], spans: 0, chunks: [],
@@ -644,7 +647,7 @@ export function createBoardWetLayer(options: BoardWetOptions): BoardWetRenderer 
             // A refusal waits for the pool to have TEMP_BYTES free, as every other wet refusal does: without the wake the stroke polled.
             const temp = s.temp ?? reserve(TEMP_BYTES); if (!temp) { denied = true; awaitSizedCapacity(owner, invalidate, { pool: 'cpu', bytes: TEMP_BYTES }); return false; }
             s.temp = temp;
-            const geometry = materializeCurveRange(real, { firstSpan: offset, spanCount: count }, publication.parameters);
+            const geometry = materializeCurveRange(real, { firstSpan: offset, spanCount: count }, publication.parameters, publication.closure);
             w.offset = spans === 0 ? 1 : offset + count;
             const style: InkWidth = s.style ??= { width: w.snapshot.presentation.width, model: { id: 'uniform' }, pressure: 'none' };
             const dot: InkDot | null = offset === 0 && s.dot ? { x: real.x(0), y: real.y(0), radius: DOT_METRIC_PROVISIONAL.radius(style.width, style.width / 2, style.model) } : null;

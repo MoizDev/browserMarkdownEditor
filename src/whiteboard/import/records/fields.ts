@@ -4,7 +4,7 @@ import type { LegacyShape } from './common';
 const PROPS: Readonly<Record<string, readonly string[]>> = {
     draw: ['segments', 'color', 'fill', 'dash', 'size', 'isComplete', 'isClosed', 'isPen', 'scale', 'scaleX', 'scaleY'],
     highlight: ['segments', 'color', 'size', 'isComplete', 'isPen', 'scale', 'scaleX', 'scaleY'],
-    geo: ['geo', 'w', 'h', 'growY', 'color', 'labelColor', 'fill', 'dash', 'size', 'font', 'align', 'verticalAlign', 'richText', 'url', 'scale'],
+    geo: ['geo', 'w', 'h', 'growY', 'color', 'labelColor', 'fill', 'dash', 'size', 'font', 'align', 'verticalAlign', 'richText', 'url', 'scale', 'flipX', 'flipY'],
     text: ['color', 'size', 'w', 'font', 'textAlign', 'autoSize', 'scale', 'richText'],
     note: ['color', 'labelColor', 'size', 'font', 'align', 'verticalAlign', 'richText', 'growY', 'fontSizeAdjustment', 'url', 'scale', 'textLastEditedBy'],
     arrow: ['kind', 'elbowMidPoint', 'bend', 'start', 'end', 'arrowheadStart', 'arrowheadEnd', 'color', 'labelColor', 'fill', 'dash', 'size', 'font', 'richText', 'labelPosition', 'scale'],

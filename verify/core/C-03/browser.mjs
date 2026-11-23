@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { chromium } from 'playwright';
+import { pinnedChrome } from '../../lib/paths.mjs';
 
 export const driver = createRequire(import.meta.url)('playwright/package.json').version;
 export const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=';
@@ -14,7 +15,7 @@ export function product(reason, condition, detail) { if (!condition) { const err
 export function invalid(detail) { const error = new Error(detail); error.invalid = true; throw error; }
 export async function launch() {
     assert.equal(driver, '1.63.0', 'Wrong Playwright driver');
-    const browser = await chromium.launch({ headless: true, executablePath: '/Users/adham/Developer/bme-impl/scratch/browsers/157.0.8103.39/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing' });
+    const browser = await chromium.launch({ headless: true, executablePath: await pinnedChrome() });
     assert.equal(browser.version(), '157.0.8103.39', 'Wrong Chrome for Testing');
     return browser;
 }

@@ -1,4 +1,5 @@
-// Source-only scratch candidates and logic mutants; run this whole command under bme-lock build.
+// Source-only scratch candidates and logic mutants; a build-only phase, run before any browser run.
+import { scratchDir } from '../../../lib/paths.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -10,7 +11,7 @@ const seamRef = process.env.W12_SEAM_REF;
 assert(!seamRef || variant === 'candidate', 'A real seam replay must not also overlay a mutant');
 assert(['candidate', 'no-filter', 'forget-touches', 'up-only', 'eager-canvas', 'always-touch'].includes(variant), 'Unknown build variant');
 const lane = process.cwd();
-const root = process.env.W12_BUILD_ROOT ?? '/Users/adham/Developer/bme-impl/scratch/w-a/w12';
+const root = process.env.W12_BUILD_ROOT ?? scratchDir('w-a', 'w12');
 const name = process.env.W12_BUILD_NAME ?? variant;
 assert(/^[a-z0-9-]+$/.test(name), 'Build name must be an owned simple directory name');
 const output = path.resolve(root, name), source = path.join(output, 'source');

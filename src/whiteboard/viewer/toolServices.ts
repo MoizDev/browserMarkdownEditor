@@ -35,6 +35,7 @@ import { createBoardTextEditor, type BoardTextEditorOptions } from './textEditor
 import { createSensitiveTargets } from './sensitiveTargets';
 import type { ViewerEngine } from './types';
 import type { BoardCardActions } from './cardControls';
+import { isCancellation } from '../../platform/workers/envelope';
 
 /** The board's context-menu request: the pointer, the element the menu hangs from, and the locked node it targets, if any. */
 export interface BoardContextMenuRequest { readonly point: { readonly x: number; readonly y: number }; readonly opener: HTMLElement; readonly locked: NodeId | null }
@@ -162,14 +163,17 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
             // Ctrl (on macOS too) and Cmd are the no-target keys for an arrow end (catalogue a.2), so they show no hover at all.
             if (event.ctrlKey || event.metaKey) { select.setConnectorHover(null, null, false); return; }
             const world = surfaceToWorld(at, camera.camera), exact = event.altKey;
+            // A hint, as the hover pick below: a failed resolve clears it, and the next move asks again.
             attachments.resolve(world, controller.signal, { precise: false, exact, route: 'arc', input }).then(attached => {
                 if (!controller.signal.aborted && seq === hoverSeq) select.setConnectorHover(attached?.target ?? null, world, exact);
-            }, error => { if (!controller.signal.aborted && !(error instanceof DOMException && error.name === 'AbortError')) ui.error(error); });
+            }, () => { if (!controller.signal.aborted && seq === hoverSeq) select.setConnectorHover(null, null, false); });
             return;
         }
+        // Hover is a hint: a pick that fails clears it and the next move asks again. Its failure reached the board's notice
+        // on every pointer move along an undecidable edge before (measured: "Point hit is geometrically uncertain" at 8.0 px).
         point.hitHover(at, input, controller.signal).then(id => {
             if (!controller.signal.aborted && seq === hoverSeq) { sensitive.setHovered(id); if (tool === 'select') select.setHover(id); }
-        }, error => { if (!controller.signal.aborted) ui.error(error); });
+        }, () => { if (!controller.signal.aborted && seq === hoverSeq) { sensitive.setHovered(null); if (tool === 'select') select.setHover(null); } });
     };
     const stopHoverRepick = runtime.session.subscribe(() => {
         if (lastPointer && !runtime.session.isGestureActive && !disposed) trackHover(lastPointer);
@@ -182,6 +186,14 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         && t.vaultEpoch === inputToken.vaultEpoch && t.tabId === inputToken.tabId && t.sessionGeneration === inputToken.sessionGeneration
         && t.viewGeneration === inputToken.viewGeneration && editable(), style: () => runtime.session.doc.ui, camera,
         mappings: options.mappings, invalidate: options.interaction.invalidate, onError: ui.error });
+    // Released shapes land in the order they were drawn, each prepared after the one before has applied.
+    let creationTail: Promise<void> = Promise.resolve();
+    const creationTurn = () => {
+        const ready = creationTail;
+        let done!: () => void;
+        creationTail = new Promise<void>(resolve => { done = resolve; });
+        return { ready, done };
+    };
     const pending = new Set<() => void>();
     const registerPending = (cancel: () => void) => { if (!editable()) throw new DOMException('View is not editable', 'AbortError'); pending.add(cancel); return () => { pending.delete(cancel); }; };
     let brush: ZoomBox | null = null, column: { x: number; y: number; width: number | null } | null = null;
@@ -264,6 +276,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         if (choice.id === 'figure' && !FIGURE_SHAPES.includes(variant as FigureShape)) throw new RangeError('Invalid figure variant');
         const kind = choice.id as 'figure' | 'sticky' | 'frame' | 'connector' | 'polyline';
         return { ...route(boardCreationTool(kind), { runtime, render: runtime.render, camera, kind, registerPending,
+            settle: () => runtime.session.beginGesture('settling'), registerSettling: select.registerSettling, creationTurn,
             sampleToSurface: options.sampleToSurface, guides: select.setGuides, hint: select.setConnectorTarget, binding: select.setConnectorBinding, alwaysSnap: options.alwaysSnap, dynamicSize: options.dynamicSize,
             ...(kind === 'figure' ? { figure: variant as FigureShape } : {}), preview, current: editable, follow,
             editText: async id => { await text.editText(id); }, resolveAttachment: (position, signal, request) => attachments.resolve(position, signal,
@@ -300,7 +313,9 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         let cancelled = selectionCancelled || textCancelled;
         for (const cancel of [...pending]) { pending.delete(cancel); try { cancel(); } catch (error) { ui.error(error); } cancelled = true; }
         try { if (options.imports.cancelPending()) cancelled = true; } catch (error) { ui.error(error); }
-        if (!text.manager.current) preview.clear();
+        // A released erase that is still landing owns the overlay (its strokes, dimmed): clearing it at the next press made
+        // them flash back at full opacity until the erase's frame.
+        if (!text.manager.current && !select.holdsPreview()) preview.clear();
         brush = null; column = null; laserContext.cancel(); erasePath = []; return cancelled;
     };
     const paste = (event: ClipboardEvent) => {
@@ -321,11 +336,11 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         void select.lockedAt(world, signal).then(async locked => {
             if (locked === null) {
                 try { await select.secondarySelect(world, signal); }
-                catch (error) { if (!(error instanceof DOMException && error.name === 'AbortError')) ui.error(error); }
+                catch (error) { if (!isCancellation(error)) ui.error(error); }
             }
             open(locked);
         }, error => {
-            if (!(error instanceof DOMException && error.name === 'AbortError')) ui.error(error);
+            if (!isCancellation(error)) ui.error(error);
             open(null);
         });
     };
@@ -353,6 +368,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         hover: event => { ui.hover?.(event); trackHover(event); }, contextMenu: contextMenuAt, drop: event => options.imports.drop(event), linkAt: ui.linkAt,
         penModeChanged: ui.penModeChanged, persistToolLock: ui.persistToolLock, clearLatches: ui.clearLatches, cancelPendingGestures: cancelPending,
         clearLaserTrail: dropTrails,
+        undoSettlingGestures: () => select.cancelSettling(true),
         keyboardContextMenu: select.keyboardContextMenu,
     };
     const writeOverlays = (frame: ScheduledFrame) => {

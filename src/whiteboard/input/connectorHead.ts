@@ -7,6 +7,7 @@ import type { BoardRuntime } from '../host/runtime';
 import { sheetOf } from '../model/doc';
 import type { NodeId } from '../model/ids';
 import { projectBoardGeometrySets } from '../model/overlayDoc';
+import { isCancellation } from '../../platform/workers/envelope';
 
 export interface ConnectorHeadOptions {
     readonly runtime: BoardRuntime;
@@ -74,7 +75,7 @@ export function toggleConnectorHead(options: ConnectorHeadOptions): boolean {
             } finally { final.release(); }
         } finally { source.release(); }
     })().catch(error => {
-        if (!controller.signal.aborted && !(error instanceof DOMException && error.name === 'AbortError')) options.error(error);
+        if (!controller.signal.aborted && !isCancellation(error)) options.error(error);
     }).finally(() => {
         try { options.clear(); } finally { try { unregister?.(); } finally { release(); } }
     }).catch(options.error);

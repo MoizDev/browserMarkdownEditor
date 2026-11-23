@@ -1,22 +1,20 @@
 # W-01: native drawing registration
 
 Plain Playwright runs of the real production app, not code-based tests. No application module is
-imported into the browser. Use the shared lock and run slow commands in `hc run --bg` terminals.
-Stop preview **between runs**, before writing code; start nothing during a timing window.
+imported into the browser. Build first, then run; stop preview **between runs**. The browser is the
+pinned Chrome for Testing (`node verify/install-browser.mjs` once per machine).
 
 ## Clean candidate
 
 Commit the candidate first. The independently expected identity names that reviewed checkout:
 
 ```sh
-W=/Users/adham/Developer/bme-impl
-L=$W/scratch/bin/bme-lock
-S=$W/scratch/w-b/candidate
+S=/absolute/scratch/w-b/candidate   # outside the clone
 C=$(git rev-parse HEAD)
-node verify/whiteboard/w-b/w-01-build.mjs --scratch "$S" # holds L build for copy + Vite
-$L serve -- ./node_modules/.bin/vite preview --config "$S/vite.config.mjs" --port 6520 --strictPort
+node verify/whiteboard/w-b/w-01-build.mjs --scratch "$S"   # copy + Vite build, before any run
+./node_modules/.bin/vite preview --config "$S/vite.config.mjs" --port 6520 --strictPort
 # After preview is ready, in another terminal:
-$L run -w 2 -- node verify/whiteboard/w-b/w-01-drawing.mjs --url http://localhost:6520/ \
+node verify/whiteboard/w-b/w-01-drawing.mjs --url http://localhost:6520/ \
   --expected-commit "$C" --out "$S/results"
 # Stop preview immediately after the run.
 ```
@@ -24,7 +22,7 @@ $L run -w 2 -- node verify/whiteboard/w-b/w-01-drawing.mjs --url http://localhos
 Repeat with `--theme dark/light --dpr 1/2`. The run asserts the **installed** Playwright package is
 1.63.0, compares the real executable path with the pinned CfT path, then asserts the launched
 browser is 157.0.8103.39. Post-launch failures close all contexts and the browser. Three isolated
-contexts (weight 2) use fresh OPFS vaults/cache; no stored-handle reads or IDB shim are needed.
+contexts use fresh OPFS vaults/cache; no stored-handle reads or IDB shim are needed.
 
 ## Witness, identity, false pass and loss
 
@@ -68,10 +66,10 @@ checks and applies the committed unified patch with `git apply`, then builds wit
 configuration. A patch that no longer applies fails before Vite. Patch hashes enter the receipt.
 
 ```sh
-M=$W/scratch/w-b/registration-mutant
+M=/absolute/scratch/w-b/registration-mutant
 node verify/whiteboard/w-b/w-01-build.mjs --scratch "$M" --mutant
-$L serve -- ./node_modules/.bin/vite preview --config "$M/vite.config.mjs" --port 6521 --strictPort
-$L run -w 2 -- node verify/whiteboard/w-b/w-01-drawing.mjs --url http://localhost:6521/ \
+./node_modules/.bin/vite preview --config "$M/vite.config.mjs" --port 6521 --strictPort
+node verify/whiteboard/w-b/w-01-drawing.mjs --url http://localhost:6521/ \
   --expected-commit "$C" --expected-mutant registration --out "$M/results"
 # Expected exit 1. Stop preview.
 ```
@@ -83,10 +81,10 @@ search, both idle-prefetch arms, the four-shape legacy control and Trash control
 The native tree icon also rejects this mutant. A failure caused only by missing focus is not proof.
 
 ```sh
-M=$W/scratch/w-b/prefetch-mutant
+M=/absolute/scratch/w-b/prefetch-mutant
 node verify/whiteboard/w-b/w-01-build.mjs --scratch "$M" --prefetch-mutant
-$L serve -- ./node_modules/.bin/vite preview --config "$M/vite.config.mjs" --port 6522 --strictPort
-$L run -w 2 -- node verify/whiteboard/w-b/w-01-drawing.mjs --url http://localhost:6522/ \
+./node_modules/.bin/vite preview --config "$M/vite.config.mjs" --port 6522 --strictPort
+node verify/whiteboard/w-b/w-01-drawing.mjs --url http://localhost:6522/ \
   --expected-commit "$C" --expected-mutant prefetch --out "$M/results"
 # Expected exit 1. Stop preview.
 ```

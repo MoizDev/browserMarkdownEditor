@@ -23,6 +23,7 @@ function part(input: Float64Array, from: number, to: number, out: Float64Array, 
  * flattened-polyline guess or accumulation of previously accepted pairwise errors is used. */
 export function createOmissionCertificate(parameters: CurveParameters): OmissionCertificate {
     const a = new Float64Array(8), b = new Float64Array(8), ca = new Float64Array(8), cb = new Float64Array(8), scratch = new Float64Array(8);
+    const arc: number[] = [];
     return (candidate: CanonicalizationCandidate): boolean => {
         if (certifyExactCollinear(candidate)) return true;
         const c = candidate, n = c.rawCount, count = c.retainedCount;
@@ -47,6 +48,19 @@ export function createOmissionCertificate(parameters: CurveParameters): Omission
         const flagsAfter = writeCurveSpan(raw, prefix + removed, parameters, b);
         if ((flagsBefore & CurveFlag.CornerAfter) || (flagsAfter & CurveFlag.CornerBefore)) return false;
         const budget = CANONICALIZATION_DIRECTED_ERROR_DEVICE_PX / c.captureDeviceScale;
+        // The common parameter is the raw samples' cumulative chord length, not their index. Pointer
+        // samples are unevenly spaced along a stroke (a slow mouse alternates one- and two-pixel steps,
+        // and ink/dequantize.ts keeps that spacing), and an index parameter pairs points that far apart,
+        // so the bound measured the misalignment instead of the shape: measured on a slow whole-pixel
+        // circle, 287 of 411 samples kept by index, 103 by chord length, and 8 instead of 157 on a line
+        // 10° off horizontal. Any common monotone parameter is still an enclosure of every centreline point.
+        const first = Math.max(-2, -prefix);
+        arc.length = 0;
+        for (let i = first, total = 0; i < n; i++) {
+            if (i > first) total += Math.hypot(raw.x(prefix + i) - raw.x(prefix + i - 1), raw.y(prefix + i) - raw.y(prefix + i - 1));
+            arc.push(total);
+        }
+        const at = (rawIndex: number) => arc[rawIndex - first];
         const compare = (before: SampleSequence, indices: ArrayLike<number> | null, size: number): boolean => {
             let oldSpan = Math.max(0, prefix - 2), newSpan = oldSpan;
             const position = (index: number, map: ArrayLike<number> | null) => index < prefix ? index - prefix : map ? map[index - prefix] : index - prefix;
@@ -59,8 +73,10 @@ export function createOmissionCertificate(parameters: CurveParameters): Omission
                 if (!(old1 > old0 && new1 > new0)) return false;
                 writeCurveSpan(before, oldSpan, parameters, a);
                 writeCurveSpan(next, newSpan, parameters, b);
-                part(a, (rawSpan - old0) / (old1 - old0), (rawSpan + 1 - old0) / (old1 - old0), ca, scratch);
-                part(b, (rawSpan - new0) / (new1 - new0), (rawSpan + 1 - new0) / (new1 - new0), cb, scratch);
+                const oldLength = at(old1) - at(old0), newLength = at(new1) - at(new0);
+                if (!(oldLength > 0 && newLength > 0)) return false;
+                part(a, (at(rawSpan) - at(old0)) / oldLength, Math.min(1, (at(rawSpan + 1) - at(old0)) / oldLength), ca, scratch);
+                part(b, (at(rawSpan) - at(new0)) / newLength, Math.min(1, (at(rawSpan + 1) - at(new0)) / newLength), cb, scratch);
                 let magnitude = 1, difference = 0;
                 for (let i = 0; i < 8; i += 2) {
                     magnitude = Math.max(magnitude, Math.abs(ca[i]), Math.abs(ca[i + 1]), Math.abs(cb[i]), Math.abs(cb[i + 1]));

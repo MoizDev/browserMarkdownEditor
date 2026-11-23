@@ -8,10 +8,11 @@ import type { MediaLease } from '../media/store';
 import type { NodeId, SheetId } from '../model/ids';
 import { MEDIA_MIMES, type MediaId, type MediaMime } from '../model/media';
 import { boardContentSource, type PinnedBoardBuild } from './contentSource';
-import { createSessionGestureQueue } from './gestureQueue';
+import { createSessionGestureQueue, type GesturePhase } from './gestureQueue';
 import { createSaveScheduler } from './saveScheduler';
 import type { BoardSessionFactoryOptions, ComposedBoardSession } from './factoryTypes';
 import type { SerializerCheckpoint } from '../format/serializerClient';
+import { isCancellation } from '../../platform/workers/envelope';
 
 function emptyTouched(): { nodes: Set<NodeId>; sheets: Set<SheetId>; board: Set<BoardKey>; media: Set<MediaId> } {
     return { nodes: new Set(), sheets: new Set(), board: new Set(), media: new Set() };
@@ -199,7 +200,7 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
         finishComposition: options.finishComposition,
         captureJournal: () => { const source = capture(); return journal.capture(source, cachedSource!.context); },
         // A journal append superseded by a newer revision or a closing session is cancelled work: the next dirty batch journals it.
-        journalError: error => { if (!(error instanceof DOMException && error.name === 'AbortError')) options.onFailure(error); },
+        journalError: error => { if (!isCancellation(error)) options.onFailure(error); },
     });
     const mediaReferenceSnapshot = () => {
         const names = new Set<string>(), unresolved = new Set<MediaId>();
@@ -224,14 +225,15 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
         get readOnlyReason() { return readonlyReason(); },
         get isGestureActive() { return queue.isGestureActive; },
         get gestureHolds() { return queue.gestureHolds; },
+        get isInputGestureActive() { return queue.isInputGestureActive; },
         apply(transaction: Transaction) { guard(); return applyController.apply(transaction); },
         preflight(transaction: Transaction) { guard(); return applyController.preflight(transaction); },
         begin(origin: TransactionOrigin, label: string) { guard(); return applyController.begin(origin, label); },
         enqueueAfterGesture<T>(signal: AbortSignal, task: () => T) { return queue.enqueueAfterGesture(signal, task); },
         subscribeGesture(listener: () => void) { return queue.subscribeGesture(listener); },
-        beginGesture() {
+        beginGesture(phase?: GesturePhase) {
             guard();
-            const release = queue.beginGesture();
+            const release = queue.beginGesture(phase);
             scheduler.setGesture(true); notifyPending();
             let active = true;
             return () => { if (active) { active = false; try { release(); } finally { scheduler.setGesture(queue.isGestureActive); notifyPending(); } } };

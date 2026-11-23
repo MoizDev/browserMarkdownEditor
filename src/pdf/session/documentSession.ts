@@ -51,7 +51,9 @@ export class PdfTiledDocumentSession {
     constructor(readonly token: RenderToken, readonly source: 'outer' | 'original',
         private readonly acquireSnapshot: (signal: AbortSignal) => Promise<{ blob: Blob; stat: { lastModified: number; size: number }; dispose(): void }>,
         private readonly pool: TiledDocumentPool, private readonly isTokenCurrent: (token: RenderToken) => boolean,
-        private readonly onStableBlob?: (blob: Blob, stat: { lastModified: number; size: number }, signal: AbortSignal) => void,
+        /** Called once, as the open starts, with the memory-backed copy still being made: its fingerprint is the version.
+         * It rejects when the snapshot could not be read through (changed or gone on disk): see `open`. */
+        private readonly onStableBlob?: (blob: Promise<Blob>, stat: { lastModified: number; size: number }, signal: AbortSignal) => void,
         private readonly requestPassword?: PdfPasswordRequest) {}
 
     open(): Promise<OpenTiledDocument> {
@@ -59,10 +61,20 @@ export class PdfTiledDocumentSession {
         if (!this.opening) {
             this.opening = (async () => {
                 const snapshot = await this.acquireSnapshot(this.controller.signal);
-                let blob: Blob;
-                try { blob = await stablePdfBlob(snapshot.blob, this.controller.signal); }
-                finally { snapshot.dispose(); }
-                this.onStableBlob?.(blob, snapshot.stat, this.controller.signal);
+                // A nameless slice of the snapshot File: the same snapshot-checked bytes, and a Blob the worker envelope
+                // admits (a File would carry its name into the contained engine).
+                const disk = snapshot.blob instanceof File;
+                const blob = disk ? snapshot.blob.slice(0, snapshot.blob.size, 'application/pdf') : snapshot.blob;
+                // The first page is drawn from the disk snapshot itself while its memory-backed copy is made beside it:
+                // copying first held every open for the whole file (measured: ~250 ms for a 287 MB textbook from OPFS,
+                // 770 ms under load, before the engine saw a byte). The guarantee is unchanged: a read of the snapshot
+                // after the file changed on disk fails (NotReadableError) rather than returning new bytes, so the engine,
+                // the copy and the fingerprint each see the snapshot's bytes or an error, never a mix, exactly as the copy
+                // itself did. Every worker adopts the copy when it is ready, so no later change on disk reaches this session.
+                // The copy is hashed, not the snapshot, so the disk is read once and the version cannot fail on a later change.
+                const stable = disk ? stablePdfBlob(blob, this.controller.signal) : Promise.resolve(blob);
+                void stable.catch(() => {}).finally(() => snapshot.dispose());
+                this.onStableBlob?.(stable, snapshot.stat, this.controller.signal);
                 let opened: OpenTiledDocument;
                 for (;;) {
                     try {
@@ -89,6 +101,12 @@ export class PdfTiledDocumentSession {
                     throw new DOMException('PDF session replaced', 'AbortError');
                 }
                 this.document = opened;
+                if (disk) {
+                    // A copy that fails (the file changed or went while it was read) leaves the session on its snapshot:
+                    // what is drawn stays the snapshot's and an unread page fails to draw, until the owner, told through
+                    // the rejected version (sourceFactory), reloads the document under a new reader token or raises the DiskBar.
+                    void stable.then(copy => this.closed ? undefined : opened.poolDocument.adoptSource(copy)).catch(() => {});
+                }
                 return opened;
             })();
             const opening = this.opening;

@@ -1,14 +1,14 @@
-// Preparation only. Invoke under bme-lock build, never under a browser run slot.
-// All source patches live in a detached scratch worktree, not the lane's src/.
+// Preparation only: run it before, never inside, a browser run.
+// All source patches live in a detached scratch worktree, never this checkout's src/.
 import { readFile, writeFile, mkdir, realpath } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
+import { scratchRoot } from '../../lib/paths.mjs';
 import { ROOT, argumentsOf, git, sha256, command, exists, replaceExactly, toolbox, workSite } from './common.mjs';
 
 const options = argumentsOf(process.argv.slice(2), ['base', 'source', 'scratch', 'variant', 'toolbox'], ['base', 'source', 'scratch', 'variant', 'toolbox']);
 if (!['clean', 'holds'].includes(options.variant)) throw new Error('Known preparation variants: clean, holds');
 const sourceRoot = resolve(options.source), scratch = resolve(options.scratch);
-const scratchRoot = '/Users/adham/Developer/bme-impl/scratch/';
-if (!sourceRoot.startsWith(scratchRoot) || !scratch.startsWith(scratchRoot) || scratch.startsWith(sourceRoot + '/')) throw new Error('Source and emitted output must be separate scratch paths');
+if (!sourceRoot.startsWith(`${scratchRoot}/`) || !scratch.startsWith(`${scratchRoot}/`) || scratch.startsWith(sourceRoot + '/')) throw new Error(`Source and emitted output must be separate paths under the scratch folder ${scratchRoot}`);
 const base = git(ROOT, 'rev-parse', options.base), tools = await toolbox(options.toolbox);
 await mkdir(scratch, { recursive: true });
 if (!await exists(join(sourceRoot, '.git'))) {

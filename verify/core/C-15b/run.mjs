@@ -5,6 +5,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { chromium } from 'playwright';
+import { pinnedChrome } from '../../lib/paths.mjs';
 
 const args = process.argv.slice(2);
 const option = (key, fallback) => args.includes(key) ? args[args.indexOf(key) + 1] : fallback;
@@ -21,7 +22,7 @@ const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const driverVersion = createRequire(import.meta.url)('playwright/package.json').version;
 const git = (...args) => execFileSync('git', ['-C', sourceRoot, ...args], { encoding: 'utf8' }).trim();
 const fail = (reason, detail) => Object.assign(new Error(detail), { reason });
-const chrome = option('--chrome', '/Users/adham/Developer/bme-impl/scratch/browsers/157.0.8103.39/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing');
+const chrome = option('--chrome') ?? await pinnedChrome();
 const plant = 'bme-perf-hooks-plant-7f3a';
 // These identify the hook, not ordinary app words such as tree or paths.
 const anchors = [plant, '__perf', 'trash-done', /\.tree\s*=\s*\{\s*paths\s*:/, /\.reports\s*=\s*\(\)\s*=>/];
@@ -249,13 +250,19 @@ try {
         result.identity = { commit: git('rev-parse', 'HEAD'), tree: git('status', '--porcelain', '--untracked-files=all') || 'clean', root: sourceRoot, mode: 'dev' };
         assert.equal(result.identity.commit, expectedCommit);
         assert.equal(result.identity.tree, 'clean', 'dev source tree must be clean');
-        const server = JSON.parse(execFileSync('hc', ['get', devServer], { encoding: 'utf8' }));
-        result.devServer = { address: devServer, cwd: server.cwd, argv: server.argv };
-        assert.equal(server.state, 'live', 'dev server is not live');
+        // --dev-server is the dev server's process id: its live argv and cwd prove which worktree it
+        // serves (`ps` fails on a dead pid). argv is split on spaces, so keep paths space-free.
+        const pid = Number(devServer);
+        assert.ok(Number.isInteger(pid) && pid > 0, '--dev-server must be the dev server process id');
+        let server;
+        try {
+            server = { argv: execFileSync('ps', ['-ww', '-o', 'args=', '-p', String(pid)], { encoding: 'utf8' }).trim().split(/\s+/),
+                cwd: execFileSync('lsof', ['-a', '-d', 'cwd', '-p', String(pid), '-Fn'], { encoding: 'utf8' }).split('\n').find(line => line.startsWith('n'))?.slice(1) };
+        } catch (error) { throw new Error(`dev server ${pid} is not live`, { cause: error }); }
+        result.devServer = { pid, cwd: server.cwd, argv: server.argv };
         assert.equal(server.cwd, sourceRoot, 'dev server cwd is not the offered worktree');
         const vite = server.argv.findIndex(arg => arg.endsWith('/vite'));
         assert.ok(vite >= 0 && server.argv[vite + 1] === sourceRoot, 'dev server must explicitly pass the offered worktree as its Vite root');
-        assert.ok(server.argv.includes('serve'), 'dev server lacks its serve grant');
         assert.equal(server.argv[server.argv.indexOf('--port') + 1], new URL(url).port, 'dev server does not own the observed port');
         result.loss = 'Dev source text carries dead guarded code; no textual-exclusion claim is made for development modules.';
     } else {

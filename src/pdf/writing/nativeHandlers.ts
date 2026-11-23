@@ -101,17 +101,15 @@ export const createPdfWriterRuntime: CreatePdfWriterRuntime = async options => {
             return verifyNativeNotebook(runtime, args as unknown as WriterOperations['writer.verifyNotebookOutput']['args'], ctx);
         }),
         'writer.rotate': serial(async (value, ctx) => {
-            const args = object(value); object(args.source);
-            if (typeof args.delta !== 'number' || !Number.isSafeInteger(args.delta / 90) || (args.pageIndices !== undefined && !Array.isArray(args.pageIndices))) throw new PdfEngineError('InvalidPdf', 'Invalid rotation request');
-            const result = await rotateNativePdf(runtime, args as unknown as WriterOperations['writer.rotate']['args'], ctx);
-            ctx.transfer(result.bytes); return result;
+            const args = object(value), turns = object(args.turns);
+            if (!(args.source instanceof Blob) || !Number.isSafeInteger(turns.all) || !Array.isArray(turns.pages) ||
+                (turns.pages as unknown[]).some(entry => !Array.isArray(entry) || entry.length !== 2 || !entry.every(Number.isSafeInteger))) throw new PdfEngineError('InvalidPdf', 'Invalid rotation request');
+            return rotateNativePdf(args as unknown as WriterOperations['writer.rotate']['args'], ctx);
         }),
         'writer.verifyRotation': serial(async (value, ctx) => {
-            const args = object(value); object(args.source);
-            if (typeof args.delta !== 'number' || !Number.isSafeInteger(args.delta / 90) || !(args.bytes instanceof ArrayBuffer) ||
-                !Array.isArray(args.expected) || (args.pageIndices !== undefined && !Array.isArray(args.pageIndices))) throw new PdfEngineError('InvalidPdf', 'Invalid rotation verification request');
-            const result = await verifyNativeRotation(runtime, args as unknown as WriterOperations['writer.verifyRotation']['args'], ctx);
-            ctx.transfer(result.bytes); return result;
+            const args = object(value);
+            if (!(args.source instanceof Blob) || !(args.bytes instanceof ArrayBuffer) || !Number.isSafeInteger(args.base) || !Array.isArray(args.rotations)) throw new PdfEngineError('InvalidPdf', 'Invalid rotation verification request');
+            return verifyNativeRotation(runtime, args as unknown as WriterOperations['writer.verifyRotation']['args'], ctx);
         }),
         'writer.inspect': serial(async (value, ctx) => {
             const args = object(value); object(args.source);

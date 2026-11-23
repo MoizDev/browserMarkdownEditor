@@ -4,6 +4,7 @@ import type { PdfFindMemory } from '../utils/pdfFindHighlight';
 import { dismissOnEscape } from '../utils/escapeDismiss';
 import { openContextMenu } from '../utils/contextMenu';
 import { copyText, readClipboardText, CLIPBOARD_READ_BLOCKED, CLIPBOARD_WRITE_BLOCKED } from '../utils/clipboard';
+import { isCancellation } from '../platform/workers/envelope';
 import './PdfFindBar.css';
 
 export interface PdfFindStart { page: number; y: number }
@@ -27,7 +28,7 @@ interface PdfFindBarProps {
     onNotify?(message: string): void;
 }
 const keyOf = (hit?: PdfFindHit) => hit ? `${hit.page}:${hit.from}:${hit.to}` : '';
-const cancelled = (error: unknown) => error instanceof Error && (error.name === 'AbortError' || error.name === 'AbortException');
+const cancelled = (error: unknown) => isCancellation(error) || error instanceof Error && error.name === 'AbortException';
 function mergeHits(a: readonly PdfFindHit[], b: readonly PdfFindHit[]) {
     return [...new Map([...a, ...b].map(hit => [keyOf(hit), hit])).values()].sort((x, y) => x.page - y.page || x.from - y.from);
 }
@@ -216,8 +217,10 @@ function PdfFindBar(props: PdfFindBarProps, forwarded: React.ForwardedRef<PdfFin
     const status = view.issue || (!query.trim() ? '' : !progress || index < 0 && !progress.done ? `Searching… ${progress?.pagesDone ?? 0}/${progress?.pagesTotal ?? '…'} pages`
         : hits.length ? `${index + 1} of ${hits.length.toLocaleString('en-US')}${progress.capped || !progress.done ? '+' : ''}` : 'No matches');
     const quality = progress ? [progress.textlessPages ? `${progress.textlessPages} ${progress.textlessPages === 1 ? 'page has' : 'pages have'} no text (scans are not OCR’d)` : '',
-        progress.failedPages.length ? `${progress.failedPages.length} ${progress.failedPages.length === 1 ? 'page could' : 'pages could'} not be read` : '',
-        progress.partialPages.length ? `${progress.partialPages.length} ${progress.partialPages.length === 1 ? 'page has' : 'pages have'} text-order/extraction warnings` : ''].filter(Boolean).join(' · ') : '';
+        progress.failedPages.length ? `${progress.failedPages.length} ${progress.failedPages.length === 1 ? 'page could' : 'pages could'} not be read` : '']
+        // Text-order warnings (partialPages) are extraction diagnostics, not a failure to find: a clean LaTeX book told the
+        // reader "180 pages have text-order/extraction warnings" while every match was found. Only text that is not there is said.
+        .filter(Boolean).join(' · ') : '';
     return <div className="pdf-find-bar" role="search" aria-label="Find in PDF" onContextMenu={contextMenu}
         onDragOver={event => event.preventDefault()} onDrop={event => event.preventDefault()}
         onKeyDown={event => {

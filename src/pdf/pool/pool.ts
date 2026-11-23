@@ -1,5 +1,5 @@
 import { createWorkerClient } from '../../platform/workers/client';
-import type { ContainedPort, Priority, WorkerClient } from '../../platform/workers/envelope';
+import { isCancellation, type ContainedPort, type Priority, type WorkerClient } from '../../platform/workers/envelope';
 import { PdfEngineError } from '../engine/types';
 import type { DocInfo } from '../engine/types';
 import type { PageGeometry } from '../../platform/types';
@@ -30,6 +30,7 @@ import { record, integer, boolean, invalidPdfReply } from './validationCommon';
 import { rebuildPdfTextReply } from '../text/rebuildReply';
 import type { PdfTextDetail } from '../worker/protocol';
 import { reportWorkerMemory, releaseWorkerMemory } from '../../platform/render/workerMemory';
+import { auditCount } from '../../platform/render/renderAudit';
 
 const validators = createPdfReplyValidators();
 const workerOwners = new WeakMap<WorkerClient, BootstrapPort>();
@@ -48,7 +49,7 @@ type Doc = { key: PdfDocKey; source: 'outer' | 'original'; blob: Blob; password?
     rasterFailures: Set<number>; rasterEpoch: number };
 type Slot = { id: number; client: WorkerClient; generation: number; opens: Map<string, Promise<DocInfo>>;
     openRequests: Map<string, { request: Promise<unknown>; priority: Priority }>;
-    pages: Set<string>; inFlight: number; heapBytes: number; retiring: boolean; idleAt: number;
+    pages: Set<string>; inFlight: number; heapBytes: number; retiring: boolean; idleAt: number; warmUntil: number;
     fonts: Map<PdfFontId, Promise<void>>; needed: Map<PdfDocKey, PdfFontId[]>; fontEpoch: number };
 type Job = { doc: Doc; lease?: Lease; op: PdfEngineOp; args: Record<string, unknown>; priority: Priority; signal: AbortSignal;
     asked: number; timeoutMs?: number; deadline?: number; controller: AbortController; resolve: (value: unknown) => void; reject: (error: unknown) => void;
@@ -64,6 +65,8 @@ function sameGeometry(a: Readonly<PageGeometry>, b: Readonly<PageGeometry>): boo
         [0, 1, 2, 3, 4, 5].every(index => Number.isFinite(a.toUserSpace[index]) && a.toUserSpace[index] === b.toUserSpace[index]);
 }
 let poolSerial = 0;
+/** How long a pre-booted render worker outlives the idle retirement while nothing has opened a document on it. */
+const WARM_HOLD_MS = 5 * 60_000;
 
 type BootstrapPort = ContainedPort & { readonly engine: EngineInitArgs; compiled(): Promise<void> };
 
@@ -238,7 +241,7 @@ class Pool implements PdfPool {
     private slot(): Slot {
         const id = ++this.nextSlot;
         const client = pdfClient(this.options, `pdf-render-${this.serial}-${id}`, 'render', id, heap => { slot.heapBytes = heap; });
-        const slot: Slot = { id, client, generation: 0, opens: new Map(), openRequests: new Map(), pages: new Set(), inFlight: 0, heapBytes: 0, retiring: false, idleAt: Date.now(), fonts: new Map(), needed: new Map(), fontEpoch: 0 };
+        const slot: Slot = { id, client, generation: 0, opens: new Map(), openRequests: new Map(), pages: new Set(), inFlight: 0, heapBytes: 0, retiring: false, idleAt: Date.now(), warmUntil: 0, fonts: new Map(), needed: new Map(), fontEpoch: 0 };
         client.on('font.needed', value => {
             try {
                 const data = record(value, ['ids', 'docKey', 'page']);
@@ -296,6 +299,7 @@ class Pool implements PdfPool {
         slot.client.reprioritise(open.request, priority);
     }
     private async openOn(slot: Slot, doc: Doc, priority: () => Priority, signal: AbortSignal): Promise<DocInfo> {
+        slot.warmUntil = 0;
         this.syncGeneration(slot);
         this.promoteOpen(slot, doc.key, priority());
         for (const id of doc.fonts) await this.provideFont(slot, id, signal);
@@ -377,7 +381,7 @@ class Pool implements PdfPool {
         job.settled = true; job.signal.removeEventListener('abort', job.abort);
         job.progress?.finish();
         if (error instanceof Error && job.op === 'page.tile' && job.rasterEpoch === job.doc.rasterEpoch && Number.isSafeInteger(job.args.page) &&
-            !['AbortError', 'Cancelled'].includes(error.name)) failPdfPage(job.doc.key, job.args.page as number, 'failed', 'This page could not be drawn.');
+            !isCancellation(error)) failPdfPage(job.doc.key, job.args.page as number, 'failed', 'This page could not be drawn.');
         if (job.timer) clearTimeout(job.timer);
         const index = this.queue.indexOf(job); if (index >= 0) this.queue.splice(index, 1);
         if (error !== undefined) job.reject(error); else job.resolve(value);
@@ -471,6 +475,8 @@ class Pool implements PdfPool {
         if (!job.progress && job.op === 'page.tile' && job.priority <= 1 && Number.isSafeInteger(job.args.page)) {
             job.progress = beginPdfPageWork(job.doc.key, job.args.page as number);
         }
+        // Which worker each visible/prefetch tile went to: how a large window's open spreads (or queues) across the pool.
+        if (job.op === 'page.tile') auditCount('pdf-pool', `tile:p${job.priority}:w${this.slots.indexOf(slot)}`);
         const attempt = { controller: new AbortController(), preempted: false };
         const signal = AbortSignal.any([job.signal, attempt.controller.signal]);
         let rasterFailurePage: number | undefined;
@@ -508,7 +514,7 @@ class Pool implements PdfPool {
                         } else this.promoteRegions(job.doc, page as number, job.priority);
                         try { await waitFor(regions, signal); }
                         catch (error) {
-                            if (!signal.aborted && error instanceof Error && ['AbortError', 'Cancelled'].includes(error.name)) {
+                            if (!signal.aborted && isCancellation(error)) {
                                 if (job.doc.regions.get(page as number) === regions) job.doc.regions.delete(page as number);
                                 continue;
                             }
@@ -617,7 +623,7 @@ class Pool implements PdfPool {
         const shared = pending;
         // The first waiter owns this shared installation; its preemption must not fail the others.
         return waitFor(shared, signal).catch(error => {
-            if (!signal.aborted && error instanceof Error && ['AbortError', 'Cancelled'].includes(error.name)) {
+            if (!signal.aborted && isCancellation(error)) {
                 if (slot.fonts.get(id) === shared) slot.fonts.delete(id);
                 return this.provideFont(slot, id, signal);
             }
@@ -693,6 +699,20 @@ class Pool implements PdfPool {
         this.pump();
     }
     releaseTile(result: PageTileResult): void { this.credits.release(result); }
+    async adoptSource(doc: Doc, blob: Blob): Promise<void> {
+        if (!(blob instanceof Blob) || (typeof File !== 'undefined' && blob instanceof File) || blob.size !== doc.blob.size) throw new PdfEngineError('RangeError', 'Invalid PDF source copy');
+        if (doc.closing || doc.blob === blob || this.disposed) return;
+        // Swapped first: an open posted from now on (a new worker, a restart) reads the copy. A worker that already opened
+        // the snapshot is told in its serial order, after its open and any render queued before.
+        doc.blob = blob;
+        await Promise.allSettled(this.slots.filter(slot => slot.opens.has(doc.key)).map(async slot => {
+            const generation = slot.client.generation;
+            await slot.opens.get(doc.key);
+            if (slot.client.generation !== generation || !slot.opens.has(doc.key) || doc.closing) return;
+            record(await slot.client.request<unknown>('doc.adoptSource', { docKey: doc.key, source: blob, size: blob.size },
+                { priority: 1, cpu: 'light', signal: doc.controller.signal, deadlineMs: 60_000 }), []);
+        }));
+    }
     async release(lease: Lease): Promise<void> {
         const doc = lease.doc; doc.leases.delete(lease); doc.refs--;
         if (doc.refs > 0) return;
@@ -734,7 +754,7 @@ class Pool implements PdfPool {
         const idle = this.slots.filter(slot => !slot.inFlight).sort((a, b) => b.heapBytes - a.heapBytes);
         for (const slot of idle) {
             if (slot.heapBytes + (workerExtraBytes.get(slot.client) ?? 0) > ceiling || this.totalHeap() > this.budget ||
-                (this.slots.length > 1 && now - slot.idleAt >= 20_000) || (!visible && now - slot.idleAt >= 60_000)) {
+                (this.slots.length > 1 && now - slot.idleAt >= 20_000) || (!visible && now - slot.idleAt >= 60_000 && now >= slot.warmUntil)) {
                 slot.retiring = true; const at = this.slots.indexOf(slot); if (at >= 0) this.slots.splice(at, 1); slot.client.dispose();
             }
         }
@@ -840,6 +860,21 @@ class Pool implements PdfPool {
             reprioritise: (promise, priority) => client.reprioritise(promise, priority), close,
         };
     }
+    warm(): void {
+        if (this.disposed || this.slots.some(slot => !slot.retiring)) return;
+        const slot = this.slot();
+        // Held past the no-visible-document retirement until first use: a vault's first PDF is often opened minutes
+        // after it loads, and retired at 60 s the boot would be gone by then. Bounded, so an engine nobody opens a
+        // document on still goes: measured (macOS footprint, DPR 2), the booted broker frame and its empty worker are one
+        // renderer process of ~77 MB, plus ~12 MB in the browser and network processes, which a first open would pay anyway.
+        slot.warmUntil = Date.now() + WARM_HOLD_MS;
+        // The cheapest request spawns the worker through the broker frame, compiles the module and runs engine.init.
+        // Its failure is not the reader's: the open that follows owns the restart policy and the error.
+        void slot.client.request<unknown>('worker.stats', {}, { priority: 3, deadlineMs: 60_000 }).then(value => {
+            const stats = validatePdfWorkerStats(value);
+            slot.heapBytes = stats.heapBytes; reportMemory(slot.client, stats.heapBytes);
+        }).catch(() => {});
+    }
     async stats(): Promise<readonly PdfWorkerStats[]> {
         return Promise.all(this.slots.map(async slot => {
             const value = await slot.client.request<unknown>('worker.stats', {}, { priority: 3, deadlineMs: 60_000 });
@@ -896,6 +931,7 @@ class Lease implements PdfPoolDocument {
     tile(args: WithoutDocKey<PageTileArgs>, options: PdfRequestOptions) { return this.request('page.tile', args, options); }
     releaseTile(result: PageTileResult): void { this.pool.releaseTile(result); }
     retry(): Promise<void> { return this.closed ? Promise.reject(abortError()) : this.pool.retry(this.docKey); }
+    adoptSource(blob: Blob): Promise<void> { return this.closed ? Promise.reject(abortError()) : this.pool.adoptSource(this.doc, blob); }
     renderPage(page: number, scale: number, options: PdfPageBitmapOptions): Promise<ImageBitmap> { return renderPdfPageBitmap(this, page, scale, options); }
     thumbnail(page: number, maxSidePx: number, options: Omit<PdfPageBitmapOptions, 'priority' | 'maxPixels'>): Promise<ImageBitmap> {
         const geometry = this.info.pages[page];

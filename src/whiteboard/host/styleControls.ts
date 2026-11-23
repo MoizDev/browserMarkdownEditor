@@ -57,7 +57,7 @@ export function createBoardStyleControls(options: BoardStyleControlsOptions) {
     const hasSelection = () => runtime.selection.getSnapshot().selected.length > 0;
     const styles = {
         currentColor: () => commands.currentColor(),
-        /** The values the command palette lists, in its order. White is left out as in the pen panel (penPanel.ts). */
+        /** The values the command palette lists, in its order. White is left out as in the style panel (stylePanel.ts). */
         options: { colours: SWATCHES.filter(color => color !== 'white'), opacities: OPACITIES, fills: FILLS, dashes: DASHES, sizes: SIZES, fonts: FONTS,
             aligns: ['start', 'middle', 'end'] as const },
         currentOpacity: () => commands.currentOpacity(),

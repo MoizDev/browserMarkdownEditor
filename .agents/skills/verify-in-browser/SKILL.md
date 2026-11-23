@@ -1,57 +1,66 @@
 ---
 name: verify-in-browser
-description: How to check a change in the real app — there is no test suite, so verification is Playwright driving the production build in the pinned headless Chrome against an OPFS-stubbed vault. Covers the shared-machine lock, preparing and serving a build, seeding notes, boards and PDFs, opening documents, forcing and proving WebGL2 or canvas2d, DPR and themes, waiting for a settled picture, and the traps that make a working change look broken. Load before writing any browser script, before driving the app, and before claiming a change works.
+description: How to check a change in the real app when it needs checking — there is no test suite, so a UI/UX change (or any change only visible by using the app) is verified by Playwright driving the production build in the pinned headless Chrome for Testing against an OPFS-stubbed vault. Covers when a run is needed, installing the pinned browser, preparing and serving a build, seeding notes, boards and PDFs, opening documents, forcing and proving WebGL2 or canvas2d, DPR and themes, waiting for a settled picture, and the traps that make a working change look broken. Load before writing any browser script, before driving the app, and before claiming a UI change works.
 ---
 
 # Checking a change in the real app
 
-**There are no code-based tests** (AGENTS.md). `npm run typecheck` and `npm run lint` are the static gates;
-everything behavioural is checked by driving the real app in headless Chrome. A change is not verified because it
-typechecks. The bar for a change: reproduce the bug once the way a person meets it, fix, show it once more the same
+**There is NO test suite, and none is run routinely** (AGENTS.md bans code-based tests). `npm run typecheck` and
+`npm run lint` are the static gates for **every** change. A headless run of the real app is done **if and only
+when a change needs it**: a UI/UX change, or any change whose correctness is only visible by using the app as a
+person would (drawing, rendering, opening, saving, restoring). A change that typechecks is not verified when it is
+one of those; a change that is not one of those needs no browser run.
+
+When a run is needed, the bar is: reproduce the bug once the way a person meets it, fix, show it once more the same
 way, and look at the screenshots (both themes if it draws; both backends if it renders). For a speed fix, one
 before/after pair.
 
 ## The pinned toolchain
 
-- **Driver**: `playwright@1.63.0` from the repo's own `node_modules`, never the npx cache.
-- **Browser**: Chrome for Testing **157.0.8103.39** (`verify/browser-pin.json`), launched by path. The default path is
-  `/Users/adham/Developer/bme-impl/scratch/browsers/<version>/<executable>`; `BME_CHROME_PATH` overrides it.
-  `verify/lib/browser.mjs`'s `openBrowser` enforces both pins and gives a fresh context. Never use `channel:
-  'chrome'` (installed Chrome updates itself mid-run) or the bundled Chromium (it crashed reading a stored folder
-  handle on reload).
-- **Toolbox** (`verify/lib/`, README there has every option): `serve.mjs` (`prepareApp`, `serveApp`),
-  `browser.mjs`, `vault.mjs` (`installVault`, `seedVault`, `readVaultFile`, `readWitness`, `waitForVault`,
-  `outsideChange`), `identity.mjs` (`bindServedBodies`), `counters.mjs`, `input.mjs`, `reload.mjs`,
-  `fast.mjs` (`openDocument`, `treeRow`), `report.mjs`. Fixture generators are in `verify/fixtures/` (PDFs via
-  `fixtures/lib/pdf.mjs`); generated files live in scratch, never in the repo.
-
-## The shared machine (`bme-lock`)
-
-On this machine every build, static check, server and browser run goes through
-`/Users/adham/Developer/bme-impl/scratch/bin/bme-lock` (`build`, `static`, `serve`, `run [-w N]`; `status` shows
-holders). It frees the grant when the command exits. **Never nest grants**: a script holding `run` must not build;
-`prepareApp` refuses under `run`. Start slow commands in `hc run --bg` and `hc wait` them, wrap browser runs in a
-hard `timeout 300`, stop your server when the run ends, use your own port with `--strictPort` (never 5173 or the
-developer's 5199), and delete a build as soon as its evidence is no longer needed.
+- **Driver**: `playwright@1.63.0` from the repo's own `node_modules` (`npm ci`), never the npx cache.
+- **Browser**: Chrome for Testing **157.0.8103.39** (`verify/browser-pin.json`, pinned with a sha256 for
+  `mac-arm64`, `mac-x64`, `linux64` and `win64`), launched by path. Get it once per machine:
+  `node verify/install-browser.mjs` — it downloads this platform's archive from Google's Chrome for Testing
+  bucket, checks bytes and sha256 against the pin, unpacks it into a per-user cache (`BME_BROWSER_CACHE` moves
+  it) and prints the executable; run again, it only prints. `BME_CHROME_PATH` launches another copy of the
+  same build. `openBrowser` enforces both pins, gives a fresh context, and when the browser is missing fails
+  naming the installer. Never use `channel: 'chrome'` (installed Chrome updates itself mid-run) or Playwright's
+  bundled Chromium (it crashed reading a stored folder handle on reload).
+- **Scratch**: builds, profiles, screenshots and reports go to `BME_SCRATCH`, by default a per-clone folder under
+  the OS temp dir (`scratchDir(...)` in `verify/lib/paths.mjs`), **never the repo**: Vite's `outDir` must sit
+  outside the source root, and your own check scripts belong outside it too.
+- **Toolbox** (`verify/lib/`, its README has every option): `serve.mjs` (`prepareApp`, `serveApp`),
+  `browser.mjs`, `paths.mjs`, `vault.mjs` (`installVault`, `seedVault`, `readVaultFile`, `readWitness`,
+  `waitForVault`, `outsideChange`), `identity.mjs` (`bindServedBodies`), `counters.mjs`, `input.mjs`,
+  `reload.mjs`, `fast.mjs` (`openDocument`, `treeRow`), `report.mjs`. Fixture generators are in `verify/fixtures/`
+  (PDFs via `fixtures/lib/pdf.mjs`). A complete worked example: `verify/guards/toolbox-smoke.mjs`.
 
 ## Recipe
 
-1. **Prepare** once per source change, under `build` — it writes a scratch Vite config, the production `dist`
-   and a frozen identity (`prepared.json`) outside the worktree:
-   `bme-lock build -- node prepare.mjs` with
-   `await prepareApp({ root: WORKTREE, scratch: SCRATCH + '/app', mode: 'production' })`.
-   Use `mode: 'dev'` only to exercise StrictMode; dev refuses to serve if HEAD or sources drifted since preparing.
-2. **Run** under `run`: `bme-lock run -w 2 -- timeout 300 node check.mjs` (weight 2 for a PDF, a large board or
-   several panes; 1 otherwise).
+Preparing and running are separate steps: the run then measures exactly the build it names, and many runs share
+one build. Write both scripts **outside the clone** (your scratch), with `R` set to the clone's path.
+
+1. **Prepare** once per source change: a production `vite build` into scratch, with its identity frozen in
+   `prepared.json` (`mode: 'dev'` only to exercise StrictMode; dev refuses to serve if HEAD or sources drifted):
 
 ```js
-const R = '/abs/path/to/worktree';
-const { openBrowser } = await import(R + '/verify/lib/browser.mjs');
-const { serveApp } = await import(R + '/verify/lib/serve.mjs');
-const { bindServedBodies } = await import(R + '/verify/lib/identity.mjs');
-const { installVault, seedVault } = await import(R + '/verify/lib/vault.mjs');
-const { openDocument } = await import(R + '/verify/lib/fast.mjs');
-const app = await serveApp({ root: R, scratch: SCRATCH + '/app', mode: 'production', build: false, port: PORT });
+// prepare.mjs — R=/path/to/clone node prepare.mjs
+const { prepareApp } = await import(`${process.env.R}/verify/lib/serve.mjs`);
+const prepared = await prepareApp({ root: process.env.R });   // scratch defaults to scratchDir('app', mode)
+console.log(prepared.distDir);
+```
+
+2. **Run** against that build, on a free port you choose (strict: a taken port fails instead of moving). Bound it
+   with a hard timeout (`timeout 300 node check.mjs`) so a hung page cannot hold the port; servers stop on exit.
+
+```js
+// check.mjs — R=/path/to/clone PORT=5661 node check.mjs
+const R = process.env.R, lib = name => import(`${R}/verify/lib/${name}.mjs`);
+const { serveApp } = await lib('serve'), { openBrowser } = await lib('browser'), { scratchDir } = await lib('paths');
+const { bindServedBodies } = await lib('identity'), { installVault, seedVault } = await lib('vault');
+const { openDocument } = await lib('fast'), { editMode, fontsReady } = await lib('input');
+const BOARD = '{"format":"board","version":[1,0],"kind":"whiteboard","fence":"compat-1: compatibility fence, holds no content, so that builds of this app from before the guard release refuse to edit this file","document":{"schema":{"schemaVersion":999},"store":{}},"records":[\n{"type":"sheet","id":"Qm3vL8a0Zt","name":"Page 1","order":"a0"},\n{"type":"end","count":1}\n]}\n';
+const app = await serveApp({ root: R, port: Number(process.env.PORT), build: false });
 const run = await openBrowser({ launchOptions: { args: [] }, contextOptions: { viewport: { width: 1200, height: 800 } } });
 try {
   await installVault(run.context, { name: 'Fixture' });               // OPFS picker stub + 'granted' permissions
@@ -63,26 +72,22 @@ try {
   const page = await run.context.newPage();
   const errors = []; page.on('pageerror', e => errors.push(String(e)));
   await page.goto(app.url);
-  await seedVault(page, { name: 'Fixture', files: { 'A.md': '# A\n', 'B.drawing': BOARD, 'P.pdf': pdfBytes } });
+  await seedVault(page, { name: 'Fixture', files: { 'A.md': '# A\n\nHello.\n', 'B.drawing': BOARD } });
   await page.getByRole('button', { name: 'Open Vault', exact: true }).click();
-  await openDocument(page, 'B.drawing');                              // waits for the pane's canvas
-  // ... act as a person would, then screenshot and LOOK at it ...
+  await openDocument(page, 'A.md');                                   // waits for the editor
+  await editMode(page);                                               // notes open in Reading mode
+  await openDocument(page, 'B.drawing');                              // waits for the board's canvas
+  // ... act as a person would ...
+  await fontsReady(page);
+  await page.screenshot({ path: scratchDir('shots', 'board.png') });  // then LOOK at it
   await binding.check();                                              // the served bytes were the prepared build
+  if (errors.length) throw new Error(errors.join('\n'));
 } finally { await run.close(); await app.stop(); }
 ```
 
-**Fixtures.** Notes are text. A minimal native whiteboard is one text file (the app writes the full form itself on
-save):
-
-```
-{"format":"board","version":[1,0],"kind":"whiteboard","fence":"compat-1: compatibility fence, holds no content, so that builds of this app from before the guard release refuse to edit this file","document":{"schema":{"schemaVersion":999},"store":{}},"records":[
-{"type":"sheet","id":"Qm3vL8a0Zt","name":"Page 1","order":"a0"},
-{"type":"end","count":1}
-]}
-```
-
-Or make one as a person does: the file tree's **New drawing or notebook** button. PDFs: pdf-lib through
-`verify/fixtures/lib/pdf.mjs`, or a small file kept in your scratch.
+**Fixtures.** Notes are text. A minimal native whiteboard is the one-line-per-record text in `BOARD` above (the app
+writes the full form itself on save). Or make one as a person does: the file tree's **New drawing or notebook**
+button. PDFs: pdf-lib through `verify/fixtures/lib/pdf.mjs`, or a small file kept in your scratch.
 
 **Selectors.** File rows `.tree-item[data-path="…"]` (`treeRow`; names show without `.md`); the note editor
 `.cm-content`; a board's surface `.board-viewer-surface`; a PDF's `.pdf-tiled-surface` (Original) or
@@ -92,11 +97,13 @@ Or make one as a person does: the file tree's **New drawing or notebook** button
 
 - **Every pane presents canvas2d first**, then swaps to WebGL2 once the device qualifies (`rendering-platform`). A
   check of "the GPU path" must look after the swap.
-- **WebGL2**: headless CfT on this Mac with no flags uses the real GPU (`ANGLE Metal Renderer: Apple M4 Pro`).
+- **WebGL2**: headless CfT with no flags uses the machine's real GPU where there is one (measured on macOS:
+  `ANGLE Metal Renderer: Apple M4 Pro`).
 - **canvas2d**: launch with `args: ['--disable-webgl']`. The audit then counts `context:unavailable:no-webgl2`
   and `pane:fallback:pane-2d:gpu-unavailable`, and the app shows its `gpu-unavailable` notice once.
 - **Software WebGL2**: `--use-angle=swiftshader` gives a SwiftShader context; the app refuses it and runs canvas2d,
-  counting `context:unavailable:software` and showing the `gpu-unavailable` notice once.
+  counting `context:unavailable:software` and showing the `gpu-unavailable` notice once. A machine with no GPU
+  (most CI and Linux containers) lands here by itself: say the WebGL2 path was not exercised.
 - **Prove the backend, never assume it**: with the audit on, `window.__bmeRenderAudit.presents().records` carries
   `backend: 'webgl2' | 'canvas2d'` per present, and `snapshot().counters` every `fallback:` count. Record the
   renderer string (`WEBGL_debug_renderer_info` on a throwaway canvas): a software renderer (SwiftShader, llvmpipe,
@@ -106,7 +113,7 @@ Or make one as a person does: the file tree's **New drawing or notebook** button
   WebGL2 PDF pane draw only its top-left half in each direction (an artefact, not an app bug). A
   screenshot is in device pixels: a point picked from it is `x / scale` in CSS.
 - Headless Chrome ticks a synthetic 60 Hz whatever the flags: judge per-frame cost against 8.33 ms, not cadence.
-  Time questions run alone (`run -w 8`, an exclusive slot); everything else is proved by counters.
+  Timing questions need an otherwise idle machine (`verify/lib/bench/`); everything else is proved by counters.
 
 ## Waiting for a settled picture
 
@@ -146,13 +153,17 @@ on, wait until the present count stops moving (`presents().records.length`, or a
   `WorkerLocation` before resume (it crashed CfT 157's renderer). See `verify/lib/TARGETS.md`.
 - **Terminal** checks need the real helper (`npm run helper:dev`, `VAULTAGENT_TERMINAL_SHELL=/bin/sh`); type into
   `.xterm-helper-textarea` and assert through the shell's side effects (`integrated-terminal`).
-- **Boards: click the surface first.** A board takes keys only while focus is inside its root (`.board-viewer-surface`).
-  A new board's tool is Draw (`model/defaults.ts`), so press `v` for Select before a selection or nudge check.
+- **Boards: focus before keys.** A board takes keys only while focus is inside its root (`.board-viewer-surface`). A new
+  board's tool is Draw (`model/defaults.ts`), so a click on the surface draws a dot: click a tool bar button (Select)
+  instead, which also hands the board the keyboard.
 - **A CDP mouse release names its button.** `Input.dispatchMouseEvent` `mouseReleased` needs `button: 'left'`; without
   it the release does not end the press, so the gesture stays open.
 - **Read a board's file after it saves.** The save is debounced 150 ms after the last change and held through a gesture
   (`session/saveScheduler.ts`); a headless run measured about 1.3 s before the disk holds it. Wait ≥ 3 s after the last
   change before reading the file, or the check reads the previous version.
+- **Leave the machine as you found it**: stop your server when the run ends (`app.stop()` in a `finally`), never
+  take a port another server holds (5173 is Vite's default, likely someone's dev server), and delete builds and
+  screenshots in scratch once their evidence is no longer needed.
 
 ## Beyond the change
 

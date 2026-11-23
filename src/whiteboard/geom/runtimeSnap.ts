@@ -49,7 +49,7 @@ export interface BoardSnapOptions {
     /** Gap snapping (centre of a gap, duplicate gaps). A point has no width, so a point snap turns it off. */
     readonly gaps?: boolean;
     /** Point snapping for a handle or a new end: the nearest corner or centre of another box, or one of `ownPoints`, within the
-     * threshold in both axes at once. Alignment to edges is not used; the outline fallback is not part of this mode. */
+     * threshold in both axes at once. Alignment to edges is not used; `outline` adds the edge fallback. */
     readonly points?: boolean;
     /** World positions the handle may snap to besides other boxes (the edited polyline's other vertices). */
     readonly ownPoints?: readonly Vec2[];

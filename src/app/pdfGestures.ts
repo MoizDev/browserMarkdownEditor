@@ -268,8 +268,11 @@ async function writeTurns(deps: RotateDeps, path: string, id: string, turns: Pen
     notifyRef.current('This PDF is not ready to rotate. Try again in a moment.'); return failed;
   }
   if (diskStateRef.current.get(id)) { notifyRef.current('This PDF has changed on disk. Deal with that first, then rotate it.'); return failed; }
-  const pendingInk = () => !!tabsRef.current.find(t => t.id === id)?.dirty || documentSessions.hasPendingEdits(id) || flushingRef.current.has(id) ||
-    !!getView(path)?.hasPendingEdits?.() || documentBuffers.revisionForDocument(id)?.revision !== revision || !!session.adapter.hasPendingEdits();
+  // Unsaved bytes, a save in flight or strokes the view still holds: as preparePdfPrint, not the tab's combined dirty
+  // flag, which also counts a retained Annotate session's background journalling and refused every turn of an
+  // annotated PDF with "still being saved" (seen after its ink had been written) instead of saying why it is refused.
+  const pendingInk = () => documentBuffers.isDirty(id) || flushingRef.current.has(id) || !!getView(path)?.hasPendingEdits?.() ||
+    documentBuffers.revisionForDocument(id)?.revision !== revision;
   if (pendingInk()) { notifyRef.current('This PDF has annotations still being saved. Try again in a moment.'); return failed; }
   const current = () => rootHandleRef.current === rootAtCall && currentVaultIdRef.current === vaultAtCall &&
     getVaultActivation() === activationAtCall && readerEpochRef.current.epoch === epochAtCall &&

@@ -541,7 +541,7 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
             start(projected.changes, undefined, projected.paper, { baked: current.meta.offset, offset: current.meta.offset });
         } catch (error) { clear(); report(error); }
     }
-    return {
+    const preview: BoardPreview = {
         show(nodes) {
             try {
                 const changes = new Map<NodeId, Node>();
@@ -564,6 +564,10 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
             } catch (error) { clear(); report(error); }
         },
         waitUntilReady(signal) {
+            // A commit awaiting its frame owns the overlay, and a request made meanwhile is held until that frame shows. The
+            // request is ready only after it: answered at once, a second erase took the first's overlay for its own and then
+            // could not arm its commit ('Preview cannot be committed').
+            if (commitRevision !== null && !disposed && !signal.aborted) return preview.waitUntilIdle(signal).then(() => preview.waitUntilReady(signal));
             if (disposed || signal.aborted || ((!pin || !controller) && !deferred && !queued)) return Promise.reject(interrupted());
             if (handedOffGeneration === generation && frames && !queued) return Promise.resolve();
             return new Promise<void>((resolve, reject) => {
@@ -585,7 +589,10 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
         },
         armCommit() {
             if (disposed || commitRevision !== null || !pin || !options.current()) throw new Error('Preview cannot be committed');
-            commitRelease = runtime.session.beginGesture();
+            // The commit is done; only its frame is awaited. A settling hold keeps queued edits behind it and the overlay up
+            // until that frame shows, but admits the person's next press: as an input hold it refused every press for
+            // 48 ms on a small board and 95–130 ms on 158 strokes (measured: 3 of 6 presses dropped at a 30 ms gap).
+            commitRelease = runtime.session.beginGesture('settling');
             commitRevision = runtime.session.doc.rev + 1;
         },
         finishCommit() { if (commitRevision !== null && runtime.session.doc.rev !== commitRevision) clearNow(); },
@@ -615,4 +622,5 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
         warm() { if (disposed) return; try { ensureLayers(); } catch (error) { report(error); } },
         dispose() { if (!disposed) { clearNow(); disposed = true; unbind(); } },
     };
+    return preview;
 }

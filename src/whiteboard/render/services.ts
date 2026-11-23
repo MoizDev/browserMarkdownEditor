@@ -434,6 +434,27 @@ export function createBoardRenderServices(options: {
         storeIdle(node.id, prepared);
         return prepared;
     };
+    // A pick reuses the coverage the painter already built when that coverage is precise enough at the pick's zoom. Every
+    // InkCoverage carries its own certified error (centre, radius, dash phase), and the pick jobs widen their hit/miss
+    // decisions by exactly that error, so ANY certified variant answers a hit test correctly; precision only decides how
+    // close to the band's edge an answer stays undecided. Under PICK_COVERAGE_ERROR_CSS the edge moves by less than an
+    // eighth of a CSS px against a 4 CSS px pointer margin. The pick asked for its own variant before (device scale 3,
+    // never LOD), so the first hover or marquee over fresh ink waited on worker coverage jobs for geometry already on screen
+    // (measured: after 12 strokes painted, the first hover sweep counted geometry:build 10, the second 1).
+    const PICK_COVERAGE_ERROR_CSS = 1 / 8;
+    const pickVariant = (borrowed: Readonly<Node>, doc: BoardDoc, cssPerWorld: number): Prepared | undefined => {
+        if (borrowed.kind !== 'stroke' || !(cssPerWorld > 0) || !Number.isFinite(cssPerWorld)) return undefined;
+        const coverageError = (value: Prepared): number => {
+            let error = 0;
+            for (const coverage of value.ink ?? []) error = Math.max(error, coverage.centreErrorWorld + coverage.radiusErrorWorld + coverage.dashPhaseErrorWorld);
+            return error;
+        };
+        const value = variantFor(borrowed.id, signature(borrowed, doc), candidate => !!candidate.ink
+            && coverageError(candidate) * cssPerWorld <= PICK_COVERAGE_ERROR_CSS);
+        if (!value) return undefined;
+        cached.delete(value.key); cached.set(value.key, value); auditCount(AUDIT, 'geometry:pick-reuse');
+        return value;
+    };
     // A native copy event cannot await fonts, images, or a worker. These are the
     // canonical CPU producers at the current face epoch, not persisted b hints.
     // Mutation access below still separately requires fully loaded text faces.
@@ -780,7 +801,11 @@ export function createBoardRenderServices(options: {
                 },
             });
         },
-        prepareForPick(node: Readonly<Node>, signal: AbortSignal, doc: BoardDoc = options.doc) { return prepare(node, doc, signal); },
+        /** `cssPerWorld`: the pick's zoom. With it, a stroke's already-built coverage serves the pick when it is precise enough there. */
+        async prepareForPick(node: Readonly<Node>, signal: AbortSignal, doc: BoardDoc = options.doc, cssPerWorld?: number): Promise<Prepared> {
+            check(signal);
+            return (cssPerWorld === undefined ? undefined : pickVariant(node, doc, cssPerWorld)) ?? await prepare(node, doc, signal);
+        },
         prepareForPickNow(node: Readonly<Node>, signal: AbortSignal, doc: BoardDoc = options.doc) { return prepareNow(node, doc, signal); },
         prepareOverlayNow(doc: BoardDoc, request: ScenePaintRequest, ids: Iterable<NodeId> | undefined, signal: AbortSignal) {
             check(signal); return paintNow(doc, request, signal, ids);

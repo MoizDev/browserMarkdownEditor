@@ -23,6 +23,7 @@ import { QuickOverview } from './quickOverview'
 import { sampleSurface, type GestureOwner, type InputToken, type Modifiers, type RealSample, type Tool } from './tool'
 import type { KeyboardNavigationPriority } from './scrollKeysTypes'
 import type { TextInputBridge } from '../text/edit/managerTypes'
+import { isCancellation } from '../../platform/workers/envelope'
 
 export type BoardInputMode = 'edit' | 'view'
 export type Detach = () => void
@@ -85,6 +86,9 @@ export interface BoardInputServices {
   persistToolLock?(locked: boolean): void
   clearLatches?(): void
   cancelPendingGestures(): boolean
+  /** Cancels the finished gestures still landing whose landing would be the next undo step (a released erase): an undo
+   * takes them back. True when there were any. */
+  undoSettlingGestures?(): boolean
 }
 
 const attached = new WeakMap<HTMLElement, Detach>()
@@ -173,7 +177,10 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       registerPending(cancel) { pendingContinuations.add(cancel); return () => { pendingContinuations.delete(cancel) } },
     }),
   })
-  const claim = (): boolean => services.tools.claimInput(owner, session.isGestureActive)
+  // Only a gesture still in someone's hands refuses a press. Work already released (an erase or a box landing, a commit
+  // awaiting its frame) holds the session too, and refused every press made in that window (measured: 3 of 6 presses
+  // dropped at a 30 ms gap on a 158-stroke board, 1 at 60 ms).
+  const claim = (): boolean => services.tools.claimInput(owner, session.isInputGestureActive)
   const releaseClaim = (): void => { services.tools.releaseInput(owner) }
   const delegated = session.doc.kind === 'whiteboard' && view.wet.onRealPresented ? new DelegatedInkBridge({
     surface: view.surface, mappings: view.mappings, camera: () => view.camera.camera, current,
@@ -477,70 +484,89 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     clearLatches: () => { services.textInput?.cancelPending(); cancelContinuations(); services.cancelPendingGestures(); spaceHeld = false; zoomHeld = false; shiftHeld = false; overview.leave(); cursor.escape(); pointer.interrupt('flush'); services.clearLatches?.() },
     run(id, event) {
       if (!current()) return false
-      if (id === 'accessibility.repeat' && view.a11y.repeatAnnouncement?.()) return true
-      if (id === 'accessibility.contextMenu' && services.keyboardContextMenu) {
-        const sample = cursor.active ? cursor.currentSample() : null
-        const viewport = view.camera.viewport
-        const surface = sample ? view.sampleToSurface(sample) : services.keyboardCursorInitial?.() ?? { x: viewport.width / 2, y: viewport.height / 2 }
-        if (![surface.x, surface.y, viewport.width, viewport.height].every(Number.isFinite) || viewport.width <= 0 || viewport.height <= 0) return false
-        const point = { x: Math.max(0, Math.min(viewport.width, surface.x)), y: Math.max(0, Math.min(viewport.height, surface.y)) }
-        return services.keyboardContextMenu(point, surfaceToWorld(point, view.camera.camera))
-      }
-      if (id === 'escape') {
-        if (overview.active) { overview.escape(); zoomHeld = false; return true }
-        const continuationCancelled = cancelContinuations(), cancelled = services.cancelPendingGestures()
-        if (pointer.interrupt('escape') || cancelled || continuationCancelled) return true
-      }
-      if (id === 'undo') {
-        const continuationCancelled = cancelContinuations(), cancelled = services.cancelPendingGestures()
-        if (pointer.interrupt('undo') || cancelled || continuationCancelled) return true
-        if (editable()) { services.history.undo(); return true }
-      }
-      if (id === 'redo' && editable()) {
-        const continuationCancelled = cancelContinuations(), cancelled = services.cancelPendingGestures()
-        if (cursor.active && router.activeOwner) { cursor.escape(); return true }
-        if (pointer.interrupt('flush') || cancelled || continuationCancelled) return true
-        services.history.redo(); return true
-      }
-      if (id === 'delete' && editable()) {
-        const continuationCancelled = cancelContinuations(), cancelled = services.cancelPendingGestures()
-        if (router.activeOwner) {
-          if (cursor.active && router.activeOwner.pointerIds.has(-1)) cursor.escape(); else pointer.interrupt('os-cancel')
+      if (!router.activeOwner && session.isGestureActive && !session.isInputGestureActive) {
+        // Undo takes back a released erase that has not landed yet: that IS undoing it.
+        if (id === 'undo' && editable() && services.undoSettlingGestures?.()) return true
+        // Anything else waits for the finished work to land, then acts on its result: Delete right after a box deletes
+        // what the box selected. Each branch below used to cancel that work first (and swallow the key because something
+        // was cancelled), so a box then Delete deleted nothing and an erase then a tool key brought the strokes back.
+        if (!holdsMode(id)) {
+          void session.enqueueAfterGesture(new AbortController().signal, () => { if (current()) runKey(id, event) })
+            .catch(error => { if (!isCancellation(error)) services.error(error) })
           return true
         }
-        if (cancelled || continuationCancelled) return true
-        const sample = cursor.currentSample()
-        if (sample && services.keyboardHandleCommand?.(id, sample)) return true
       }
-      if (id === 'edit.start' && editable() && services.textInput?.enter()) return true
-      if (id.startsWith('style.')) flush()
-      if (id === 'tool.lock' && editable()) { services.tools.toggleLocked(); return true }
-      if (id === 'pan.hold') {
-        spaceHeld = true
-        if (!(router.activeOwner instanceof LiveInk)) return true
-        let previous: Point
-        return router.suspendInk(view.token, {
-          begin: sample => { previous = physicalSurface(sample) },
-          update: samples => { for (const sample of samples) { const point = physicalSurface(sample); view.camera.panBy({ x: previous.x - point.x, y: previous.y - point.y }); previous = point }; services.cameraChanged() },
-          end: () => {},
-        })
-      }
-      if (id === 'pan.release') {
-        spaceHeld = false
-        router.resumeInk(view.token)
-        if (temporaryPan) pointer.interrupt('flush')
-        return true
-      }
-      if (id === 'zoom.hold') { zoomHeld = true; return true }
-      if (id === 'zoom.release') { overview.leave(); zoomHeld = false; return true }
-      if (id.startsWith('tool.') && editable()) {
-        cancelContinuations(); services.cancelPendingGestures()
-        const tool = id.slice(5)
-        if (services.tools.getRegistration(tool)) { services.tools.setTool(tool); return true }
-      }
-      return services.commands.run(id, event)
+      return runKey(id, event)
     },
   }, services.mac)
+  // Space and Z hold a quasi-mode, and accessibility keys speak: they act at once, never behind settling work.
+  function holdsMode(id: string): boolean {
+    return id === 'pan.hold' || id === 'pan.release' || id === 'zoom.hold' || id === 'zoom.release' || id.startsWith('accessibility.')
+  }
+  function runKey(id: string, event: KeyboardEvent): boolean {
+    if (id === 'accessibility.repeat' && view.a11y.repeatAnnouncement?.()) return true
+    if (id === 'accessibility.contextMenu' && services.keyboardContextMenu) {
+      const sample = cursor.active ? cursor.currentSample() : null
+      const viewport = view.camera.viewport
+      const surface = sample ? view.sampleToSurface(sample) : services.keyboardCursorInitial?.() ?? { x: viewport.width / 2, y: viewport.height / 2 }
+      if (![surface.x, surface.y, viewport.width, viewport.height].every(Number.isFinite) || viewport.width <= 0 || viewport.height <= 0) return false
+      const point = { x: Math.max(0, Math.min(viewport.width, surface.x)), y: Math.max(0, Math.min(viewport.height, surface.y)) }
+      return services.keyboardContextMenu(point, surfaceToWorld(point, view.camera.camera))
+    }
+    if (id === 'escape') {
+      if (overview.active) { overview.escape(); zoomHeld = false; return true }
+      const continuationCancelled = cancelContinuations(), cancelled = services.cancelPendingGestures()
+      if (pointer.interrupt('escape') || cancelled || continuationCancelled) return true
+    }
+    if (id === 'undo') {
+      const continuationCancelled = cancelContinuations(), cancelled = services.cancelPendingGestures()
+      if (pointer.interrupt('undo') || cancelled || continuationCancelled) return true
+      if (editable()) { services.history.undo(); return true }
+    }
+    if (id === 'redo' && editable()) {
+      const continuationCancelled = cancelContinuations(), cancelled = services.cancelPendingGestures()
+      if (cursor.active && router.activeOwner) { cursor.escape(); return true }
+      if (pointer.interrupt('flush') || cancelled || continuationCancelled) return true
+      services.history.redo(); return true
+    }
+    if (id === 'delete' && editable()) {
+      const continuationCancelled = cancelContinuations(), cancelled = services.cancelPendingGestures()
+      if (router.activeOwner) {
+        if (cursor.active && router.activeOwner.pointerIds.has(-1)) cursor.escape(); else pointer.interrupt('os-cancel')
+        return true
+      }
+      if (cancelled || continuationCancelled) return true
+      const sample = cursor.currentSample()
+      if (sample && services.keyboardHandleCommand?.(id, sample)) return true
+    }
+    if (id === 'edit.start' && editable() && services.textInput?.enter()) return true
+    if (id.startsWith('style.')) flush()
+    if (id === 'tool.lock' && editable()) { services.tools.toggleLocked(); return true }
+    if (id === 'pan.hold') {
+      spaceHeld = true
+      if (!(router.activeOwner instanceof LiveInk)) return true
+      let previous: Point
+      return router.suspendInk(view.token, {
+        begin: sample => { previous = physicalSurface(sample) },
+        update: samples => { for (const sample of samples) { const point = physicalSurface(sample); view.camera.panBy({ x: previous.x - point.x, y: previous.y - point.y }); previous = point }; services.cameraChanged() },
+        end: () => {},
+      })
+    }
+    if (id === 'pan.release') {
+      spaceHeld = false
+      router.resumeInk(view.token)
+      if (temporaryPan) pointer.interrupt('flush')
+      return true
+    }
+    if (id === 'zoom.hold') { zoomHeld = true; return true }
+    if (id === 'zoom.release') { overview.leave(); zoomHeld = false; return true }
+    if (id.startsWith('tool.') && editable()) {
+      cancelContinuations(); services.cancelPendingGestures()
+      const tool = id.slice(5)
+      if (services.tools.getRegistration(tool)) { services.tools.setTool(tool); return true }
+    }
+    return services.commands.run(id, event)
+  }
   let toolEpoch = services.tools.getSnapshot().selectionEpoch
   const updateMirror = () => {
     const snapshot = services.tools.getSnapshot()

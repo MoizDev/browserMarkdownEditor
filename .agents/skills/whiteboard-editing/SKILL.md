@@ -49,6 +49,11 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   use (`ToolState` in `input/gesture.ts`) unless the tool lock is on or `keepToolOnce` was armed. Escape returns
   to Select. Tool choice is session UI state, never history.
 - A tool whose work lands after pointer-up returns to Select itself (`completesTool` in `input/pointerRouter.ts`).
+- **A released gesture lands; it is not pending work.** After pointer-up an erase or a box keeps a `settling` session hold
+  (`session.beginGesture('settling')`, and so does the preview's commit hold) and registers with `registerSettling`, not
+  `registerPending`: the next press is admitted (`claimInput` reads `isInputGestureActive`), Escape/Delete/tool keys wait for it
+  (`attach.ts` queues them with `enqueueAfterGesture`), only the view's end or — for an erase — an undo cancels it, and a
+  revision that moves meanwhile is prepared again, not abandoned. A new gesture that reads the selection waits for `settled()`.
 - **One gesture owner at a time** (`input/router.ts`, `InputRouter`): tools receive normalised `RealSample`s only,
   stamped with an `InputToken` (vault epoch, tab, session and view generations). A replaced view cannot finish its
   successor's contact; check the token before acting on anything async.
@@ -64,7 +69,8 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   (`delegatedInk.ts`) uses the browser's ink presenter when present. Pen mode (`ToolState.penMode`) and
   `penTransitions.ts` route a stylus to ink or eraser while touch pans. The eraser removes whole items
   (`input/basicTools.ts`); there is no partial erase.
-- Select (`tools/select.ts`, `viewer/selectServices.ts`): click, marquee (Ctrl = full containment), scribble/lasso (Alt+drag);
+- Select (`input/selectGesture.ts`, `viewer/selectServices.ts`): click, marquee (the accelerator — ⌘ on macOS, Ctrl elsewhere — =
+  full containment; a mac Ctrl press is a right click), scribble/lasso (Alt+drag);
   handles and transforms in `viewer/selectionHandles.ts`, `shapeHandles.ts`, `stickyHandles.ts`,
   `tools/transformDrivers.ts`. Creation tools are `viewer/creationTools.ts`.
 

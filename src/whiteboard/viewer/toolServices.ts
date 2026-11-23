@@ -139,9 +139,11 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         try { at = options.clientToSurface(event.clientX, event.clientY); } catch { sensitive.setHovered(null); return; }
         const controller = new AbortController(), seq = ++hoverSeq;
         hoverPick = controller;
-        point.hit(at, input, controller.signal).then(id => {
+        // Hover is a hint: a pick that fails clears it and the next move asks again. Its failure reached the board's notice
+        // on every pointer move along an undecidable edge before (measured: "Point hit is geometrically uncertain" at 8.0 px).
+        point.hit(at, input, controller.signal, true).then(id => {
             if (!controller.signal.aborted && seq === hoverSeq) sensitive.setHovered(id);
-        }, error => { if (!controller.signal.aborted) ui.error(error); });
+        }, () => { if (!controller.signal.aborted && seq === hoverSeq) sensitive.setHovered(null); });
     };
     const text = createBoardTextEditor({ runtime, render: runtime.render, engine, preview, point, camera, viewport: options.viewport,
         overlay: options.overlay, current, interaction: options.interaction, inputFrames: options.inputFrames, mac: ui.mac,
@@ -221,7 +223,9 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         let cancelled = selectionCancelled || textCancelled;
         for (const cancel of [...pending]) { pending.delete(cancel); try { cancel(); } catch (error) { ui.error(error); } cancelled = true; }
         try { if (options.imports.cancelPending()) cancelled = true; } catch (error) { ui.error(error); }
-        if (!text.manager.current) preview.clear();
+        // A released erase that is still landing owns the overlay (its strokes, dimmed): clearing it at the next press made
+        // them flash back at full opacity until the erase's frame.
+        if (!text.manager.current && !select.holdsPreview()) preview.clear();
         brush = null; column = null; laserContext.cancel(); return cancelled;
     };
     const paste = (event: ClipboardEvent) => {
@@ -260,6 +264,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         ownsWheel: ui.ownsWheel, cameraChanged: options.interaction.cameraChanged, error: ui.error, pointerChanged: ui.pointerChanged,
         hover: event => { ui.hover?.(event); trackHover(event); }, contextMenu: contextMenuAt, drop: event => options.imports.drop(event), linkAt: ui.linkAt,
         penModeChanged: ui.penModeChanged, persistToolLock: ui.persistToolLock, clearLatches: ui.clearLatches, cancelPendingGestures: cancelPending,
+        undoSettlingGestures: () => select.cancelSettling(true),
         keyboardContextMenu: select.keyboardContextMenu,
     };
     const writeOverlays = (frame: ScheduledFrame) => {

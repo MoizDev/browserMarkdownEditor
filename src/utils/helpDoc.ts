@@ -338,7 +338,7 @@ The bar at the bottom centre holds **Select** (\`V\`), **Hand** (\`H\`), **Draw*
 ### Drawing
 - **Draw** follows your pen, mouse or finger, and however fast you draw the line comes out as a smooth curve through the path your hand took; only a sharp turn stays a corner. Hold \`Shift\` while drawing to make the next part straight; press \`Shift\` and click with Draw to continue your last stroke with a straight line from its end.
 - **Highlight** draws a broad see-through stroke. **Laser** draws a trail that fades by itself and is never saved — for pointing while you share your screen.
-- **Eraser** removes whatever it touches.
+- **Eraser** removes whatever it touches. Every sweep counts, however quickly you start the next one or switch tools; \`Cmd/Ctrl + Z\` brings back what the last sweep removed.
 - **Figures**, **Arrow** and **Line**: drag to draw. An arrow that starts or ends on a shape stays attached to it when the shape moves; double-click an arrow's end to switch its arrowhead on or off.
 - **Text**: click to start typing; **Note** puts a sticky note where you click. To change the words of a selected text or note, press \`Enter\` or double-click it; \`Escape\` finishes.
 - **Frame**: drag to draw a named frame. It clips what sits inside it and takes in anything fully inside the box; \`Cmd/Ctrl + Alt + G\` frames the selection, or removes the frames when only frames are selected (their contents stay put). **Fit to content** (Menu → Edit) shrinks or grows a frame around what it holds.
@@ -348,12 +348,12 @@ The bar at the bottom centre holds **Select** (\`V\`), **Hand** (\`H\`), **Draw*
 ### The pen panel
 Colour and thickness live in the panel at the top right; it is the same panel in a drawing, a notebook and an annotated PDF. Pick one of twelve colours. The **slider is the pen's width**, and it is continuous rather than a set of sizes — it starts at a normal writing width and goes down to a hairline, which is what small handwriting on ruled paper needs. Double-click it to come back to the default. Drag the slider or pick a colour with something selected and it re-inks that instead of only the next stroke.
 
-**Hide colours and pen width**, at the top of the panel, folds it down to a single swatch in your current colour; **Show colours and pen width** opens it again. **Every file keeps its own pen.** A notebook you annotate in fine red stays fine and red; the PDF you were marking up in thick blue is still thick and blue when you come back to it. A brand new file starts at the width you were last using.
+The chevron beside the width slider (**Hide colours and pen width**) folds it down to a single swatch in your current colour; click it again (**Show colours and pen width**) to open it. **Every file keeps its own pen.** A notebook you annotate in fine red stays fine and red; the PDF you were marking up in thick blue is still thick and blue when you come back to it. A brand new file starts at the width you were last using.
 
 Style keys for the selection: \`Alt + F\` fills a figure, \`Alt + Shift + F\` gives it a lined fill, \`Alt + T\` makes it white, and \`Shift + Q\` copies the style of what is under the pointer.
 
 ### Selecting and arranging
-- Click to select; \`Shift\`-click adds or removes; drag a box on empty space to select what is in it. Hold \`Alt\` and drag on empty space to draw a free path that selects what it crosses. \`Cmd/Ctrl + A\` selects everything on the sheet, and \`Tab\` / \`Shift + Tab\` step through items.
+- Click to select; \`Shift\`-click adds or removes; drag a box on empty space to select everything it touches; hold \`Cmd\` (\`Ctrl\` on Windows and Linux) while you drag the box to select only what lies wholly inside it. You can press \`Delete\` the moment you let go: it removes what the box selected. Hold \`Alt\` and drag on empty space to draw a free path that selects what it crosses. \`Cmd/Ctrl + A\` selects everything on the sheet, and \`Tab\` / \`Shift + Tab\` step through items.
 - Drag to move (\`Shift\` keeps the move straight), drag a corner or edge to resize (\`Shift\` keeps the proportions, \`Alt\` resizes from the centre), drag the rotate handle to turn (\`Shift\` snaps the angle). \`Alt\`-drag moves a copy and leaves the original.
 - Arrow keys nudge the selection (\`Shift\` for farther). \`Cmd/Ctrl + D\` duplicates, \`Delete\` or \`Backspace\` removes.
 - \`Cmd/Ctrl + G\` groups and \`Cmd/Ctrl + Shift + G\` ungroups; double-click inside a selected group to select one thing in it. \`Shift + L\` locks the selection so it can't be moved by accident (right-click a locked item to unlock it; Menu → Edit → **Unlock all** unlocks everything).

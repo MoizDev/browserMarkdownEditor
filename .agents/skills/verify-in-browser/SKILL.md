@@ -146,6 +146,13 @@ on, wait until the present count stops moving (`presents().records.length`, or a
   `WorkerLocation` before resume (it crashed CfT 157's renderer). See `verify/lib/TARGETS.md`.
 - **Terminal** checks need the real helper (`npm run helper:dev`, `VAULTAGENT_TERMINAL_SHELL=/bin/sh`); type into
   `.xterm-helper-textarea` and assert through the shell's side effects (`integrated-terminal`).
+- **Boards: click the surface first.** A board takes keys only while focus is inside its root (`.board-viewer-surface`).
+  A new board's tool is Draw (`model/defaults.ts`), so press `v` for Select before a selection or nudge check.
+- **A CDP mouse release names its button.** `Input.dispatchMouseEvent` `mouseReleased` needs `button: 'left'`; without
+  it the release does not end the press, so the gesture stays open.
+- **Read a board's file after it saves.** The save is debounced 150 ms after the last change and held through a gesture
+  (`session/saveScheduler.ts`); a headless run measured about 1.3 s before the disk holds it. Wait ≥ 3 s after the last
+  change before reading the file, or the check reads the previous version.
 
 ## Beyond the change
 

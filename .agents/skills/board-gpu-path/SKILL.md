@@ -65,7 +65,9 @@ Shared rules (layers, frames, the governor) are in `rendering-platform`. This fi
 - **Large pictures** (`media/tilePlan.ts`): a tiled picture's whole-mip item carries `picture` facts; the image route plans the
   finer tiles of each tile it composes itself (`planPictureTiles`, the screen's byte share via `setScreen`, canvas2d's keys) and
   skips the stream's `underlaid` tiles. A tile still decoding is left out (the stand-in shows); its entry waits in `awaitingDecode`
-  asking no frames, and recomposes once the decode settles. The tile demand never aborts an acquire someone still waits for.
+  asking no frames, and recomposes once the decode settles. Only the resting scale's entries are asked (`waiting` starts
+  the uploads of landed tiles): those a zoom composed on its way wait for their scale, or their uploads filled the pool at
+  rest. The tile demand never aborts an acquire someone still waits for.
 - A change marks the positions under its bounds dirty (`tileParts.ts` parts index). A dirty position is recomposed into the
   target it already has.
 - Coverage (`coverage(view)`): a position is `ok`, `dirty` or `missing`. A position with any picture (its tile, a dirty one, a

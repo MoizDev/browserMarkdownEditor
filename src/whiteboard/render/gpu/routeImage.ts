@@ -568,7 +568,7 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
             let waits = false, started = false;
             for (const key of keys) {
                 if (uploading.has(key) || current.imageWaiting(key)) waits = true;
-                else if (current.imageState(key) === 'ready' && textures.needsSource(key)) { uploading.add(key); waits = started = true; }
+                else if (current.imageState(key) === 'ready' && textures.needsSource(key)) { uploading.add(key); waits = started = true; auditCount(audit, 'image:tile:upload-start'); }
             }
             if (started) host.invalidate('image-tile-upload');
             return waits;

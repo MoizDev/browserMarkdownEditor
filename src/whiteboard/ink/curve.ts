@@ -42,7 +42,12 @@ export type CurvePublication = Readonly<{
     replaceableTail: CurveGeometry;
     endpointX: number; endpointY: number;
     packingErrorWorld: number;
+    /** Set only on the pen-up publication of a stroke that closes on itself (see curveClosure). */
+    closure: CurveClosure;
 }>;
+/** A closed stroke's neighbours across its join: the sample before its last (`beforeX/Y`, the first
+ * span's predecessor) and its second sample (`afterX/Y`, the last span's successor). Null when open. */
+export type CurveClosure = Readonly<{ beforeX: number; beforeY: number; afterX: number; afterY: number; }> | null;
 
 export function curveParameters(declaredMaxScale: number, fairingToleranceWorld?: number, maxDpr = 3): CurveParameters {
     const deviceScale = declaredMaxScale * maxDpr;
@@ -118,9 +123,26 @@ function writeControl(out: Float64Array, offset: number, ax: number, ay: number,
     return false;
 }
 
+// A closed stroke (its last sample exactly on its first, `closed` on the node; input/liveInk.ts marks a
+// pen stroke so at pen up) was drawn with two free ends meeting there: the first span left along its
+// own chord and the last arrived along its own, so a quick "0" showed a kink at the join. A closed
+// stroke's join is now an ordinary sample: the first span takes the sample before the last as its
+// predecessor and the last span takes the second sample as its successor, so both ends share the
+// tangent from that predecessor to that successor, under the same corner rule (a 120° turn there stays
+// a corner). Controls stay one third of their own chord from their samples, so CURVE_CONTROL_REACH and
+// every bound built on it hold unchanged. Closure is known only at pen up, so the first span changes
+// then: the wet layer re-tessellates its finalized prefix once for it (viewer/wetLayer.ts) and the
+// pen-up picture is the committed one.
+export function curveClosure(samples: SampleSequence, closed: boolean): CurveClosure {
+    const last = samples.count - 1;
+    if (!closed || samples.count < 4 || samples.x(0) !== samples.x(last) || samples.y(0) !== samples.y(last)
+        || samples.segmentKind(0) !== 'freehand' || samples.segmentKind(last - 1) !== 'freehand') return null;
+    return Object.freeze({ beforeX: samples.x(last - 1), beforeY: samples.y(last - 1), afterX: samples.x(1), afterY: samples.y(1) });
+}
+
 // Writes one span into caller-owned doubles; repeated reconstruction needs no point/vector objects.
 export function writeCurveSpan(samples: SampleSequence, index: number, p: CurveParameters,
-    output: Float64Array, offset = 0, endpointLimit = samples.count): number {
+    output: Float64Array, offset = 0, endpointLimit = samples.count, closure: CurveClosure = null): number {
     validateParameters(p);
     if (!Number.isInteger(index) || !Number.isInteger(endpointLimit) || !Number.isInteger(offset)
         || index < 0 || index + 1 >= endpointLimit || endpointLimit > samples.count
@@ -134,15 +156,21 @@ export function writeCurveSpan(samples: SampleSequence, index: number, p: CurveP
     const straight = samples.segmentKind(index) === 'straight';
     const before = !straight && index > 0 && samples.segmentKind(index - 1) === 'freehand';
     const after = !straight && index + 2 < endpointLimit && samples.segmentKind(index + 1) === 'freehand';
+    // A closed stroke's join (curveClosure): the whole sequence is the loop, so only a full-length read joins.
+    const join = !straight && closure && endpointLimit === samples.count ? closure : null;
+    const opening = !!join && index === 0, closing = !!join && index + 2 === samples.count;
     if (writeControl(output, offset + 2, ax, ay, bx, by,
-        before ? samples.x(index - 1) : 0, before ? samples.y(index - 1) : 0, before, false)) flags |= CurveFlag.CornerBefore;
+        before ? samples.x(index - 1) : opening ? join!.beforeX : 0, before ? samples.y(index - 1) : opening ? join!.beforeY : 0,
+        before || opening, false)) flags |= CurveFlag.CornerBefore;
     if (writeControl(output, offset + 4, ax, ay, bx, by,
-        after ? samples.x(index + 2) : 0, after ? samples.y(index + 2) : 0, after, true)) flags |= CurveFlag.CornerAfter;
+        after ? samples.x(index + 2) : closing ? join!.afterX : 0, after ? samples.y(index + 2) : closing ? join!.afterY : 0,
+        after || closing, true)) flags |= CurveFlag.CornerAfter;
     if (straight || endpointLimit === 2) flags |= CurveFlag.Straight;
     return flags;
 }
 
-export function materializeCurveRange(samples: SampleSequence, range: CurveRange, p: CurveParameters): CurveGeometry {
+export function materializeCurveRange(samples: SampleSequence, range: CurveRange, p: CurveParameters,
+    closure: CurveClosure = null): CurveGeometry {
     validateParameters(p);
     const { firstSpan, spanCount } = range;
     if (!Number.isInteger(firstSpan) || !Number.isInteger(spanCount) || firstSpan < 0 || spanCount < 0
@@ -154,7 +182,7 @@ export function materializeCurveRange(samples: SampleSequence, range: CurveRange
     let minX = originX, minY = originY, maxX = originX, maxY = originY;
     for (let i = 0; i < spanCount; i++) {
         const offset = 8 * i;
-        flags[i] = writeCurveSpan(samples, firstSpan + i, p, cubics, offset);
+        flags[i] = writeCurveSpan(samples, firstSpan + i, p, cubics, offset, samples.count, closure);
         for (let j = 0; j < 8; j += 2) {
             minX = Math.min(minX, cubics[offset + j]); maxX = Math.max(maxX, cubics[offset + j]);
             minY = Math.min(minY, cubics[offset + j + 1]); maxY = Math.max(maxY, cubics[offset + j + 1]);
@@ -239,7 +267,7 @@ export class LocalCurveBuilder {
             finalizedSpanCount,
             replaceableTail: materializeCurveRange(samples, { firstSpan: finalizedSpanCount, spanCount: spanCount - finalizedSpanCount }, this.parameters),
             endpointX: samples.x(samples.count - 1), endpointY: samples.y(samples.count - 1),
-            packingErrorWorld: this.samples.packingErrorWorld,
+            packingErrorWorld: this.samples.packingErrorWorld, closure: null,
         });
     }
     finish(): Readonly<{ samples: SampleBuilder; publication: CurvePublication; }> {
@@ -253,6 +281,16 @@ export class LocalCurveBuilder {
         this.completed = true;
         return Object.freeze({ samples, publication });
     }
+}
+
+/** The pen-up publication of a stroke that closes on itself: its first and last spans meet smoothly (curveClosure). */
+export function closeCurvePublication(publication: CurvePublication, closure: CurveClosure): CurvePublication {
+    if (!closure) return publication;
+    const { samples, parameters } = publication;
+    // The first span changes too, so this publication finalizes nothing: a reader that cached a finalized
+    // prefix starts it again (viewer/wetLayer.ts). The tail materialized here is the stroke's first chunk.
+    return Object.freeze({ ...publication, closure, finalizedSpanCount: 0, replaceableTail: materializeCurveRange(samples,
+        { firstSpan: 0, spanCount: Math.min(CURVE_CHUNK_SPANS, samples.count - 1) }, parameters, closure) });
 }
 
 export type InkRevision = Readonly<{ nodeId: string; nodeRevision: number; gestureSequence: number; }>;

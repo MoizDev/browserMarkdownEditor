@@ -1,5 +1,5 @@
 import type { PathCommand } from '../../platform/types';
-import type { CurveGeometry } from './curve';
+import type { CurveClosure, CurveGeometry } from './curve';
 import { CurveFlag } from './curve';
 import { CubicFlattenJob, INK_CAP_ERROR_DEVICE_PX, INK_CENTRELINE_ERROR_DEVICE_PX, INK_DASH_PHASE_ERROR_DEVICE_PX, INK_MAX_FLAT_PIECES, INK_RADIUS_ERROR_DEVICE_PX } from './flatten';
 import type { CubicArcMap } from './flatten';
@@ -18,6 +18,9 @@ export interface ArcPointMotifs {
 export interface CoverageOptions {
     readonly deviceScale: number;
     readonly closed?: boolean;
+    /** A closed stroke's closing neighbour (ink/curve.ts curveClosure), carried with the options so a
+     * worker materializes the very geometry the caller would; the coverage job itself does not read it. */
+    readonly closure?: CurveClosure;
     readonly dotMetric?: DotMetric;
     readonly dot?: InkDot | null; // Cached WHOLE-stroke classification, mandatory for partial chunks.
     readonly dash?: DashPattern;

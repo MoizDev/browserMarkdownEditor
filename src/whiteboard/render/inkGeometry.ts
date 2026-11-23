@@ -1,5 +1,5 @@
 import { styleGeometryMetrics } from '../geom/styleMetrics';
-import { CURVE_CHUNK_SPANS, CURVE_VERSION, curveParameters, materializeCurveRange, type CurveParameters, type CurveRange } from '../ink/curve';
+import { CURVE_CHUNK_SPANS, CURVE_VERSION, curveClosure, curveParameters, materializeCurveRange, type CurveParameters, type CurveRange } from '../ink/curve';
 import { INK_CAP_ERROR_DEVICE_PX } from '../ink/flatten';
 import { InkCoverageJob, coverageOutline, type CoverageOptions, type InkCoverage } from '../ink/outline';
 import type { SampleSequence, SegmentKind } from '../ink/samples';
@@ -67,6 +67,7 @@ function* strokeCoverage(node: StrokeNode, samples: SampleStoreReader, options: 
     }
     if (node.dash === 'none') return Object.freeze([]);
     const points = realizeStrokePoints(sequence(samples, node), node.sx, node.sy);
+    const closure = curveClosure(points, node.closed);
     const width: InkWidth = { width: node.width, model: node.widthModel, pressure: node.pressure };
     validateInkWidth(width);
     // Parameter scale is an admission bound, not a transform: the saved tolerance
@@ -96,7 +97,7 @@ function* strokeCoverage(node: StrokeNode, samples: SampleStoreReader, options: 
     // whole stroke; compute its exact local-coordinate chord bound first.
     if (metric && width.model.id !== 'uniform' && !dot) {
         for (let start = 0; start < total; start += CURVE_CHUNK_SPANS) {
-            const geometry = materializeCurveRange(points, { firstSpan: start, spanCount: Math.min(CURVE_CHUNK_SPANS, total - start) }, parameters);
+            const geometry = materializeCurveRange(points, { firstSpan: start, spanCount: Math.min(CURVE_CHUNK_SPANS, total - start) }, parameters, closure);
             for (let i = 0; i < geometry.spanCount; i++) {
                 if (due()) { yield; check(); reset(); }
                 const c = geometry.cubics, offset = i * 8;
@@ -110,7 +111,7 @@ function* strokeCoverage(node: StrokeNode, samples: SampleStoreReader, options: 
         check();
         const count = Math.min(CURVE_CHUNK_SPANS, total - first);
         const range = { firstSpan: first, spanCount: count };
-        const coverageOptions: CoverageOptions = { deviceScale: options.deviceScale, closed: false,
+        const coverageOptions: CoverageOptions = { deviceScale: options.deviceScale, closed: false, closure,
             dot: dotValue, dotMetric: DOT_METRIC_PROVISIONAL, ...pattern,
             ...(metric ? { arcPrefix: { distanceWorld: distance, errorWorld: error }, radiusSlopeBound: slope } : {}) };
         if (options.worker) {
@@ -120,7 +121,7 @@ function* strokeCoverage(node: StrokeNode, samples: SampleStoreReader, options: 
             distance += coverage.lengthWorld;
             error = coverage.dashPhaseErrorWorld;
         } else {
-        const geometry = materializeCurveRange(points, range, parameters);
+        const geometry = materializeCurveRange(points, range, parameters, closure);
         const job = new InkCoverageJob(points, geometry, width, coverageOptions);
         try {
             let status: 'pending' | 'complete' | 'cancelled';

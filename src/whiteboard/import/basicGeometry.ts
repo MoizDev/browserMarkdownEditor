@@ -2,7 +2,7 @@ import type { Affine } from '../../platform/types';
 import { cubicBounds, type Box } from '../geom/bounds';
 import type { Vec2 } from '../geom/path';
 import { polylineWorldSemanticBounds } from '../geom/providers';
-import { curveParameters, writeCurveSpan } from '../ink/curve';
+import { curveClosure, curveParameters, writeCurveSpan } from '../ink/curve';
 import type { SampleStore } from '../ink/samples';
 import { realizeStrokePoints } from '../ink/width';
 import type { Node, StrokeNode } from '../model/nodes';
@@ -28,9 +28,9 @@ function inkBounds(node: StrokeNode, m: Affine, samples: SampleStore): Box {
         const p = point(sequence.x(0), sequence.y(0), m);
         box = [p.x, p.y, p.x, p.y];
     } else {
-        const data = new Float64Array(8), parameters = curveParameters(8, node.fairTol);
+        const data = new Float64Array(8), parameters = curveParameters(8, node.fairTol), closure = curveClosure(sequence, node.closed);
         for (let i = 0; i < sequence.count - 1; i++) {
-            writeCurveSpan(sequence, i, parameters, data);
+            writeCurveSpan(sequence, i, parameters, data, 0, sequence.count, closure);
             const p = (j: number) => point(data[j], data[j + 1], m);
             box = union(box, cubicBounds({ p0: p(0), p1: p(2), p2: p(4), p3: p(6) }));
         }

@@ -1,4 +1,4 @@
-import { LocalCurveBuilder, type CurvePublication } from '../ink/curve'
+import { closeCurvePublication, curveClosure, LocalCurveBuilder, type CurvePublication } from '../ink/curve'
 import { StraightInkBuilder } from './straightInk'
 import type { SampleBuilder, SampleBuilderOptions } from '../ink/samples'
 import type { FinishReason, GestureOwner, Modifiers, RealSample, Tool } from './tool'
@@ -156,11 +156,12 @@ export class LiveInk implements GestureOwner {
     this.ended = true
     try {
       const finished = this.builder.finish()
-      this.snapshot = finished.publication
       const points = finished.publication.samples, last = points.count - 1
       // R-20 keeps closure inert; only an exact, non-degenerate loop is marked.
       const closed = this.context.presentation.tool === 'pen' && points.count >= 4
         && points.x(0) === points.x(last) && points.y(0) === points.y(last)
+      // The wet ink's last picture is the committed one, closing tangent included.
+      this.snapshot = closeCurvePublication(finished.publication, curveClosure(points, closed))
       this.dry = this.context.commit(finished.samples, this.context.identity, reason === 'undo', closed)
       if (reason === 'undo') this.handover.clear(this.context.identity)
       else {

@@ -237,6 +237,8 @@ export interface GpuPaintAdapter {
     /** The governor's GPU pressure: frees up to `bytes` of idle GPU memory, path coverage sets first, then composed tiles
      * not used this frame. Returns the bytes freed. */
     evictGpu(bytes: number, frameId: number): number;
+    /** True when the device holds this picture's texture, so the reference paint need not decode its bitmap (PaintLayerResources). */
+    textureHeld(imageKey: string): boolean;
     /** Stamps what the view shows as used in `frameId`, before the frame's prepare: its partial relief leaves it (see Layer.protectFrame). */
     protectFrame(frameId: number, view: ViewState): void;
     /** The governor's CPU pressure: frees up to `bytes` of idle CPU memory (the path route's outline geometry, unused this
@@ -463,6 +465,7 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             if (freed > 0) composer.noteEvicted();
             return freed;
         },
+        textureHeld(imageKey: string): boolean { return !disposed && imageRoute.textureHeld(imageKey); },
         protectFrame(frameId: number, view: ViewState): void {
             if (!disposed) store.touchVisible(view, frameId);
         },

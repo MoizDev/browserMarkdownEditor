@@ -129,12 +129,16 @@ export function translationHandleGesture(sample: RealSample, modifiers: Modifier
         return {
             async preview(point, keys, request, commit) {
                 clear(); const base = await plan.preview(point, keys.shift, keys.accel, request);
+                const active = () => !signal.aborted && options.current() && host.current();
                 if (commit && base.ops.length) {
-                    const active = () => !signal.aborted && options.current() && host.current();
                     const grown = await prepareNotebookTranslation({ runtime: options.runtime, ids: options.ids, preview: base,
                         signal: request, current: active, cooperate: options.cooperate });
                     if (request.aborted || signal.aborted) { grown?.release(); throw new DOMException('Notebook move cancelled', 'AbortError'); }
                     notebook = grown;
+                }
+                // Frame membership is planned for the commit only: a live parent change left the original picture drawn at its
+                // start during the drag (measured; ESCALATION in gap.md), so the in-progress preview keeps the plain move.
+                if (commit && base.ops.length) {
                     const prepared = await prepareFrameDrop({ runtime: options.runtime, ids: options.ids, preview: notebook?.preview ?? base,
                         signal: request, current: active, cooperate: options.cooperate });
                     if (request.aborted || signal.aborted) { prepared?.release(); throw new DOMException('Frame drop cancelled', 'AbortError'); }
@@ -189,9 +193,10 @@ function withNotebookGrowth<T extends { readonly doc: BoardDoc; readonly ops: re
 
 export function rotationHandleGesture(sample: RealSample, modifiers: Modifiers, options: Omit<BoardRotationOptions, 'down' | 'signal'>,
     host: AsyncTransformGestureHost): GestureOwner {
+    const coarse = sample.source === 'touch';
     return new AsyncTransformGesture<GrowthValue<BoardRotationPreview>>(sample, modifiers, async signal => {
         const plan: BoardRotationPlan = await createBoardRotationPlan({ ...options, down: sample, signal });
-        return withNotebookGrowth({ preview: (point, keys, request) => plan.preview(point, keys.shift, request),
+        return withNotebookGrowth({ preview: (point, keys, request, commit) => plan.preview(point, keys.shift, request, commit ? { coarse } : undefined),
             commit: value => plan.commit(value), cancel: () => plan.cancel() }, options, signal, host, 'Rotate selection');
     }, host);
 }

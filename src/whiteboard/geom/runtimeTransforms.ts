@@ -9,7 +9,7 @@ import type { NodeId } from '../model/ids';
 import type { Node } from '../model/nodes';
 import { projectBoardGeometrySets } from '../model/overlayDoc';
 import type { Vec2 } from './path';
-import { rotatePoint, snapRotation, unwrapRotation } from './transforms';
+import { rotatePoint, snapReleasedRotation, snapRotation, unwrapRotation } from './transforms';
 
 export interface BoardRotationOptions {
     readonly runtime: BoardRuntime;
@@ -28,7 +28,8 @@ export interface BoardRotationPreview {
     readonly ops: readonly NodeSetOp[];
 }
 export interface BoardRotationPlan {
-    preview(pointer: Vec2, shift: boolean, signal?: AbortSignal): Promise<BoardRotationPreview>;
+    /** `release`: the pointer is up, so the angle also lands on whole degrees (and a right angle when coarse). */
+    preview(pointer: Vec2, shift: boolean, signal?: AbortSignal, release?: { readonly coarse: boolean }): Promise<BoardRotationPreview>;
     previewAngle(delta: number, signal?: AbortSignal): Promise<BoardRotationPreview>;
     commit(preview: BoardRotationPreview): void;
     cancel(): void;
@@ -151,12 +152,14 @@ export async function createBoardRotationPlan(options: BoardRotationOptions): Pr
             } finally { staged.release(); }
     };
     return {
-        preview(pointer, shift, requestSignal) {
+        preview(pointer, shift, requestSignal, release) {
             check(requestSignal);
             if (![pointer.x, pointer.y].every(Number.isFinite) || (pointer.x === centre.x && pointer.y === centre.y)) throw new RangeError('Invalid rotation pointer');
             const pointerAngle = Math.atan2(pointer.y - centre.y, pointer.x - centre.x);
             angle = unwrapRotation(angle, lastPointer, pointerAngle); lastPointer = pointerAngle;
-            return render(snapRotation(orientation + angle, shift) - orientation, requestSignal);
+            let next = snapRotation(orientation + angle, shift);
+            if (release) next = snapReleasedRotation(next, release.coarse);
+            return render(next - orientation, requestSignal);
         },
         previewAngle(delta, requestSignal) { return render(delta, requestSignal); },
         commit(value) {

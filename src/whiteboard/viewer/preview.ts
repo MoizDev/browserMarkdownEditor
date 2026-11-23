@@ -7,7 +7,7 @@ import type { NodeId, ParentId } from '../model/ids';
 import { createNode, type Node } from '../model/nodes';
 import { compareOrder } from '../model/orderKey';
 import type { BoardRuntime } from '../host/runtime';
-import { createBoardLayers, type BoardLayerPair } from '../render/boardLayers';
+import { createBoardLayers, sameToken, type BoardLayerPair } from '../render/boardLayers';
 import { createPaintFrameAssembler } from '../render/frameAssembler';
 import type { PaintClip, PaintSource, PaintNodeSource, PaintTextItem } from '../render/paintStream';
 import { textPaintMaterial } from '../render/textGeometry';
@@ -208,7 +208,10 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
     // assembler's own frame, matched to the wrapper by revision, theme and token.
     const assemblerFrameOf = (shown: PaintSource | null): PaintSource | null => {
         const own = frames?.readFrame() ?? null;
-        return shown && own && own.sceneRevision === shown.sceneRevision && own.theme === shown.theme && own.token === shown.token ? own : null;
+        // The token is compared by value. The layer's ready frame carries a copy of the assembler's token (measured on WebGL2 light, a drag into
+        // a frame: same fields, different object, on about one coverage read in ten). Identity read that as no frame, so the base showed its
+        // node for that frame, recomposed its tiles with the node in them, and the original stayed on screen at rest.
+        return shown && own && own.sceneRevision === shown.sceneRevision && own.theme === shown.theme && sameToken(own.token, shown.token) ? own : null;
     };
     const presentedOverlay = () => {
         if (disposed || !inFlight || !pair) return;

@@ -56,6 +56,9 @@ import { useAgentHostDeps } from './app/useAgentHostDeps';
 import { useReaderIntegration } from './app/useReaderIntegration';
 import { useGlobalShortcuts } from './app/useGlobalShortcuts';
 import { useRecoveryActions } from './app/useRecoveryActions';
+import { requestDocumentKeyboard } from './utils/documentKeyboard';
+import { opensInApp } from './utils/documentReading';
+import type { FileTreeNode } from './types';
 
 // The AI agent panel and everything under it (its CSS, the WebSocket bridge,
 // the reply renderer, the aicss components) load on first open — a reader who
@@ -236,6 +239,11 @@ export default function App() {
     setLayout, setTabs, setSaveStatus, setMainView, rememberAssetRefs, seedPdfBaseline,
     seedDocumentBuffer
   });
+  // A click (or Enter) on a file in the tree opens it AND gives it the keyboard, as a tab-bar click does: the
+  // keyboard otherwise stays on the tree row, so a drawing's first tool shortcut went nowhere.
+  const openFromTree = useCallback(async (node: FileTreeNode) => {
+    if (await handleFileClick(node) && opensInApp(node.name)) requestDocumentKeyboard(node.path);
+  }, [handleFileClick]);
 
   const {
     writeEntryStyles, handleStyleEntry, handleSetTreeOrder
@@ -520,7 +528,7 @@ export default function App() {
           rootHandle={rootHandle}
           search={searchController}
           fileTree={fileTree}
-          onFileClick={handleFileClick}
+          onFileClick={openFromTree}
           onCreateFile={handleCreateFile}
           onCreateFolder={handleCreateFolder}
           onCollapse={collapseSidebar}

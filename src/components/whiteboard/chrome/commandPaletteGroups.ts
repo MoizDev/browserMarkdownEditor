@@ -16,6 +16,8 @@ export interface PaletteStyleCommands {
     currentColor(): string | null;
     /** The opacity the selection shares, null when nothing is selected or the items differ. */
     currentOpacity(): number | null;
+    /** Opacity is a property of selected shapes only (the style panel offers its row only with a selection), so the palette's row needs one too. */
+    hasSelection(): boolean;
     setColor(color: string): void;
     setOpacity(opacity: number): void;
     setFill(fill: string): void;
@@ -102,9 +104,9 @@ function styleSubmenus(styles: PaletteStyleCommands, t: BoardTranslate): Context
     const colour = pickOne('colour', t('styles.colour'), options.colours.map(color => ({
         id: `colour-${color}`, label: t(`colours.${color}`), checked: color === current, run: () => styles.setColor(color),
     })));
-    const opacity = pickOne('opacity', t('styles.opacity'), options.opacities.map(value => ({
+    const opacity = styles.hasSelection() ? pickOne('opacity', t('styles.opacity'), options.opacities.map(value => ({
         id: `opacity-${value}`, label: `${Math.round(value * 100)}%`, checked: value === currentOpacity, run: () => styles.setOpacity(value),
-    })));
+    }))) : null;
     const fill = pickOne('fill', t('styles.fill'), options.fills.map(value => ({
         id: `fill-${value}`, label: labelOf(FILL_LABELS, value), checked: value === next.fill, run: () => styles.setFill(value),
     })));
@@ -120,7 +122,7 @@ function styleSubmenus(styles: PaletteStyleCommands, t: BoardTranslate): Context
     const alignment = pickOne('alignment', t('styles.alignment'), options.aligns.map(value => ({
         id: `alignment-${value}`, label: labelOf(ALIGN_LABELS, value), checked: value === next.align, run: () => styles.setAlignment(value, value),
     })));
-    return [colour, opacity, fill, dash, size, font, alignment];
+    return [colour, ...(opacity ? [opacity] : []), fill, dash, size, font, alignment];
 }
 
 /**

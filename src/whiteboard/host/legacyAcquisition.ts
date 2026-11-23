@@ -80,19 +80,22 @@ const MEMORY_WAIT_MS = 60_000;
  * one session failed "Insufficient shared memory" with each file ~15 KB: every conversion reserves 16 MB + 12 × size
  * of a 32–41 MB CPU pool, and the next board's conversion asked while the previous one (or the board it had just
  * opened, building its first tiles) still held its share (measured: 16.9 MB held, then refused, then released 450 ms
- * later). Nothing leaked; the request was simply refused instead of waiting for that release. */
+ * later). Nothing leaked; the request was simply refused instead of waiting for that release.
+ * The first asks are `prefetch`: a refused plain reservation trims the other boards' caches and steps the app's
+ * display quality down, which a conversion that only has to wait its turn must not cause (measured: 2 trims and
+ * quality below 1 on 10 frames over six boards opened back to back). After a second it asks plainly. */
 async function reserveWhenAvailable(memory: MemoryAllocator, bytes: number, check: () => void, signal: AbortSignal) {
-    const deadline = performance.now() + MEMORY_WAIT_MS;
+    const start = performance.now(), deadline = start + MEMORY_WAIT_MS;
     for (;;) {
         check();
-        const lease = memory.reserve(bytes);
+        const lease = memory.reserve(bytes, performance.now() - start < 1_000 ? { prefetch: true } : undefined);
         if (lease) return lease;
         const left = deadline - performance.now();
         if (!memory.whenAvailable || left <= 0) {
             throw new Error('Not enough memory is free to convert this board right now. Close another board and open it again.');
         }
         await new Promise<void>(resolve => {
-            const timer = setTimeout(done, Math.min(left, 5_000));
+            const timer = setTimeout(done, Math.min(left, 1_000));
             function done() { clearTimeout(timer); signal.removeEventListener('abort', done); resolve(); }
             signal.addEventListener('abort', done, { once: true });
             memory.whenAvailable!(done, bytes);

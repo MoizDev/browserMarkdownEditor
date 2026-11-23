@@ -1,4 +1,5 @@
 import { getPlatformRuntime } from '../../platform/render/platformRuntime';
+import type { ReserveOptions } from '../../platform/render/memoryGovernor';
 import { DEFAULT_PAPER } from '../../utils/paper';
 import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
 import type { SourceOwner } from '../../utils/documentBuffers';
@@ -92,7 +93,7 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
                 owner: token, pool: 'cpu', kind: 'working', class: 'critical', hiddenAt: null,
                 lastVisibleAt: now, lastUsedAt: now, memory: () => ({ live, retiring: 0 }), evict: () => {} });
             const memory = {
-                reserve(bytes: number) { const lease = cache.reserve(bytes); if (lease) live += lease.bytes; return lease; },
+                reserve(bytes: number, options?: ReserveOptions) { const lease = cache.reserve(bytes, options); if (lease) live += lease.bytes; return lease; },
                 release(lease: Parameters<typeof cache.release>[0]) { cache.release(lease); live -= lease.bytes; },
                 whenAvailable: (wake: () => void, bytes?: number) => cache.whenAvailable?.(wake, bytes),
             };

@@ -114,6 +114,12 @@ come back to either.
   that exact object, the native board and media to `createConvertedPdfInkSource` (branded
   `kind: 'legacy-converted'`). Ownership transfers only on success; the first verified native write and reopen
   completes migration; cancellation leaves the original untouched.
+- The legacy importer (`whiteboard/import/`) reads every tldraw generation by each record's own layout and version
+  (`records/versions.ts`; stroke layouts in `segments.ts`). An item it cannot represent is left out, preserved raw as a
+  `legacy-*` record in the native file, and reported with an `item` noun; it never makes the board read-only. Only a
+  file with no readable board fails, through `importFailure`. `importNotice` (items left out, repairs carrying a
+  `notice`) is shown once in the board's notice; float16 pressure drift below 0 is silent. Never join issue reasons
+  raw: use `groupIssueText`. Conversion memory is reserved with a wait (`reserveWhenAvailable`), never refused at once.
 - HOST media projection excludes only validated bookkeeping fields (`pdf/session/inkHostMedia.ts`). Never invent
   media receipts or fall back to the folder's `.Assets` for embedded PDF media.
 

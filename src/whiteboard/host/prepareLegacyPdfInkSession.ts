@@ -1,4 +1,5 @@
 import { getPlatformRuntime } from '../../platform/render/platformRuntime';
+import type { ReserveOptions } from '../../platform/render/memoryGovernor';
 import { acquireLegacyPdfInkCandidate } from '../../pdf/session/legacyInkAcquisition';
 import { createConvertedPdfInkSource } from '../../pdf/session/convertedInkSource';
 import { createPdfInkConversionHost } from '../../pdf/session/inkHost';
@@ -65,7 +66,7 @@ export async function prepareLegacyPdfInkSession(options: PreparePdfInkSessionOp
             pool: 'cpu', kind: 'working', class: 'critical', hiddenAt: null, lastVisibleAt: now, lastUsedAt: now,
             memory: () => ({ live, retiring: 0 }), evict: () => {} });
         const memory = {
-            reserve(bytes: number) { const lease = cache.reserve(bytes); if (lease) live += lease.bytes; return lease; },
+            reserve(bytes: number, options?: ReserveOptions) { const lease = cache.reserve(bytes, options); if (lease) live += lease.bytes; return lease; },
             release(lease: Parameters<typeof cache.release>[0]) { cache.release(lease); live -= lease.bytes; },
             whenAvailable: (wake: () => void, bytes?: number) => cache.whenAvailable?.(wake, bytes),
         };

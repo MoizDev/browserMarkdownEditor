@@ -68,7 +68,11 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
     const bookmarks = new Map<string, LegacyObject>();
     const preservedRecords: { type: string; id: string; raw: RawJson }[] = [];
     const preservedIds = new Set<string>();
+    // A record is kept once however many reasons keep it (extra props, then an unknown kind, wrote it twice).
+    const preservedSources = new WeakSet<LegacyObject>();
     const preserve = (record: LegacyObject, id: string, family: string) => {
+        if (preservedSources.has(record)) return;
+        preservedSources.add(record);
         const type = `legacy-${family}`;
         let preservedId = id, suffix = 0;
         while (preservedIds.has(`${type}\u0000${preservedId}`)) preservedId = `${id.slice(0, 100)}~duplicate${++suffix}`;

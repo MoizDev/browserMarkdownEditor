@@ -392,6 +392,9 @@ The agent's **canvas tools** work on the document rather than its view: they can
 
 For drawing without a pointer, the **Use keyboard drawing cursor** button gives the board a cursor you move with the arrow keys and press and lift with \`Enter\`. \`Alt + R\` repeats the board's last announcement for a screen reader.
 
+### When the graphics card cannot be used
+Drawings, notebooks and PDFs are drawn with your computer's graphics card (WebGL2) whenever the browser offers it, and otherwise with the browser's ordinary drawing, which shows exactly the same thing but can be slower on large documents. When a document has no usable graphics card — graphics acceleration switched off in Chrome, software-only graphics, an unsupported card, or repeated graphics errors on that document — a notice says so once, with **Dismiss**: on a board in a box just above the tool bar, on a PDF at the bottom left. A board's other notices, such as a picture that could not be shown, appear in the same box.
+
 ### Drawings
 A **drawing** (\`.drawing\`) is a canvas with no pages at all — an endless sheet in every direction, for diagrams and thinking rather than for a page you intend to hand in. Its **Minimap** (bottom right) shows the artwork and your current view: click or drag in it to move there; with the minimap focused, the arrow keys move a quarter of the view (a full view with \`Shift\`), and \`Home\` / \`End\` go to the artwork's top-left / bottom-right. A drawing has no paper, and its own **Theme**.
 

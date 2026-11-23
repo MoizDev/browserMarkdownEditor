@@ -39,6 +39,21 @@
 .board-viewer-notice-dismissible > span { flex: 1 1 auto; min-width: 0; }
 .board-viewer-notice-dismissible > button { flex: none; }
 
+/* Every notice the board raised, in one box, newest last, each row with its own Dismiss and a hairline between rows.
+   Kept to half the board's height, scrolling inside, so a long run of them never covers the tool strip above. */
+.board-viewer-notices {
+    display: flex;
+    flex-direction: column;
+    z-index: 3;
+    max-height: 50%;
+    overflow-y: auto;
+    padding-block: 0;
+}
+.board-viewer-notices > .board-viewer-notice-dismissible { padding-block: 9px; }
+.board-viewer-notices > .board-viewer-notice-dismissible + .board-viewer-notice-dismissible {
+    border-top: 1px solid var(--background-modifier-border);
+}
+
 /* Renderer status: display only, so it never takes pointer events from the board or its input. */
 .board-paint-status { position: absolute; z-index: 2; pointer-events: none; }
 .board-paint-status-loading {

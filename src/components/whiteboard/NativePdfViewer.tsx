@@ -8,6 +8,7 @@ import ViewerHost from './ViewerHost';
 import { useNativeClipboard } from './useNativeClipboard';
 import './NativeCanvasEntry.css';
 import { isCancellation } from '../../platform/workers/envelope';
+import { BoardNoticeStack } from './BoardNoticeStack';
 
 const VIEW_REASON = 'PDF annotation tools are unavailable in this view.';
 type ViewOptions = Parameters<typeof createNativeViewLease>[0];
@@ -326,7 +327,7 @@ function PdfEditingAttached({ props, context, updating, rebind }: { props: Nativ
     const register = useCallback((focus: () => void) => registerKeyboardTarget(path, focus), [registerKeyboardTarget, path]);
     const chrome = <>{context.chrome({ minimapOpen, setMinimapOpen, inverted: context.inverted,
         setInverted: context.setInverted, zoom: navigation.zoom })}
-        {context.notice && <span className="board-viewer-notice" role="status">{context.notice}</span>}</>;
+        <BoardNoticeStack notices={context.notices} /></>;
     return <PdfAttachedFrame props={props} lease={lease} viewer={lease.view} onFocus={onFocus} register={register}
         inverted={context.inverted} setInverted={context.setInverted} cover={cover} reason={source.reason}
         readOnly={!context.editable} admitting={context.admitting} editingChrome={chrome} detach={!paired} />;

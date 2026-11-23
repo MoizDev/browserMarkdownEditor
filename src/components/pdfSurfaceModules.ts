@@ -12,5 +12,5 @@ export const nativePdfEntrySlot = moduleSlot(() => import('./whiteboard/NativePd
 export function warmPdfOpenPath(): Promise<unknown> {
     // A failure is not reported here: the open that needs the module imports it again and owns the error.
     return Promise.all([pdfTiledSurfaceSlot.load(), import('../pdf/session/sourceRuntime'), import('../pdf/session/passwords'),
-        import('../pdf/session/startup'), import('../platform/render/cpuEntry')]);
+        import('../pdf/session/startup').then(startup => startup.warmPdfEngine()), import('../platform/render/cpuEntry')]);
 }

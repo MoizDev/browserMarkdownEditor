@@ -74,6 +74,8 @@ export interface PdfPool {
     open(options: PdfOpenOptions): Promise<PdfPoolDocument>;
     writer(options?: { signal?: AbortSignal }): Promise<PdfWriterSession>;
     stats(): Promise<readonly PdfWorkerStats[]>;
+    /** Boots one render worker ahead of the first open (idle warm-up of a vault that holds PDFs); no-op when one lives. */
+    warm(): void;
     /** Explicit user recovery, never an automatic switch to the classic parser. */
     retry(docKey: PdfDocKey): Promise<void>;
     dispose(): void;

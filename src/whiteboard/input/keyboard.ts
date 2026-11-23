@@ -40,6 +40,8 @@ export const boardBindings: readonly KeyBinding[] = [
   { id: 'preferences.theme', group: 'preferences', label: 'Toggle theme', key: '/', accel: true },
   { id: 'preferences.grid', group: 'preferences', label: 'Toggle grid', key: "'", accel: true },
   { id: 'help.shortcuts', group: 'accessibility', label: 'Keyboard shortcuts', key: '/', accel: true, alt: true },
+  // Cmd/Ctrl+K toggles the command palette. Inside a text edit it is the rich-text link key (text/edit/keys.ts), which keeps it.
+  { id: 'commandPalette.open', group: 'accessibility', label: 'Command palette', key: 'k', accel: true },
   { id: 'accessibility.repeat', group: 'accessibility', label: 'Repeat announcement', key: 'r', alt: true },
   { id: 'accessibility.contextMenu', group: 'accessibility', label: 'Open context menu', key: 'Enter', accel: true, shift: true },
   { id: 'edit.start', group: 'edit', label: 'Edit selected text', key: 'Enter' },

@@ -25,11 +25,13 @@ export interface BoardChromeProps extends BoardHeaderProps {
     readonly debug?: DebugOverlayProps;
     /** Paper controls of a paged host; they sit under the header, never over it. */
     readonly pageControls?: ReactNode;
+    /** The command palette; it sits between the header and the bar, above the bar when open. */
+    readonly palette?: ReactNode;
 }
 
 /** The view supplies live session state; these controls do not own a second selection or history. */
 export function BoardChrome({ locale, direction, selectedTool, toolLabel, toolShortcut, toolsLabel, moreLabel,
-    readOnly, readOnlyReason, toolDisabledReason, focusMode, selectTool, zoomControls, penPanel, debug, pageControls, ...header }: BoardChromeProps) {
+    readOnly, readOnlyReason, toolDisabledReason, focusMode, selectTool, zoomControls, penPanel, debug, pageControls, palette, ...header }: BoardChromeProps) {
     const choices = toolChoices(toolLabel, toolShortcut);
     return <>
         {debug && <DebugOverlay {...debug} />}
@@ -39,6 +41,7 @@ export function BoardChrome({ locale, direction, selectedTool, toolLabel, toolSh
             {pageControls}
             {penPanel && <div className="board-chrome-pen"><ConnectedPenPanel {...penPanel} /></div>}
         </div>
+        {palette}
         <div className="board-chrome-bottom">
             <ToolStrip primary={choices.primary} more={choices.more} selected={selectedTool}
                 toolsLabel={toolsLabel} moreLabel={moreLabel}

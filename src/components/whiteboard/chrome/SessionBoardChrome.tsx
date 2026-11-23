@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { flushSync } from 'react-dom';
+import type { ContextMenuCommand, ContextMenuEntry } from '../../../utils/contextMenu';
 import { getBoardPreferences, subscribeBoardPreferences, updateBoardPreferences } from '../../../utils/boardPreferences';
 import type { BoardCommand, BoardCommandSource, CommandState } from './boardCommands';
 import { ConnectedBoardChrome, type ToolStateView } from './ConnectedBoardChrome';
@@ -12,6 +14,19 @@ import { preferenceEntries, type LocalPreferencesView } from './preferencesMenu'
 import { ShortcutsDialog, type ShortcutGroup } from './ShortcutsDialog';
 import { boardThemeMenu } from './themeMenu';
 import { setEnhancedBoardTooltips } from '../../../utils/tooltip';
+import { CommandPalette } from './CommandPalette';
+import { rememberRecent, type PaletteGroup } from './commandPaletteModel';
+import { paletteGroups, type PaletteSheetSource, type PaletteStyleCommands, type PaletteToolSource } from './commandPaletteGroups';
+import { toolChoices } from './toolChoices';
+import { arrangeSubmenus } from './boardCommands';
+
+/** The sheet structure the palette lists and changes: the board's own sheet controls (useNativeSheetControls). */
+export interface PaletteSheetControls {
+    snapshot(): { readonly sheets: readonly { readonly id: string; readonly name: string }[]; readonly current: string; readonly canCreate: boolean };
+    selectSheet(id: string): void;
+    createSheet(): unknown;
+    duplicateSheet(id: string): unknown;
+}
 
 /** Values come from the owning session and viewer; the chrome does not invent capability state. */
 export interface SessionBoardChromeProps {
@@ -33,6 +48,12 @@ export interface SessionBoardChromeProps {
     readonly runAction: (id: MainAction) => void | Promise<void>;
     readonly shortcuts: readonly ShortcutGroup[];
     readonly registerShortcuts?: (open: () => void) => () => void;
+    /** The keyboard's way to open the command palette: the chrome hands back its open function while it is mounted. */
+    readonly registerCommandPalette?: (open: () => void) => () => void;
+    /** The selection-scoped rows the palette lists first, read when it opens. */
+    readonly paletteSelection?: () => readonly ContextMenuEntry[];
+    readonly paletteStyles?: PaletteStyleCommands;
+    readonly paletteSheets?: PaletteSheetControls;
     readonly localPreferences: LocalPreferencesView;
     readonly sheetName: string;
     readonly openSheets: (anchor: HTMLButtonElement) => void;
@@ -45,6 +66,8 @@ export interface SessionBoardChromeProps {
     readonly pageControls?: ReactNode;
 }
 
+interface OpenPalette { readonly groups: readonly PaletteGroup[]; readonly returnFocus: HTMLElement | null }
+
 export function SessionBoardChrome(props: SessionBoardChromeProps) {
     const global = useSyncExternalStore(subscribeBoardPreferences, getBoardPreferences, getBoardPreferences);
     useEffect(() => {
@@ -54,9 +77,10 @@ export function SessionBoardChrome(props: SessionBoardChromeProps) {
     const debugStats = useSyncExternalStore(subscribeBoardDebugStats, getBoardDebugStats, getBoardDebugStats);
     const [shortcutsOpen, setShortcutsOpen] = useState(false);
     const [returnFocus, setReturnFocus] = useState<HTMLElement | null>(null);
+    const [palette, setPalette] = useState<OpenPalette | null>(null);
     const closeShortcuts = useCallback(() => setShortcutsOpen(false), []);
-    const { isVisible, registerShortcuts } = props;
-    useEffect(() => { if (!isVisible) setShortcutsOpen(false); }, [isVisible]);
+    const { isVisible, registerShortcuts, registerCommandPalette } = props;
+    useEffect(() => { if (!isVisible) { setShortcutsOpen(false); setPalette(null); } }, [isVisible]);
     useEffect(() => {
         if (!isVisible) return;
         return registerShortcuts?.(() => {
@@ -83,13 +107,19 @@ export function SessionBoardChrome(props: SessionBoardChromeProps) {
         || id === 'convertToBookmark' || id === 'convertToEmbed';
     const actionState = (id: MainAction): CommandState => {
         if (props.readOnly && editAction(id)) return { enabled: false, reason: props.readOnlyReason };
-        return id === 'keyboardShortcuts' ? { enabled: true } : props.actionState(id);
+        // The shortcuts dialog and the palette are views of the board's commands, so they open on a read-only board too.
+        return id === 'keyboardShortcuts' || id === 'commandPalette' ? { enabled: true } : props.actionState(id);
     };
+    const focusedElement = (): HTMLElement | null => document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    // A header button keeps the keyboard after a menu closes, and then the board's shortcuts hear nothing: focus goes back to the board itself.
+    const boardSurface = (anchor: HTMLElement): HTMLElement => anchor.closest<HTMLElement>('.board-viewer-host')?.querySelector<HTMLElement>('.board-interaction-root') ?? anchor;
     const runAction = (id: MainAction) => {
         if (!actionState(id).enabled) return;
         if (id === 'keyboardShortcuts') {
-            setReturnFocus(null);
+            setReturnFocus(focusedElement());
             setShortcutsOpen(true);
+        } else if (id === 'commandPalette') {
+            setPalette({ groups: buildPalette(), returnFocus: focusedElement() });
         } else return props.runAction(id);
     };
     const actions = { actionLabel: labels.actionLabel, actionShortcut: (id: MainAction) => props.actionShortcut(id),
@@ -99,6 +129,42 @@ export function SessionBoardChrome(props: SessionBoardChromeProps) {
         copyAsLabel: labels.contextSectionLabel('copyAs'), transparentLabel: labels.text('transparent'),
         transparent: props.localPreferences.view.transparent, debugMode: props.localPreferences.view.debugMode,
         toggleTransparent: () => props.localPreferences.setView('transparent', !props.localPreferences.view.transparent),
+    };
+    const toolSource = (): PaletteToolSource => {
+        const active = props.toolState.getSnapshot().active;
+        return { choices: toolChoices(labels.toolLabel, props.toolShortcut), current: { id: active.id, figure: active.variant },
+            state: props.toolStateFor,
+            select(id, figure) { if (id === 'media') props.openMedia(); else props.toolState.setTool(id, figure); } };
+    };
+    const sheetSource = (): PaletteSheetSource | null => {
+        const controls = props.paletteSheets;
+        if (!controls) return null;
+        let snapshot: ReturnType<PaletteSheetControls['snapshot']>;
+        try { snapshot = controls.snapshot(); } catch { return null; }
+        return { sheets: snapshot.sheets, current: snapshot.current, canCreate: snapshot.canCreate && !props.readOnly,
+            select: id => controls.selectSheet(id), create: () => { controls.createSheet(); }, duplicate: id => { controls.duplicateSheet(id); } };
+    };
+    // The palette's rows are read when it opens, from the same sources the menus use. The ref keeps the registered opener current.
+    const buildPalette = (): readonly PaletteGroup[] => paletteGroups({
+        translate: props.translate, sectionLabel: labels.mainSectionLabel, main: mainMenuEntries(menu), preferences,
+        selection: props.paletteSelection?.() ?? [], arrange: arrangeSubmenus(commandSource, labels.contextSectionLabel), arrangeLabel: labels.contextSectionLabel('arrange'),
+        styles: props.paletteStyles ?? null, sheets: sheetSource(), tools: toolSource(),
+    });
+    const buildRef = useRef(buildPalette);
+    useLayoutEffect(() => { buildRef.current = buildPalette; });
+    useEffect(() => {
+        if (!isVisible) return;
+        return registerCommandPalette?.(() => setPalette({ groups: buildRef.current(), returnFocus: focusedElement() }));
+    }, [registerCommandPalette, isVisible]);
+    const closePalette = useCallback(() => setPalette(null), []);
+    const runPaletteRow = (key: string, command: ContextMenuCommand) => {
+        updateBoardPreferences({ paletteRecents: rememberRecent(getBoardPreferences().paletteRecents, key, 20) });
+        // The palette unmounts before its command runs, so focus is back on the board when the command opens something of its own.
+        flushSync(() => setPalette(null));
+        try {
+            const result = command.run();
+            if (result instanceof Promise) void result.catch(props.reportError);
+        } catch (error) { props.reportError(error); }
     };
     // Debug mode's overlay shows the board's own diagnostics: the tool, the counts and the frame time are live (debugStats).
     const active = props.toolState.getSnapshot().active;
@@ -112,11 +178,16 @@ export function SessionBoardChrome(props: SessionBoardChromeProps) {
         visibleCount: debugStats.visibleCount, backend: debugStats.backend, outlines: debugStats.outlines,
     } : undefined;
     if (!props.isVisible) return null;
+    const paletteNode = palette ? <CommandPalette groups={palette.groups} readOnly={props.readOnly} recent={global.paletteRecents}
+        label={labels.text('commandPalette')} placeholder={props.translate('palette.search')} emptyLabel={props.translate('palette.noResults')}
+        recentLabel={props.translate('palette.recent')} backLabel={props.translate('palette.back')} locale={props.locale}
+        direction={props.direction} returnFocus={palette.returnFocus} onRun={runPaletteRow} onClose={closePalette} /> : undefined;
     return <>
         <ConnectedBoardChrome toolState={props.toolState} openMedia={props.openMedia}
             locale={props.locale} direction={props.direction} commands={commandSource}
             menuLabel={labels.text('menu')} menuEntries={anchor => mainMenuEntries({ ...menu, runAction: id => {
                 if (id === 'keyboardShortcuts') { setReturnFocus(anchor); setShortcutsOpen(true); }
+                else if (id === 'commandPalette') setPalette({ groups: buildRef.current(), returnFocus: boardSurface(anchor) });
                 else return runAction(id);
             } })} sheetName={props.kind === 'pdf-ink' ? labels.text('annotationSheets') : props.sheetName}
             openSheets={props.openSheets} actionsLabel={labels.text('actions')}
@@ -127,7 +198,7 @@ export function SessionBoardChrome(props: SessionBoardChromeProps) {
                 return state.enabled ? undefined : state.reason;
             }} focusMode={props.localPreferences.view.focusMode}
             penPanel={props.penPanel ? { ...props.penPanel, disabled: props.readOnly || props.penPanel.disabled } : undefined}
-            debug={debugOverlay} pageControls={props.pageControls}
+            debug={debugOverlay} pageControls={props.pageControls} palette={paletteNode}
             zoomControls={{ zoom: props.zoom, locale: props.locale, direction: props.direction,
                 zoomLabel: labels.text('zoom'), minimapLabel: labels.text('minimap'),
                 minimapVisible: props.minimapVisible, commands: actions }} />

@@ -12,6 +12,8 @@ export function createNativeBoardActions(options: {
     readonly camera: ReturnType<typeof createNativeCameraOperations>;
     readonly shortcutsAvailable: () => boolean;
     readonly openShortcuts: () => void;
+    /** Opens the command palette when the chrome has attached it (false until then). */
+    readonly openCommandPalette: () => boolean;
     /** Starts one print of the pinned board; false when the board is not current or already printing. */
     readonly print: () => boolean;
     /** Starts one whole-sheet PDF export; false when the board is not current or already busy. */
@@ -54,6 +56,10 @@ export function createNativeBoardActions(options: {
         keyboardShortcuts: {
             state: () => options.shortcutsAvailable() ? { enabled: true } : { enabled: false, reason: 'Board shortcuts are not attached' },
             run: options.openShortcuts,
+        },
+        commandPalette: {
+            state: () => lease.isCurrent() ? { enabled: true } : { enabled: false, reason: 'The board is not open' },
+            run() { if (!options.openCommandPalette()) throw new Error('The command palette is not ready'); },
         },
     };
 }

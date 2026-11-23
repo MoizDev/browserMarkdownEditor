@@ -3,7 +3,7 @@ import { commandRow, type BoardCommandSource, type CommandState } from './boardC
 
 export type MainAction = 'uploadMedia' | 'insertEmbed' | 'unlockAll' | 'convertToBookmark' | 'convertToEmbed'
     | 'zoomIn' | 'zoomOut' | 'zoomToFit' | 'zoomToSelection' | 'zoomTo100' | 'toggleMinimap'
-    | 'exportPng' | 'exportSvg' | 'exportPdf' | 'exportJson' | 'print' | 'keyboardShortcuts';
+    | 'exportPng' | 'exportSvg' | 'exportPdf' | 'exportJson' | 'print' | 'keyboardShortcuts' | 'commandPalette';
 export type MainSection = 'edit' | 'view' | 'export' | 'preferences';
 
 export interface MainMenuSource extends BoardCommandSource {
@@ -58,6 +58,7 @@ export function mainMenuEntries(source: MainMenuSource): ContextMenuEntry[] {
         { kind: 'separator', id: 'main-divider' },
         section('preferences', source.preferences),
         ...(source.language ? [source.language] : []),
+        action('commandPalette'),
         action('keyboardShortcuts'),
     ];
 }

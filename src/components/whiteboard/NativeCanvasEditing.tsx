@@ -171,6 +171,9 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
     const current = useCallback(() => ownerCurrent() && lease.isCurrent(), [ownerCurrent, lease]);
     const mac = /Mac|iPhone|iPad/.test(navigator.platform);
     const shortcutRef = useRef<(() => void) | null>(null);
+    // The chrome registers its palette opener while mounted; the keyboard and the actions reach it through here.
+    const paletteRef = useRef<(() => void) | null>(null);
+    const openCommandPalette = useCallback(() => { if (!paletteRef.current) return false; paletteRef.current(); return true; }, []);
     const [chromeReady, setChromeReady] = useState(false), [thumbnails, setThumbnails] = useState(false);
     const [servicesEpoch, refreshServices] = useState(0);
     const minimapRef = useRef(false), setMinimapRef = useRef<((value: boolean) => void) | null>(null);
@@ -214,7 +217,7 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
         commands: ReturnType<typeof createNativeBoardOperations> } | null>(null);
     useEffect(() => {
         const camera = createNativeCameraOperations({ runtime, lease, current, signal, minimapVisible, setMinimapVisible });
-        const actions = createNativeBoardActions({ lease, capabilities, camera, shortcutsAvailable, openShortcuts, print: runPrint, exportPdf: runExportPdf });
+        const actions = createNativeBoardActions({ lease, capabilities, camera, shortcutsAvailable, openShortcuts, openCommandPalette, print: runPrint, exportPdf: runExportPdf });
         const labels = localizeBoardChrome((key, values) => translateBoard(language.getSnapshot().table, key, values));
         const commands = createNativeBoardOperations({ runtime, lease, current, canWrite,
             frameName: () => 'Frame', flatten: capabilities.flatten, editLink: link.editLink, actions,
@@ -223,13 +226,14 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
             actionShortcut: id => nativeActionShortcut(id, mac), notice: setNotice, onError: report });
         const value = { camera, commands }; setOwned(value);
         return () => setOwned(previous => previous === value ? null : previous);
-    }, [runtime, lease, current, signal, minimapVisible, setMinimapVisible, capabilities, shortcutsAvailable, openShortcuts,
+    }, [runtime, lease, current, signal, minimapVisible, setMinimapVisible, capabilities, shortcutsAvailable, openShortcuts, openCommandPalette,
         language, canWrite, link, mac, setNotice, report, runPrint, runExportPdf]);
     useLayoutEffect(() => {
         if (!owned) return;
         const { commands, camera } = owned;
         const extra = createNativeEditingKeyboard({ runtime, lease, commands, camera, preferences: clipboard.preferences,
             openShortcuts: () => { if (!shortcutRef.current) return false; shortcutRef.current(); return true; },
+            openCommandPalette,
             // I inverts the one picture selected, and does nothing when no picture is (it is never a page command).
             invertPicture: () => {
                 const picture = clipboard.media.selection(canWrite());
@@ -249,11 +253,16 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
         return () => { if (commandRef.current === keys.run) commandRef.current = null;
             if (contextMenuRef.current === openMenu) contextMenuRef.current = null; };
     }, [commandRef, contextMenuRef, embedControllerRef, embedPort, runtime, lease, owned, clipboard, language, current, canWrite, report, setNotice,
-        dialogs.requestText, openCrop, linksRef]);
+        dialogs.requestText, openCrop, linksRef, openCommandPalette]);
     const registerShortcuts = useCallback((open: () => void) => {
         shortcutRef.current = open; refreshServices(value => value + 1);
         return () => { if (shortcutRef.current === open) shortcutRef.current = null; };
     }, []);
+    const registerCommandPalette = useCallback((open: () => void) => {
+        paletteRef.current = open;
+        return () => { if (paletteRef.current === open) paletteRef.current = null; };
+    }, []);
+    const paletteSelection = useCallback(() => contextMenuRef.current?.selectionEntries() ?? [], [contextMenuRef]);
     const onStyles = useCallback((value: Styles | null) => {
         styleRef.current = value; refreshServices(epoch => epoch + 1);
     }, [styleRef]);
@@ -271,9 +280,10 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
             readOnly={adapter.board.isReadOnly || !canWrite()} readOnlyReason={adapter.board.readOnlyReason ?? 'Board editing services are not ready'} reportError={report}
             toolStateFor={toolStateFor} commands={commands} actionShortcut={commands.actionShortcut} actionState={commands.actionState}
             runAction={commands.runAction} openMedia={() => { void commands.runAction('uploadMedia'); }} zoom={context.zoom}
-            minimapVisible={context.minimapOpen} confirm={dialogs.confirm} canWrite={canWrite} registerShortcuts={registerShortcuts} onReady={handleChromeReady} onStyles={onStyles}
+            minimapVisible={context.minimapOpen} confirm={dialogs.confirm} canWrite={canWrite} registerShortcuts={registerShortcuts}
+            registerCommandPalette={registerCommandPalette} paletteSelection={paletteSelection} onReady={handleChromeReady} onStyles={onStyles}
             notebook={runtime.session.doc.kind !== 'whiteboard' ? { inverted, setInverted, thumbnailsOpen: thumbnails, setThumbnailsOpen: setThumbnails } : undefined} /></NativeChromeAttachment>;
-    }, [runtime, lease, language, clipboard, current, mac, props.isVisible, adapter, canWrite, report, toolStateFor, owned, dialogs.confirm, registerShortcuts, onStyles, handleChromeReady, inverted, setInverted, thumbnails, bindMinimap]);
+    }, [runtime, lease, language, clipboard, current, mac, props.isVisible, adapter, canWrite, report, toolStateFor, owned, dialogs.confirm, registerShortcuts, registerCommandPalette, paletteSelection, onStyles, handleChromeReady, inverted, setInverted, thumbnails, bindMinimap]);
     useEffect(() => {
         if (!props.isVisible || signal.aborted || !current() || !attached || !chromeReady || !owned || !embedPort
             || !lease.editing?.isAttached() || !lease.editing.getTools() || !styleRef.current || !shortcutRef.current

@@ -730,7 +730,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         setHoverOutline(null);
         return boardSelectTool.begin(sample, modifiers, selectContext);
     } };
-    return { select, tool, eraser, beginHandle, doubleClickHandle, setHover: setHoverOutline, secondarySelect, handleCommand, keyboardContextMenu, lockedAt, nudge, transform, navigate, command, stickyNeighbour, setGuides, setConnectorTarget: connectorHints.setTarget, navigation, writeOverlays: (frame: ScheduledFrame) => auditTimed('select-overlay', () => writeOverlays(frame)), cancelPending,
+    return { select, tool, eraser, beginHandle, doubleClickHandle, setHover: setHoverOutline, secondarySelect, handleCommand, keyboardContextMenu, lockedAt, nudge, transform, navigate, command, stickyNeighbour, setGuides, setConnectorTarget: connectorHints.setTarget, setConnectorHover: connectorHints.setHover, setConnectorBinding: connectorHints.setBinding, navigation, writeOverlays: (frame: ScheduledFrame) => auditTimed('select-overlay', () => writeOverlays(frame)), cancelPending,
         dispose() { if (disposed) return; cancelPending(); disposed = true; setHoverOutline(null); hoverSvg?.remove(); hoverSvg = null; keyboardContext?.dispose(); backToContent.dispose(); cameraCommands.dispose(); selectionCommands.dispose(); styleShortcuts.dispose(); navigation.dispose(); selectionHandles.dispose(); shapeHandles.dispose(); connectorHints.dispose(); stickyHandles.dispose(); cardControls.dispose(); scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); guideSvg?.remove(); guideSvg = null; svg = null; shape = null;
             regionPreview = null; scribbleSource = null; scribbleTail = null; scribblePoints = []; scribbleCount = 0; },
     };

@@ -139,16 +139,28 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
     const sensitive = createSensitiveTargets(() => { if (!disposed) options.interaction.invalidate(); });
     let hoverPick: AbortController | null = null, hoverSeq = 0;
     const endHoverPick = () => { hoverPick?.abort(); hoverPick = null; };
+    const clearHover = () => { sensitive.setHovered(null); select.setHover(null); select.setConnectorHover(null, null, false); };
     const trackHover = (event: PointerEvent) => {
         endHoverPick();
         const tool = runtime.tools.getSnapshot().active.id;
-        if (event.type === 'pointerout' || (tool !== 'select' && tool !== 'eraser') || !current()
-            || (event.pointerType !== 'mouse' && event.pointerType !== 'pen')) { sensitive.setHovered(null); select.setHover(null); return; }
+        // The arrow tool hovers too: the target an end would bind to is found by the same resolver the drop uses (catalogue a.2).
+        const arrow = tool === 'connector';
+        if (event.type === 'pointerout' || (tool !== 'select' && tool !== 'eraser' && !arrow) || !current()
+            || (event.pointerType !== 'mouse' && event.pointerType !== 'pen')) { clearHover(); return; }
         const input = event.pointerType === 'pen' ? 'pen' : 'mouse';
         let at: Point;
-        try { at = options.clientToSurface(event.clientX, event.clientY); } catch { sensitive.setHovered(null); select.setHover(null); return; }
+        try { at = options.clientToSurface(event.clientX, event.clientY); } catch { clearHover(); return; }
         const controller = new AbortController(), seq = ++hoverSeq;
         hoverPick = controller;
+        if (arrow) {
+            // Ctrl (on macOS too) and Cmd are the no-target keys for an arrow end (catalogue a.2), so they show no hover at all.
+            if (event.ctrlKey || event.metaKey) { select.setConnectorHover(null, null, false); return; }
+            const world = surfaceToWorld(at, camera.camera), exact = event.altKey;
+            attachments.resolve(world, controller.signal, { precise: false, exact, route: 'arc', input }).then(attached => {
+                if (!controller.signal.aborted && seq === hoverSeq) select.setConnectorHover(attached?.target ?? null, world, exact);
+            }, error => { if (!controller.signal.aborted && !(error instanceof DOMException && error.name === 'AbortError')) ui.error(error); });
+            return;
+        }
         point.hit(at, input, controller.signal).then(id => {
             if (!controller.signal.aborted && seq === hoverSeq) { sensitive.setHovered(id); if (tool === 'select') select.setHover(id); }
         }, error => { if (!controller.signal.aborted) ui.error(error); });
@@ -243,7 +255,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         if (choice.id === 'figure' && !FIGURE_SHAPES.includes(variant as FigureShape)) throw new RangeError('Invalid figure variant');
         const kind = choice.id as 'figure' | 'sticky' | 'frame' | 'connector' | 'polyline';
         return { ...route(boardCreationTool(kind), { runtime, render: runtime.render, camera, kind, registerPending,
-            sampleToSurface: options.sampleToSurface, guides: select.setGuides, hint: select.setConnectorTarget, alwaysSnap: options.alwaysSnap, dynamicSize: options.dynamicSize,
+            sampleToSurface: options.sampleToSurface, guides: select.setGuides, hint: select.setConnectorTarget, binding: select.setConnectorBinding, alwaysSnap: options.alwaysSnap, dynamicSize: options.dynamicSize,
             ...(kind === 'figure' ? { figure: variant as FigureShape } : {}), preview, current: editable, follow,
             editText: async id => { await text.editText(id); }, resolveAttachment: (position, signal, request) => attachments.resolve(position, signal,
                 { ...request, input: sample.source === 'keyboard' ? 'mouse' : sample.source }), onError: ui.error }), completesTool: true };

@@ -16,6 +16,8 @@ export interface ConnectorControlGestureOptions {
     readonly id: NodeId;
     /** A press on a label that does not drag edits its text (catalogue §7 a.7, S§11.3). */
     readonly editText?: (id: NodeId) => void | Promise<void>;
+    /** A bend or elbow handle that sits on the label: a press that does not drag edits the label, and a drag still bends. */
+    readonly clickEdits?: boolean;
     readonly control: ConnectorControl;
     readonly current: () => boolean;
     readonly hold: () => () => void;
@@ -91,7 +93,7 @@ export function connectorControlGesture(first: RealSample, _modifiers: Modifiers
             if (ended || cleaned) return;
             if (reason !== 'up' || !options.current()) { cancel(); return; }
             ended = true;
-            if (options.control === 'label' && !moved && options.editText) { cleanup(); void options.editText(options.id); return; }
+            if ((options.control === 'label' || options.clickEdits) && !moved && options.editText) { cleanup(); void options.editText(options.id); return; }
             void render(true);
         },
         cancel(_reason: CancelReason) { cancel(); },

@@ -8,6 +8,7 @@ import type { PathOp, Vec2 } from '../geom/path';
 import type { BoardRuntime } from '../host/runtime';
 import type { NodeId } from '../model/ids';
 import type { ConnectorNode } from '../model/nodes';
+import { PRECISE_HOVER_MS } from '../input/bindingPrecision';
 
 export interface ConnectorHintOptions {
     readonly runtime: BoardRuntime;
@@ -33,15 +34,28 @@ export function bindingSegments(node: Readonly<ConnectorNode>, geometry: Connect
 const SVG_NS = 'http://www.w3.org/2000/svg';
 // The selection colour the handles use, so a hint reads as part of the same overlay.
 const HINT_STROKE = '#75b7ff';
-type Surface = { readonly outline: readonly PathOp[]; readonly localToWorld: Affine };
+type Surface = { readonly outline: readonly PathOp[]; readonly localToWorld: Affine; readonly centre: Vec2 };
+
+/** The box centre of an outline, in world space: where an imprecise arrow binds (the anchor is the centre of the target's box). */
+function outlineCentre(outline: readonly PathOp[], localToWorld: Affine): Vec2 {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const op of outline) if (op.op !== 'Z') {
+        x0 = Math.min(x0, op.p.x); y0 = Math.min(y0, op.p.y); x1 = Math.max(x1, op.p.x); y1 = Math.max(y1, op.p.y);
+    }
+    return transformPoint(localToWorld, { x: (x0 + x1) / 2, y: (y0 + y1) / 2 });
+}
 
 /** The arrow hints drawn over the board: the outline of the shape an arrow end would bind to (catalogue §7 a.9, the target
- * hint), and the stubs of the bound ends of the selected arrow. The outline comes from the same attachment surface the
- * binding uses, so the hint and the binding cannot disagree. */
+ * hint), the stubs of the bound ends of the selected arrow or of an end being dragged, and the arrow tool's idle hover marker.
+ * The outline comes from the same attachment surface the binding uses, so the hint and the binding cannot disagree. */
 export function createConnectorHints(options: ConnectorHintOptions) {
     const { runtime } = options, doc = runtime.session.doc;
     let wanted: NodeId | null = null, surface: Surface | null = null, generation = 0, disposed = false;
     let bindings: readonly BindingSegment[] | null = null;
+    // The arrow tool's idle hover (catalogue a.2, a.9): a ring at the target's centre (imprecise), and after the hover hold on the
+    // same target a cross at the pointer (precise). Alt is exact: the outline only. Drags clear it, so a drag's stubs are never hidden.
+    let hoverTarget: NodeId | null = null, hoverPointer: Vec2 | null = null, hoverExact = false, hoverPrecise = false;
+    let hoverTimer: ReturnType<typeof setTimeout> | undefined;
     let controller: AbortController | undefined, svg: SVGSVGElement | undefined, targetPath: SVGPathElement | undefined, bindingPath: SVGPathElement | undefined;
     let targetPainted = '', bindingPainted = '', bindingDash = '';
     const current = () => !disposed && options.current() && runtime.session.doc === doc;
@@ -53,8 +67,16 @@ export function createConnectorHints(options: ConnectorHintOptions) {
         for (const path of [targetPath, bindingPath]) { path.setAttribute('fill', 'none'); path.setAttribute('stroke', HINT_STROKE); path.setAttribute('stroke-width', '1.5'); svg.append(path); }
         options.overlay.append(svg);
     };
+    // The marks drawn over the stubs: the hover marker while the arrow tool hovers a target, else the bound stubs.
+    const marks = (): readonly BindingSegment[] | null => {
+        if (hoverTarget !== null && surface && hoverPointer && !hoverExact) {
+            return hoverPrecise ? [{ from: hoverPointer, to: hoverPointer, mark: 'cross' }] : [{ from: surface.centre, to: surface.centre, mark: 'ring' }];
+        }
+        return bindings;
+    };
     const paint = (camera: ViewState['camera']) => {
-        if (!surface && !bindings?.length) { if (svg) { targetPath?.setAttribute('d', ''); bindingPath?.setAttribute('d', ''); targetPainted = bindingPainted = ''; } return; }
+        const shown = marks();
+        if (!surface && !shown?.length) { if (svg) { targetPath?.setAttribute('d', ''); bindingPath?.setAttribute('d', ''); targetPainted = bindingPainted = ''; } return; }
         ensure();
         if (surface) {
             const to = (p: Vec2) => { const q = worldToSurface(transformPoint(surface!.localToWorld, p), camera); return `${q.x} ${q.y}`; };
@@ -68,12 +90,12 @@ export function createConnectorHints(options: ConnectorHintOptions) {
             const d = parts.join(' ');
             if (d !== targetPainted) { targetPainted = d; targetPath!.setAttribute('d', d); }
         } else if (targetPainted) { targetPainted = ''; targetPath!.setAttribute('d', ''); }
-        if (bindings?.length) {
+        if (shown?.length) {
             const at = (p: Vec2) => worldToSurface(p, camera);
             // Below zoom 0.2 the stub is solid: a dash period is under a pixel there (catalogue §7 a.9).
             const dash = camera.z >= 0.2 ? '4 4' : '';
             const parts: string[] = [];
-            for (const { from, to, mark } of bindings) {
+            for (const { from, to, mark } of shown) {
                 const a = at(from), b = at(to);
                 parts.push(`M ${a.x} ${a.y} L ${b.x} ${b.y}`);
                 if (mark === 'ring') parts.push(`M ${b.x - 4} ${b.y} a 4 4 0 1 0 8 0 a 4 4 0 1 0 -8 0 Z`);
@@ -84,29 +106,44 @@ export function createConnectorHints(options: ConnectorHintOptions) {
             if (dash !== bindingDash) { bindingDash = dash; if (dash) bindingPath!.setAttribute('stroke-dasharray', dash); else bindingPath!.removeAttribute('stroke-dasharray'); }
         } else if (bindingPainted) { bindingPainted = ''; bindingPath!.setAttribute('d', ''); }
     };
+    const clearHover = () => {
+        clearTimeout(hoverTimer); hoverTimer = undefined; hoverTarget = null; hoverPointer = null; hoverExact = false; hoverPrecise = false;
+    };
+    const showTarget = (target: NodeId | null): void => {
+        if (target === wanted) return;
+        wanted = target; generation++; controller?.abort(); controller = undefined;
+        const node = target === null ? undefined : doc.nodes.get(target);
+        // A connector or group has no outline to bind to, and the binding resolver refuses both.
+        if (!node || node.kind === 'connector' || node.kind === 'group' || node.kind === 'opaque') { surface = null; options.invalidate(); return; }
+        const turn = generation, request = new AbortController(); controller = request;
+        void runtime.render.prepareForPick(node, request.signal, doc).then(prepared => {
+            if (request.signal.aborted || turn !== generation || !current()) return;
+            const attachments = prepared.vector?.attachments, pose = worldPose(doc, node.id);
+            const c = Math.cos(pose.rotation), s = Math.sin(pose.rotation), localToWorld: Affine = [c, s, -s, c, pose.x, pose.y];
+            surface = attachments ? { outline: attachments.outline, localToWorld, centre: outlineCentre(attachments.outline, localToWorld) } : null;
+            options.invalidate();
+        }).catch(() => { if (turn === generation) { surface = null; options.invalidate(); } });
+    };
     return {
         /** The bound ends' stubs, or null: the selected arrow's own binding, or the one an endpoint drag is making. */
         setBinding(segments: readonly BindingSegment[] | null): void { bindings = segments && segments.length ? segments : null; options.invalidate(); },
-        /** The target to show, or null. Its outline is read from the target's geometry asynchronously; the last request wins. */
-        setTarget(target: NodeId | null): void {
-            if (target === wanted) return;
-            wanted = target; generation++; controller?.abort(); controller = undefined;
-            const node = target === null ? undefined : doc.nodes.get(target);
-            // A connector or group has no outline to bind to, and the binding resolver refuses both.
-            if (!node || node.kind === 'connector' || node.kind === 'group' || node.kind === 'opaque') { surface = null; options.invalidate(); return; }
-            const turn = generation, request = new AbortController(); controller = request;
-            void runtime.render.prepareForPick(node, request.signal, doc).then(prepared => {
-                if (request.signal.aborted || turn !== generation || !current()) return;
-                const attachments = prepared.vector?.attachments, pose = worldPose(doc, node.id);
-                const c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
-                surface = attachments ? { outline: attachments.outline, localToWorld: [c, s, -s, c, pose.x, pose.y] } : null;
-                options.invalidate();
-            }).catch(() => { if (turn === generation) { surface = null; options.invalidate(); } });
+        /** The target to show, or null, for a drag: it clears the hover marker. Its outline is read from the target's geometry
+         * asynchronously; the last request wins. */
+        setTarget(target: NodeId | null): void { clearHover(); showTarget(target); },
+        /** The arrow tool's idle hover: the target under the pointer (null for none), the pointer's world point, and whether Alt makes
+         * the binding exact. A new target starts its hover hold; the same target keeps it. */
+        setHover(target: NodeId | null, pointer: Vec2 | null, exact: boolean): void {
+            if (target !== hoverTarget) {
+                clearTimeout(hoverTimer); hoverTimer = undefined; hoverPrecise = false; hoverTarget = target;
+                if (target !== null) hoverTimer = setTimeout(() => { hoverTimer = undefined; hoverPrecise = true; options.invalidate(); }, PRECISE_HOVER_MS);
+            }
+            hoverPointer = target === null ? null : pointer; hoverExact = exact;
+            showTarget(target); options.invalidate();
         },
         write(frame: ScheduledFrame) { if (current()) paint(frame.view.camera); },
         writeLive(view: ViewState) { if (current()) paint(view.camera); },
         dispose(): void {
-            if (disposed) return; disposed = true; generation++; controller?.abort();
+            if (disposed) return; disposed = true; generation++; controller?.abort(); clearHover();
             svg?.remove(); svg = undefined; targetPath = undefined; bindingPath = undefined; surface = null; wanted = null; bindings = null;
         },
     };

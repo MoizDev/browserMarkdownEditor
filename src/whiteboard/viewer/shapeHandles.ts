@@ -136,6 +136,8 @@ export function createShapeHandles(options: ShapeHandleOptions) {
                         const body = connectorBody(a, b, Math.abs(node.bend) <= threshold ? 0 : node.bend, 0.01);
                         next.push({ hit: { kind: 'connector-control', control: 'bend' }, point: connectorBodyPoint(body, .5) });
                     }
+                    // Listed after the bend or elbow: at its default place the label sits on that handle, and begin() decides the press
+                    // (a click edits the label, a drag still bends).
                     if (node.label) next.push({ hit: { kind: 'connector-control', control: 'label' }, point: geometry.editMetrics.anchorWorld });
                 }
                 if (!active()) return; selected = node.id; handles = Object.freeze(next); options.invalidate();
@@ -213,7 +215,12 @@ export function createShapeHandles(options: ShapeHandleOptions) {
                 { ...common, index: hit.index, insert: hit.kind === 'polyline-midpoint', snap });
             if (hit.kind === 'connector-end') return connectorEndHandleGesture(sample, modifiers, { ...common, terminal: hit.terminal, hint: options.hint, binding: options.binding,
                 sampleToSurface: options.sampleToSurface, resolveAttachment: options.resolveAttachment });
-            return connectorControlGesture(sample, modifiers, { ...common, control: hit.control, zoom: () => options.view().camera.z, editText: options.editText });
+            // A bend or elbow press on the label's own spot (its default place) is a click-to-edit when it does not drag.
+            const label = handles.find(handle => handle.hit.kind === 'connector-control' && handle.hit.control === 'label');
+            const clickEdits = !!label && hit.kind === 'connector-control' && (hit.control === 'bend' || hit.control === 'elbow')
+                && Math.hypot(options.sampleToSurface(sample).x - worldToSurface(label.point, options.view().camera).x,
+                    options.sampleToSurface(sample).y - worldToSurface(label.point, options.view().camera).y) <= (sample.source === 'touch' || sample.source === 'pen' ? 16 : 7);
+            return connectorControlGesture(sample, modifiers, { ...common, control: hit.control, zoom: () => options.view().camera.z, editText: options.editText, clickEdits });
         },
         toggleHead(hit: ShapeHandleHit): boolean {
             if (!current() || !selected || hit.kind !== 'connector-end') return false;

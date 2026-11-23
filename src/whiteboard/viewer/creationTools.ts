@@ -26,6 +26,7 @@ import type { createBoardRenderServices } from '../render/services';
 import { EMPTY_RICH_TEXT } from '../text/richText';
 import type { AttachmentRequest } from './attachments';
 import { PRECISE_HOLD_MS, PRECISE_SPEED } from '../input/bindingPrecision';
+import { bindingSegments, type BindingSegment } from './connectorHints';
 import type { BoardPreview } from './preview';
 
 type CreationKind = 'figure' | 'text' | 'sticky' | 'frame' | 'connector' | 'polyline';
@@ -43,6 +44,8 @@ export interface BoardCreationContext {
     readonly guides?: (guides: readonly BoardSnapGuide[]) => void;
     /** The arrow target hint, shown while the pointer is over a shape an arrow end would bind to. */
     readonly hint?: (target: NodeId | null) => void;
+    /** The bound end's stub while the pointer is over a target, or null: where the release would bind the end (catalogue §7 a.9). */
+    readonly binding?: (segments: readonly BindingSegment[] | null) => void;
     readonly alwaysSnap?: () => boolean;
     /** A toolbar drag: the shape is centred on the pointer at its default size and follows it until release (catalogue T§7, T§12). */
     readonly follow?: boolean;
@@ -86,6 +89,8 @@ class CreationGesture implements GestureOwner {
     private ended = false;
     private released = false;
     private longPress: ReturnType<typeof setTimeout> | undefined;
+    // Redraws the end when its hold on a target runs out with no pointer event (the release decides precision the same way).
+    private precisionWake: ReturnType<typeof setTimeout> | undefined;
     constructor(private readonly down: RealSample, modifiers: Modifiers, private readonly context: BoardCreationContext) {
         const doc = context.runtime.session.doc, selection = context.runtime.selection.getSnapshot();
         this.pointerIds = new Set([down.pointerId]); this.sample = down; this.lastMovedAt = down.time; this.lastTime = down.time; this.downModifiers = modifiers; this.modifiers = modifiers;
@@ -232,12 +237,25 @@ class CreationGesture implements GestureOwner {
             if (node.kind === 'connector') {
                 // Ctrl (on macOS too) and Cmd skip binding; a bound end is never snapped, and a free end follows the grid only.
                 if (!modifiers.accel && !modifiers.control) {
-                    const attached = await this.context.resolveAttachment(point, signal, { precise: false, exact: modifiers.alt, route: node.route,
+                    // The end's precision is the one the release will take (catalogue §7 a.3): it rested 320 ms on the target, or it arrived
+                    // slower than 0.5 px/ms. Until then the stub shows the imprecise binding, at the centre.
+                    const restedMs = sample.time - this.lastMovedAt, endPrecise = restedMs >= PRECISE_HOLD_MS || this.speed < PRECISE_SPEED;
+                    const attached = await this.context.resolveAttachment(point, signal, { precise: endPrecise, exact: modifiers.alt, route: node.route,
                         input: sample.source === 'keyboard' ? 'mouse' : sample.source });
                     if (!active()) throw new DOMException('Creation snap invalidated', 'AbortError');
                     this.context.hint?.(attached?.target ?? null);
-                    if (attached) { this.context.guides?.([]); return node; }
-                } else this.context.hint?.(null);
+                    if (attached) {
+                        this.context.guides?.([]);
+                        // The stub comes from the candidate's geometry, as a handle drag's does. The preview stays free: the release binds it.
+                        const bound = { ...node, end: { ...node.end, attach: attached } }, candidate = createAddedBoardDoc(this.document, [bound]);
+                        const prepared = await runtime.render.prepareForPick(bound, signal, candidate).catch(() => null);
+                        if (!active()) throw new DOMException('Creation snap invalidated', 'AbortError');
+                        if (prepared?.connector) this.context.binding?.(bindingSegments(bound, prepared.connector));
+                        if (!endPrecise) this.wakeAt(PRECISE_HOLD_MS - restedMs);
+                        return node;
+                    }
+                    this.context.binding?.(null);
+                } else { this.context.hint?.(null); this.context.binding?.(null); }
                 this.context.guides?.([]);
                 const grid = boardSnapGrid(runtime.session.doc);
                 if (!grid) return node;
@@ -272,7 +290,13 @@ class CreationGesture implements GestureOwner {
         this.context.guides?.(result.guides);
         return result.delta.x || result.delta.y ? this.node({ ...sample, x: sample.x + result.delta.x, y: sample.y + result.delta.y }, modifiers) : node;
     }
+    private wakeAt(delay: number): void {
+        this.clearWake();
+        this.precisionWake = setTimeout(() => { this.precisionWake = undefined; if (!this.ended && this.valid()) this.draw(); }, Math.max(0, delay));
+    }
+    private clearWake(): void { if (this.precisionWake !== undefined) { clearTimeout(this.precisionWake); this.precisionWake = undefined; } }
     private draw(): void {
+        this.clearWake();
         if (!this.valid()) return;
         const sample = this.sample, modifiers = this.modifiers, turn = ++this.previewGeneration;
         this.previewRequest?.abort(); const request = new AbortController(); this.previewRequest = request;
@@ -438,7 +462,8 @@ class CreationGesture implements GestureOwner {
         if (this.released) return;
         this.released = true;
         if (this.longPress !== undefined) { clearTimeout(this.longPress); this.longPress = undefined; }
-        try { this.context.guides?.([]); this.context.hint?.(null); this.context.preview.clear(); } finally { this.unregister(); this.release(); }
+        this.clearWake();
+        try { this.context.guides?.([]); this.context.hint?.(null); this.context.binding?.(null); this.context.preview.clear(); } finally { this.unregister(); this.release(); }
     }
 }
 export function boardCreationTool(id: CreationKind): Tool<BoardCreationContext> {

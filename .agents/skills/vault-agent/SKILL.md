@@ -102,7 +102,7 @@ A write the app did not make is no longer clobbered — every document save is v
 reloads the note or raises a conflict bar (`tabs-and-panes` → "Outside changes") — but it costs the reader
 exactly that interruption, which is why the prompt still forbids the agent's own tools on vault files. So text
 edits (`vault_edit`/`vault_write`, refused as stale unless the text still equals what the agent read) go live
-view → cached `EditorState`s + buffer → disk + `afterWrite`; create/mkdir refuse taken names
+view → the hidden note's Markdown session (`markdownSessions.dispatch`) → disk + `afterWrite`; create/mkdir refuse taken names
 (`useFileSystem().nameTaken`) and never truncate; move REFUSES a taken target; trash is
 `useTrashActions.performTrash` (src/app) without the question. Canvases: see the next section.
 

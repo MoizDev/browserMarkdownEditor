@@ -334,6 +334,9 @@
     cursor: pointer;
     max-width: 100%;
     overflow-wrap: anywhere;
+    /* A finger dragged off a bar tool is the drop gesture (chromeDrag.ts), not a page pan: without this the browser takes the
+     * touch as a pan and cancels the press at the first move (measured: a finger drag-out created nothing). */
+    touch-action: none;
 }
 
 .board-chrome-tool:hover,

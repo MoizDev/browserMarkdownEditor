@@ -28,6 +28,15 @@ function stickyPitCorrection(doc: BoardDoc, root: Node, delta: Vec2, zoom: numbe
     return slot ? { x: slot.x - x, y: slot.y - y } : null;
 }
 
+/** Positions commit to 1e-6 board units. Finer than any pointer step at any zoom, and coarser than the binary64 residue a delta
+ * leaves: measured, a grid landing at 120 committed as 119.99999999999994 and a free drag as 290.00000000000006. Applied once,
+ * to the committed placement; the live preview keeps the exact arithmetic so the gesture's feel does not change. */
+const POSITION_SCALE = 1e6;
+function cleanPlacement(op: NodeSetOp): NodeSetOp {
+    if (op.t !== 'set' || (op.key !== 'x' && op.key !== 'y') || typeof op.value !== 'number') return op;
+    return { ...op, value: Math.round(op.value * POSITION_SCALE) / POSITION_SCALE };
+}
+
 export interface BoardTranslationOptions {
     readonly runtime: BoardRuntime;
     readonly ids: readonly NodeId[];
@@ -167,7 +176,7 @@ export async function createBoardTranslationPlan(options: BoardTranslationOption
             try {
                 check(); if (!latest || latest.value !== value || latest.serial !== serial) throw new DOMException('Translation preview is not current', 'AbortError');
                 latest.signal.throwIfAborted(); if (latest.snapFence && !latest.snapFence()) throw new DOMException('Snap settings changed', 'AbortError');
-                const transaction: Transaction = { origin: 'tool', label: 'Move selection', ops: value.ops };
+                const transaction: Transaction = { origin: 'tool', label: 'Move selection', ops: value.ops.map(cleanPlacement) };
                 if (transaction.ops.length) { const applied = session.apply(transaction); applied.release(); }
             } finally { close(); }
         },

@@ -1,5 +1,6 @@
 import { isLocked } from '../change/commands';
 import type { Op } from '../change/ops';
+import { resnappedShapeAnchors } from '../geom/attachments';
 import { styleGeometryMetrics } from '../geom/styleMetrics';
 import type { FigureNode } from '../model/nodes';
 import type { BoardDoc } from '../model/doc';
@@ -223,8 +224,10 @@ export class BoardStyleCommands {
     /** The geo shape of selected figures. With nothing selected the figure tool's own variant is the next shape. */
     setShape(shape: FigureShape): void {
         const ops: Op[] = [];
-        for (const node of selectedNodes(this.session.doc, this.selection())) {
-            if (node.kind === 'figure' && node.shape !== shape) ops.push({ t: 'set', id: node.id, key: 'shape', value: shape });
+        const doc = this.session.doc;
+        for (const node of selectedNodes(doc, this.selection())) {
+            if (node.kind !== 'figure' || node.shape === shape) continue;
+            ops.push({ t: 'set', id: node.id, key: 'shape', value: shape }, ...resnappedShapeAnchors(doc, node, shape));
         }
         this.commit('Change shape', ops);
     }

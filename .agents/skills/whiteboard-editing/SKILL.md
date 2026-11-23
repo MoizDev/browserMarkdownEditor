@@ -64,7 +64,10 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
 - The laser (`input/laserTrail.ts`) is a session fade, never saved; Escape clears a visible trail before it
   returns the tool to Select (`input/attach.ts`).
 - A bar press dragged off the bar goes to `ToolState.beginChromeDrag` → `input/chromeDrag.ts` (router-owned): the
-  shape is created where the pointer is released. A click never leaves the bar, so it only selects the tool.
+  shape is created where the pointer is released (a Text drop shows its mark on the pointer meanwhile). A mouse or
+  pen click only selects the tool on release; a finger's press selects it at once (touch-start). Bar buttons carry
+  `touch-action: none` (`chrome.css`), else the browser pans and cancels the finger drag. In pen mode a finger drag
+  off the bar creates nothing (`attach.ts` resolve gate); the tap still selects.
 - Select (`tools/select.ts`, `input/selectGesture.ts`, `viewer/selectServices.ts`): click, marquee (`isWrapMode`
   makes Cmd/Ctrl the full-containment key), Alt-drag scribble; both select live and Escape restores the start
   selection. Handles: `viewer/selectionHandles.ts`, `shapeHandles.ts`, `stickyHandles.ts`; a coarse pointer draws
@@ -73,7 +76,11 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   text tool in `text/edit/tool.ts`. A frame's border double-click fits it to its children (`viewer/frameBorderFit.ts`).
 - Arrow ends (`input/connectorHandles.ts`, `input/bindingPrecision.ts`, `viewer/connectorHints.ts`): precise after
   320 ms of rest, 600 ms of arrow-tool hover, or on a slow entry; a fast entry binds to the centre. Alt is exact,
-  Cmd/Ctrl skips binding.
+  Cmd/Ctrl skips binding. A figure changing shape re-snaps its precise ends that its new outline leaves outside to
+  the nearest outline point (`geom/attachments.ts` `resnappedShapeAnchors`, called by `chrome/styleCommands.ts`
+  `setShape`; the same transaction). Route changes (arc/elbow) keep the anchors as they are.
+- Translation commits positions rounded to 1e-6 board units (`geom/runtimeTranslation.ts`, `cleanPlacement`); the
+  live preview keeps exact arithmetic, so a grid-snapped drop no longer commits 119.99999999999994.
 - Navigation: `input/navigation.ts` and the wheel, touch and pinch modules (`cameraZoom.ts`, `oneFingerZoom.ts`,
   `touchDoubleTap.ts`, `panFling.ts`, `zoomBrush.ts`, `edgeScroll.ts`). Space + arrow pages through
   `viewer/keyboardNavigation.ts`, gliding on the platform scheduler (`rendering-platform`).

@@ -73,6 +73,9 @@ export class ChromeToolDrag<Context> {
       () => window.removeEventListener('keydown', onKey, true),
     )
     this.armed = armed
+    // A finger's press chooses its tool at once, as the mobile tool bar does (catalogue U§10): a tap leaves that tool chosen and a
+    // drag off the bar creates from it. A mouse or pen press still selects on release, through the bar's click.
+    if (armed.touch) options.select(choice)
     return true
   }
 
@@ -164,16 +167,24 @@ export class ChromeToolDrag<Context> {
 }
 
 /** A toolbar text drop: the text is created where the pointer is released, and entered for editing (catalogue T§11). It has no
- *  drag width of its own, unlike the text tool's press-and-drag column. */
+ *  drag width of its own, unlike the text tool's press-and-drag column. Its preview is the same auto-size mark the text tool
+ *  shows, carried by the pointer until release, so the text appears where the mark was. */
 export const textDropTool: Tool<TextToolContext> = {
   id: 'text',
   begin(first: RealSample, _modifiers: Modifiers, context: TextToolContext): GestureOwner {
     let last = first
+    context.previewTextColumn(first.x, first.y, null)
     return {
       kind: 'node-edit', pointerIds: new Set([first.pointerId]),
-      update(samples) { for (const sample of samples) if (sample.pointerId === first.pointerId) last = sample },
-      finish(reason) { if (reason === 'up') context.createText(last.x, last.y, null) },
-      cancel() {},
+      update(samples) {
+        for (const sample of samples) if (sample.pointerId === first.pointerId) last = sample
+        context.previewTextColumn(last.x, last.y, null)
+      },
+      finish(reason) {
+        context.clearTextColumnPreview()
+        if (reason === 'up') context.createText(last.x, last.y, null)
+      },
+      cancel() { context.clearTextColumnPreview() },
     }
   },
 }

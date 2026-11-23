@@ -362,7 +362,9 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   })
   // A bar tool pressed on the chrome: the board's router owns the drag once the pointer leaves the bar (see ChromeToolDrag).
   const chromeDrag = new ChromeToolDrag<unknown>({ token: view.token, router, mappings: view.mappings, mac: services.mac, current, editable,
-    claim, releaseClaim, resolve: (choice, sample, modifiers) => services.resolveChromeDrag?.(choice, sample, modifiers) ?? null,
+    claim, releaseClaim,
+    // Pen mode takes only the pen on the board, so a finger dragged off the bar creates nothing (catalogue I§5.2); its tap still selects.
+    resolve: (choice, sample, modifiers) => touch.penMode && sample.source !== 'pen' ? null : services.resolveChromeDrag?.(choice, sample, modifiers) ?? null,
     select: choice => services.tools.setTool(choice.id, choice.variant), snapshot: () => services.tools.getSnapshot(),
     complete: start => services.tools.complete(start),
     focus: () => view.surface.closest<HTMLElement>('.board-interaction-root')?.focus({ preventScroll: true }), error: services.error })

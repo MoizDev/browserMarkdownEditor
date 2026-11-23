@@ -11,7 +11,7 @@ export function decodePng(bytes) {
     }
     const width = bytes.readUInt32BE(16);
     const height = bytes.readUInt32BE(20);
-    // A malformed artifact must not allocate the shared machine's memory before it can be
+    // A malformed artifact must not allocate gigabytes of the machine's memory before it can be
     // reported. Oversized captures are a harness fault, never a comparison pass or a crop.
     if (!width || !height || width * height > 2 ** 24) {
         throw new Error(`Picture exceeds the 2^24-pixel decoder limit: ${width}x${height}`);

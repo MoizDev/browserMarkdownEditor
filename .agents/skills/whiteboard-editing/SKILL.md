@@ -57,6 +57,9 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   `fairTol` (validated, never a limit). Wet, dry, both backends, picking, export and omission all read it; a span
   depends on samples i−1…i+2, so the wet tail is replaceable (`finalizedSpanCount`). Anything that bounds a stroke
   without building cubics uses the curve enclosure (`ink/reach.ts`, `SampleSummary.curveBounds`), never the sample box.
+  A `closed` stroke's caller passes `curveClosure(points, node.closed)` (its last span arrives along its first).
+  LIVE pointer samples are first moved within their pointer-grid cell (`ink/dequantize.ts`, a provisional wet tail);
+  replayed, imported or agent samples never are.
 - Ink: `input/liveInk.ts` (wet curve), `sessionInk.ts`, `continueInk*.ts`, `straightInk.ts`; delegated ink
   (`delegatedInk.ts`) uses the browser's ink presenter when present. Pen mode (`ToolState.penMode`) and
   `penTransitions.ts` route a stylus to ink or eraser while touch pans. The eraser removes whole items

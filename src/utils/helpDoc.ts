@@ -336,7 +336,7 @@ The bar at the bottom centre holds **Select** (\`V\`), **Hand** (\`H\`), **Draw*
 - Menu → Preferences → **Input device** says whether a scroll is a trackpad swipe (pan) or a mouse wheel (zoom); it detects this by itself unless you choose. **Edge scrolling** pans when you drag something to the edge of the board.
 
 ### Drawing
-- **Draw** follows your pen, mouse or finger, and however fast you draw the line comes out as a smooth curve through the path your hand took; only a sharp turn stays a corner. Hold \`Shift\` while drawing to make the next part straight; press \`Shift\` and click with Draw to continue your last stroke with a straight line from its end.
+- **Draw** follows your pen, mouse or finger, and however fast or slowly you draw the line comes out as a smooth curve through the path your hand took, without the pointer's pixel steps, and a loop that ends where it began closes smoothly; only a sharp turn stays a corner. Hold \`Shift\` while drawing to make the next part straight; press \`Shift\` and click with Draw to continue your last stroke with a straight line from its end.
 - **Highlight** draws a broad see-through stroke. **Laser** draws a trail that fades by itself and is never saved — for pointing while you share your screen.
 - **Eraser** removes whatever it touches.
 - **Figures**, **Arrow** and **Line**: drag to draw. An arrow that starts or ends on a shape stays attached to it when the shape moves; double-click an arrow's end to switch its arrowhead on or off.

@@ -81,6 +81,8 @@ export interface BoardSelectServicesOptions {
     readonly alwaysSnap?: () => boolean;
     /** The wrap-mode preference (utils/boardPreferences.ts `isWrapMode`): a brush then selects only what it fully encloses. */
     readonly wrapMode?: () => boolean;
+    /** Ctrl/Cmd-drag from a resize handle of the one selected picture crops it from that edge; false when it cannot be cropped. */
+    readonly cropFromHandle?: (id: NodeId, edge: { readonly dx: -1 | 0 | 1; readonly dy: -1 | 0 | 1 }, pointer: { readonly pointerId: number; readonly x: number; readonly y: number }) => boolean;
     onError(error: unknown): void;
     onKeptLocked?(ids: readonly NodeId[]): void;
     toggleWhiteboardTheme?(): void;
@@ -620,8 +622,16 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         const direction = stickyHandles.hit(surface, coarse, sample.time);
         if (!direction) {
             const hit = selectionHandles.hit(surface, coarse, sample.time); if (!hit) return null;
-            // Accel-drag from a resize or rotate handle brushes instead (catalogue S§4.4, S§8.1, S§9): the select gesture takes it.
-            if (modifiers.accel) return null;
+            if (modifiers.accel) {
+                // Accel-drag from a resize handle of one picture crops it from that edge (catalogue S§10.2): the press is the crop's
+                // to finish, so it holds the gesture alone and no brush starts. Any other accel-drag from a handle brushes (S§4.4, S§8.1).
+                const selected = runtime.selection.getSnapshot().selected;
+                if (hit.kind === 'resize' && selected.length === 1 && options.cropFromHandle?.(selected[0]!, { dx: hit.handle.x, dy: hit.handle.y },
+                    { pointerId: sample.pointerId, x: sample.x, y: sample.y })) {
+                    return { kind: 'node-edit', pointerIds: new Set([sample.pointerId]), update() {}, finish() {}, cancel() {} };
+                }
+                return null;
+            }
             const ids = [...runtime.selection.getSnapshot().selected], host = {
                 hold: () => session.beginGesture(), registerPending, current: mutable,
                 show: (ops: readonly Op[]) => showTransform(ops), waitUntilReady: options.preview.waitUntilReady,

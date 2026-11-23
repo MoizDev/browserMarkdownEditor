@@ -25,9 +25,12 @@ export interface MediaRowActions {
     cardPreview(id: MediaRowId): Promise<void>;
 }
 
-const CROP_ROWS: readonly { readonly preset: PictureCropPreset; readonly label: string }[] = [
-    { preset: 'original', label: 'Original' }, { preset: 'square', label: 'Square' }, { preset: 'circle', label: 'Circle' },
-    { preset: 'landscape', label: 'Landscape 4:3' }, { preset: 'portrait', label: 'Portrait 3:4' }, { preset: 'wide', label: 'Wide 16:9' },
+// The crop bar's own aspect names, so the menu and the editor read the same in every board language. The English fallbacks
+// show only when a board has no table for the key, which every shipped table has.
+const CROP_ROWS: readonly { readonly preset: PictureCropPreset; readonly key: string; readonly fallback: string }[] = [
+    { preset: 'original', key: 'crop.aspect.original', fallback: 'Original' }, { preset: 'square', key: 'crop.aspect.square', fallback: 'Square (1:1)' },
+    { preset: 'circle', key: 'crop.aspect.circle', fallback: 'Circle (1:1)' }, { preset: 'landscape', key: 'crop.aspect.landscape', fallback: 'Landscape (4:3)' },
+    { preset: 'portrait', key: 'crop.aspect.portrait', fallback: 'Portrait (3:4)' }, { preset: 'wide', key: 'crop.aspect.wide', fallback: 'Wide (16:9)' },
 ];
 
 /** The App's own picker for a replacement: one image, chosen from the right-click that asked for it. */
@@ -84,7 +87,7 @@ export function mediaRows(selection: MediaRowSelection, options: MediaRowOptions
     }
     // The editor row above already says "Crop image"; this submenu names what it is for: the presets the editor offers.
     rows.push({ kind: 'submenu', id: 'media-crop', label: label('chrome.cropToAspect', 'Crop to aspect ratio'), ...rowState,
-        entries: CROP_ROWS.map(({ preset, label: presetLabel }) => ({ kind: 'command' as const, id: `media-crop-${preset}`, label: presetLabel, ...rowState,
+        entries: CROP_ROWS.map(({ preset, key, fallback }) => ({ kind: 'command' as const, id: `media-crop-${preset}`, label: label(key, fallback), ...rowState,
             run: attempt(() => actions.crop(selection.id, preset)) })) });
     // Invert is a picture's own flag; a clip's frames are not inverted by it.
     if (!selection.video) {

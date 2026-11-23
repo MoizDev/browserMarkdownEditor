@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type PointerEvent as ReactPointerEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import LucideGlyph from '../LucideGlyph';
 import { worldToSurface } from '../../platform/render/camera';
 import { worldPose } from '../../whiteboard/change/coordinates';
@@ -11,6 +11,7 @@ import type { PictureCropStore } from './pictureCropStore';
 import type { NativeViewLease } from './nativeViewLease';
 import type { BoardTextQuestion } from './useNativeBoardDialogs';
 import { chooseReplacementImage } from './nativeMediaRows';
+import { returnBoardFocusIfLost } from './chrome/boardFocus';
 
 type Translate = (key: string) => string;
 
@@ -111,15 +112,11 @@ export function NativePictureCrop({ lease, store, t, isVisible, onError }: Nativ
     const root = useRef<HTMLDivElement | null>(null);
     const drag = useRef<{ drag: CropDrag; pointer: number; x: number; y: number; frame: PictureFrame } | null>(null);
     const commit = useCallback(() => { try { store.commit(); } catch (error) { onError(error); } }, [store, onError]);
-    // Ending a crop hands the board its keyboard focus again, best effort: a pointer Apply has been measured to leave focus on the body,
-    // so a click on the picture is still what brings the board's keys back after one.
+    // Ending a crop hands the board its keyboard focus back: the bar's button or the pressed bar leaves the DOM with it.
     const leave = useCallback((apply: boolean) => {
-        // The nearest ancestor that holds the board's keyboard target: the view this crop was drawn in.
-        let board: HTMLElement | null = null;
-        for (let node: HTMLElement | null = root.current; node && !board; node = node.parentElement) board = node.querySelector<HTMLElement>('.board-interaction-root');
+        const host = root.current?.closest<HTMLElement>('.board-viewer-host') ?? null;
         if (apply) commit(); else store.cancel();
-        // The commit re-renders the board: the focus moves once that has settled, or the new interaction root takes no key.
-        board?.focus({ preventScroll: true });
+        returnBoardFocusIfLost(host);
     }, [store, commit]);
 
     // Escape cancels; Enter applies; an arrow moves the picture's content inside the frame (Shift for ten times as far).
@@ -149,15 +146,50 @@ export function NativePictureCrop({ lease, store, t, isVisible, onError }: Nativ
     }, [session, store, leave, frame]);
 
     // A press outside the crop ends it and keeps the draft, and passes on: the press still selects whatever it landed on.
+    // The bar is part of the crop: a press on its aspect menu, zoom slider or Fit is not an outside click (measured: it ended the crop).
     useEffect(() => {
         if (!session) return;
         const onDown = (event: PointerEvent) => {
-            if (root.current?.contains(event.target as Node)) return;
-            if (store.get()) commit();
+            const target = event.target;
+            if (root.current?.contains(target as Node) || (target instanceof Element && target.closest('.crop-bar'))) return;
+            if (store.get()) {
+                const host = root.current?.closest<HTMLElement>('.board-viewer-host') ?? null;
+                commit();
+                returnBoardFocusIfLost(host);
+            }
         };
         window.addEventListener('pointerdown', onDown, true);
         return () => window.removeEventListener('pointerdown', onDown, true);
     }, [session, store, commit]);
+
+    // A Ctrl/Cmd-press on a selection handle asked for this crop from one edge (the select tool gave the press to the crop): the drag
+    // then follows that press on the window, since the press belongs to the board and no element of this editor holds it.
+    useEffect(() => {
+        if (!session || !frame) return;
+        const grab = store.takeEdge();
+        if (grab) drag.current = { drag: { mode: 'edge', dx: grab.dx, dy: grab.dy, origin: session.window }, pointer: grab.pointerId, x: grab.x, y: grab.y, frame };
+    }, [session, frame, store]);
+    const sessionOpen = session !== null;
+    useEffect(() => {
+        if (!sessionOpen) return;
+        const onMove = (event: PointerEvent) => {
+            const active = drag.current, live = store.get();
+            if (!active || !live || active.pointer !== event.pointerId) return;
+            const delta = localDelta(active.frame, event.clientX - active.x, event.clientY - active.y);
+            store.setWindow(dragged(active.drag, delta.x / active.frame.fullW, delta.y / active.frame.fullH,
+                { shift: event.shiftKey, fromCentre: event.altKey }, live.width, live.height));
+        };
+        const onUp = (event: PointerEvent) => { if (drag.current?.pointer === event.pointerId) drag.current = null; };
+        // Captured: the board's gesture stops the press's moves below the window, and the drag must still follow them.
+        window.addEventListener('pointermove', onMove, true);
+        window.addEventListener('pointerup', onUp, true);
+        window.addEventListener('pointercancel', onUp, true);
+        return () => {
+            window.removeEventListener('pointermove', onMove, true);
+            window.removeEventListener('pointerup', onUp, true);
+            window.removeEventListener('pointercancel', onUp, true);
+        };
+    }, [sessionOpen, store]);
 
     if (!session || !frame) return null;
     const win = session.window;
@@ -170,6 +202,15 @@ export function NativePictureCrop({ lease, store, t, isVisible, onError }: Nativ
         store.setWindow(next);
     };
     const end = (event: ReactPointerEvent<HTMLElement>) => { if (drag.current?.pointer === event.pointerId) drag.current = null; };
+    // A double-click on an edge gives back that side of the original (a corner gives back its two sides), catalogue S§12 "Image":
+    // the picture keeps its other sides as they are, so it is one step to undo a cut you have made by hand.
+    const resetSide = (handle: { readonly dx: -1 | 0 | 1; readonly dy: -1 | 0 | 1 }) => (event: ReactMouseEvent<HTMLElement>) => {
+        event.preventDefault(); event.stopPropagation();
+        const live = store.get();
+        if (!live) return;
+        const win = live.window;
+        store.setWindow({ x0: handle.dx < 0 ? 0 : win.x0, y0: handle.dy < 0 ? 0 : win.y0, x1: handle.dx > 0 ? 1 : win.x1, y1: handle.dy > 0 ? 1 : win.y1 });
+    };
     const begin = (mode: 'move' | 'edge', dx: -1 | 0 | 1, dy: -1 | 0 | 1) => (event: ReactPointerEvent<HTMLElement>) => {
         if (event.button !== 0) return;
         event.preventDefault(); event.stopPropagation();
@@ -204,7 +245,8 @@ export function NativePictureCrop({ lease, store, t, isVisible, onError }: Nativ
                     </div>
                     {HANDLES.map(handle => (
                         <span key={handle.name} className={`crop-handle crop-handle-${handle.name as CropHandle}`} aria-hidden="true"
-                            onPointerDown={begin('edge', handle.dx, handle.dy)} onPointerMove={move} onPointerUp={end} onPointerCancel={end} />
+                            onPointerDown={begin('edge', handle.dx, handle.dy)} onPointerMove={move} onPointerUp={end} onPointerCancel={end}
+                            onDoubleClick={resetSide(handle)} />
                     ))}
                 </div>
             </div>

@@ -115,7 +115,13 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
         try {
             signal.throwIfAborted();
             const doc = runtime.session.doc, scene = runtime.scene;
-            if (!scene || !scene.ready) throw new BoardRegionUncertain('Board scene is not ready');
+            if (!scene) throw new BoardRegionUncertain('Board scene is not ready');
+            // A sweep that starts while the scene still absorbs the previous commit waits for it, as a point query does.
+            // It threw before, and the eraser's next drag right after an erase lost every hit with a notice.
+            while (!scene.ready) {
+                scene.step(32, performance.now() + 3); await cooperate(); signal.throwIfAborted();
+                if (runtime.scene !== scene || runtime.session.doc !== doc) throw stale();
+            }
             const pin = scene.pin(); let token: RenderToken;
             try { token = Object.freeze({ ...pin.token }); } finally { pin.release(); }
             const view = options.camera(), camera = Object.freeze({ ...view.camera }), viewport = Object.freeze({ ...view.viewport });
@@ -144,7 +150,9 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                     for (;;) {
                         const value = triangulation.step({ deadline: performance.now() + 3, maxWork: 128 });
                         if (value.status === 'pending') { await cooperate(); check(); continue; }
-                        if (value.status === 'uncertain') throw new BoardRegionUncertain(value.reason);
+                        // A polygon that cannot be triangulated (a box dragged exactly along one axis has no area) is queried whole:
+                        // the narrow jobs take it as it is, winding and boundary included.
+                        if (value.status === 'uncertain') break;
                         let convex = points.length <= 64, winding = 0;
                         for (let i = 0; i < points.length; i++) {
                             const side = orient2d(points[i], points[(i + 1) % points.length], points[(i + 2) % points.length]);
@@ -210,8 +218,14 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                     : { kind: 'swept', points: localPoints, localToSurface, radiusCss: query.radiusCss };
                 let hit = false, whole = false, empty = false;
                 if (prepared.ink) {
-                    const runInk = async (region: RegionQuery): Promise<{ hit: boolean; empty: boolean; uncertain: boolean }> => {
-                        let uncertain = false, any = false, all = true, visible = false;
+                    // An ink answer with no witness either way is a tangency within the coverage error (a fraction of a device
+                    // pixel, INK_PICK_TOLERANCE_DEVICE_PX plus the outline's certified error): the eraser or lasso edge touches
+                    // the painted edge. It is decided here, per stroke, rather than failing the query: touching counts as a hit for
+                    // an eraser, a lasso or a box that selects what it touches, and as "not inside" for a containment box. It
+                    // rejected the whole query before: one stroke tangent to an eraser sample discarded every other stroke the drag
+                    // had clearly crossed, behind the notice "Ink region intersection is numerically ambiguous".
+                    const runInk = async (region: RegionQuery): Promise<{ hit: boolean; empty: boolean }> => {
+                        let any = false, all = true, visible = false;
                         const containment = region.kind === 'polygon' && region.containment;
                         for (const coverage of prepared.ink!) {
                             if (!coverage.segments.length && !coverage.discs.length) continue;
@@ -222,8 +236,8 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                                         check(); const state = job.step({ deadline: performance.now() + 3, maxWork: 128 });
                                         if (state.status === 'pending') { await cooperate(); continue; }
                                         if (state.status !== 'empty') visible = true;
-                                        any ||= state.status === 'hit'; all &&= state.status === 'hit' || state.status === 'empty';
-                                        uncertain ||= state.status === 'uncertain'; break;
+                                        any ||= state.status === 'hit' || state.status === 'uncertain'; all &&= state.status === 'hit' || state.status === 'empty';
+                                        break;
                                     }
                                 } finally { job.cancel(); }
                             } else {
@@ -232,23 +246,21 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                                     for (;;) {
                                         check(); const state = job.step({ deadline: performance.now() + 3, maxVisits: 128 });
                                         if (state.status === 'complete') {
-                                            const decision = state.result!.decision; visible = true; any ||= decision === 'hit'; all &&= decision === 'hit'; uncertain ||= decision === 'uncertain'; break;
+                                            const decision = state.result!.decision; visible = true; any ||= decision !== 'miss'; all &&= decision === 'hit'; break;
                                         }
                                         await cooperate();
                                     }
                                 } finally { job.cancel(); }
                             }
-                            if (containment ? !all && !uncertain : any) break;
+                            if (containment ? !all : any) break;
                         }
-                        return { hit: containment ? all && visible : any, empty: containment && !visible && !uncertain, uncertain };
+                        return { hit: containment ? all && visible : any, empty: containment && !visible };
                     };
                     if (decomposedContainment && query.kind === 'polygon') {
                         const full = await runInk({ ...query, points, localToSurface });
-                        if (!full.uncertain) { whole = true; hit = full.hit; empty = full.empty; }
-                    }
-                    if (!whole) {
+                        whole = true; hit = full.hit; empty = full.empty;
+                    } else {
                         const part = await runInk(localQuery); hit = part.hit; empty = part.empty;
-                        if (!hit && part.uncertain) throw new BoardRegionUncertain('Ink region intersection is numerically ambiguous');
                     }
                 } else if (prepared.vector) {
                     let vector = prepared.vector;
@@ -425,9 +437,14 @@ export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
                     }
                     await cooperate(); check();
                 }
-                if (!result?.hit && !result?.whole && !result?.empty && uncertain) throw uncertain;
-                if (result && !result.hit && !result.whole && !result.empty && decomposedContainment)
-                    throw new BoardRegionUncertain('Containment spans a non-convex lasso partition');
+                // A node whose geometry cannot be decided (a frame clip without a certified extent, a vector at its exact edge, a
+                // containment that spans two pieces of a non-convex lasso) is a miss for this one node: it stays, the person can
+                // sweep it again, and every node that WAS decided keeps its answer. One such node rejected the whole query before,
+                // and the eraser or marquee lost everything it had found, behind a notice in geometry jargon.
+                if (!result?.hit && !result?.whole && !result?.empty && uncertain) {
+                    const selected = selectableAtFocus(doc, resolved.id, focus, sheet);
+                    result = selected ? { selected, hit: false, rank: resolved.rank, whole: false, empty: false } : undefined;
+                }
                 if (result) {
                     evaluated.set(resolved.id, result);
                     if (result.hit && !(query.kind === 'polygon' && query.containment && result.selected !== resolved.id))

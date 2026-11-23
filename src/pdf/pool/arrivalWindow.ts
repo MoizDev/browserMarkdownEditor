@@ -24,8 +24,10 @@ export function subscribePdfTileArrivals(listener: () => void): () => void {
     return () => { listeners.delete(listener); };
 }
 
-/** Audit only: arrived rasters whose every pixel is one colour, marked by the producer while the render audit is on and never
- * otherwise (tileLayer's 'pdf:uniform-replaced'). Weak: a closed bitmap's mark goes with it. */
-const uniform = new WeakSet<ImageBitmap>();
-export function markPdfTileUniform(bitmap: ImageBitmap): void { uniform.add(bitmap); }
+/** Arrived rasters whose every pixel is one colour, with that colour: the raster's own four bytes (RGBA, straight from PDFium), marked
+ * by the producer. A GPU tile layer draws such a tile from a 1x1 texture of those bytes (tileLayer's solid tiles), and the audit tapes
+ * 'pdf:uniform-replaced' by it. Weak: a closed bitmap's mark goes with it. */
+const uniform = new WeakMap<ImageBitmap, Uint8Array>();
+export function markPdfTileUniform(bitmap: ImageBitmap, rgba: Uint8Array): void { uniform.set(bitmap, rgba); }
 export function isPdfTileUniform(bitmap: ImageBitmap): boolean { return uniform.has(bitmap); }
+export function pdfTileUniformColour(bitmap: ImageBitmap): Uint8Array | null { return uniform.get(bitmap) ?? null; }

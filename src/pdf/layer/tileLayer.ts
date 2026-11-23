@@ -10,7 +10,7 @@ import { planPdfTileDemand } from './tileDemand';
 import type { PdfDemandInput, PdfTileRequest } from './tileDemand';
 import { getPdfFontEpoch, pdfMirrorProfilePrefix, pdfVariantRevision } from '../fonts/profiles';
 import { pdfDocKey } from '../worker/protocol';
-import { consumePdfTileArrival, forgetPdfTileArrival, isPdfTileUniform } from '../pool/arrivalWindow';
+import { consumePdfTileArrival, forgetPdfTileArrival, isPdfTileUniform, pdfTileUniformColour } from '../pool/arrivalWindow';
 import { auditCount, auditDrawn, auditTape, renderAuditEnabled } from '../../platform/render/renderAudit';
 import { QuadList } from './quadList';
 
@@ -51,8 +51,14 @@ interface Entry {
     auditDrawnAt?: number;
     /** Audit only: every pixel of the raster is one colour (isPdfTileUniform, read when it settles: the bitmap may go at upload). */
     auditUniform?: boolean;
+    /** An opaque raster of one colour (a blank stretch of page): its four bytes. On a device such a tile is a 1x1 texture of them,
+     * drawn over the tile's whole box: no tile-sized texture, no upload of its pixels. */
+    solid?: Uint8Array;
     used: number;
 }
+
+/** The source rect of a solid tile's 1x1 texture: any part of the tile samples the same one texel. */
+const SOLID_SOURCE: Readonly<Rect> = Object.freeze({ x: 0, y: 0, width: 1, height: 1 });
 
 const NO_BOXES: readonly Readonly<Rect>[] = [];
 
@@ -514,6 +520,10 @@ export class PdfTileLayer implements Layer {
                 entry.bitmap = bitmap;
                 entry.settled = true;
                 if (renderAuditEnabled()) entry.auditUniform = isPdfTileUniform(bitmap);
+                // Opaque only: the texel is uploaded as the raster's own bytes, which equal the bitmap's premultiplied ones only at
+                // full alpha, so a solid tile samples exactly what its textured neighbours' page pixels do (no seam where they meet).
+                const colour = pdfTileUniformColour(bitmap);
+                if (colour && colour[3] === 255) entry.solid = colour;
                 this.drawVersion++;
                 this.settledOrder = null;
                 this.coverCache = null;
@@ -754,7 +764,7 @@ export class PdfTileLayer implements Layer {
             const stand = scaleDiffers(entry.request.scale.scale, rasterScale);
             if (stand && renderAuditEnabled()) auditTape(`pdf-standin-ratio:${(entry.request.scale.scale / rasterScale).toPrecision(9)}`);
             this.markQuad(destination, coarserThan(entry.request.scale.scale, rasterScale));
-            this.host.drawTexturedQuad(pass, texture.handle, source, destination, { opacity: 1, sampling: 'linear',
+            this.host.drawTexturedQuad(pass, texture.handle, entry.solid && texture.width === 1 ? SOLID_SOURCE : source, destination, { opacity: 1, sampling: 'linear',
                 ...(__BME_BENCH__ ? {
                     coverage: stand ? 'standin' as const : 'current' as const,
                     standInRatio: entry.request.scale.scale / rasterScale,
@@ -1210,7 +1220,10 @@ export class PdfTileLayer implements Layer {
 
     private uploadTile(device: GfxDevice, key: string, entry: Entry, budget: FrameBudget): 'done' | 'capacity' | 'budget' {
         const bitmap = entry.bitmap!;
-        const width = bitmap.width, height = bitmap.height, bytes = width * height * 4;
+        // A one-colour tile is one texel (see Entry.solid): about two in five of a zoom's new exact tiles on a text PDF are blank
+        // page (measured, doc12 at WebGL2 DPR 2), each a 1 MB texture and upload before.
+        const solid = entry.solid ?? null;
+        const width = solid ? 1 : bitmap.width, height = solid ? 1 : bitmap.height, bytes = width * height * 4;
         if (width > TILE_EDGE || height > TILE_EDGE) {
             this.failed.add(key);
             this.onError(new RangeError('PDF tile is larger than a tile texture'), entry.request);
@@ -1253,8 +1266,9 @@ export class PdfTileLayer implements Layer {
         if (granted) { this.restGrant -= bytes; auditCount('pdf-page', 'upload:rest-grant'); }
         else if (!budget.claimUpload(bytes)) { texture.device.destroy(texture.handle); this.pendingFrame = true; return 'budget'; }
         try {
-            device.writeTexture(texture.handle, { x: 0, y: 0, width, height },
-                { source: bitmap, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
+            device.writeTexture(texture.handle, { x: 0, y: 0, width, height }, solid
+                ? { source: solid, rowBytes: 4, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' }
+                : { source: bitmap, premultiplied: true, colorSpace: 'srgb', origin: 'top-left' });
         } catch (error) {
             texture.device.destroy(texture.handle);
             if (budgetRefusal(error)) { this.awaitGpuCapacity(bytes); return 'capacity'; }
@@ -1265,7 +1279,7 @@ export class PdfTileLayer implements Layer {
         this.tileBytes += bytes;
         this.coverCache = null;
         if (again) auditCount('pdf-page', 're-upload');
-        auditCount('pdf-page', 'tile-upload', 1, { px: width * height });
+        auditCount('pdf-page', solid ? 'tile-upload:solid' : 'tile-upload', 1, { px: width * height });
         consumePdfTileArrival(bitmap);
         return 'done';
     }

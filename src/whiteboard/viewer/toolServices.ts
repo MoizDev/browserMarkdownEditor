@@ -139,9 +139,11 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         try { at = options.clientToSurface(event.clientX, event.clientY); } catch { sensitive.setHovered(null); return; }
         const controller = new AbortController(), seq = ++hoverSeq;
         hoverPick = controller;
-        point.hit(at, input, controller.signal).then(id => {
+        // Hover is a hint: a pick that fails clears it and the next move asks again. Its failure reached the board's notice
+        // on every pointer move along an undecidable edge before (measured: "Point hit is geometrically uncertain" at 8.0 px).
+        point.hit(at, input, controller.signal, true).then(id => {
             if (!controller.signal.aborted && seq === hoverSeq) sensitive.setHovered(id);
-        }, error => { if (!controller.signal.aborted) ui.error(error); });
+        }, () => { if (!controller.signal.aborted && seq === hoverSeq) sensitive.setHovered(null); });
     };
     const text = createBoardTextEditor({ runtime, render: runtime.render, engine, preview, point, camera, viewport: options.viewport,
         overlay: options.overlay, current, interaction: options.interaction, inputFrames: options.inputFrames, mac: ui.mac,

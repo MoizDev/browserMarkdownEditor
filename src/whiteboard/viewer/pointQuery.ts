@@ -114,7 +114,8 @@ async function connectorPoint(node: Readonly<ConnectorNode>, geometry: Connector
 
 /** Queries one published Scene revision, not a second index or live paint cache. */
 export function createBoardPointQuery(options: BoardPointQueryOptions): {
-    hit(point: Vec2, input: InputKind, signal: AbortSignal): Promise<NodeId | null>;
+    /** `quiet`: a failure is the caller's alone (hover asks again at the next move), never the person's notice. */
+    hit(point: Vec2, input: InputKind, signal: AbortSignal, quiet?: boolean): Promise<NodeId | null>;
     hitTarget(point: Vec2, input: InputKind, signal: AbortSignal): Promise<BoardTargetHit | null>;
     hitLocked(point: Vec2, input: InputKind, signal: AbortSignal): Promise<NodeId | null>;
     dispose(): void;
@@ -122,7 +123,7 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
     const jobs = new Set<AbortController>();
     let disposed = false;
     const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
-    async function run(point: Vec2, input: InputKind, signal: AbortSignal, targetMode: boolean, lockedMode = false): Promise<Candidate | null> {
+    async function run(point: Vec2, input: InputKind, signal: AbortSignal, targetMode: boolean, lockedMode = false, quiet = false): Promise<Candidate | null> {
             if (disposed) throw cancelled();
             if (![point.x, point.y].every(Number.isFinite) || !['mouse', 'pen', 'touch'].includes(input)) throw new RangeError('Invalid point query');
             const { runtime } = options, doc = runtime.session.doc, revision = doc.rev, selection = runtime.selection.getSnapshot();
@@ -310,27 +311,31 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
                 }
                 check();
                 if (!scene.ready || scene.revision !== revision) throw cancelled();
+                // An undecided candidate is ink or a path exactly at the edge of its hit band (measured: a pointer exactly 8.0 CSS px
+                // from a straight stroke), or one whose clip cannot be certified. It is decided, never raised: a pick ANSWERS. The
+                // certain winner stands; with none, the press is a miss, which is safe (a box simply starts there). A target query
+                // is the exception: there an undecided candidate is something on top that cannot be attached to, and attaching to
+                // a shape it covers would be wrong, so it stays a miss. This threw before, on every hover move along that band and
+                // on the press, which then never started its box.
                 for (let i = 0; i < uncertain.length; i++) {
                     if ((i & 127) === 0) await tick();
                     const candidate = uncertain[i];
                     const winner = selectionResult.winner;
-                    if (!winner || (candidate.id !== winner.id && !(targetMode ? winner.rank > candidate.rank : better(winner, candidate)))) {
-                        throw new Error('Point hit is geometrically uncertain');
-                    }
+                    if (targetMode && winner && candidate.id !== winner.id && !(winner.rank > candidate.rank)) selectionResult.winner = null;
                 }
                 check();
                 if (!scene.ready || scene.revision !== revision) throw cancelled();
                 return selectionResult.winner;
             } catch (error) {
                 // Every pointer move aborts the previous hover pick (endHoverPick): a superseded pick is not an error.
-                if (!isCancellation(error) && !combined.aborted) {
+                if (!quiet && !isCancellation(error) && !combined.aborted) {
                     try { options.onError(error); } catch { /* Preserve the query error. */ }
                 }
                 throw error;
             } finally { cursor?.cancel(); jobs.delete(controller); }
     }
     return {
-        async hit(point, input, signal) { return (await run(point, input, signal, false))?.id ?? null; },
+        async hit(point, input, signal, quiet) { return (await run(point, input, signal, false, false, quiet))?.id ?? null; },
         /** The topmost node under the point when that node is locked, else null. A locked node cannot be selected, so a
          * secondary click reaches it only through this (F-CTX-006); the caller must not select it. */
         async hitLocked(point, input, signal) {

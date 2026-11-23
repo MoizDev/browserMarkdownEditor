@@ -23,7 +23,7 @@ import type {
 import type { AgentChange, AgentHost, ChatIndex, ChatMeta } from '../../types/vaultAgent';
 import {
     activePath, activeSessionId, append as appendNode, branchFrom, emptyTree, isEmpty,
-    selectVersion as selectVersionIn, type ChatNode, type ChatTree, type StoredTool,
+    selectVersion as selectVersionIn, tagSession, type ChatNode, type ChatTree, type StoredTool,
 } from '../../utils/chatTree';
 import { readOpenChat, rememberOpenChat } from './openChatMemory';
 import { writeJSON } from '../../utils/storage';
@@ -811,9 +811,13 @@ class ChatStore {
             // The session belongs to the BRANCH, not to the chat: a fork starts
             // its own, and is handed the turns above it as a transcript because
             // the other version's session holds the words that were edited away.
-            const branchTree = this.conversation(key).tree;
-            const sessionId = activeSessionId(branchTree);
-            const prefix = sessionId ? '' : transcriptPrefix(branchTree, userItemId);
+            const shown = this.conversation(key);
+            const sessionId = activeSessionId(shown.tree);
+            const prefix = sessionId ? '' : transcriptPrefix(shown.tree, userItemId);
+            // Marked as part of that session before the run, not after the reply:
+            // a stopped or failed run leaves no reply, but the CLI kept the words.
+            const branchTree = sessionId ? tagSession(shown.tree, userItemId, sessionId) : shown.tree;
+            if (branchTree !== shown.tree) this.setConversation(key, { ...shown, tree: branchTree });
             this.runUserNode = { key, nodeId: userItemId };
             // Saved before the run, not only after it: a window closed mid-reply
             // should still have the question, and the branch it was asked on.
@@ -934,7 +938,7 @@ class ChatStore {
 
         const patch = foldRunIntoNode(conversation.items, pending.nodeId);
         const empty = !patch.text && !patch.tools?.length && !patch.reasoning;
-        let tree = conversation.tree;
+        let tree = sessionId ? tagSession(conversation.tree, pending.nodeId, sessionId) : conversation.tree;
         if (!empty) {
             tree = appendNode(tree, {
                 id: uid(), role: 'assistant', text: '', createdAt: Date.now(),
@@ -986,6 +990,16 @@ class ChatStore {
         if (run.phase === 'preparing') this.set({ run: { ...run, phase: 'running' } });
         switch (event.type) {
             case 'session': {
+                // The question is in this session now, reply or not.
+                const pending = this.runUserNode;
+                if (pending?.key === key) {
+                    const conversation = this.conversation(key);
+                    const tree = tagSession(conversation.tree, pending.nodeId, event.sessionId);
+                    if (tree !== conversation.tree) {
+                        this.setConversation(key, { ...conversation, tree });
+                        this.persistTree(key, tree);
+                    }
+                }
                 const chat = this.state.chats.find(c => c.id === key);
                 // Written at once, not at the end: a reload mid-reply must
                 // still be able to find this chat's transcript.

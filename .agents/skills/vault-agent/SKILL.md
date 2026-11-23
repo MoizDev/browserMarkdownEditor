@@ -165,8 +165,11 @@ is a writing job). Teaching is **sticky per conversation** (`ChatStoreState.teac
   reopen the chat just stepped out of), the draft becoming a real chat mid-run, and `deleteChat`. The
   composer's unsent text rides along in the same spirit (`Composer`, keyed `<vault>|<chat>`, images
   deliberately excluded: object URLs do not survive the page that minted them).
-- **A branch is a SESSION of its own.** `activeSessionId` is the newest assistant turn on the branch
-  being shown, so an edit starts a fresh CLI session and carries the kept turns as a
+- **A branch is a SESSION of its own.** `activeSessionId` is the newest session on the branch being
+  shown, but ONLY if no node off the branch carries it too (a session is a line: every fork below the
+  first reply shares its parent's session, old answer included). User nodes record the session they
+  were sent into (`tagSession`, at send / the `session` event), so a stopped run still counts. An
+  edit therefore starts a fresh CLI session and carries the kept turns as a
   `<bme-history>` transcript (`transcriptPrefix`, 40k budget, oldest dropped first). Resuming the
   other version's session instead would hand the agent the very words the user edited away.
   `ChatMeta.sessionId` stays the chat's latest, for `session.delete` and the history fallback.

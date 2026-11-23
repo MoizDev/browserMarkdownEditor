@@ -417,6 +417,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     },
   })
   let keyboardStart: ToolStateSnapshot | null = null
+  let commaHeld = false
   const cursor = createKeyboardCursor({
     token: view.token, current: () => current(),
     toWorld: point => surfaceToWorld(point, view.camera.camera),
@@ -468,6 +469,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     cursor.activate(services.keyboardCursorInitial?.() ?? { x: viewport.width / 2, y: viewport.height / 2 })
     view.surface.focus()
   })
+  const modifiersOf = (event: KeyboardEvent): Modifiers => ({ shift: event.shiftKey, alt: event.altKey, control: event.ctrlKey, accel: services.mac ? event.metaKey : event.ctrlKey })
   const stopKeys = installKeyboard(view.surface, {
     visible: current, enabled: editable, shortcutsEnabled: services.shortcutsEnabled,
     modalOpen: services.modalOpen, editing: services.editing,
@@ -530,6 +532,19 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
         router.resumeInk(view.token)
         if (temporaryPan) pointer.interrupt('flush')
         return true
+      }
+      // Comma presses the pointer at the keyboard cursor while it is held and lifts it on release (K§10.6).
+      if (id === 'pointer.hold') {
+        if (cursor.gesture) return true;
+        if (!cursor.active) cursor.activate(services.keyboardCursorInitial?.() ?? { x: view.camera.viewport.width / 2, y: view.camera.viewport.height / 2 });
+        commaHeld = cursor.enter(modifiersOf(event));
+        return commaHeld;
+      }
+      if (id === 'pointer.release') {
+        if (!commaHeld) return false;
+        commaHeld = false;
+        if (cursor.gesture) cursor.enter(modifiersOf(event));
+        return true;
       }
       if (id === 'zoom.hold') { zoomHeld = true; return true }
       if (id === 'zoom.release') { overview.leave(); zoomHeld = false; return true }

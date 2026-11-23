@@ -201,8 +201,9 @@ interface StandIn extends Indexed { readonly atlas: TextAtlas; readonly entry: A
 interface Slot { entry: AtlasEntry | null; rgba: boolean; standIn: boolean; x: number; y: number; w: number; h: number }
 /** A staged mono cell awaiting its conversion: the entry it fills and where its bitmap sits in the staging texture. */
 interface PendingCell { entry: AtlasEntry; x: number; y: number }
-/** One R8 page's share of the conversion: its cells are the instances [first, first + count) of the conversion buffer. */
-interface PageRun { page: AtlasPage; first: number; count: number; fill: number }
+/** One R8 page's share of the conversion: its cells are the instances [first, first + count) of the conversion buffer. `sample` is one of
+ * its cells: an eviction drops a whole page at once, so that cell says whether the page's cells are still there when the conversion draws. */
+interface PageRun { page: AtlasPage; first: number; count: number; fill: number; sample: AtlasEntry | null }
 interface TextRun extends PreparedRun {
     readonly device: GfxDevice;
     readonly buffer: BufferHandle;
@@ -279,6 +280,11 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
     /** The conversion's instance buffer and its CPU twin: grown to the pending count, never shrunk. */
     let convertBuffer: BufferHandle | null = null, convertLease: ByteLease | null = null, convertCapacity = 0;
     let convertScratch: Float32Array<ArrayBuffer> = new Float32Array(0), convertScratchLease: ByteLease | null = null;
+    /** Set when a cell is staged after the conversion rows were last written. The rows are written by uploadPrepared, at the end of the
+     * composer's prepare, and never in encodeOffscreen: the device refuses an upload once a pass is recorded in the frame, and the
+     * composer's encodeOffscreen runs after the passes of the layers encoded before it (measured: a rectangle and a text selected together,
+     * rotated on WebGL2, demoted the pane to canvas2d each time the underlay had drawn first). */
+    let convertStale = false;
     const pending: PendingCell[] = [];
     let pendingCount = 0;
     const pageRuns: PageRun[] = [];
@@ -355,6 +361,7 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         pipelinesReady = false; pipelinesPending = false; failed = false;
         mono = null; colour = null; white = null; whiteLease = null; sampler = null;
         clearStageTimer(); stage = null; convertBuffer = null; convertLease = null; convertCapacity = 0; pendingCount = 0; pageRunCount = 0;
+        convertStale = false;
         // Stand-in records name the atlases this device just disposed: none may be drawn from again.
         standIns.clear(); standAccount.reset();
         releaseRaster();
@@ -685,6 +692,7 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
                 if (next) { next.entry = placed; next.x = spot.x; next.y = spot.y; }
                 else { next = { entry: placed, x: spot.x, y: spot.y }; pending.push(next); }
                 pendingCount++;
+                convertStale = true;
                 auditCount(audit, 'text:mask-raster', 1, { px: at.w * at.h });
                 auditCount(audit, 'upload:mask', 1, { bytes });
                 recordStandIn(req, label, null, mono!, placed, geometry.slices, geometry);
@@ -798,8 +806,8 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
     };
     const addRun = (page: AtlasPage): PageRun => {
         let run = pageRuns[pageRunCount];
-        if (run) { run.page = page; run.first = 0; run.count = 0; run.fill = 0; }
-        else { run = { page, first: 0, count: 0, fill: 0 }; pageRuns.push(run); }
+        if (run) { run.page = page; run.first = 0; run.count = 0; run.fill = 0; run.sample = null; }
+        else { run = { page, first: 0, count: 0, fill: 0, sample: null }; pageRuns.push(run); }
         pageRunCount++;
         return run;
     };
@@ -943,13 +951,14 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
                 pass.draw(batch.command);
             }
         },
-        encodeOffscreen(passes: OffscreenPasses): void {
-            if (pendingCount === 0) return;
-            clearStageTimer();
-            const owner = device, staged = stage, pipeline = convertPipeline;
-            if (!owner || !staged || !pipeline || !convertBuffer || !sampler || !mono) throw new Error('Text conversion without its objects');
-            // Gather this frame's live cells per page, in page order, into the conversion buffer: one instance range per page.
+        uploadPrepared(): void {
+            if (!convertStale) return;
+            convertStale = false;
             pageRunCount = 0;
+            if (pendingCount === 0) return;
+            const owner = device, staged = stage;
+            if (!owner || !staged || !convertBuffer || !mono) throw new Error('Text conversion without its objects');
+            // Gather this frame's live cells per page, in page order, into the conversion buffer: one instance range per page.
             for (let i = 0; i < pendingCount; i++) {
                 const p = pending[i];
                 if (!mono.holds(p.entry)) continue;
@@ -963,6 +972,7 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
                 const run = runOf(p.entry.page)!;
                 const o = (run.first + run.fill) * 12;
                 run.fill++;
+                run.sample ??= p.entry;
                 const e = p.entry;
                 convertScratch[o] = e.x; convertScratch[o + 1] = e.y; convertScratch[o + 2] = e.w; convertScratch[o + 3] = e.h;
                 convertScratch[o + 4] = p.x / ATLAS_PAGE; convertScratch[o + 5] = 1 - p.y / staged.height;
@@ -970,10 +980,20 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
                 convertScratch[o + 8] = 0; convertScratch[o + 9] = 0; convertScratch[o + 10] = 0; convertScratch[o + 11] = 0;
             }
             if (total > 0) owner.writeBuffer(convertBuffer, 0, convertScratch.subarray(0, total * 12));
+        },
+        encodeOffscreen(passes: OffscreenPasses): void {
+            if (pendingCount === 0) return;
+            // Every staged cell has its row: a cell staged after uploadPrepared is a composer bug, which fails the frame rather than
+            // drawing a conversion from rows that do not hold it.
+            if (convertStale) throw new Error('Text conversion staged after its upload');
+            clearStageTimer();
+            const staged = stage, pipeline = convertPipeline;
+            if (!staged || !pipeline || !convertBuffer || !sampler || !mono) throw new Error('Text conversion without its objects');
             // One pass per R8 page that has cells this frame. Each pass loads the page (its other texels stay), and draws its cells.
             for (let r = 0; r < pageRunCount; r++) {
                 const run = pageRuns[r];
-                if (run.count === 0) continue;
+                // A page evicted since the upload lost its cells with it: nothing is drawn into its target, which is gone.
+                if (run.count === 0 || !run.sample || !mono.holds(run.sample)) continue;
                 const target = run.page.target;
                 if (!target) throw new Error('R8 text page without a conversion target');
                 const viewport = { x: 0, y: 0, width: ATLAS_PAGE, height: ATLAS_PAGE };

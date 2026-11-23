@@ -129,8 +129,8 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
     }, [pdf, page, isVisible, isFocused]);
     const [thumbs, setThumbs] = useState(readThumbnailsOpen);
     // Blank pages at their final size and place from the moment the geometry is known until the first frame presents.
-    // Without them the pane sat empty and dark between the source opening and the first picture (inv-f cold-small: 400 ->
-    // 505 ms); with them the picture lands in the paper it was waiting in, with no layout change.
+    // Without them the pane sat empty and dark between the source opening and the first picture (measured on a cold open of a small
+    // PDF: 400 -> 505 ms); with them the picture lands in the paper it was waiting in, with no layout change.
     const [paper, setPaper] = useState<readonly { left: number; top: number; width: number; height: number }[] | null>(null);
     const paperShown = useRef(false);
     const [noticeState, setNoticeState] = useState<{ session: PdfTiledDocumentSession; notice: RenderNotice | undefined }>(() =>
@@ -867,7 +867,7 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         };
         // The wheel (and a trackpad pinch, which arrives as ctrl+wheel) is taken on the content, not the surface: links are buttons in the
         // overlay, a sibling of the surface, so over a table of contents or a citation every wheel event missed the handler and the page
-        // stood still under the cursor until the link left it (inv-f e11: zero presents while 40 wheel events reached the window).
+        // stood still under the cursor until the link left it (measured: zero presents while 40 wheel events reached the window).
         const wheelTarget = contentHost ?? host;
         wheelTarget.addEventListener('wheel', wheel, { passive: false });
         host.addEventListener('keydown', keydown);

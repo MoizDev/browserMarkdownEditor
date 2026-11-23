@@ -3,7 +3,7 @@ import { createElement, useEffect, useSyncExternalStore, type ComponentType, typ
 /**
  * A lazily loaded component rendered DIRECTLY once its module has arrived, instead of through `React.lazy` behind a
  * `<Suspense>`. React 19 holds a suspended boundary's reveal until its fallback has been up 300 ms, whenever the chunk
- * landed: measured (inv-f trace-cold), the PDF surface's chunk arrived ~20 ms after the click and the page still waited
+ * landed: measured on a cold open, the PDF surface's chunk arrived ~20 ms after the click and the page still waited
  * for a timer of 291 ms with the main thread idle, then every later import of the open path started only after it.
  * A slot is a module snapshot: a warm load renders on the first pass, a cold one shows `fallback` until the module is
  * there and renders on the next pass with nothing throttling it. `load()` is shared, so an idle warm-up and the render

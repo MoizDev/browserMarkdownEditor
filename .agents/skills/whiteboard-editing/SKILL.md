@@ -141,7 +141,11 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   in opaque contained frames (`contained-frames` skill).
 - **Crop is in-canvas**: `components/whiteboard/NativePictureCrop.tsx` (the crop bar and the floating controls over
   the picture) with `pictureCropStore.ts`, `nativeCropGeometry.ts` and the geometry in `media/crop.ts`. Enter applies,
-  Escape cancels, and a click outside applies.
+  Escape cancels, and a click outside applies; a press on the bar (aspect, zoom, Fit) is not outside, and Apply or an
+  outside commit returns focus to the board. Ctrl/Cmd-drag from a selected picture's handle starts a crop from that edge
+  (`selectServices.ts` `beginHandle` → `cropFromHandle` → `beginEdge`: the press's drag follows on the window, capture
+  phase). A dblclick on the body opens the crop after the press's gesture ends (`enqueueAfterGesture`), since the store
+  refuses to start during one. A dblclick on a crop edge gives that side back.
 - A pasted URL becomes a `linkcard`, or an `embed` for a known provider (`clipboard/insertText.ts`,
   `media/embed.ts`: seventeen providers in `EmbedProvider`, YouTube via youtube-nocookie; identifier-only path rules
   so a link cannot smuggle a second address). A pasted link fills a selected link-carrying item instead.
@@ -164,7 +168,7 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
 - Board preferences persist in `localStorage['bme.whiteboard.preferences']` (`utils/boardPreferences.ts`).
 - Copy/cut/paste are listened on the board surface (`useNativeClipboard.ts`); paste classifies native records,
   legacy, Excalidraw and HTML (`clipboard/paste.ts`), each admitted as an external source. A plain paste of board
-  content stays where it was copied when it came from this board and sheet and overlaps the view, else it lands in the view's centre (`clipboard/placement.ts`); Cmd/Ctrl+D repeats the last
+  content stays where it was copied when it came from this board and sheet and overlaps the view, else it lands in the view's centre (`clipboard/placement.ts`); a cursor paste takes the deepest unlocked frame under the pointer (`frameUnder`), and Cmd/Ctrl+D repeats the last
   copy's offset (`clipboard/duplicateRepeat.ts`).
 
 ## Checking an editing change

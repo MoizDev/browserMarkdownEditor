@@ -135,7 +135,9 @@ come back to either.
 - PDF-pane print hands the exact saved bytes to the browser after flushing pending ink, not a raster spool.
 - Board print/export share one focused pin in `components/whiteboard/useNativeClipboard.ts`: drawings use
   `whiteboard/export/whiteboardPrint.ts`, notebooks `notebookPrint.ts`, PDF-backed boards `pagedPrintSnapshot`;
-  `components/whiteboard/printBoard.ts` is the only print surface. JSON copy/export share
+  `components/whiteboard/printBoard.ts` is the only print surface. A whiteboard with a selection asks Selection or Sheet in the
+  app's dialog (`NativeCanvasEditing` `runPrint` → `clipboard.print(wholeSheet)` → `nativeExport` `wholeSheet`); paged boards
+  print all pages. JSON copy/export share
   `whiteboard/clipboard/copyJson.ts` (`buildBoardJson`) and `exportDelivery.ts`.
 - PDF+ink PNG composes `PdfInkBackdrop.captureSnapshot` with the board snapshot under ONE parent capture
   (`rendering-platform`, Capture).

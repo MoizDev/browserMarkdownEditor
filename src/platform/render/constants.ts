@@ -15,6 +15,8 @@ export const RENDER_CONSTANTS: RenderConstants = Object.freeze({
         depth: false,
         stencil: false,
         preserveDrawingBuffer: false,
+        // Not 'high-performance': an integrated GPU is a real GPU for this work, and asking for more wakes a dual-GPU Mac's discrete
+        // GPU for every open document. A software renderer is refused by the broker (softwareRenderer), not by this attribute.
         powerPreference: 'default',
         desynchronized: false,
         failIfMajorPerformanceCaveat: true,

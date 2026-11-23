@@ -1,6 +1,7 @@
 import type { GpuReleaseReason, RenderToken } from './types';
 import type { GfxLimits } from './gfx/api';
 import type { MemoryAllocator } from './memoryGovernor';
+import type { GpuUnavailableCause } from '../renderStatus';
 
 export type { GpuReleaseReason } from './types';
 
@@ -27,8 +28,10 @@ export type ContextDisposeReason = 'disposed' | 'revoked' | 'context-lost' |
 /** A GPU defect reported by the owner (a lost draw, a failed readiness check), named by its owner. */
 export type GpuErrorReason = `gpu-error:${string}`;
 /** `budget`: the visible-context cap is full, so this pane shows live 2D and upgrades when a context frees. */
+/** `gpu-unavailable`: this browser has no usable graphics card for this pane (see GpuUnavailableCause); never memory pressure. */
 export type CpuFallbackReason = 'capacity' | 'budget' | 'out-of-budget' | 'creation-failed' | 'context-lost' |
-    'cpu-pinned' | 'restore-timeout' | 'pressure' | GpuErrorReason;
+    'cpu-pinned' | 'restore-timeout' | 'pressure' | 'gpu-unavailable' | GpuErrorReason;
+export type { GpuUnavailableCause };
 export type GpuFailureReason = 'creation-failed' | 'out-of-budget' | GpuErrorReason;
 
 export interface SurfaceResizeResult {
@@ -110,6 +113,9 @@ export interface SurfaceCallbacks {
     onSlotAvailable(): void;
     /** Stable App-owned status-line callback; once per session, including across view remounts. */
     onPinned(): void;
+    /** The pane runs on canvas2d because no usable GPU exists for it. Once per cause: a device cause once per app session, a
+     * document's repeated GPU errors once per document session. A transient fallback (budget, bridge, memory, loss) never calls it. */
+    onGpuUnavailable?(cause: GpuUnavailableCause): void;
 }
 
 export interface SurfaceBrokerConfiguration {

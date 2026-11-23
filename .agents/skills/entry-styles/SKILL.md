@@ -1,136 +1,145 @@
 ---
 name: entry-styles
-description: Icons and colours for files and folders, and the file tree's Custom sort order — the `.appearance.json` vault file (and what may be stored in it), the store the file tree and vault menu read them from, the drag-to-reorder gesture, and the lazily-loaded Lucide set behind the picker. Load before touching entryStyle*, lucideIcons, EntryStylePicker, LucideGlyph, treeSort/treeReorder/treeDrag, the tree's drag and drop, anything that renames/moves/trashes a vault entry, or before storing anything new in a vault file.
+description: Icons and colours for files and folders, and the file tree's Custom sort order — the per-folder `.appearance.json` vault file (and what may be stored in it), the store the file tree and vault menu read, the drag-to-reorder gesture, and the lazily loaded Lucide set behind the picker. Load before touching entryStyle*, useEntryStyles, lucideIcons, EntryStylePicker, LucideGlyph, treeSort/treeReorder/treeDrag/expandedPaths, the tree's drag and drop, anything that renames/moves/trashes a vault entry, or before storing anything new in a vault file.
 ---
 
 # Icons, colours and the custom order of files and folders
 
-Files: `utils/entryStyle.ts` (the on-disk model, pure), `utils/entryStyleStore.ts` (external store),
-`utils/lucideIcons.ts` (the lazy set + search), `components/EntryStylePicker.tsx` (the context-menu
-flyout), `components/LucideGlyph.tsx` (draws an icon from node data), `TreeNode.tsx`, `VaultMenu.tsx`.
+| File | Role |
+|---|---|
+| `utils/entryStyle.ts` | the on-disk model and every pure helper (its header comment is the long-form why) |
+| `utils/entryStyleStore.ts` | external store: `getEntryStyles`, `getEntryStyle(path)`, `getEntryOrder`, `subscribeEntryStyles` |
+| `app/useEntryStyles.ts` | reading the files on vault open, the one serialized writer, `handleStyleEntry`, `handleSetTreeOrder` |
+| `components/EntryStylePicker.tsx` | the context-menu flyout (`kind: 'entry-style'`, see `app-context-menu`) |
+| `components/LucideGlyph.tsx` | draws an icon from stored node data; tiny, safe to import anywhere |
+| `utils/lucideIcons.ts` | the lazy 1,818-icon set and its search |
+| `utils/treeSort.ts`, `treeReorder.ts`, `treeDrag.ts`, `expandedPaths.ts` | sorting, the drop rule, drag/drop-target stores, which folders are open |
+| `TreeNode.tsx`, `FileExplorer.tsx`, `VaultMenu.tsx` | the readers |
 
-## The file
+## The file: one `.appearance.json` per folder that has something to say
 
-`<folder>/.appearance.json` — `{ version: 2, entries: {childName: {icon, color}}, icons: {name:
-IconNode[]}, order?: {'': childNames[]} }`. **One per folder that has anything to say**, describing
-**its own children**, files and folders alike. Hidden from the tree at **every depth**
-(`isHiddenEntryName`), like `.Assets` and `.Garbage`; `LEGACY_STYLE_FILE` (`.folders.json`, the name
-it had while only folders could be styled) stays root-only, read forward once, left on disk.
+On disk: `<folder>/.appearance.json` = `{ version: 2, entries: { childName: { icon?, color? } },
+icons: { iconName: IconNode[] }, order?: { '': childNames[] } }` — it describes **that folder's own
+children**, files and folders alike, by NAME. In memory the app works on **one merged view keyed by
+vault path** (`entries: { 'Math': …, 'Math/A3.notebook': … }`, `order: { '': […], 'Math': […] }`);
+`shardEntryStyles` cuts it into per-folder files and `mergeShard(view, folder, shard)` folds one back.
+Every helper, the store and the rows speak the merged view.
 
-In memory it is ONE merged view, keyed by vault path all the way down — that is what every helper in
-`entryStyle.ts`, the store and `TreeNode` take and return. `shardEntryStyles` cuts it into the files;
-`mergeShard(file, folder, shard)` folds one back in. They are inverses, and there is a test that says so.
+- **A look lives beside the thing it describes.** With one root file, opening `Vault/Math` as its
+  own vault (Finder, or **Open as Vault**) put the styles *above* the root, unreachable by the File
+  System Access API: every icon vanished and the first pick wrote a file the outer vault never saw.
+  Sharded, both roots read and write `Math/.appearance.json`. This is the per-folder rule AGENTS.md
+  states for `.Assets`, `.Garbage` and `.appearance.json`.
+- **Moves are free.** A renamed, moved or trashed folder carries its own file on disk; only its ENTRY
+  in its parent's file is re-keyed. The writer **skips** a folder the tree cannot name — one that just
+  moved, whose file went with it.
+- Hidden at every depth (`isHiddenEntryName` in `utils/vaultEntries.ts`) and refused to the agent at
+  every depth (`writeRefusal` in `utils/vaultAgentTools.ts`). The legacy root-only `.folders.json`
+  (`LEGACY_STYLE_FILE`) is read forward once and left on disk, hidden too.
+- `parseEntryStyles` never throws: this is user-editable text, and a bad file costs an icon, not the
+  tree.
 
-- **A LOOK LIVES BESIDE THE THING IT DESCRIBES.** With one file at the vault root, opening
-  `Vault/Math` from Finder (or **Open as Vault**) opened a vault whose styles sat in a file *above*
-  its root — unreachable by the File System Access API, so every icon, colour and arrangement
-  vanished and the first pick wrote a fresh file the outer vault would never see. Sharded, `Math/Deep`'s
-  look is in `Math/.appearance.json`, inside either root, so both show it and a change in one is read
-  by the other. These keys are ABSOLUTE in the only sense a browser has: anchored to the folder, not
-  to whichever ancestor happened to be the root.
-- **Moves are free.** A renamed, moved or trashed folder carries its files with it on disk
-  (`copyDirRecursive` copies everything, and `.appearance.json` is just a file in there); only its own
-  ENTRY, in its parent's file, is re-keyed. The writer SKIPS a folder the tree cannot name — that is a
-  folder that just moved, and its file went with it.
-- **Reads: once per customized folder, per vault open.** The tree walk (`listDir`) already enumerates
-  every folder, so it keeps the handle of each `.appearance.json` it passes on
-  `FileTreeDirNode.styleFile`; App opens only those. Nothing is opened speculatively and a vault with
-  no icons reads nothing. Still never per tree walk — that runs after every save.
-- **Writes: only the files that changed.** `useEntryStyles.writeEntryStyles` (src/app) cuts the merged view
-  into files, compares each with `shardTextRef` (what that folder's file last said, byte for byte) and writes
-  the difference — an icon picked in one folder is one small write. A folder left with nothing to say has its
-  file **removed**, not left holding `{}` in every folder an icon was ever tried in.
-- **MIGRATION IS AUTOMATIC AND ONE-WAY.** `needsFanOut` reads the SHAPE, not `version`: a key with a
-  separator, or an order keyed by anything but `''`. Such a file is the merged view already, so it is
-  read whole and fanned back out once the tree lands. A root file that only ever styled top-level
-  things is already a valid shard and is left alone. An entry for a folder no longer in the tree is
-  dropped — nothing could have drawn it.
-- **THE ARTWORK IS STORED WITH IT** (`icons`, deduped by name, pruned on write to what *that file*
-  still refers to — a folder opened as a vault must draw its icons without the root's). That is what
-  lets the file tree draw a custom icon with **none of Lucide in the main bundle** and with no flash
-  of default icons on a cold start, and it makes every folder self-describing.
-- **`color` is a NAME, never a hex.** The two values per colour live in `index.css` as
-  `--folder-<key>`, one per theme, because one hex cannot be legible on both sidebars. The tint goes
-  on the **icon only** (`--entry-color` on `.tree-item-icon`) — a tree of coloured names stops
-  reading as a list. On a file a chosen icon REPLACES the type icon, which is the one thing that row
-  says on its own, so it is opt-in and the colour is the common case.
-- `parseEntryStyles` never throws: this is user-editable text in their vault, and a bad file must
-  cost an icon, not the file tree.
-- **What is already held WINS** when a file is read (`mergeShard`): files are read as the tree reaches
-  their folders, which can be after the reader has picked something in there, and a read landing late
-  must not put back an icon that was just cleared. App marks a folder loaded *before* the await, and
-  writing a folder marks it loaded too.
+**Reads — once per customized folder, per vault open.** The tree walk (`listDir`) already visits
+every folder and keeps the handle of each `.appearance.json` it passes on `FileTreeDirNode.styleFile`;
+`useEntryStyles` opens only those (root first, depth first), never speculatively, never per tree walk
+(the walk reruns after every save). A folder is marked loaded **before** the await, and what the store
+already holds **wins** in `mergeShard`, so a read landing late cannot restore an icon just cleared. The
+store is emptied in a layout effect the moment `rootHandle` changes.
 
-## What may be stored where — a USER rule
+**Migration is automatic and one-way.** `needsFanOut` reads the SHAPE, not `version`: a key containing
+a separator, or an `order` keyed by anything but `''`, means a pre-shard file — read whole as the merged
+view and fanned out once the tree lands. Entries for folders no longer in the tree are dropped.
 
-App-wide settings (theme, fonts, font size, tab size, …) live in **browser storage**, as they always
-have. `.appearance.json` holds exactly what it holds today: per-entry icons/colours, their artwork,
-and the tree's custom `order`. **Adding any NEW kind of key to it — or any new app-owned vault
-file — needs the user's explicit permission first.** Ask; never add one on your own judgement.
+**Writes — `writeEntryStyles(next)`, the only writer.**
+- Sets the store **first**, then writes: the picker is a live preview judged against the real sidebar.
+- Shards `next`, compares each file's text byte for byte with `shardTextRef` (what that folder's file
+  last said), and writes only the files that changed. A folder left with nothing to say has its file
+  **removed** (it is the app's own bookkeeping file, not the person's content).
+- Serialized in call order on one promise chain, each write bound to the vault it was issued in. A
+  cross-folder drop writes twice back to back, and overlapping `createWritable`s land in completion
+  order — the older snapshot could win on disk.
+- Goes through `handleIO.fileIn(dir, name, true)` + `writeFile`, never `createFile`: `createFile`
+  truncates in a writable of its own (a crash in between loses every icon) and re-walks the vault, which
+  mid-`moveFile` drew a dropped item in both folders.
+
+**The artwork is stored with the look** (`icons`, deduped by name, pruned on write to what that file
+still uses). That is what lets the tree draw custom icons with **none of Lucide in the main bundle** and
+no flash of default icons on a cold start, and lets a folder opened as its own vault draw its icons.
+
+**`color` is a NAME** (`ENTRY_COLORS`), never a hex: each name has two values in `index.css`
+(`--folder-<key>`, one per theme) because one hex cannot be legible on both sidebars. The tint goes on
+the **icon only** (`--entry-color` on the row's icon, via `entryColorVar`); a tree of coloured names
+stops reading as a list. On a file a chosen icon replaces the type icon, so it is opt-in; colour is the
+common case.
+
+## What may be stored where — the user's rule
+
+App-wide settings (theme, fonts, sizes, …) live in **browser storage** (`utils/storage.ts`).
+`.appearance.json` holds exactly: per-entry icon/colour, their artwork, and the custom `order`.
+**Any NEW kind of key in it, or any new app-owned vault file, needs the user's explicit permission
+first.** Ask; never decide it yourself. (AGENTS.md says the same.)
+
+## Store identity is what keeps the tree cheap
+
+- `getEntryStyle(path)` returns the **stored object**, so each `TreeNode` subscribes to its own path and
+  re-renders only when its own entry changes. Never return a fresh `{}` from a selector.
+- **`order` must keep its identity through every helper that does not change it** (`withEntryStyle`,
+  `renameEntry`, `forgetEntry`, a no-op `withEntryOrder`): `FileExplorer` subscribes to it while Custom
+  is chosen, and a fresh object re-sorts the tree. `handleSetTreeOrder` skips the write when
+  `withEntryOrder` returns the same object.
+- `order` maps are prototype-free (`newOrder`) and read only through `orderListFor`: a root folder
+  named `constructor` or `toString` crashed rename, trash and the Custom sort.
+- **Which folders are open** is a store too (`utils/expandedPaths.ts`): as a `Set` prop every toggle
+  re-rendered every row (measured: 31 ms a toggle on 1,020 rows, 13 ms after). A row subscribes to its
+  own path's boolean.
+- `handleStyleEntry` / `handleSetTreeOrder` are stable `useCallback`s: `FileExplorer` and `TreeNode` are
+  memoized, and one unstable prop from App re-renders the whole tree.
 
 ## The custom order (sort menu → Custom)
 
-- In the merged view `order` is keyed by FOLDER path (`''` = root), valued by child NAMES in display
-  order — names, so a folder rename re-keys one key; on disk each file carries only its own folder's
-  list, under `''`. Omitted from a file that has none (an icon-only folder's file has no `order` key). Names not on disk are ignored; unlisted children follow the listed
-  ones in canonical order (`utils/treeSort.ts`, stable sort); a folder with no list is plain A→Z.
-  Folders are NOT forced first under Custom. The *selection* of Custom is global
-  (`fileTreeSortOrder` in localStorage); only the arrangement is per vault.
-- **Which folders are OPEN is a store too** (`utils/expandedPaths.ts`), and for the same reason: as
-  a `Set` prop it was a new object per toggle, so every mounted row's memo compared unequal and a
-  thousand rows reconciled to turn one chevron (measured: 31ms a toggle on 1,020 rows, 13ms after).
-  A row subscribes to ITS OWN path and reads a boolean; `FileExplorer` takes the whole set, and its
-  own re-render is harmless because the rows' props do not change.
-- **`order`'s identity must survive every helper that does not change it** (`withEntryStyle`,
-  `renameEntry`, `forgetEntry`, `withEntryOrder` on a no-op): FileExplorer subscribes to it (only
-  while Custom is chosen — a constant snapshot otherwise), and a fresh object re-sorts the tree.
-- Drag: under Custom a dragged tree node's drop belongs to FileExplorer's delegated container
-  handlers (TreeNode's folder handlers bail on `isTreeReorderMode() && peekDraggedNode()`); OS files
-  and tab drags keep the old paths. `utils/treeReorder.ts` `planTreeDrop` is the pure rule (null = no
-  indicator, drop ignored). The indicator is drawn by the target row via the drop-target store in
-  `utils/treeDrag.ts` (per-path primitive snapshot), as a `::after` line INSIDE the row box —
-  `.tree-item`'s `content-visibility: auto` clips paint to it.
-- A cross-folder drop writes the destination's order FIRST, then `moveFile` (whose refresh then
-  renders it in place); a failed move restores the old list.
+- `TreeSortOrder` is `name-asc | name-desc | mtime-desc | mtime-asc | custom`; the **choice** is global
+  (`fileTreeSortOrder` in browser storage), the **arrangement** is per vault in the files.
+- Under Custom, listed names come first in their stored order, unlisted children follow in canonical
+  order (stable sort), names not on disk are ignored, a folder with no list is A→Z, and folders are
+  **not** forced first.
+- The tree is windowed (`FileExplorer` flattens visible rows into a fixed-height list). Under Custom a
+  dragged tree node's drop belongs to `FileExplorer`'s container handlers; `TreeNode`'s folder handlers
+  bail on `isTreeReorderMode() && peekDraggedNode()`. OS files and tab drags keep their own paths.
+- `planTreeDrop` (`utils/treeReorder.ts`) is the pure rule: `null` = no indicator, drop ignored. The
+  indicator is drawn by the target row from the drop-target store in `utils/treeDrag.ts` (each row reads
+  only its own `TreeDropPosition`), as a `::after` line **inside** the row box — `.tree-item` has
+  `content-visibility: auto`, which clips paint to the box.
+- A cross-folder drop writes the destination's order **first**, then `moveFile` (whose refresh renders
+  it in place); a failed move writes the previous list back.
 
-## Keeping it in step
+## Keeping it in step with path changes
 
-Styles are keyed by vault path, so **every path change has to re-key them**, and for a folder that
-means its descendants too (their keys all carry the old prefix):
+Styles are keyed by vault path, so **every path change re-keys them**, and a folder's change re-keys
+all its descendants (their keys carry its prefix). `renameEntry` (rename/move, from `useRenameMove` and
+the agent host) and `forgetEntry` (trash, and a Trash restore that displaces something) do it, for both
+`entries` and `order` (lists keyed under the path move or drop; the name is renamed in or removed from
+its parent's list). They ride the same hooks as `movePdfRenderData` and `moveAssetRefs`. Neither is
+gated on kind: a file's path is a key too. A new way to rename, move or trash an entry must call them.
 
-- `retargetTabs` (rename/move) → `renameEntry`; `handleTrash` and a Trash restore that displaces
-  something → `forgetEntry`. Both also carry `order`: the lists keyed by the path (and under it) are
-  re-keyed/dropped, and the name is renamed in place / removed from its parent's list. Same hook
-  `movePdfRenderData` and `moveAssetRefs` already ride. Neither is gated on `kind`: a file's path is
-  a key too, and the folder-only prefix branch simply never matches for one.
-- **The vault menu shows a row's icon via `RecentVault.vaultPath`**, resolved in `publishVaults` with
-  `root.resolve(handle)` — one round trip per vault, on a list that changes only when a vault is
-  opened or forgotten. It is `undefined` for a vault outside the open one and for the open vault
-  itself, which then falls back to a plain folder: that vault's look lives in ITS OWN
-  `.appearance.json`, which is not the file loaded.
-- Writes go through `useEntryStyles.writeEntryStyles` (src/app), which sets the store FIRST and writes after —
-  the picker is a live preview and is being judged against the real sidebar. It does **not** call
-  `createFile`: that one empties the file in a writable of its own (a crash in between loses every icon and
-  the order) and then re-walks the whole vault — which, mid-`moveFile`, drew a dropped item in both folders,
-  and after a vault switch repainted the old vault's tree. One `getFileHandle({create})` writable replaces it
-  whole — and only for the FILES that changed, diffed against `shardTextRef`; a folder left with nothing to
-  say has its file removed. Writes are **serialized in call order** on a promise chain, each bound to the
-  vault it was issued in — a cross-folder drop writes twice back to back, and overlapping writables land in
-  completion order. The loader empties the store the moment the vault changes.
-- `order` maps are **prototype-free** (`newOrder`) and read from outside only via `orderListFor`:
-  its keys are folder paths, and a root folder named `constructor`/`toString` otherwise crashed
-  rename, trash and the Custom sort.
+**The vault menu** shows a recent vault's icon via `RecentVault.vaultPath`, resolved with
+`root.resolve(handle)` in `context/recentVaults.ts`. It is `undefined` for a vault outside the open one
+and for the open vault itself, which falls back to a plain folder: that vault's own look lives in its
+parent's file, which is not loaded.
 
-## The icon set
+## The icon set (`utils/lucideIcons.ts`)
 
-`lucide-static`'s `icon-nodes.json` (1,818 icons, ~91KB gz) + `tags.json` (~43KB gz), both behind a
-dynamic `import()` and verified to build as their own chunks. **Nothing the main bundle reaches may
-import `lucideIcons.ts`** — same discipline as the PDF/tldraw split.
+`lucide-static`'s `icon-nodes.json` (1,818 icons, ~91 KB gz) and `tags.json` (~43 KB gz), both behind a
+dynamic `import()` and built as their own chunks. **Nothing the main bundle reaches may import
+`lucideIcons.ts`**; `EntryStylePicker` is `React.lazy` in `ContextMenu` for that reason. App and board
+chrome icons that need Lucide artwork copy the node data verbatim into source
+(`components/icons.tsx`, `whiteboard/chrome/boardIcons.ts`, `toolIcons.tsx`) and draw it with
+`LucideGlyph` — never by importing the set.
 
-- `SUGGESTED_ICONS` is what an empty query shows. Lucide is alphabetical, so without it the first
-  screen is `a-arrow-down` and thirty alignment glyphs.
-- `VISIBLE_ICONS` caps the rendered list at 180: all 1,818 as inline SVGs measured over a second to
-  mount. Search is what reaches the rest.
-- `searchIcons` ranks (exact name → prefix → substring → keyword) rather than merely filtering, and
-  the name's own words are folded into the keywords — Lucide's tags for `folder-open` do not include
-  "folder".
+- `SUGGESTED_ICONS` is the empty-query screen (Lucide is alphabetical; otherwise the first screen is
+  `a-arrow-down` and thirty alignment glyphs).
+- `VISIBLE_ICONS` (in the picker) caps rendering at 180: all 1,818 inline SVGs took over a second to
+  mount. Search reaches the rest.
+- `searchIcons` ranks exact name → prefix → substring → keyword, with the name's own words folded into
+  the keywords (Lucide's tags for `folder-open` do not include "folder").
+- The picker does not close the menu on a pick (icon and colour are two choices) and seeds its state
+  from the entry, because entries are built once at raise time.

@@ -11,7 +11,9 @@ import { commonResizeRotation, type OrientedBox, type ResizeHandle } from '../ge
 import type { BoardRuntime } from '../host/runtime';
 import { PresentedHistory } from '../input/presentedHistory';
 import { childrenOf, hasOpaqueDescendant } from '../model/doc';
+import type { BoardDoc } from '../model/doc';
 import type { NodeId } from '../model/ids';
+import type { Node } from '../model/nodes';
 import { handleRadius, pointerIsCoarse } from './pointerKind';
 
 export type SelectionHandleHit = Readonly<{ kind: 'resize'; handle: ResizeHandle }> | Readonly<{ kind: 'rotate'; centre: Vec2; orientation: number }>;
@@ -70,6 +72,19 @@ function buildHandleNodes(parent: SVGSVGElement, handleCount: number): HandleNod
     return { coarse: pointerIsCoarse(), path, stem, rotate, circles, last: new Float64Array(PROJECTED + 4).fill(Number.NaN) };
 }
 
+/** The world rotations of the unlocked leaves under `roots` (a group's children, recursively). The selection frame and the hover
+ * outline both draw their box in `commonResizeRotation` of these, so a group is boxed the same way selected and hovered. */
+export function frameLeafRotations(doc: BoardDoc, roots: readonly Node[]): number[] {
+    const rotations: number[] = [], pending = [...roots];
+    while (pending.length) {
+        const node = pending.pop()!;
+        if (node.locked) continue;
+        if (node.kind === 'group') { for (const child of childrenOf(doc, node.id)) pending.push(child); }
+        else rotations.push(worldPose(doc, node.id).rotation);
+    }
+    return rotations;
+}
+
 export function createSelectionHandles(options: SelectionHandleOptions) {
     const { runtime } = options, session = runtime.session, doc = session.doc;
     let box: OrientedBox | null = null, controller: AbortController | undefined, generation = 0, disposed = false;
@@ -91,16 +106,7 @@ export function createSelectionHandles(options: SelectionHandleOptions) {
             const scope = await acquireBoardGeometryScope(runtime, roots.map(node => node.id), { signal, current: active, cooperate: options.cooperate });
             try {
                 if (!active()) return;
-                const rotations: number[] = [], pending = [...roots], cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
-                let visited = 0;
-                while (pending.length) {
-                    if (!active()) return;
-                    const node = pending.pop()!;
-                    if (++visited % 256 === 0) { await cooperate(); if (!active()) return; }
-                    if (node.locked) continue;
-                    if (node.kind === 'group') { for (const child of childrenOf(doc, node.id)) pending.push(child); }
-                    else rotations.push(worldPose(doc, node.id).rotation);
-                }
+                const rotations = frameLeafRotations(doc, roots);
                 if (!rotations.length) return;
                 const rotation = commonResizeRotation(rotations) ?? 0, c = Math.cos(rotation), s = Math.sin(rotation);
                 const target = inverse([c, s, -s, c, 0, 0], 1e12); if (!target) throw new Error('Selection frame is not invertible');

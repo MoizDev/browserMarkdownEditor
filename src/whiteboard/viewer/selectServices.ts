@@ -1,6 +1,7 @@
 import { auditTimed } from '../../platform/render/renderAudit';
 import { cameraChanged, forgetCamera } from './cameraCache';
 import { inverse } from '../geom/affine';
+import { commonResizeRotation } from '../geom/transforms';
 import { worldPose } from '../change/coordinates';
 import { worldToSurface, type CameraController } from '../../platform/render/camera';
 import type { ScheduledFrame } from '../../platform/render/scheduler';
@@ -46,7 +47,7 @@ import { createShapeHandles } from './shapeHandles';
 import { createConnectorHints } from './connectorHints';
 import { createStickyHandles } from './stickyHandles';
 import { createCardControls, type BoardCardActions } from './cardControls';
-import { createSelectionHandles } from './selectionHandles';
+import { createSelectionHandles, frameLeafRotations } from './selectionHandles';
 import { createBoardSelectionNavigation } from './selectionNavigation';
 import type { BoardPreview } from './preview';
 
@@ -569,7 +570,9 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         guidePath.setAttribute('d', d);
     };
     // Hover outline (catalogue S§2): the shape a press would pick, outlined while the Select tool is idle and it is not selected.
-    // Its box is the node's own rotated extent from the geometry scope, the same measure the selection frame uses.
+    // Its box is the node's own rotated extent from the geometry scope, the same measure the selection frame uses. That box is a
+    // measure of the document as it is now, so it is re-measured on every document or selection change. Measured: Shift+. on a
+    // rectangle under a still pointer, then Cmd+G, left the unrotated 150×90 box on the grouped child, because nothing re-measured it.
     let hoverNode: NodeId | null = null, hoverCorners: readonly Vec2[] | null = null, hoverController: AbortController | null = null;
     let hoverSvg: SVGSVGElement | null = null, hoverPath: SVGPathElement | null = null;
     const writeHover = (camera: ViewState['camera']) => {
@@ -587,12 +590,17 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         hoverCorners.forEach((corner, i) => { const p = worldToSurface(corner, camera); d += `${i ? 'L' : 'M'}${p.x} ${p.y}`; });
         hoverPath!.setAttribute('d', `${d}Z`);
     };
-    const setHoverOutline = (id: NodeId | null) => {
-        if (id === hoverNode) return;
-        hoverController?.abort(); hoverController = null; hoverNode = id; hoverCorners = null;
-        if (!id || !current()) { writeHover(options.camera().camera); requestFrame(); return; }
+    // Measures the hovered node in its own rotated frame. The previous box stays on screen until this one lands, so a nudge
+    // does not blink the outline out; a node that has left the document drops it at once.
+    const measureHover = () => {
+        hoverController?.abort(); hoverController = null;
+        const id = hoverNode;
+        if (!id || !current() || !doc.nodes.has(id)) { hoverNode = null; hoverCorners = null; writeHover(options.camera().camera); requestFrame(); return; }
         const controller = new AbortController(); hoverController = controller;
-        const pose = worldPose(doc, id), rotation = doc.nodes.get(id)?.kind === 'group' ? 0 : pose.rotation;
+        // worldPose composes every ancestor's transform with the node's own rotation, so a child of a group or frame is measured
+        // in the space it is drawn in. A group is boxed in the frame its selection draws, so hovering and selecting it agree.
+        const node = doc.nodes.get(id)!;
+        const rotation = node.kind === 'group' ? commonResizeRotation(frameLeafRotations(doc, [node])) ?? 0 : worldPose(doc, id).rotation;
         const c = Math.cos(rotation), s = Math.sin(rotation), target = inverse([c, s, -s, c, 0, 0], 1e12);
         if (!target) return;
         void (async () => {
@@ -608,6 +616,13 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             if (!controller.signal.aborted && !(error instanceof DOMException && error.name === 'AbortError')) report(error);
         });
     };
+    const setHoverOutline = (id: NodeId | null) => {
+        if (id === hoverNode) return;
+        hoverNode = id; hoverCorners = null; measureHover();
+    };
+    // Session notices carry selection changes too, and arrive on the frame that presents them. Nothing is hovered during a gesture
+    // (setHover(null) at its start), so a drag's notices cost nothing here.
+    const stopHoverNotices = session.subscribe(() => { if (hoverNode) measureHover(); });
     const beginHandle = (sample: RealSample, modifiers: Modifiers): GestureOwner | null => {
         // A card's chips need no write right: consent to load an embed, and opening a link, change no document.
         const chip = cardControls.begin(physicalSurface(sample), sample, modifiers.accel);
@@ -746,7 +761,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         return boardSelectTool.begin(sample, modifiers, selectContext);
     } };
     return { select, tool, eraser, beginHandle, doubleClickHandle, setHover: setHoverOutline, secondarySelect, handleCommand, keyboardContextMenu, lockedAt, nudge, transform, navigate, command, stickyNeighbour, setGuides, setConnectorTarget: connectorHints.setTarget, setConnectorHover: connectorHints.setHover, setConnectorBinding: connectorHints.setBinding, navigation, writeOverlays: (frame: ScheduledFrame) => auditTimed('select-overlay', () => writeOverlays(frame)), cancelPending,
-        dispose() { if (disposed) return; cancelPending(); disposed = true; setHoverOutline(null); hoverSvg?.remove(); hoverSvg = null; keyboardContext?.dispose(); backToContent.dispose(); cameraCommands.dispose(); selectionCommands.dispose(); styleShortcuts.dispose(); navigation.dispose(); selectionHandles.dispose(); shapeHandles.dispose(); connectorHints.dispose(); stickyHandles.dispose(); cardControls.dispose(); scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); guideSvg?.remove(); guideSvg = null; svg = null; shape = null;
+        dispose() { if (disposed) return; cancelPending(); disposed = true; stopHoverNotices(); setHoverOutline(null); hoverSvg?.remove(); hoverSvg = null; keyboardContext?.dispose(); backToContent.dispose(); cameraCommands.dispose(); selectionCommands.dispose(); styleShortcuts.dispose(); navigation.dispose(); selectionHandles.dispose(); shapeHandles.dispose(); connectorHints.dispose(); stickyHandles.dispose(); cardControls.dispose(); scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); guideSvg?.remove(); guideSvg = null; svg = null; shape = null;
             regionPreview = null; scribbleSource = null; scribbleTail = null; scribblePoints = []; scribbleCount = 0; },
     };
 }

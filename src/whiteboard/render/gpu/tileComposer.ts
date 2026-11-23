@@ -401,6 +401,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     const { host, audit, parts, store, routes, tileWorld, inkRouteFor, lay, layQuads, admitClips, withPreparedClips, pins } = options;
     const routeList: ItemRoute[] = [routes.path, routes.inkAnalytic, routes.inkUnion, routes.image, routes.text, routes.cpu]
         .filter((route): route is ItemRoute => route !== undefined);
+    const uploadPrepared = (): void => { for (const route of routeList) route.uploadPrepared?.(); };
     let resourcesSeen: PaintResources2d | null = null;
     // Slots live beside their entries (keyed by the entry object), so an entry the store drops takes its slot with it.
     const slots = new WeakMap<TileEntry, Slot>();
@@ -1864,6 +1865,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             }
             frameSpan = spanAt(view, target);
             fTarget = target; fZooming = zooming; fSpan = frameSpan;
+            uploadPrepared();
             if (budget.phase === 'foreground') { foregroundFrame = budget.frameId; return false; }
             }
             // The background call (or the single-phase call) finishes the frame: the rest of the composes, the pending regions and held
@@ -1941,6 +1943,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 if (editBits & EDIT_INVALID) auditCount(audit, 'prepare:changed:invalidated');
                 if (sigChanged) auditCount(audit, 'prepare:changed:draw-list');
             }
+            uploadPrepared();
             return changed;
         },
         encodeOffscreen(passes: OffscreenPasses, _view: ViewState, band: PaintBand): void {

@@ -41,6 +41,10 @@ export interface ItemRoute<I extends PaintItem = PaintItem> {
      *  so nothing is read back to the CPU. The composer calls it once per frame at the start of its encodeOffscreen,
      *  before any tile pass, for every route that has it. */
     encodeOffscreen?(passes: OffscreenPasses): void;
+    /** Uploads what this frame's admits staged for encodeOffscreen. The composer calls it at the end of each prepare (its foreground and
+     *  background calls alike), because every upload belongs to prepare: a device refuses one once a pass is recorded in the frame, and a
+     *  composer's encodeOffscreen runs after the passes of the layers encoded before it. */
+    uploadPrepared?(): void;
     retire(run: PreparedRun): void;
     /** Every GPU resource; idempotent. */
     release(): void;

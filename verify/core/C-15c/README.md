@@ -114,7 +114,7 @@ create its identity with:
 node "$DRIVER/build-identity.mjs" <mutant-source> <mode> <mutant-outDir> <mutant-identity.json> "$W/wt/c-d-ref" <absolute-patch-file>
 ```
 
-Serve on a spare assigned port. Copy the candidate spec, replacing only the relevant P or B arm's
+Serve on a free port you choose. Copy the candidate spec, replacing only the relevant P or B arm's
 URL/identity and adding its `patch` path. Invoke **the identical driver command shape** with that spec
 and a separate output directory. Check both exit 1 and the exact named reason line. Never treat an
 `INVALID` or a missing report as rejection. Preserve the commands, output and patch SHA alongside the

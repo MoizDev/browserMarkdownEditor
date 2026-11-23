@@ -15,7 +15,7 @@ export async function openBrowser({ executablePath, contextOptions = {}, launchO
     const { chromium } = await import('playwright');
     const args = [...(launchOptions.args ?? [])];
     if (debuggingPort !== undefined) {
-        if (!Number.isInteger(debuggingPort) || debuggingPort < 1024 || debuggingPort > 65535) throw new Error('Pass a debuggingPort from your own assigned range');
+        if (!Number.isInteger(debuggingPort) || debuggingPort < 1024 || debuggingPort > 65535) throw new Error('Pass a free debuggingPort you chose (1024–65535)');
         if (args.some(arg => /^--remote-debugging-(?:port|address)/.test(arg) || /^--remote-allow-origins=.*\*/.test(arg))) throw new Error('Conflicting or wildcard debugging arguments are forbidden');
         // An occupied port could belong to the user's browser. Never discover or
         // attach to it accidentally; this is our fresh, privately launched browser.

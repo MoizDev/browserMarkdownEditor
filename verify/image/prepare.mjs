@@ -19,7 +19,8 @@ const out = options['--out'];
 if (out === ROOT || out.startsWith(`${ROOT}/`) || options['--dist'] === ROOT || options['--dist'].startsWith(`${ROOT}/`)) throw new Error('Image context and app dist must be outside the repository');
 
 const functionalPin = JSON.parse(await readFile(resolve(ROOT, 'verify/browser-pin.json'), 'utf8'));
-if (functionalPin.version !== PINS.browser.version || functionalPin.driver !== `playwright@${PINS.playwright}`) throw new Error('Image and functional browser/driver pins disagree');
+if (functionalPin.version !== PINS.browser.version || functionalPin.driver !== `playwright@${PINS.playwright}`
+    || functionalPin.platforms.linux64?.sha256 !== PINS.browser.sha256) throw new Error('Image and functional browser/driver pins disagree');
 const archive = await readFile(options['--chrome']);
 if (archive.length !== PINS.browser.bytes || sha256(archive) !== PINS.browser.sha256) throw new Error('Chrome archive does not match the reviewed Linux pin');
 await mkdir(out, { recursive: false });

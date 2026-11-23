@@ -10,7 +10,7 @@ import { isolatedDockerEnv } from './docker.mjs';
 const ROOT = resolve(fileURLToPath(new URL('../../', import.meta.url)));
 const execute = promisify(execFile);
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
-if (process.argv.length !== 4 || process.argv[2] !== '--context') throw new Error('Usage (through bme-vm only): node verify/image/build.mjs --context <prepared external context>');
+if (process.argv.length !== 4 || process.argv[2] !== '--context') throw new Error('Usage (a local Docker engine only): node verify/image/build.mjs --context <prepared external context>');
 const context = resolve(process.argv[3]);
 if (context === ROOT || context.startsWith(`${ROOT}/`)) throw new Error('Build context must be external scratch');
 const proposal = JSON.parse(await readFile(resolve(context, 'IMAGE.proposal.json'), 'utf8'));

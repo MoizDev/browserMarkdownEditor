@@ -49,7 +49,7 @@ Results/captures: `<run scratch>/p04-sanity-build/sanity.json` and its PNGs. Ser
 finally; no server is retained between runs. `sanity.mjs --prepare` runs under build; normal mode
 runs under run, using in-tree serve/browser/vault helpers. Set BME_ROOT to the detached source,
 BME_SCRATCH to the prepared output directory, BME_PDF to the authored dense40 PDF, BME_PATCH to
-the exact seam patch and BME_PORT to an assigned port.
+the exact seam patch and BME_PORT to a free port you choose.
 
 ## Stated loss
 

@@ -24,6 +24,7 @@ import type { NodeId } from '../model/ids';
 import { CLICK_SLOP_CSS, sampleSurface, type GestureOwner, type InputToken, type Modifiers, type RealSample } from '../input/tool';
 import { leafResizeHandleGesture, rotationHandleGesture, translationHandleGesture } from '../input/transformGestures';
 import { prepareFrameDrop } from '../input/frameDrop';
+import { fitFrameAtBorder } from './frameBorderFit';
 import { prepareNotebookTransform, prepareNotebookTranslation } from '../input/notebookTranslation';
 import { createBoardCameraCommands } from './cameraCommands';
 import { createSelectionCommandDriver } from './selectionCommands';
@@ -75,6 +76,8 @@ export interface BoardSelectServicesOptions {
     openKeyboardContextMenu?(request: KeyboardContextRequest): void;
 }
 const IDENTITY = [1, 0, 0, 1, 0, 0] as const;
+/** A frame's border band for double-click fitting, in screen pixels. */
+const FRAME_BORDER_CSS = 6;
 export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const { runtime, render } = options, session = runtime.session, doc = session.doc;
     const token = Object.freeze({ ...options.token });
@@ -603,6 +606,9 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         if (!mutable()) return false;
         const hit = shapeHandles.hit(surface, false, time);
         if (hit && shapeHandles.toggleHead(hit)) return true;
+        // Six screen pixels: the border's band, measured at the camera's zoom (the same band at every zoom).
+        if (fitFrameAtBorder({ runtime, point: world, bandWorld: FRAME_BORDER_CSS / options.camera().camera.z, current: mutable,
+            registerPending, error: report })) return true;
         if (!selectionHandles.contains(world, time)) return false;
         return enterGroupAtPoint({ runtime, point: world, current: mutable, hold: () => session.beginGesture(), registerPending,
             hit: (point, signal) => options.point.hit(point, 'mouse', signal), error: report });

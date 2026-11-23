@@ -4,6 +4,7 @@ import { preparePolylineControl, type PolylineControlPreview } from '../geom/pol
 import { snapBoardBounds, type BoardSnapGuide } from '../geom/runtimeSnap';
 import type { BoardRuntime } from '../host/runtime';
 import type { NodeId } from '../model/ids';
+import { worldPose } from '../change/coordinates';
 import type { CancelReason, FinishReason, GestureOwner, Modifiers, RealSample } from './tool';
 
 export interface PolylineHandleOptions {
@@ -14,6 +15,9 @@ export interface PolylineHandleOptions {
     readonly onFinishUp?: () => void;
     readonly onCommit?: () => void;
     readonly snap?: { readonly zoom: () => number; readonly alwaysSnap: () => boolean; readonly guides: (guides: readonly BoardSnapGuide[]) => void };
+    /** Shift constrains the point to 15° from its neighbouring vertex. The Shift-click that extends a line turns this off:
+     * its point is where the pointer is, and Shift there only chose to extend. */
+    readonly angleSnap?: boolean;
     readonly current: () => boolean;
     readonly hold: () => () => void;
     readonly registerPending: (cancel: () => void) => () => void;
@@ -25,6 +29,20 @@ export interface PolylineHandleOptions {
     readonly clear: () => void;
     readonly error: (error: unknown) => void;
     readonly cooperate?: () => Promise<void>;
+}
+
+/** The point at its own distance from the neighbouring vertex, on the nearest 15° ray; null when there is no neighbour to measure from. */
+function angleFromNeighbour(runtime: BoardRuntime, id: NodeId, index: number, point: Readonly<{ x: number; y: number }>): { x: number; y: number } | null {
+    const doc = runtime.session.doc, node = doc.nodes.get(id);
+    if (!node || node.kind !== 'polyline') return null;
+    const neighbour = index > 0 ? index - 1 : index + 1, local = node.points[neighbour];
+    if (!local) return null;
+    const pose = worldPose(doc, id), c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
+    const anchor = { x: pose.x + c * local.x - s * local.y, y: pose.y + s * local.x + c * local.y };
+    const dx = point.x - anchor.x, dy = point.y - anchor.y, length = Math.hypot(dx, dy);
+    if (!(length > 0)) return null;
+    const step = Math.PI / 12, angle = Math.round(Math.atan2(dy, dx) / step) * step;
+    return { x: anchor.x + length * Math.cos(angle), y: anchor.y + length * Math.sin(angle) };
 }
 
 /** Direct endpoint editing preserves an attachment unless the user explicitly detaches it. */
@@ -56,6 +74,10 @@ export function polylineHandleGesture(first: RealSample, modifiers: Modifiers, o
                     zoom: options.snap.zoom(), current: active, signal: request.signal, cooperate: options.cooperate });
                 if (!active()) throw new DOMException('Polyline snap became stale', 'AbortError');
                 point = { x: raw.x + snapped.delta.x, y: raw.y + snapped.delta.y }; guides = snapped.guides;
+            }
+            if (keys.shift && options.angleSnap !== false) {
+                const angled = angleFromNeighbour(runtime, options.id, options.index, point);
+                if (angled) { point = angled; guides = []; }
             }
             result = await preparePolylineControl({ runtime, id: options.id,
                 action: options.insert ? { kind: 'insert', index: options.index, point }

@@ -26,6 +26,8 @@ import type { AttachmentRequest } from './attachments';
 import type { BoardPreview } from './preview';
 
 type CreationKind = 'figure' | 'text' | 'sticky' | 'frame' | 'connector' | 'polyline';
+/** Touch hold that drops a pending creation. Measured nowhere: a tap is well under this, a deliberate hold well over it. */
+const LONG_PRESS_MS = 500;
 export interface BoardCreationContext {
     readonly runtime: BoardRuntime;
     readonly render: ReturnType<typeof createBoardRenderServices>;
@@ -70,6 +72,7 @@ class CreationGesture implements GestureOwner {
     private modifiers: Modifiers;
     private ended = false;
     private released = false;
+    private longPress: ReturnType<typeof setTimeout> | undefined;
     constructor(private readonly down: RealSample, modifiers: Modifiers, private readonly context: BoardCreationContext) {
         const doc = context.runtime.session.doc, selection = context.runtime.selection.getSnapshot();
         this.pointerIds = new Set([down.pointerId]); this.sample = down; this.lastMovedAt = down.time; this.downModifiers = modifiers; this.modifiers = modifiers;
@@ -89,6 +92,13 @@ class CreationGesture implements GestureOwner {
         try { this.unregister = context.registerPending(() => this.cancel('invalidated')); }
         catch (error) { this.release(); throw error; }
         try { this.draw(); } catch (error) { this.cancel('invalidated'); throw error; }
+        if (down.source === 'touch') this.longPress = setTimeout(() => this.holdCancel(), LONG_PRESS_MS);
+    }
+    /** A touch held still past the long-press time is a hold, not a tap: the pending shape is dropped, so nothing is left behind. */
+    private holdCancel(): void {
+        this.longPress = undefined;
+        if (this.ended || !this.isClick()) return;
+        this.cancel('invalidated');
     }
     private valid(): boolean {
         const { runtime } = this.context, session = runtime.session;
@@ -312,7 +322,8 @@ class CreationGesture implements GestureOwner {
             const bounds = new Float64Array(4);
             transformBox(bounds, 0, geometry.bounds.ink, 0, [c, s, -s, c, pose.x, pose.y]);
             const growth = notebookGrowthOp(doc, Math.max(bounds[3], logical.y + logical.height));
-            const adopted = node.kind === 'frame' ? await this.enclosedFrameChildren(node, pose) : [];
+            // A click makes a frame at its default size and captures nothing: only a drag's frame takes the shapes it encloses.
+            const adopted = node.kind === 'frame' && !this.isClick() ? await this.enclosedFrameChildren(node, pose) : [];
             const lease = adopted.length ? await render.pinChangeGeometry(adopted, signal, doc, () => this.valid()) : undefined;
             try {
                 if (!this.valid()) throw new DOMException('Creation invalidated', 'AbortError');
@@ -348,6 +359,7 @@ class CreationGesture implements GestureOwner {
     private cleanup(): void {
         if (this.released) return;
         this.released = true;
+        if (this.longPress !== undefined) { clearTimeout(this.longPress); this.longPress = undefined; }
         try { this.context.guides?.([]); this.context.preview.clear(); } finally { this.unregister(); this.release(); }
     }
 }
@@ -366,6 +378,7 @@ export function boardCreationTool(id: CreationKind): Tool<BoardCreationContext> 
                 // A click-created tiny endpoint is replaced; subsequent Shift clicks append in the same active tool flow.
                 return polylineHandleGesture(sample, modifiers, { runtime, id: node.id,
                     index: replaceTiny ? node.points.length - 1 : node.points.length, insert: !replaceTiny,
+                    angleSnap: false,
                     onFinishUp: () => runtime.tools.keepToolOnce(prior.epoch), onCommit: () => runtime.tools.extendedPolyline(node.id, prior.epoch),
                     snap: { zoom: () => context.camera.camera.z, alwaysSnap: context.alwaysSnap ?? (() => false), guides: value => context.guides?.(value) },
                     current: context.current, hold: () => session.beginGesture(), registerPending: context.registerPending,

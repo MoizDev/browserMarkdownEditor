@@ -8,7 +8,7 @@ import { isSheetParent } from '../model/doc';
 import { newNodeId } from '../model/ids';
 import type { MediaId } from '../model/media';
 import { createEmbed, createLinkcard, createText, type Node } from '../model/nodes';
-import { resolveEmbedCandidate, type EmbedManifest } from '../media/embed';
+import { embedCardSize, resolveEmbedCandidate, type EmbedManifest } from '../media/embed';
 import type { UrlEnvironment } from '../security/urlPolicy';
 import { createAddedBoardDoc } from '../model/overlayDoc';
 import { keyBetween } from '../model/orderKey';
@@ -109,7 +109,7 @@ export async function insertClipboardText(options: InsertClipboardTextOptions): 
         // These are persisted card dimensions, not a placement estimate; the renderer
         // supplies the actual painted geometry used below and never fetches a preview.
         const embed = url !== undefined && options.embedEnvironment ? resolveEmbedCandidate(url, options.embedEnvironment, options.embedManifest) : null;
-        let node: Node = url !== undefined ? embed ? createEmbed({ ...base, w: 800, h: 450, url })
+        let node: Node = url !== undefined ? embed ? createEmbed({ ...base, ...embedCardSize(embed.provider), url })
             : createLinkcard({ ...base, w: 320, h: 180, url, preview: null }) : createText({ ...base, text: text!, color: style.color, size: style.size, font: style.font,
                 align: style.textAlign, autoSize: true, w: 1, scale: 1 });
         const preserved = new Map<MediaId, number>();

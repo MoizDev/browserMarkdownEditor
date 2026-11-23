@@ -5,6 +5,7 @@ import { createBoardTranslationPlan, type BoardTranslationOptions, type BoardTra
 import { snapBoardBounds, type BoardSnapGuide } from '../geom/runtimeSnap';
 import { acquireBoardGeometryScope } from '../commands/geometryScope';
 import type { CancelReason, FinishReason, GestureOwner, Modifiers, RealSample } from './tool';
+import { PointerPace } from './pointerPace';
 import { prepareFrameDrop, type FrameDropPlan } from './frameDrop';
 import { createDuplicateDragPlan, type DuplicateDragPreview } from './duplicateDrag';
 import { prepareNotebookTransform, prepareNotebookTranslation, type NotebookTransform, type NotebookTranslation } from './notebookTranslation';
@@ -49,7 +50,7 @@ class AsyncTransformGesture<Preview extends { readonly ops: readonly Op[] }> imp
     private cleaned = false;
     private readonly ready: Promise<Plan<Preview>>;
     constructor(sample: RealSample, modifiers: Modifiers, create: (signal: AbortSignal) => Promise<Plan<Preview>>,
-        private readonly host: AsyncTransformGestureHost) {
+        private readonly host: AsyncTransformGestureHost, private readonly pace?: PointerPace) {
         this.pointerIds = new Set([sample.pointerId]); this.sample = sample; this.modifiers = modifiers;
         this.release = host.hold();
         try { this.unregister = host.registerPending(() => this.cancel('invalidated')); }
@@ -98,7 +99,9 @@ class AsyncTransformGesture<Preview extends { readonly ops: readonly Op[] }> imp
         if (this.ended || this.controller.signal.aborted) return;
         if (!this.host.current()) { this.cancel('invalidated'); return; }
         this.modifiers = modifiers;
-        for (const sample of samples) if (this.pointerIds.has(sample.pointerId)) this.sample = sample;
+        const following = samples.filter(sample => this.pointerIds.has(sample.pointerId));
+        this.pace?.observe(following);
+        for (const sample of following) this.sample = sample;
         void this.render(false);
     }
     finish(reason: FinishReason): void {
@@ -115,11 +118,12 @@ class AsyncTransformGesture<Preview extends { readonly ops: readonly Op[] }> imp
 
 export function translationHandleGesture(sample: RealSample, modifiers: Modifiers, options: Omit<BoardTranslationOptions, 'down' | 'signal'>,
     host: AsyncTransformGestureHost): GestureOwner {
+    const pace = new PointerPace(sample);
     if (modifiers.alt) return new AsyncTransformGesture<DuplicateDragPreview>(sample, modifiers, async signal => {
         const plan = await createDuplicateDragPlan({ ...options, down: sample, signal });
-        return { preview: (point, keys, request, commit) => plan.preview(point, keys.shift, keys.accel, request, commit),
+        return { preview: (point, keys, request, commit) => plan.preview(point, keys.shift, keys.accel, request, commit, pace.speed()),
             display: value => host.guides?.(value.guides), commit: value => plan.commit(value), cancel: () => plan.cancel() };
-    }, host);
+    }, host, pace);
     type Preview = { readonly ops: readonly Op[]; readonly base: BoardTranslationPreview;
         readonly drop: FrameDropPlan | null; readonly notebook: NotebookTranslation | null };
     return new AsyncTransformGesture<Preview>(sample, modifiers, async signal => {
@@ -128,7 +132,7 @@ export function translationHandleGesture(sample: RealSample, modifiers: Modifier
         const clear = () => { try { drop?.release(); } finally { drop = null; notebook?.release(); notebook = null; } };
         return {
             async preview(point, keys, request, commit) {
-                clear(); const base = await plan.preview(point, keys.shift, keys.accel, request);
+                clear(); const base = await plan.preview(point, keys.shift, keys.accel, request, pace.speed());
                 if (commit && base.ops.length) {
                     const active = () => !signal.aborted && options.current() && host.current();
                     const grown = await prepareNotebookTranslation({ runtime: options.runtime, ids: options.ids, preview: base,
@@ -153,7 +157,7 @@ export function translationHandleGesture(sample: RealSample, modifiers: Modifier
             },
             cancel() { clear(); plan.cancel(); },
         };
-    }, host);
+    }, host, pace);
 }
 
 type GrowthValue<T extends { readonly doc: BoardDoc; readonly ops: readonly Op[] }> = {
@@ -218,7 +222,11 @@ export function leafResizeHandleGesture(sample: RealSample, modifiers: Modifiers
                 const active = () => !signal.aborted && !request.aborted && options.current() && session.owner === owner
                     && session.doc === doc && doc.rev === revision && runtime.selection.getSnapshot() === selection
                     && runtime.render.text.fonts.epoch === font;
-                if (!snap || snap.alwaysSnap() === keys.accel || Math.hypot(point.x - sample.x, point.y - sample.y) * snap.zoom() < 1) {
+                // Object snapping only where the rotation is a right angle (a rotated box's features are not its edges), and the
+                // grid whenever Cmd/Ctrl is not held. Neither is gated by velocity.
+                const quarter = plan.startBox.rotation / (Math.PI / 2), rightAngle = Math.abs(quarter - Math.round(quarter)) < 1e-9;
+                const objects = !!snap && snap.alwaysSnap() !== keys.accel && rightAngle, grid = !!snap && !keys.accel;
+                if (!snap || (!objects && !grid) || Math.hypot(point.x - sample.x, point.y - sample.y) * snap.zoom() < 1) {
                     guides.set(result, []); return result;
                 }
                 const scope = await acquireBoardGeometryScope(runtime, ids, { doc: result.doc, signal: request, current: active, cooperate: options.cooperate });
@@ -236,7 +244,7 @@ export function leafResizeHandleGesture(sample: RealSample, modifiers: Modifiers
                     bounds = { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
                 } finally { scope.release(); }
                 if (!active()) throw new DOMException('Resize snapping became stale', 'AbortError');
-                const target = await snapBoardBounds({ runtime, bounds, selected: ids, zoom: snap.zoom(), current: active, signal: request, cooperate: options.cooperate });
+                const target = await snapBoardBounds({ runtime, bounds, selected: ids, zoom: snap.zoom(), current: active, signal: request, cooperate: options.cooperate, objects, grid });
                 if (!active()) throw new DOMException('Resize snapping became stale', 'AbortError');
                 const angle = plan.startBox.rotation, c = Math.cos(angle), s = Math.sin(angle), factor = keys.alt ? 2 : 1;
                 const localX = options.handle.x ? (c * target.delta.x + s * target.delta.y) / factor : 0;

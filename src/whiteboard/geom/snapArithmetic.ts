@@ -24,6 +24,20 @@ export function exactGapDisplacement(beforeEnd: number, afterStart: number, size
     const half: Dyadic = { n: spare.n, e: spare.e - 1 };
     return snapDeltaFromDyadic(dyadicSubtract(plus(dyadic(beforeEnd), half), dyadic(start)));
 }
+/** The exact size of the space between two binary64 edges. */
+export function exactGapSize(from: number, to: number): Dyadic { return dyadicSubtract(dyadic(to), dyadic(from)); }
+/** A duplicate gap: the moving box sits one `gap` away from an anchor edge. `after` puts it past the anchor's right edge,
+ * `before` puts its far edge one gap short of the anchor's left edge. Exact until the final rounding. */
+export function exactDuplicateDisplacement(anchor: number, gap: Dyadic, start: number, size: number, side: 'before' | 'after'): ExactSnapDelta {
+    const a = dyadic(anchor), s = dyadic(start);
+    const value = side === 'after' ? signedSum([a, 1], [gap, 1], [s, -1]) : signedSum([a, 1], [gap, -1], [dyadic(size), -1], [s, -1]);
+    return snapDeltaFromDyadic(value);
+}
+function signedSum(...terms: readonly (readonly [Dyadic, 1 | -1])[]): Dyadic {
+    let total: Dyadic = Object.freeze({ n: 0n, e: 0 });
+    for (const [value, sign] of terms) total = sign > 0 ? plus(total, value) : dyadicSubtract(total, value);
+    return total;
+}
 export function snapWithin(delta: ExactSnapDelta, threshold: number): boolean {
     return compare(magnitude(delta.value), dyadic(threshold)) <= 0;
 }

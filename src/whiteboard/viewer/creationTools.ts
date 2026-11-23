@@ -180,8 +180,9 @@ class CreationGesture implements GestureOwner {
                 if (!active()) throw new DOMException('Creation snap invalidated', 'AbortError');
                 if (attached) { this.context.guides?.([]); return node; }
             }
+            // An end point snaps to points (corners and centres), as a handle does; it has no width, so no gaps.
             const snapped = await snapBoardBounds({ runtime, bounds: { ...point, width: 0, height: 0 }, selected: [],
-                zoom: this.context.camera.camera.z, current: active, signal });
+                zoom: this.context.camera.camera.z, current: active, signal, points: true, gaps: false });
             if (!active()) throw new DOMException('Creation snap invalidated', 'AbortError');
             const next = this.node({ ...sample, x: sample.x + snapped.delta.x, y: sample.y + snapped.delta.y }, modifiers);
             if (next.kind !== 'connector' && next.kind !== 'polyline') throw new Error('Creation kind changed');

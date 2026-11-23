@@ -72,7 +72,7 @@ export function connectorEndHandleGesture(first: RealSample, modifiers: Modifier
             let target = { x: point.x, y: point.y }, guides: readonly BoardSnapGuide[] = [];
             // Binding wins over alignment; free endpoints follow the same snap inversion as selection movement.
             if (!attachment && options.snap.alwaysSnap() !== input.accel) {
-                const snapped = await snapBoardBounds({ runtime, bounds: { ...target, width: 0, height: 0 }, selected: [node.id],
+                const snapped = await snapBoardBounds({ runtime, bounds: { ...target, width: 0, height: 0 }, selected: [node.id], gaps: false,
                     zoom: options.snap.zoom(), current: active, signal: localRequest.signal, cooperate: options.cooperate });
                 check(); target = { x: target.x + snapped.delta.x, y: target.y + snapped.delta.y }; guides = snapped.guides;
             }

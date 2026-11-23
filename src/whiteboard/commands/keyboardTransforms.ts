@@ -35,7 +35,7 @@ export function createBoardKeyboardTransforms(options: BoardKeyboardTransformOpt
             return enqueue(signal, async () => {
                 if (!selected.length || (!movement.x && !movement.y)) return;
                 const plan = await createBoardTranslationPlan({ runtime, ids: selected, down: { x: 0, y: 0 },
-                    zoom: () => 1, alwaysSnap: () => false, current, signal, cooperate: options.cooperate });
+                    zoom: () => 1, alwaysSnap: () => false, current, signal, cooperate: options.cooperate, snap: false });
                 try { const preview = await plan.preview(movement, false, false, signal); plan.commit(preview); }
                 finally { plan.cancel(); }
             });

@@ -10,7 +10,7 @@ import { projectBoardGeometrySets } from '../model/overlayDoc';
 import { projectFrameMembership } from './frameMembership';
 import { projectBoardTransformPreview } from './transformProjection';
 import type { Vec2 } from './path';
-import { snapBoardBounds, type BoardSnapGuide } from './runtimeSnap';
+import { SNAP_MAX_SPEED, snapBoardBounds, type BoardSnapGuide } from './runtimeSnap';
 import { TranslationPlan } from './translation';
 import { constrainedTranslation } from './transforms';
 
@@ -23,10 +23,13 @@ export interface BoardTranslationOptions {
     readonly current: () => boolean;
     readonly signal?: AbortSignal;
     readonly cooperate?: () => Promise<void>;
+    /** false is a pure move (keyboard nudges): no object or grid snapping, whatever the preferences say. */
+    readonly snap?: boolean;
 }
 export interface BoardTranslationPreview { readonly ops: readonly NodeSetOp[]; readonly doc: BoardDoc; readonly guides: readonly BoardSnapGuide[] }
 export interface BoardTranslationPlan {
-    preview(point: Vec2, shift: boolean, accel: boolean, signal: AbortSignal): Promise<BoardTranslationPreview>;
+    /** `speed` is the pointer's speed in CSS px per ms; object snapping is off at or above SNAP_MAX_SPEED. */
+    preview(point: Vec2, shift: boolean, accel: boolean, signal: AbortSignal, speed?: number): Promise<BoardTranslationPreview>;
     commit(preview: BoardTranslationPreview): void;
     cancel(): void;
 }
@@ -69,7 +72,7 @@ export async function createBoardTranslationPlan(options: BoardTranslationOption
     const clear = () => { const value = latest; latest = undefined; value?.scope.release(); };
     const close = () => { if (closed) return; closed = true; serial++; plan.cancel(); try { clear(); } finally { source.release(); } };
     return {
-        async preview(point, shift, accel, request) {
+        async preview(point, shift, accel, request, speed = 0) {
             check(request); if (![point.x, point.y].every(Number.isFinite)) throw new RangeError('Invalid translation pointer');
             const turn = ++serial, active = () => current() && !request.aborted && turn === serial;
             const assert = () => { check(request); if (turn !== serial) throw new DOMException('Translation preview superseded', 'AbortError'); };
@@ -94,16 +97,18 @@ export async function createBoardTranslationPlan(options: BoardTranslationOption
             let staged = await stage(delta), final: BoardGeometryScope | undefined, transferred = false;
             try {
                 assert();
-                // Default, calibration cut by owner: snapping is off unless the modifier or Always Snap enables it.
-                if (options.alwaysSnap() !== accel) {
-                    const zoom = options.zoom();
-                    snapFence = () => options.alwaysSnap() !== accel && options.zoom() === zoom;
+                // Object snapping follows the calibrated default (off unless the modifier or Always Snap enables it) and the
+                // velocity gate. The grid follows the modifier alone: held Cmd/Ctrl turns it off, nothing else does.
+                const objects = options.alwaysSnap() !== accel && !(speed >= SNAP_MAX_SPEED), grid = !accel;
+                if (options.snap !== false && (objects || grid)) {
+                    const zoom = options.zoom(), preference = options.alwaysSnap();
+                    snapFence = () => options.alwaysSnap() === preference && options.zoom() === zoom;
                     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
                     for (const root of roots) { const b = staged.scope.logicalBounds(root.id); x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y);
                         x1 = Math.max(x1, b.x + b.width); y1 = Math.max(y1, b.y + b.height); }
                     const useX = !shift || delta.x !== 0, useY = !shift || delta.y !== 0;
                     const result = await snapBoardBounds({ runtime, bounds: { x: x0, y: y0, width: x1 - x0, height: y1 - y0 },
-                        selected: roots.map(node => node.id), zoom, allowX: useX, allowY: useY,
+                        selected: roots.map(node => node.id), zoom, allowX: useX, allowY: useY, objects, grid,
                         current: () => active() && snapFence!(), signal: request, cooperate: options.cooperate });
                     assert(); if (!snapFence()) throw new DOMException('Snap settings changed', 'AbortError');
                     const snapX = useX ? result.delta.x : 0, snapY = useY ? result.delta.y : 0;

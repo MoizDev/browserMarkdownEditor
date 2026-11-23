@@ -156,7 +156,11 @@ export function SheetMenu({ anchor, sheets, current, readOnly, dir, t, close, se
                         else if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur(); }
                     }} /> : <button type="button" role="menuitemradio" className="board-sheet-select" aria-checked={sheet.id === current}
                     aria-current={sheet.id === current ? 'page' : undefined}
-                    onClick={() => { if (suppressClick.current) return; select(sheet.id); close(); }}
+                    onClick={() => {
+                        // Clicking the current sheet keeps the menu open, so its double-click can rename it.
+                        if (suppressClick.current || sheet.id === current) return;
+                        select(sheet.id); close();
+                    }}
                     onDoubleClick={() => beginRename(sheet)}
                     onKeyDown={event => {
                         // Enter on the current sheet renames it (catalogue: Enter on the current page), instead of selecting it again.

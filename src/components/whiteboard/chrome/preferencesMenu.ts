@@ -1,5 +1,6 @@
 import type { ContextMenuCommand, ContextMenuSubmenu } from '../../../utils/contextMenu';
 import { getBoardPreferences, updateBoardPreferences } from '../../../utils/boardPreferences';
+import { spacedChord } from './mainMenu';
 
 export type PreferenceLabel = 'alwaysSnap' | 'toolLock' | 'showGrid' | 'selectOnWrap' | 'focusMode'
     | 'edgeScrolling' | 'dynamicSize' | 'pasteAtCursor' | 'inputDevice' | 'autoTrackpad' | 'trackpad' | 'mouse'
@@ -20,14 +21,17 @@ export interface PreferenceMenuOptions {
     readonly local: LocalPreferencesView;
     readonly label: (key: PreferenceLabel) => string;
     readonly theme?: ContextMenuSubmenu | null;
+    /** The chord of a keyboard binding, by its binding id, when the row has one (Tool lock Q, Show grid, Focus mode). */
+    readonly chord?: (bindingId: string) => string | undefined;
 }
 
-export function preferenceEntries({ local, label, theme }: PreferenceMenuOptions): ContextMenuSubmenu['entries'] {
+/** The catalogue's order: the view and session toggles, then Accessibility, Input device and Theme under one divider. */
+export function preferenceEntries({ local, label, theme, chord }: PreferenceMenuOptions): ContextMenuSubmenu['entries'] {
     const global = getBoardPreferences();
     const toggle = (id: PreferenceLabel, checked: boolean, run: () => void, disabled = false,
-        reason?: string): ContextMenuCommand => ({ kind: 'command', id, label: label(id), checked, run, disabled, reason });
-    const view = (labelId: PreferenceLabel, key: ViewFlag) =>
-        toggle(labelId, local.view[key], () => local.setView(key, !local.view[key]));
+        reason?: string, shortcut?: string): ContextMenuCommand => ({ kind: 'command', id, label: label(id), checked, run, disabled, reason, shortcut });
+    const view = (labelId: PreferenceLabel, key: ViewFlag, binding?: string) =>
+        toggle(labelId, local.view[key], () => local.setView(key, !local.view[key]), false, undefined, binding ? spacedChord(chord?.(binding)) : undefined);
     const session = (labelId: PreferenceLabel, key: SessionFlag) =>
         toggle(labelId, local.session[key], () => local.setSession(key, !local.session[key]));
     const input: ContextMenuSubmenu = { kind: 'submenu', id: 'inputDevice', label: label('inputDevice'), entries: [
@@ -48,13 +52,15 @@ export function preferenceEntries({ local, label, theme }: PreferenceMenuOptions
     ] };
     return [
         toggle('alwaysSnap', global.isSnapMode, () => updateBoardPreferences({ isSnapMode: !global.isSnapMode })),
-        view('toolLock', 'toolLock'), view('showGrid', 'grid'),
+        view('toolLock', 'toolLock', 'tool.lock'), view('showGrid', 'grid', 'preferences.grid'),
         toggle('selectOnWrap', global.isWrapMode, () => updateBoardPreferences({ isWrapMode: !global.isWrapMode })),
-        view('focusMode', 'focusMode'),
+        view('focusMode', 'focusMode', 'preferences.focus'),
         toggle('edgeScrolling', global.edgeScrolling, () => updateBoardPreferences({ edgeScrolling: !global.edgeScrolling })),
         toggle('dynamicSize', global.isDynamicResizeMode,
             () => updateBoardPreferences({ isDynamicResizeMode: !global.isDynamicResizeMode })),
-        session('pasteAtCursor', 'pasteAtCursor'), input, accessibility,
-        ...(theme ? [theme] : []), view('debugMode', 'debugMode'),
+        session('pasteAtCursor', 'pasteAtCursor'), view('debugMode', 'debugMode'),
+        { kind: 'separator', id: 'preferences-divider' },
+        accessibility, input,
+        ...(theme ? [theme] : []),
     ];
 }

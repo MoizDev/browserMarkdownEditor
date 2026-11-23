@@ -223,6 +223,7 @@ export function createBoardSession(options: BoardSessionFactoryOptions): Compose
         get contentRevision() { return contentRevision; },
         get readOnlyReason() { return readonlyReason(); },
         get isGestureActive() { return queue.isGestureActive; },
+        get gestureHolds() { return queue.gestureHolds; },
         apply(transaction: Transaction) { guard(); return applyController.apply(transaction); },
         preflight(transaction: Transaction) { guard(); return applyController.preflight(transaction); },
         begin(origin: TransactionOrigin, label: string) { guard(); return applyController.begin(origin, label); },

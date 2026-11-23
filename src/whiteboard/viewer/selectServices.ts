@@ -354,7 +354,8 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
                     centre = { x: (x0 + x1) / 2, y: (y0 + y1) / 2 };
                 } finally { scope.release(); }
                 if (!active()) return;
-                if (flip) { await flipBoardLeaves({ runtime, ids, centre, axis: flip, current: active, signal: controller.signal }); return; }
+                // The hold above is this transform's own: the flip runs under it, so it must not refuse it as a foreign gesture.
+                if (flip) { await flipBoardLeaves({ runtime, ids, centre, axis: flip, current: active, signal: controller.signal, heldGestures: 1 }); return; }
                 const angle = angles[command], down = { x: centre.x + 1, y: centre.y };
                 const plan = await createBoardRotationPlan({ runtime, ids, centre, down, orientation: 0,
                     current: active, signal: controller.signal });

@@ -152,7 +152,9 @@ const keyNames: Readonly<Record<string, string>> = { ArrowLeft: '←', ArrowRigh
 
 /** The chord a person reads for a binding: modifiers then the key cap, joined with symbols on Mac and "+" elsewhere. */
 export function bindingChord(binding: KeyBinding, mac: boolean): string {
-  const keyCap = binding.chordKey ?? (binding.key.length === 1 ? binding.key.toUpperCase() : keyNames[binding.key] ?? binding.key)
+  // Delete and Backspace draw the ⌫ cap on Mac, where the key is the one that erases backwards; elsewhere the name is clearer.
+  const keyCap = binding.chordKey ?? (binding.key.length === 1 ? binding.key.toUpperCase()
+    : binding.key === 'Delete' || binding.key === 'Backspace' ? (mac ? '⌫' : 'Del') : keyNames[binding.key] ?? binding.key)
   return [binding.accel ? (mac ? '⌘' : 'Ctrl') : '', binding.alt ? (mac ? '⌥' : 'Alt') : '', binding.shift ? (mac ? '⇧' : 'Shift') : '', keyCap]
     .filter(Boolean).join(mac ? '' : '+')
 }

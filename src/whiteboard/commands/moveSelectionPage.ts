@@ -6,6 +6,8 @@ import { hasOpaqueDescendant, isSheetParent, sheetOf, type BoardDoc } from '../m
 import type { NodeId, SheetId } from '../model/ids';
 import type { Node } from '../model/nodes';
 import { boardPageStack } from '../model/pages';
+import { newSheetId } from '../model/ids';
+import { addSheet } from './pagesAndSheets';
 
 // Provenance: page placement by the canonical page field, with page-local
 // positions preserved as reorderPage does; independent composition, no third-party source.
@@ -128,6 +130,29 @@ function moveSelectionToSheet(runtime: BoardRuntime, ids: readonly NodeId[], tar
     }
 }
 
+/**
+ * Makes a new sheet and moves the selection onto it as ONE history step: the sheet is created inside the open step, so
+ * undo removes both. Refused, like every other move, when the selection cannot move or the sheet limit is reached.
+ */
+function moveSelectionToNewSheet(runtime: BoardRuntime, ids: readonly NodeId[], name: string): void {
+    const session = runtime.session, doc = session.doc, { block } = movableRoots(doc, ids);
+    if (block) throw new Error(`Selection cannot move to a sheet: ${block}`);
+    const id = newSheetId({ nodes: doc.nodes, sheets: doc.sheets });
+    session.history.open('Move to new sheet');
+    let builder: ReturnType<typeof session.begin> | undefined, open = true;
+    try {
+        addSheet(doc, session, id, name).release();
+        builder = session.begin('host', 'Move to new sheet');
+        const moved = moveNodesToSheet(doc, builder, ids, id, runtime.render.changeGeometry);
+        const applied = builder.commit(); builder = undefined;
+        try { runtime.selection.setSheet(id); runtime.selection.replace(moved); } finally { applied.release(); }
+        session.history.close(); open = false;
+    } catch (error) {
+        try { builder?.abort(); } finally { if (open) session.history.cancel(); }
+        throw error;
+    }
+}
+
 /** The live backend Core's context menu uses: targets come from the current document and selection. */
 export function createPageMoveBackend(runtime: BoardRuntime) {
     const selected = (): readonly NodeId[] => [...runtime.selection.getSnapshot().selected];
@@ -138,6 +163,19 @@ export function createPageMoveBackend(runtime: BoardRuntime) {
             const doc = runtime.session.doc, stop = blocked();
             const rows = [...sheetMoveTargets(doc, selected()), ...pageMoveTargets(doc, selected())];
             return stop ? rows.map(row => ({ ...row, enabled: false, reason: stop })) : rows;
+        },
+        /** Why "New sheet" cannot run now, or undefined when it can. */
+        newSheetBlock(): string | undefined {
+            const stop = blocked();
+            if (stop) return stop;
+            const doc = runtime.session.doc;
+            if (doc.sheetOrder.length >= 40) return 'sheet-limit';
+            return movableRoots(doc, selected()).block;
+        },
+        moveToNewSheet(name: string): void {
+            const stop = blocked();
+            if (stop) throw new Error(`Selection cannot move to a sheet: ${stop}`);
+            moveSelectionToNewSheet(runtime, selected(), name);
         },
         moveToPage(id: string): void {
             const stop = blocked();

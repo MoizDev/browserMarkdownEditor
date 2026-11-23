@@ -1,4 +1,5 @@
 import { isLocked } from '../change/commands';
+import { boardSnapGrid, nearestBoardGridCoordinate } from '../geom/gridSnap';
 import { sheetOf, type BoardDoc } from '../model/doc';
 import type { NodeId, ParentId } from '../model/ids';
 import { boardPageStack } from '../model/pages';
@@ -85,8 +86,17 @@ export function planBoardClipboardPlacement(options: BoardClipboardPlacementOpti
     else centre = viewportCentre;
     // In-place is exact even when existing content straddles a physical page gap.
     if (!preserve) centre = clampPoint(doc, centre);
-    const delta = { x: centre.x - sourceCentre.x, y: centre.y - sourceCentre.y };
-    const origin = { x: bounds.x + delta.x, y: bounds.y + delta.y };
+    let delta = { x: centre.x - sourceCentre.x, y: centre.y - sourceCentre.y };
+    let origin = { x: bounds.x + delta.x, y: bounds.y + delta.y };
+    // Show grid: a pasted or dropped group's top-left lands on the lattice after centring. An in-place paste stays exact, and a
+    // duplicate keeps its offset from the source.
+    const lattice = preserve || intent === 'duplicate' ? null : boardSnapGrid(doc);
+    if (lattice && Number.isFinite(origin.x) && Number.isFinite(origin.y)) {
+        origin = { x: nearestBoardGridCoordinate(origin.x, lattice.origin.x, lattice.step.x).coordinate,
+            y: nearestBoardGridCoordinate(origin.y, lattice.origin.y, lattice.step.y).coordinate };
+        delta = { x: origin.x - bounds.x, y: origin.y - bounds.y };
+        centre = { x: sourceCentre.x + delta.x, y: sourceCentre.y + delta.y };
+    }
     if (![centre.x, centre.y, delta.x, delta.y, origin.x, origin.y].every(Number.isFinite)) throw new RangeError('Clipboard placement overflows');
     return Object.freeze({ worldOrigin: Object.freeze(origin), worldCentre: Object.freeze({ ...centre }), delta: Object.freeze(delta), parent,
         preserveSourcePosition: preserve });

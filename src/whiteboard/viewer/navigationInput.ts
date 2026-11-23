@@ -4,6 +4,7 @@ import type { TouchPanSample } from '../../platform/render/scheduler';
 import type { Viewport } from '../../platform/types';
 import { installKeyboard } from '../input/keyboard';
 import { installWheel, TouchArbiter, type ContactPoint } from '../input/navigation';
+import { createCameraPager } from './cameraPage';
 
 // Provenance: shared camera, touch arbiter, keyboard and scheduler contracts;
 // independent read-only navigation adapter, no third-party source.
@@ -23,6 +24,8 @@ export interface BoardNavigationOptions {
     readonly keyboard?: { modalOpen?(): boolean; editing?(): boolean; shortcutsEnabled?(): boolean };
     /** Preferences: whether the mouse wheel's zoom turn is inverted. */
     readonly invertMouseZoom?: () => boolean;
+    /** The preference that turns board animation off: a Space page then jumps in one step. */
+    readonly reducedMotion?: () => boolean;
 }
 interface Drag {
     id: number; origin: Point; last: Point; moved: boolean; secondary: boolean;
@@ -52,6 +55,8 @@ export function attachBoardNavigation(options: BoardNavigationOptions): () => vo
     const contact = (event: PointerEvent): ContactPoint => ({ ...point(event.clientX, event.clientY), id: event.pointerId,
         time: event.timeStamp, width: event.width, height: event.height });
     const cancelMotion = () => options.platform()?.cancelMotion();
+    const pager = createCameraPager({ camera, viewport: options.viewport, active, changed: () => { if (active()) options.changed(); },
+        reducedMotion: options.reducedMotion ?? (() => false), error: options.onError });
     const release = (id: number) => { try { if (surface.hasPointerCapture(id)) surface.releasePointerCapture(id); } catch { /* The browser may already have released it. */ } };
     const touch = new TouchArbiter(camera, {
         cancelTouchPreview() { if (drag?.touch) drag = null; },
@@ -146,6 +151,7 @@ export function attachBoardNavigation(options: BoardNavigationOptions): () => vo
         editing: () => options.keyboard?.editing?.() ?? false, shortcutsEnabled: () => options.keyboard?.shortcutsEnabled?.() ?? true,
         gestureActive: () => contacts.size > 0,
         navigation: () => ({ paged: true, hasSelection: false, keyboardCursorActive: false,
+            page(direction) { cancelMotion(); return pager.page(direction); },
             scroll(key) {
                 if (key !== 'PageUp' && key !== 'PageDown') return false;
                 run(() => { const viewport = options.viewport(); cancelMotion(); camera.panBy({ x: 0, y: viewport.height * 0.9 * (key === 'PageUp' ? -1 : 1) }); options.changed(); }); return true;
@@ -164,13 +170,13 @@ export function attachBoardNavigation(options: BoardNavigationOptions): () => vo
             if (id === 'escape') { run(flush); return true; }
             return false;
         },
-        clearLatches: () => run(flush),
+        clearLatches: () => run(() => { pager.stop(); flush(); }),
     }, options.mac);
     const blur = () => run(flush);
     window.addEventListener('blur', blur); window.addEventListener('pagehide', blur);
     const detach = () => {
         if (!live) return;
-        run(flush); live = false;
+        run(() => { pager.stop(); flush(); }); live = false;
         surface.removeEventListener('pointerdown', down); surface.removeEventListener('pointermove', move);
         surface.removeEventListener('pointerup', up); surface.removeEventListener('pointercancel', cancel); surface.removeEventListener('lostpointercapture', cancel);
         surface.removeEventListener('contextmenu', menu); surface.removeEventListener('dblclick', doubleClick); surface.removeEventListener('auxclick', aux);

@@ -3,6 +3,7 @@ import type { Viewport } from '../../platform/types';
 import type { BoardRuntime } from '../host/runtime';
 import type { KeyboardNavigationPriority, PagedScrollKey } from '../input/scrollKeysTypes';
 import { boardPageStack } from '../model/pages';
+import { createCameraPager } from './cameraPage';
 
 export interface BoardKeyboardNavigationOptions {
     readonly runtime: BoardRuntime;
@@ -16,16 +17,20 @@ export interface BoardKeyboardNavigationOptions {
     readonly cancelReveal: () => void;
     readonly changed: () => void;
     readonly error: (error: unknown) => void;
+    /** The preference that turns board animation off: a Space page then jumps in one step. */
+    readonly reducedMotion: () => boolean;
 }
 
 /** Keyboard camera work goes through the pane's existing controller and constraints. */
 export function createBoardKeyboardNavigation(options: BoardKeyboardNavigationOptions): (keyboardCursorActive: boolean) => KeyboardNavigationPriority {
     const { runtime, camera } = options, session = runtime.session, doc = session.doc, owner = session.owner;
     const active = () => options.current() && session.owner === owner && session.doc === doc;
+    const pager = createCameraPager({ camera, viewport: options.viewport, active, changed: options.changed, reducedMotion: options.reducedMotion, error: options.error });
+    const halt = (): void => { pager.stop(); options.cancelMotion(); };
     const cameraAction = (action: () => void): boolean => {
         if (!active()) return false;
         try {
-            options.cancelReveal(); options.cancelMotion();
+            options.cancelReveal(); halt();
             action(); options.changed(); return true;
         } catch (error) { options.error(error); return false; }
     };
@@ -54,5 +59,6 @@ export function createBoardKeyboardNavigation(options: BoardKeyboardNavigationOp
         scroll,
         nudge: (direction, coarse) => active() && options.editable() && options.nudge(direction, coarse),
         pan,
+        page: direction => { options.cancelReveal(); halt(); return pager.page(direction); },
     });
 }

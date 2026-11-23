@@ -52,6 +52,9 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
 - **One gesture owner at a time** (`input/router.ts`, `InputRouter`): tools receive normalised `RealSample`s only,
   stamped with an `InputToken` (vault epoch, tab, session and view generations). A replaced view cannot finish its
   successor's contact; check the token before acting on anything async.
+- A superseded hover pick, a marquee the person ended, any async step a newer one replaced: its rejection is never
+  shown. Report only `!isCancellation(error) && !signal.aborted` (`platform/workers/envelope.ts`; it covers the worker
+  host's own `'Cancelled'`, which a DOM-`AbortError`-only check showed as "bme-worker-host-v1: Request aborted").
 - Ink: `input/liveInk.ts` (wet curve), `sessionInk.ts`, `continueInk*.ts`, `straightInk.ts`; delegated ink
   (`delegatedInk.ts`) uses the browser's ink presenter when present. Pen mode (`ToolState.penMode`) and
   `penTransitions.ts` route a stylus to ink or eraser while touch pans. The eraser removes whole items

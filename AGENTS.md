@@ -23,11 +23,14 @@ file is *under* 150 that room already exists, so spend it freely. Where it goes 
 
 ## What this is
 
-A local-first, Obsidian-style Markdown editor that runs **entirely in the browser**, no backend or
-database. Optional fonts use Google; the local VaultAgent helper serves AI and terminal. It reads and
-writes the user's real files through the **File System Access API**, so it is **Chromium-only by
-design** (`showDirectoryPicker`, OPFS, `color-mix` are used freely). Stack: **React 19 + Vite 7 +
-TS 6 + CodeMirror 6**, KaTeX, mermaid, in-house canvas/PDF engines, idb-keyval, xterm.js.
+A local-first, Obsidian-style editor for Markdown notes, PDFs, notebooks, whiteboards and EPUBs, running
+**entirely in the browser** on the user's real files through the **File System Access API** — no backend or
+database, so **Chromium-only by design** (`showDirectoryPicker`, OPFS, `color-mix` used freely). Optional fonts
+use Google; the local VaultAgent helper serves AI and terminal. Stack: **React 19 + Vite 7 + TS 6 + CodeMirror
+6**, KaTeX, mermaid, idb-keyval, xterm.js, and in-house engines — PDFium as wasm (`src/pdf/`), our own board
+for drawings, notebooks and PDF ink (`src/whiteboard/`), one render platform for every canvas pane
+(`src/platform/render/`) — whose assets and fonts are local and integrity-checked: no CDN is a dependency of
+drawing a line. **Zero tldraw code**, ever; `.tldraw` is only a legacy import (`whiteboard/PROVENANCE.md`).
 
 ## Commands
 
@@ -51,9 +54,10 @@ exception:** when the user EXPLICITLY asks for a code-based test, write it — o
 - **The layers, and what may not cross between them.** `src/context/` is the only code that touches the File
   System Access API. Its index worker (`vaultIndex/reader.ts`) reads only file handles sent by `vaultIndex/client.ts`;
   listing, prompts and all mutations stay on the main thread in `FileSystemContext`. `src/editor/` is CodeMirror
-  land, **React-free**, reached through facets and plain callbacks. `src/components/` is React; `src/utils/` is pure
-  or DOM-light; `src/app/` is App's state as hooks, imported only by `App.tsx` and itself. An import crossing those
-  lines is the change to rethink. `shared/` is pure data and types the app and `helper/` (Bun) both import.
+  land, **React-free**, reached through facets and plain callbacks; so are the engines (`whiteboard/`, `pdf/`,
+  `platform/`, `epub/`). `src/components/` is React; `src/utils/` is pure or DOM-light; `src/app/` is App's
+  state as hooks, imported only by `App.tsx` and itself; `shared/` is pure data and types the app and `helper/`
+  (Bun) both import. An import crossing those lines is the change to rethink.
 - **Nothing the user made is destroyed outright.** A deleted file is *moved* to `.Garbage`, an
   unreferenced asset is *retired* into it and returns if the reference does, an unasked-for overwrite
   is renamed aside — which is why each costs a copy instead of a `removeEntry`. Prefer a wrong call
@@ -81,13 +85,15 @@ exception:** when the user EXPLICITLY asks for a code-based test, write it — o
   load (a writer then owns it, keeping the link's `file` until consumed), it outranks the stored handle;
   its `file` is opened only BY the session restore, in the vault it names — never by a second opener.
 - **Open documents are a flat list (`tabs`) plus a *layout* — a row of panes, each owning its tabs,
-  widths on the layout** (`utils/tabPanes.ts`); `activeTabPath` is derived. The save funnel
-  `updateTabContent(path, content, {fromDisk?})` is **path-explicit and the only one** — several documents are
-  editable at once and canvas panes serialize after their pane has gone. The session is per vault id
+  widths on the layout** (`utils/tabPanes.ts`); `activeTabPath` is derived. Tabs hold NO content: that is in
+  the App-owned buffer ledger by document id (`utils/documentBuffers.ts`); panes key on `id|loadedKind`. The
+  save funnel `updateTabContent(path, content, {fromDisk?})` is **path-explicit and the only one** — several
+  documents are editable at once and canvas panes serialize after their pane has gone. The session is per vault id
   and **versioned** (`utils/tabSessions.ts`); a switch empties the workspace without losing it.
-- **A CodeMirror `EditorState` outlives its pane — and `EditorPane`, which the graph view unmounts** (the
-  cache is App's) — and so does everything baked into it (`domEventHandlers`, the update listener): all
-  it reaches must be **stable for the app's life**, i.e. App-level. A per-pane ref only hides staleness.
+- **A note's `EditorState` and undo history outlive its pane and `EditorPane`** (which the graph view
+  unmounts): they belong to its App-owned session (`utils/documentSessions.ts`, `editor/markdownSession.ts`),
+  freed only on close, trash, vault switch or kind change — and so does everything baked into them
+  (`domEventHandlers`, the update listener): all it reaches must be **stable for the app's life**.
 - **Loaded representation authorizes content operations**, never extension alone (`documentReading.ts`).
   EPUB is binary/read-only; sentinels never enter text saves/assets/tools (`epub-reader`). Word emphasis
   stays in the original PDF/EPUB view; Text is explicit. Images/tables keep source Markdown (`markdown-tables`).
@@ -106,45 +112,39 @@ exception:** when the user EXPLICITLY asks for a code-based test, write it — o
 - **A MOUNTED-BUT-HIDDEN PANE MUST BE TOLD.** Panes stay mounted, hidden with `visibility`, so anything
   that holds memory or runs work needs an `isVisible` and has to let go — a hidden PDF held 62MB of
   page bitmaps (`pdf-and-drawings`). `isActive` is keyboard focus and is NOT this.
-- **Third-party CDNs are not a dependency of drawing a line.** Native renderer assets and fonts
-  are local and integrity-checked; optional user-selected note fonts are a separate feature.
-- **The decoration pass runs per keystroke, per arrow key, on every open pane** — memoize on immutable
-  identity or measure it; read mode stays a pure function of the document + its folds (`live-preview`).
+- **The decoration pass runs per keystroke, per arrow key, on every open pane** — incremental (whole-line
+  windows over `editor/docAnalysis.ts`), so memoize on immutable identity or measure it; read mode stays a
+  pure function of the document + its folds (`live-preview`).
 - **Long-running async work over the vault is serialized, never merely started** — trashing a folder,
   asset reconciles, the recent-vaults read-modify-write and every vault switch each hold an in-flight
   ref or a promise queue: `StrictMode` (on, `main.tsx`) double-runs effects; users click twice mid-copy.
 - **The PDF/canvas module split is bundle-size discipline enforced by import discipline** —
-  native runtimes, worker clients and rendering services stay behind their lazy hosts; load
-  `pdf-and-drawings` (notebooks and drawings too) before adding an import. The chunks
+  native runtimes, worker clients and rendering services stay behind their lazy hosts, as the lint dark zone
+  (`bme/import-zones` `darkExcept`/`darkLazy`) enforces; load `pdf-and-drawings` before adding an import. Chunks
   warm at idle (`components/prefetchPanes.ts`) by the kinds the vault holds: markdown-only fetches none.
   The PDFium engine is committed (`src/pdf/vendor/pdfium/`, rebuilt by `build/pdfium/`); dev and production
   load those exact bytes, and `build/pdfiumAssets.ts` fails the build on any mismatch with its manifest.
-- **`readFile` normalizes `\r\n → \n`, and everything downstream depends on it** — CodeMirror does
-  the same, so buffers and search offsets stay in step; a reader that skips it drifts on CRLF.
-- **The app's user documentation is a file in this repo** — `utils/helpDoc.ts`, one exported string
-  opened as a read-mode tab: a user-facing change is not finished until it describes the gestures it
-  adds. Its pseudo-path is a **bare name**, so tab-closing code gates its equality branch to files.
-- **A pane draws on WebGL2 or its own canvas2d, both must work; every fallback is counted (`fallback:…`).**
+- **`readFile` normalizes `\r\n → \n`, and everything downstream depends on it**; a reader that skips it drifts on CRLF.
+- **The user guide is `utils/helpDoc.ts`**, one string opened as a read-mode tab (one source line per paragraph):
+  a user-facing change is not finished until it describes its gestures. Its pseudo-path is a **bare name**.
+- **A canvas pane presents on canvas2d first and swaps to WebGL2 once qualified; both must work and look the
+  same, and no drop to canvas2d is silent** — each is counted (`fallback:…`) (`rendering-platform`,
+  `board-gpu-path`). Editing a board — tools, input, keys, text, history — is `whiteboard-editing`.
 
 ## Conventions & gotchas
 
-- **Object URLs are cached by file version, never minted per use** — keyed on path, validated on
-  `(lastModified, size)`. Each pane likewise holds **one stable resolver and one stable `imageActions`**
-  for life; a fresh closure per call makes every image widget compare unequal on every ⌘E and tab switch.
-- **`saveEpoch` is an external store** (`utils/saveEpoch.ts`), not a prop, as are the context-menu,
-  entry-style, create-request, file-times and **active-file** stores. `FileExplorer`/`TreeNode` are
-  `React.memo`'d: never thread such a value through, nor an inline arrow — one un-`useCallback`'d prop
-  from App defeats the memo. Rows subscribe to a BOOLEAN ("am I active?"), so a switch re-renders two.
-- **Large repeated views need a bounded layout cost.** The file tree windows its flattened, fixed-height
-  rows; PDF pages use `content-visibility: auto` plus a known box so offscreen pages do not paint.
+- **Object URLs are cached by file version** (path, `(lastModified, size)`), never minted per use; each pane holds
+  **one stable resolver and `imageActions`** for life, or every image widget compares unequal on each ⌘E.
+- **`saveEpoch` is an external store** (`utils/saveEpoch.ts`), as are the context-menu, entry-style, create-request,
+  file-times and **active-file** stores. `FileExplorer`/`TreeNode` are `React.memo`'d: never thread such a value,
+  or an un-`useCallback`'d arrow, through; rows subscribe to a BOOLEAN ("am I active?"), so a switch re-renders two.
+- **Large repeated views need a bounded layout cost**: the file tree windows its fixed-height rows; canvases tile.
 - **The path-keyed records** (`fileScrollAnchors`, `pdf`/`canvasViewPositions`, `collapsedHeadings`) live
   parsed in memory (`utils/storage.ts`) per-vault `scopedKey`; never pruned (capping was **rejected**).
-- **Settings → CSS variables** on `document.documentElement`, persisted to `localStorage` — except **Tab
-  size** (a CodeMirror compartment), **Recent vaults shown** (a prop), the **Terminal** font/size
-  (`utils/terminalSettings.ts`), all clamped on read (`localStorage` is user-editable), and **Vault name
-  as tab title**. Theme is `data-theme` on `<html>` (**absent = dark**); custom accent/code colors are
-  inline `<html>` overrides that intentionally outrank both theme blocks.
-- **Register browser settings in `utils/storage.ts`** — values AND removals are mirrored into IndexedDB.
+- **Settings → CSS variables** on `<html>`, persisted to `localStorage` and registered in `utils/storage.ts`
+  (values AND removals mirror into IndexedDB), clamped on read; Tab size, Recent vaults shown, the Terminal
+  font/size and Vault name as tab title are the exceptions. Theme is `data-theme` (**absent = dark**);
+  custom accent/code colors are inline `<html>` overrides that intentionally outrank both theme blocks.
 - **ESLint's relaxations are intentional**, each explained in `eslint.config.ts` — do not tighten them.
 - **Match the house comment style.** Explain *why*, beside the code, with the measured evidence that
   forced it ("measured: 7 tabs → 0"); a comment restating what the line does is not it.

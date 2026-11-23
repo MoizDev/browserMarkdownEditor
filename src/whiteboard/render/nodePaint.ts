@@ -30,7 +30,8 @@ function textItem(node: Readonly<Node>, geometryKey: string, label: PositionedFi
     context: SceneResolveContext, palette: PaintPalette, faces: FaceTable): PaintTextItem {
     return { kind: 'text', key: `${node.id}:text:${index}:${palette.revision}`, nodeId: node.id, geometryKey: `${geometryKey}:text:${label.paint.key}`,
         localToWorld: translated(context.world, label.x, label.y, label.scale ?? 1), clips: context.clips,
-        paint: label.paint, faces: label.paint.faceTable ?? faces, material: textPaintMaterial(label.paint, palette, context.opacity) };
+        paint: label.paint, faces: label.paint.faceTable ?? faces,
+        material: textPaintMaterial(label.paint, palette, context.opacity, node.kind === 'sticky' ? resolveSwatch(palette, node.color, 'fill') : undefined) };
 }
 
 /** A canonical stroke is one item in each prescribed band. All chunk coverage is

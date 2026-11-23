@@ -15,8 +15,11 @@ This is the board's own route. Editing (tools, selection, text) is `whiteboard-e
    device the first request is the view's world; once that is up, the whole sheet is asked ONCE with no world, keyed
    by revision, sheet, theme, sensitivity and ink band (`SceneKey`). A camera change inside one band asks nothing:
    the tiles follow the camera. On canvas2d a request stands while it holds the viewport at the same ink realisation
-   (`paintRequestScope.ts`): one band across while a zoom is still going (`ZOOM_SETTLE_MS` 250), the exact scale only
-   on a board with pictures. Asked per step, every pan and zoom step presented twice.
+   (`paintRequestScope.ts`); while a zoom is still going (moving, or a scale change within `ZOOM_SETTLE_MS` 250) it
+   stands one ink band across, on a board with pictures only while its picture tiles still cover the screen, and
+   the exact scale is asked once the zoom settles. Asked per step, every pan and zoom step presented twice. The 2D
+   adapter's next-scale snapshot shares the presented snapshot's picture leases in the same prepare, so a step
+   completes in its own frame (video frames still ask, for the newest frame).
 3. **Stream** (`paintStream.ts`, `scenePaintStream.ts`): each node yields `underlay` items then `content` items
    (`PaintBand`); every node's underlay is emitted before any content.
 4. **Assembler** (`frameAssembler.ts`): builds the stream into a `PaintSource` frame under CPU leases.
@@ -101,6 +104,9 @@ and the platform alone picks the device.
 - The wet layer (`viewer/wetLayer.ts`) lets go of a stroke when the board reports it in `drawnInkNodeIds`, read in
   the wet layer's own prepare. A node goes in only once every live part of it was admitted this frame: reported
   earlier, a deferred re-admission at pen-up left the stroke on neither layer for a frame.
+- The wet bands answer unchanged from a fingerprint of what they draw: on a device the runs each stroke was admitted
+  as, after a draw2d the pending strokes' sources (canvas2d admits no runs; keyed by runs, a live stroke showed only
+  at pen-up).
 - With no stroke in flight the wet layer's routes are `evictGpu`-able (16.8 MB measured): a layer the frame touched
   is never released whole, so without it the governor's trim fell short.
 
@@ -126,12 +132,20 @@ refusals wait once, sized (`awaitSizedCapacity`). Ruled paper also has a PDF wri
 - A tile still decoding is left out (the stand-in shows); its entry waits in `awaitingDecode` asking no frames and
   recomposes once the decode settles. Only the resting scale's entries are asked; tiles a zoom composed on its way
   wait for their scale. The tile demand never aborts an acquire someone still waits for.
+- A picture is hashed and verification-decoded once: the residency source (`media/residencySource.ts`) admits a Blob
+  once and inspection skips the decode for content already verified in this page. Re-inspecting per raster job
+  queued whole-picture decodes ahead of the tiles (measured: first tile raster 215 → 150 ms).
 
 ## Memory and waits
 
 - GPU bytes are leases on the GPU pool. The adapter's `evictGpu(bytes, frameId)` frees path coverage sets, then image
   and text textures, then composed tiles, each only what `frameId` did not use. Only the band owning the GPU adapter
   forwards `evictGpu`.
+- **A canvas2d bridge keeps the board's GPU work.** A frame prepared with no device but the same paint (the first
+  CPU picture, a resize bridge) keeps the composer's tiles and picture textures and their ledger, so the governor
+  still counts and can trim them through `evictGpu`; only a lost/released device (the pane's `releaseGpu`) or a
+  paint of another document drops them. Released per bridge frame, a resize dropped and rebuilt every tile
+  (measured: 540 tile releases and 8 picture re-uploads over 8 bridges → 0 and 0).
 - CPU bytes on a device are the direct build's leases in 64 KiB chunks (`DIRECT_CHUNK`).
 - A refused reservation waits once, sized: `awaitSizedCapacity(host, wake, { pool, bytes })`
   (`budgetRefusal.ts`); the governor wakes it only when the bytes fit. The composer's GPU retry after a visible

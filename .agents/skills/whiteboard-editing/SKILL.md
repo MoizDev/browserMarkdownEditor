@@ -65,7 +65,11 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
 - **One table** (`boardBindings` in `input/keyboard.ts`) supplies both dispatch and the shortcuts dialog
   (`components/whiteboard/chrome/ShortcutsDialog.tsx`); add a shortcut there, never a stray listener. Extra
   bindings that need app state go through `components/whiteboard/nativeEditingKeyboard.ts` with the same commands.
-- The listener is on the board's root element: a key reaches the board only while focus is inside it.
+- The listener is on the board's interaction root: a key reaches the board only while focus is inside it. Opening
+  a document from the tree hands it the keyboard (`utils/documentKeyboard.ts` → `EditorPane`'s keyboard-target
+  registry; `ViewerHost` registers the interaction root), and a pointer click on a board toolbar button hands it
+  back (`returnKeyboard` in `ViewerHost.tsx`), except a button that opens a popup or a keyboard activation. A new
+  floating control must keep this: a click that strands focus outside the root silently kills every shortcut.
 - Order inside `keydown`: paged/arrow navigation (arrows nudge a selection, else pan), then a printable unbound key
   with a selection starts typing into it (`typeText`), then Space/`z` hold pan/zoom, then the binding. A bound key is
   a shortcut before it is text (⇧/ opens the dialog, never types `?`). Read-only boards run only view,

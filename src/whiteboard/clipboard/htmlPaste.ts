@@ -14,7 +14,7 @@ import { boardPageStack } from '../model/pages';
 import type { JobContext } from '../security/admission';
 import type { BoardJobIdentity } from '../workers/protocol';
 import type { ClipboardHtmlFrameHost } from './htmlFrameHost';
-import { insertClipboardText } from './insertText';
+import { insertClipboardText, pastedTextFit } from './insertText';
 import { insertNativeClipboard } from './insertNative';
 import { prepareBoardClipboardMediaInJob } from './prepareMedia';
 import { planBoardClipboardPlacement } from './placement';
@@ -120,7 +120,7 @@ export async function pasteClipboardHtmlInJob(options: HtmlClipboardPasteOptions
             if (!prepared) throw new Error('HTML text layout is unavailable');
             const width = Math.max(1, prepared.paint.box.w);
             if (!Number.isFinite(width)) throw new Error('HTML text layout is invalid');
-            textNode = width > 1200 ? { ...textNode, autoSize: false, w: 600 } : { ...textNode, w: width };
+            textNode = { ...textNode, ...pastedTextFit(width, textNode.text.blocks.length, target.viewport.w) };
             scope.release(); scope = undefined; candidate = createAddedBoardDoc(doc, [textNode]);
             scope = await acquireBoardGeometryScope(runtime, [textNode.id], { doc: candidate, signal: context.signal, current: () => { check(); return true; }, cooperate }); check();
             textBounds = scope.logicalBounds(textNode.id); scope.release(); scope = undefined;

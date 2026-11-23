@@ -77,3 +77,30 @@ export async function findStickyNeighbour(options: {
     } finally { cursor.cancel(); }
     check(); return best?.id ?? null;
 }
+
+/** A click snaps into an empty adjacent slot ("pit") of a note of the same scale and rotation when the pointer is within `radius`
+ * of it (tldraw's adjacent-position snap). The slots are the offsets Tab and Cmd+Enter use, so a note made in a pit is the note
+ * the keyboard would have made; a slot is taken when another note's centre sits in it. Returns the new note's local top-left. */
+export function findStickyPit(doc: BoardDoc, scale: number, centre: Vec2, parent: ParentId, page: number, radius: number): Vec2 | null {
+    const siblings = doc.children.get(parent) ?? [];
+    const centreOf = (note: Readonly<StickyNode>): Vec2 => ({ x: note.x + 100 * note.scale, y: note.y + (100 + note.growY / 2) * note.scale });
+    const notes = siblings.filter((node): node is StickyNode => node.kind === 'sticky' && node.scale === scale && node.rotation === 0
+        && node.page === page && !isLocked(doc, node) && Math.hypot(centreOf(node).x - centre.x, centreOf(node).y - centre.y) <= 420 * scale + radius);
+    let best: { topLeft: Vec2; distance: number } | null = null;
+    for (const note of notes) {
+        const slots: Vec2[] = [
+            { x: note.x + 210 * scale, y: note.y + note.growY * scale / 2 },
+            { x: note.x - 210 * scale, y: note.y + note.growY * scale / 2 },
+            { x: note.x, y: note.y + (210 + note.growY) * scale },
+            { x: note.x, y: note.y - 210 * scale },
+        ];
+        for (const topLeft of slots) {
+            const c = { x: topLeft.x + 100 * scale, y: topLeft.y + 100 * scale };
+            const distance = Math.hypot(c.x - centre.x, c.y - centre.y);
+            if (distance > radius || (best && distance >= best.distance)) continue;
+            if (siblings.some(other => other.kind === 'sticky' && Math.hypot(centreOf(other).x - c.x, centreOf(other).y - c.y) <= radius)) continue;
+            best = { topLeft, distance };
+        }
+    }
+    return best?.topLeft ?? null;
+}

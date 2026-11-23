@@ -14,6 +14,8 @@ export interface TextCreationPorts {
     place(x: number, y: number): { readonly parent: ParentId; readonly page: number; readonly x: number; readonly y: number; readonly before?: readonly Op[] };
     zoom(): number;
     dynamicSize(): boolean;
+    /** The height of one empty line at the current font and size, in layout units, or null before its faces have loaded. */
+    lineHeight(): number | null;
 }
 export interface TextEditingManagerPorts {
     readonly session: EditableSessionPort;

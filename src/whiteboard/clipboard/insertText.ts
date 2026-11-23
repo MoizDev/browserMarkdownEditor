@@ -42,6 +42,13 @@ export interface InsertClipboardTextOptions {
     cooperate?(): Promise<void>;
 }
 
+/** Pasted text is sized to the view: one line may be as wide as 920 units (never narrower than 200, nor than 90% of the view), a
+ * longer text wraps at 90% of the view. Wider text becomes fixed-width at that limit; narrower text stays auto-sized. */
+export function pastedTextFit(width: number, lines: number, viewportWidth: number): { readonly autoSize: boolean; readonly w: number } {
+    const limit = Math.max(1, lines > 1 ? 0.9 * viewportWidth : Math.min(920, Math.max(200, 0.9 * viewportWidth)));
+    return width > limit ? { autoSize: false, w: limit } : { autoSize: true, w: width };
+}
+
 /** Empty text creates no object; whitespace and newline-only text are preserved literally. */
 export async function insertClipboardText(options: InsertClipboardTextOptions): Promise<string | null> {
     const { runtime } = options, session = runtime.session, doc = session.doc, owner = session.owner, revision = doc.rev;
@@ -125,7 +132,7 @@ export async function insertClipboardText(options: InsertClipboardTextOptions): 
             if (!prepared) throw new Error('Clipboard text layout is unavailable');
             const width = Math.max(1, prepared.paint.box.w);
             if (!Number.isFinite(width)) throw new RangeError('Clipboard text is too wide');
-            node = width > 1200 ? { ...node, autoSize: false, w: 600 } : { ...node, w: width };
+            node = { ...node, ...pastedTextFit(width, node.text.blocks.length, target.viewport.w) };
             scope.release(); scope = undefined;
             candidate = createAddedBoardDoc(doc, [node], [], preserved);
             scope = await acquireBoardGeometryScope(runtime, [id], { doc: candidate, signal, current: () => { check(); return true; }, cooperate });

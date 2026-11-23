@@ -3,7 +3,7 @@ import type { NodeId } from '../../model/ids';
 import type { Marks, RichText } from '../richText';
 import type { EditSelection, TextChange } from './host';
 import { linkUrl, type ToggleMark } from './format';
-import { inputRule } from './rules';
+import { inputRule, typographyRule } from './rules';
 
 // The rich-text lane supplies these operations; this controller owns only the
 // edit session and sends every content change through the transaction service.
@@ -21,6 +21,11 @@ export interface EditTransactions {
     link(url: string | null, from: number, to: number): Transaction | null;
     enter(selection: EditSelection): { readonly transaction: Transaction; readonly selection: EditSelection };
 }
+
+/** Typed openers that wrap a selection, with their closers. */
+const WRAP_PAIRS: Readonly<Record<string, readonly [string, string]>> = {
+    '(': ['(', ')'], '[': ['[', ']'], '{': ['{', '}'], '<': ['<', '>'], '"': ['"', '"'], "'": ["'", "'"],
+};
 
 export class TextEditController {
     private storedMarks: Marks | null = null;
@@ -79,14 +84,38 @@ export class TextEditController {
         return result.selection;
     }
 
+    /** A typed bracket or quote over a selection surrounds it and keeps the selection on the same text. The closer is spliced
+     * first, so the opener's offset is still valid when it goes in. */
+    private wrap(change: TextChange, pair: readonly [string, string], before: EditSelection): EditSelection {
+        const from = change.from, to = change.to;
+        const after = { anchor: from + 1, focus: to + 1 };
+        const { storedMarks } = this;
+        // Inside code the quotes stay straight, as the rest of code text does.
+        const [open, close] = pair;
+        const marks = this.services.marksAt(from);
+        const [left, right] = marks.code ? [open, close] : open === '"' ? ['\u201c', '\u201d'] : open === "'" ? ['\u2018', '\u2019'] : [open, close];
+        this.services.typing('boundary', before, after);
+        this.services.apply({ origin: 'tool', label: 'Wrap text', ops: [
+            { t: 'splice', id: this.id, key: this.key, from: to, to, insert: this.services.fragment(to, right, storedMarks) },
+            { t: 'splice', id: this.id, key: this.key, from, to: from, insert: this.services.fragment(from, left, storedMarks) },
+        ] });
+        this.services.setSelection(after);
+        this.services.completeTyping('boundary', after);
+        return after;
+    }
+
     replace(change: TextChange, kind: 'typing' | 'composition' | 'boundary', before: EditSelection): EditSelection {
+        const wrap = kind === 'typing' && change.from !== change.to && change.text.length === 1 && Object.hasOwn(WRAP_PAIRS, change.text)
+            ? WRAP_PAIRS[change.text] : undefined;
+        if (wrap) return this.wrap(change, wrap, before);
         const fragment = this.services.fragment(change.from, change.text, this.storedMarks);
         this.services.typing(kind, before, change.selection, change);
         this.services.apply({ origin: 'tool', label: kind === 'composition' ? 'Compose text' : 'Edit text',
             ops: [{ t: 'splice', id: this.id, key: this.key, from: change.from, to: change.to, insert: fragment }] });
         let selection = change.selection;
         if (kind === 'typing' && change.text && selection.anchor === selection.focus) {
-            const rule = inputRule(this.id, this.key, this.services.readText(), selection.focus);
+            const rule = inputRule(this.id, this.key, this.services.readText(), selection.focus)
+                ?? typographyRule(this.id, this.key, this.services.readText(), selection.focus);
             if (rule) {
                 const after = { anchor: rule.caret, focus: rule.caret };
                 const mark = this.services.markTransformation();

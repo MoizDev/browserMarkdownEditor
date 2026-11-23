@@ -38,8 +38,9 @@ export function handleEditKey(event: KeyboardEvent, services: KeyServices, mac: 
         return true;
     }
     if (mod && !event.altKey && ['b', 'i', 'u', 'e', 'k', 'h', 's', 'z'].includes(lower)) {
+        // The link key is Mod+Shift+K, the one row the shortcuts dialog lists; plain Mod+K is not a text key.
         const command = lower === 'b' ? 'bold' : lower === 'i' ? 'italic' : lower === 'u' ? 'underline'
-            : lower === 'e' ? 'code' : lower === 'k' ? 'link' : lower === 'h' && event.shiftKey ? 'highlight'
+            : lower === 'e' ? 'code' : lower === 'k' && event.shiftKey ? 'link' : lower === 'h' && event.shiftKey ? 'highlight'
             : lower === 's' && event.shiftKey ? 'strike' : lower === 'z' ? event.shiftKey ? 'redo' : 'undo' : null;
         if (command) { consume(event); services.command(command); return true; }
     }
@@ -61,6 +62,10 @@ export function handleEditKey(event: KeyboardEvent, services: KeyServices, mac: 
     }
     if (event.key === 'Tab' && services.inList()) {
         consume(event); services.command(event.shiftKey ? 'outdent' : 'indent'); return true;
+    }
+    // Tab stays in the editor: outside a list and outside a note's neighbour flow it types a tab character.
+    if (event.key === 'Tab' && !mod && !event.altKey) {
+        consume(event); services.command(event.shiftKey ? 'untab' : 'tab'); return true;
     }
     if (event.key === 'Enter') {
         consume(event); services.command('enter'); return true;

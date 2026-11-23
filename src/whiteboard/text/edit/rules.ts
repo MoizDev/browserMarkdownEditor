@@ -71,3 +71,52 @@ export function inputRule(id: NodeId, key: 'text' | 'label', text: RichText, car
     }
     return null;
 }
+
+// TipTap-typography defaults, as tldraw ships them: a sequence becomes its character as its last character is typed.
+// Fractions need a non-letter, non-digit before them so "11/2" stays as typed.
+const TYPOGRAPHY: readonly { readonly pattern: string; readonly insert: string; readonly wordStart?: true }[] = [
+    { pattern: '--', insert: '—' }, { pattern: '...', insert: '…' },
+    { pattern: '<-', insert: '←' }, { pattern: '->', insert: '→' },
+    { pattern: '(c)', insert: '©' }, { pattern: '(r)', insert: '®' }, { pattern: '(tm)', insert: '™' },
+    { pattern: '1/2', insert: '½', wordStart: true }, { pattern: '1/4', insert: '¼', wordStart: true },
+    { pattern: '3/4', insert: '¾', wordStart: true }, { pattern: '+/-', insert: '±' },
+    { pattern: '!=', insert: '≠' }, { pattern: '<<', insert: '«' }, { pattern: '>>', insert: '»' },
+];
+
+function markAt(block: Block, index: number): Marks | undefined {
+    let offset = 0;
+    for (const run of block.runs) {
+        if (index < offset + run.text.length) return run.marks;
+        offset += run.text.length;
+    }
+    return undefined;
+}
+
+/** The typed character becomes typography when the text before it completes a pattern. Quotes take the open or close form by
+ * what precedes them. Monospace text and an unclosed backtick type literally (literalTyping), so they are never rewritten. */
+export function typographyRule(id: NodeId, key: 'text' | 'label', text: RichText, caret: number): InputRuleResult | null {
+    const found = blockAt(text, caret);
+    if (!found || !textBoundaries.isBoundary(text, caret)) return null;
+    const { block, start, value } = found;
+    const at = caret - start, before = value.slice(0, at);
+    if (!before || before.split('`').length % 2 === 0) return null;
+    const marks = markAt(block, at - 1);
+    if (!marks || marks.code) return null;
+    const typed = before.at(-1)!;
+    let from: number, insert: string;
+    if (typed === '"' || typed === '\'') {
+        const previous = before.at(-2);
+        const opening = previous === undefined || /[\s([{—–]/u.test(previous);
+        if (typed === '"') insert = opening ? '“' : '”';
+        else insert = opening ? '‘' : '’';
+        from = at - 1;
+    } else {
+        const rule = TYPOGRAPHY.find(item => before.endsWith(item.pattern) && (!item.wordStart || !/[\p{L}\p{N}]/u.test(before.charAt(before.length - item.pattern.length - 1))));
+        if (!rule) return null;
+        insert = rule.insert; from = at - rule.pattern.length;
+    }
+    const replaceFrom = start + from;
+    if (!textBoundaries.isBoundary(text, replaceFrom) || !textBoundaries.isBoundary(text, caret)) return null;
+    return { transaction: transaction(id, key, replaceFrom, caret, { blocks: [{ kind: 'p', level: 0, dir: 'auto', runs: [{ text: insert, marks }] }] }),
+        caret: replaceFrom + insert.length };
+}

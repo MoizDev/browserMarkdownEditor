@@ -98,6 +98,7 @@ export const boardBindings: readonly KeyBinding[] = [
   { id: 'text.code', group: 'text-formatting', label: 'Inline code', key: 'e', accel: true },
   { id: 'text.bullets', group: 'text-formatting', label: 'Bulleted list', key: '8', accel: true, shift: true },
   { id: 'text.numbered', group: 'text-formatting', label: 'Numbered list', key: '7', accel: true, shift: true },
+  { id: 'text.link', group: 'text-formatting', label: 'Link', key: 'k', accel: true, shift: true },
   ...(['0', '1', '2', '3', '4', '5', '6'] as const).map(key => ({ id: `text.heading.${key}`, group: 'text-formatting', label: key === '0' ? 'Paragraph' : `Heading ${key}`, key, accel: true, alt: true })),
   { id: 'camera.zoomIn', group: 'view', label: 'Zoom in', key: '=', repeat: true },
   { id: 'camera.zoomOut', group: 'view', label: 'Zoom out', key: '-', repeat: true },

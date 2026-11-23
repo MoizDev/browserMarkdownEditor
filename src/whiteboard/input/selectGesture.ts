@@ -48,6 +48,12 @@ class BoardSelectGesture implements GestureOwner {
     private sweepLast: Vec2;
     private sweepPreview: ReadonlySet<NodeId> = new Set();
     private readonly points: Vec2[];
+    /** The selection the brush has written while dragging (catalogue S§5: hits show live, Escape restores the start).
+     * Null until the first write; a cancel restores `initial` only while the selection still holds exactly these ids. */
+    private shown: readonly NodeId[] | null = null;
+    /** One rectangle query in flight at a time; a move during it marks the latest region dirty, so the last move always lands. */
+    private liveBusy = false;
+    private liveDirty = false;
 
     constructor(private readonly down: RealSample, keys: Modifiers, private readonly context: BoardSelectGestureContext) {
         this.pointerIds = new Set([down.pointerId]); this.last = down; this.keys = keys; this.startKeys = keys;
@@ -124,7 +130,39 @@ class BoardSelectGesture implements GestureOwner {
         } else {
             if (this.sweep) this.context.scribble.preview(this.sweepPreview);
             this.context.preview(this.region());
+            this.refreshMarquee();
         }
+    }
+    /** Writes the brush's hits to the selection as it moves, so a shape the brush reaches is selected while the drag
+     * is still going (catalogue S§5). Shift keeps the starting selection, as the release does. Scribble hits are not
+     * live yet: its swept query stalls or reports a node limit (see the escalation in the report). */
+    private showSelection(ids: readonly NodeId[]): void {
+        if (this.ended || this.cleaned || !this.valid()) return;
+        const next = [...new Set(this.keys.shift ? [...this.initial, ...ids] : ids)];
+        const current = this.selectionFence.selected;
+        if (current.length === next.length && next.every(id => current.includes(id))) return;
+        this.context.selection.replace(next);
+        this.selectionFence = this.context.selection.getSnapshot();
+        this.shown = this.selectionFence.selected;
+    }
+    /** Rectangle hits for the current region, one query at a time: a move that arrives during a query re-runs it once it lands. */
+    private refreshMarquee(): void {
+        if (this.sweep || this.transform || this.ended || !this.dragging || this.hit === undefined) return;
+        if (this.liveBusy) { this.liveDirty = true; return; }
+        this.liveBusy = true; this.liveDirty = false;
+        void this.context.region(this.region(), this.controller.signal).then(ids => {
+            this.liveBusy = false;
+            this.showSelection(ids);
+            if (this.liveDirty) this.refreshMarquee();
+        }).catch(error => { this.liveBusy = false; this.fail(error); });
+    }
+    /** A cancelled brush gives back the selection it started with, but only while nothing else has changed it since. */
+    private restoreShown(): void {
+        const shown = this.shown;
+        this.shown = null;
+        if (!shown) return;
+        const current = this.context.selection.getSnapshot().selected;
+        if (current.length === shown.length && shown.every(id => current.includes(id))) this.context.selection.replace(this.initial);
     }
     /** A move of `hit`, cloned while Alt is held (catalogue S§7.4). The move is relative to the press, so a switch restarts it
      * from the current pointer without a jump. */
@@ -205,6 +243,7 @@ class BoardSelectGesture implements GestureOwner {
     }
     cancel(reason: CancelReason): void {
         if (this.cleaned) return;
+        this.restoreShown();
         try { this.sweep?.cancel(); }
         finally { try { this.transform?.cancel(reason); } finally { this.transform = null; this.cleanup(); } }
     }

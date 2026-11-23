@@ -200,7 +200,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     };
     const sweep = (eraser: boolean): SweepQueueServices => ({
         beginSweep: (from, to, topOnly) => beginSweep(from, to, topOnly, eraser ? 8 : 6),
-        sceneRevision: () => doc.rev, now: () => performance.now(), schedule: callback => options.inputFrames.schedule(callback),
+        sceneRevision: () => doc.rev, now: () => performance.now(), schedule: (callback, onDrop) => options.inputFrames.schedule(callback, onDrop),
         preview(ids) {
             previewIds = new Set(ids);
             if (eraser) options.preview.showOps([...ids].map(id => ({ t: 'set', id, key: 'opacity', value: 0.5 } as const)));

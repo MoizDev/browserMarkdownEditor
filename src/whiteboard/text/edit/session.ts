@@ -52,6 +52,9 @@ export interface EditSessionServices extends Omit<EditTransactions, 'typing' | '
     isStandaloneText(): boolean;
     /** The creation step token for a text node created by this edit session. */
     readonly creationToken?: number;
+    /** Runs as the editor closes, before its element leaves the page: focus left on a removed element falls to
+     *  <body>, and every board shortcut listens on the board's root, so the keyboard must go back there first. */
+    returnFocus(): void;
     finish(): void;
 }
 
@@ -511,6 +514,7 @@ export class TextEditSession {
         this.blinkTimer = null;
         this.typingHistory.dispose();
         this.words.clear();
+        this.services.returnFocus();
         this.pointer.dispose(); this.host.dispose();
         if (this.services.alive() && this.services.isStandaloneText() && this.services.plainText().length === 0) {
             const history = this.services.history;

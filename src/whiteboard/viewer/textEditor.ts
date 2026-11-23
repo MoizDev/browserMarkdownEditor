@@ -50,6 +50,8 @@ export interface BoardTextEditorOptions {
     readonly camera: CameraController;
     readonly viewport: () => Viewport;
     readonly overlay: HTMLElement;
+    /** The board's keyboard root: where focus goes when an edit closes. */
+    readonly keyboardTarget: HTMLElement;
     readonly current: () => boolean;
     readonly interaction: { invalidate(): void; cameraChanged(): void };
     readonly inputFrames: { schedule(callback: () => void): () => void };
@@ -329,6 +331,11 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
                 autoScroll(x, y) { scroll = { x, y }; scheduleScroll(); }, stopAutoScroll: stopScroll,
                 touchHandles(value) { handles = value; options.ui.touchHandles(value); requestFrame(); },
                 menu: openTextMenu, openLink: options.ui.openLink, stickyNeighbour: direction => stickyNeighbour(direction),
+                returnFocus() {
+                    // Only focus the editor's own element or nothing: a button the person clicked keeps the focus.
+                    const focused = document.activeElement;
+                    if (focused === null || focused === document.body || overlay.contains(focused)) options.keyboardTarget.focus({ preventScroll: true });
+                },
                 finish() { stopScroll(); layoutEngine.releaseEditingCache(); spellingMenu?.cancel(); spellingMenu = null; options.ui.spellingMenu(0, 0, null); spellGeneration++; if (spellTimer !== null) clearTimeout(spellTimer); spellTimer = null; spell?.suspend(); misspellings = []; spellSource = null; spellNode = null; if (active === id) { active = null; options.editingChanged?.(null); paint = null; faces = null; currentWorld = null; }
                     options.ui.selectionChanged(null, null); requestFrame(); },
             };

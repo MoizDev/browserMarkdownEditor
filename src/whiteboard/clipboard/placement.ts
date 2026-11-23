@@ -24,6 +24,8 @@ export interface BoardClipboardPlacementOptions {
     readonly doc: BoardDoc;
     readonly cameraZoom: number;
     readonly intent: ClipboardIntent;
+    /** A duplicate repeating the offset its predecessor was moved by (catalogue S§7.4, K§2); absent, the copy steps right. */
+    readonly duplicateOffset?: { readonly x: number; readonly y: number } | null;
 }
 function boundsValid(value: ClipboardBounds): boolean {
     return !!value && [value.x, value.y, value.w, value.h, value.x + value.w, value.y + value.h].every(Number.isFinite)
@@ -80,7 +82,9 @@ export function planBoardClipboardPlacement(options: BoardClipboardPlacementOpti
         centre = target.pointer;
     } else if (intent === 'duplicate') {
         // Duplicate steps right by the selection's width plus a 10-unit gap, in world units (spec F-ARR-005: 190 then 280).
-        centre = { x: sourceCentre.x + bounds.w + 10, y: sourceCentre.y };
+        // A repeat steps by the offset the previous copy now sits at, so a copy moved by hand is followed at the same distance.
+        centre = options.duplicateOffset ? { x: sourceCentre.x + options.duplicateOffset.x, y: sourceCentre.y + options.duplicateOffset.y }
+            : { x: sourceCentre.x + bounds.w + 10, y: sourceCentre.y };
     } else if (cursor) centre = target.pointer ?? viewportCentre;
     else if (same && overlaps) { centre = sourceCentre; preserve = true; }
     else centre = viewportCentre;

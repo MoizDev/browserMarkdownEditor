@@ -1,4 +1,4 @@
-import { LocalCurveBuilder, type CurvePublication } from '../ink/curve'
+import { closeCurvePublication, curveClosure, LocalCurveBuilder, type CurvePublication } from '../ink/curve'
 import { StraightInkBuilder } from './straightInk'
 import type { SampleBuilder, SampleBuilderOptions } from '../ink/samples'
 import type { FinishReason, GestureOwner, Modifiers, RealSample, Tool } from './tool'
@@ -33,6 +33,9 @@ export interface LiveInkContext {
   readonly presentation: InkPresentation
   readonly builderOptions: SampleBuilderOptions
   readonly captureDeviceScale: number
+  /** One CSS pixel of pointer input in local units at pointer down (1 / zoom): the coarsest grid the
+   * pointer's samples can sit on (ink/dequantize.ts). */
+  readonly inputPixelWorld: number
   // Capture style, target sheet and local transform at down; implementations write
   // through the session transaction and preserve the same id/lease for undo/redo.
   /** Writes the sample's local point into `out`. */
@@ -118,7 +121,8 @@ export class LiveInk implements GestureOwner {
   constructor(first: RealSample, modifiers: Modifiers, private readonly context: LiveInkContext, private readonly handover: WetInkHandover) {
     this.pointerIds = new Set([first.pointerId])
     this.read = { identity: context.identity, presentation: context.presentation, sample: first, curveSequence: -1 }
-    this.builder = new StraightInkBuilder(new LocalCurveBuilder(context.builderOptions, context.captureDeviceScale, context.presentation.fairTol))
+    this.builder = new StraightInkBuilder(new LocalCurveBuilder(context.builderOptions, context.captureDeviceScale, context.presentation.fairTol,
+      undefined, context.inputPixelWorld))
     this.append(first, modifiers)
     context.clearRedoAtDown()
     context.invalidate()
@@ -152,11 +156,12 @@ export class LiveInk implements GestureOwner {
     this.ended = true
     try {
       const finished = this.builder.finish()
-      this.snapshot = finished.publication
       const points = finished.publication.samples, last = points.count - 1
       // R-20 keeps closure inert; only an exact, non-degenerate loop is marked.
       const closed = this.context.presentation.tool === 'pen' && points.count >= 4
         && points.x(0) === points.x(last) && points.y(0) === points.y(last)
+      // The wet ink's last picture is the committed one, closing tangent included.
+      this.snapshot = closeCurvePublication(finished.publication, curveClosure(points, closed))
       this.dry = this.context.commit(finished.samples, this.context.identity, reason === 'undo', closed)
       if (reason === 'undo') this.handover.clear(this.context.identity)
       else {

@@ -62,6 +62,9 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   `fairTol` (validated, never a limit). Wet, dry, both backends, picking, export and omission all read it; a span
   depends on samples i−1…i+2, so the wet tail is replaceable (`finalizedSpanCount`). Anything that bounds a stroke
   without building cubics uses the curve enclosure (`ink/reach.ts`, `SampleSummary.curveBounds`), never the sample box.
+  A `closed` stroke's caller passes `curveClosure(points, node.closed)` (its last span arrives along its first).
+  LIVE pointer samples are first moved within their pointer-grid cell (`ink/dequantize.ts`, a provisional wet tail);
+  replayed, imported or agent samples never are.
 - A superseded hover pick, a marquee the person ended, any async step a newer one replaced: its rejection is never
   shown. Report only `!isCancellation(error) && !signal.aborted` (`platform/workers/envelope.ts`; it covers the worker
   host's own `'Cancelled'`, which a DOM-`AbortError`-only check showed as "bme-worker-host-v1: Request aborted").

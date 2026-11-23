@@ -19,6 +19,8 @@ export interface SessionInkServices {
   readonly width: number
   readonly declaredMaxScale: number
   readonly captureDeviceScale: number
+  /** One CSS pixel of pointer input in world units at pointer down (1 / zoom). */
+  readonly inputPixelWorld: number
   readonly nextSequence: () => number // Monotone per session, shared by every attached view.
   readonly rememberStroke: (id: StrokeNode['id']) => void
   readonly admit: (builder: SampleBuilder) => SampleLease
@@ -47,6 +49,7 @@ export function sessionInkContext(first: RealSample, services: SessionInkService
     presentation: { tool, color, width, fairTol, localToWorld: services.localToWorld(origin) },
     builderOptions: { pressure, declaredMaxScale: services.declaredMaxScale },
     captureDeviceScale: services.captureDeviceScale,
+    inputPixelWorld: services.inputPixelWorld,
     toLocal: (sample, out) => { services.mapPoint(sample, out); out.x -= origin.x; out.y -= origin.y },
     clearRedoAtDown: services.clearRedoAtDown,
     invalidate: services.invalidate,

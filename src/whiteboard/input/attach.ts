@@ -125,11 +125,22 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   // F-TOOL-009: the quick overview is Shift pressed while Z is held. Shift pressed first is the direct zoom route, not this.
   let shiftHeld = false
   const overview = new QuickOverview(() => services.zoomBrush())
+  // Catalogue T§4: while Z is held the cursor is zoom-in, zoom-out while Alt is held, and the quick overview has neither (its
+  // state keeps the default arrow). Z is a hold, not a tool, so no tool sets it: this owns the surface cursor for the hold and
+  // puts back what was there on release.
+  let cursorBeforeZoom: string | null = null, altHeld = false
+  const showZoomCursor = (): void => {
+    const surface = view.surface
+    if (!zoomHeld) { if (cursorBeforeZoom !== null) { surface.style.cursor = cursorBeforeZoom; cursorBeforeZoom = null } return }
+    if (cursorBeforeZoom === null) cursorBeforeZoom = surface.style.cursor
+    surface.style.cursor = overview.active ? 'default' : altHeld ? 'zoom-out' : 'zoom-in'
+  }
   const trackShift = (held: boolean) => {
     if (held === shiftHeld) return
     shiftHeld = held
     if (!zoomHeld) return
     if (held) { if (!router.activeOwner) overview.enter() } else overview.leave()
+    showZoomCursor()
   }
   // Cmd/Ctrl held over Draw or Highlight erases until it is released (catalogue T§14). The eraser's own Cmd means "top-most
   // item only", so the temporary eraser takes whole items: accel is stripped from its gestures. The displaced tool returns
@@ -155,7 +166,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       else releaseAccelEraser()
     }
   }
-  const modifierRelease = new ModifierRelease(modifiers => { trackShift(modifiers.shift); holdAccelEraser(modifiers); pointer.modifiersChanged(modifiers) })
+  const modifierRelease = new ModifierRelease(modifiers => { trackShift(modifiers.shift); altHeld = modifiers.alt; showZoomCursor(); holdAccelEraser(modifiers); pointer.modifiersChanged(modifiers) })
   const wholeItems = (owner: GestureOwner): GestureOwner => ({
     kind: owner.kind, pointerIds: owner.pointerIds,
     update: (samples, modifiers) => owner.update(samples, { ...modifiers, accel: false }),
@@ -288,7 +299,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       if (spaceHeld) { temporaryPan = true; return { tool: hand, context: undefined } }
       if (zoomHeld) {
         // The overview's press lands the destination and returns to Draw while Z is still held: no gesture follows.
-        if (overview.active) { overview.leave(); zoomHeld = false; return null }
+        if (overview.active) { overview.leave(); zoomHeld = false; showZoomCursor(); return null }
         const source = services.zoomBrush()
         const context = { ...source, toSurface: (point: RealSample) => sampleSurface(point, source.toSurface) }
         return { tool: { id: zoomBrushTool.id, begin: (point, keys) => zoomBrushTool.begin(point, keys, context) }, context: undefined }
@@ -575,7 +586,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     cursor, navigation: services.keyboardNavigation ? () => services.keyboardNavigation!(cursor.active) : undefined, gestureActive: () => router.activeOwner !== null || zoomHeld,
     typeText: text => !!services.textInput?.type(text),
     modifierChanged: modifiers => modifierRelease.update(modifiers),
-    clearLatches: () => { services.textInput?.cancelPending(); cancelContinuations(); services.cancelPendingGestures(); spaceHeld = false; zoomHeld = false; shiftHeld = false; overview.leave(); cursor.escape(); pointer.interrupt('flush'); modifierRelease.releaseAll(); services.clearLatches?.() },
+    clearLatches: () => { services.textInput?.cancelPending(); cancelContinuations(); services.cancelPendingGestures(); spaceHeld = false; zoomHeld = false; shiftHeld = false; overview.leave(); showZoomCursor(); cursor.escape(); pointer.interrupt('flush'); modifierRelease.releaseAll(); services.clearLatches?.() },
     run(id, event) {
       if (!current()) return false
       if (id === 'accessibility.repeat' && view.a11y.repeatAnnouncement?.()) return true
@@ -588,7 +599,7 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
         return services.keyboardContextMenu(point, surfaceToWorld(point, view.camera.camera))
       }
       if (id === 'escape') {
-        if (overview.active) { overview.escape(); zoomHeld = false; return true }
+        if (overview.active) { overview.escape(); zoomHeld = false; showZoomCursor(); return true }
         // A laser trail still on screen is cleared first and the laser stays chosen; this is read before the
         // pending-gesture cancel below, which clears the trail too.
         const laserCleared = services.clearLaserTrail?.() ?? false
@@ -651,12 +662,12 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
         if (cursor.gesture) cursor.enter(modifiersOf(event));
         return true;
       }
-      if (id === 'zoom.hold') { zoomHeld = true; services.zoomBrush().prepareOverview?.(); return true }
-      if (id === 'zoom.release') { overview.leave(); zoomHeld = false; return true }
+      if (id === 'zoom.hold') { zoomHeld = true; services.zoomBrush().prepareOverview?.(); showZoomCursor(); return true }
+      if (id === 'zoom.release') { overview.leave(); zoomHeld = false; showZoomCursor(); return true }
       if (id.startsWith('tool.bar.') && editable()) {
         // The chrome publishes the tools its bar shows; a slot the bar does not show (narrow pane, or a figure that is
         // unavailable) does nothing, so the key falls through to the other bindings as an unbound key would.
-        const digit = Number(id.slice('tool.bar.'.length)), choice = services.tools.barTool(digit === 0 ? 9 : digit - 1)
+        const choice = services.tools.barTool(Number(id.slice('tool.bar.'.length)) - 1)
         if (!choice) return false
         if (choice.id === 'media') return services.commands.run('media.insert', event)
         cancelContinuations(); services.cancelPendingGestures()

@@ -61,6 +61,7 @@ export function createBoardStyleControls(options: BoardStyleControlsOptions) {
         options: { colours: SWATCHES.filter(color => color !== 'white'), opacities: OPACITIES, fills: FILLS, dashes: DASHES, sizes: SIZES, fonts: FONTS,
             aligns: ['start', 'middle', 'end'] as const },
         currentOpacity: () => commands.currentOpacity(),
+        hasSelection,
         /** The defaults the next shape gets, which the command palette's style rows mark as chosen. */
         nextStyle: () => { const next = session.doc.ui.next; return { fill: next.fill, dash: next.dash, size: next.size, font: next.font, align: next.align }; },
         currentWidthScale: () => commands.currentWidthScale(),

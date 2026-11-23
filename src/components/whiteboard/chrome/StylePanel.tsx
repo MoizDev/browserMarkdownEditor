@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
 import { penScaleFromSlider } from '../../../whiteboard/chrome/penWidth';
 import { MIXED, type Shared, type StyleRow } from '../../../whiteboard/chrome/stylePanel';
 import type { StyleCommands, StylePanelSnapshot } from '../../../whiteboard/host/styleControls';
@@ -340,12 +340,43 @@ function shapeToolLabel(shape: FigureShape): ToolLabel {
     return shape.replace(/-(\w)/g, (_, letter: string) => letter.toUpperCase()) as ToolLabel;
 }
 
+/** Whole choice rows at a short pane: the rows region stops at the bottom of the last choice button that fits the dock's
+ * room, so no swatch or option is cut across its middle (measured at 1000×600 on canvas2d with the GPU notice: the second
+ * colour row was cut in half). Headings are not stops, so a heading never ends the view alone. Past that point the
+ * region scrolls. Reads and writes only the rows' inline max-height. */
+function fitRowsToWholeSections(dock: HTMLElement | null): void {
+    const rows = dock?.querySelector<HTMLElement>('.board-style-rows'), panel = dock?.querySelector<HTMLElement>('.board-style-panel');
+    if (!dock || !rows || !panel) return;
+    rows.style.maxHeight = '';
+    const top = rows.getBoundingClientRect().top, panelStyle = getComputedStyle(panel), rowStyle = getComputedStyle(rows);
+    const room = dock.getBoundingClientRect().bottom - parseFloat(panelStyle.paddingBottom) - parseFloat(panelStyle.borderBottomWidth) - top;
+    // A button's bottom in the rows' own scroll coordinates: its box moves up by the scroll offset.
+    let fit: number | null = null;
+    for (const choice of rows.querySelectorAll<HTMLElement>('.board-style-choice')) {
+        const bottom = choice.getBoundingClientRect().bottom - top + rows.scrollTop;
+        if (bottom <= room && (fit === null || bottom > fit)) fit = bottom;
+    }
+    if (fit === null) return;
+    // max-height bounds the content box unless the page sets border-box, so the rows' own padding comes off it.
+    const padding = rowStyle.boxSizing === 'border-box' ? 0 : parseFloat(rowStyle.paddingTop) + parseFloat(rowStyle.paddingBottom);
+    rows.style.maxHeight = `${Math.max(0, fit - padding)}px`;
+}
+
 /** The docked panel under the header: its own collapse fold, the same rows the popover shows. */
 export function DockedStylePanel(props: StylePanelProps) {
     const { snapshot } = props, t = snapshot.translate;
     const collapsed = useSyncExternalStore(subscribeStylePanel, getStylePanelCollapsed, getStylePanelCollapsed);
     const rootRef = useRef<HTMLDivElement>(null), latest = useRef(props);
     useEffect(() => { latest.current = props; });
+    // Rows change with the selection and the tool, and the room with the pane, so the fit is re-read on each render and resize.
+    useLayoutEffect(() => { fitRowsToWholeSections(rootRef.current); });
+    useEffect(() => {
+        const dock = rootRef.current;
+        if (!dock || typeof ResizeObserver === 'undefined') return;
+        const observer = new ResizeObserver(() => fitRowsToWholeSections(dock));
+        observer.observe(dock);
+        return () => observer.disconnect();
+    }, []);
     useEffect(() => registerStylePanelFocus(() => {
         const root = rootRef.current, current = latest.current;
         if (!root || current.snapshot.disabled || !current.snapshot.rows.length || root.offsetParent === null) return false;

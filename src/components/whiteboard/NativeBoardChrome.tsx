@@ -29,7 +29,8 @@ export function NativeBoardChrome(props: NativeBoardChromeProps) {
     const tools = useMemo(() => ({ getSnapshot: runtime.tools.getSnapshot, subscribe: runtime.tools.subscribe,
         setTool(id: string, variant?: string) { if (currentOwner()) runtime.tools.setTool(id, variant); },
         toggleLocked() { if (currentOwner()) runtime.tools.toggleLocked(); },
-        lockable: (id: string) => runtime.tools.getRegistration(id)?.persistence === 'single-use',
+        // A registration's `lockable: false` (zoom) withdraws the padlock, as ToolState's own rule does (gesture.ts).
+        lockable: (id: string) => { const registration = runtime.tools.getRegistration(id); return registration?.persistence === 'single-use' && registration.lockable !== false; },
         setBarTools: (choices: readonly { readonly id: string; readonly variant?: string }[]) => runtime.tools.setBarTools(choices),
         beginDrag: (choice: { readonly id: string; readonly variant?: string }, event: PointerEvent, bar: Element) => currentOwner() && runtime.tools.beginChromeDrag(choice, event, bar) }), [runtime, currentOwner]);
     if (engine.session !== runtime.session) throw new Error('Board chrome needs the attached board session');

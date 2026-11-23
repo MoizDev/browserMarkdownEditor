@@ -34,11 +34,11 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
 - **Previews never change the document.** A gesture shows its effect through `viewer/preview.ts` (the preview
   layers have a permanent slot, `previewSlot.ts`: inserting layers mid-gesture changed the topology, which seals
   platform input and cancelled the gesture itself). Only a completed, still-current pointer-up applies its
-  preflighted transaction (`tools/transform.ts`).
+  prepared commit (`input/transformGestures.ts`, through `session.apply`).
 - Geometry for a change is prepared off-thread (`render.prepareChangeGeometry` / `pinChangeGeometry`, the exact
   jobs in `geom/`); a commit waits for it rather than guessing.
 - A command run under a transform's own held gesture declares it (`heldGestures`, `commands/flipLeaves.ts`): the
-  session's `gestureHolds` must equal that count or the command is refused. Flip and the keyboard transform use this.
+  session's `gestureHolds` must equal that count or the command is refused. Flip uses this.
 - Read-only is the session's `isReadOnly` (admission or apply's seal; a developer setting can force it per kind,
   `utils/engineRouting.ts`) plus per-node `locked` (`isLocked` walks ancestors). Save must honour it too.
 - The AI agent edits boards through the same transactions (`whiteboard/agent/`, `change/agentBatch.ts`;
@@ -83,7 +83,10 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   live preview keeps exact arithmetic, so a grid-snapped drop no longer commits 119.99999999999994.
 - Navigation: `input/navigation.ts` and the wheel, touch and pinch modules (`cameraZoom.ts`, `oneFingerZoom.ts`,
   `touchDoubleTap.ts`, `panFling.ts`, `zoomBrush.ts`, `edgeScroll.ts`). Space + arrow pages through
-  `viewer/keyboardNavigation.ts`, gliding on the platform scheduler (`rendering-platform`).
+  `viewer/keyboardNavigation.ts`: the glide lasts `PAGE_GLIDE_MS` (320 ms) times the board's animation speed, and
+  jumps under reduced motion (speed 0). It glides on the platform scheduler (`rendering-platform`).
+- Holding Z (zoom) sets the surface cursor to zoom-in, zoom-out while Alt is held, and the default cursor during the
+  quick overview (Shift+Z); `input/attach.ts` `showZoomCursor` owns it and restores the saved cursor on release.
 
 ## Keyboard
 

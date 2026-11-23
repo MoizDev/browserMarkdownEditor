@@ -40,10 +40,10 @@ export const boardBindings: readonly KeyBinding[] = [
   { id: 'tool.laser', group: 'tools', label: 'Laser', key: 'k' },
   { id: 'tool.frame', group: 'tools', label: 'Frame', key: 'f' },
   { id: 'tool.lock', group: 'tools', label: 'Tool lock', key: 'q' },
-  // The bar's tools by position: 1–9 and 0 (the tenth) press the Nth tool the bar shows, not a fixed tool.
-  // The ten keys are dispatched but not listed: one dialog row (below) names them all, as a family the dispatcher reads from the key.
-  ...(['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'] as const).map(key => ({ id: `tool.bar.${key}`, group: 'tools', label: `Tool on the bar by position`, key, alias: true })),
-  { id: 'tool.bar.position', group: 'tools', label: 'Tool on the bar by position', key: '1', chordKey: '1–9, 0', dialogOnly: true },
+  // The bar's nine primary tools by position: 1–9 press the Nth tool the bar shows, not a fixed tool. The bar has no tenth
+  // slot, so 0 is unbound. The keys are dispatched but not listed: one dialog row (below) names them all, as a family the dispatcher reads from the key.
+  ...(['1', '2', '3', '4', '5', '6', '7', '8', '9'] as const).map(key => ({ id: `tool.bar.${key}`, group: 'tools', label: `Tool on the bar by position`, key, alias: true })),
+  { id: 'tool.bar.position', group: 'tools', label: 'Tool on the bar by position', key: '1', chordKey: '1–9', dialogOnly: true },
   // Comma presses the pointer at the keyboard cursor and lifting the key releases it (K§10.6).
   { id: 'pointer.hold', group: 'tools', label: 'Pointer down', key: ',' },
   { id: 'style.white', group: 'preferences', label: 'White', key: 't', alt: true },
@@ -216,7 +216,11 @@ export function installKeyboard(root: HTMLElement, actions: KeyboardActions, mac
       const accelDown = mac ? event.metaKey : event.ctrlKey
       if (accelDown && !event.altKey && BROWSER_ZOOM_KEYS.has(event.key)) event.preventDefault()
       // Windows opens the menu bar when Alt is released alone; a gesture or zoom that Alt joins must not reach it.
-      if (event.key === 'Alt' && actions.gestureActive?.()) event.preventDefault()
+      // The press is still reported as a modifier: the early return below would otherwise hide Alt from a zoom hold's cursor.
+      if (event.key === 'Alt' && actions.gestureActive?.()) {
+        event.preventDefault()
+        actions.modifierChanged?.({ shift: event.shiftKey, alt: event.altKey, control: event.ctrlKey, accel: mac ? event.metaKey : event.ctrlKey })
+      }
     }
     if (event.defaultPrevented || !actions.visible() || actions.modalOpen() || actions.editing() || textOwned(event.target, root) || event.isComposing || event.keyCode === 229 || event.key === 'Dead' || event.getModifierState('AltGraph')) return
     if (!root.contains(event.target as Node)) return

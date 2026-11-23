@@ -295,14 +295,6 @@ third-party code included (normally "none") · date.
 | `geom/resizePlan.types.ts` | lane w-g | GE-4 | geometry §6.1–6.4 | Design; immutable target geometry and page-aware placement service contracts | none | 2026-11-13 |
 | `geom/resizePlacement.types.ts` | lane w-g | GE-4 | geometry §6.3–6.5 | Design; projected local centre and page-aware placement service contract | none | 2026-11-13 |
 | `geom/resizePlacement.ts` | lane w-g | GE-4 | geometry §6.3–6.5 | Design; projected bounds-centre mapping and frame-child world-pose preservation | none | 2026-11-13 |
-| `geom/rotationPlan.types.ts` | lane w-g | GE-4 | geometry §6.1–6.3 | Design; immutable rotation snapshot and page-aware placement contracts | none | 2026-11-13 |
-| `geom/transformCommands.types.ts` | lane w-g | GE-4 | geometry §6.2/6.7 | Design; nudge, resize, rotation and per-kind reflection command services | none | 2026-11-13 |
-| `geom/flip.types.ts` | lane w-g | GE-4; F-XFORM-009 | geometry §6.4–6.7 | Design; per-kind reflection and projected world-pose services | none | 2026-11-13 |
-| `geom/flip.ts` | lane w-g | GE-4; F-XFORM-009 | geometry §6.4–6.7 | Design; reflected centres, local sign/flip properties and delegated container/binding policies | none | 2026-11-13 |
-| `geom/transformCommands.ts` | lane w-g | GE-4; F-XFORM-002/003/009/015 | geometry §6.2/6.7 | Design; discrete nudges, ±15°/±15⁄16° rotations, 1.1 scale and centre-reflection transactions | none | 2026-11-13 |
-| `geom/rotationPlacement.types.ts` | lane w-g | GE-4 | geometry §6.3 | Design; local-centre and page-aware rotation placement service contract | none | 2026-11-13 |
-| `geom/rotationPlacement.ts` | lane w-g | GE-4; F-XFORM-008 | geometry §6.3 | Design; selection-centre rotation mapped through shared parent/page pose | none | 2026-11-13 |
-| `geom/rotationPlan.ts` | lane w-g | GE-4; F-XFORM-008 | geometry §6.1–6.3 | Design; angle unwrapping, selection-centre rotation and one-transaction placement | none | 2026-11-13 |
 | `geom/resizePlan.ts` | lane w-g | GE-4 | geometry §6.1–6.4 | Design; oriented frame, mapped centres, explicit selection scope and per-kind transaction planning | none | 2026-11-13 |
 | `geom/resizeKinds.ts` | lane w-g | GE-4; F-XFORM-007/009/010/014 | geometry §6.4–6.5 | Design; per-kind property operations, unchanged ink width, crop-aware picture reflection and injected layout; opaque guard | none | 2026-11-13 |
 | `geom/crop.ts` | lane w-g | GE-4; F-XFORM-009; F-MEDIA crop | geometry §6.5 | Design; source-normalized crop and reflected intervals, model dimension limits | none | 2026-11-13 |
@@ -327,9 +319,6 @@ third-party code included (normally "none") · date.
 | `text/importRich.ts` | lane w-g | T-2 | text §4 | Preserve identical Unicode control-character rejection via property class | none | 2026-11-13 |
 | `text/richOperations.ts` | lane w-g | T-5 | text §4 | Preserve identical Unicode control-character rejection via property class | none | 2026-11-13 |
 | `tools/select.ts` | lane w-g | GE-3; F-SEL-001/002/003/004 | geometry §§4–5; selection spec; input | Design; input Tool, shared swept queue and exception-safe pending-gesture lifetime | none | 2026-11-13 |
-| `tools/transform.types.ts` | lane w-g | GE-4 | geometry §6.1; input §9 | Design; injected preview, snap preflight and single session-apply services | none | 2026-11-13 |
-| `tools/transform.ts` | lane w-g | GE-4 | geometry §6.1; input §9 | Design; cancellable derived preview, pending preflight and atomic pointer-up apply | none | 2026-11-13 |
-| `tools/transformDrivers.ts` | lane w-g | GE-4; F-XFORM-001/004/008 | geometry §6.1–6.3 | Design; input adapters for translation, resize and rotation snapshot plans | none | 2026-11-13 |
 
 ## Figures and geometry providers (lane w-h)
 
@@ -421,6 +410,7 @@ third-party code included (normally "none") · date.
 | `input/basicTools.ts` | lane w-f | F-INK-008/009; F-INPUT-010 | input §§6–7; ink spec | Input and ink behavioural specifications; injected hierarchy and transaction services; no tldraw source | none | 2026-11-13 |
 | `input/laserTrail.ts` | lane w-f | F-INK-009 | input §7; ink spec | Input and ink behavioural specifications; shared scheduler deadline seam; no tldraw source | none | 2026-11-13 |
 | `input/zoomBrush.ts` | lane w-f | F-CAM-013 | input §6; camera spec | Independent gesture recipe with injected camera operations; no tldraw source | none | 2026-11-13 |
+| `input/quickOverview.ts` | uxp | F-TOOL-009; catalogue T§4 | input §6 | Independent overview recipe over injected zoom context (fit, 0.85 step-out, pointer-following brush, Escape restore); the cursor is set by attach.ts; no tldraw source | none | 2026-11-23 |
 | `input/attach.ts` | lane w-f | F-INPUT-001/002/004/005; R-19 | input §§2–9 | Input architecture and public session, camera, tool and compositor seams; no tldraw source | none | 2026-11-13 |
 | `input/pointerRouter.ts` | lane w-f | F-INPUT-001/004/005 | input §§2–3,9 | Input architecture and public pointer/router interfaces; no tldraw source | none | 2026-11-13 |
 | `input/sweepQueue.ts` | lane w-f | F-INK-008; F-SEL-003 | geometry §§4,5.4; input §7 | Independent bounded, cancellable cursor orchestration; no tldraw source | none | 2026-11-13 |

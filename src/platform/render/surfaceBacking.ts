@@ -11,6 +11,8 @@ export interface SurfaceBackingOptions {
     readonly canvas: HTMLCanvasElement;
     readonly displayed: boolean;
     readonly now: number;
+    /** Called once the bytes a refused resize asked for fit again (the governor's sized wake), so the owner retries the resize. */
+    readonly wake?: () => void;
 }
 
 /** Browser-owned canvas backing, not arena memory. A rebuilding canvas is ordinary working
@@ -74,7 +76,14 @@ export class SurfaceBacking implements MemoryAllocator {
             this.releaseZeroed();
             held = 0;
         }
-        if (requested > held && !this.reserve(requested - held)) return null;
+        if (requested > held && !this.reserve(requested - held)) {
+            // A refused backing waits for its bytes, sized, as the 2D compositor's does (compositor2d awaitCapacity): a pane whose GPU
+            // surface is refused behind its 2D picture asks no frame of its own, so without the wake nothing retried it once the
+            // layers had settled (found with the re-shown PDF of GpuPaneCandidate.zeroed, whose refusal never cleared).
+            const wake = this.options.wake;
+            if (wake) (this.displayed ? this.display : this.scratch).whenAvailable?.(wake, requested - held);
+            return null;
+        }
         const result = resizeSurface(width, height);
         if (result.complete && result.width === width && result.height === height) {
             let spare = [...this.leases].reduce((sum, lease) => sum + lease.bytes, 0) - requested;

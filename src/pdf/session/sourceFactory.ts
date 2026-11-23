@@ -64,7 +64,7 @@ export function createPdfTiledSourceFactory(pool: TiledDocumentPool): PdfTiledSo
                     const version = stable.then(blob => fingerprintSnapshot(blob, requestSignal)).then(hash => ({ ...stat, hash }));
                     holder.version = version;
                     // Unversioned, the App never compares this document with the disk: a write that landed during the open
-                    // left the old pages up for good with no DiskBar (inv-f, 287 MB textbook overwritten 0.5 s after the click).
+                    // left the old pages up for good with no DiskBar (measured: a 287 MB textbook overwritten 0.5 s after the click).
                     void stable.catch(error => {
                         if (requestSignal.aborted || (error instanceof DOMException && error.name === 'AbortError') || !session.isCurrent()) return;
                         holder.binding.onReaderSourceLost?.(holder.binding.identity, stat);

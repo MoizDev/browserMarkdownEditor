@@ -6,7 +6,7 @@ export const pdfTiledTextSurfaceSlot = moduleSlot(() => import('./PdfTiledTextSu
 export const nativePdfEntrySlot = moduleSlot(() => import('./whiteboard/NativePdfEntry'));
 
 /** Warms everything a first PDF open waits on, all at once: the Original surface and, from it, the source runtime, the
- * password store, the engine's startup and the platform's canvas entry. Measured cold (inv-f trace-cold), each of those
+ * password store, the engine's startup and the platform's canvas entry. Measured on a cold open, each of those
  * was requested only after the one before it had arrived and run: surface at 20 ms, source modules at 310 ms, engine
  * files at 325 ms, cpuEntry at 396 ms, first tiles at 470 ms. Idempotent: every import is the module cache's. */
 export function warmPdfOpenPath(): Promise<unknown> {

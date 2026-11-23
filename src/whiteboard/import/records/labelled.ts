@@ -41,7 +41,7 @@ export function readLabelledShape(shape: LegacyShape, base: NodeBase, rich: Rich
                 dash: pick(p.dash, DASHES.filter(d => d !== 'none'), 'dash'), size,
                 font: pick(p.font, FONTS, 'font'), align: pick(p.align, H_ALIGNS, 'alignment'),
                 valign: pick(p.verticalAlign, V_ALIGNS, 'vertical alignment'), label: rich(p.richText, shape.id),
-                width: styleGeometryMetrics.actualWidth('figure', size, scale), labelScale: scale, flipX: false, flipY: false, url: url(p.url) };
+                width: styleGeometryMetrics.actualWidth('figure', size, scale), labelScale: scale, flipX: p.flipX === true, flipY: p.flipY === true, url: url(p.url) };
         }
         case 'text': return { ...base, kind: 'text', text: rich(p.richText, shape.id),
             color: pick(p.color, SWATCHES, 'colour'), size: pick(p.size, SIZES, 'size'), font: pick(p.font, FONTS, 'font'),

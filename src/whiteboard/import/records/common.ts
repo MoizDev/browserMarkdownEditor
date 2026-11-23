@@ -19,8 +19,10 @@ export interface LegacyShape {
     readonly source: LegacyObject;
 }
 export function readShape(record: LegacyObject, report: ReportBuilder): LegacyShape {
-    const { id, type, parentId, index, x, y, rotation, isLocked, opacity } = record;
-    const meta = object(record.meta), props = object(record.props);
+    const { id, type, parentId, index, x, y } = record;
+    // Fields an older generation did not write yet take the value it meant: no rotation, unlocked, opaque, no meta.
+    const rotation = record.rotation ?? 0, isLocked = record.isLocked ?? false, opacity = record.opacity ?? 1;
+    const meta = record.meta === undefined ? {} : object(record.meta), props = object(record.props);
     if (record.typeName !== 'shape' || typeof id !== 'string' || !isValidId(id)
         || typeof type !== 'string' || typeof parentId !== 'string' || !isValidId(parentId)
         || typeof index !== 'string' || typeof x !== 'number' || typeof y !== 'number'

@@ -13,7 +13,7 @@ export function preserveMetadata(meta: LegacyObject, excluded: ReadonlySet<strin
     return { fields: new Map([['legacyMeta', raw]]), raw: new Map() };
 }
 export function readLegacySheet(record: LegacyObject): Sheet {
-    const meta = object(record.meta);
+    const meta = record.meta === undefined ? {} : object(record.meta);
     if (record.typeName !== 'page' || typeof record.id !== 'string' || typeof record.name !== 'string'
         || typeof record.index !== 'string' || !meta) throw new Error('Invalid page record');
     return { id: sheetId(record.id), name: record.name, order: record.index, ext: preserveMetadata(meta) };

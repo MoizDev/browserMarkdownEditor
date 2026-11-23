@@ -45,7 +45,8 @@ import {
 import type { ScrollAnchor } from '../editor/scrollAnchor';
 import { insertTableAtCursor } from '../editor/tableEdit';
 import { canWrite, modeExtensions } from '../editor/readingMode';
-import { keyboardAfterSearchClose, noteSearchKeymap, rebuildSearchPanelForMode, returnKeyboard, runNoteSearchKey } from '../editor/noteSearch';
+import { keyboardAfterSearchClose, noteSearchKeymap, returnKeyboard, runNoteSearchKey } from '../editor/noteSearch';
+import { findPanel } from '../editor/findPanel';
 import { tabIntoText } from '../editor/tabIntoText';
 import { docString } from '../editor/docCache';
 import { wordCountField } from '../editor/wordCount';
@@ -945,7 +946,9 @@ function DocumentPane({
             // ⌘F's jump is a revealMatch, as the vault-search reveal is: centred
             // and held while pictures and diagrams above it load (the default,
             // a one-shot nearest-edge scroll, left a match 1,445px below view).
-            search({ scrollToMatch: revealMatchEffect }),
+            // The floating ⌘F box (editor/findPanel.ts) in place of CodeMirror's
+            // full-width form.
+            search({ scrollToMatch: revealMatchEffect, createPanel: findPanel(revealMatchEffect), top: true }),
             // The search keys again, for a note that cannot take focus — run
             // by the window listener below, never by CodeMirror itself.
             noteSearchKeymap,
@@ -1130,14 +1133,9 @@ function DocumentPane({
                     ],
                 });
                 // Nothing for collapsed headings: their field is in no compartment,
-                // and reads the mode from the editable facet re-stated above.
-                //
-                // An open search panel follows the mode re-stated above, for the
-                // same both-places reason (tabs-and-panes). A path in use: the
-                // cache is App's and survives the graph view, where App's ⌘E
-                // still toggles the active tab's mode with no pane showing it —
-                // so a document can come back in a mode its state was not left in.
-                rebuildSearchPanelForMode(view, wasReadOnly);
+                // and reads the mode from the editable facet re-stated above. Nor
+                // for an open ⌘F box, which follows `readOnly` itself
+                // (editor/findPanel.ts).
             }
 
             // Put back where this document was left, and keep it there while the
@@ -1223,7 +1221,6 @@ function DocumentPane({
                     ...(modeChanged ? [readOnlyCompartment.reconfigure(modeExtensions(mode)),livePreviewCompartment.reconfigure(livePreviewFor(mode))] : []),
                     ...(!isCode && !isTex ? [readingEmphasisCompartment.reconfigure(readingEmphasisOptions({enabled: preferences.emphasis.enabled, mode, locale: ''}))] : []),
                 ] });
-                rebuildSearchPanelForMode(view, wasReadOnly);
                 if (anchor) restoreWordReadingAnchor(view, anchor);
                 restoreSelection?.();
             });

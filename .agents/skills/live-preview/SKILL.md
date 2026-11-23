@@ -223,16 +223,20 @@ folded sections, and marks `cm-reading-prefix`. Mode and preference reconfigures
 
 - `noteSearch.ts`: ⌘F, ⌘G/⇧⌘G, F3/⇧F3 for a note that cannot take focus. CodeMirror runs keymaps only
   for keys aimed at `.cm-content`, so `DocumentPane`'s `window` listener runs them for the focused pane
-  when `keyIsForNote` allows (see `app-context-menu`). Escape is left out on purpose. `SearchPanel`
-  reads `readOnly` once, so an open panel is rebuilt on every mode flip (`rebuildSearchPanelForMode`),
-  keeping query, focused control and caret; a panel takes the keyboard on mount, so rebuilds hand it
-  back (`returnKeyboard`); closing in Reading mode hands a stranded keyboard to `.cm-scroller`
-  (`keyboardAfterSearchClose`).
+  when `keyIsForNote` allows (see `app-context-menu`). Escape is left out on purpose. A panel takes the
+  keyboard on mount, so a view rebuilt around an open one hands it back (`returnKeyboard`); closing in
+  Reading mode hands a stranded keyboard to `.cm-scroller` (`keyboardAfterSearchClose`).
+- `findPanel.ts`: the ⌘F box itself, `search({ createPanel })` in place of CodeMirror's form — floating
+  top-right inside the sticky, 0px-tall top panel container, with "n of N", option toggles and Replace
+  behind a disclosure. It follows `readOnly` live in `update()` (no rebuild on ⌘E). Its jumps and steps
+  are its own over the counted matches, never `findNext`/`findPrevious` from inside it: those re-select
+  Find's text (`selectSearchInput`), so typing as-you-go kept one letter. It raises its own field menu
+  with a native listener that stops the event, so the note menu never sees it.
 - `tabIntoText.ts`: Tab on a focused `.cm-scroller` in Edit mode focuses the text, moving an off-screen
   caret to the end of the first single-line block in view. A table or diagram is one multi-line block
   there, which is the tell to skip it.
 - `cmTheme.ts`: Obsidian dark/light; the caret is drawn by `drawSelection()` and styled from CSS
-  variables (Settings); the search panel shares one `searchPanelStyles` object. `formatKeymap.ts`'s
+  variables (Settings); the ⌘F box shares one `searchPanelStyles` object. `formatKeymap.ts`'s
   ⌘B/⌘I has a `domEventHandlers` keydown fallback because Chromium can eat ⌘I as `formatItalic`.
   `revealHighlight.ts` is the search-result flash.
 

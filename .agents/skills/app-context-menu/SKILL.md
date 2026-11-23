@@ -85,7 +85,7 @@ close over.
   canvas/selection (`whiteboard/viewer/toolServices.ts` → `nativeBoardContextMenu.ts`; also from the
   keyboard via `KeyboardContextRequest`), board text editing and spelling (`nativeEditingLease.ts`),
   the plain canvas view (`useNativeClipboard.ts`), PDF text (`pdf/overlay/textMenu.ts`,
-  `PdfReadingText`, `usePdfTiledCopyMenu`), PDF find field, EPUB text, terminal, agent panel.
+  `PdfReadingText`, `usePdfTiledCopyMenu`), PDF and note find fields (`editor/findPanel.ts`), EPUB text, terminal, agent panel.
 - **Buttons** (positioned from `getBoundingClientRect()` bottom-left, `opener` + `anchor`): tab group
   `⌄` (`TabBar`), pane `⋯` and history `↔` (`DocumentPane`), explorer create and sort
   (`FileExplorer`), table row/column grips (`tableWidget`), board main menu (`BoardHeader`), sheets

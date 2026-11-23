@@ -264,11 +264,13 @@ Collapsing only changes what you see — the file itself is never touched. A not
 Only \`#\`-style headings at the top level of a note collapse — not ones inside a quote or a list — and a heading with nothing under it has no arrow.
 
 ### Finding Text in a Note
-Press \`Cmd + F\` / \`Ctrl + F\` with a note in front of you — in Read Mode or Edit Mode — and a search bar opens along the bottom of that note. It searches the whole note, not just the part on screen, including sections you have collapsed: a match inside one opens it.
-- Type what you are looking for and press \`Enter\` (or **next**) for the next match, \`Shift + Enter\` (or **previous**) for the one before. \`Cmd + G\` / \`Ctrl + G\` and \`Shift + Cmd + G\` / \`Shift + Ctrl + G\` do the same, whether you are in the bar or back in the note.
-- **all** selects every match. **match case**, **regexp** and **by word** narrow what counts.
-- **Replace** is only there in Edit Mode, because Read Mode never changes the note. Switch modes with the bar open and it appears or disappears; what you typed is kept.
-- \`Escape\` closes the bar while you are in it, and so does its **×**. The keys then work on the note again: in Read Mode \`Space\` and \`Page Down\` scroll it, and in Edit Mode you are back typing where you were. Each press closes one thing: with the **Linked mentions** list open too, the first \`Escape\` closes the bar and a second closes the list.
+Press \`Cmd + F\` / \`Ctrl + F\` with a note or text file in front of you — in Read Mode or Edit Mode — and a find box opens in the top-right corner of that note, staying there as you scroll. It searches the whole note, not just the part on screen, including sections you have collapsed: a match inside one opens it.
+- Start typing and it jumps to the first match from where you are, every match is highlighted, and the box counts them — **3 of 15**.
+- \`Enter\` (or **›**) goes to the next match and \`Shift + Enter\` (or **‹**) to the one before, wrapping round at the ends. \`Cmd + G\` / \`Ctrl + G\` and \`Shift + Cmd + G\` / \`Shift + Ctrl + G\` do the same, whether you are in the box or back in the note. \`Alt + Enter\` selects every match at once.
+- The three toggles inside the field narrow what counts: **Aa** matches case, **ab** matches whole words only, and \`.*\` treats what you type as a regular expression.
+- **Replace** is only there in Edit Mode, because Read Mode never changes the note: open it with the arrow at the box's left. \`Enter\` in the Replace field (or **Replace**) replaces the current match and moves on; \`Cmd + Enter\` / \`Ctrl + Enter\` (or **All**) replaces every match. Switch modes with the box open and Replace appears or disappears; what you typed is kept.
+- Right-click the field for Cut, Copy, Paste and Select all.
+- \`Escape\` closes the box while you are in it, and so does its **×**. The keys then work on the note again: in Read Mode \`Space\` and \`Page Down\` scroll it, and in Edit Mode you are back typing where you were. Each press closes one thing: with the **Linked mentions** list open too, the first \`Escape\` closes the box and a second closes the list.
 
 With more than one pane open, it searches the pane you last clicked in. While you are typing in the sidebar's search box or a rename field, \`Cmd + F\` is the browser's; PDF Original opens the PDF's own find bar, which searches every page, while PDF Text searches its extracted text (see *PDFs*).
 

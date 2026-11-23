@@ -63,8 +63,8 @@ Three structures, each with one job:
   Per-document state a baked handler needs goes **by path** (`scrollDebounce`).
 - **Compartments are module-level singletons** (a state outlives the pane that built it, and a reconfigure
   naming an unknown compartment is silently dropped). Every setting is reconfigured in its own effect AND when
-  a state is adopted (theme, read-only, live preview, indent, reading emphasis; an open search panel is rebuilt
-  per mode). The three settings effects skip their mount run (`settled`): each `livePreviewCompartment`
+  a state is adopted (theme, read-only, live preview, indent, reading emphasis; an open ⌘F box follows the
+  mode by itself). The three settings effects skip their mount run (`settled`): each `livePreviewCompartment`
   reconfigure is a full decoration walk.
 - `OpenTab.id` never repeats in a page load (`newTabId`'s counter — never make it recycle).
 

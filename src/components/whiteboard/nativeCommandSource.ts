@@ -1,5 +1,5 @@
 import type { BoardCommand, BoardCommandSource, CommandState } from './chrome/boardCommands';
-import { boardBindings } from '../../whiteboard/input/keyboard';
+import { bindingChord, boardBindings } from '../../whiteboard/input/keyboard';
 import type { MainAction } from './chrome/mainMenu';
 
 export interface NativeCommandOperation {
@@ -32,10 +32,7 @@ const keyCommands: Readonly<Record<string, BoardCommand>> = {
 
 function bindingShortcut(key: string | undefined, mac: boolean): string | undefined {
     const binding = key && boardBindings.find(item => item.id === key);
-    if (!binding) return undefined;
-    return [binding.accel ? (mac ? '⌘' : 'Ctrl') : '', binding.alt ? (mac ? '⌥' : 'Alt') : '',
-        binding.shift ? (mac ? '⇧' : 'Shift') : '', binding.key.length === 1 ? binding.key.toUpperCase() : binding.key]
-        .filter(Boolean).join(mac ? '' : '+');
+    return binding ? bindingChord(binding, mac) : undefined;
 }
 export function nativeCommandShortcut(command: BoardCommand, mac: boolean): string | undefined {
     const key = Object.entries(keyCommands).find(([, value]) => value === command)?.[0]

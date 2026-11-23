@@ -82,7 +82,6 @@ export interface BoardInputServices {
   /** Animated zoom to an absolute zoom at the anchor (double-tap and the zoom tool's steps). */
   animateZoom?(zoom: number, anchor: Point): void
   /** A glide of the camera by a screen-space delta (Space+arrow pages one screen). */
-  animatePan?(delta: Point): void
   error(error: unknown): void
   pointerChanged?(sample: RealSample): void
   hover?(event: PointerEvent): void
@@ -504,20 +503,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       services.cameraChanged()
     },
   })
-  // Space held turns an arrow into a page: one screen in that direction, glided, even with a selection (catalogue I§2.1).
-  const spaceNavigation = (navigation: KeyboardNavigationPriority): KeyboardNavigationPriority => {
-    if (!spaceHeld) return navigation
-    return { ...navigation, hasSelection: false, pan(direction) {
-      const viewport = view.camera.viewport
-      const delta = direction === 'ArrowLeft' ? { x: -viewport.width, y: 0 } : direction === 'ArrowRight' ? { x: viewport.width, y: 0 }
-        : direction === 'ArrowUp' ? { x: 0, y: -viewport.height } : direction === 'ArrowDown' ? { x: 0, y: viewport.height } : null
-      if (!delta) return false
-      if (services.animatePan) services.animatePan(delta); else view.camera.panBy(delta)
-      services.cameraChanged()
-      return true
-    } }
-  }
   let keyboardStart: ToolStateSnapshot | null = null
+  let commaHeld = false
   const cursor = createKeyboardCursor({
     token: view.token, current: () => current(),
     toWorld: point => surfaceToWorld(point, view.camera.camera),
@@ -569,10 +556,11 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     cursor.activate(services.keyboardCursorInitial?.() ?? { x: viewport.width / 2, y: viewport.height / 2 })
     view.surface.focus()
   })
+  const modifiersOf = (event: KeyboardEvent): Modifiers => ({ shift: event.shiftKey, alt: event.altKey, control: event.ctrlKey, accel: services.mac ? event.metaKey : event.ctrlKey })
   const stopKeys = installKeyboard(view.surface, {
     visible: current, enabled: editable, shortcutsEnabled: services.shortcutsEnabled,
     modalOpen: services.modalOpen, editing: services.editing,
-    cursor, navigation: services.keyboardNavigation ? () => spaceNavigation(services.keyboardNavigation!(cursor.active)) : undefined, gestureActive: () => router.activeOwner !== null || zoomHeld,
+    cursor, navigation: services.keyboardNavigation ? () => services.keyboardNavigation!(cursor.active) : undefined, gestureActive: () => router.activeOwner !== null || zoomHeld,
     typeText: text => !!services.textInput?.type(text),
     modifierChanged: modifiers => modifierRelease.update(modifiers),
     clearLatches: () => { services.textInput?.cancelPending(); cancelContinuations(); services.cancelPendingGestures(); spaceHeld = false; zoomHeld = false; shiftHeld = false; overview.leave(); cursor.escape(); pointer.interrupt('flush'); modifierRelease.releaseAll(); services.clearLatches?.() },
@@ -637,6 +625,19 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
         router.resumeInk(view.token)
         if (temporaryPan) pointer.interrupt('flush')
         return true
+      }
+      // Comma presses the pointer at the keyboard cursor while it is held and lifts it on release (K§10.6).
+      if (id === 'pointer.hold') {
+        if (cursor.gesture) return true;
+        if (!cursor.active) cursor.activate(services.keyboardCursorInitial?.() ?? { x: view.camera.viewport.width / 2, y: view.camera.viewport.height / 2 });
+        commaHeld = cursor.enter(modifiersOf(event));
+        return commaHeld;
+      }
+      if (id === 'pointer.release') {
+        if (!commaHeld) return false;
+        commaHeld = false;
+        if (cursor.gesture) cursor.enter(modifiersOf(event));
+        return true;
       }
       if (id === 'zoom.hold') { zoomHeld = true; return true }
       if (id === 'zoom.release') { overview.leave(); zoomHeld = false; return true }

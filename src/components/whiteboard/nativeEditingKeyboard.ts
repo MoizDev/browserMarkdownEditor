@@ -19,6 +19,8 @@ export function createNativeEditingKeyboard(options: {
     readonly openShortcuts: () => boolean;
     /** Inverts the one picture selected; false when none is, so the key does nothing. */
     readonly invertPicture: () => boolean;
+    /** Enter on the one picture selected opens its crop editor; false when that picture cannot be cropped (K§10.2). */
+    readonly cropPicture: () => boolean;
     readonly current: () => boolean;
     readonly canWrite: () => boolean;
     readonly report: (error: unknown) => void;
@@ -46,9 +48,11 @@ export function createNativeEditingKeyboard(options: {
         if (!created) return false;
         options.runtime.selection.setSheet(created); return true;
     };
-    return (id: string): boolean => {
+    return (id: string, event?: KeyboardEvent): boolean => {
         if (!options.current()) return false;
         switch (id) {
+            // Enter edits text first (the text editor takes it before the board does); with no text to edit it crops a picture.
+            case 'edit.start': return options.cropPicture();
             case 'figure.rectangle': case 'figure.ellipse': case 'figure.last': {
                 if (!options.canWrite() || !options.runtime.tools.getRegistration('figure')) return false;
                 const variant = id === 'figure.last' ? options.runtime.tools.getSnapshot().lastFigure ?? 'rectangle' : id.slice('figure.'.length);

@@ -9,7 +9,7 @@ import { attachBoardNavigation, type BoardNavigationOptions } from './navigation
 export interface BoardNavigationHostOptions {
     readonly camera: CameraController;
     readonly viewport: () => Viewport;
-    readonly platform: () => Pick<PlatformPane, 'startFling' | 'animateZoom' | 'cancelMotion'> | null;
+    readonly platform: () => Pick<PlatformPane, 'startFling' | 'animateZoom' | 'animatePan' | 'cancelMotion'> | null;
     readonly visible: () => boolean;
     readonly current: () => boolean;
     /** Persist/notify the latest camera once when the shared scheduler consumes input. */
@@ -24,6 +24,7 @@ export interface BoardNavigationHostOptions {
     readonly keyboard?: BoardNavigationOptions['keyboard'];
     readonly invertMouseZoom?: () => boolean;
     readonly mouseWheel?: () => boolean;
+    readonly reducedMotion?: () => boolean;
     readonly mappings?: MappingHistory;
     readonly overlay?: (frame: ScheduledFrame, element: HTMLElement) => void;
     readonly presented?: (presentation: PlatformPresentation | null) => void;
@@ -65,7 +66,7 @@ export function createBoardNavigationHost(options: BoardNavigationHostOptions): 
         const captured = binding;
         detach = attachBoardNavigation({ surface: captured.surface, camera: options.camera, viewport: options.viewport,
             platform: options.platform, visible: active, current: () => active() && binding === captured,
-            mac: options.mac, linkAt: options.linkAt, contextMenu: options.contextMenu, keyboard: options.keyboard, invertMouseZoom: options.invertMouseZoom, mouseWheel: options.mouseWheel,
+            mac: options.mac, linkAt: options.linkAt, contextMenu: options.contextMenu, keyboard: options.keyboard, invertMouseZoom: options.invertMouseZoom, mouseWheel: options.mouseWheel, reducedMotion: options.reducedMotion,
             onError: report,
             interactionChanged(value) { if (binding === captured) { contact = value; invalidate(); } },
             changed() {

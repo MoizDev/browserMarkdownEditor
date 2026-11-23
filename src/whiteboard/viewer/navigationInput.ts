@@ -13,7 +13,7 @@ export interface BoardNavigationOptions {
     visible(): boolean;
     current(): boolean;
     viewport(): Viewport;
-    platform(): Pick<PlatformPane, 'startFling' | 'animateZoom' | 'cancelMotion'> | null;
+    platform(): Pick<PlatformPane, 'startFling' | 'animateZoom' | 'animatePan' | 'cancelMotion'> | null;
     changed(): void;
     interactionChanged?(active: boolean): void;
     onError(error: unknown): void;
@@ -25,6 +25,8 @@ export interface BoardNavigationOptions {
     readonly invertMouseZoom?: () => boolean;
     /** Preferences: the Input device choice (Mouse makes a plain wheel turn zoom). */
     readonly mouseWheel?: () => boolean;
+    /** The preference that turns board animation off: a Space page then jumps in one step. */
+    readonly reducedMotion?: () => boolean;
 }
 interface Drag {
     id: number; origin: Point; last: Point; moved: boolean; secondary: boolean;
@@ -54,6 +56,18 @@ export function attachBoardNavigation(options: BoardNavigationOptions): () => vo
     const contact = (event: PointerEvent): ContactPoint => ({ ...point(event.clientX, event.clientY), id: event.pointerId,
         time: event.timeStamp, width: event.width, height: event.height });
     const cancelMotion = () => options.platform()?.cancelMotion();
+    // Space+arrow pages one viewport. The glide is the shared scheduler's (as the editing path's is), never a loop of its own;
+    // the board's reduce-motion preference makes it one jump.
+    const page = (direction: string): boolean => {
+        const view = options.viewport();
+        const delta = direction === 'ArrowLeft' ? { x: -view.width, y: 0 } : direction === 'ArrowRight' ? { x: view.width, y: 0 }
+            : direction === 'ArrowUp' ? { x: 0, y: -view.height } : direction === 'ArrowDown' ? { x: 0, y: view.height } : null;
+        if (!delta || !active() || !(view.width > 0 && view.height > 0)) return false;
+        const platform = options.platform();
+        cancelMotion();
+        if (options.reducedMotion?.() || !platform) { camera.panBy(delta); options.changed(); } else platform.animatePan(delta);
+        return true;
+    };
     const release = (id: number) => { try { if (surface.hasPointerCapture(id)) surface.releasePointerCapture(id); } catch { /* The browser may already have released it. */ } };
     const touch = new TouchArbiter(camera, {
         cancelTouchPreview() { if (drag?.touch) drag = null; },
@@ -148,6 +162,7 @@ export function attachBoardNavigation(options: BoardNavigationOptions): () => vo
         editing: () => options.keyboard?.editing?.() ?? false, shortcutsEnabled: () => options.keyboard?.shortcutsEnabled?.() ?? true,
         gestureActive: () => contacts.size > 0,
         navigation: () => ({ paged: true, hasSelection: false, keyboardCursorActive: false,
+            page,
             scroll(key) {
                 if (key !== 'PageUp' && key !== 'PageDown') return false;
                 run(() => { const viewport = options.viewport(); cancelMotion(); camera.panBy({ x: 0, y: viewport.height * 0.9 * (key === 'PageUp' ? -1 : 1) }); options.changed(); }); return true;

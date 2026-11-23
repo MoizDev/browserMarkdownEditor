@@ -3,7 +3,7 @@ import { availableBoardLocales, translateBoard, type BoardLanguageState } from '
 import type { BoardPreferenceState } from '../../whiteboard/chrome/preferences';
 import { createBoardStyleControls } from '../../whiteboard/host/styleControls';
 import type { BoardRuntime } from '../../whiteboard/host/runtime';
-import { boardBindings, shortcutGroups } from '../../whiteboard/input/keyboard';
+import { bindingChord, boardBindings, shortcutGroups } from '../../whiteboard/input/keyboard';
 import type { ViewerEngine } from '../../whiteboard/viewer/types';
 import { persistLastPenScale } from './chrome/stylePanelStore';
 import { SessionBoardChrome, type SessionBoardChromeProps } from './chrome/SessionBoardChrome';
@@ -66,10 +66,7 @@ function AttachedNativeBoardChrome({ runtime, language, preferences, mac, onRead
         const key = id === 'figure' ? `figure.${figure ?? runtime.tools.getSnapshot().lastFigure ?? 'rectangle'}`
             : id === 'media' ? 'media.insert' : id.includes('.') ? id : `tool.${id}`;
         const binding = boardBindings.find(item => item.id === key);
-        if (!binding) return undefined;
-        return [binding.accel ? (mac ? '⌘' : 'Ctrl') : '', binding.alt ? (mac ? '⌥' : 'Alt') : '',
-            binding.shift ? (mac ? '⇧' : 'Shift') : '', binding.key.length === 1 ? binding.key.toUpperCase() : binding.key]
-            .filter(Boolean).join(mac ? '' : '+');
+        return binding ? bindingChord(binding, mac) : undefined;
     };
     return <SessionBoardChrome {...props} kind={runtime.session.doc.kind} locale={lang.locale} direction={lang.table.dir}
         translate={(key, values) => translateBoard(lang.table, key, values)} languages={availableBoardLocales()}

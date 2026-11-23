@@ -119,9 +119,3 @@ export function selectParent(doc: BoardDoc, selection: SelectionState): boolean 
     selection.setScope(parentFocus, [focus.id]);
     return true;
 }
-export function escapeSelection(doc: BoardDoc, selection: SelectionState): void {
-    const state = selection.getSnapshot();
-    if (state.selected.length) { selection.clear(); return; }
-    const focus = doc.nodes.get(state.focus as NodeId);
-    if (focus) selection.setFocus(focus.parent);
-}

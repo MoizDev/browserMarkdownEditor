@@ -4,6 +4,7 @@ import { createBoardAccessibilityDom } from '../../whiteboard/viewer/accessibili
 import { createBoardKeyboardNavigation } from '../../whiteboard/viewer/keyboardNavigation';
 import { createBoardToolServices, type BoardToolServicesOptions } from '../../whiteboard/viewer/toolServices';
 import { addBoardDictionaryWord, getBoardDictionary, subscribeBoardDictionary } from '../../utils/boardDictionary';
+import { getBoardPreferences } from '../../utils/boardPreferences';
 import { MAX_USER_WORD_LENGTH } from '../../whiteboard/text/spell/dictionary';
 import { closeContextMenu, getContextMenu, openContextMenu, type ContextMenuRequest } from '../../utils/contextMenu';
 import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
@@ -128,8 +129,10 @@ export function createNativeEditingLease(options: Omit<BoardInputHostOptions, 's
                 const keyboardNavigation = createBoardKeyboardNavigation({ runtime: options.runtime, camera: options.camera,
                     viewport: options.viewport, paged: options.paged, current: () => options.current(options.token) && options.visible(),
                     editable: options.toolOptions.editable, nudge: (direction, coarse) => tools?.actualsubcontrollers.select.nudge(direction, coarse) ?? false,
-                    cancelMotion: () => options.toolOptions.platform().cancelMotion(), cancelReveal: () => options.engine.cancelReveal(),
-                    changed: options.toolOptions.interaction.cameraChanged, error: options.onError });
+                    cancelMotion: () => options.toolOptions.platform().cancelMotion(),
+                    animatePan: delta => options.toolOptions.platform().animatePan(delta), cancelReveal: () => options.engine.cancelReveal(),
+                    changed: options.toolOptions.interaction.cameraChanged, error: options.onError,
+                    reducedMotion: () => getBoardPreferences().animationSpeed === 0 });
                 tools = createBoardToolServices({ ...options.toolOptions, spelling, surface, overlay, imports: importer.imports,
                     ui: { ...options.toolOptions.ui, keyboardNavigation,
                         text: { ...options.toolOptions.ui.text,

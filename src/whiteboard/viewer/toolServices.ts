@@ -278,7 +278,6 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         tools: runtime.tools, history: runtime.session.history, mac: ui.mac, shortcutsEnabled: ui.shortcutsEnabled, modalOpen: ui.modalOpen,
         edgeScrolling: ui.edgeScrolling, mouseWheel: ui.mouseWheel, invertMouseZoom: ui.invertMouseZoom,
         animateZoom: (zoom, anchor) => { options.platform().cancelMotion(); options.platform().animateZoom(camera.clampZoom(zoom), anchor); },
-        animatePan: delta => { options.platform().cancelMotion(); options.platform().animatePan(delta); },
         // A pan's release slides the view; a new press stops whatever motion is still running (both were unwired before).
         startFling: samples => options.platform().startFling(samples),
         cancelMotion: () => options.platform().cancelMotion(),

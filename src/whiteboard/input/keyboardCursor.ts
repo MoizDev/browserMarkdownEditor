@@ -16,6 +16,7 @@ export function createKeyboardCursor(services: KeyboardCursorServices): Keyboard
   }
   return {
     get active() { return current() && point !== null },
+    get gesture() { return gesture },
     currentSample() { return current() && point ? sample() : null },
     activate(initial) {
       if (!current() || !Number.isFinite(initial.x) || !Number.isFinite(initial.y)) return

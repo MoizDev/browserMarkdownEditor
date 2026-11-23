@@ -233,8 +233,14 @@ function ConnectedEditor({ props, lease, adapter, clipboard, capabilities, langu
                 try { clipboard.media.invert(picture.id); } catch (error) { report(error); }
                 return true;
             },
+            // Enter on the one picture selected opens the same crop editor as the picture's menu.
+            cropPicture: () => {
+                const picture = clipboard.media.selection(canWrite());
+                if (!picture || picture.kind !== 'picture' || picture.blocked !== null || picture.video || !clipboard.media.cropSource(picture.id)) return false;
+                openCrop(picture.id); return true;
+            },
             current, canWrite, report });
-        const keys = createNativeKeyCommands(commands, id => extra(id)); commandRef.current = keys.run;
+        const keys = createNativeKeyCommands(commands, (id, event) => extra(id, event)); commandRef.current = keys.run;
         const openMenu = createNativeBoardContextMenu({ runtime, commands, language, preferences: clipboard.preferences,
             embed: () => embedPort ? embedControllerRef.current : null,
             openLink(url) { const target = linksRef.current; if (!target) throw new Error('Link actions are unavailable'); target.openLink(url); },

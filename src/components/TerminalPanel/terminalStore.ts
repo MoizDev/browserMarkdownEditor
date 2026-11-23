@@ -37,8 +37,6 @@ import { CLIPBOARD_READ_BLOCKED, CLIPBOARD_WRITE_BLOCKED, copyText, readClipboar
 import { terminalStart } from '../../utils/terminalStart';
 import { detectOs } from '../../utils/platform';
 import { setTerminalCount } from '../../utils/terminalCount';
-import { setTerminalContextActive } from '../../utils/terminalContext';
-import { removeSessionValue, writeSessionValue } from '../../utils/storage';
 import { currentFont, fontsReady, startFontDetection, subscribeFont } from './terminalFont';
 import { deriveTheme, watchTheme } from './terminalTheme';
 
@@ -413,11 +411,7 @@ class TerminalStore {
 
     private setWebgl(s: Session, on: boolean): void {
         if (!on) {
-            if (s.webgl) {
-                try { s.webgl.dispose(); } catch { /* already gone */ }
-                s.webgl = null;
-                setTerminalContextActive(false);
-            }
+            if (s.webgl) { try { s.webgl.dispose(); } catch { /* already gone */ } s.webgl = null; }
             return;
         }
         if (s.webgl || !s.opened || s.disposed) return;
@@ -427,14 +421,10 @@ class TerminalStore {
                 // The GPU took the context (a sleep, a driver reset, too many of them):
                 // xterm falls back to its DOM renderer until the next adopt.
                 try { gl.dispose(); } catch { /* already gone */ }
-                if (s.webgl === gl) {
-                    s.webgl = null;
-                    setTerminalContextActive(false);
-                }
+                if (s.webgl === gl) s.webgl = null;
             });
             s.term.loadAddon(gl);
             s.webgl = gl;
-            setTerminalContextActive(true);
         } catch {
             s.webgl = null; // no WebGL here: the DOM renderer stays
         }
@@ -821,8 +811,8 @@ class TerminalStore {
                     key: s.key, termId: s.termId, base: s.base, ordinal: s.ordinal,
                     cols: clampDim(s.term.cols, TERMINAL_MAX_COLS), rows: clampDim(s.term.rows, TERMINAL_MAX_ROWS),
                 }));
-            if (stored.length === 0) removeSessionValue(SESSIONS_KEY);
-            else writeSessionValue(SESSIONS_KEY, JSON.stringify({ sessions: stored, active: this.state.activeKey }));
+            if (stored.length === 0) sessionStorage.removeItem(SESSIONS_KEY);
+            else sessionStorage.setItem(SESSIONS_KEY, JSON.stringify({ sessions: stored, active: this.state.activeKey }));
         } catch { /* storage blocked: a reload simply starts fresh */ }
     }
 

@@ -1,6 +1,0 @@
-{
-  "path": "build/toolchain/wasm/BUILD.gn",
-  "beforeSha256": "d92000b714e04b463511af6674c8a1b1766e21b42212849b197c212f375e595a",
-  "afterSha256": "7abb358099c2f192e1627650b4acbb3744db80bb806eae65ec6748d84810afbc",
-  "reason": "use_allocator_shim is not declared in standalone PDFium; GN --fail-on-unused-args refused it"
-}

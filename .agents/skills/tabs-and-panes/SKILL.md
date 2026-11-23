@@ -1,219 +1,592 @@
 ---
 name: tabs-and-panes
-description: Open documents and how they are arranged — the flat tab list vs. the pane layout (utils/tabPanes.ts), where a document's content really lives (the App-owned buffer ledger and per-document sessions), the save funnel and versioned autosave, outside changes and the DiskBar, crash recovery, per-vault session persistence and restore, pane keying, the per-pane header and history, the tab strip, the dividers, and the agent's view registry. Load before changing tabs, panes, the tab strip, the save funnel, documentBuffers/documentSessions, what is restored on reload, or anything that opens, closes, renames or reloads a document.
+description: The multi-pane / per-pane-tabs model — the flat document list vs. the pane layout, autosave, session persistence, pane keying and the EditorState cache, the per-pane header and history, and the divider-resize gesture. Load before changing tabs, panes, the tab strip, the save funnel, or what is restored on reload.
 ---
 
-# Open documents: a flat list, a layout, and a ledger
+# Tabs: a flat document list + a pane LAYOUT
 
-Three structures, each with one job:
-- **`tabs: OpenTab[]`** (`app/useOpenDocuments.ts`) — every open document, flat: `id`, `file`, `mode`,
-  `dirty`, `representation` (loaded kind + write authority, see `documentReading.ts`), and session-only
-  flags `readError`, `disk`, `pdfRebuild`, `diskRev`. Saving, assets, search, rename and move index it and
-  never care how documents are arranged. **It holds no content.**
-- **`layout: TabLayout`** (`utils/tabPanes.ts`) — `{panes, activeId, sizes?}`: one `TabPane` per COLUMN, up to
-  `MAX_PANES` (5), all drawn at once, each with ordered `paths` and one `activePath`. `activeTabPath` is
-  derived (`focusedPath(layout)`).
-- **The buffer ledger + sessions** (`utils/documentBuffers.ts`, `utils/documentSessions.ts`), App-owned,
-  outside React, keyed by **document id**: where the content is.
+The app moved from a single `(activeFile + fileContent + editorMode)` trio to a tab list, and then
+to **two structures rather than one**:
 
-## Layout invariants
-- **Every open path is in exactly one pane, once.** App pairs every `setTabs` with the matching layout
-  transition; nothing in `tabPanes.ts` reads `tabs`, so a slip degrades to a pane with no document, never
-  corruption. The keyboard-target registry and the per-path debounces assume "once" — `moveTabToPane`/
-  `splitToPane` must never leave a path in two panes.
-- **Panes, active id and widths are ONE state**, changed only by pure `(layout, …) => layout` functions inside
-  the updater; two `useState`s would let `activeId` name a pane the same update removed.
-- **Per-pane back/forward `history`** has one writer, `showInPane`, invariant `history[historyIndex] ===
-  activePath` (if broken, both arrows read false — never a jump to a document the pane lacks). It pushes only
-  when the target differs from the current entry (after `forgetInHistory` it may already be it). `closePath`
-  and `moveTabToPane`'s source forget; `renamePath`/`relabelPaths` relabel. Not persisted.
-- `openInSidePane(layout, path)` shows a document WITHOUT moving `activeId` (already visible → unchanged;
-  behind a tab of an unfocused pane → fronted; else a new right column, or at the cap the right-most unfocused
-  one). The agent uses it.
+- **`tabs: OpenTab[]`** — every open document, flat. Autosave, the asset diff, vault search, rename
+  and move all index it by path, and none of them care how the documents are arranged.
+- **`layout: TabLayout`** (`utils/tabPanes.ts`) — how they are arranged. `{ panes, activeId, sizes? }`:
+  one `TabPane` per COLUMN, up to `MAX_PANES` (5), **all drawn at once**, each holding its own
+  ordered `paths` (its tabs) and showing one of them (`activePath`). One pane with several tabs is
+  the ordinary strip. The widths are one row on the LAYOUT, not inside a pane.
 
-## Where content lives
-- **`DocumentBufferStore`**: per document, the latest accepted `ContentSource` (a string, or a `DeferredSource`
-  read on demand), App's `revision`/`savedRevision` (the dirty predicate), `readable` (text authority) and
-  `flushable` (write authority). `contentOf(path)` resolves today's id at the path and flattens once per
-  revision. `snapshotOf`/`snapshotForDocument` are borrowed synchronous reads; anything async (save, copy,
-  agent, queued work) uses **`retainSnapshotOf`/`retainSnapshotForDocument` and releases in `finally`**.
-  `markSaved(id, revision)` only advances — an old write never cleans a newer edit.
-- **`DocumentSessionStore`**: one engine session per document (`'markdown'`, `'drawing'`, `'notebook'`,
-  `'pdf'`), each a `SessionAdapter` (`hasPendingEdits`, synchronous `checkpoint`, `acknowledge`, `drain`,
-  `journalDelta`, `recover`, media references, `onChange`). Created lazily on first pane mount or first
-  programmatic edit — never by restore — and **released only by App** after the closing barrier, for
-  `tab-close`, `trash`, `vault-switch` or `kind-change`. Never on hide, pane unmount, rename or `diskRev`.
-  Session serials are page-unique and never reused; the funnel rejects a report from a non-live owner.
-- **A Markdown session owns the `EditorState` and its undo history, viewless or not**
-  (`editor/markdownSession.ts`, created via `useOpenDocuments` `markdownSessions`). A `DocumentPane` builds an
-  `EditorView` on `adapter.state` and `attach`es it; on unmount the session keeps the state. That is what makes
-  tab switches, the graph view (which unmounts `EditorPane`) and hidden agent edits lose nothing.
-- Canvas documents get a session bridge (`canvasSessionBridge.ts`; PDF adds `pdfSessionRoute`); see
-  `pdf-and-drawings`.
+  > **This is a transposition of the model that came before it**, where a tab-bar entry held N
+  > side-by-side panes and only the active entry was drawn. Same two-level shape, axes swapped.
+  > Comments and commits written before it read "group" for what is now a *tab* — grep
+  > `tabPanes.ts`, never trust an old line about "merging tabs".
 
-## Pane keying and the EditorState rules
-- **`paneKey = id|loadedKind`** (`EditorPane.tsx`), plus `|unread` for an unreadable tab (a successful retry
-  remounts) and `|diskRev` on canvas floats (a disk reload remounts on the new bytes). The **id** is why an
-  overwrite-rename cannot hand the survivor the dead document's pane (measured once: `alpha.md` renamed onto an
-  open `beta.md` drew and saved "BETA CONTENT"). The **kind** releases the old session on a cross-kind rename.
-  A same-kind rename keeps the pane: sessions report by document id, and the current path is resolved per call.
-- **Whatever is baked into an `EditorState` outlives every pane** — `domEventHandlers`, the update listener,
-  extension closures. Anything they reach must be **stable for the app's life** (App-level, e.g.
-  `openNoteByName`, `getWikiLinkTargets`, reading through refs); a per-pane ref only hides staleness.
-  Per-document state a baked handler needs goes **by path** (`scrollDebounce`).
-- **Compartments are module-level singletons** (a state outlives the pane that built it, and a reconfigure
-  naming an unknown compartment is silently dropped). Every setting is reconfigured in its own effect AND when
-  a state is adopted (theme, read-only, live preview, indent, reading emphasis; an open ⌘F box follows the
-  mode by itself). The three settings effects skip their mount run (`settled`): each `livePreviewCompartment`
-  reconfigure is a full decoration walk.
-- `OpenTab.id` never repeats in a page load (`newTabId`'s counter — never make it recycle).
+`activeTabPath` — the focused document — is *derived* (`focusedPath(layout)`), and
+`activeFile`/content/mode are derived from it. Each tab's content lives in memory, so switching tabs
+never re-reads disk or loses unsaved edits; `dirty` drives the tab dot.
 
-## The save funnel
-- **`updateTabContent(path, content, {fromDisk?})` is path-explicit and the only funnel** (`app/useSaveFunnel.ts`):
-  several documents are editable at once, and canvases serialize after their pane has gone. It checks
-  `canUpdateTabContent` and the live session owner, reports to the ledger, and schedules the per-tab save.
-  `fromDisk` reports a saved revision: no dirty, nothing scheduled.
-- **`dirty` is cleared when nothing is left to write**, at the write and again when a session's pending work
-  settles (`settleCleanTabs`): a board acknowledges its write while its after-write step is still tracked work.
-- **Autosave is per tab** (`saveTimersRef`, 1 s debounce); closing one tab never cancels another's write.
-- **`flushTab` writes are serialized per DOCUMENT** (`flushChainsRef` by `OpenTab.id`, so a rename mid-write
-  cannot split a chain) and go only through `writeFileVersioned` against `getBaseline(id)`
-  (`utils/docBaselines.ts`). `written` → new baseline; `changed` → `disk:'conflict'`; `deleted` →
-  `disk:'deleted'`. `diskStateRef` mirrors `OpenTab.disk` synchronously and is the gate: a held tab is never
-  autosaved. With `closing` (close, trash, vault switch) a write the file cannot take becomes a `(conflict)`
-  copy, announced in a dialog — nobody is left to ask.
-- A save captures immediately; only leaving a document **drains** its session first (2 s deadline). Close
-  removes the path from the layout at once but keeps the document (and a PDF's canvas) mounted until drain and
-  write settle; a failed save restores the tab.
-- A `readError` tab's buffer is **not the file** — ⌘S force-flushes the focused tab and would write `''`.
-  `flushTab`, the funnel, mode toggles, search (reads disk instead), the asset neighbour scan and restore seeding
-  all guard it; a new reader of a tab's content joins that list.
-- An annotated PDF's file is rebuilt (off the main thread) from its pristine source plus the board's ink; its
-  baseline is hashed in the background at open (`seedPdfBaseline`) and its first save awaits it.
-- A failed save is never silent: told once per document until a save succeeds, the tab stays dirty. A save a
-  newer revision overtook is not a failure. "Saved" shows when the path is **visible** in any column.
-- `beforeunload` is armed while any revision or canvas serializer is pending, until its write is acknowledged
-  (AGENTS.md's sanctioned native prompt). Hide/pagehide checkpoints drain serializers then use the funnel.
+- **The two structures are kept in step by construction.** Every open path is in exactly one pane,
+  ONCE; App pairs each `setTabs` with the matching layout transition. Nothing in `tabPanes.ts` reads
+  `tabs`, so a violation degrades to a pane with no document rather than to corruption. Folding the
+  two together would have put a pane walk in front of every save, search and asset lookup for a
+  feature none of them are about. The "once" is load-bearing far beyond this file: the `EditorState`
+  cache, the keyboard-target registry and `scrollDebounce`/`foldDebounce` are keyed by path alone, so
+  `moveTabToPane` and `splitToPane` must never leave one path in two panes.
+- **The panes, the active id and the widths are ONE piece of state**, and every operation is a pure
+  `(layout, …) => layout` applied inside the updater. Two `useState`s would let an update leave
+  `activeId` naming a pane the same update removed, or a width row indexed against a pane list it no
+  longer describes — the first is exactly what the double-click-to-open race produces.
+- **Each pane carries a session-only back/forward `history` beside its `activePath`**, maintained by
+  the one writer `showInPane`, whose invariant is `history[historyIndex] === activePath`. If they
+  come apart, `canGoBack`/`canGoForward` read false — two dead arrows, never a jump to a document the
+  pane is not holding. `showInPane` only PUSHES when `history[historyIndex]` is not already the
+  target: after `forgetInHistory` it is, and pushing there duplicated the survivor (`[A] → [A, A]`),
+  which left ← enabled and doing nothing. `closePath` and the source side of `moveTabToPane` `forgetInHistory`;
+  `renamePath`/`relabelPaths` relabel it. Not persisted: a restored pane starts at `[activePath]`,
+  which is why both arrows are grey right after a reload.
 
-## Crash recovery (`utils/recovery*.ts`, `RecoveryBar`, `RecoverySurface`)
-Every change also reports through ONE App-lifetime funnel (`useRecoveryJournal` → `createRecoveryFunnel`)
-into an IndexedDB journal keyed by vault and a random window id; the session's `journalDelta` supplies an
-immutable capture pinned to its revision, and `recoveryAdapters` binds each document's session. Checkpoints
-are serialized and revision-aware (a late one never replaces a newer one). On open, the Recover bar offers an
-entry **in place only when the path and the raw-byte baseline both match**; other windows' and older entries
-are copy-only (`recoveryCopy`), never applied to the live file.
+## The keyboard chords that move between tabs
 
-## Outside changes (`useOutsideChanges`, `useDiskBarActions`, `DiskBar`)
-- Every read that fills a tab records a baseline (`handleFileClick`, restore, `retryUnreadTab`, `addTabQuietly`);
-  a vault switch clears them only after its pre-commit drains.
-- **`checkOpenDocs(scope | 'all', batch?)`**: serialized; waits out `vaultMovesRef`, `trashInFlightRef` and
-  `restoringRef`; skips a document with a write in flight. Per tab: fresh handle from the root → missing →
-  follow a certain move (`followDiskMove`) or `disk:'deleted'`; stat = baseline → nothing (our echo); hash equal →
-  refresh the stat; hash differs → unsaved work (`dirty`, armed timer, write in flight, session pending) ?
-  conflict : **reload in place**. Disk back at baseline lifts a held tab. Followed moves are re-checked at the
-  new path on a 750 ms retry. Triggered by every vault-change batch, focus/visibility, and a 2 s poll while
-  `liveDetection === 'polling'`. Success messages use the status line (`announce`), never `notify`.
-- **Reload in place**: Markdown dispatches one minimal change annotated `externalReload` + `isolateHistory`
-  into its session (caret, scroll and history outside the change survive; ⌘Z steps back over it). Canvases get a
-  fresh session (`documentSessions.replace`) and `diskRev + 1`. EPUB/PDF invalidate their reader token.
-- **The DiskBar** sits between the slot header and body (inside `PdfPane` for a PDF; read-only for EPUB).
-  Conflict: **Reload** (mine → `(conflict)` copy, disk re-read now) / **Keep mine** (disk → copy, baseline := what
-  was read, forced flush; a disk that moved again re-raises it). Deleted: **Save again** (`recreateFile`) /
-  **Close** (asks when unsaved).
+⌥⇥ / ⌥⇧⇥ walk the open documents, ⌥⇧W closes the focused one, ⌥⇧T reopens the last close. They live
+in **`EditorPane`, not App's chord handler**, for two reasons: all three must hand the keyboard on
+through the same `handKeyboardToNote` a tab-bar click uses (that registry is EditorPane's), and the
+walk is over `layout.panes.flatMap(p => p.paths)` — every column's tabs in drawn order, so a split
+workspace cycles through all of it.
 
-## Session persistence is PER VAULT (`utils/tabSessions.ts`, `useSessionPersistence`, `useSessionRestore`)
-- One localStorage record `vaultSessions: Record<vaultId, StoredSession>` = `{v:2, paths, groups, focus, sizes,
-  active}` (`groups[i]` = pane i's tabs; `sizes` one row or `null` = equal). This module is its only writer.
-  Old flat keys migrate one way; a record with no `v` (pre-transposition, rows were side-by-side panes) is read by
-  `migrateV1` as one pane holding everything. Everything read back is shape-guarded (`isStoredSession`).
-- **An empty `paths` is a real session** ("I closed everything") and survives a switch.
-- **The restore pass is the ONLY thing that opens documents when a vault loads.** The address bar's link
-  (`initialLocation`, read once) is folded into it — applied only when `findLinkedVault` resolves to
-  `currentVaultId`, which works because `recordVault` sets the id and the labelled list in ONE batch (issue #6).
-  Its `file` stays in the bar (`pendingLinkFile`) until the pass consumes it. A second opener racing the pass
-  once filed one tab as the vault's whole session.
-- The stored session is read **synchronously** before the reads yield; during the reads **nothing is persisted**
-  (`restoringRef`, a per-pass token reset at every claim). What the user opens meanwhile is **merged**
-  (`mergeLayouts`: saved tabs first, then the new ones, keeping their focus). Reads run concurrently, merge once.
-- **`restoreLayout` drops nothing**: rows past `MAX_PANES` and unaccounted paths become tabs of the last column
-  (issue #8). **Only a GONE file is dropped**; an unreadable one gets one re-read then comes back as a
-  `readError` tab, keeping its place. Retry (`retryUnreadTab`) is serialized per id and matches on id.
-- Restoring documents follow renames/moves and never come back from Trash: the pass publishes
-  `restorePendingRef` (`utils/pendingRestore.ts`), which `retargetTabs`, `handleTrash` and the bin's Replace
-  update synchronously inside `trackVaultMove`; it waits for ANY move in flight, re-resolves survivors from the
-  root, repeats if the epoch moved, and from there to dispatch has **no await**. The layout is built in origin
-  space and `relabelPaths`'d in one step (chained `renamePath` could delete a live pane).
-- **Two refs say which vault the workspace is the session of** — `sessionRootRef` and `sessionVaultIdRef`, written
-  together at the claim and checked by both effects. The switch effect sets `sessionRootRef.current = null` and
-  re-points `sessionVaultIdRef` at the vault being LEFT; **`if (!currentVaultId) return;` stays above the claim**.
-  Each line closed a measured loss (a vault's tabs never coming back, or the empty layout filed under its id).
-  The pass re-checks handle AND id after its last await and before merging.
-- `pruneSessions` deletes a forgotten vault's session (gated on "list ever loaded", not length 0).
+- **Option, and matched on `e.code`.** ⌃⇥ is the browser's tab switch and ⌘W closes the window;
+  Option+W on a Mac gives `e.key === '∑'`, so `e.key` cannot be used for the letters.
+- **Capture phase**, so CodeMirror (which binds plain Tab) and tldraw never see them — and, being
+  cancelled there, no ⌥ character is typed into a note.
+- **The reopen stack is App's** (`closedPathsRef`, capped at `CLOSED_TAB_MEMORY`): PATHS, filled by
+  `closeTab` and `closePaneAndTabs` only. A rename, an overwrite (`releaseOverwritten`) or a vault
+  switch takes a tab away for a reason reopening would undo, so those never record — and the stack is
+  **emptied on a vault switch**, since two vaults share paths freely. A reopen reaches further back
+  past anything already open or no longer in the tree, so the chord never resurrects a ghost.
 
-## Switching vaults empties the workspace, never loses it (`useVaultSwitch`)
-The provider's pre-commit hook drains and saves every tab first (handles still good); then App releases every
-session (`'vault-switch'`) and removes its buffer, then clears baselines, disk state, render data and
-`clearViews()`; the reopen stack empties when `currentVaultId` changes. It fires only on a
-real switch, never the `null → vault` startup assignment. A tab only means anything inside its vault.
+## Autosave and the save funnel
 
-## Keyboard
-- ⌥⇥ / ⌥⇧⇥ walk every column's tabs in drawn order, ⌥⇧W closes, ⌥⇧T reopens. They live in **`EditorPane`**,
-  capture phase, matched on `e.code` (⌃⇥/⌘W belong to the browser; ⌥W types `∑`), and skip the terminal.
-  The reopen stack (`closedPathsRef`, `CLOSED_TAB_MEMORY` 20) records only `closeTab`/`closePaneAndTabs`, never a
-  rename, overwrite or switch, and is emptied on a vault switch.
-- **A tab-bar select or close hands the keyboard to the note's `.cm-scroller`** (`handKeyboardToNote`, in a rAF,
-  through `registerKeyboardTarget`) unless focus is in something that types or a menu. A lazy target (EPUB)
-  keeps the request until its current registration takes focus.
-- A document's scroll place is a text anchor `{pos, offset}` (`editor/scrollAnchor.ts`, `fileScrollAnchors`), held
-  on mount until reader input; a search jump must be a `revealMatch` effect (held centred), and a widget that
-  resizes after `toDOM` must `requestMeasure()`. See `live-preview`.
+- **Autosave is per-tab**, via a `Map<path, timer>` (`saveTimersRef`, 1s debounce). Switching or
+  closing one tab must never cancel another tab's pending write.
+- **The save funnel `updateTabContent(path, content, opts?)` is path-explicit and the only one there is:**
+  several documents are editable at once in a split tab, and the drawing/PDF canvases serialize on
+  their own debounce that can fire *after* their pane has gone away — either way the text must land
+  in the originating file's buffer, not "whatever pane has focus now."
+- State is mirrored into refs (`tabsRef`, `layoutRef`, `visiblePathsRef`, `activeTabPathRef`,
+  `writeFileRef`, `rebuildGraphRef`) so stable callbacks and timers never go stale without re-arming.
+  A save reports "Saved" when its path is **visible** (any pane of the tab on screen), not merely
+  focused.
 
-## Panes on screen (`EditorPane`, `TabBar`, `DocumentPane`)
-- **ONE filtered array drives the strip and the columns** (`panes = layout.panes.filter(...)`), so group index ===
-  column index. Both read `--pane-w-<i>`/`--pane-x-<i>` on `.editor-pane` through module-level frozen style arrays
-  (`TAB_GROUP_STYLE`, `PANE_WIDTH_STYLE`), at every pane count including one; horizontal insets live inside each
-  group's scroller, and `box-sizing: border-box` stays global.
-- **A canvas is a float**: PDFs, drawings and notebooks mount per open tab at `EditorPane` level (`PdfPane`,
-  `CanvasPane`, geometry in `floatingSlot.ts`) and are hidden, not unmounted — and **must be told** (`isVisible`)
-  so they release memory and work (AGENTS.md). EPUB mounts inside its `DocumentPane`. A text pane is a
-  `DocumentPane` with its own `EditorView`.
-- **Every pane draws a header, a lone one included** (product decision; do not add a `paneCount > 1` gate):
-  `[← →] [title + dirty dot] [mode] [⋯]`. `⋯` focuses its pane **before** opening (insert-table requests are
-  answered by the focused pane only). The focus underline shows only when split.
-- A tab group is `[tabs] [+] [⌄]`; drop handlers sit on `.tab-group` so `+`/`⌄` accept drops. `.tab` has a definite
-  `width: var(--tab-width)` (a flex-basis alone is invisible to intrinsic sizing: tabs collapsed to 116px). Tabs
-  name notes with `noteDisplayName`; `data-tooltip` carries the full path. `dirty`/`unreadable` are per tab.
-- The drop zone exists only while a tab is in flight (CodeMirror would insert the text; a PDF would swallow it);
-  the drag carries its own `dataTransfer` type (`utils/tabDrag.ts`) so the explorer stays inert.
-- The **status pill** (bottom right: backlinks, counts from `wordCountField` published at most once per frame,
-  save status) speaks for the focused pane, is `pointer-events: none` except its button, mounts only when it has
-  something to say, lifts (`.is-lifted`) over a PDF/notebook's own pills, and keeps a reserved `min-width`.
+- **Writes are versioned and serialized per DOCUMENT.** `flushTab` chains on `flushChainsRef` keyed by
+  `OpenTab.id` (a rename mid-write cannot split a chain; `flushingRef` counts what is queued or running)
+  and writes only through `writeFileVersioned` against `getBaseline(id)` (`utils/docBaselines.ts` —
+  keyed by id, so a rename needs no re-key). `written` → new baseline + the old tail; `changed` → the
+  tab enters `disk: 'conflict'`, `deleted` → `disk: 'deleted'`. `diskStateRef` mirrors `OpenTab.disk`
+  SYNCHRONOUSLY and is the gate: a held tab is never autosaved. `closing` (close, trash, vault switch):
+  a last write its file cannot take keeps the text as a `(conflict)` copy instead — nobody is left to ask.
+  A PDF's baseline is hashed in the background at open (`seedPdfBaseline`); its first save awaits it.
+- **`updateTabContent(path, content, { fromDisk: true })`** buffers WITHOUT dirty and schedules nothing:
+  a reload from disk is the file, and reported as typing it would be written straight back.
+
+## Outside changes (`App.checkOpenDocs`, `reloadFromDisk`, `handleDiskAction`, `DiskBar`)
+
+- **Every read that fills a tab records a baseline** (`readFileVersioned`): `handleFileClick`, the restore
+  pass (versions carried to the merge), `retryUnreadTab`, `addTabQuietly`. `releaseTab` drops it; the
+  vault switch clears all of it after its synchronous flush captures.
+- **`checkOpenDocs(scope | 'all', batch?)`** — serialized promise queue; waits out `vaultMovesRef`,
+  `trashInFlightRef` and `restoringRef` (mid copy-then-delete the old file is simply gone); skips and
+  re-queues a document with a write in flight. Per tab: fresh handle from the root → missing → follow a
+  certain move (`followDiskMove`) or `disk: 'deleted'`; stat equals baseline → nothing (the echo of our
+  own save); hash equal → refresh the stored stat (`touch`); hash differs → **`hasUnsaved`** (`dirty` ||
+  armed timer || write in flight || the reporter's `hasPendingEdits`) ? conflict : reload in place.
+  Disk back at the baseline lifts a held tab and re-arms its save. A move followed in a pass re-points
+  tabs only a commit later, so those are skipped (not "missing") and re-checked at the new path on the
+  750 ms retry. A noticed move onto ANOTHER open document flushes that one as closing (`retargetPaths`'
+  `fromDisk`) — an in-app move drops it. Success messages go to the status line (`announce`), never
+  `notify` (the "Could not continue" modal).
+  Triggered by every `subscribeVaultChanges` batch, window focus / `visibilitychange`, and a 2 s poll
+  while visible when `liveDetection === 'polling'`.
+- **Reload in place**: text → the reporter's `replaceFromDisk` (one minimal head/tail change annotated
+  `externalReload` + `isolateHistory`, `editor/externalReload.ts`), or with no live view the cached
+  `${id}|${path}` state and the buffer; the update listener baked into the state reports it as
+  `fromDisk`. Caret, scroll anchor and history outside the change survive; ⌘Z steps back over it.
+  Canvases → `content` replaced, `diskRev + 1`, which is part of the Drawing/Notebook/PdfPane keys (NOT
+  `paneKey`, so the EditorState cache key is untouched); a PDF also drops its parked render data.
+- **The DiskBar** sits between `.editor-slot-header` and `.editor-slot-body` — inside `PdfPane` for a PDF,
+  which floats over the slot (its body is always wrapped in `.pdf-pane-body`, so the bar coming and going
+  never remounts the viewer). Conflict: **Reload** (pending canvas strokes flushed via `flushPending`,
+  mine → `(conflict)` copy, disk re-read NOW) / **Keep mine** (disk → copy, baseline := what was read,
+  then a forced `flushTab` — a disk that moved again re-raises the conflict). Deleted: **Save again**
+  (`recreateFile`; something there now → conflict) / **Close** (asks when unsaved).
+
+## Session persistence is PER VAULT
+
+`utils/tabSessions.ts` owns one localStorage record, `vaultSessions: Record<vaultId, StoredSession>`
+— `{v: 2, paths, groups, focus, sizes, active}`, where `groups[i]` is **pane i's tabs** and `sizes`
+is one row for the whole layout — and is that record's **only writer**, which is
+`readRecord`/`flushRecord`'s stated safety condition. The key is `StoredVault.id`. The restore pass
+runs **once per vault**, on a cold start and again on every switch back to it.
+
+- **This replaced six flat keys stamped with one `openTabsVaultId`.** That shape held ONE session,
+  belonging to whichever vault wrote it last, and the switch effect's `EMPTY_LAYOUT` went straight
+  back out through the un-gated persist effect — so the outgoing vault's session was destroyed on
+  the way out. That is precisely why switching back used to restore nothing. A map keyed by vault id
+  has nowhere to lose it. Migration from the flat keys is **one-way** and deletes them: a per-vault
+  map cannot be written back into flat keys without lying to an older build about whose session it
+  is, so a downgrade restores nothing rather than restoring wrongly.
+- **The record is VERSIONED, and v1 is read one way only.** A record with no `v` predates the
+  transposition, where each `groups` row was one tab's side-by-side panes; read under the new meaning
+  each row would become a COLUMN, so eight ordinary tabs would reopen as eight columns, far past the
+  cap. `migrateV1` collapses it to **one pane holding every document that was open**, focused where
+  it was — an arrangement lost, never a document — and the next persist writes v2. It runs inside
+  `readSession` *after* `migrateLegacy`, so the flat-key path (which writes the v1 shape by
+  definition) funnels through it too.
+- **`sizes` is `null` for the layouts nobody resized**, which is most of them; absence encodes "equal
+  columns" all the way down. Stored widths are validated at the column count the session was
+  *written* at and then narrowed by the rows that actually became columns, so a column whose every
+  note was deleted on disk takes its share with it and the rest divide it up — exactly as closing it
+  would have.
+- **The whole stored session is read synchronously, before the restore pass yields to its file
+  reads** — the claim is what un-gates persistence, so a value read after the awaits could already
+  have been rewritten, and a split would come back silently flattened. `restoringRef` (below) now
+  also shuts persistence for the reads, but one snapshot makes that unreachable, not merely unreached.
+- **`restoreLayout` drops NOTHING.** Rows past `MAX_PANES`, and any path no row accounts for, become
+  TABS OF THE LAST COLUMN rather than being closed — the layout is rebuilt from what came back and
+  the persist effect files that as the whole session, so a path dropped here is a document gone from
+  the vault's tabs for good (issue #8). `mergeLayouts` appends the same way, into `base`'s focused
+  pane: what was opened during the reads is a click, not an arrangement, and appending columns could
+  breach the cap.
+- **Only a GONE file is dropped from the session; an UNREADABLE one comes back as a tab.** Gone = no
+  tree node, or the read throws `NotFoundError` (after following any rename in flight). Anything else
+  gets one immediate re-read (a fresh `getFile()` cures Chromium's "changed after getFile"
+  `NotReadableError`), then its `PendingRestoreEntry.readError` is set — it survives re-validation
+  like a read entry — and it is merged as an `OpenTab` with `readError` and `content: ''`. The old catch skipped it like a deleted file, and a
+  skipped path is gone for good: the layout is rebuilt from what came back and the persist effect
+  files that as the whole session (issue #8). As a real tab it keeps its place, close, rename
+  and persistence for free — a layout-only path would get no pane and blank the editor.
+- **A `readError` tab holds NO file text, and every consumer of `content` must know it** — ⌘S
+  force-flushes the focused tab and would write `''` over the note. Guarded at `flushTab` (the write
+  gate), `updateTabContent`/`flushTabNow`, `toggleTabMode`, `getOpenTabContent` (search reads disk
+  instead), the asset-reconcile neighbour scan (treated as unreadable → keep), and the restore's
+  asset-baseline seeding; DocumentPane mounts no view, drawing or notebook for it, and EditorPane
+  hides the header's document actions. A new reader of `tab.content` joins that list.
+- **Retry (`App.retryUnreadTab`)** — the pane's Try again, or clicking the note in the tree
+  (`handleFileClick`, through `retryUnreadTabRef`, AWAITED so a search result's reveal lands on the
+  remounted pane). Serialized per tab id by an in-flight `Set`; its updaters match on **id**, so a
+  close/rename/switch mid-read no-ops. Success seeds the asset baseline and clears `readError`;
+  `NotFoundError` closes the tab and says so via `tell` — only if the tab still holds the handle
+  the read began with, since a rename/move mid-read removes the old entry. The pane's
+  React key carries `|unread`, so success REMOUNTS it and the view is built from the real text as on
+  a fresh open; `stateKey` is unchanged, safe because the unreadable pane never cached a state.
+- **An empty `paths` is a real session** — "I closed everything in this vault" — and must survive a
+  switch. Nothing may treat it as absence on the way *in*.
+- **The restore pass is the ONLY thing that opens documents when a vault loads.** The address bar's
+  note (`initialLocation`, captured once) is folded INTO it: applied only when `findLinkedVault` — the
+  resolver FileSystemContext picked the vault with — resolves the link to `currentVaultId`, and
+  spent by the first claim of a vault it names (a fallback vault leaves it pending, so opening the
+  named folder later in the page load still opens the note; a link with no vault or no file is spent
+  at once). That resolve is only sound because `recordVault` sets the id and the labelled list in
+  ONE batch — with the id first, a folder opened for the first time was absent from the list at the
+  claim and the note was dropped (issue #6); never set the id ahead of the list again. The note is
+  read alongside the saved paths (one they lack is appended as a tab of the last
+  column by `restoreLayout`) and focused as its `wantActive`. 5de752e opened it
+  with a second, racing `handleFileClick` instead; the pass saw that tab after its reads and bailed
+  *after the claim*, so the persist effect filed the one tab as the vault's whole session. Measured, under the
+  pre-transposition model but with the hazard unchanged: four documents in three tabs, one a 65/35
+  split, reloaded as one tab, the stored `paths` rewritten from four to that one. Persistence is live from the claim, so **an early return after it, with tabs
+  on screen, leaves the next commit to file those tabs as the vault's whole session** — which is why
+  what is opened while the reads are in flight (a tree click) is **merged** (`mergeLayouts`: the saved
+  tabs first, as left, then what was opened, keeping its focus and its in-memory `OpenTab`), never
+  deferred to, and why the reads themselves are the one stretch where **nothing is persisted at all**
+  (`restoringRef`, a per-pass token released just before the merge is dispatched, and in `finally`).
+  Without that gate a click 100ms into a 600ms-per-file restore held the stored session at that one
+  tab for 2.4s, and a reload inside the window lost the rest for good.
+  The reads run **concurrently** (`Promise.all` over `pending.entries`, each retrying on its own) and
+  are still merged **once**, in stored order — the window lasts the slowest read, not their sum (#7).
+- **The documents being restored follow a rename/move and never come back out of the Trash** (issue
+  #9: a note renamed after its read came back as an `a.md` tab over a tree showing `a2.md`, every
+  keystroke logging `Auto-save failed`; a trashed one reopened). They are not in `tabsRef` until the
+  merge, so the pass publishes `restorePendingRef` (`utils/pendingRestore.ts`: each document's stored
+  *origin* and *current* path, plus an `epoch`), which `retargetTabs`, `handleTrash` and the bin's
+  Replace update **synchronously** beside their own tab fix-ups. Those four run inside
+  `trackVaultMove` (`vaultMovesRef`) — never around a dialog — because each is copy → `removeEntry` →
+  a full `refreshTree` walk → only then the fix-up. Reads resolve each entry's current path from the
+  root. Then the pass waits for no move in flight — ANY move, related or not, so trashing a big
+  unrelated folder mid-restore holds every restored tab (and the persist gate) for the whole copy
+  (measured: reads done at 7.68s, tabs at 7.84s when the trash ended; accepted) — re-resolves every survivor from the root (fresh
+  handles; a note deleted outside the app drops), repeats if the epoch moved, and from there to the
+  dispatch has **no await** — one reopens the bug. The layout is built by `restoreLayout` in origin
+  space and `relabelPaths`'d to current paths **simultaneously**; chained `renamePath` would let its
+  overwrite branch delete a live pane (`b→c` then `a→b`).
+- **The link's `file` stays in the address bar until the pass consumes it** (`pendingLinkFile`,
+  state so the URL writer re-runs): cleared at the claim that spends the link with nothing to open
+  (a fallback vault leaves it, as it leaves `linkPendingRef`), else in the pass's `finally` — on
+  success in the merge's batch, so the bar never flashes the bare vault. The writer shows it only
+  while no vault document is active (help has no link) and the link resolves to this vault, and never
+  blanks the hash while `linkPendingRef` is unspent (the mount path commits `rootHandle` a render
+  before the id). Before it, the bar dropped `file` from `recordVault` (ahead of the tree walk) to
+  the merge, and a reload there lost a note the gated session had never held.
+- Everything read back is shape-guarded (`isStoredSession`); localStorage is user-editable and holds
+  whatever an older build wrote, and a malformed entry reads as `null`.
+- Restored PDF tabs get `content: ''` exactly like `handleFileClick` (their buffer is a tldraw
+  snapshot, never file bytes). The persist effect is keyed on `layout` rather than a joined path
+  string, because the layout's identity already moves only when the arrangement does.
+- **A forgotten vault's session is pruned** (`pruneSessions` off `recentVaults`), because
+  `forgetVault` means the folder mints a fresh id if it is ever opened again. Nothing prunes by
+  staleness — the same call `fileScrollAnchors` makes. The effect gates on "has the list ever
+  loaded" (a ref), **not** on `recentVaults.length === 0`: forgetting the last removable row is a
+  real transition to zero, and an emptiness test silently skipped it.
+
+## Switching vaults empties the workspace but no longer loses it
+
+Flushing every pending write first — those handles are still good. A tab only means anything inside
+the vault it came from: its path indexes that vault's tree, its handle writes into that vault's
+folder, and the editor's state cache is keyed by a string carrying that path, so a path two vaults
+share could serve the old vault's buffer for the new vault's file. The effect is keyed on a
+`rootHandle` change and guarded to fire only on a *real* switch — the `null → vault` assignment at
+startup must not clear the tabs the restore pass is about to bring back. Clearing the tabs is also
+what drops their cached editor states, since `EditorPane` prunes that map to the open set — on its
+next mount, if the graph view is up.
+
+**Two refs say WHICH VAULT the workspace on screen is the session of** — `sessionRootRef`
+(the handle) and `sessionVaultIdRef` (the id) — written together by the restore pass and checked by
+**both** effects. `hasRestoredTabs`, the old single boolean, is gone; this is that rule per vault.
+Neither ref alone is enough, because of two real orderings:
+
+- `openVaultHandle` commits `setRootHandle` + `setFileTree` in one batch and only **then** awaits
+  `recordVault`, so there is a commit where the tree is the NEW vault's and `currentVaultId` is
+  still the OLD one. Restoring there would open the old vault's paths out of the new vault's tree.
+  Requiring *both* refs to differ makes the pass wait for that commit to pass.
+- On the switch commit the persist effect runs with the outgoing layout, and a commit later with
+  the empty one the switch installs; requiring both refs to *match* makes it skip until the incoming
+  vault's restore has run. What closes that is the **`sessionRootRef.current = null` in the switch
+  effect**, not declaration order — the ref holds the outgoing handle before that line and `null`
+  after, and neither can equal the incoming `rootHandle`. Do not "simplify" that assignment away:
+  `rootHandle` is compared by object identity and the vault menu re-mints handles, so without it
+  coming back to a vault by the same menu row filed the EMPTY layout under its id.
+
+**The switch effect re-points `sessionVaultIdRef` at the vault being LEFT** (it does not clear it —
+that would let the pass claim on the mid-switch commit, where `currentVaultId` is still the outgoing
+one). Leaving it on the last *claim* instead is not equivalent, because a vault can set
+`currentVaultId` and never claim: the pass returns on an empty `fileTree`, and an **empty folder** is
+indistinguishable from a tree that has not landed. Measured — vault R with three tabs → an empty
+folder → back to R — the pass then claimed R's handle against the empty vault's id, so the commit
+carrying R's own id failed the handle test: **R's tabs never came back and nothing R did afterwards
+was persisted for the rest of the page load.**
+
+**`if (!currentVaultId) return;` must stay ABOVE the ref claim.** `currentVaultId` starts `null` and
+is never reset to `null` on a switch, so the only way it is falsy is "`recordVault` has not finished
+yet, or failed". Claiming the refs there marks the workspace as that vault's against a `null` id,
+and the follow-up commit carrying the real id is then rejected by `sessionRootRef === rootHandle` —
+the session silently never restores. It bit `openVaultHandle` (and `openRecentVault`, which is only
+a wrapper over it) and `pickDirectory` — the paths that commit the tree before `recordVault`. The
+mount path and `restoreVault` call `recordVault` FIRST and walk after, which is why an ordinary
+reload and the permission button looked fine. Above the claim, the pass simply waits for the id;
+nothing is left un-gated, because the persist effect's own first line is the same check.
+
+The pass re-checks the vault (handle AND id, via `rootHandleRef`/`currentVaultIdRef`) after its final
+re-validation (its last await) and **before** the merge, and that check alone keeps a mid-restore
+switch's OLD tabs out of the new vault: the switch empties the tab set, so the merge would lay them
+straight over it. Asset
+baselines are seeded only after it, for the same reason — the switch has just cleared that map.
+`restoringRef` is reset at **every claim**, so a pass still reading the vault just left cannot hold
+the incoming vault's gate. A pass whose notes are ALL gone still dispatches a merge when `layoutRef` says
+something was opened meanwhile, because the gate held that commit's own write back; and when
+`layoutRef` has not caught up yet the pass returns instead, leaving the flush that updates it to run
+the persist effect immediately after the `finally` — that ref's effect is declared above it. One
+write either way, which is what makes the stale ref harmless rather than merely unlikely.
+
+**What the gate costs, and why it is still the right trade.** A note opened during the reads and then
+abandoned by a vault SWITCH inside the same window is never filed under the outgoing vault: its write
+was gated, and the pass then returns at the vault re-check without dispatching a merge (measured — a
+tree click 150ms into a 2.4s restore, switching away at 400ms, left the stored session at its
+original four paths). Only the memory that a tab was open is lost, never a file, and the alternative
+is writing a session from the gated path — which is exactly the hazard the gate exists for. A read
+that never settles is the same trade taken to its limit: nothing in that vault is persisted until
+some other vault's claim resets the token (see above), which is the safe direction to fail.
+
+# Panes (`utils/tabPanes.ts`, `TabBar.tsx`, `EditorPane.tsx`, `DocumentPane.tsx`)
+
+Dragging a tab out of a strip and dropping it on the page gives it a COLUMN of its own; dragging it
+into another pane's strip moves it there as a tab. The columns run left to right, even until the
+divider between two of them is dragged, and there are at most five. **Splitting is deliberately only
+ever vertical**, which is what lets a pane's rectangle be a plain share of the width — and what makes
+a resizable pane one number rather than a rectangle.
+
+- **ONE filtered array drives the strip and the columns.** `EditorPane` computes
+  `panes = layout.panes.filter(p => byPath.has(p.activePath))` (defensive, as it always was) and
+  `paneTabs`/`widths` from it, then hands `panes` to `TabBar` and `paneTabs[i]` to column `i`. That
+  single array is what guarantees tab-group index === column index; two independent walks would drift
+  the moment one of them filtered something the other kept.
+- **The tab groups line up with the columns because they read the same variables.** `--pane-w-<i>` /
+  `--pane-x-<i>` live on `.editor-pane`, which contains BOTH `.view-header` and `.editor-split`, so a
+  group sized `flex-grow: var(--pane-w-i, 1)` against a zero basis tiles exactly as its column does —
+  including live during a divider drag, which writes those variables with no React render. Both sides
+  use a **module-level frozen style array** (`TAB_GROUP_STYLE`, `PANE_WIDTH_STYLE`) so the drag
+  re-renders nothing. `.editor-split-divider`'s `margin-left: -3px` and `::before { left: 3px }`
+  cancel, so the rule sits at `--pane-x-<i>` and a group boundary drawn at its own `left: 0` is
+  continuous with it. The horizontal insets therefore live INSIDE each group's scroller, never on
+  `.view-header`: padding there would move every boundary. `box-sizing: border-box` must stay global
+  for the same reason.
+- **`--pane-w-0` now exists at a single pane too** (`widthStyle` is passed at every count), so the
+  strip and the column use one mechanism from one pane to five, and `.pdf-pane` no longer needs a
+  split-only class.
+- **A group's drop handlers are on `.tab-group`, not on `.tab-group-strip`**, so the `+`/`⌄` beside
+  the strip take a drop too — on the strip alone that ~56px refused one silently (no
+  `preventDefault`, so no `drop` event). `+` and `⌄` follow the LAST TAB (`.tab-group-actions`'
+  `margin-right: auto` against a content-sized `flex: 0 1 auto` strip), as the reference images draw
+  them; they are flex siblings of the scroller, so a crowded strip shrinks under them rather than
+  scrolling beneath them. That content-sized strip only sizes to the tabs' 200px slots because
+  `.tab` carries a DEFINITE `width: var(--tab-width)`: a `flex-basis` is invisible to a flex
+  container's intrinsic sizing, so with the basis alone the strip sized to the titles and every tab
+  collapsed to roughly the average title width (measured: 116px at 3 tabs in a 1176px pane). So the
+  buttons follow the last tab's 200px SLOT, not its text — a lone short tab pushes them ~120px
+  right of its title, which is the reference look, not a bug. The `flex: 0 1 var(--tab-width)` beside
+  the width is redundant (a definite width resolves `flex-basis: auto` to itself); the width is the
+  one that must not go.
+
+- **A pane is a `DocumentPane`, and it owns a CodeMirror view of its own.** The editor used to be one
+  created-once `EditorView` re-pointed at each tab's cached state; showing five documents at once
+  made that a special case inside the editor rather than five of the same thing. React keys a pane by
+  `paneKey` — `OpenTab.id | path` — so a pane shows one document for its whole life and there is no
+  tab-swap logic in it at all; switching tabs mounts and unmounts panes. **A canvas is the exception
+  on purpose**: PDFs, whiteboards and notebooks are floats mounted per open tab at `EditorPane` level
+  (`PdfPane`, `CanvasPane`, geometry in `components/floatingSlot.ts`) and are hidden rather than
+  unmounted, because rebuilding one costs a reload or a whole tldraw editor — see `pdf-and-drawings`.
+- **The `EditorState` cache is what makes that free.** A pane caches its state on the way out and
+  adopts it on the way in, so undo history, selection and an open search panel survive every tab
+  switch exactly as they did when one view was re-pointed — and still never reach across documents.
+  The map is **owned by `App`, not `EditorPane`**, because the graph view *replaces* `EditorPane`: a
+  cache it owned died with it, and a trip to the Neural Brain view threw away every open note's undo
+  (issue #34). `EditorPane` only hands it down and prunes it to the open set; while the graph is up
+  that prune waits for its next mount, which is harmless only because `OpenTab.id` never repeats
+  within a page load (`newTabId`'s counter — never make it recycle). A tab's mode CAN change while no
+  pane shows it (App's ⌘E works in the graph view), which is why adopting re-states the mode and
+  rebuilds the search panel for it.
+- **A pane and its cached state are keyed by `paneKey` — `OpenTab.id | path` — and a path alone would
+  be wrong.** Both halves earn their place. The **id** because a rename that overwrites an open file
+  leaves two different documents answering to one path for a single commit: keyed by path, React
+  matched the survivor to the pane the *overwritten* document was drawn in and kept that pane's live
+  view, while the cache handed over its text and its undo history — and the renamed file's first
+  keystroke saved the dead document's bytes straight over it (measured: `alpha.md` renamed onto an
+  open `beta.md` drew "BETA CONTENT" and wrote it back to disk; a PDF did the same, its re-read
+  effect re-running on the new handle and returning early on the bytes it already had). The **path**
+  because a rename must still rebuild the view: the update listener that reports edits has the path
+  baked into it, so a pane carried across a rename would go on reporting the old one and every edit
+  after it would land nowhere. Ids are session-only, like a group's, and re-minted on restore.
+- **The three settings effects skip their mount run** (`settled`). The callback ref that builds the
+  view has just configured it for exactly those values, and `livePreviewCompartment` is not a cheap
+  thing to re-state: every `createLivePreviewPlugin` mints a **new `StateField`**, so reconfiguring
+  it discards the field's value and runs `create()`, a full `buildDecorations` walk. Ungated, every
+  pane mount paid for two of those instead of one, and a pane now mounts on every tab switch — a
+  five-pane split cost ten walks where five would do.
+- **A state outliving its pane cuts a second way: whatever is BAKED into it outlives the pane too.**
+  The compartments are the part that can be re-supplied; `EditorView.domEventHandlers` and the update
+  listener are not, so the handlers an adopted state runs are the ones the FIRST pane for that
+  document built. Anything they reach must therefore be **stable for the app's life** — wrapping it
+  in a per-pane ref does not rescue it, it only hides the staleness, since that ref stops being
+  updated the moment its pane unmounts. `openNoteByName` was not stable (it closed over `mdFiles`,
+  rebuilt on every tree refresh), so a `[[wikilink]]` in any note whose pane had been unmounted once
+  silently did nothing for every note created, renamed or moved since — it is now stable in
+  `App.tsx`, reading the index through a ref, which is where that kind of fix belongs. "The app's
+  life" means App-level, not `EditorPane`-level: the states outlive `EditorPane` too, so the `[[`
+  autocomplete source (`getWikiLinkTargets`), had it stayed in `EditorPane`, would have gone on
+  reading an unmounted `EditorPane`'s graph after a graph-view trip — it is App's now. Genuinely
+  per-document state that a baked handler needs goes **by path** instead, which is what
+  `DocumentPane`'s `scrollDebounce` is: a per-instance timer meant the live pane's unmount flush could
+  never find the timer the adopted handler had armed.
+- **A document's scroll place is a text anchor `{pos, offset}`, never pixels** (`editor/scrollAnchor.ts`,
+  record `fileScrollAnchors`). A fresh view only *estimates* the heights it has not drawn — 116,331px
+  for text that measured 154,032px once read through — so a replayed `scrollTop` reopened ~1,450 lines
+  low. A mounting pane **holds** the anchor (`scrollAnchorTracking`) until reader input, a
+  `scrollIntoView` transaction or a reveal, and the scroll handler saves nothing while it holds —
+  which is why a return cannot creep. The hold corrects TWICE per height/viewport change: a
+  `requestMeasure` pin, and `settle` after the loop, because CodeMirror's own scroll anchoring rewrites
+  a same-loop write — drop either and frames paint off the place. The same hold has a second kind:
+  a **search jump** (vault-search reveal, and ⌘F via `search({ scrollToMatch: revealMatchEffect })`)
+  dispatches a `revealMatch` effect, which the extension turns into the centring scroll and holds
+  CENTRED until reader input — mermaid SVGs, pictures and the post-open parse otherwise moved the
+  match off screen. Only the restore kind pauses saving (a held match IS the reader's place). The hold
+  cannot see a bare `scrollIntoView` *effect*: a jump from outside the editor must be a `revealMatch`,
+  and a widget that changes size after `toDOM` must `view.requestMeasure()` or the hold never hears
+  it. The reveal `parseForReveal`s up to the match first (100ms budget). `offset` is negative only on
+  the first line (its top padding).
+  `scrollSnapshot()`'s target cannot be built from stored data. A pane restores from
+  `scrollDebounce`'s `pending` before the record.
+- **The CodeMirror compartments are module-level singletons, and must stay that way.** A Compartment
+  is an identity key, not state, so views share them freely — but a state OUTLIVES the pane that
+  built it, and a reconfigure effect naming a compartment its state has never heard of is silently
+  dropped. Per-pane compartments would give an adopted document a theme, mode and tab size frozen at
+  whatever the pane that last held it had. Anything a *setting* feeds is therefore reconfigured in
+  **both** places: its own effect (for the live view) and the moment a cached state is adopted —
+  and so is an open search panel rebuilt, since its Replace row is fixed per mode (`noteSearch.ts`).
+- **A canvas document builds no view**: a drawing renders its tldraw pane inside the slot, and a
+  PDF's surface is a `PdfPane` that EditorPane positions *over* the slot. See the `pdf-and-drawings`
+  skill for why the PDF panes stay outside the panes, and for the two consequences of floating over a
+  slot (a surface must report focus for the slot itself; a hidden pane keeps the geometry it was last
+  shown at).
+- **A tab-bar select or close hands the keyboard to the focused note's `.cm-scroller`** (#35 — a
+  tab is a `<div>`, so the click left `<body>` and Space/PageDown scrolled nothing). EditorPane's
+  `handKeyboardToNote` runs in a `requestAnimationFrame` (an effect loses to StrictMode destroying
+  and rebuilding the new pane's view) and never takes it from something that types (a caret, Find,
+  a rename field) or a menu/dialog — but DOES take it from a button, which the × / middle-click
+  `preventDefault` would otherwise leave holding Space. Each note pane registers its target via
+  `registerKeyboardTarget`. The scroller in BOTH modes — Edit mode's text would arm Space to type
+  off screen. A pane kind that should scroll by keyboard registers one. Around it:
+  `noteSearch.keyboardAfterSearchClose` covers ⌘F's Escape in Reading mode; `scrollAnchor`'s hold
+  lets only scroll keys aimed at the scroller release it (⌘E just after a click drifted 58–78
+  lines); `editor/tabIntoText.ts` makes Tab enter the text where the reader is, not at a stale
+  caret. The registry is EditorPane's, unlike the state cache: panes register from an effect and
+  nothing of it is baked into a state, so it rebuilds with EditorPane after a graph-view trip. The
+  two extensions ARE baked in, and are safe there only because they touch nothing but their view.
+- **The drop zone is a layer over the panes, present only while a tab is actually in flight.**
+  CodeMirror handles `drop` itself and would insert the dragged text; a PDF pane would swallow it
+  outright. Which half of which pane the pointer is in decides the insertion index, painted with the
+  same purple dashed outline the file tree uses. A drag carries a bespoke `dataTransfer` type
+  (`utils/tabDrag.ts`) so the explorer — a drop target for everything, reading the drag long before
+  any drop — stays inert as a tab passes over it; `types` is the only thing readable during
+  `dragover`.
+- **EVERY pane draws a header, including a lone one.** That is a product decision (match the
+  reference images), not an accident: do not reinstate a `paneCount > 1` gate. It costs the
+  single-pane case `--pane-header-height` of vertical chrome, and it is why `.pdf-pane` offsets by
+  `header + pane header` unconditionally while `.editor-empty-overlay` (no panes, so no pane header)
+  still offsets by the header alone. The header is `[← →] [centred title + dirty dot] [mode] [⋯]`;
+  the focus underline is scoped to `.editor-split.is-split`, since a permanent accent line under one
+  pane is noise.
+- **The pane header owns what used to sit right of the strip.** Read/edit (or view/annotate) is the
+  book button, per pane rather than "the focused one". `⋯` raises the app's own context menu with
+  Insert table… (a `kind: 'grid'` row), Export to PDF for a notebook, and Close this pane — the
+  images show no × in the header. **`⋯` focuses its pane BEFORE it opens**, because the table-insert
+  request is answered only by the focused `DocumentPane` for that path; raised in an unfocused pane
+  it would publish into nothing.
+- **A tab group is `[scrolling tabs] [+] [⌄]`.** `+` selects that pane and then opens a new note into
+  it (`openTab` opens into the FOCUSED pane, so the selection is what makes "in this column" true);
+  `⌄` lists that pane's tabs in the context menu. Tabs name a note through `noteDisplayName` (`.md`
+  hidden, display only — see the `vault-filesystem` skill), while the tooltip (`data-tooltip`) stays the full
+  path. `dirty` and `unreadable` are **per tab** now, not OR'd across a group.
+- **The document's readings live in a floating `.status-bar` pill, bottom right**: backlinks (the
+  `BacklinksPanel` anchors to it), word and character counts, and the save status — all about the
+  FOCUSED pane. It is `pointer-events: none` with `auto` on the button, or it would swallow clicks
+  and text selection at the bottom right of every document. **The counts are computed over a
+  DEBOUNCED copy of the content** (250ms) and skipped entirely for canvas and unreadable documents:
+  `activeTab.content` changes on every keystroke, so a naive `useMemo` is a full-document walk per
+  key. It mounts only when it has something to say — `backlinksAvailable || countable || saveStatus`
+  (a canvas/unreadable tab once left an empty 40px pill: the reserved slot alone) — and `saveStatus`
+  alone suffices, because "Moving … to Trash…" and "Put back as …" are raised from the tree and the
+  bin with no tab open. It sits over the RIGHTMOST column whatever is focused, so when that column
+  shows a PDF or notebook it takes `.is-lifted`, clearing their page/zoom pills (a drawing has
+  nothing in that corner). `.save-status` keeps a reserved `min-width` and is always mounted (never
+  conditionally rendered) and wide enough for `'Saved'`, or the pill would resize twice a minute
+  while the reader types. `min-width`, not `width` — long strings still show
+  whole.
 
 ## The dividers
-- **Drawn over the panes, not as borders** (a PDF float would paint over a border, and the divider is the handle):
-  an 8px strip, rule offset 3px/5px, `z-index: 6` (above panes at 5, below the tab drop zone at 20). It cancels
-  `dragover`/`drop` — an OS file dropped on it would navigate the app away.
-- **Widths live on the LAYOUT as percentages; absence means equal** (`normalizeSizes` gates every row,
-  `paneSizes` is the only reader). Closing rescales survivors proportionally; `insertSize` gives a new column
-  `1/(n+1)`. `MIN_PANE_PX` (200) is a gesture-only floor capped at half the dragged pair, never re-applied on
-  window resize.
-- **The drag writes CSS variables and commits once** — no React render per frame (it would re-render the strip
-  and every PDF and persist the session 60×/s). React diffs `style` by value through the same `pct` helper, so a
-  mid-drag re-render writes nothing. A **cancelled** drag restores the columns by hand; an **abandoned** one
-  (panes changed under it) must not repaint.
-- Terminators check `pointerId`; an effect on `(group.id, paneCount)` abandons a drag whose handle left the DOM
-  (a detached handle's `lostpointercapture` reaches no listener). The handle takes `focus()` on pointerdown so
-  the arrow-key nudge works. A gesture whose row cannot be committed is refused before it starts.
 
-## The agent's view of the panes (`utils/viewRegistry.ts`)
-- Every mounted pane registers a reporter under its path from an effect — **never inside the `EditorState`**.
-  `describe()` is called only at send time. `retargetTabs` calls `moveView` on rename; `clearViews()` runs on
-  a vault switch. Hidden floats stay registered.
-- Agent text edits: a mounted note through its reporter (one transaction through the funnel); an open, hidden
-  note through `markdownSessions.dispatch` (so the next mount shows it and ⌘Z undoes it); a closed file is
-  written and runs `afterWrite`. Canvases go through their session (`vault-agent`).
+- **The dividers between panes are drawn over them, not as borders on them** — a PDF pane floats
+  above its slot and would paint straight over an edge belonging to it. That is doubly load-bearing,
+  because the divider is also the **handle**: a border on a slot could never be grabbed over a PDF
+  either. It is an 8px strip with the 1px rule drawn by `::before`, offset 3px into the left pane and
+  5px into the right rather than centred — the left pane's scrollbar is 6px and ends exactly at the
+  boundary, and its pane header's close button stops 4px short of it. Its `z-index: 6` is load-bearing
+  in both directions: above the panes (5) so the press reaches the strip rather than CodeMirror or a
+  PDF's capture-phase `pointerdown`, and below `.editor-split-dropzone` (20), which exists only while
+  a *tab* is in flight — which is what makes the two gestures mutually exclusive without either
+  knowing about the other. Giving it a hit area also made it a **drop target**, so it cancels
+  `dragover`/`drop`: an OS file dropped on an uncancelled one navigates the whole app away to that
+  file.
+- **The widths live on the LAYOUT, as percentages, and absence means equal.** `sizes?: number[]`
+  sits beside `panes` because every transition that changes the pane list has to change the widths
+  *in the same update* — a second piece of state would allow exactly the intermediate where one array
+  is indexed against a list it no longer describes. Absent is the encoding of "nobody has arranged
+  this": a single pane, a workspace nobody resized, and a session written before dividers could be
+  dragged are one thing drawn one way, so nothing invents an arrangement the reader never made and
+  evening the panes up again is a field being deleted. `normalizeSizes` is the single gate every row
+  passes (a commit, a redistribution, a stored session) and `paneSizes(layout)` the only reader, so a
+  row out of step with `panes` degrades to equal columns — the geometry's version of "a pane with no
+  document rather than corruption".
+- Widths are picked out **by index**, by the same walk that produced the surviving panes:
+  `closePane`, the emptied-source branch of `moveTabToPane`, and `renamePath`'s overwrite branch —
+  the one place a column disappears without anything closing. Redistribution: **closing rescales the
+  survivors proportionally** (the only rule that preserves every surviving ratio and doesn't depend
+  on which neighbour the departing column sat beside), and **`insertSize` gives an arriving column
+  the share a new one is drawn at**, `1/(n+1)`, while the rest keep their internal proportions — so
+  splitting equal columns still comes out equal, i.e. still absent. `splitToPane` routes its removal
+  through `closePath`, so the source's history, focus fallback, column and width are all settled by
+  the one function that already knows how; it refuses outright when a pane's ONLY tab is dropped back
+  on its own column, which would otherwise mint an id and re-share widths for nothing.
+- **Percentages, not pixels**: the window and the sidebar resize constantly and a restored session
+  lands in a window of another size — the same reason a fitted table's columns are percentages. The
+  **pixel floor (`MIN_PANE_PX`) is a gesture constraint**, converted against the live width and
+  capped at half *the pair being dragged* — never at a share of the whole tab, which put the floor at
+  118px on a five-pane 1176px editor. It is never re-applied on a window resize, because that would
+  rewrite an arrangement from a window size the reader was only passing through.
+- **The drag writes CSS variables and commits once.** `--pane-w-<i>` and `--pane-x-<i>` on
+  `.editor-pane` — the one box holding both the columns and the PDF panes floating over them — feed
+  the slots' `flex-grow` (against a zero basis, so the browser divides by the sum and the columns tile
+  exactly however the percentages rounded), the dividers' `left`, and every visible PDF pane's
+  rectangle. (The tab-drop highlight is the one column-aligned box that does *not* read them — it
+  exists only while a tab is in flight, which a divider drag excludes.) So one write per frame moves
+  all of it, with **no React render at all**: a `setState` per frame would re-render this component,
+  the tab bar and every mounted PDF pane on top of the work the width change already causes, and would
+  run App's persist effect — writing the whole session to localStorage sixty times a second. The seam
+  is safe because React diffs `style` **by value**: mid-drag its view of the variables is still the
+  committed one, so a re-render (a save status arriving, a keystroke next door) writes nothing and
+  leaves the gesture's values alone — both sides format through the same `pct` helper so that
+  comparison is on identical strings. The corollary is that a **cancelled** drag must put the columns
+  back by hand; React has not re-rendered and nothing else would. The exception, and the one exit that
+  must *not* repaint, is the gesture being **abandoned** because the panes it was moving are no longer
+  the panes on screen — React has just re-rendered, which is what raised the abandon, so repainting
+  the old row would drag the tab that replaced it into a shape nobody chose.
+- **A gesture is ended by its own pointer, by its own tab, or by nothing at all — so both of those
+  have to be watched.** Every exit is a React handler on the handle and React delegates at the root,
+  so a handle removed from the document while it still holds the capture gets its implicit
+  `lostpointercapture` at a detached node, which reaches no listener: nothing would release the body
+  class, the Escape listener, or `startResize`'s own guard, leaving every divider dead and the whole
+  window on a `col-resize` cursor with text selection off for the rest of the session. `⌘N` mid-drag
+  is enough to do it. An effect on `(group.id, paneCount)` abandons the drag instead. Separately, a
+  capture retargets *its* pointer and nothing else, so a second finger landing on the same strip still
+  gets its `pointerup` there — unguarded it committed the drag the first finger was still making, so
+  all three terminators check `pointerId`.
+- **The handle takes focus on pointerdown, because nothing else would give it any.**
+  `setPointerCapture` does not focus, and the `mousedown` that would is deliberately cancelled (that
+  cancel preserves the double-click reset and suppresses the text selection). Without the explicit
+  `focus()` the arrow-key nudge the Help guide describes could never be reached by the gesture that
+  documents it, and the only way to a divider at all was tabbing out of a CodeMirror that binds Tab.
+- **A gesture that could not be committed is refused rather than started.** A tab holding a path with
+  no open document draws fewer columns than it has panes, and a row that short is one `setGroupSizes`
+  declines by length, which returns the same layout, which means no re-render: the columns would move
+  under the pointer and then silently not be recorded, with the DOM left describing an arrangement
+  React does not hold. `startResize` and `keyResize` both check the two agree first. `tableFit`
+  re-fits and `PdfViewer` re-rasterizes live and are deliberately left alone: both are
+  `ResizeObserver`-driven, both already absorb exactly this from the sidebar drag, and the reflow *is*
+  the feedback the gesture exists to give (measured: a PDF beside a dragged divider stays rendered).
+- **`.editor-empty-overlay` is still an overlay**, but the reason changed: with no tab open there are
+  simply no panes and no view to orphan. The overlay-not-unmount rule now applies *within* a pane
+  (`.canvas-pane`, `.pdf-pane` over their slot), not to the editor as a whole.
 
-## Verify
-Per `verify-in-browser`: split into columns, rename/move an open note, reload (layout and focus come back),
-switch vaults and back, edit a note on disk while it is open (clean → reloads, dirty → DiskBar), and close a tab
-mid-save. Watch the stored `vaultSessions` and the file on disk, not just the screen.
+## The AI agent's view of the panes (`utils/viewRegistry.ts`)
+
+- **Every mounted pane registers a reporter under its path** (`registerView`), from an effect —
+  NEVER inside the `EditorState` (it outlives the pane). The agent panel calls `describe()` only at
+  send time, so it always gets the live position; nothing is polled or persisted. The unregister
+  removes the reporter under whatever path it holds NOW, and `App.retargetTabs` calls `moveView`
+  beside `movePdfRenderData`, so the reporter answers under the new path until the pane remounts there.
+  `clearViews()` runs in the vault-switch effect. Hidden PDF readers and hidden boards stay registered
+  (they are floats that outlive the switch); annotate canvases, torn down when hidden, do not.
+- **`openInSidePane(layout, path)`** puts a document on screen WITHOUT moving `activeId` — how the
+  agent opens a canvas it was asked to draw on: already visible → unchanged; behind a tab of an
+  unfocused pane → fronted there; otherwise a new column at the right, or at `MAX_PANES` the
+  right-most unfocused column. `App`'s agent host adds the tab first (`addTabQuietly`, no focus) and
+  flips a PDF's tab to `'edit'` (annotate), then waits on `whenViewReady(path, 15s, r => !!r.canvas)`.
+- **Agent text edits and the save funnel**: a mounted note gets the edit through its reporter (one
+  transaction, the pane's update listener carries it to `updateTabContent`); an open-but-hidden note
+  gets it applied to EVERY cached `EditorState` for that path (`${id}|${path}`) and to the buffer, so
+  the next mount shows it and ⌘Z undoes it; a closed file is written and runs `afterWrite` (the tail of
+  `flushTab`). See the `vault-agent` skill.
+
+
+OpenTab.representation is required; all constructors and retries classify it. EPUB uses a visible EpubReaderHost, not the retained PDF/canvas floats. Reader tokens include vault id/epoch, document id and byte generation; the scoped readerViewState writer outlives mounts. See epub-reader.
+
+EPUB semantic tab/close commands are token-validated in App then routed through EditorPane's
+existing navigation and keyboard-target path (all columns). Tab selection/close can await a
+bounded canonical checkpoint; hand the keyboard over after that promise. A lazy target can
+register later: retain the requested path until its CURRENT registration actually takes focus,
+not its first StrictMode setup. EpubPane itself queues a focus request until its adapter is ready.

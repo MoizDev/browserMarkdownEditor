@@ -1,5 +1,4 @@
 import { EditorView, WidgetType, keymap } from '@codemirror/view';
-import { countEditorWidget } from './editorPerf';
 import { EditorSelection, Facet, Prec } from '@codemirror/state';
 import type { Extension } from '@codemirror/state';
 import { embedPattern, embedText } from '../utils/assets';
@@ -200,7 +199,6 @@ function resizeEmbed(view: EditorView, dom: HTMLElement, model: ImageModel, dire
  * leave the picture in the trash with the note still pointing at it.
  */
 function removeEmbed(view: EditorView, at: EmbedAt): void {
-    if (!view.dom.isConnected) return;
     let { from, to } = at;
     // The confirmation is modal, so the document cannot have moved — and if it
     // somehow has, this bails rather than guessing. Searching the document for
@@ -274,7 +272,6 @@ export class ImageWidget extends WidgetType {
         readonly selected: boolean,
     ) {
         super();
-        if (__BME_BENCH__) { countEditorWidget(); }
     }
 
     eq(other: ImageWidget): boolean {

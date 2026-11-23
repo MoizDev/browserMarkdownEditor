@@ -8,7 +8,6 @@ import { copyText, CLIPBOARD_WRITE_BLOCKED } from '../utils/clipboard';
 import { registerReadingSurface } from '../utils/documentReading';
 import { dismissOnEscape } from '../utils/escapeDismiss';
 import '../components/EpubReader/reader.css';
-import { isCancellation } from '../platform/workers/envelope';
 export interface EpubPaneProps {
  identity:ReaderIdentity;snapshot:ReadOnlyFileSnapshot;initialRecord?:EpubReadingRecord;isFocused:boolean;
  onReaderVersion(token:ReaderToken,version:DiskVersion):void;
@@ -50,7 +49,7 @@ function EpubPane(props:EpubPaneProps){
  const readingPreferencesRef=useRef(preferences);
  useEffect(()=>{readingPreferencesRef.current=preferences},[preferences]);
  function notify(message:string){latest.current.onNotify(message)}
- function run(job:Promise<unknown>|undefined){void job?.catch(error=>{if(isCancellation(error))return;notify(error instanceof Error?error.message:'Book action failed')})}
+ function run(job:Promise<unknown>|undefined){void job?.catch(error=>{if(error instanceof DOMException&&error.name==='AbortError')return;notify(error instanceof Error?error.message:'Book action failed')})}
  function restorePanelFocus(){const element=opener.current;if(!element?.isConnected)return;if(element.tagName==='IFRAME')adapter.current?.focus();else element.focus()}
  function closePanel(){setPanel(null);restorePanelFocus()}
  function showPanel(next:Panel,event?:React.MouseEvent<HTMLElement>){if(event)opener.current=event.currentTarget;setPanel(p=>p===next?null:next)}
@@ -84,7 +83,7 @@ function EpubPane(props:EpubPaneProps){
   // eslint-disable-next-line react-hooks/exhaustive-deps
  },[snapshot,identity.vaultId,identity.vaultEpoch,identity.documentId,identity.byteGeneration]);
  const flowRef=useRef(flow);
- useEffect(()=>{flowRef.current=flow;let active=true;void adapter.current?.configure({...preferences,flow}).catch(error=>{if(active&&!isCancellation(error))latest.current.onNotify(String(error))});return ()=>{active=false}},[preferences,flow]);
+ useEffect(()=>{flowRef.current=flow;let active=true;void adapter.current?.configure({...preferences,flow}).catch(error=>{if(active&&!(error instanceof DOMException&&error.name==='AbortError'))latest.current.onNotify(String(error))});return ()=>{active=false}},[preferences,flow]);
  const registerKeyboardTarget=props.registerKeyboardTarget;
  useEffect(()=>registerKeyboardTarget(identity.path,()=>{if(adapter.current)adapter.current.focus();else focusPending.current=true}),[registerKeyboardTarget,identity.path]);
  useEffect(()=>{if(!panel)return;const dismiss=dismissOnEscape(()=>{setPanel(null);restorePanelFocus()});const node=pane.current?.querySelector<HTMLElement>('.epub-panel input,.epub-panel button');node?.focus();return dismiss},[panel]);

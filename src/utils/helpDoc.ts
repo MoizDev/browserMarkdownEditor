@@ -26,9 +26,7 @@ Any folder can be a vault, including one inside another vault: opening \`Notes/M
 
 Switching vaults puts away the notes you had open (saving anything unsaved first), since those files belong to the vault you just left — but it does not forget them. Each vault remembers its own, so switching back brings that vault's panes, the tabs in each of them, the pane widths and the note you were reading straight back, without your reopening a thing — and so does reloading the page. A note you deleted from disk in the meantime is simply not among them; one that is there but can't be read at that moment still comes back, as a tab that says so (see **Tabs** below). That memory lives in this browser, beside the recent-vaults list, which is why taking a vault off that list forgets its tabs along with the row. **The chat you had open in the AI panel comes back the same way**, with everything that was said in it — reloading the tab no longer drops you into a blank new chat — and so does a message you had typed but not sent.
 
-Because all of that lives in this browser rather than on a server, a browser short of space is allowed to clear it: your vault list (the permission to reach those folders, which is the part you cannot simply retype), your open tabs, your settings and the recovery copies of unsaved edits. **Settings → Vault → "Keep this data on this device"** says which footing you are on and asks the browser to keep it. Browsers grant that to sites you use often rather than on request, so if it says no, it is worth asking again after installing this app from the address bar, bookmarking it, or a few more visits. The app does not warn you about this while you work; this setting is the one place it is shown. Your folders themselves are never at risk — they are files on your disk, and the worst case is finding them in the folder picker again.
-
-If another window resets this app’s local settings, a separate browser-local backup restores your settings, open-tab sessions and saved reading positions automatically. A status-line message says **Settings restored after another tab reset them**; a reset discovered while opening the app may reload it once before your workspace appears. This backup does not survive clearing all of the site’s browser data.
+Because all of that lives in this browser rather than on a server, a browser short of space is allowed to clear it: your vault list (the permission to reach those folders, which is the part you cannot simply retype), your open tabs and your settings. **Settings → Vault → "Keep this data on this device"** says which footing you are on and asks the browser to keep it. Browsers grant that to sites you use often rather than on request, so if it says no, it is worth asking again after a few more visits, or installing this app from the address bar. Your folders themselves are never at risk — they are files on your disk, and the worst case is finding them in the folder picker again.
 
 ### Security & Permissions
 Modern browsers require you to explicitly grant permission every time you open a vault or sometimes when returning to the application after a session. This is a deliberate security feature of the File System Access API to ensure websites cannot silently access your hard drive.
@@ -40,21 +38,9 @@ Modern browsers require you to explicitly grant permission every time you open a
 ### The Sidebar
 Along the top of the sidebar sit two tabs — **Files** (the folder) shows the file tree and **Search** (the magnifying glass) searches the vault — with the button that hides the sidebar at the right-hand end (\`Cmd + \\\` / \`Ctrl + \\\` does the same; the button left behind on the thin strip brings it back).
 
-If the search index loses access to the vault, a notice appears above the workspace. Choose **Retry** to grant access again and refresh the index; your notes stay untouched. The index keeps a browser-local copy of note text and links to make reopening faster; removing a vault from the recent list also removes its index. If an outside edit kept exactly the same file size and modification time, open the vault menu and choose **Rebuild index** to read the files again.
-
 Under the tabs, while the file tree is showing, is a row of buttons for the tree itself: **New note**, **New folder**, the **pencil** (its menu holds **New Drawing** and **New Notebook**), **Change sort order**, **Auto-reveal current file** and **Expand all** / **Collapse all** (see *Sorting and Finding Your Place* below).
 
 At the bottom, a row of five icons: **Neural Brain** (the graph view of how your notes link — press it again to get back to the editor), the **AI agent** (the sparkles — see section 9), the **Terminal** (see section 10), the **Trash** bin (see *The Trash Bin*) and the **light/dark mode** switch. Under them is the vault switcher (see *Switching Vaults*), with **Help** (the question mark, which opens this guide) and **Settings** (the gear) on its right. Hover any of these buttons for a moment and a label says what it does.
-
-In **Settings → About**, the third-party notices link lists the software included with the app. **Show developer settings** reveals experimental engine controls; engine changes apply when you next open a pane. **PDF platform layer** previews the new renderer in the classic PDF viewer; the classic view remains available if the preview cannot attach. Only engines included in this build are offered. An emergency read-only switch for each native canvas kind permits viewing, copying and export but prevents edits and saves. **Incremental live preview** can be turned off to recalculate a whole note on each change. Turning developer settings off restores the normal engine choices without deleting your saved selections.
-
-To recover a converted canvas's old file, right-click it and choose **Restore the copy from before conversion**. The app finds the matching backup in Trash and restores a separate file under a free name; it leaves the converted file and backup alone. For a converted PDF, open its annotation view first. In Trash, **Restore a copy** likewise copies a selected file back without consuming it or replacing an existing file.
-
-**Settings → Editing → Board dictionary → Manage** lists the words saved for board spelling in this browser. Use **Remove** beside a word to remove it; the list is shared by boards across vaults, not saved inside a vault.
-
-When a newer app version is available, a notice offers **Reload**. Save your edits and resolve any disk conflicts first; the app will not reload from the notice while a document still has unsaved changes.
-
-In Neural Brain, drag a note to move it, drag the background to pan, and use the wheel to zoom toward the pointer. **Reset view** frames the graph again. **Indexing your notes…** means the graph is being built; **Updating…** marks a graph while its index catches up. Small graphs retain the exact layout calculation; graphs with more than 600 nodes use approximate repulsion, so their arrangement can differ slightly without changing any notes or links.
 
 ### File Tree
 The left sidebar displays your vault's folder structure. You can click on any note to open it in the editor.
@@ -65,8 +51,6 @@ The left sidebar displays your vault's folder structure. You can click on any no
 **Custom** is your own order: drag files and folders into whatever arrangement you like, folders mixed in among the files if you want (see *Drag and Drop*). Until you move something, a folder looks just as it does under File name (A to Z). Anything added later — a new note, something put back from the Trash — appears at the end of its folder until you place it. The order is kept in the hidden \`.appearance.json\` inside each folder you have arranged, so it travels with the vault and with the folder; choosing another sort order leaves it untouched, and choosing **Custom** again brings it straight back.
 
 **Auto-reveal current file** is an on/off switch, off to begin with. While it is on (its button stays shaded), whatever you switch to in the editor is found in the tree for you: the folders it is in open, and its row scrolls into view. It acts when you change notes (and when you turn it on, or come back to Files from Search) — never on its own after that, so a folder you close yourself stays closed.
-
-Tab to the file tree and use the **Up** and **Down** arrows to move between rows. **Right** opens a folder or moves into it; **Left** closes it or moves to its parent. **Enter** or **Space** opens a file or toggles a folder.
 
 **Expand all** opens every folder in the vault, at every depth. Once any folder is open the same button becomes **Collapse all**, which closes them all again.
 
@@ -128,11 +112,9 @@ The **Search** tab at the top of the sidebar looks through every note in the
 vault — file names *and* the text inside them — and replaces the file tree while
 it is open; the **Files** tab beside it brings the tree back. Picking a result
 opens that note and scrolls to the line it matched, then puts the tree back. EPUBs, notebooks, drawings and PDFs match on their names only, since what is in
-them is not text. Results appear as the vault is searched. **Indexing — n of N** shows progress while the index or first text search loads. An open note's current text is searched before its saved version, and results refresh as you edit; saved changes remain searchable after the note closes.
+them is not text.
 
 ### Drag and Drop
-Files dropped on an area that does not handle them are refused rather than opened in a browser tab. Links dropped outside editable fields are likewise refused when no area handles them. Dropping a Markdown file onto an editable note can replace its text, as described below.
-
 You can drag and drop files and folders within the file tree to reorganize your vault:
 - Drag any item and drop it onto a folder to move it inside that folder.
 - Drag any item and drop it onto the empty space in the sidebar (the root level) to move it back to the main vault directory.
@@ -194,12 +176,12 @@ Under each pane's tabs is a row belonging to that pane: its file's name in the m
 
 - **←** and **→** walk that pane back and forward through the documents it has shown, the way a browser's do. Each pane remembers its own, and only for as long as the app is open — after a reload both arrows start out greyed, because there is nowhere yet to go back to.
 - The **eye** button switches that pane between Read Mode and Edit Mode (\`Cmd + E\` / \`Ctrl + E\` does the same to the pane you last clicked in). On a PDF you can annotate, it switches between reading and drawing on it instead. A whiteboard, a notebook, this guide and a note that could not be read have no such button.
-- **⋯** holds what is left: **Insert table…** in a note, **Read extracted text**, **Original PDF** and **Print…** on a PDF, **Export to PDF** on a notebook, and **Close this pane**, which closes the pane and everything open in it.
+- **⋯** holds what is left: **Insert table…** in a note, **Export to PDF** on a notebook, and **Close this pane**, which closes the pane and everything open in it.
 
 With more than one pane, the pane you last clicked in is the one with the coloured underline, and it is the one that ⌘E, ⌘F and ⌘S act on. Every pane is a real editor: you can type in all of them, and each keeps its own undo history.
 
 ### The Status Bar
-A small bar sits at the bottom right, over the page, and describes the pane you last clicked in: how many notes link to it (click it for the list), how many words and characters it holds, and whether your changes have been written to disk. The counts follow your typing without delay. It never takes a click meant for the note underneath it. A PDF, drawing, notebook or code file has no words worth counting, so there the bar shows only briefly, to say something was saved or moved to the Trash — and when a PDF or notebook is open in the right-most pane, the bar sits just above its page and zoom buttons rather than over them.
+A small bar sits at the bottom right, over the page, and describes the pane you last clicked in: how many notes link to it (click it for the list), how many words and characters it holds, and whether your changes have been written to disk. It never takes a click meant for the note underneath it. A PDF, drawing, notebook or code file has no words worth counting, so there the bar shows only briefly, to say something was saved or moved to the Trash — and when a PDF or notebook is open in the right-most pane, the bar sits just above its page and zoom buttons rather than over them.
 
 ### Giving One Pane More Room
 The line between two panes can be dragged. Pull it left or right and those two panes share the width between them — everything else stays exactly where you put it. A pane won't shrink past being readable, so you can always find the line again.
@@ -264,30 +246,25 @@ Collapsing only changes what you see — the file itself is never touched. A not
 Only \`#\`-style headings at the top level of a note collapse — not ones inside a quote or a list — and a heading with nothing under it has no arrow.
 
 ### Finding Text in a Note
-Press \`Cmd + F\` / \`Ctrl + F\` with a note or text file in front of you — in Read Mode or Edit Mode — and a find box opens in the top-right corner of that note, staying there as you scroll. It searches the whole note, not just the part on screen, including sections you have collapsed: a match inside one opens it.
-- Start typing and it jumps to the first match from where you are, every match is highlighted, and the box counts them — **3 of 15**.
-- \`Enter\` (or **›**) goes to the next match and \`Shift + Enter\` (or **‹**) to the one before, wrapping round at the ends. \`Cmd + G\` / \`Ctrl + G\` and \`Shift + Cmd + G\` / \`Shift + Ctrl + G\` do the same, whether you are in the box or back in the note. \`Alt + Enter\` selects every match at once.
-- The three toggles inside the field narrow what counts: **Aa** matches case, **ab** matches whole words only, and \`.*\` treats what you type as a regular expression.
-- **Replace** is only there in Edit Mode, because Read Mode never changes the note: open it with the arrow at the box's left. \`Enter\` in the Replace field (or **Replace**) replaces the current match and moves on; \`Cmd + Enter\` / \`Ctrl + Enter\` (or **All**) replaces every match. Switch modes with the box open and Replace appears or disappears; what you typed is kept.
-- Right-click the field for Cut, Copy, Paste and Select all.
-- \`Escape\` closes the box while you are in it, and so does its **×**. The keys then work on the note again: in Read Mode \`Space\` and \`Page Down\` scroll it, and in Edit Mode you are back typing where you were. Each press closes one thing: with the **Linked mentions** list open too, the first \`Escape\` closes the box and a second closes the list.
+Press \`Cmd + F\` / \`Ctrl + F\` with a note in front of you — in Read Mode or Edit Mode — and a search bar opens along the bottom of that note. It searches the whole note, not just the part on screen, including sections you have collapsed: a match inside one opens it.
+- Type what you are looking for and press \`Enter\` (or **next**) for the next match, \`Shift + Enter\` (or **previous**) for the one before. \`Cmd + G\` / \`Ctrl + G\` and \`Shift + Cmd + G\` / \`Shift + Ctrl + G\` do the same, whether you are in the bar or back in the note.
+- **all** selects every match. **match case**, **regexp** and **by word** narrow what counts.
+- **Replace** is only there in Edit Mode, because Read Mode never changes the note. Switch modes with the bar open and it appears or disappears; what you typed is kept.
+- \`Escape\` closes the bar while you are in it, and so does its **×**. The keys then work on the note again: in Read Mode \`Space\` and \`Page Down\` scroll it, and in Edit Mode you are back typing where you were. Each press closes one thing: with the **Linked mentions** list open too, the first \`Escape\` closes the bar and a second closes the list.
 
-With more than one pane open, it searches the pane you last clicked in. While you are typing in the sidebar's search box or a rename field, \`Cmd + F\` is the browser's; PDF Original opens the PDF's own find bar, which searches every page, while PDF Text searches its extracted text (see *PDFs*).
+With more than one pane open, it searches the pane you last clicked in. While you are typing in the sidebar's search box or a rename field, \`Cmd + F\` is the browser's; PDF Original keeps the browser's own find, while PDF Text searches its extracted text (see *PDFs*).
 
 ### Room Below the Last Line
 A note scrolls on past its last line by about half the height of its pane, so the end of what you are reading or writing can sit in the middle of the screen instead of against the bottom edge. A note shorter than that doesn't scroll at all. In Edit Mode, clicking in that space puts the cursor at the end of the note.
 
 ### Auto-Save
-You do not need to manually save your work. The editor automatically saves your changes to your local hard drive 1 second after you stop typing. You can also manually trigger a save using \`Cmd + S\` or \`Ctrl + S\`. If you reload or close the window while a change is still waiting to be saved, the browser asks whether you want to leave, in its own words; choose to stay and the save finishes as usual. Switching away from the window also saves straight away, as far as the browser lets it: that is a best effort, not a guarantee against a crash.
-
-If a save fails — the folder became read-only, the disk is full, another program holds the file — a notice at the bottom right says which file was not saved and why, and the status bar reads **Not saved**. It never takes the keyboard, so you can keep typing: your text stays in the tab, the next change tries again, and the notice goes away by itself once a save succeeds. Close it with **×** if you have read it; it stays closed for that file until the file saves again.
+You do not need to manually save your work. The editor automatically saves your changes to your local hard drive 1 second after you stop typing. You can also manually trigger a save using \`Cmd + S\` or \`Ctrl + S\`.
 
 ### When Files Change Outside the App
 Your notes are ordinary files, so other programs can change them too — a \`git pull\` in the terminal, a formatter, a sync service like iCloud or Dropbox, another editor, or this app open in a second browser tab. The editor notices, and never saves over a change it has not seen:
 - **A note you have open updates by itself** when its file changes and you have nothing unsaved in it. Your cursor and scroll position stay where they were, and \`Cmd + Z\` / \`Ctrl + Z\` steps back to the text you had before. Drawings, notebooks and PDFs reload the same way.
 - **If you were in the middle of editing it**, neither version wins silently. A bar appears at the top of the note — "*changed on disk while you had unsaved edits*" — with two buttons. **Reload** shows the version on disk and keeps yours beside it as \`name (conflict).md\`; **Keep mine** saves your version and keeps the one from disk beside it as \`name (conflict).md\`. (If that name is taken, the copy is called \`name (conflict 2).md\`, and so on.) Until you choose, the note is not saved, but you can keep reading and editing it; its tab carries a warning sign meanwhile, so a note waiting on you is easy to spot behind other tabs.
 - **Even when a change could not be noticed as it happened**, every save first checks that the file is still the one you opened. If it is not, nothing is written and the same bar appears. A change that only touched the file's date (\`touch\`, or a checkout that wrote the very same text) is not counted as a change.
-- **After an interruption**, if this browser has recovered changes for the file you open, a bar offers **Recover** or **Discard**. Changes for a missing or changed file, and older changes from another window, appear under **Recovered changes available as copies**; choose **Save a copy** to keep them without replacing the file. Native drawing and notebook copies also restore the media bytes retained in their recovery record; an existing, different picture is kept and the recovered copy uses a free filename. These recovery records are stored in this browser, not in the vault, and can be lost if browser storage is cleared.
 - **If the file is deleted**, the bar says so, and typing does not quietly bring the file back: **Save again** writes your note back where it was (folders included), and **Close** closes the tab — asking first if it holds edits that exist nowhere else. Closing a note whose file changed or vanished in any other way (the × on its tab, say) keeps your unsaved edits beside it as a \`(conflict)\` copy rather than dropping them.
 - **Changing a document’s kind by renaming its extension** first preserves pending source edits. Edits made during the move are kept in a \`(conflict)\` copy with the original extension before the destination is reopened. A failed preservation keeps the original editor open.
 - **If the file is renamed or moved**, its tab follows it to the new name, and a renamed folder keeps its icon, colour, custom order and whether it was expanded — when your system reports the change as a rename. A sync service that copies and then deletes, or a folder renamed on Windows, looks like a new folder: open notes inside are followed when their contents match, but the folder's look starts fresh. When the app cannot be sure where a file went, the tab shows it as deleted rather than guess.
@@ -312,189 +289,88 @@ Right-clicking in a note, or anywhere in the file tree, opens the application's 
 - *Move to Trash* asks first and names where the item is going, exactly as the row's own trash button does.
 - A row you are in the middle of renaming keeps the browser's menu, because what you want there is its Paste.
 
-A **drawing** keeps its canvas controls. PDFs use their in-app reader and annotation controls.
+A **drawing** keeps tldraw's own menu and a **PDF** keeps the browser's, since both of those already have menus that fit what they are.
 
 ---
 
-## 5. Drawings, Notebooks, and PDFs
+## 5. Notebooks, Drawings, and PDFs
 
-Three kinds of file open on a canvas instead of in the text editor: **drawings**, **notebooks** and **PDFs** you write on. All three use the same **board** — the same tools, menus and shortcuts, described first below — and are saved a second after you stop. A board is editable whenever its file can be written; otherwise it opens read-only with a notice that says why.
-
-Make a drawing or a notebook with the **pencil** button at the top of the sidebar (**New drawing or notebook**), then **New Drawing** or **New Notebook**, and type its name.
-
-A board you open or create from the file tree takes the keyboard straight away, so its tool keys work at once; so does clicking any button on its tool bar.
-
-### The tool bar
-The bar at the bottom centre holds **Select** (\`V\`), **Hand** (\`H\`), **Draw** (\`D\`, also \`B\` or \`X\`), **Eraser** (\`E\`), **Arrow** (\`A\`), **Text** (\`T\`), **Note** (\`N\`, a sticky note), **Media** (a picture or video from your computer, \`Cmd/Ctrl + U\`) and **Rectangle** (\`R\`). The chevron at its end opens **More tools**: the other nineteen figures (ellipse \`O\`, triangle, diamond, hexagon, oval, rhombus, star, cloud, heart, x box, check box, four block arrows, pentagon, octagon, trapezoid and rhombus 2), **Line** (\`L\`), **Highlight** (\`Shift + D\`), **Laser** (\`K\`) and **Frame** (\`F\`). While one of those is the active tool, the chevron shows it filled in blue. The bar's last figure slot holds the figure you drew with last, at first **Rectangle**: choose another figure from More tools and it takes that place, and \`G\` draws with it again. Hover any button for its name and key. On a touchscreen a tap on a bar tool chooses it at once, and a finger dragged off the bar creates that tool's shape where the finger lets go. In a narrow pane, the tools that do not fit on the bar move to the front of the chevron's list, the header's Undo, Redo, Delete and Duplicate move into its **Actions** grid, and the zoom box sits just above the bar.
-
-**Tool lock** (\`Q\`, Menu → Preferences, or the padlock that appears above the bar when a shape, text, note, frame, arrow, line or media tool is chosen) keeps the tool you picked after each use. A shape, arrow, line or frame you have let go of always lands, however quickly you start the next one, press a key or pick another tool; \`Escape\` before you let go still cancels it, and \`Cmd/Ctrl + Z\` right after takes back the last one. Press \`1\` to \`9\` to choose the tool in that position on the bar, left to right; a tool that a narrow window has moved into More tools has no number. Drag a tool from the bar onto the board to make that shape where you let go; a plain click only chooses the tool. \`Escape\` returns the chosen tool to Select, and closes More tools or the Actions grid.
-
-### Moving around
-- **Pan:** scroll or swipe, drag with the Hand tool, or hold \`Space\` and drag. The arrow keys pan when nothing is selected (\`Shift\` for bigger steps). Holding \`Space\` and pressing an arrow key moves the view by one screen, gliding for about a third of a second (at once with **Reduce motion**).
-- **Zoom:** pinch, or scroll as your **Input device** setting says (below). \`Cmd/Ctrl + =\` and \`Cmd/Ctrl + -\` zoom in and out, as \`=\` and \`-\` do, and \`Shift\` with either zooms around the pointer. \`Shift + 0\` goes back to 100%, \`Shift + 1\` fits everything on screen and \`Shift + 2\` fits the selection. The **zoom box** at the bottom right shows the zoom; click it for the zoom menu (in, out, 100%, fit and selection), which stays open while you step the zoom. Double-click the percentage for 100%.
-- **Zoom to an area:** hold \`Z\` and drag a rectangle to zoom to fit it. Hold \`Z\` and click to zoom in one step, or \`Alt\`-click to zoom out one step. With \`Alt\` held while you drag the box, the new zoom is at most half the current one, so the box only zooms out.
-- **Quick overview:** while holding \`Z\`, press \`Shift\`. The board zooms out about the pointer, so what is under it stays under it, until the view and everything on the sheet both fit, and a rectangle follows the pointer; let go of \`Z\` or \`Shift\` to land there, or press \`Escape\` to go back where you were. The pointer is an arrow while the overview is up.
-- If you wander far from everything, a **Back to content** button appears at the top left after a moment and glides you back to your selection, or to the sheet.
-- Menu → Preferences → **Input device** sets what the wheel does. With **Default (trackpad)** or **Trackpad**, which behave the same, a scroll pans, and \`Ctrl\` / \`Cmd\` with a scroll zooms, as a pinch does. With **Mouse**, a turn of the wheel zooms and \`Ctrl\` / \`Cmd\` with a scroll pans; **Invert mouse zoom** reverses the zoom direction. One turn changes the zoom by at most 10%. **Edge scrolling** (on by default) pans when you drag something to the edge of the board.
-- **Two fingers** pan, and pinch to zoom. Spreading or closing them by more than 24 px starts a zoom; a two-finger pan turns into a zoom only after the spacing changes by 64 px, so a pan does not zoom by accident. On touch, double-tap and hold, then drag up to zoom out or down to zoom in; 200 px doubles or halves the zoom, and a double tap without a drag zooms in one step.
-- **Pen mode:** when a pen touches a touchscreen, the board switches to pen mode. The pen draws; the mouse and a finger can no longer draw or edit, though two-finger pan and pinch still work. **Exit pen mode** at the top left leaves it.
-- The arrow beside the zoom percentage opens the **minimap**, which shows the whole drawing with your view as a box. Press outside the box to glide there, or drag inside it to move the view. Selected shapes show in the map, and it stays open or closed between visits.
-
-### Drawing
-- **Draw** follows your pen, mouse or finger, and however fast or slowly you draw the line comes out as a smooth curve through the path your hand took, without the pointer's pixel steps, and a loop that ends where it began closes smoothly; only a sharp turn stays a corner. Hold \`Shift\` while drawing to make the next part a straight line, whose direction snaps to 15° steps; hold \`Cmd/Ctrl\` as well to draw it without the snap. Press \`Shift\` and click with Draw to continue your last stroke with a straight line from its end.
-- **Highlight** draws a broad see-through stroke. **Laser** draws a trail that fades by itself and is never saved — for pointing while you share your screen.
-- **Eraser** removes whole items, whatever it touches, and leaves a short trail behind the pointer. Every sweep counts, however quickly you start the next one or switch tools; \`Cmd/Ctrl + Z\` brings back what the last sweep removed. Hold \`Cmd/Ctrl\` over Draw or Highlight to erase the whole items under the pointer until you let go, and then the drawing tool comes back. With a drawing tool chosen, a right-click first switches to Select, so the menu acts on what is under the pointer.
-- **Figures** and **Line**: drag to draw. **Arrow**: see *Arrows* below. While you drag a line's end or bend, hold \`Shift\` to hold it to 15° steps from its neighbouring point. On a touchscreen, a shape started with a tap is dropped if you keep your finger still for half a second.
-- **Text**: click to start typing, or press and hold for a moment, then drag sideways to make text that wraps at the width you drag. Dragging **Text** off the bar shows a mark that follows the pointer; where you let go, a text reading **Text** is created and selected, so typing replaces it. **Note**: drag to make a note that follows the pointer and lands where you let go; a click centres one on the pointer, or puts it in a free space beside another note when you click within 10 px of that space. To change the words of a selected text or note, press \`Enter\` or double-click it; \`Escape\` finishes and gives the keyboard back to the board. Double-clicking a text selects all of its words, and clicking the only selected text places the caret where you click. A note's words always stay readable on its colour: where the colour you chose would be too faint, they turn black or white, whichever reads better. Pressing another note's or shape's text while one is open finishes the first and opens the one you pressed. If the keyboard has left the text you are editing (you clicked the style panel, say), dragging that shape moves it.
-- **Frame**: drag to draw a named frame. It clips what sits inside it and takes in anything fully inside the box; \`Cmd/Ctrl + Alt + G\` frames the selection, or removes the frames when only frames are selected; \`Cmd/Ctrl + Alt + Shift + G\` removes the selected frames either way (their contents stay put). **Fit to content** (Menu → Edit) shrinks or grows a frame around what it holds. A click with the Frame tool makes an empty frame of the default size where you click; only a frame you drag out takes in the shapes it fully encloses. Double-click the left or right edge of a selected frame to fit its width to what it holds, the top or bottom edge to fit its height, or a corner to fit both; the fit leaves a margin.
-
-**While you edit text**, \`Cmd/Ctrl + B\` (bold), \`Cmd/Ctrl + I\` (italic), \`U\` (underline), \`Cmd/Ctrl + Shift + S\` (strikethrough), \`Cmd/Ctrl + Shift + H\` (highlight), \`Cmd/Ctrl + E\` (inline code), \`Cmd/Ctrl + Shift + 8\` / \`7\` (bulleted / numbered list) and \`Cmd/Ctrl + Alt + 1\` to \`6\` for headings (\`0\` for plain text). \`Cmd/Ctrl + Shift + K\` edits the link on the selected text, and \`Cmd/Ctrl + K\` finishes the edit and opens the command palette. The formatting bar above a selection shows Bold, Italic, Inline code, Link, Bulleted list and Highlight; a format that is on is highlighted. Misspelt words are underlined; right-click one for suggestions or **Add to dictionary**. The words you add are listed, and can be removed, under **Settings → Editing → Board dictionary**.
-
-**Typing** turns \`--\` into an em dash (—), \`...\` into an ellipsis (…), \`(c)\`, \`(r)\` and \`(tm)\` into © ® ™, \`1/2\`, \`1/4\` and \`3/4\` into ½ ¼ ¾ (at the start of a word), \`+/-\` into ±, \`!=\` into ≠, \`<<\` and \`>>\` into « and », and \`<-\` and \`->\` into ← and →. Quotes and apostrophes curl as you type; inside code, or while a backtick is still open, they are typed as written. With text selected, typing \`(\`, \`[\`, \`{\`, \`<\`, \`"\` or \`'\` wraps the selection in that pair. **Tab** types a tab character in a text box, and indents or outdents a list item; in a note it moves to the neighbouring note in that direction when there is one, and otherwise types a tab. Pasted text wraps at 90% of the view width and stays auto-sized when it fits.
-
-### The style panel
-The style panel sits at the top right of a drawing, a notebook or an annotated PDF, and shows the styles that apply to what you are doing. With something selected it shows the rows those items have: colour, opacity, fill, dash, size, pen width (for ink, text and notes), font, alignment, shape, arrow kind, arrowheads or line type. With nothing selected it sets the style of the next shape you make. Pick one of twelve colours. Where the items in a selection differ, the row says **Mixed** and nothing is picked until you choose. Press a colour or option and move across others to apply each one as you pass it; releasing keeps the last. The whole press is one undo step. The width slider is continuous rather than a set of sizes, from a normal writing width down to a hairline: double-click it to come back to the default, and the arrow keys and Page Up / Page Down move it, a held key being one undo step. Figures, arrows and lines have no width slider; their **Size** row sets the outline width and the text of their labels.
-
-The chevron in the panel's header folds it to its title and the colour in use; the chevron opens it again. **Cmd/Ctrl + Enter** moves the keyboard into the panel, and **Escape** returns it to the board; **Cmd/Ctrl + Z** still undoes from there. Below about 640 px of pane width the panel becomes a palette button in the bottom bar, tinted with the colour in use, which opens the same controls. **Every file keeps its own pen.** A notebook you annotate in fine red stays fine and red; the PDF you were marking up in thick blue is still thick and blue when you come back to it. A brand new file starts at the width you were last using.
-
-Style keys for the selection: \`Alt + F\` fills a figure, \`Alt + Shift + F\` gives it a lined fill, \`Alt + T\` makes it white, and \`Shift + Q\` copies the style of what is under the pointer.
-
-### Arrows
-**Arrows** attach to shapes. Drag an end onto a shape and rest there for about a third of a second, or move onto it slowly, and it attaches to the exact point under the pointer; move onto it quickly and it attaches to the shape's centre. Hold \`Alt\` to attach exactly, with no marker, or hold \`Cmd/Ctrl\` to leave the end unattached. While you drag, the shape an end will attach to is outlined; with the Arrow tool, hovering a shape shows a ring at its centre, and after a moment a cross shows the exact point. While you drag an elbow arrow's end, its shape shows four dots at the middle of each edge, and a circle where the end will land on an edge. An elbow arrow that ends on a shape's edge reaches it straight on from outside, going around the shape if it has to, and never runs through the shape to get there. Shift holds a free end to 15° steps, and an unattached end follows the grid when grid mode is on, and so does an arrow's start point. An arrow attached at both ends lives in the frame or group its two shapes share, or on the sheet, and it moves into or out of a frame with its shapes. A drag shorter than 10 units makes no arrow, and an arc keeps its curve when one end is released from its shape. An attached end stays attached when its shape moves, and when you change its shape the end that the new outline leaves outside moves to the nearest point of that outline. Dragging a selected arrow moves it free of its shapes, unless those shapes move with it. Click an arrow's label, without dragging, to edit its text. Dragging the middle handle bends the arrow, and near the straight line it straightens it; an elbow's middle handle snaps to the middle of its range and to the parallel segments of other elbows that share a shape. Double-click an arrow's end to switch its arrowhead on or off. \`Cmd/Ctrl\` with a drag on an arrow's end or label draws a selection box instead of moving it. A selected arrow shows the stubs where it is bound.
-
-### Selecting and arranging
-- Click to select; \`Shift\`-click or \`Cmd/Ctrl\`-click adds or removes. Drag a box on empty space to select what it reaches: the selection follows the box as you drag, and \`Escape\` puts back the selection you had. With **Select when wrapped** on (Menu → Preferences) the box selects only what it fully encloses; holding \`Cmd/Ctrl\` during the drag reverses that. You can press \`Delete\` the moment you let go: it removes what the box selected. Hold \`Alt\` and drag on empty space to draw a free path that selects what it crosses, as you draw it. \`Cmd/Ctrl + A\` selects everything on the sheet, and \`Tab\` / \`Shift + Tab\` step through items. Hover a shape to see its outline; a right-click selects the shape under the pointer before its menu opens. Hold \`Cmd/Ctrl\` and drag from a shape to draw a selection box instead of moving it. Shift, Cmd or Ctrl with a double-click does nothing; a plain double-click on empty board starts text there. Selection handles draw larger when the board was last used with a finger or a pen.
-- Drag to move (\`Shift\` keeps the move straight), drag a corner or edge to resize (\`Shift\` keeps the proportions, \`Alt\` resizes from the centre), drag the rotate handle to turn (a turn lands on whole degrees when you let go, and on a right angle on touch; \`Shift\` snaps it to 15° steps as you turn). \`Alt\`-drag moves a copy and leaves the original.
-- Arrow keys nudge the selection (\`Shift\` for farther). \`Cmd/Ctrl + D\` duplicates (each further copy goes the same distance on again, or repeats the offset of your last Alt-drag clone), \`Delete\` or \`Backspace\` removes.
-- \`Cmd/Ctrl + G\` groups two or more items, or ungroups a single group; \`Cmd/Ctrl + Shift + G\` ungroups. Double-click inside a selected group, or press \`Enter\`, to select one thing in it; \`Escape\` steps back out of the group before it clears the selection. \`Shift + L\` locks the selection so it can't be moved by accident (right-click a locked item to unlock it; Menu → Edit → **Unlock all** unlocks everything).
-- \`[\` / \`]\` send to the back / bring to the front, and \`Alt + [\` / \`Alt + ]\` one step. \`Shift + H\` and \`Shift + V\` flip; \`Shift + .\` and \`Shift + ,\` rotate (with \`Alt\` in finer steps). \`Alt\` with \`A\`, \`H\`, \`D\`, \`W\`, \`V\` or \`S\` aligns left, centre, right, top, middle or bottom.
-- \`Shift + F\` **flattens** the selection into a single picture.
-
-### Snapping and the grid
-Dragging a shape snaps it to other shapes: its edges and centre line up with theirs, and an evenly spaced gap shows when a shape fits between two others. Each point that lines up is marked with a cross. Hold \`Cmd/Ctrl\` while you drag to snap; if **Always snap** is on in Preferences, holding it drags without snapping instead. Pressing or releasing \`Cmd/Ctrl\` during a drag switches the snap at once. A shape or a line end does not snap while the pointer moves fast, so move more slowly to snap. While the grid is shown, a plain drag snaps to it, a snap to another shape wins over the grid, and holding \`Cmd/Ctrl\` drags off the grid. A line's end or bend snaps to the corners and centres of other shapes and to the line's own other points within 8 px, and to the nearest point of another shape's outline when no corner or centre is in reach. Resizing snaps to other shapes only while the shape is unturned or turned by a right angle. A note dragged close to a free space beside another note snaps into it within 10 px. A pasted or dropped group's top-left corner lands on the grid when the grid is shown, and every figure, frame and note you make lands on it too, and an arrow's start point does. The arrow keys nudge a selection 1 px (\`Shift\`: 10 px), or one grid step (\`Shift\`: five) when the grid is shown.
-
-### The board's menus
-The strip in the top-left corner holds the **Menu** (☰), the **sheet** drop-down, **Undo**, **Redo**, **Delete**, **Duplicate** and **Actions** (⋮). Undo, Redo, Delete and Duplicate are dimmed when they cannot act, and say why when you hover them.
-
-- **Menu** has **Edit** (undo, cut, copy, paste, duplicate, delete, select all, **Copy as**, group, flatten, frames, locking, and **Convert to bookmark / embed** for links), **View** (the zoom commands and **Toggle minimap**), **Export**, **Insert embed…** (\`Cmd/Ctrl + I\`), **Upload media…** (\`Cmd/Ctrl + U\`), **Preferences**, **Language** (the board's own buttons and menus come in 49 languages) and **Keyboard shortcuts…** (\`Cmd/Ctrl + Alt + /\`), which lists every key in three columns. If keyboard shortcuts are turned off, the dialog says so at its top, and Delete, \`Cmd/Ctrl + Enter\`, \`Cmd/Ctrl + Shift + Enter\` and \`Alt + R\` still work.
-- **Actions** opens a grid of buttons for the selection: align, stretch, distribute and stack; send to back, backward, forward and to front; rotate; **Edit link…**; and **Group**, which becomes **Ungroup** when the selection is a group.
-- **Command palette…** (in the Menu, or \`Cmd/Ctrl + K\`, which also finishes a text edit first) lists every command, tool and style and searches them as you type. Arrows or Tab move, Enter runs, → opens a submenu, and ← (or Backspace on an empty search) goes back; Escape backs out or closes. Styles include an **Opacity** submenu from 10% to 100%. On a drawing you can edit, a command that cannot run now stays listed and says why.
-- **Right-click** the board for the same commands where you clicked: Cut, Copy, Paste, Duplicate, Delete, Copy as and Select all, plus, with something selected, **Edit**, **Arrange**, **Reorder**, **Move to page** and **Export as**. **Arrange** holds the flips, the alignments, distribute, stretch, pack and **Stack**, which needs at least three shapes and lines them up in order, left to right or top to bottom. **Move to page** can send the selection to a **New sheet**. Flipping a text keeps its letters readable. A row that cannot run now stays on the menu and says why — a locked picture, a read-only board, nothing selected. \`Cmd/Ctrl + Shift + Enter\` opens the same menu from the keyboard.
-- **Preferences**: Always snap, Tool lock, Show grid (\`Cmd/Ctrl + '\`), Select when wrapped, Focus mode (\`Cmd/Ctrl + .\`, hides the board's controls; a dot in the bottom-right corner brings them back), Edge scrolling, Dynamic size, Paste at cursor, **Accessibility** (reduce motion, turn the board's keyboard shortcuts off, enhanced accessibility), **Input device** (see *Moving around*), a drawing's **Theme** (dark, light or system; \`Cmd/Ctrl + /\` toggles it), and Debug mode.
-
-**Sheets.** A board can hold several sheets — separate canvases in one file. The sheet drop-down lists them: click one to go there, **New sheet** adds one, and the **⋯** beside a sheet renames, duplicates, moves or deletes it. Double-click the current sheet's name, or press \`Enter\` on it, to rename; drag a sheet's row to reorder, and drag the grip under the list to set its height (double-click the grip for automatic height). With the board focused, \`Alt + ←\` or \`↑\` goes to the previous sheet and \`Alt + →\` or \`↓\` to the next; on the last sheet, a forward step adds a new sheet once that sheet has content. A notebook's or a PDF's sheets all share its paper or pages (a PDF calls them **Annotation sheets**).
-
-### Pictures, videos, links and embeds
-Drop or paste a picture or video onto a board, or use **Media** / \`Cmd/Ctrl + U\`. Right-click a selected picture for **Replace media…** (the new one keeps the old one's centre and longer side; on a PDF page it is embedded in that PDF), **Crop image**, **Crop to aspect ratio** (original, square, circle, 4:3, 3:4 or 16:9), **Invert image colours**, **Download original** and **Alternative text…**. A video adds **Play** / **Pause**.
-
-**Cropping** happens on the canvas. Double-click a picture, press \`Enter\` with it selected, or choose **Crop image**: the whole original stays visible, faded outside the kept window. Drag an edge or corner to crop (\`Shift\` keeps the proportions, \`Alt\` resizes from the centre), and drag inside to move the picture within its frame; the arrow keys nudge it, and \`Shift\` with them moves it farther. \`Enter\` applies the crop, \`Escape\` cancels it, and a click outside applies it. Hold \`Cmd/Ctrl\` and drag a selected picture's handle to start the crop from that edge in one motion. Double-click a crop edge to give that side back to the whole picture. The bar's aspect menu, zoom slider and **Fit** keep the crop open, and **Apply** hands the keyboard back to the board. A selected picture's toolbar has **Replace**, **Crop**, **Download original** and **ALT** buttons.
-
-A pasted web address becomes a **link card** showing its address. **Fetch link preview** (on the card, or in its right-click menu) contacts the link's site only when you ask, and keeps the title, description, picture and icon the page declares in the board's pictures folder. **Open link** (or \`Cmd/Ctrl\`-click on the card) opens the address in a new tab. A pasted link instead fills the one selected figure, note, picture, card or embed that is unlocked, rather than making a new card.
-
-**Embeds.** **Menu → Insert embed** places a web embed (a video link, say) on the board as an inert poster. Nothing loads until you ask: press **Load** on the card (or right-click → **Load embed**); **Stop** on the card, or **Unload embed**, puts the card back. A loaded embed plays in place. If something drawn on top of it is see-through, the board keeps showing its true picture and the embed opens in a panel of its own above the board instead, with an **Unload** button; \`Escape\` closes it too. Closing the tab or switching documents always unloads it.
-
-### Inverting a Picture You Brought Over
-Screenshots taken out of a dark-themed app land on a notebook page or a whiteboard as a black rectangle. Select the picture and press \`I\` to invert it, so it sits on the page like everything else drawn there, and press \`I\` again to put it back. It applies to every picture you have selected, undoes with \`Cmd + Z\`, is saved with the file, and comes out inverted in a notebook's exported PDF too. Only that picture changes; the image file in your vault is untouched.
-
-### Copying, exporting and printing
-\`Cmd/Ctrl + X\`, \`C\` and \`V\` cut, copy and paste the selection. \`Cmd/Ctrl + Shift + V\` pastes plain text, \`Cmd/Ctrl + Alt + V\` pastes at the cursor, and \`Cmd/Ctrl + Shift + Alt + V\` pastes plain text at the cursor. A plain paste goes back where it was copied from when that is on screen, and otherwise into the middle of the view. A paste at the cursor lands in the frame under the pointer, if there is one. **Copy as → PNG / SVG** copies a picture of the selection (or the whole sheet when nothing is selected), drawn from the artwork rather than a screenshot of the controls; tick **Transparent** for no background. SVG is copied as text. \`Cmd/Ctrl + Shift + C\` copies the selection as PNG.
-
-**Menu → Export** saves **PNG**, **SVG**, **PDF** or **JSON**; **Print…** (\`Cmd + P\` / \`Ctrl + P\`) asks first whether to print the selection or the whole sheet: PDF puts a drawing's sheet on one page and a notebook or PDF board on all its pages, and JSON is the board's own records, with pictures referenced by hash rather than bundled. A selection's **Export as** offers PNG, SVG and JSON of just those items. **Print** (\`Cmd/Ctrl + P\` with the board focused) prints the open board the same way. With something selected, Print asks first: **Selection** prints just those items, **Sheet** prints the whole sheet.
-
-Navigation, selection, copying and exporting never edit the file; only drawing and editing do.
-
-### Saving, reopening and the agent
-Every change is saved to the file a second after you stop; \`Cmd/Ctrl + Z\` undoes and \`Cmd/Ctrl + Shift + Z\` redoes. Drawings and notebooks **reopen where you left them** — the same spot on a drawing, the same page and zoom in a notebook — just as a PDF does, whether you switch tabs, close the file or reload the app. A drawing you open here for the first time shows the view saved in the file, if it has one (an older \`.tldraw\` drawing opens where it was last viewed); otherwise it frames everything on the page with a margin, never zoomed in past 100 %.
-
-A drawing or notebook this version cannot read safely — an unreadable file, one written in a newer format, or one that is not the kind its name says — **opens read-only**: neither drawing on it nor Save can overwrite the original file. An empty file is still a valid new board.
-
-The agent's **canvas tools** work on the document rather than its view: they can change a drawing or notebook while its pane is hidden, each batch is one undo step, and a disk conflict or a read-only file still refuses them.
-
-For drawing without a pointer, the **Use keyboard drawing cursor** button gives the board a cursor you move with the arrow keys and press and lift with \`Enter\`. Holding \`,\` presses the pointer at that cursor, and releasing it lifts the press. \`Alt + R\` repeats the board's last announcement for a screen reader. The skip link **Move focus to canvas** selects the first object in reading order and puts the keyboard on the canvas. On a read-only board it only moves the focus: choosing an object from the board's object list selects it, and a live announcement says which one.
-
-### When the graphics card cannot be used
-Drawings, notebooks and PDFs are drawn with your computer's graphics card (WebGL2) whenever the browser offers it, and otherwise with the browser's ordinary drawing, which shows exactly the same thing but can be slower on large documents. When a document has no usable graphics card — graphics acceleration switched off in Chrome, software-only graphics, an unsupported card, or repeated graphics errors on that document — a notice says so once, with **Dismiss**: on a board in a box just above the tool bar, on a PDF at the bottom left. A board's other notices, such as a picture that could not be shown, appear in the same box with it, newest last, each with its own **Dismiss**; a new notice never hides one you have not read.
-
-### Drawings
-A **drawing** (\`.drawing\`) is a canvas with no pages at all — an endless sheet in every direction, for diagrams and thinking rather than for a page you intend to hand in. Its **Minimap** (bottom right) shows the artwork and your current view: click or drag in it to move there; with the minimap focused, the arrow keys move a quarter of the view (a full view with \`Shift\`), and \`Home\` / \`End\` go to the artwork's top-left / bottom-right. A drawing has no paper, and its own **Theme**.
-
-An older \`.tldraw\` drawing is converted when opened: the original is kept in the folder's Trash before the first save. Elbow connectors from earlier versions keep their ends, their attachments, their arrowheads and their label; this app draws their bends itself, so an elbow may bend in a different place than it did before, still joining the same shapes by the same sides. Drawings from any tldraw version open this way, tldraw's own \`.tldr\` files included, and opening one never changes the file. If a few items cannot be shown here (an embed, a shape kind this app does not have), the board still opens without them and says so once in a notice at the bottom, which **Dismiss** puts away; the items stay recorded in the converted file, and the original is in Trash. Repairs worth knowing about, such as pen pressure that could not be read, are listed in the same notice. A file that cannot be read at all says why in one sentence and is left exactly as it was.
+Three kinds of file open on a canvas instead of in the text editor. All three
+are drawn with the same tools — pen, highlighter, shapes, text — and all three
+save themselves as you work, a second after you stop.
 
 ### Notebooks
-A **notebook** (\`.notebook\`) is ruled paper you can write on: the closest thing here to a paper pad, and what to reach for when you are doing an assignment by hand rather than taking notes in Markdown.
+A **notebook** (\`.notebook\`) is ruled paper you can write on: the closest thing
+here to a paper pad, and what to reach for when you are doing an assignment by
+hand rather than taking notes in Markdown. Make one with **New Notebook**, in
+the pencil button's menu at the top of the sidebar.
 
-A notebook scrolls like a PDF: swipe up and down to move through the pages, and pinch to zoom. At full width the page fills the screen edge to edge, and the pages can never be swiped off screen. \`Page Up\` / \`Page Down\`, \`Space\` / \`Shift + Space\`, \`Home\` and \`End\` move by pages.
+A notebook has the same dark pages a PDF does: the button beside the thumbnails
+one turns the paper black and the writing light, for working at night. It only
+changes how the notebook looks on screen, and a PDF exported from it is still
+printed on white paper.
+
+A notebook scrolls like a PDF: swipe up and down to move through the pages, and
+pinch to zoom. At full width the page fills the screen edge to edge, and the
+pages can never be swiped off screen. The page box at the bottom right jumps to
+a page, and the button beside it opens a **strip of page thumbnails** down the
+left, showing what is written on each one.
 
 The bar across the top of a notebook is its paper:
 
-- **Paper size** — Letter, A4 or Legal — and **Portrait / Landscape** (the button names the current way round; click it to turn the paper).
-- **Paper ruling** — lined, grid, dotted or blank. Changing it re-papers what you have already written; nothing you have drawn moves.
-- **Add page** adds a page at the bottom. You rarely need it: writing near the bottom of the last page adds the next one for you, before you run out of room.
-- **Delete last page** removes the last one. An empty page just goes; one with writing on it asks first, because that writing goes with it.
-- **Page thumbnails** opens a strip of pages down the left, showing what is written on each; click one to go there.
-- **Invert page colours** turns the paper black and the writing light, for working at night. It only changes how the notebook looks on screen; a PDF exported from it is still printed on white.
-- The **page box** shows the page you are on; type a number and press \`Enter\` to jump.
+- **Lined / Grid / Dotted / Blank** — the ruling. Changing it re-papers what you
+  have already written; nothing you have drawn moves.
+- **Letter / A4 / Legal** and **Portrait / Landscape** — the page size.
+- **+ Page** adds a page at the bottom. You rarely need it: writing near the
+  bottom of the last page adds the next one for you, before you run out of room.
+- **− Page** removes the last one. An empty page just goes; one with writing on
+  it asks first and says how much, because that writing goes with it.
 
-#### Exporting a notebook to PDF
-Choose **⋯ → Export to PDF** in the notebook's pane header to write a PDF beside the notebook — \`Assignment 3.notebook\` becomes \`Assignment 3.pdf\`. The ruling and your handwriting are both drawn into it as real vector artwork, so it stays sharp printed or zoomed in, and the pages are ordinary PDF pages that anything can open. Every sheet is included, in order. If some content cannot be drawn faithfully, the export stops rather than silently leaving that artwork out.
+### Exporting a notebook to PDF
+The download icon in the top bar writes a PDF beside the notebook — \`Assignment
+3.notebook\` becomes \`Assignment 3.pdf\`. The ruling and your handwriting are both
+drawn into it as real vector artwork, so it stays sharp printed or zoomed in, and
+the pages are ordinary PDF pages that anything can open.
 
-The notebook stays the original you keep writing in. Exporting again uses the same PDF name rather than leaving a pile of copies. An existing PDF is kept in the folder's Trash before it is replaced. The app asks first unless it is this notebook's unchanged last export; if the target changes during export, it asks again. Close the target PDF's tab before replacing it, so an open document cannot lose unsaved annotations. A folder with the PDF's name cannot be replaced.
+The notebook stays the original you keep writing in. Exporting again overwrites
+the same PDF rather than leaving a pile of copies, and asks first if a PDF of
+that name is there that this notebook did not put there.
 
-The exported PDF remembers which notebook it came from, so pressing the pen on it **opens that notebook** instead of annotating the PDF as if it were someone else's. That is what you want: annotating the export would make a third file holding marks the notebook knew nothing about, and your next export would neither include them nor replace it. The link survives renaming the PDF, and if the notebook itself is gone the app says so rather than quietly forking.
+The exported PDF remembers which notebook it came from, so pressing the pen on
+it **opens that notebook** instead of annotating the PDF as if it were someone
+else's. That is what you want: annotating the export would make a third file
+holding marks the notebook knew nothing about, and your next export would
+neither include them nor replace it. The link survives renaming the PDF, and if
+the notebook itself is gone the app says so rather than quietly forking.
 
-Everything around a page — the toolbars, the style panel, the space the pages sit on — follows the app's theme. The **pages themselves stay white** in either theme, because that is paper: it is what the exported PDF prints on, and ink that changed colour with the theme would come out invisible in the file. Notebook and PDF ink therefore use a paper palette and do not offer the board's Theme menu or its theme shortcut.
+### The pen
+Colour and thickness live in the panel at the top right, and it is the same
+panel in a notebook, a drawing and an annotated PDF.
 
-### PDFs
-PDFs open **inside the app** in their own pane, in a reader: scroll them, select and copy their text, search every page, follow their links, and write on them. The pane header's **⋯** switches between **Original PDF** (the pages as they are) and **Read extracted text** (an optional text view), and the pen beside it — or \`Cmd + E\` / \`Ctrl + E\` — switches between reading and **Annotate**, the same toggle every other file has.
+The **slider is the pen's width**, and it is continuous rather than a set of
+sizes — it starts at a normal writing width and goes down to a hairline, which is
+what small handwriting on ruled paper needs. Double-click it to come back to the
+default. The dot beside it is the actual width, in the actual colour, so you can
+see what you are about to draw with. Drag the slider or pick a colour with
+something selected and it re-inks that instead of only the next stroke.
 
-#### Reading a PDF
-- **Moving:** scroll, or use \`Page Up\` / \`Page Down\` (a screenful), \`Home\` and \`End\` (first and last page). The **page box** at the bottom right shows the physical page you are on; type a number and press \`Enter\` to jump.
-- **Zoom:** pinch or hold \`Ctrl\` and scroll, use the \`+\` and \`-\` keys, or the **−** / **+** beside the zoom percentage at the bottom right.
-- The buttons at the bottom right, from the left: **Contents** (the PDF's bookmarks, when it has them — click a heading to jump there, arrow keys move through and open the tree, \`Enter\` follows a heading, \`Escape\` closes it), **Page thumbnails** (a strip of pages down the left, using the same page numbers as the page box, with the current page highlighted), **Invert page colours** (dark pages for reading at night, while reading and while writing on them — only how they look, never the file), the two **rotate** arrows (below), and **PDF feature limitations**, which lists the file's known restrictions.
-- **Right-click** the page for **Copy**, **Copy as quote**, **Search vault for selection**, **Find selection in this PDF**, **Copy page text**, **Select all** and **Read extracted text**.
-- If a page cannot be rendered completely, a notice stays on that page (an error whose page is unknown appears above the document) and its thumbnail says **Thumbnail unavailable** rather than pretending to be blank. **Try again** reopens the PDF; it never changes the original file. In Annotate, switch to View to retry without disturbing your ink. If rendering makes no progress for a while, **This PDF is taking longer than usual** lets you keep waiting or **Try again**; a renderer restart can affect other open PDFs, and each says so. If the PDF reader itself cannot load, its column offers **Retry**; if the browser keeps the failure, reload the app. Very long PDFs start with estimated page sizes, which settle as you visit pages.
-- **PDF rendering quality was reduced to fit memory** appears on a PDF (or **Rendering quality was reduced to fit memory** on a board) only when that document has really been drawn below full sharpness for about a second, and it goes by itself once the page is sharp again. **…is limited by available memory** means the pages on screen did not fit for that long and goes once they do. Neither is an error: each offers **Dismiss** only, since reopening the file would not help. Freeing memory the app no longer needs happens quietly and never shows a notice. **Retry** appears only when a page or the PDF really failed to render; after it, a short note says the retry is under way and clears itself as soon as the pages are sharp.
-- Screen readers find a landmark for every physical page; moving to one brings that page into view. **Read this PDF as text**, at the start of the viewer, opens the whole-document accessible view.
+**The pen panel hides.** The arrow at its top folds it down to a single swatch in your current colour; click the swatch to open it again. **Every file keeps its own pen.** A notebook you annotate in fine red stays fine
+and red; the PDF you were marking up in thick blue is still thick and blue when
+you come back to it, however many other things you drew in between. A brand new
+file starts at the width you were last using, since that is usually the one you
+want again.
 
-#### Finding and copying text
-In **Original PDF**, press \`Cmd + F\` / \`Ctrl + F\` to search every page, including pages you have never opened. A short single-line selection pre-fills the bar; otherwise it keeps this pane's last query. Matching ignores case and accents, folds ligatures, and matches across line breaks, hyphenated line ends and PDF text-item boundaries. The count shows progress and stops at **10,000+** matches. Scans without selectable text are not OCR'd.
-- In the input, \`Enter\` / \`Shift + Enter\` move to the next / previous match. \`Cmd + G\` / \`Ctrl + G\` and their Shift forms do the same from the bar or the page. Next waits for an unfinished scan rather than wrapping early.
-- \`Escape\` or **×** closes the bar and leaves the current match selected, ready to copy. Switching tabs keeps each pane's query and results.
-- Chrome's own **Edit → Find** sees only the pages whose text is built, not necessarily every page. Use the keyboard shortcut for a complete search.
+### Drawings
+A **drawing** (\`.tldraw\`) is the same canvas with no pages at all — an endless
+sheet in every direction, for diagrams and thinking rather than for a page you
+intend to hand in.
 
-**Copying.** Select a passage and press \`Cmd + C\` / \`Ctrl + C\`. With a page focused, \`Cmd + A\` / \`Ctrl + A\` visibly selects the built text and marks **the whole document** for copying; follow it with \`Cmd + C\` / \`Ctrl + C\` to gather every physical page, including pages you have never opened, separated by a newline. A notice shows progress or a blocked clipboard write. Changing the selection returns to ordinary passage copying. Whole-document text above **16 MiB** is refused rather than silently cut off. A PDF that forbids copying cannot be selected, copied, searched as text or read as text by the agent.
+Drawings and notebooks **reopen where you left them** — the same spot on a
+drawing, the same page and zoom in a notebook — just as a PDF does, whether you
+switch tabs, close the file or reload the app.
 
-**Read extracted text** (in **⋯**) is a separate reading view with physical page labels, its own Find (\`Cmd/Ctrl + F\` while it is focused), Copy and the shared **Aa** reading controls. Text is extracted by the PDF engine, with no OCR: scans may have no text, existing OCR may differ from the pixels, and columns, tables and maths may come out in an imperfect order — the text-order warning means that, not necessarily missing text. Copy across pages puts a separator between them. Word emphasis is inactive there; choose **Original PDF** to use it on the page itself. Choosing Original returns to the page images to check layout, pictures, links and annotations; an unchanged round trip restores where you were. Reading positions and an explicit Text choice are remembered per vault and file; a Text passage saved by an older version is matched by its words and labelled when the match is approximate.
-
-**Word emphasis** in the pane header paints supported glyphs directly on the original page, including while annotating, and keeps the same layout, links and annotations (see *Word emphasis* below). Image-only scans, hidden OCR, clipped or covered text, missing font mappings and unsupported painting routes stay original, and the header says why. **Aa** does not replace a native PDF's fonts or geometry.
-
-#### Turning a sideways scan the right way up
-The two curved arrows at the bottom turn the pages a quarter at a time — \`]\` turns right, \`[\` turns left. They turn the whole document; hold \`Alt\` (\`Option\`) while clicking an arrow to turn only the page you are reading, which is what a single crooked page in an otherwise straight scan wants. The page turns as you press, and sharpens a moment later once the turned file is saved and read back; press as quickly as you like, every press counts. Unlike inverting, this is a real change to the file: the PDF is saved the way round you left it and opens that way here and in anything else. The rest of the file is kept exactly as it was — the turn is added after it — and four turns bring the file back to exactly what it was. There is no undo for a turn: the opposite arrow is the undo. A PDF this app has annotated is not turned (its marks are drawn against the pages as they are), and if a turn cannot be saved the page turns back and a message says why.
-
-A PDF you have already written on is left alone, with a note saying so: your marks are drawn against the pages as they are, and turning the paper would move every one of them — so straighten a scan before you annotate it. A notebook's export, a PDF whose attachments this app cannot read, and an encrypted PDF are left alone too, and the note says what to do instead.
-
-#### Writing on a PDF
-Press the pen in the pane header (or \`Cmd + E\` / \`Ctrl + E\`) and the PDF opens on the board, **on the page you were reading**, with the same tools, style panel and menus as a notebook. The bar at the top holds **Page thumbnails**, **Invert page colours** and the page box. Swiping scrolls the pages up and down and pinching zooms; at full width the page fills the screen edge to edge, and you can zoom in past that. Switching back to reading returns you to wherever you stopped writing. Save with \`Cmd + S\` / \`Ctrl + S\`, or let autosave finish. **Menu → Export → PNG** captures the pages and the ink together, without inversion.
-
-**The marks go into that PDF, not into a copy.** There is no second "(annotated)" file to keep track of: the file you annotated is the file you annotate again. It is still a real PDF that opens anywhere, with your marks drawn in as vector artwork and the document's own text still selectable underneath.
-
-Your original is not lost. The file quietly carries a pristine copy of the PDF as it was before you touched it, alongside the editable form of your strokes — which is what lets you come back days later and move, recolour or erase a mark rather than being stuck with it. It is also why annotating never builds up: every save redraws from that pristine copy, so the marks never thicken or double no matter how many times you edit. Returning to Original after saving shows the actual saved pages with the ink.
-
-Annotated saves also carry a write mark. If another program changes the file after a marked save, Annotate stays read-only and explains that rebuilding from your last editable version would drop those changes. **Keep the file as it is** (the default, or \`Escape\` while the notice is focused) leaves it unchanged. **Annotate from my last version** first keeps the exact current PDF in that folder's **Trash**, then enables editing. A malformed or unsupported mark offers the same safe choice. A changed or deleted file must be resolved before this can continue; a failed copy enables nothing and offers Retry.
-
-Older annotated PDFs without a mark can still be edited: before their first save here, a copy of the current file is kept in **Trash** and the saved PDF gains the mark. For annotations in the older Classic format, Annotate offers **Convert legacy annotations…**: it checks the source, asks first, and keeps the exact original in **Trash** before native editing starts; cancelling or a refused conversion leaves the original unchanged.
-
-Editable annotations are limited to **32 MiB**: beyond that the save is refused without changing the PDF, and the unsaved annotations stay open. A refused save is never reported as Saved and cannot be dropped by closing its tab or switching vaults; closing or switching waits for a pending save. A browser or system crash cannot wait for an unfinished save.
-
-#### PDFs that stay read-only
-**A PDF that cannot be written on safely stays in the reader.** Before the pen opens, the app checks what the file actually carries, not its name. A PDF holding an unrelated \`original.pdf\`, attachments that cannot be read or that contradict each other, or annotations written by a newer version stays read-only, with a note saying why; drawing and saving change nothing in it, and you can still read, select, copy and find in it. Choose **Retry** if an attachment could not be read; otherwise open it in the version of the app that wrote it. Never delete attachments from your only copy just to make the note go away. Existing attachments are kept when you save; if two have the same name, a notice gives the names used to keep both.
-
-**Signed or certified PDFs** — and PDFs whose write safety cannot be established — are read-only for annotation and rotation. Where available, **Save unsigned annotated copy** asks first and creates a different file; it never overwrites the signed original or claims its signatures cover the copy. **Encrypted PDFs** ask for their password (kept only while the PDF is open, never saved; cancel leaves the file unchanged and Retry asks again) and cannot be annotated or rotated, so the encrypted file is never rewritten. Form fields show their saved appearance and cannot be filled in; XFA forms may be missing; PDF scripts, form submission and launch actions never run. A rare PDF using \`/UserUnit\` may show at a different relative size in another viewer.
-
-**Fonts.** When a PDF uses fonts it does not include, the reader substitutes bundled Noto faces where supported; ambiguous Chinese uses Simplified Chinese, and a known character set takes precedence over a conflicting language hint. **PDF feature limitations** states this policy for every PDF, not only those that needed it.
-
-#### Printing a PDF
-Choose **Print…** in the PDF's **⋯** menu while reading it (or press \`Cmd + P\` / \`Ctrl + P\` while it has focus), choose **Prepare PDF** to save any pending annotations, then **Open PDF** to open the exact saved file in a new browser tab, and print from the browser's PDF viewer there. A blocked pop-up or a changed file is reported; allow pop-ups or resolve the notice and try again. An encrypted PDF may ask for its password again there. To print a notebook, press \`Cmd + P\` / \`Ctrl + P\` on its board, or export it to PDF first.
+### Inverting a Picture You Brought Over
+Screenshots taken out of a dark-themed app land on a notebook page or a whiteboard as a black rectangle. Select the picture and press \`i\` to invert it, so it sits on the page like everything else drawn there, and press \`i\` again to put it back. It applies to every picture you have selected, undoes with \`Cmd + Z\`, is saved with the file, and comes out inverted in a notebook's exported PDF too. Only that picture changes; the image file in your vault is untouched.
 
 ### EPUB books
 
@@ -510,9 +386,63 @@ Position and reading layout live only in this browser, separately for each vault
 
 ### Word emphasis
 
-The **Word emphasis** button in a reading header (three short lines, each starting heavy), its **⋯** row, and **Settings → Reading** share one preference, initially Off, across supported reading views. There are no per-file overrides. It visually emphasizes prefixes of eligible Latin prose, including rendered table body prose. In Markdown and EPUB, authored bold, code, math, URLs and unsupported scripts remain ordinary. PDF emphasis follows its original glyph mappings and supported painting routes. This optional visual heuristic makes no reading-speed or accessibility claim.
+The **Word emphasis** button in a reading header, its **⋯** row, and **Settings → Reading** share one preference, initially Off, across supported reading views. There are no per-file overrides. It visually emphasizes prefixes of eligible Latin prose, including rendered table body prose. In Markdown and EPUB, authored bold, code, math, URLs and unsupported scripts remain ordinary. PDF emphasis follows its original glyph mappings and supported painting routes. This optional visual heuristic makes no reading-speed or accessibility claim.
 
 It leaves the source, save state, undo history and copied text intact. PDF and EPUB emphasis paints eligible glyphs in the same document view, preserving original layout, artwork and reading position. Switching it Off restores the original paint. Image-only pages and unsupported text profiles remain unchanged and show why the control is inactive, while retaining your preference. Source editing and code/TeX keep their existing presentation. Notes, TXT and extensionless files keep their existing Markdown presentation and editor typography. Toggle with Enter/Space or a pointer; no new global shortcut is added. Reading preferences are stored in your browser, never in the vault.
+
+### PDFs
+The pane header’s **Word emphasis** toggle paints supported glyphs directly on the original PDF page, including while annotating. It keeps the same tab, page layout, camera, links and annotations; switching Off restores the original paint. It never opens extracted text or performs OCR. Image-only scans, hidden OCR, fully clipped or covered text, missing font mappings and unsupported painting routes stay original. The header reports availability for the current page. **Aa** does not replace the native PDF’s fonts or geometry.
+
+The **⋯ → Read extracted text** action is a separate, manual reading choice with physical page labels, Find, Copy and shared Aa controls. Word emphasis is inactive there; choose **Original PDF** to use the native toggle. Copy across Text pages contains extracted prose with a page separator, excluding page controls and quality notices. Text is extracted by pdf.js, with no new OCR: scans may have no text, existing OCR may differ from the pixels, and columns/tables/math may have imperfect ordering. Find reports coverage and stops at 500 hits. **Original PDF** returns to the page image to check the source layout, images, links and annotations. Text navigation can map approximately; an unchanged round trip restores the original camera. Aa changes browser-local PDF Text/EPUB defaults; Markdown keeps its editor typography. Reading locations and explicit Text choices are remembered per vault and file. Older unmarked Text choices reopen on Original because older Word emphasis actions selected Text automatically. **Cmd/Ctrl+F** searches extracted text while Text is focused; Original keeps the browser’s find. An image of Text cannot be sent to the agent; it receives bounded canonical text instead.
+
+A PDF opens in a reader: scroll it, select its text, search it with the browser's
+own \`Cmd + F\`, follow its links, and jump to a page with the box at the bottom.
+Pinch or hold \`Ctrl\` and scroll to zoom, or use the \`+\` and \`-\` keys. The button
+beside the page box opens a **strip of page thumbnails** down the left; click one
+to go to that page. The button next to it **inverts the pages** so they are easy on the
+eyes in the dark, while reading and while writing on them. It only changes how
+they look: the file, and any PDF made from it, keeps its real colours.
+
+**Turning a sideways scan the right way up.** The two curved arrows beside the
+invert button turn the pages a quarter at a time — \`]\` turns right, \`[\` turns
+left. It turns the whole document; hold \`Alt\` (\`Option\`) while clicking an
+arrow to turn only the page you are reading, which is what a single crooked page
+in an otherwise straight scan wants. Unlike inverting, this is a real change to
+the file: the PDF is saved the way round you left it, and it opens that way
+here, in your browser and in anything else you open it with. Four turns bring it
+back where it started.
+
+A PDF you have already written on is left alone, with a note saying so. Your
+marks are drawn against the pages as they are, and turning the paper would move
+every one of them — so straighten a scan before you start annotating it.
+
+\`Cmd + E\` (or the pen in the top bar) switches between reading a PDF and
+**writing on it** — the same toggle every other file has. Draw on it as you would
+on a notebook. It opens **on the page you were reading**, with the same page box
+and thumbnail strip, and switching back to reading returns you to wherever you
+stopped writing. Swiping scrolls the page up and down like a PDF, and pinching
+zooms — at full width the page fills the screen edge to edge, and you can zoom in
+past that. The page can never be swiped off screen.
+
+**The marks go into that PDF, not into a copy.** There is no second
+"(annotated)" file to keep track of, and nothing to remember to open next time:
+the file you annotated is the file you annotate again. It is still a real PDF
+that opens anywhere, with your marks drawn in as vector artwork and the
+document's own text still selectable underneath.
+
+Your original is not lost. The file quietly carries a pristine copy of the PDF
+as it was before you touched it, alongside the editable form of your strokes —
+which is what lets you come back days later and move, recolour or erase a mark
+rather than being stuck with it. It is also why annotating never builds up:
+every save redraws from that pristine copy, so the marks never thicken or
+double no matter how many times you edit.
+
+Everything around a page — the toolbars, the pen panel, the space the pages sit
+on — follows the app's theme, so a notebook or a PDF is dark at night like the
+rest of the app. The **pages themselves stay white** in either theme, because
+that is paper: it is what the exported PDF prints on, and ink that changed colour
+with the theme would come out invisible in the file. A drawing has no pages, so
+it is dark all over.
 
 ---
 
@@ -542,7 +472,7 @@ Every folder gets its own \`.Assets\`, and a note only ever shows pictures from 
 Your notes are still ordinary Markdown: what is actually written in the file is \`![[filename.png]]\`, and a resized picture records its width as \`![[filename.png|320]]\`. Anything else that reads Markdown sees exactly that. The editor simply spares you from typing it.
 
 ### Removing an Image
-Deleting a picture — with the bin, with \`Backspace\`, or just by deleting the text around it — also retires the image file: a second later it moves out of \`.Assets\` and into that folder's \`.Garbage\`, so your folders don't slowly fill up with pictures nothing shows any more. A picture shared with another note or a board in the folder stays until neither needs it; if a board cannot be read, the app keeps the picture rather than guessing.
+Deleting a picture — with the bin, with \`Backspace\`, or just by deleting the text around it — also retires the image file: a second later it moves out of \`.Assets\` and into that folder's \`.Garbage\`, so your folders don't slowly fill up with pictures nothing shows any more.
 
 Nothing is lost by this:
 - An image another note **in the same folder** still shows is left exactly where it is.
@@ -550,7 +480,7 @@ Nothing is lost by this:
 - And anything that was retired is still sitting in \`.Garbage\`: it is listed in the Trash bin like anything else, and putting it back returns it to \`.Assets\`, where your notes can show it again.
 
 ### Opening Media
-Click a \`.pdf\` in the file tree to open it in the app's PDF pane, not as text. Images such as \`.jpg\`, \`.jpeg\`, and \`.png\` open in a browser tab.
+If you click on \`.pdf\`, \`.jpg\`, \`.jpeg\`, or \`.png\` files directly within the file tree, they will automatically open in a new browser tab for viewing rather than attempting to load as text.
 
 ### The Trash System
 To prevent accidental permanent data loss, deleting a file does not erase it from your hard drive. Instead, it moves the item into a hidden \`.Garbage\` folder located in the same directory as the file — deleting \`Maths/Calculus/notes.md\` puts it in \`Maths/Calculus/.Garbage\`, so a deletion stays next to the notes it came from. Deleting the same name twice keeps both copies (the second becomes \`notes (1).md\`).
@@ -611,8 +541,6 @@ An address written *inside* a label — \`[read this https://example.com now](ht
 ### Wiki Links
 \`[[Note Name]]\` links to another note in the vault by its name, and \`[[Note Name|what to call it]]\` shows different text. Type \`[[\` and the editor offers the notes you have. Clicking one **opens that note in a new tab inside the app** — it never leaves the browser page you are on. This works in both modes.
 
-**Neural Brain** and **Linked mentions** follow these note links only: a web link creates no relationship between notes, even when its address ends in \`.md\`. When two notes share a name, a note link chooses the first of them in the vault's own order, whatever order the sidebar is sorted in.
-
 ### Lists
 Unordered Lists:
 - Item 1
@@ -635,8 +563,6 @@ function helloWorld() {
   console.log("Hello");
 }
 \`\`\`
-
-Code blocks may use backticks or tildes (at least three matching characters; the closing run may be longer). In Reading mode the fence lines stay hidden; Copy code copies only the lines between them. Use mermaid after either opening fence to draw a diagram. In Edit mode, move the caret into the block to reveal its source.
 
 ### Tables
 | Syntax | Description |
@@ -734,12 +660,10 @@ Each chat keeps its own conversation. The chat list at the top lets you go back 
 ### What the agent can see
 You never need to tell it what you are looking at. With **every** message it is told, fresh, which tabs and panes you have open, which one you are in, and exactly where you are in each: the lines on screen and your selection in a note (unsaved edits included), the page, zoom and selected text in a PDF, and what is in view on a drawing or notebook page. When the tab you are in is a drawing, notebook or PDF, a picture of what is on screen goes along too — but only when it changed since your last message. Scroll, switch tabs or keep writing between messages and the next message knows.
 
-It can also look things up on the web. With VaultAgent 0.2.2 or newer, the agent can page through a large board's shapes instead of stopping at the first 200; if the board changes between pages, it starts the listing again.
+It can also look things up on the web.
 
 ### What the agent can change
 It can read and search every file in the vault, edit notes, create notes and folders, rename and move things, and delete them — to the Trash, never for good. On drawings, notebooks and PDFs it can add text, sticky notes, shapes, arrows and freehand strokes, and move, restyle or remove shapes. Every change happens straight away and shows in the chat as a card (with the lines it changed); the card's **Open** takes you to the file. A change made in a note you have open appears in it live, and \`Cmd + Z\` undoes it like your own typing. A drawing, notebook or PDF it works on opens **beside** what you are doing, without taking you away from it.
-
-Its searches use JavaScript regular-expression syntax. A slow pattern never freezes the editor: after five seconds the search answers anyway, keeps the matches it had found, and says plainly that the result is incomplete.
 
 **It has the same access to your computer as in your terminal.** It can run programs and read and change files anywhere your account can, and it does so without asking first, because nobody could answer a permission prompt in the panel. It is told to make every change to the vault through this app, which is what puts its edits in your editor live and lets \`Cmd + Z\` undo them.
 

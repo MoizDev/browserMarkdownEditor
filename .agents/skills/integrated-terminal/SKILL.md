@@ -1,6 +1,6 @@
 ---
 name: integrated-terminal
-description: The built-in terminal — the VaultAgent helper's PTY session manager (helper/src/terminal/), where a new shell starts (helper/src/vaultPath.ts, utils/terminalStart.ts), the frozen macOS PTY host (helper/ptyhost/, vaultagent-pty), the terminal.* protocol and its version gate, and the lazy xterm.js dock (components/TerminalPanel/, TerminalDock, terminalLaunch, HelperGate). Load before touching any of those, the terminal's shell/env/font rules, its keyboard exemptions, its WebGL context, or anything that could restart the helper while shells are open.
+description: The built-in terminal — the VaultAgent helper's PTY session manager (helper/src/terminal/), the frozen macOS PTY host (helper/ptyhost/, vaultagent-pty), the terminal.* protocol and its version gate, and the lazy xterm.js dock (components/TerminalPanel/, TerminalDock, terminalLaunch, HelperGate). Load before touching any of those, the terminal's shell/env/font rules, its keyboard exemptions, or anything that could restart the helper while shells are open.
 ---
 
 # The terminal: the user's own shell, in a dock under the editor
@@ -12,154 +12,159 @@ TerminalDock (main chunk: handle + height)          helper (Bun)                
                                                            flow control, TTL, steal          (elsewhere: Bun.spawn {terminal})
 ```
 
-## The user's decisions — the spec, do not "fix" them
-- On by default, ships with VaultAgent, its own button beside the agent's.
-- **Completely unconstrained**: no sandbox, allow-list or confirmation. The user accepted that anything
-  running script on this origin can now run commands.
-- **Independent of the agent**: nothing in `viewRegistry`/`agentContext`, no agent tool touches it, the
-  manager shares no state with agent runs.
-- A **new** shell starts in the folder of the file being looked at, falling back to `~`. A running shell
-  owns its cwd; `cd`-ing it under the user was considered and refused.
-- No folder picker or setup dialog. **No code-signing certificate, ever** (ad-hoc signing only).
+**The user's decisions, which are the spec — do not "fix" them:** on by default, ships with VaultAgent,
+a button beside the agent's; **a new shell starts in the folder of the file the user is looking at**
+(revised from "starts in `~`, knows nothing about the vault" — see the section below; it still falls
+back to `~`); **completely unconstrained** (no sandbox, allow-list or confirmation — the user accepted that anything running
+script on this origin can now run commands); no folder picker or setup dialog; **independent of the
+agent** (nothing in `viewRegistry`/`agentContext`, no agent tool touches it, the manager shares no
+state with runs); **no code-signing certificate, ever** (ad-hoc signing only).
 
 ## Where a shell starts (`helper/src/vaultPath.ts`, `utils/terminalStart.ts`)
-The page cannot send a path — the File System Access API hands out handles, never `/Users/…` (the same
-reason agent CLIs run in `~/.bme-agent-sessions/<uuid>`). `terminal.open` carries `vaultId` + a
-vault-relative `dir` and answers with the `cwd` it used; the helper resolves the vault itself.
-- **Found by MARKER, not name**: `.VaultAgent/vault.json` holds the vault id, so a same-named folder
-  cannot impersonate it. `searchForVault` walks breadth-first from `$HOME` (depth 6, 2 s, 20,000 dirs,
-  skipping hidden dirs, `Library`, `node_modules`, `.Trash`…, never following a symlink out) and opens no
-  file but the marker. The answer is cached in `~/.bme-agent-sessions/vault-paths.json` and **re-checked
-  against the marker every time**, so a moved vault never hands a shell someone else's directory.
-- **Every fallback is one step out, never a failure**: a deleted folder, `..`, an absolute path or a file
-  ends at the vault root; an unfindable vault ends at `~`.
-- `utils/terminalStart.ts` is a one-function store App fills from the focused tab (not `viewRegistry`).
-  The vault id comes from `useFileSystem().ensureVaultId` — the SAME minting the agent host uses (two
-  would split one vault in two) — minted lazily on the first terminal or Settings visit, never merely
-  because a vault was opened.
-- `Settings → Terminal → Vault folder on disk` (`components/VaultFolderSetting.tsx`) shows what was found
-  and takes a typed path. It asks the helper ONLY when a connection already exists — Settings must never
-  be what raises Chrome's Local Network Access prompt.
+
+`terminal.open` carries `vaultId` + `dir` (vault-relative, from the editor) and answers with the `cwd`
+it used. The editor CANNOT send a path: the File System Access API hands out handles and never
+`/Users/…`, which is also why the agent's CLIs run in `~/.bme-agent-sessions/<uuid>`. So the helper
+resolves the vault itself.
+
+- **The vault is found by its MARKER, not its name**: `.VaultAgent/vault.json` holds the vault's id,
+  so "where is vault X?" has an exact answer and a same-named folder cannot impersonate it.
+  `searchForVault` walks breadth-first from `$HOME` (depth 6, 2s, 20k dirs, skipping hidden dirs,
+  `Library`, `node_modules`, `.Trash`…, never following a symlink out) and opens no file but the
+  marker. The answer is cached in `~/.bme-agent-sessions/vault-paths.json` and **re-checked against
+  the marker every time**, so a moved or renamed vault never hands a shell someone else's directory.
+- **Every fallback is one step out, never a failure**: a folder deleted since the editor last looked,
+  a `..`, an absolute path or a file instead of a directory all end at the vault root; a vault that
+  cannot be found at all ends at `~`, which is exactly the old behaviour.
+- **The browser side is `utils/terminalStart.ts`**, a one-function store App fills from the focused
+  tab — not `viewRegistry`, not `agentContext`: the terminal stays independent of the agent. The vault
+  id comes from `vaultAgentStore.ensureVaultId`, the SAME minting the agent host uses (two mintings
+  would split one vault in two), and it is minted lazily — on the first terminal or the first time
+  Settings is opened, never merely because a vault was opened.
+- **Only NEW shells follow the focus.** A running shell owns its cwd; `cd`-ing it under the user was
+  considered and refused.
+- `Settings → Terminal → Vault folder on disk` (`components/VaultFolderSetting.tsx`) shows what was
+  found and takes a typed path when the search comes up empty (a vault outside `$HOME`, a network
+  share). It asks the helper ONLY when a connection already exists — Settings must never be what
+  raises Chrome's Local Network Access prompt.
 
 ## Protocol and gate (`shared/vaultAgentProtocol.ts`)
-- Requests: `terminal.open {termId, cols, rows, vaultId?, dir?}` → `{shell, pid, backend, cwd}`,
-  `terminal.attach` → `{snapshot, shell, exited}`, `terminal.resize`, `terminal.close` (idempotent),
-  `terminal.fontHint`, `terminal.privacy`, `helper.openPrivacySettings`, `helper.revealPtyHost`, and
-  `vault.path {vaultId, set?}` → `{path}` (the Settings row's read/override of the found folder).
-  Fire-and-forget: `terminal.input` (≤ `TERMINAL_INPUT_MAX_CHARS` = 65,536; the panel splits pastes, more
-  is dropped) and `terminal.ack {chars}`. Events: `terminal.output {data, reset?}`, `terminal.exit`,
-  `terminal.detached`.
-- All JSON text frames (the bridge drops binary). Output is decoded per session with a streaming
-  `TextDecoder`, so a UTF-8 sequence split across PTY reads survives. xterm's `onBinary` is NOT
-  forwarded: X10 mouse bytes > 127 would be mangled as UTF-8 (SGR mouse rides `onData`).
-- **Gate:** `HelperInfo.terminal = version >= TERMINAL_VERSION` (0.2.0). `MIN_HELPER_VERSION` stays put (it
-  gates the CHAT; raising it locks older helpers out of chat) and `PROTOCOL_VERSION` stays 1 (additive).
-  `HelperGate` (`components/HelperGate/`, shared by both lazy chunks; `gatePasses(bridge,'terminal')`)
-  shows install / connect / "Update VaultAgent to use the terminal".
-- **LNA rule:** no 127.0.0.1 request on page load unless `autoConnect()`'s gate passes. The button and ⌃`
-  are a gesture, so `app/useSidePanels.ts` calls `connectHelperForTerminal()` (`components/terminalLaunch.ts`,
-  a dynamic import of the bridge) inside it; a dock restored open on load goes through `autoConnect`.
+
+- Requests: `terminal.open {termId, cols, rows}` → `{shell, pid, backend}`, `terminal.attach` →
+  `{snapshot, shell, exited}`, `terminal.resize`, `terminal.close` (idempotent), `terminal.fontHint`,
+  `terminal.privacy`, `helper.openPrivacySettings`, `helper.revealPtyHost`. Fire-and-forget client
+  messages `terminal.input` (≤ `TERMINAL_INPUT_MAX_CHARS`, the panel splits pastes; more is dropped) and
+  `terminal.ack {chars}`. Helper events `terminal.output {data, reset?}`, `terminal.exit`, `terminal.detached`.
+- All JSON text frames (the bridge drops binary ones). Output is decoded per session with a streaming
+  `TextDecoder`, so a UTF-8 sequence split across PTY reads survives. `onBinary` is NOT forwarded: X10
+  mouse bytes > 127 would be mangled as UTF-8 (SGR mouse rides `onData`).
+- **Gate:** `HelperInfo.terminal = version >= TERMINAL_VERSION` (0.2.0). `MIN_HELPER_VERSION` stays put
+  (it gates the CHAT; raising it would lock older helpers out of the chat) and `PROTOCOL_VERSION` stays 1
+  (additive). `HelperGate` (`components/HelperGate/`, shared by both lazy chunks; `gatePasses(bridge,
+  'terminal')`) shows install / connect / "Update VaultAgent to use the terminal".
+- **LNA rule kept:** no 127.0.0.1 request on page load unless `autoConnect()`'s gate passes. The button
+  and ⌃` are a gesture, so App calls `connectHelperForTerminal()` (`components/terminalLaunch.ts`, a
+  dynamic import of the bridge) inside it; a dock restored open on load goes through `autoConnect`.
 
 ## Helper side (`helper/src/terminal/`)
-- **Sessions belong to the helper, not a socket.** A socket close DETACHES (`detachAll`); the shell runs on
-  for `TERMINAL_DETACHED_TTL_MS` (30 min) and any connection may `attach` — stealing it; the old owner gets
-  `terminal.detached`. Caps: `MAX_TERMINALS` (10) per connection, 3× that in total including detached, so
-  reconnect loops cannot pile shells up. Ids are client-minted UUIDs kept in the page's sessionStorage
-  `terminalSessions`, so only that tab knows them.
-- **Headless mirror, not a byte ring.** Each session feeds `@xterm/headless` + `addon-serialize`; attach and
-  `reset` send ONE serialized snapshot (screen, `TERMINAL_SCROLLBACK` = 5000 lines, modes), so vim/htop
-  come back intact. Serialize INSIDE `headless.write('', cb)` — serializing after the callback duplicated
-  output parsed in later slices (measured). Output arriving during an attach is held and flushed after
-  the response, so the snapshot always comes first.
-- **Flow control without `pause()`** (Bun's PTY cannot pause reads): output is coalesced (5 ms / 64 KiB)
-  and counted until acked; above `TERMINAL_ACK_HIGH` (512k chars) the helper stops streaming and lets the
-  mirror absorb the flood, under `TERMINAL_ACK_LOW` (128k) it sends one `reset` snapshot and resumes.
-  Memory stays bounded by scrollback and Ctrl-C still gets through. `server.ts`'s 8 MiB
-  `backpressureLimit` is where Bun DROPS frames (`send` → 0): the manager's `dropped` path stops
-  streaming and resyncs with a `reset`.
+
+- **Sessions belong to the helper, not to a socket.** A socket close DETACHES (`detachAll`); the shell
+  runs on `TERMINAL_DETACHED_TTL_MS` (30 min) and any connection may `attach` — stealing it, the old owner
+  gets `terminal.detached`. Caps: `MAX_TERMINALS` (10) per connection → `limit`; 3× that in total, detached
+  included, so reconnect loops cannot pile shells up. Ids are client-minted UUIDs (sessionStorage
+  `terminalSessions` in the page, so only that tab knows them).
+- **Headless mirror, not a byte ring.** Every session feeds `@xterm/headless` + `addon-serialize`; attach
+  and `reset` send ONE serialized snapshot (screen, scrollback `TERMINAL_SCROLLBACK`, modes), so vim/htop
+  come back intact. Serialize INSIDE `headless.write('', cb)` — after the callback, output already parsed
+  in later time slices was duplicated (measured). Output arriving during an attach is held and flushed
+  after the response, so the snapshot always precedes it.
+- **Flow control without `pause()`** (Bun's PTY cannot pause reads): output is coalesced (~5 ms / 64 KiB)
+  and counted until acked; above `TERMINAL_ACK_HIGH` the helper stops streaming and lets the mirror
+  absorb the flood, and under `TERMINAL_ACK_LOW` it sends one `reset` snapshot and resumes. Memory stays
+  bounded by the scrollback; Ctrl-C still gets through. The PTY host only reads the PTY while its socket
+  takes output, but `ptyHostBackend` always drains that socket, so the ack scheme is the real control.
+  `server.ts`'s 8 MiB `backpressureLimit` is a ceiling past which Bun DROPS frames (`send` → 0): the owner's
+  `send` returns `false`, and `TerminalManager.dropped` stops streaming and resyncs with a `reset` snapshot.
 - **The shell is what a new terminal window runs** (`shell.ts`): `$SHELL` if executable, else the passwd
-  shell, else `/bin/sh` (`nologin`/`false` → `/bin/bash`), as a LOGIN shell (`-l`). Windows: `pwsh.exe` →
-  Windows PowerShell → `%COMSPEC%`, `-NoLogo`.
-- **The env is built fresh by `terminalEnv`, never `agentEnv`** (that one injects PATH dirs for the agent):
-  launchd/systemd/dev residue stripped (`XPC_SERVICE_NAME=0` as Terminal.app does — `update.ts` reads it to
-  detect the launchd job — `INVOCATION_ID`, `npm_*`, `BUN_*`, every `VAULTAGENT_*`…); `HOME/USER/LOGNAME/
-  SHELL` from the account (zsh set `LOGNAME=root` when missing, measured); `TERM=xterm-256color`,
-  `COLORTERM=truecolor`, `TERM_PROGRAM=VaultAgent`; `LANG` only when unset or not UTF-8 (launchd gives
-  none; macOS derives it from `AppleLocale`). **No helper secret may ever be in `process.env`** — the MCP
-  token is per-child env only. `VAULTAGENT_TERMINAL_SHELL` is a debugging override, stripped from the env.
-- **Teardown:** hang up (SIGHUP to the session; zsh ignores SIGTERM), then `kill(-pid, SIGKILL)` after 2 s;
-  Windows kills the tree (`taskkill /T /F`) first, dodging the pre-24H2 `ClosePseudoConsole` hang. A
-  job-control job (`cmd &`) has its own process group and ends only because bash/zsh resend SIGHUP to their
-  jobs — dash does not, as in any terminal app. Helper SIGTERM/SIGINT and the self-update restart run
-  `closeAll()`. **Never log terminal bytes.**
-- `font.ts` reads the user's terminal apps' configs (Ghostty, iTerm2/Terminal.app via `defaults export` +
-  `plutil`, kitty, Alacritty, WezTerm, Windows Terminal, VS Code) — best effort, read-only, 2 s timeouts,
-  names sanitized, ≤ 16 candidates.
+  shell, else `/bin/sh` (`nologin`/`false` → `/bin/bash`), as a LOGIN shell (`-l`), cwd `os.homedir()`.
+  Windows: `pwsh.exe` → Windows PowerShell → `%COMSPEC%`, `-NoLogo`. The env is built fresh by
+  `terminalEnv`, **never `agentEnv`** (that one injects PATH dirs for the agent): launchd/systemd/dev-run
+  residue stripped (`XPC_SERVICE_NAME=0` as Terminal.app does — `update.ts` reads it to detect the launchd
+  job — `INVOCATION_ID`, `npm_*`, `BUN_*`, every `VAULTAGENT_*`…), `HOME/USER/LOGNAME/SHELL` from the
+  account (zsh set `LOGNAME=root` when missing, measured), `TERM=xterm-256color`, `COLORTERM=truecolor`,
+  `TERM_PROGRAM=VaultAgent`, and `LANG` only when unset or not UTF-8 (launchd gives none, and p10k/starship
+  glyphs break without one; macOS derives it from `AppleLocale`). No helper secret may ever be in
+  `process.env` — the MCP token is per-child env only. `VAULTAGENT_TERMINAL_SHELL` is a TEST-ONLY override
+  (smoke, tests) and is stripped from the shell's env.
+- **Teardown:** in-process → `terminal.close()` (SIGHUP to the session; zsh ignores SIGTERM), then
+  `kill(-pid, SIGKILL)` after 2 s; Windows kills the tree (`taskkill /T /F`) first, dodging the pre-24H2
+  `ClosePseudoConsole` hang. A job-control job (`cmd &`) has its own process group, out of reach of
+  the hang-up and of either backend's group kill: it ends only because bash/zsh resend SIGHUP to their
+  jobs. dash (Ubuntu's `/bin/sh`) does not, as in any terminal app, so the real-PTY test runs bash
+  (macOS's `/bin/sh` IS bash, which hid it). `terminal.closed` stays false after exit, so the code closes it. Helper
+  SIGTERM/SIGINT and the self-update restart run `closeAll()`. Never log terminal bytes.
+- `font.ts` reads the user's terminal apps' configs (Ghostty, iTerm2 and Terminal.app via `defaults
+  export` + `plutil`, kitty, Alacritty, WezTerm, Windows Terminal, VS Code) — best effort, 2 s timeouts,
+  read-only, names sanitized, ≤ 16 candidates.
 
 ## macOS protected folders: the frozen PTY host (`helper/ptyhost/`)
-TCC attributes a shell's access to Documents/Desktop/Downloads/iCloud/Full Disk Access to its
-**responsible process** — the launchd job above it. The helper is ad-hoc signed, so TCC keys grants by
-path + **cdhash**, and every self-update silently dropped every grant. So on installed macOS helpers every
-shell is a child of **`vaultagent-pty`**: a few hundred lines of libc C, its own LaunchAgent
-`dev.bme.vaultagent.pty`, a pure byte relay on `<appDir>/pty.sock` (0600; framing documented at the top of
+
+TCC attributes a shell's access to Documents/Desktop/Downloads/iCloud Drive/Full Disk Access to its
+**responsible process** — the launchd job above it. The helper is ad-hoc signed, so TCC keys its grants
+by path + **cdhash**, and every self-update silently dropped every grant. So on installed macOS helpers
+every shell is a child of **`vaultagent-pty`**: ~380 lines of libc C, its own LaunchAgent
+`dev.bme.vaultagent.pty`, a pure byte relay on `<appDir>/pty.sock` (0600; framing in the header of
 `ptyhost.c`), one forked handler per connection.
-- **Its bytes are frozen.** The universal binary is COMMITTED, pinned in `PINNED.json` (sha256 + per-arch
-  cdhash, checked by the release workflow's macOS step), embedded in every helper build
-  (`with { type: 'file' }`), and written to the app dir only when missing or different
-  (`install/ptyhost.ts` `ensurePtyHost`, on `install` and every installed `serve` start). **CI never
-  rebuilds it.** Rebuild only deliberately with `build.sh`: every byte change costs each macOS user a
-  re-grant. While an input frame is blocked on a full PTY the handler still reads its socket, so a client
-  hang-up is always seen.
-- Backend per spawn (`backend.ts` `chooseBackend`): the PTY host when macOS + installed + its socket
+
+- **Its bytes are frozen:** the universal binary is COMMITTED, pinned (`PINNED.json`: sha256 + per-arch
+  cdhash, checked by the release workflow's macOS step), embedded in
+  every helper build (`with { type: 'file' }`), and written to the app dir only when missing or different
+  (`install/ptyhost.ts` `ensurePtyHost`, on `install` and every installed `serve` start — which covers
+  helpers that self-updated from 0.1.3). **CI never rebuilds it.** Rebuild only deliberately with
+  `build.sh` (reproducible with this Mac's Apple clang): every byte change costs each macOS user one re-grant
+  — free only until the first release that ships it (0.2.0). While an input frame is blocked on a full PTY
+  the handler still reads its socket (into `rbuf`'s free room), so a client hang-up is always seen.
+- Backend choice per spawn (`backend.ts` `chooseBackend`): PTY host when macOS + installed + its socket
   answers; otherwise Bun's in-process PTY (Linux, Windows, `helper:dev`, `--no-register`), logging once per
   outage. `terminal.open` reports which. The FDA probe (`privacy.ts`) runs `test -r …/TCC.db` THROUGH the
-  active backend, so it tests the host's identity; the panel's notice shows only for `ptyhost` with
-  `fullDiskAccess === false` (dismissed via localStorage `terminalFdaNoticeDismissed`).
-- Uninstall boots it out and removes its plist; the updater's leftover cleanup can never match it.
-- **Still unverified on real Apple hardware:** that TCC attribution actually reaches the host. Confirm with
-  `log stream --predicate 'subsystem == "com.apple.TCC"'` while a shell under the real LaunchAgent touches
-  `~/Desktop` (it can raise a real prompt — warn the user first). Accepted residual: the first access per
-  protected folder asks once, separately from the user's Terminal/iTerm2 grants.
+  active backend, so it is the host's identity being tested; the panel's notice shows only for `ptyhost`
+  with `fullDiskAccess === false` (dismissal: localStorage `terminalFdaNoticeDismissed`).
+- Uninstall boots it out and removes its plist (the binary goes with the app dir); the updater's
+  leftover cleanup can never match it. **Unverified Apple behaviour:** that attribution reaches the host
+  must be confirmed with `log stream --predicate 'subsystem == "com.apple.TCC"'` while a shell under the
+  real LaunchAgent touches `~/Desktop` (it can raise a real prompt — warn the user first). If it does not,
+  keep the in-process backend and say requirement 9 is unmet. Residual, accepted: the first access per
+  protected folder asks once (or FDA once), separately from the user's Terminal/iTerm2 grants.
 
-## Page side (`components/TerminalPanel/`, lazy; `TerminalDock.tsx` + `terminalLaunch.ts`, main chunk)
-- **xterm is reachable ONLY through `lazy(() => import('./TerminalPanel'))`** and is never prefetched; after
-  a build the main entry chunk must contain no `xterm` / `Symbols Nerd`.
+## Page side (`components/TerminalPanel/`, lazy; `TerminalDock.tsx` + `terminalLaunch.ts`, main)
+
+- **xterm is reachable ONLY through `lazy(() => import('./TerminalPanel'))`** and is never prefetched;
+  after a build the main entry chunk must contain no `xterm` / `Symbols Nerd`.
 - **`terminalStore`** (module singleton, like `agentBridge`/`chatStore`): one xterm + one persistent host
   `<div>` per session, adopted/released by the panel idempotently (StrictMode), so hiding the dock, a vault
   switch or the welcome screen never kills a shell or loses scrollback. It `retain()`s the bridge while
   sessions exist, re-attaches after a reconnect ("[Reconnecting to VaultAgent…]"), acks per frame (50 ms
-  timer fallback for background tabs), and publishes the session count to `utils/terminalCount.ts` —
-  import-free, the ONE thing the agent chunk reads (update/uninstall ask first when shells are open; the
-  helper also refuses `terminal.open` while updating).
-- **WebGL context:** only the active, visible session holds one (Chrome caps contexts at ~16); context loss
-  falls back to xterm's DOM renderer. The store reports it through `utils/terminalContext.ts` →
-  `platform/terminalContext.ts`, an import-free flag the render platform's `surfaceBroker` reads: its
-  context budget **always reserves the terminal's context** (`RENDER_CONSTANTS.reservedTerminalContexts`)
-  so document panes never starve the shell. Keep that shim renderer-free on both sides.
-- **Dock:** a sibling AFTER the main view inside `.workspace-main` (outside the graph/editor switch).
-  Height in localStorage `terminalHeight`, clamped on read and drag (120 px … 70 %), the pane-divider
+  timer fallback for background tabs), and publishes the count to `utils/terminalCount.ts` — import-free,
+  the ONE thing the agent chunk reads (update/uninstall ask first when shells are open; the helper also
+  refuses `terminal.open` while updating). **Only the active, visible session holds a WebGL context**
+  (Chrome caps them ~16); context loss falls back to the DOM renderer.
+- **Dock:** a sibling AFTER the main view inside `.workspace-main` (outside the graph/editor ternary).
+  Height in localStorage `terminalHeight`, clamped on read and drag (120 px … 70%), the pane-divider
   pointer-capture pattern, ↑/↓ nudge, double-click reset. App owns only `terminalOpen` (localStorage),
   `terminalOpenedByUser` and the stable `toggleTerminal`/`hideTerminal` (`SidebarFooter` is memo'd).
-- **Keyboard:** ⌃` (capture phase in `useSidePanels`, every OS) toggles even from inside the shell.
-  `[data-terminal]` (dock, handle, panel root) is exempt from `useGlobalShortcuts`'s ⌘E and EditorPane's
-  capture ⌥ chords — a new global shortcut must honour it too. xterm's key handler: macOS ⌘C/⌘V native,
-  ⌘K clears, ⌥/⌘ arrows mapped; Windows/Linux Ctrl+C copies with a selection (else SIGINT),
-  Ctrl+Shift+C/V. Ctrl+W cannot be intercepted, so a `beforeunload` guard runs while focus is inside
-  (non-macOS) — AGENTS.md's one sanctioned native prompt. `macOptionIsMeta: false`. Links open on
-  ⌘/Ctrl-click (http/https only).
+- **Keyboard:** ⌃` (capture phase in App, every OS) toggles even from inside the shell. `[data-terminal]`
+  (on the dock, handle and panel root) is exempt from App's ⌘E and EditorPane's capture ⌥ chords. xterm's
+  custom key handler: macOS ⌘C/⌘V native, ⌘K clears, ⌥/⌘ arrows mapped; Windows/Linux Ctrl+C copies with a
+  selection (else SIGINT), Ctrl+Shift+C/V. Ctrl+W cannot be intercepted, so a `beforeunload` guard runs
+  while focus is inside (non-mac). `macOptionIsMeta: false`. Links open on ⌘/Ctrl-click (http/https).
 - **Context menu:** the app's own (`openContextMenu`), raised only when the program has not enabled mouse
   tracking or Shift is held.
-- **Fonts:** Settings (`utils/terminalSettings.ts`, clamped on read, Reset to Defaults) → `terminal.fontHint`
-  candidates probed with `new FontFace(…, 'local("<name>")').load()` → none; never blocks open more than
-  1.5 s, swaps later (re-set `fontFamily`, `clearTextureAtlas`, refit). The bundled **Symbols Nerd Font
-  Mono** (`public/fonts/`, notices beside it) sits in every stack with a `unicode-range` of its real cmap and
-  loads before `term.open()`, because xterm measures cells at open.
-- **Colours** follow the app theme: background/foreground/cursor/selection from CSS variables resolved through
-  a probe element, ANSI from `editor/codePalette.ts`, re-derived by a MutationObserver on `<html>`
+- **Fonts:** Settings (`utils/terminalSettings.ts`, import-free store, clamped, Reset to Defaults) →
+  `terminal.fontHint` candidates probed with `new FontFace(…, 'local("<name>")').load()` (PostScript names
+  work) → none; never blocks open > ~1.5 s, swaps later (re-set `fontFamily`, `clearTextureAtlas`, refit).
+  The bundled **Symbols Nerd Font Mono** (`public/fonts/`, upstream notices beside it; mixed MIT / CC BY 4.0
+  / OFL / Apache icon licences) sits in every stack with a `unicode-range` of the real cmap, and is loaded
+  before `term.open()` because xterm measures cells at open.
+- **Colours** follow the app theme: background/foreground/cursor/selection from CSS variables resolved
+  through a probe element, ANSI from `editor/codePalette.ts`, re-derived by a MutationObserver on `<html>`
   (`data-theme`/`style`) — a `[theme]` effect would read stale values. Terminal-app schemes are not imported.
-
-## Verify
-The real check is the helper: `npm run helper:dev`, then open the dock in the app (`verify-in-browser`), run
-a command, hide/show the dock and switch vaults (the shell and scrollback survive), and flood it
-(`yes | head -c 50M`) to see flow control hold. `bun helper/scripts/smoke.ts <compiled helper>` is the
-release workflow's end-to-end check of a built binary (terminal included).

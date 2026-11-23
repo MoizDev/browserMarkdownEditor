@@ -1,5 +1,4 @@
 import WordEmphasisToggle from './WordEmphasisToggle';
-import { BoardDictionarySetting } from './BoardDictionarySetting';
 import { resetReadingPreferences } from '../utils/readingPreferences';
 import React, { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react';
 import { DEFAULT_RECENT_VAULT_LIMIT, MAX_STORED_VAULTS } from '../utils/recentVaults';
@@ -10,7 +9,6 @@ import {
 import type { CaretStyle, SettingsDefaults } from '../types';
 import { VaultFolderSetting } from './VaultFolderSetting';
 import { StorageDurabilitySetting } from './StorageDurabilitySetting';
-import { AVAILABLE_PDF_VIEWERS, CANVAS_KINDS, developerEnabled, emergencyKey, incrementalEditorEnabled, routeEngines, setDeveloperSetting } from '../utils/engineRouting';
 
 const DEFAULTS: SettingsDefaults = { editorFontSize: 16, codeFontSize: 14, rainbowBrackets: true, treeFontSize: 13, editorPadding: 6, tabSize: 4, caretStyle: 'line', caretThickness: 10, smoothCaret: true, caretSpeed: 80, accentColor: '', codeBlockColor: '', recentVaultLimit: DEFAULT_RECENT_VAULT_LIMIT, showVaultInTitle: true };
 
@@ -66,12 +64,6 @@ export default function SettingsPanel({ editorFontSize, codeFontSize, rainbowBra
     const fontInputRef = useRef<HTMLInputElement | null>(null);
     const applyFont = () => onFontFamilyChange((fontInputRef.current?.value || '').trim());
     const titleId = useId();
-    const [developer, setDeveloper] = useState(developerEnabled);
-    const [, refreshDeveloper] = useState(0);
-    const routes = routeEngines();
-    const updateDeveloper = (key: string, value: string | boolean) => {
-        if (setDeveloperSetting(key, value)) refreshDeveloper(n => n + 1);
-    };
 
     // The terminal's two settings live in their own store (utils/terminalSettings):
     // the lazy terminal chunk reads it too, and neither side imports the other.
@@ -118,7 +110,7 @@ export default function SettingsPanel({ editorFontSize, codeFontSize, rainbowBra
             >
                 <div className="settings-header">
                     <h3 className="settings-title" id={titleId}>Settings</h3>
-                    <button className="settings-close-btn" aria-label="Close settings" onClick={onClose}>×</button>
+                    <button className="settings-close-btn" onClick={onClose}>×</button>
                 </div>
                 <div className="settings-body">
                     <h4 className="settings-section">Appearance</h4>
@@ -144,7 +136,7 @@ export default function SettingsPanel({ editorFontSize, codeFontSize, rainbowBra
                     <div className="setting-row">
                         <div className="setting-info">
                             <div className="setting-name">Code font size</div>
-                            <div className="settings-hint">Source files only (.py, .rkt, .c …), in Fira Code.</div>
+                            <div className="setting-desc">Source files only (.py, .rkt, .c …), in Fira Code.</div>
                         </div>
                         <div className="setting-control">
                             <span className="settings-value">{codeFontSize}px</span>
@@ -243,7 +235,7 @@ export default function SettingsPanel({ editorFontSize, codeFontSize, rainbowBra
                     </div>
 
                     <h4 className="settings-section">Reading</h4>
-                    <div className="setting-row"><div className="setting-info"><div className="setting-name">Word emphasis</div><div className="settings-hint">One browser-local preference for supported reading views. PDF pages and EPUB text are emphasized in their original view without changing files or layout. Image-only pages and unsupported text stay unchanged; the header explains availability.</div></div><div className="setting-control"><WordEmphasisToggle capability={{kind:'toggle'}} /></div></div>
+                    <div className="setting-row"><div className="setting-info"><div className="setting-name">Word emphasis</div><div className="setting-desc">One browser-local preference for supported reading views. PDF pages and EPUB text are emphasized in their original view without changing files or layout. Image-only pages and unsupported text stay unchanged; the header explains availability.</div></div><div className="setting-control"><WordEmphasisToggle capability={{kind:'toggle'}} /></div></div>
                     <button type="button" className="settings-reset-btn" onClick={resetReadingPreferences}>Reset reading preferences</button>
                     <h4 className="settings-section">Editing</h4>
 
@@ -268,8 +260,6 @@ export default function SettingsPanel({ editorFontSize, codeFontSize, rainbowBra
                             />
                         </div>
                     </div>
-
-                    <BoardDictionarySetting />
 
                     <h4 className="settings-section">Vault</h4>
 
@@ -510,22 +500,6 @@ export default function SettingsPanel({ editorFontSize, codeFontSize, rainbowBra
                             </div>
                         </div>
                     )}
-
-                    <h4 className="settings-section">About</h4>
-                    <div className="setting-row">
-                        <div className="setting-info"><div className="setting-name">Show developer settings</div><div className="settings-hint">Native editor diagnostics and safety controls, applied when a pane opens.</div></div>
-                        <div className="setting-control"><button type="button" role="switch" aria-label="Show developer settings" aria-checked={developer} className={`settings-toggle${developer ? ' on' : ''}`} onClick={() => { const next = !developer; if (setDeveloperSetting('bme.developer', next)) setDeveloper(next); }}><span className="settings-toggle-knob" /></button></div>
-                    </div>
-                    <div className="setting-row"><a className="settings-notices-link" href={`${import.meta.env.BASE_URL}THIRD_PARTY_NOTICES`} target="_blank" rel="noreferrer">Third-party notices</a></div>
-                    {developer && <>
-                        <h4 className="settings-section">Developer</h4>
-                        <div className="setting-row"><div className="setting-info"><div className="setting-name">Incremental live preview</div><div className="settings-hint">Turn off to render the whole note on each change.</div></div><div className="setting-control"><button type="button" role="switch" aria-label="Incremental live preview" aria-checked={incrementalEditorEnabled()} className={`settings-toggle${incrementalEditorEnabled() ? ' on' : ''}`} onClick={() => updateDeveloper('bme.editor.incremental', !incrementalEditorEnabled())}><span className="settings-toggle-knob" /></button></div></div>
-                        {CANVAS_KINDS.map(kind => <div className="setting-row" key={kind}>
-                            <div className="setting-info">{kind === 'pdfInk' ? 'PDF ink' : kind === 'drawing' ? 'Drawing' : 'Notebook'} emergency read-only</div>
-                            <div className="setting-control"><button type="button" role="switch" aria-label={`${kind} emergency read-only`} aria-checked={routes.canvas[kind].emergencyReadOnly} className={`settings-toggle${routes.canvas[kind].emergencyReadOnly ? ' on' : ''}`} onClick={() => updateDeveloper(emergencyKey(kind), !routes.canvas[kind].emergencyReadOnly)}><span className="settings-toggle-knob" /></button></div>
-                        </div>)}
-                        {!AVAILABLE_PDF_VIEWERS.length && <div className="settings-hint">The native PDF engine is unavailable in this build.</div>}
-                    </>}
 
                     <div className="settings-footer">
                         <button

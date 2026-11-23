@@ -453,15 +453,3 @@ export function SquareTerminal({ size = 16, ...props }: IconProps) {
 }
 
 export const BookOpen = ({ size = 16, ...props }: IconProps) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" {...props}><path d="M12 5v15M12 5C9 3 5 3 2 4v15c3-1 7-1 10 1 3-2 7-2 10-1V4c-3-1-7-1-10 1Z"/></svg>;
-
-/** Word emphasis: three lines of text whose first stretch is heavy, the way the
- *  mode paints each word. Replaces a bold "W" + "e" text glyph that read as a
- *  word cut off ("We") in the pane header. */
-export function WordEmphasis({ size = 16, ...props }: IconProps) {
-    return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
-            <path d="M4 6h6M4 12h8M4 18h5" strokeWidth="3.25" />
-            <path d="M13.5 6H20M15.5 12H20M12.5 18H17" strokeWidth="1.5" />
-        </svg>
-    );
-}

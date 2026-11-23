@@ -51,8 +51,6 @@ interface ConfirmDialogProps {
     input?: {
         label: string;
         initialValue: string;
-        /** Mask secrets without changing the default for ordinary prompts. */
-        type?: 'text' | 'password';
         placeholder?: string;
         /**
          * Why this value cannot be accepted, or null. Runs on every keystroke:
@@ -103,11 +101,8 @@ export default function ConfirmDialog({ questionId = 0, title, children, confirm
     if (typed.id !== questionId) setTyped({ id: questionId, value: input?.initialValue ?? '' });
     const value = typed.id === questionId ? typed.value : input?.initialValue ?? '';
     const setValue = (next: string) => setTyped({ id: questionId, value: next });
-    // A reason is shown once the person has changed the field; an untouched field that is not yet valid (an empty URL) stays
-    // quiet, and Create stays blocked until it is.
-    const invalid = input?.validate ? input.validate(value) : null;
-    const reason = value === (input?.initialValue ?? '') ? null : invalid;
-    const blocked = !!input && invalid !== null;
+    const reason = input?.validate ? input.validate(value) : null;
+    const blocked = !!input && reason !== null;
 
     // Whatever raised this — a tree row's trash button, usually. Read during the
     // first render, which is BEFORE the commit that moves focus into the dialog,
@@ -178,7 +173,7 @@ export default function ConfirmDialog({ questionId = 0, title, children, confirm
                             ref={inputRef}
                             id={inputId}
                             className="confirm-input"
-                            type={input.type ?? 'text'}
+                            type="text"
                             value={value}
                             placeholder={input.placeholder}
                             autoComplete="off"

@@ -36,7 +36,6 @@ export interface ContextMenuCommand {
      * vault (see AGENTS.md on the two deliberate innerHTML sinks).
      */
     label: string;
-    shortcut?: string;
     run: () => void | Promise<void>;
     danger?: boolean;
     /**
@@ -51,9 +50,6 @@ export interface ContextMenuCommand {
      *  says nothing is indistinguishable from a broken one, which is the rule
      *  VaultMenu.messageFor states for the vault list and which holds here too. */
     reason?: string;
-    /** The menu stays open after this row runs, for a row that adjusts something the menu shows (zoom steps).
-     *  Its rows are then re-read through replaceContextMenuEntries, so their state stays true. */
-    keepOpen?: boolean;
 }
 
 /** A row that opens a matrix size picker beside itself (Insert table…). */
@@ -115,17 +111,7 @@ export interface ContextMenuLabel {
     tooltip?: string;
 }
 
-export interface ContextMenuSubmenu {
-    kind: 'submenu';
-    id: string;
-    label: string;
-    entries: (ContextMenuCommand | ContextMenuSeparator | ContextMenuSubmenu)[];
-    disabled?: boolean;
-    reason?: string;
-}
-
 export type ContextMenuEntry =
-    | ContextMenuSubmenu
     | ContextMenuCommand
     | ContextMenuGrid
     | ContextMenuEntryStyle
@@ -139,14 +125,6 @@ export interface ContextMenuRequest {
     entries: ContextMenuEntry[];
     /** The menu's aria-label. */
     label: string;
-    /**
-     * An extra class on the menu and on its flyouts, for a surface that wants its own look (the board's main
-     * menu). Only a stylesheet reads it: rows, labels and the store behave the same, and a request without it
-     * renders exactly as before.
-     */
-    className?: string;
-    lang?: string;
-    dir?: 'ltr' | 'rtl';
     /** Focus returns here on close, if it is still `isConnected`. */
     opener: HTMLElement | null;
     /**
@@ -158,9 +136,6 @@ export interface ContextMenuRequest {
      * toggle it away.
      */
     anchor?: HTMLElement | null;
-    /** Hang the menu ABOVE its point (its bottom edge at `y`), as a popover over a bottom-edge control does. Flips only
-     *  when the menu would not fit above; a menu with room below still goes above. */
-    above?: boolean;
     /** Run exactly once when the menu closes, however it closed. Lets a raiser
      *  clear its own "the menu is on me" highlight without App knowing anything
      *  about it. */
@@ -192,14 +167,6 @@ export function openContextMenu(request: ContextMenuRequest): boolean {
     if (previous && previous !== request) previous.onClose?.();
     for (const listener of listeners) listener();
     return true;
-}
-
-/** Swaps the rows of the menu this anchor raised, without closing it or moving it. A keep-open menu whose rows depend on
- *  live state (zoom) calls this when that state changes; any other anchor, or no menu, changes nothing. */
-export function replaceContextMenuEntries(anchor: HTMLElement, entries: ContextMenuEntry[]): void {
-    if (!current || current.anchor !== anchor) return;
-    current = { ...current, entries };
-    for (const listener of listeners) listener();
 }
 
 export function closeContextMenu(): void {

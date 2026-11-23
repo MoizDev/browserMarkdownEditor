@@ -141,71 +141,6 @@
   --tab-text-color: #5c5c5c;
   --tab-text-color-active: #222222;
 }
-/* A whiteboard pane draws in its own board theme (F-THEME-002, R-26: Preferences > Theme and Mod+/ keep today's
-   behaviour, where the board's Dark/Light recolours its toolbars and panels too). Only the colour variables the
-   light theme overrides are re-scoped; accent and settings-driven variables stay the app's. */
-/* .board-main-menu-dark is the board's main menu when it is opened from a dark board: the menu renders outside the
-   pane, so it takes the same tokens by its own class (BoardHeader sets it from the pane it was raised in). */
-.canvas-pane[data-board-theme="dark"],
-.board-main-menu-dark {
-  --background-primary: #1e1e1e;
-  --background-primary-alt: #252525;
-  --background-secondary: #202020;
-  --background-secondary-alt: #1a1a1a;
-  --background-modifier-border: #363636;
-  --background-modifier-hover: #2a2d2e;
-  --background-modifier-active: #353535;
-  --text-normal: #dcddde;
-  --text-muted: #999;
-  --text-faint: #666;
-  --text-highlight-bg: rgba(255, 208, 0, 0.4);
-  --interactive-normal: #2a2a2a;
-  --interactive-hover: #353535;
-  --scrollbar-bg: transparent;
-  --scrollbar-thumb-bg: rgba(255, 255, 255, 0.1);
-  --scrollbar-active-thumb: rgba(255, 255, 255, 0.18);
-  --tab-container-background: #333333;
-  --tab-background-hover: rgba(255, 255, 255, 0.075);
-  --tab-outline-color: transparent;
-  --tab-divider-color: #3f3f3f;
-  --tab-text-color: #b3b3b3;
-  --tab-text-color-active: #dadada;
-  --board-bar-bg: #232329;
-  --board-bar-border: #36363e;
-  --board-bar-shadow: 0 6px 18px rgb(0 0 0 / 45%);
-  --board-tool-active: #4a7fe8;
-  --board-tool-active-fg: #ffffff;
-}
-.canvas-pane[data-board-theme="light"] {
-  --background-primary: #ffffff;
-  --background-primary-alt: #f2f3f5;
-  --background-secondary: #f2f3f5;
-  --background-secondary-alt: #e3e5e8;
-  --background-modifier-border: #dadce0;
-  --background-modifier-hover: rgba(0, 0, 0, 0.04);
-  --background-modifier-active: rgba(0, 0, 0, 0.08);
-  --text-normal: #2e3338;
-  --text-muted: #5c5f66;
-  --text-faint: #999999;
-  --text-highlight-bg: rgba(255, 208, 0, 0.4);
-  --interactive-normal: #e3e5e8;
-  --interactive-hover: #dadce0;
-  --scrollbar-bg: transparent;
-  --scrollbar-thumb-bg: rgba(0, 0, 0, 0.1);
-  --scrollbar-active-thumb: rgba(0, 0, 0, 0.2);
-  --tab-container-background: #fcfcfc;
-  --tab-background-hover: rgba(0, 0, 0, 0.075);
-  --tab-outline-color: #dadce0;
-  --tab-divider-color: #dadada;
-  --tab-text-color: #5c5c5c;
-  --tab-text-color-active: #222222;
-  --board-bar-bg: #fafafa;
-  --board-bar-border: #e2e2e5;
-  --board-bar-shadow: 0 4px 14px rgb(0 0 0 / 12%), 0 1px 3px rgb(0 0 0 / 8%);
-  --board-tool-active: #4a7fe8;
-  --board-tool-active-fg: #ffffff;
-}
-
 
 /* ── Reset ── */
 *,
@@ -974,8 +909,7 @@ body.is-resizing-terminal * {
   font-size: var(--nav-item-size);
   color: var(--text-muted);
   border-radius: 0;
-  /* Like tab titles, rows must change palette with their surrounding surface:
-     the old ink nearly disappears against the new theme during an 80ms fade. */
+  transition: background 0.08s, color 0.08s;
   user-select: none;
   position: relative;
 }
@@ -1627,8 +1561,7 @@ body.is-resizing-terminal * {
   -webkit-font-smoothing: auto;
   user-select: none;
   cursor: pointer;
-  /* No colour fade: the theme's background changes immediately, so the old
-     dark-theme title colour otherwise spends 80ms almost white on white. */
+  transition: color 0.08s ease;
 }
 
 /* Inactive tabs: a rounded hover pill (::before) and the divider at the right
@@ -2120,7 +2053,7 @@ body.is-resizing-panes * {
    Obsidian's is — with panes it would have to pick a column to sit in, and it
    already picks one by being about the focused document.
 
-   z-index 7, between the panes' 5 (a PDF or a drawing would otherwise
+   z-index 7, between the panes' 5 (a PDF or a tldraw canvas would otherwise
    paint straight over it) and .editor-split-dropzone's 20, which exists only
    while a tab is in flight and has to keep winning while it is. The divider at
    6 stays grabbable where the pill overlaps it because the pill takes no
@@ -2130,73 +2063,6 @@ body.is-resizing-panes * {
    every document, and a click or a drag-select that landed on it instead of on
    the note would be silently swallowed. Only the one control inside takes them
    back. */
-.app-update-notice {
-  position: fixed;
-  z-index: 1000;
-  right: 20px;
-  bottom: 36px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 12px;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 8px;
-  background: var(--background-secondary);
-  color: var(--text-normal);
-  box-shadow: 0 4px 20px #0004;
-}
-
-.app-update-notice button {
-  border: 0;
-  border-radius: 4px;
-  padding: 4px 8px;
-  background: var(--background-modifier-border);
-  color: var(--text-normal);
-  cursor: pointer;
-}
-
-.app-update-notice button:hover { color: var(--text-accent); }
-
-/* The notice column: save failures stacked above the update notice, same card. Never focused (utils/saveNotices.ts);
-   only the cards take the pointer, so the column's empty corners never swallow a click on the page under them. */
-.app-notices {
-  position: fixed;
-  z-index: 1000;
-  right: 20px;
-  /* Clear of the status pill (bottom 10px, ~28px tall) by the same 10px it keeps from the window edge. */
-  bottom: 48px;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 8px;
-  max-width: min(420px, calc(100vw - 40px));
-  pointer-events: none;
-}
-
-.app-notices .app-update-notice {
-  position: static;
-  pointer-events: auto;
-}
-
-.app-notices-saves {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 8px;
-}
-
-.app-notices-saves:empty { display: none; }
-
-.app-save-notice {
-  align-items: flex-start;
-  line-height: 1.4;
-}
-
-.app-save-notice span {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
 .status-bar {
   position: absolute;
   right: 12px;
@@ -2218,32 +2084,16 @@ body.is-resizing-panes * {
   pointer-events: none;
 }
 
-/* Lifted clear of the bottom-right chrome when the rightmost pane is a PDF, a
-   notebook or a whiteboard (EditorPane's `liftStatus`). Two stacks sit there:
-   a reader's .pdf-viewer-controls, top 49px up (16px + 33px), and a board's
-   bottom row (zoom and minimap toggles), top 54px up (8px inset + 46px). 62px
-   clears the higher of the two by 8px. A visible whiteboard minimap stands
-   above that row, 62px up and 142px tall (140px + its border), so the notice
-   goes above it too, with the same 8px gap. Only the minimap-open case needs
-   :has(): it is the one board pill whose height varies. It turns up there only
-   for a transient message ("Saved", a trash notice) or while a markdown pane
-   to the left is focused. */
+/* Lifted clear of the page/zoom pills a PDF or a notebook draws in the same
+   corner when it fills the rightmost pane (EditorPane's `liftStatus`):
+   .pdf-viewer-controls sits 16px up and measures 33px tall, so its top is 49px
+   up; 8px above that is the gap the page pills keep between each other. Right
+   edge moved in to theirs (16px), or the stack jogs by 4px. It turns up there
+   only for a transient message ("Saved", a trash notice) or while a markdown
+   pane to the left is focused. */
 .status-bar.is-lifted {
   right: 16px;
-  bottom: 62px;
-}
-
-.editor-pane:has(.native-minimap) .status-bar.is-lifted {
-  bottom: 212px;
-}
-
-/* A visible board whose zoom controls stack over its tool bar (ViewerHost) raises the corner by that row. */
-.editor-pane:has(.board-viewer-host[data-chrome-stacked]:not(.canvas-pane-hidden *)) .status-bar.is-lifted {
-  bottom: 120px;
-}
-
-.editor-pane:has(.board-viewer-host[data-chrome-stacked]:not(.canvas-pane-hidden *)):has(.native-minimap) .status-bar.is-lifted {
-  bottom: 270px;
+  bottom: 57px;
 }
 
 .status-bar-item {
@@ -2418,27 +2268,6 @@ body.is-resizing-panes * {
   font-size: 13px;
   line-height: 1.5;
   color: var(--text-muted);
-}
-
-.confirm-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin: 12px 0 18px;
-  font-size: 12px;
-  line-height: 1.4;
-  color: var(--text-muted);
-}
-
-.confirm-list-label {
-  flex-basis: 100%;
-  margin-bottom: 2px;
-}
-
-.confirm-list-item {
-  padding: 2px 7px;
-  border: 1px solid var(--border, currentColor);
-  border-radius: 999px;
 }
 
 .confirm-body strong {
@@ -2694,19 +2523,6 @@ body.is-resizing-panes * {
 
 .setting-control .settings-segmented {
   width: 190px;
-}
-
-.setting-control select {
-  color: var(--text-normal);
-  background: var(--background-secondary);
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 5px;
-  padding: 5px 8px;
-  font: inherit;
-}
-
-.settings-body .settings-notices-link {
-  color: var(--text-accent);
 }
 
 .settings-footer {
@@ -3262,7 +3078,11 @@ body.is-resizing-panes * {
   z-index: 5;
 }
 
-/* The loading placeholder fills its pane while the native board chunk arrives. */
+/* ── Drawing pane (.tldraw files) ──
+   Fills the pane it belongs to (.editor-slot-body, or a .pdf-pane in annotate
+   mode) rather than the whole editor: a drawing is one pane's document among up
+   to five side by side, and its box is that pane's. tldraw fills what it's
+   given. */
 .drawing-pane {
   position: absolute;
   inset: 0;
@@ -3270,7 +3090,26 @@ body.is-resizing-panes * {
   background: var(--background-primary);
 }
 
+.drawing-pane .tl-container {
+  width: 100%;
+  height: 100%;
+}
+/* tldraw rings a focused canvas with a 1px outline OUTSIDE its box — over the
+   row above it, since the pane stacks above its neighbours: a line (measured
+   #edf0f2 / #1a1a1c across the full width) cut the chrome above the canvas off
+   from it. Drawn inside instead. */
+.drawing-pane .tl-container__focused {
+  outline-offset: -1px;
+}
 
+/* No halo around typed text. tldraw rings every glyph with text-shadows in
+   --tl-color-background so a label stays legible over shapes. This app remaps
+   that colour to its own surround, which on a white notebook or PDF page in the
+   dark theme is a dark ring around dark text: it read as a border on every
+   letter. Covers whiteboards, notebooks and PDF annotation (all .drawing-pane). */
+.drawing-pane .tl-container {
+  --tl-text-outline: none;
+}
 
 /* A PDF pane floats over the slot its document occupies rather than living
    inside it: one pane exists per OPEN PDF tab and the ones that are off screen
@@ -3339,17 +3178,6 @@ body.is-resizing-panes * {
   min-height: 0;
 }
 
-/* The turned picture a PDF shows from the click until the turned file is drawn
-   sharp (utils/pdfRotationStandIn.ts). Over the page view and its overlays (the
-   view's "Updating" cover is z 2), under the reader's controls (z 6), find bar
-   and notices, which keep working: another press turns it further. */
-.pdf-rotation-standin {
-  position: absolute;
-  z-index: 4;
-  pointer-events: none;
-}
-.pdf-rotation-standin canvas { display: block; width: 100%; height: 100%; }
-
 /* ── DiskBar: a document's file changed or vanished on disk ──
    Between a pane's header and its body (inside a PDF's pane, which floats over
    the slot). A strip in the app's own notice style rather than a dialog: the
@@ -3369,11 +3197,6 @@ body.is-resizing-panes * {
   font-size: 12.5px;
   line-height: 1.4;
 }
-
-.recovery-bar { flex: none; background: var(--background-primary); }
-.recovery-copies { padding: 6px 12px; font-size: 12.5px; border-bottom: 1px solid var(--background-modifier-border); }
-.recovery-copies summary { cursor: pointer; }
-.recovery-copy { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 6px; overflow-wrap: anywhere; }
 
 .disk-bar-message {
   min-width: 0;
@@ -3442,24 +3265,6 @@ body.is-resizing-panes * {
   padding: 24px;
   text-align: center;
 }
-
-/* A wait label shows only once the wait has lasted: a PDF that fills in within a few hundred ms (most do, measured
-   ~0.1-0.3 s from the click) flashed "Loading PDF…" for one or two frames. Still in the DOM for assistive tech. */
-.pdf-pane-message.is-waiting {
-  animation: pdf-pane-waiting 160ms ease-out 400ms both;
-}
-@keyframes pdf-pane-waiting {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .pdf-pane-message.is-waiting { animation-duration: 0s; }
-}
-
-.pdf-tiled-paper { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
-.pdf-tiled-paper > div { position: absolute; background: #fff; }
-/* Inverted pages: white maps to black under the page inversion (platform/render/colour.ts). */
-.pdf-tiled-paper.is-inverted > div { background: #000; }
 
 .pdf-pane-action {
   padding: 6px 12px;
@@ -3569,17 +3374,186 @@ body.is-resizing-panes * {
   height: 100%;
 }
 
-/* ── PDF reader ──
-   The tiled view's root; its pages are painted by the platform renderer, which also
-   applies the inverted-page view preference, so no page or text-layer rules live here. */
+/* ── PDF view mode (pdf.js) ──
+   A continuous scroll of canvas-rendered pages with a selectable text layer.
+   Replaced the browser's viewer in an <iframe> because that viewer can't be
+   asked what page it's on — which is what page persistence needs. */
 .pdf-viewer {
   position: relative;
   width: 100%;
   height: 100%;
 }
 
-::highlight(pdf-find) { background-color: color-mix(in srgb, #f5c400 40%, transparent); color: transparent; }
-::highlight(pdf-find-current) { background-color: color-mix(in srgb, #ff8a00 60%, transparent); color: transparent; }
+.pdf-viewer-scroll {
+  position: absolute;
+  inset: 0;
+  /* Air between the pane header and the first page. Not padding on
+     .pdf-viewer-inner and NOT a margin on the first page: the re-anchor effect
+     scrolls to layout.tops[page], so anything inside the scrollable content is
+     scrolled straight past (PAD_V = 20 already is). Insetting the scroll BOX
+     puts the air outside the content, leaving tops[], PAD_V, PAGE_GAP, the
+     windowing math and the {page, offset} persistence untouched. After inset,
+     so it wins. */
+  top: var(--pdf-top-gap);
+  overflow: auto;
+  outline: none;
+  overscroll-behavior: contain;
+}
+
+/* The CSS-variable contract pdf.js text layers size themselves by:
+   --scale-factor is set inline to the live render scale; the rest are the
+   companion defaults the library's own viewer defines. */
+.pdf-viewer-inner {
+  --scale-factor: 1;
+  --user-unit: 1;
+  --total-scale-factor: calc(var(--scale-factor) * var(--user-unit));
+  --scale-round-x: 1px;
+  --scale-round-y: 1px;
+  box-sizing: border-box;
+  width: fit-content;
+  min-width: 100%;
+  margin: 0 auto;
+}
+
+.pdf-viewer-page {
+  position: relative;
+  margin-left: auto;
+  margin-right: auto;
+  background: #fff;
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.35);
+  /* Skip the pages nobody is looking at. A zoom step restyles every text-layer
+     span and repaints the whole column, so a 40-page document paid 40 pages of
+     style, layout and compositor commit to change what two of them show —
+     measured at 61ms of Commit plus 68ms in the keydown, per step. No
+     contain-intrinsic-size: each page carries an explicit width/height from the
+     layout, so a skipped one still reserves exactly the right box, and
+     find-in-page still reaches the text inside it. */
+  content-visibility: auto;
+}
+
+/* Top/left rather than `inset: 0`, because at high zoom the canvas holds one
+   BAND of the page and is pinned over it with inline left/top/width/height
+   (see MAX_CANVAS_PIXELS); a `right`/`bottom` here would only be ignored. */
+.pdf-viewer-page > canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* Selectable-text overlay, trimmed from pdf.js's own text_layer styles.
+   Span geometry is emitted by the library (percent positions + CSS-variable
+   font sizing), so these rules are load-bearing for selection accuracy. */
+.textLayer {
+  color-scheme: only light;
+  position: absolute;
+  text-align: initial;
+  inset: 0;
+  overflow: clip;
+  opacity: 1;
+  line-height: 1;
+  letter-spacing: normal;
+  word-spacing: normal;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  caret-color: CanvasText;
+  z-index: 2;
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+}
+
+.textLayer :is(span, br) {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+  user-select: text;
+}
+
+.textLayer > :not(.markedContent),
+.textLayer .markedContent span:not(.markedContent) {
+  z-index: 1;
+  --font-height: 0;
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
+  --scale-x: 1;
+  --rotate: 0deg;
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+
+.textLayer .markedContent {
+  display: contents;
+}
+
+.textLayer span[role='img'] {
+  user-select: none;
+  cursor: default;
+}
+
+.textLayer ::selection {
+  background: color-mix(in srgb, var(--interactive-accent) 45%, transparent);
+  color: transparent;
+}
+
+/* pdf.js sizes a text layer from the page's UNROTATED box and records the
+   page's /Rotate on the container, leaving the turn itself to the host's CSS
+   (its own viewer carries these same three rules). Without them a page with
+   /Rotate 90 gets a portrait text layer over a landscape page, so selection
+   lands nowhere near the glyphs. The link layer needs no equivalent: its
+   percentages already come out of the rotated viewport. */
+.pdf-viewer-page .textLayer[data-main-rotation="90"] {
+  transform: rotate(90deg) translateY(-100%);
+}
+
+.pdf-viewer-page .textLayer[data-main-rotation="180"] {
+  transform: rotate(180deg) translate(-100%, -100%);
+}
+
+.pdf-viewer-page .textLayer[data-main-rotation="270"] {
+  transform: rotate(270deg) translateX(-100%);
+}
+
+/* ── The PDF's own links ──
+   Above the text layer, or the transparent glyph spans would swallow every
+   click. Only the link boxes themselves take pointer events, so selecting
+   ordinary text is unaffected. */
+.pdf-link-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+
+/* Both an <a> (external URL) and a <button> (in-document jump) wear this, so
+   it resets the chrome of each down to a plain transparent box. */
+.pdf-link {
+  position: absolute;
+  display: block;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  border-radius: 2px;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: background-color 90ms ease-out;
+}
+
+.pdf-link:hover,
+.pdf-link:focus-visible {
+  background: color-mix(in srgb, var(--interactive-accent) 25%, transparent);
+  outline: none;
+}
+
+/* Set for the duration of a text-selection drag: the links stand aside so the
+   selection can sweep across them (see PdfViewer's pointerdown handler). */
+.pdf-viewer-scroll.pdf-selecting .pdf-link {
+  pointer-events: none;
+}
 
 /* ── Bottom-right controls: page number, then zoom ── */
 .pdf-viewer-controls {
@@ -3618,16 +3592,6 @@ body.is-resizing-panes * {
 .pdf-viewer-zoom button:hover {
   background: var(--background-modifier-hover);
   color: var(--text-normal);
-}
-
-.pdf-viewer-zoom-value {
-  min-width: 4ch;
-  color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-  user-select: none;
 }
 
 /* Padding/font/line-height match .pdf-viewer-zoom button exactly so both pills
@@ -3678,7 +3642,9 @@ body.is-resizing-panes * {
 /* ── Page thumbnails (PdfThumbnails.tsx) — the reader and the annotate canvas ──
    The strip is windowed and absolutely positioned; the document beside it just
    starts where the strip ends. */
-.pdf-viewer {
+.pdf-viewer,
+.pdf-annotate-pane,
+.notebook-pane {
   /* THUMB_WIDTH (108) plus 14px either side. Keep the two in step. */
   --pdf-thumbs-width: 136px;
   /* 16 because that is pagedCanvas.ts's PAGE_TOP_GUTTER — the air Annotate
@@ -3767,11 +3733,23 @@ body.is-resizing-panes * {
   left: var(--pdf-thumbs-width);
 }
 
+/* A paged canvas (the PDF annotator, a notebook) gets its own box so the strip
+   can narrow it. Its stacking context keeps tldraw's internal layers under the
+   page box and the strip, and it is the ancestor pagedCanvas.ts catches swipes
+   on. */
+.paged-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+
+.has-thumbs > .paged-canvas {
+  left: var(--pdf-thumbs-width);
+}
+
 /* The pill's icon buttons: thumbnails, invert, and the two quarter turns. One
    rule, because they sit shoulder to shoulder in the same pill and any
    difference between them would read as a mistake. */
-.pdf-viewer-outline-toggle,
-.pdf-capabilities-toggle,
 .pdf-viewer-thumbs-toggle,
 .pdf-viewer-invert-toggle,
 .pdf-viewer-rotate-btn {
@@ -3786,8 +3764,6 @@ body.is-resizing-panes * {
   cursor: pointer;
 }
 
-.pdf-viewer-outline-toggle:hover,
-.pdf-capabilities-toggle:hover,
 .pdf-viewer-thumbs-toggle:hover,
 .pdf-viewer-invert-toggle:hover,
 .pdf-viewer-rotate-btn:hover {
@@ -3795,8 +3771,6 @@ body.is-resizing-panes * {
   color: var(--text-normal);
 }
 
-.pdf-viewer-outline-toggle.is-on,
-.pdf-capabilities-toggle.is-on,
 .pdf-viewer-thumbs-toggle.is-on,
 .pdf-viewer-invert-toggle.is-on {
   color: var(--interactive-accent);
@@ -3808,9 +3782,104 @@ body.is-resizing-panes * {
   color: var(--interactive-accent);
 }
 
+/* A turn is being written (utils/pdfRotating.ts) — over a second on a big book,
+   during which nothing else on screen moves, and an unmoving button read as
+   "rotate does nothing". Each arrow spins the way it turns. The button stays
+   live: another click queues another quarter turn. */
+.pdf-viewer-rotate-btn.is-busy {
+  color: var(--interactive-accent);
+}
+
+.pdf-viewer-rotate-btn.is-busy svg {
+  animation: pdf-viewer-rotate-spin 0.9s linear infinite;
+}
+
+.pdf-viewer-rotate-btn.is-busy .pdf-viewer-rotate-ccw {
+  animation-direction: reverse;
+}
+
+@keyframes pdf-viewer-rotate-spin {
+  to { transform: rotate(360deg); }
+}
+
 /* Without the motion, the accent colour alone still says "working". */
 @media (prefers-reduced-motion: reduce) {
   .pdf-viewer-rotate-btn.is-busy svg { animation: none; }
+}
+
+/* ── Inverted pages (PdfInvertToggle) ──
+   A VIEW preference and nothing more: the file and its exported PDF keep their
+   colours. Done as a CSS filter, so it is instant, costs no re-render, and leaves
+   pdf.js's cached bitmaps alone. A FULL invert: white paper becomes black and
+   black text white. A partial one (0.88) was tried first and read as washed-out
+   grey, not as an inverted page. hue-rotate(180deg) puts colours back near their
+   own hue, so a red figure still reads as red.
+
+   Reader: the page canvases only, never the page box, so the text layer's
+   selection highlight and the link layer keep their real colours.
+   Annotating: tldraw's shapes layer, which holds the pages AND the ink. Inverting
+   the pages alone would leave default black ink invisible on a dark page. The
+   background (the grey around the pages), the selection overlays and tldraw's
+   menus are other layers and stay as they are. */
+.pdf-viewer,
+.pdf-annotate-pane,
+.notebook-pane {
+  --pdf-invert: invert(1) hue-rotate(180deg);
+}
+
+.pdf-viewer.is-inverted .pdf-viewer-page > canvas,
+.pdf-annotate-pane.is-inverted .tl-shapes,
+.notebook-pane.is-inverted .tl-shapes,
+.is-inverted .pdf-thumb-page img {
+  filter: var(--pdf-invert);
+}
+
+/* What inverted white paper looks like, for the parts of a page not yet drawn
+   (before a render lands, or outside a band at high zoom). The surround is left
+   as the app's own background: against black pages it already separates them,
+   so the page breaks stay visible without darkening it. */
+.pdf-viewer.is-inverted .pdf-viewer-page,
+.is-inverted .pdf-thumb-page {
+  background: #000;
+}
+
+/* The whiteboard canvas IS the page under the active tab, so it takes the same
+   token the tab does (--tab-background-active is --background-primary). tldraw's
+   stock light canvas is hsl(210,20%,98%) = #f8f9fa and its dark one needed an
+   override anyway; remapping the variable rather than restyling .tl-background
+   also recolours the menu zone's 2px cut-out border, which was painting the old
+   canvas colour against the tab. The paged canvases keep --canvas-surround:
+   .notebook-pane and .pdf-annotate-pane both carry .drawing-pane, hence the
+   :not()s — which also make this order-independent against the block that gives
+   them --canvas-surround further down. */
+.drawing-pane:not(.notebook-pane):not(.pdf-annotate-pane) .tl-container {
+  --tl-color-background: var(--background-primary);
+}
+
+/* tldraw notches its menu zone into the top-left corner with no margin, so it
+   butts the pane header. Pad the layout column rather than the widget: the zone's
+   own bottom-right-only radius stays correct, and __top__right (the style panel,
+   which already sets margin: 8px) and __top__center (the notebook toolbar) are
+   untouched. CenteredTopPanelContainer measures only offsetWidth, so a
+   padding-top moves nothing it depends on. This is the file's only tlui-
+   selector: a variable remap cannot add spacing. */
+.drawing-pane .tlui-layout__top__left { padding-top: 8px; }
+
+/* tldraw ships 32px SVG-image cursors (chunky cross while drawing, cartoon
+   hand, etc.) and swaps them per tool by pointing --tl-cursor at these vars.
+   Remapping the vars — not `cursor` itself — keeps the override live through
+   tldraw's inline-style updates. Canvas tools all get the native arrow; UI
+   buttons and in-shape text editing keep their native equivalents. */
+.drawing-pane .tl-container {
+  --tl-cursor-default: default;
+  --tl-cursor-cross: default;
+  --tl-cursor-move: default;
+  --tl-cursor-grab: default;
+  --tl-cursor-grabbing: default;
+  --tl-cursor-zoom-in: default;
+  --tl-cursor-zoom-out: default;
+  --tl-cursor-pointer: pointer;
+  --tl-cursor-text: text;
 }
 
 .drawing-pane-loading {
@@ -3819,6 +3888,295 @@ body.is-resizing-panes * {
   justify-content: center;
   color: var(--text-muted);
   font-size: 13px;
+}
+
+/* A notebook's paper settings, floated over the canvas.
+
+   Top-CENTRE, not a corner: tldraw already owns all four of them (the menu and
+   page control top-left, the style panel top-right, the toolbar bottom-centre,
+   the zoom pill bottom-left), and the middle of the top edge is the one strip
+   it leaves clear at every window size. z-index sits above tldraw's canvas but
+   below its panels, so a style popover still opens over this rather than
+   under it. */
+/* Rendered in tldraw's TopPanel slot (NotebookPane's NotebookTopPanel), so it is
+   laid out in flow there and tldraw keeps it clear of its own top-left menu.
+   `pointer-events: auto` because tldraw's UI layer does not take clicks itself. */
+.notebook-toolbar {
+  position: relative;
+  margin-top: 8px;
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 8px;
+  /* Chrome, not paper — so this follows the app theme even though the pages
+     below it never do. See the canvas-chrome variables. */
+  background: var(--canvas-chrome-bg);
+  border: 1px solid var(--canvas-chrome-border);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.1), 0 4px 12px rgb(0 0 0 / 0.06);
+  font-size: 12px;
+  color: var(--canvas-chrome-text);
+}
+
+.notebook-select,
+.notebook-toolbar-btn {
+  font: inherit;
+  color: inherit;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.notebook-select:hover,
+.notebook-toolbar-btn:hover:not(:disabled) {
+  background: var(--canvas-chrome-hover);
+}
+
+.notebook-toolbar-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.notebook-page-count {
+  padding: 0 2px;
+  color: var(--canvas-chrome-muted);
+  /* Tabular figures so "9 pages" -> "10 pages" doesn't shift the + Page button
+     sideways while pages are being appended as you write. */
+  font-variant-numeric: tabular-nums;
+}
+
+/* The replacement style panel — colours plus one continuous width slider.
+   See components/CanvasStylePanel.tsx for why tldraw's own is not used. */
+.canvas-style-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 9px;
+  /* Exactly the swatch grid plus its padding: the panel floats over the canvas
+     the user is drawing on, so every pixel it takes is one they cannot see. */
+  width: max-content;
+  /* Replacing tldraw's StylePanel replaces its positioning wrapper too, so the
+     inset it used to get from the layout has to be stated here or the panel
+     sits flush against the window edge. */
+  margin: 8px;
+  border-radius: 10px;
+  background: var(--canvas-chrome-bg);
+  border: 1px solid var(--canvas-chrome-border);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.1), 0 6px 16px rgb(0 0 0 / 0.08);
+  pointer-events: all;
+}
+
+/* Hide / show. Collapsed, the panel is one button showing the current colour. */
+.canvas-style-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: -3px -3px -4px 2px;
+  font-size: 11px;
+  color: var(--canvas-chrome-muted);
+}
+
+.canvas-style-toggle {
+  display: flex;
+  padding: 2px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--canvas-chrome-muted);
+  cursor: pointer;
+}
+
+.canvas-style-toggle:hover,
+.canvas-style-panel.is-collapsed:hover {
+  background: var(--canvas-chrome-hover);
+  color: var(--canvas-chrome-text);
+}
+
+.canvas-style-panel.is-collapsed {
+  width: auto;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 7px 6px 8px;
+  color: var(--canvas-chrome-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.canvas-style-current {
+  width: 15px;
+  height: 15px;
+  border-radius: 5px;
+  background: var(--swatch);
+  box-shadow: 0 0 0 1px var(--canvas-chrome-border);
+}
+
+.canvas-style-colors {
+  display: grid;
+  grid-template-columns: repeat(4, 22px);
+  gap: 6px;
+}
+
+/* Rounded squares, not discs: at this size a square shows a third more of the
+   colour it stands for, and the grid reads as a palette rather than as twelve
+   buttons. */
+.canvas-style-swatch {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 7px;
+  background: var(--swatch);
+  cursor: pointer;
+  /* An OUTER ring, not an inset one, and in the chrome's border colour rather
+     than a black tint: the canvases are pinned to tldraw's light theme, so
+     'black' is #1d1d1d — which on dark chrome is a black dot on a near-black
+     panel. The ring is the only thing that makes that swatch findable. It sits
+     outside the circle so selecting a colour doesn't shrink it a pixel. */
+  box-shadow: 0 0 0 1px var(--canvas-chrome-border);
+}
+
+.canvas-style-swatch:hover {
+  box-shadow: 0 0 0 2px var(--canvas-chrome-muted);
+}
+
+.canvas-style-swatch.selected {
+  box-shadow: 0 0 0 1.5px var(--canvas-chrome-bg), 0 0 0 3px var(--interactive-accent);
+}
+
+.canvas-style-width {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--canvas-chrome-border);
+}
+
+/* A dot of exactly the ink the pen will lay down. Fixed 20px box so the row
+   height doesn't change as the dot grows, which would jog the slider. */
+.canvas-style-width-preview {
+  flex: 0 0 16px;
+  height: 16px;
+  display: grid;
+  place-items: center;
+}
+
+.canvas-style-width-preview::after {
+  content: '';
+  /* Floored at 2px: the thinnest pen is 0.36px of ink, which is honest but
+     renders as nothing at all — and a preview that disappears reads as broken
+     rather than as fine. */
+  width: max(2px, var(--dot));
+  height: max(2px, var(--dot));
+  max-width: 15px;
+  max-height: 15px;
+  border-radius: 50%;
+  background: var(--swatch);
+}
+
+/* A pill track with the filled part in the accent and a white cap on the join —
+   the agent panel's effort slider, at the size this panel can afford. The
+   browser's own range widget (`accent-color`) is a 4px groove and a flat disc,
+   which looked like a form control dropped on a drawing.
+
+   The fill is painted INTO the track by a gradient stopping at `--fill`, which
+   the component sets from the same value the input carries: a ::before on the
+   track cannot be positioned against the thumb, and a second element would not
+   inherit the input's own pointer handling. */
+.canvas-style-slider {
+  flex: 1 1 auto;
+  /* An <input type="range"> carries an intrinsic width of ~129px, and the panel
+     is sized `max-content` — so the slider, not the swatch grid, was deciding
+     how wide the panel is (measured: 173px instead of 124px). Stating a modest
+     one hands that back to the grid, and `flex: 1 1 auto` still stretches it to
+     whatever the row has. */
+  width: 72px;
+  min-width: 0;
+  height: 14px;
+  margin: 0;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.canvas-style-slider::-webkit-slider-runnable-track {
+  height: 14px;
+  border-radius: 999px;
+  background:
+    linear-gradient(90deg, var(--interactive-accent), var(--interactive-accent-hover)) 0 / var(--fill, 0%) 100% no-repeat,
+    var(--canvas-chrome-hover);
+  box-shadow: inset 0 0 0 1px var(--canvas-chrome-border);
+}
+
+.canvas-style-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  /* Centres the 12px cap in the 14px track. */
+  margin-top: 1px;
+  border-radius: 50%;
+  background: linear-gradient(180deg, #ffffff, #f2f2f4);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 0 0 0.5px rgb(0 0 0 / 0.16);
+}
+
+.canvas-style-slider:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 2px;
+}
+
+/* ── Canvas chrome follows the app theme; the PAGES never do ──────────────
+   A notebook page and a PDF page are white in either theme — that is the paper
+   the export prints on, and tldraw resolves ink COLOURS through its theme, so a
+   dark canvas would draw near-white 'black' onto white paper (the bug the
+   colorScheme pin exists to stop). So the canvases stay pinned to tldraw's light
+   scheme for correctness, and everything AROUND the paper is themed here
+   instead: the surround, this panel, and the notebook's paper bar. */
+:root {
+  --canvas-surround: #f7f7f9;
+  --canvas-chrome-bg: #ffffff;
+  --canvas-chrome-border: #e4e4e7;
+  --canvas-chrome-text: #1d1d1d;
+  --canvas-chrome-muted: #6b6b70;
+  --canvas-chrome-hover: #f1f1f3;
+}
+
+:root:not([data-theme="light"]) {
+  --canvas-surround: var(--background-primary);
+  --canvas-chrome-bg: var(--background-secondary);
+  --canvas-chrome-border: var(--background-modifier-border);
+  --canvas-chrome-text: var(--text-normal);
+  --canvas-chrome-muted: var(--text-muted);
+  --canvas-chrome-hover: var(--background-modifier-hover);
+}
+
+/* The two canvases that draw on PAGES take the themed surround and themed
+   panels. A `.tldraw` whiteboard is excluded on purpose: it has no pages, so its
+   whole surface IS the drawing surface, and it already follows the app theme
+   through colorScheme.
+
+   Remapping tldraw's own variables rather than restyling its elements — the
+   same approach the cursor overrides below use — so this keeps working through
+   tldraw's inline style updates and does not need a selector per widget. */
+.notebook-pane .tl-container,
+.pdf-annotate-pane .tl-container {
+  --tl-color-background: var(--canvas-surround);
+  --tl-color-panel: var(--canvas-chrome-bg);
+  --tl-color-panel-contrast: var(--canvas-chrome-bg);
+  --tl-color-low: var(--canvas-chrome-hover);
+  --tl-color-low-border: var(--canvas-chrome-border);
+  --tl-color-muted-1: var(--canvas-chrome-hover);
+  --tl-color-muted-2: var(--canvas-chrome-hover);
+  --tl-color-divider: var(--canvas-chrome-border);
+  --tl-color-hint: var(--canvas-chrome-border);
+  --tl-color-tooltip: var(--canvas-chrome-text);
+  --tl-color-text: var(--canvas-chrome-text);
+  --tl-color-text-1: var(--canvas-chrome-text);
+  --tl-color-text-2: var(--canvas-chrome-text);
+  --tl-color-text-3: var(--canvas-chrome-muted);
 }
 
 /* The eight folder colours, one value per theme.
@@ -5626,15 +5984,10 @@ li[aria-selected] .cm-completionMatchedText {
 /* "This row opens something." Pushed to the right edge by the row's own flex,
    and faint because it is a hint about the row rather than part of its name. */
 .context-menu-item-arrow {
-  margin-inline-start: auto;
+  margin-left: auto;
   color: var(--text-faint);
   font-size: 11px;
   line-height: 1;
-}
-
-.context-menu[dir="rtl"] .context-menu-item,
-.context-menu-panel[dir="rtl"] .context-menu-item {
-  text-align: right;
 }
 
 /* The flyout beside the menu — the table size picker lives in one. Chrome only:
@@ -6034,4 +6387,3 @@ h5.tex-heading { font-size: 1em; color: var(--text-muted); }
  .editor-history-menu { display:flex; }
  .editor-slot-title { padding-inline:2px; }
 }
-

@@ -1,6 +1,0 @@
-a2618956e4b70342877a07e86440ea37de7124928ba6c068540ef33232d4e355  /work/source/recipe/patches/wasm/pdfium.patch
-1f6a2ab1c3e40d64dcd8dffc7d1dafcae6b6c5ff7678d12f4148299d9cc52b4e  /work/patches/pdfium-wasm.patch
-c72c3b626163998acbf4e4990894b783a1206a92f7532afdd84265cbd28dce7e  /work/source/recipe/patches/wasm/build.patch
-45a4f7b5796c381bbf4cd74c54d613d63b8644df96ab3fa32ad7d9132b21f151  /work/source/recipe/patches/clang_rt.patch
-711e4a422dba9a5c34ca164a4850104e94f32bdd448bd1eb615cf4e790f28bcd  /work/source/recipe/patches/wasm/config.gn
-4f745ed82c7631f63fc213b52d8e53c3d1d328caaae131f3dd760912e9f5826b  /work/patches/standalone-wasm-allocator.patch

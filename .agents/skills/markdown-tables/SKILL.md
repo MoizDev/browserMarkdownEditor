@@ -1,231 +1,462 @@
 ---
 name: markdown-tables
-description: The rendered, in-place-editable GFM table in notes — tableModel.ts (what a table is), tableWidget.ts (rendering, the cell HTML allowlist sink, maths in cells, grips and chips), tableEdit.ts (cell editing, write-back, row/column commands, the cell menu), tableFit.ts (column widths and type scale), tableReadingSelection.ts, and the table entry rules in livePreview.ts. Load before changing how tables parse, render, are edited, sized or selected, and before adding any construct that writes back into a cell or renders cell text.
+description: The rendered-table subsystem — tableModel.ts, tableWidget.ts, tableEdit.ts, tableFit.ts. Load before changing anything about how tables parse, render, are edited in place, or are sized; and before adding any new construct that writes back into a cell.
 ---
 
 # Tables: an editable object over raw markdown
 
-A rendered table is an **object with an inside**, like an embedded image: never revealed by the
-cursor, its range atomic, each `<th>`/`<td>` a `contenteditable="plaintext-only"` island whose every
-keystroke writes markdown back through `view.dispatch`. The file still holds ordinary GFM pipe
-markdown — a layer over it, never a new format. Read `live-preview` first for the decoration pass.
+A rendered table is an **object with an inside**: never revealed by the cursor, its range atomic,
+each `<th>`/`<td>` a `contenteditable="plaintext-only"` island whose every keystroke writes markdown
+back through `view.dispatch`. It is the embedded-image model extended to a thing with parts. The
+file on disk still holds ordinary GFM pipe markdown — this is a layer over it, not a new format.
+
+Four files, and the split matters:
 
 | file | owns |
 |---|---|
-| `editor/tableModel.ts` | pure geometry, DOM- and view-free. **The single definition of a table** (`tablePattern`, `findTables`, `parseGrid`, `parseTableLayout`, `pipeOffsets`, `rowColumnCount`, `escapeNewPipes`, `protectTrailingBackslash`) |
-| `editor/tableWidget.ts` | `TableWidget`; the cell HTML sink `renderCellContent`; maths in cells; grips and corner chips |
-| `editor/tableEdit.ts` | inside a cell: keyboard, `writeBack`, session guard, row/column commands, cell menu, `insertTableAtCursor` |
-| `editor/tableFit.ts` | column widths and the table's type scale |
-| `editor/tableReadingSelection.ts` | native selections that cross table cells in Reading mode |
-| `editor/livePreview.ts` | decorating tables, `tableEntryKeymap`, `tableAdoptListener`, `completeHeaderRow` |
-| `utils/tableInsertRequest.ts` | Insert table… from the pane's `⋯` (no view there), grid size 8×10 |
+| `tableModel.ts` | pure geometry. DOM-free, `EditorView`-free. **The single definition of what a table is.** |
+| `tableWidget.ts` | renders one; owns the HTML sink and the corner chips |
+| `tableEdit.ts` | what happens inside a cell: keyboard contract, write-back, row/column commands, cell menu |
+| `tableFit.ts` | sizes it |
 
 ## One escape loop, one answer
 
-Which spans are tables, where each cell begins and ends in the document, and what each cell renders
-as must never disagree. All three live in `tableModel.ts` and share `parseRow`'s character loop:
-**only unescaped pipes delimit** (`\|` is GFM's pipe-in-a-cell, required even in code spans), and a
-second copy of that loop is a row that silently gains a column. Rows are truncated to the header's
-column count on render, so a split on an escaped pipe would *drop* content, not just misdraw it.
+Three questions must be asked of the same pipe markdown and must never disagree: which document
+spans are tables at all, where every cell begins and ends *in the document*, and what each cell
+renders as. All three are in `tableModel.ts`, sharing `parseRow`'s character loop — **moved there
+rather than copied**, because only *unescaped* pipes delimit and a second copy of that loop is a row
+that silently gains a column.
 
-## Finding tables (the decoration pass)
+## Parsing and the decoration pass
 
-- `tablePattern()` is a regex (header row, delimiter row, body rows), not a syntax-tree node. The scan
-  is incremental: `analysisObjects.ts` (`scanObjects` / `updateObjects`) runs `findTables` over changed
-  windows and marks each span `accepted` unless a code range **contains** it; `livePreview` decorates
-  only accepted spans inside the visible window.
-- `findTables` returns **only spans `parseGrid` accepts**. Load-bearing: every returned span becomes
-  an atomic, never-revealed `Decoration.replace`, and a span the widget cannot build cells for would be
-  the user's own text with no way to put a caret in it. `splitTable` requires the delimiter on line 2
-  exactly (`isSeparatorLine` also accepts a bare `-`, so `| - | - |` would otherwise read as no header).
-- **The code guard is containment, not intersection.** `collectCodeRanges` includes `InlineCode`, so
-  an intersection test rejects any table with one `` `code` `` cell; a fenced table must stay text,
-  because an atomic widget could never be edited back out of its fence. **No math guard**, deliberately
-  (an intersection would reject any table with `$x$`).
-- The widget's identity is `eq(rawTable, canEdit, selected, emphasis key)`. A Reading-emphasis
-  preference change rebuilds only table widgets (`livePreview`'s field `update`), not the whole pass.
+- **The pass is the regex**, not a syntax-tree node — `findTables(doc)` runs `/(^\|.+\|…)/gm`.
+- It returns **only spans `parseGrid` accepts**. Load-bearing: the caller pushes an atomic,
+  never-revealed `Decoration.replace` for every span it gets, so a span the widget cannot build
+  cells for would be a block of the user's own text with **no way to put a caret in it**.
+- `splitTable` is the gate — the delimiter must be line 1 exactly, because `isSeparatorLine` also
+  accepts a bare `-`, so a table whose header row is `| - | - |`, or one carrying a duplicated
+  delimiter row, would otherwise read as having no header. Such a span stays ordinary markdown.
+- **The code guard is CONTAINMENT, not the image pass's intersection test.** `collectCodeRanges`
+  collects `InlineCode` as well as fences, and a table spans several lines, so
+  `from < r.to && to > r.from` rejects any table with one `` `code` `` cell. `r.from <= from &&
+  r.to >= to` is exact. A quoted table that rendered could be neither revealed nor edited back out
+  of its fence, and its cells would write into a code block. The Help guide carries exactly this case.
+- **No math guard, deliberately.** `overlapsMath` is an intersection too, so it would reject any
+  table containing `$x$`; a containment version could only fire for a table wholly inside a math
+  region, which cannot occur.
 
-## Entering and leaving
+## Entry: there is no typing exception, and there could not be
 
-There is no "caret inside reveals source" exception: a table cannot half-exist. Instead:
-- **`tableEntryKeymap`** (`Prec.high`) binds the four arrows *beside* a table (else returns `false`):
-  Down/Right enter the first row, Up/Left the last, column from the caret's x. Down/Up first ask
-  `moveVertically` whether the move **leaves the logical line** — `skipAtomicRanges` parks a position
-  on the range's far side, so a move over a table never reports its near edge.
-- **`tableAdoptListener`** catches a caret **strictly inside** a table (Home/End with wrapping skip
-  `skipAtoms`; undo or a programmatic dispatch) and a table **typed into existence** (gated on
-  `input.type`, excluding pastes and this feature's own writes, **and** on the last body row being
-  column-complete: the body regex matches a one-cell row, and adopting early sent the user's own
-  closing `|` into the cell as `\|` — measured 4/4). Boundaries (`from`, `to`) are never adopted:
-  they are where every way out parks the caret.
-- **Enter on a lone header row** (`completeHeaderRow`) adds the delimiter and one blank body row and
-  puts the caret in it. It declines mid-line, on a delimiter-shaped line, before a pipe-fenced line,
-  inside a table or code. Tagged `input`, not `input.type`, so adoption ignores it.
-- **Backspace/Delete beside a table select it first** (the range is atomic; the default command would
-  swallow it in one press). The selected table gets `cm-table-selected` on its own container — the
-  root's `cm-image-selection` is document-wide and would ring every table.
-- In a cell: Tab/Shift-Tab step cells; Enter goes down a row (from the last row it appends one);
-  Shift-Enter inserts the literal `<br>`; arrows at a cell edge move cells or leave the table; Escape
-  leaves (prevented **and** stopped — CodeMirror binds it too); **Alt+↑/↓ moves the row**.
+An image's three mechanisms are: never suppressed by the cursor, atomic, plus a
+caret-strictly-inside exception for the embed being typed. A table cannot half-exist — the pattern
+needs three complete lines — so the third is replaced by two narrow rules in `livePreview.ts`:
+
+- **`tableEntryKeymap`** (`Prec.high`) binds the four arrows *beside* a table and returns `false`
+  otherwise: Down/Right enter the first row, Up/Left the last, and the column comes from the
+  caret's x so vertical motion feels continuous. Down/Up first ask `moveVertically` whether the
+  move would **leave the logical line** — not whether it lands on the table's edge, because
+  `skipAtomicRanges` parks a position on the range's *far* side, so a downward move over a table
+  reports `to`, never `from`.
+- **`tableAdoptListener`** catches the two cases a keypress could not produce: a caret **strictly
+  inside** a rendered table (Home/End with wrapping on is the one motion path CodeMirror does not
+  run through `skipAtoms`; an undo or programmatic dispatch can leave a caret anywhere), and a table
+  **typed into existence** (the last body row may have no trailing newline, so the caret sits on the
+  new table's `to`; left alone the next character un-renders it, one flicker per keystroke).
+  Boundaries are otherwise **never** adopted — `from` and `to` are where every documented way *out*
+  parks the caret. The typed-into-existence case is gated on `input.type` (excluding pastes and
+  every write this feature makes) **and on the last body row being column-complete**: the body group
+  is `(?:^\|.+\|[ \t]*\n?)+`, so a row matches with ONE cell, and typing `| a | b |`⏎`| --- | --- |`⏎
+  `| c | d |` makes a table two keystrokes early. Adopting there pulled the caret into the empty
+  last cell, so the user's own closing `|` was correctly escaped and landed in the file as
+  `| c | d \| |` (measured, 4/4).
+
+**Backspace and Delete beside a table select it first.** The range is atomic, so
+`@codemirror/commands` would widen through the whole table and swallow it in one keystroke. A
+second press deletes through the default command. A selected table carries `cm-table-selected` on
+**its own container**; the root's `cm-image-selection` class is document-wide, so a ring scoped to
+it would outline every table in the note at once.
 
 ## The editable island
 
-Pinned `@codemirror/view` 6.39.15 discards DOM mutations and selection changes inside a widget, never
-moves the DOM selection while focus is off `contentDOM`, and reports `eventBelongsToEditor === false`
-for events crossing a widget that ignores events. **So `ignoreEvent()` is NOT overridden** — the
-default buys all four. The cost: inside a cell the app's keymaps do not run, so `tableEdit.ts` binds
-Tab, arrows, Enter, Escape, `Mod-a` (the cell's contents), `Mod-b`/`Mod-i` (swallowed; bold is typed),
-and **`⌘Z`/`⌘Y`/`⌘⇧Z`** (ends the cell session, runs CodeMirror's undo/redo) — an unbound ⌘Z would hit
-the element's own contenteditable undo, which knows nothing of our transactions. ⌘X/⌘C/⌘V and text
-selection stay native; the `input` that follows runs the ordinary write-back.
+Four facts of the pinned CodeMirror 6.39.15 source are why this is a supported door: CodeMirror
+discards every DOM mutation inside a widget (`readMutation`, `:7329-7332`), ignores a selection
+change inside one (`:7092-7105`), never moves the DOM selection while focus is off the `contentDOM`
+(`:2994-3002`), and reports `eventBelongsToEditor === false` for any event whose path crosses a
+widget that ignores events (`:4775-4785`).
 
-- **Focus is repaired after every write-back — it is the mechanism, not a safety net.** Measured: a
-  dispatch that changes the table's source blurs the focused cell to `BODY` though the element
-  survives. Without `cell.focus({preventScroll:true})` + caret range at the end of `writeBack`, the
-  table takes exactly one character. Check `isConnected` first: the cell can be gone (typing `-` into
-  every header cell makes a delimiter row, which `parseGrid` rejects).
-- **The `canEdit` naming trap.** Never name the widget's flag `editable`: `WidgetType.prototype` has an
-  undocumented `get editable()` missing from the `.d.ts`. A `readonly editable` parameter property
-  throws at runtime with a clean typecheck; a plain field shadows the getter and lets the caret into
-  the table's chrome.
-- **`updateDOM`'s session guard.** `findWidget` offers any same-class tile's DOM to any widget of that
-  class, so a second table could adopt the element the caret is in. The guard refuses `dom` to a widget
-  whose text is not what this edit just wrote — written as `session.dom === dom`, **never `!==`**
-  (that would refuse a widget its own pooled element and tear it out). Every dispatch that changes a
-  live session's table calls `publishExpected` **first**; structural commands do the opposite and
-  **end** the session before dispatching, or `updateDOM` takes the "our own write, touch nothing"
-  branch and a new row is never drawn.
-- **Nothing reachable from `updateDOM` or `destroy` may dispatch** (inside an update
-  `EditorView.update` throws), which is why a shape change defers its re-fit. `updateListener`s run
-  after the update finishes, which is what makes the entry rules legal.
-- **"May this be written" is `canWrite(state)` from `editor/readingMode.ts`** — one copy. Reading
-  mode sets `editable: false` and `readOnly: true`, but neither blocks a programmatic dispatch, so every
-  write the table code dispatches must test it.
-- `tableEdit.ts` ↔ `tableWidget.ts` import each other on purpose: leaving a cell restores its rendered
-  HTML via `tableWidget.restoreRenderedCell`, so the HTML sink stays in one file. **Neither side may
-  touch the other's exports at module-evaluation time.**
+**`ignoreEvent()` is therefore NOT overridden** — keeping the default (`true`) buys all four. The
+last one is why `tableEdit.ts` binds Tab, the arrows, Escape, `Mod-a`, `Mod-b`/`Mod-i` and **even
+`⌘Z`**: inside a cell this app's whole keymap stack is not running, so an unbound `⌘Z` would reach
+only the browser's per-element contenteditable undo stack, which knows nothing about our
+transactions. `⌘X`/`⌘C`/`⌘V` and text selection are deliberately left to the browser — native
+operations on a `plaintext-only` element, needing no permission, and the `input` event that follows
+runs the ordinary write-back.
+
+**Focus must be repaired after every write-back, and it is the mechanism, not a safety net.**
+Measured in this app's real extension stack: a dispatch that changes a table's source **blurs the
+focused cell to `BODY`**, even though the element identity survives, it is still connected, and
+`updateDOM` returned `true`. Without the repair — `cell.focus({preventScroll:true})` plus the caret
+range, synchronously at the end of `writeBack` — the table takes exactly **one** character. The
+repair checks `isConnected` first: the cell can genuinely be gone (typing `-` into every header cell
+makes the header row a valid separator, which `parseGrid` rejects by design).
+
+## `updateDOM`'s session guard
+
+`findWidget`'s second pass offers any same-class tile's DOM to any widget of that class, so a second
+table on screen could adopt the element the caret is sitting in. The guard refuses `dom` to any
+widget whose text is not the one this edit just wrote — written on `session.dom === dom`, **never on
+`!==`**: refusing every dom that is not the session's would refuse a widget its own pooled element
+and send it through `destroy()` + `toDOM()`, the exact tear-out the guard prevents.
+
+Every dispatch that changes a live session's table publishes `session.expected` **first**
+(`publishExpected`), or the guard fires on the session's own write. The structural commands do the
+opposite — they **end** the session before dispatching, because a published `expected` sends
+`updateDOM` down its "our own write-back, touch nothing" branch and a table that just gained a row
+would never be redrawn.
+
+**Nothing reachable from `updateDOM` or `destroy` may dispatch.** Both run inside a CodeMirror
+update, where `EditorView.update` throws. That is why a shape change **defers** its re-fit.
+Conversely `updateListener` handlers run *after* the `finally { this.updateState = 0 }`, which is
+what makes the entry rules above legal.
+
+## The `canEdit` naming trap
+
+**The widget's flag is `canEdit`, and must never be called `editable`.** `WidgetType.prototype`
+carries an undocumented `get editable()` that is absent from the `.d.ts`. Measured twice: a
+`readonly editable` constructor parameter property — the exact idiom `ImageWidget` uses — **throws**
+at runtime with a completely clean typecheck; a plain field declaration instead silently shadows the
+getter, stopping CodeMirror marking the widget root `contenteditable="false"` and letting the editor
+put a caret in the table's chrome. `eq` compares `rawTable`, `canEdit` and `selected`.
 
 ## Every write is surgical
 
-Nothing that exists is reconstructed. A cell edit replaces that cell's inter-pipe span; insert row is
-one `\n| … |`; insert/delete column touches one segment per line; `moveRow` swaps two lines byte for
-byte; `moveColumn` swaps two raw segments per line **including the delimiter** (alignment travels);
-`setColumnAlign` rewrites one delimiter cell. A blank delimiter cell is written ` --- `, never empty,
-or the row stops matching. Whole-table serialization exists **only to create** a table (Insert
-table…, a new row's text). This makes three bugs unreachable: hand padding, `:---:` and `\|` survive
-edits beside them; the caret is never mapped onto both edges of a replaced span (that de-rendered the
-table); and `parseGrid`'s render-only truncation of an over-long row is never written back.
+Nothing that already exists is ever reconstructed. A cell edit replaces that cell's inter-pipe span;
+insert row is one `\n| … |` at a line end; insert column inserts one segment per line at a known pipe
+offset; delete column removes one segment plus its pipe per line. Whole-table serialization exists
+**only to create a table that did not exist before** (*Insert table…*, and a brand-new row's text).
 
-- **`escapeNewPipes` is the inverse of the parse**: escape a `|` not already escaped (odd-run parity —
-  a `(?<!\\)` lookbehind misreads `a \\| b`), collapse `[\r\n\t]+` to a space, carry a caret map.
-  Idempotent and a no-op on untouched text, which is why a focused cell shows its **raw source slice**
-  (`a \| b`), not a doubled-backslash rewrite that would turn `C:\path` into `C:\\path`.
-- **`protectTrailingBackslash` is separate**, and where it runs is the point: in an unpadded table
-  (`|a|b|`) a cell ending in an odd run of `\` would escape the closing pipe and drop a column. It runs
-  **after the trim** (the trim exposes the run; measured, `|a|b|` fell to one column), **on the
-  document-bound string only, never the DOM** (it is idempotent, so a cell showing its result can never
-  be backspaced out of `\\`), and **only when the span abuts the pipe**.
-- `writeBack` trims what goes to the document, never the DOM text (that compounds whitespace into the
-  file per keystroke).
-- Alignment is parsed, preserved and rendered (`.cm-table-widget th.cm-table-align-center` needs the
-  two-class specificity to beat the default `text-align: left`).
+Three bug classes are made unreachable rather than merely avoided:
 
-## Grips, chips and the cell menu
+1. The user's hand-aligned padding, their `:---:` and their `\|` all survive an edit to the cell
+   beside them byte for byte.
+2. The caret is never mapped onto both edges of a replaced span, which used to de-render the table
+   under the reader's hands.
+3. **`parseGrid` truncates an over-long row on RENDER only** — a serializing writer would write that
+   truncation back, so a body row `| 1 | 2 | 3 |` under a two-column header would lose the `3` on
+   the first keystroke.
 
-The DOM outlives the widget instance that built it, so nothing hung off it may close over the instance
-or remember a position: the current shape is a `TableModel` under a `Symbol` on the container, every
-command re-locates the table in the **current** document (`posAtDOM` + `parseTableLayout`), and
-listeners are delegated on the **container** (a shape change replaces cells, never the container).
+**The inverse of the parse is one function, `escapeNewPipes`:** escape a `|` that is not already
+escaped (odd-run parity — not a `(?<!\\)` lookbehind, which misclassifies `a \\| b`), collapse
+`[\r\n\t]+` to a space, carry a caret map. It is idempotent and a **no-op on untouched text**, which
+is why the focused cell is shown its **raw source slice** (`a \| b`, not `a | b`) rather than needing
+a blanket `\\` doubling that would rewrite `C:\path` to `C:\\path` on the first edit.
 
-- **Corner chips** (add row / add column) are summoned by pointer distance to their own edge
-  (`attachEdgeReveal`, `EDGE_BAND_PX` = 48), never by the caret and never by CSS `:hover` zones (a
-  hoverable zone over cells takes their clicks). Hidden chips are `pointer-events: none` (`opacity: 0`
-  still hit-tests). `:focus-within` was removed: every write-back blurs and refocuses, so it flickered
-  once per keystroke. The box is re-read at most once per frame, never cached.
-- **Grips** (`gripButton`, `placeGrips`): one per axis, moved to the row/column under the pointer,
-  **outside and flush** against the table (a gap fires `pointerleave` on the way). The index is written
-  to `data-index` by the reveal pass and read at the press. Their menus (`rowMenuEntries`,
-  `columnMenuEntries`) use the shared menu with the grip as `anchor`; `openFor` remembers which index,
-  so a press beside another row reopens for it. Shade with `cm-table-target` only when
-  `openContextMenu` returns `true`, unshade in `onClose`.
-- **The cell menu's Cut/Copy/Paste act on the CELL's selection**, captured as offsets when the menu is
-  built (the menu then takes focus and the DOM selection is gone; `caretOffset` is the fallback). The
-  editor menu's clipboard rows would paste before the table. The table's `contextmenu` listener stops
-  propagation so `.view-content`'s note menu does not open on top (`app-context-menu`).
-- **Insert table…** from the pane's `⋯`: that menu has no view, so the pick is a one-shot
-  `requestTableInsert` answered by the **focused** `DocumentPane` for that path via
-  `insertTableAtCursor` — the menu focuses its pane before opening.
+**The trailing-backslash guard is a SECOND function** (`protectTrailingBackslash`), and where it
+runs is the whole of it. A cell's span excludes the padding either side, so in an unpadded table
+(`|a|b|`) that span abuts the row's closing pipe and a cell ending in an odd run of `\` would escape
+it — the row loses a segment and a whole column leaves the screen. Three rules, the first two each
+got wrong once:
 
-## Cell HTML: the allowlist sink (AGENTS.md's "two places")
+- It runs **after the trim**, because the writers trim and the trim is what strips the whitespace
+  hiding the run: `escapeNewPipes('cmd \ ').text` ends in a space so nothing is doubled, and
+  `.trim()` then hands the document `cmd \` — measured, `|a|b|` fell from two columns to one.
+- It runs on the **document-bound string only, never on the DOM**, because it is idempotent, so a
+  cell showing its result is a *fixed point*: typing `\` gave `\\` and every Backspace after it was
+  undone by the re-escape on the next `input`.
+- It runs **only when the span abuts the pipe** — elsewhere the next character is a space, `\ ` is
+  not an escape, and rewriting the user's bytes buys nothing. That is why it is not folded into
+  `escapeNewPipes`, which is fed the DOM's text and must stay something a keystroke can take back.
 
-- `renderInlineMarkdown` escapes everything and re-emits only a fixed set of **attribute-free** inline
-  tags (`br`, `b`, `i`, `code`, `kbd`, `sub`, `sup`, …) from the pattern's own alternation — no input
-  markup is parsed, no attribute is ever emitted. `<a href>`/`<img src>` are out because they need
-  attributes. This origin holds the vault handle: `<img src=x onerror=…>` in a note would own the vault.
-- **`renderCellContent(cell, text, emphasis)` is the ONE write site**, and
-  `CELL_PARSER.innerHTML = renderInlineMarkdown(masked)` the one assignment (lint `bme/html-sinks`
-  allows `innerHTML` in `tableWidget.ts`; don't add a second). `CELL_PARSER` is a detached **`<div>`,
-  not a `<template>`**: template parsing drops a stray `</br>`, which `CELL_HTML` admits and a `<td>`
-  turns into `<br>` (the only divergence across all thirteen tags, measured).
-- **Maths is masked out before the allowlist and spliced back as DOM.** Strip `\uE000`/`\uE001` from
-  the text, find math regions (`findMathRegions`, with inline-code ranges from the **same** `` `(.+?)` ``
-  regex the allowlist uses), replace each with `\uE000<i>\uE001`, run the unmodified allowlist, then
-  `fillMathSlots` replaces each slot with a `span.cm-table-math` filled by `renderMath`
-  (`mathWidget.ts`). Masked, not split: splitting at formulas breaks emphasis around them, and
-  unmasked, `_…_` italics ate subscripts. Collect all text-node holders before splitting any.
-- **Sentinel forgery is handled at the lookup.** `&#xE000;9&#xE001;` survives every string stage and is
-  decoded by the parser; `MATH_SLOT` also matches a lone sentinel, and a token naming no region or one
-  already used is **deleted** (measured: a forged slot emptied `#root` on every open). Escaping `&`
-  is not the fix (it breaks a cell meant to show `&lt;br&gt;`).
-- KaTeX is a DOM builder, not a sink. `output: 'html'` is required (MathML doubles `textContent`, which
-  caret arithmetic, copy and `beginCellEdit`'s raw-vs-rendered guard read), so the span carries
-  `role="math"` + `aria-label` of the source. `displayMode: false` even for `$$…$$` (a cell is one
-  line). While KaTeX loads, `renderMath` shows source tagged `data-math-pending`. Clicking a maths cell
-  lands the caret at the end, as for `**bold**` — expected; do not weaken the guard.
-- Maths CSS (`index.css`), each measured: `.cm-table-math { white-space: nowrap }` **plus**
-  `.cm-table-widget .cm-table-math .katex-html > .newline { display: inline }` (KaTeX's top-level `\\`
-  is a block span); `.cm-table-widget .cm-table-math svg { max-width: none; height: inherit }` (surds
-  are inline SVG; restate, never `revert`); and the **cell** holding a formula scrolls
-  (`th:has(.cm-table-math), td:has(.cm-table-math) { overflow-x: auto }`) — never the formula's own
-  span (an inline-block shifts its baseline). Known cost: an over-wide formula is clipped on overlay
-  scrollbar platforms; that is a fitter decision, left alone. `renderCellContent` resets that cell
-  scroll when it replaces children.
-- **Reading emphasis** in Reading mode is DOM-built on top of the sink for body cells only
-  (`emphasizeCell`, not `<th>`); editable widgets ignore it (`effectiveEmphasis`), and the fit key
-  includes the emphasis key. `tableReadingSelection.ts` keeps a native selection that crosses cells: it
-  captures both endpoints (CM position or cell + text offset) before CodeMirror redraws and restores
-  once after, without a transaction, and stops CodeMirror's `selectionchange` handling when either end
-  is in a cell (CM checks only the anchor). Read-only only; never in Edit.
+`writeBack` trims before writing to the document but never trims the DOM node's text — reversing
+that compounds whitespace into the saved file on every keystroke.
 
-## Width and type scale (`tableFit.ts`)
+**Alignment is parsed, preserved and rendered.** Preserving is free (the delimiter row is never
+rewritten by a cell edit); rendering closes a real defect — a table whose file says `---:`
+displaying left-aligned in the reader's only editor. The classes need **two-class specificity**
+(`.cm-table-widget th.cm-table-align-center`), because the `text-align: left` beside them is
+`.cm-table-widget th`. Alignment is edited from a column's grip (`setColumnAlign`), which rewrites that one
+delimiter cell and nothing else.
 
-- `.cm-table-widget` resets `white-space`/`word-break`/`overflow-wrap` inherited from `.cm-content`:
-  `overflow-wrap: anywhere` collapses min-content to a character per column ("Locat / ion"). Every
-  measurement depends on that reset.
-- **Max-min fairness**, not Chromium's proportional auto layout (one paragraph column starved the
-  rest). `COMFORT_EM` (12) caps what a column may **demand**; share-out bounds are raw max-content.
-  Widths go to `<col>` as percentages with `table-layout: fixed`.
-- The type scale is found by **measuring at each size** (≤ `MAX_FIT_PASSES` 3), never by scaling
-  measurements (glyph advances round). Floors: comfort `MIN_TABLE_FONT_PX` 11 / `MIN_SCALE` 0.6, then a
-  hard floor 8 px / 0.45 used only to avoid a broken word. Last resort is `overflow-wrap: break-word`
-  **per column**, never table-wide. Cell padding is in em so it shrinks with the type.
-- `.cm-table-scroll` (between widget and `<table>`) holds `overflow-x: auto`, so overflow does not clip
-  the chips; a fitted table is exactly 100% wide, so oversize content in a cell overflows the cell.
-  `.cm-table-widget` is `position: relative` (`contain: inline-size` is not a containing block) and
-  both chips sit fully inside it; the width probe is the container's first child.
-- **Three probes, one shared `ResizeObserver`:** a zero-height block (available width), hidden text in
-  the note's font, and a span with `FONT_PROBE_TEXT` in **both** `KaTeX_Main` and italic `KaTeX_Math`
-  (a variable renders in KaTeX_Math; measured +26.7 px when only Main was sensed). The two font widths
-  are summed into `fontWidth`. They are the fit's inputs and nothing the fit writes moves them, so a fit
-  cannot re-trigger itself. Size/AMS/Typewriter faces are unsensed — a known limit.
-- **A fit must not change height after CodeMirror measured it** (the caret was stranded hundreds of px
-  below the click): `contain: inline-size` makes one fit enough; the last fit is cached per
-  `fitKey` (bounded, `FIT_CACHE_MAX` 32) and re-applied in `toDOM`, validated against the live editor
-  width and font; and a widget's **first** fit that changed height re-dispatches the current selection
-  (the one public lever that re-measures; it runs from a frame callback, not an update).
-- **A content change does not re-fit; a shape change does.** `writeBack` calls `rekeyTableFit` (points
-  the cache at the new source, nothing else — columns must not move under the reader mid-word). Row or
-  column changes, ⌘E, and source changes from elsewhere (undo, another pane) call `retuneTableFit`,
-  which resets `lastAvail`/`lastFont`/`lastBreaks` **and `fitted`**, re-applies the cached fit
-  synchronously and schedules `applyFit` on the next frame, coalesced per table. Leaving a cell
-  re-renders it without re-fitting.
+## The cell menu and the corner chips
+
+The DOM outlives the widget instance that built it, so nothing hung off it may close over that
+instance or remember a position: the chips read the table's current shape off a `TableModel` hanging
+under a `Symbol` on the container (`ImageModel`'s pattern), every command re-locates the table in the
+*current* document through `posAtDOM` + `parseTableLayout`, and listeners are delegated on the
+**container** — a shape change replaces every cell element but never the container.
+
+The cell menu's Cut/Copy/Paste act on the **cell's** own selection, captured as offsets when the menu
+is built (by the time a row is clicked the menu has taken focus and the DOM selection is gone;
+`caretOffset` is the fallback when there was no selection). Reusing the editor menu's clipboard rows
+would copy nothing and paste into the document immediately *before* the table.
+
+**Each corner chip is summoned by its own edge, and neither by the caret** (`attachEdgeReveal`,
+`EDGE_BAND_PX`). A `pointermove` on the container toggles `cm-table-near-right` /
+`cm-table-near-bottom`, so the only thing that puts a chip on screen is a reader already reaching
+for it. Four facts:
+
+- **It is pointer arithmetic, not a pair of CSS `:hover` zones, because a hoverable zone takes
+  clicks.** Both bands lie over real cells, so a CSS answer would swallow the click that puts a caret
+  in them. Same reason the layer is `pointer-events: none`, and why the chips are `pointer-events:
+  none` *until revealed*: `opacity: 0` still hit-tests, so a hidden chip otherwise sat in the corner
+  of every editable table quietly taking clicks — and showing `cursor: pointer` — that belong to the
+  cell underneath.
+- **`:focus-within` used to hold both chips up while the caret was in a cell, and it FLICKERED once
+  per character.** Every write-back blurs the focused cell to `BODY` and refocuses it synchronously,
+  so the predicate went false→true per keystroke on a transitioned property. Measured: ten characters
+  with the pointer parked off the table drove the layer `1 → 0 → 0.85 → 0 → …`. It bought nothing —
+  the chips are `tabIndex: -1` and were never keyboard-reachable; the keyboard route to a row or
+  column is the cell's own context menu.
+- **The band (48px) is deliberately wider than a chip** (~21px at the default 16px editor font,
+  ~35px at the maximum 28px). A narrower band would let the pointer land *on* a revealed chip from
+  outside the band that revealed it, blinking it away as it was being aimed at.
+- **The box is re-read every frame, not cached when the pointer arrives** — a re-fit, an added row
+  or a window resize all move it under a pointer that never moved — and at most once per frame,
+  since `pointermove` outruns paint.
+
+**`tableEdit.ts` and `tableWidget.ts` import each other, deliberately.** Leaving a cell has to put
+the cell's *rendered* HTML back, which is an HTML path, and doing it in `tableEdit` would open a
+**second `innerHTML` sink** away from the allowlist. So `tableWidget` exports `restoreRenderedCell`.
+The rule that keeps the cycle safe: **neither side may touch the other's exports at
+module-evaluation time.** Every use on both sides is inside a function body.
+
+**"May this document be written to" is `canWrite(state)` in `editor/readingMode.ts`** — one copy;
+import it, never re-derive it from either facet. Reading mode sets `EditorView.editable: false` *and*
+`EditorState.readOnly: true`, but neither blocks a programmatic `view.dispatch`, so every write the
+table code dispatches itself must test it: an unguarded one lets *Insert table…* really insert a
+table into a note the reader is only reading.
+
+## Grips, moving, aligning, and three ways in
+
+- **A grip per axis, moved to the row and column under the pointer** (`gripButton`, `placeGrips`,
+  both driven by `attachEdgeReveal`'s one per-frame measure). They sit **outside** the table's box,
+  left of the rows and above the header, so unlike the corner chips they can never take a cell's
+  click. They are **flush** against that edge: any gap and the pointer leaves the widget on its way
+  to one, firing the `pointerleave` that hides it. The target index is written onto the grip as
+  `data-index` by the reveal pass and read at the press, never captured. The hovered cell comes from
+  the `pointermove` target, so no row or cell box is scanned.
+- **Their menus are `rowMenuEntries` / `columnMenuEntries`**, raised through the ordinary context-menu
+  store with the grip as its `anchor`, so a second press on the grip closes the menu. One grip serves
+  every row, so `openFor` remembers which index the menu is for: a press beside ANOTHER row closes the
+  old menu and opens that row's. The target is shaded with `cm-table-target` only once
+  `openContextMenu` returns `true` (a toggled-shut press must not shade), and unshaded in `onClose`.
+- **`moveRow` swaps two LINES byte for byte; `moveColumn` swaps two raw segments per line, delimiter
+  included**, so alignment travels with its column. A row too short to hold both segments is the one
+  non-swap case: its last cell moves out into a new one and leaves a blank, and a blank DELIMITER cell
+  is written as ` --- `, never empty, or that row stops matching and the table falls back to text.
+  **`setColumnAlign`** replaces one delimiter cell, padding a short delimiter row out to it. All three
+  end the session before dispatching, like every structural command. **Alt+↑/↓** in a cell is
+  `moveRow`.
+- **Enter on a lone header row completes the table** (`completeHeaderRow` in `livePreview.ts`'s
+  `tableEntryKeymap`): the delimiter row and one blank body row, caret in the first body cell. Column
+  count comes from `rowColumnCount`, which uses `pipeOffsets` (the one escape loop). It declines
+  mid-line, on a delimiter-shaped line, when the next line is pipe-fenced, on a line already in a
+  table, and on a line inside a code range. Tagged `input`, not `input.type`, so the adoption rule
+  ignores it.
+- **The pane header's `⋯` → Insert table…** (`DocumentPane.openPaneMenu`) cannot reach a view, so a
+  pick is a one-shot request (`utils/tableInsertRequest.ts`) answered by the FOCUSED `DocumentPane`
+  for that path through `insertTableAtCursor` — which is why that menu focuses its pane BEFORE it
+  opens, or the request would be published into nothing. The size grid's maxima live in that module,
+  shared with the editor menu's grid.
+
+## How a table gets its width (`tableFit.ts`)
+
+A markdown table has no width of its own and the text width is whatever the reader configured, so
+something has to decide.
+
+- **The starting point was a CSS inheritance bug.** CodeMirror's line wrapping puts
+  `white-space: break-spaces; word-break: break-word; overflow-wrap: anywhere` on `.cm-content`, and
+  cells inherit all three. `anywhere` doesn't merely permit a mid-word break — it collapses the
+  table's intrinsic **minimum** width to about one character per column, so `width: 100%` could
+  squeeze a column narrower than its longest word and "Location" rendered as "Locat / ion".
+  `.cm-table-widget` resets all three; without that reset every measurement below is meaningless.
+- **Columns are sized by max-min fairness, not the browser's.** The available width is shared by
+  raising one common level, so short columns get everything they ask for and only greedy ones split
+  the remainder. Chromium's auto layout shares space in *proportion* to what each column wants,
+  letting one paragraph column starve every short column beside it. Note where `COMFORT_EM` applies:
+  it caps what a column may **demand** (and so how far the table shrinks), but the share-out's upper
+  bounds are the raw max-content widths, which is what lets a paragraph column absorb what the short
+  columns didn't need. Widths are written to `<col>` as **percentages** with `table-layout: fixed`.
+- **`COMFORT_EM` is the one knob that decides when a table shrinks**, and it exists because wrapping
+  per se isn't the problem — a column holding a sentence is *expected* to wrap. Only wrapping a
+  reader would take for damage is: a broken word, or a short label folded in half.
+- **The type scale is found by MEASURING at it, never by scaling the note-size measurements down.**
+  Text width is not proportional to font size — glyph advances round, and the error runs to several
+  percent, easily enough to wrap the one cell the shrink was protecting. Each pass measures, sees how
+  far off that leaves it, and steps; a table that already fits stops after the first pass. Two floors
+  bound it: a comfort floor, and a lower hard floor worth crossing only to prevent a broken word.
+- **Last resort, per column, never table-wide.** A column whose longest unbreakable run still doesn't
+  fit gets `overflow-wrap: break-word` **on its own cells**. Applying it to the table broke
+  "Environment" for a neighbouring URL's sake.
+- **A fitted table can't overflow, which cuts both ways.** Pinned to exactly 100% of the text width,
+  the `overflow-x: auto` on **`.cm-table-scroll`** — the box between the widget and the `<table>`,
+  which exists so the overflow is *not* on the widget, since an overflow container clips in both axes
+  and cut the corner chips off — only engages before the first fit. It does *not* rescue oversized
+  content inside a fitted cell: fixed column widths mean such content overflows the **cell** while
+  the table still measures 100%, so nothing scrolls and it paints across the next column.
+- **A cell's HTML is an allowlist, and the allowlist admits no attributes.** `renderInlineMarkdown`
+  escapes everything except a fixed set of attribute-free inline tags (`br`, `b`, `i`, `code`, `kbd`,
+  `sub`, `sup`, …), re-emitted from the pattern's own alternation rather than copied out of the
+  input — so no untrusted markup is ever parsed and no attribute is ever emitted. **This is the only
+  place in the app where note text reaches the DOM as HTML by this repo's own code** — the one other
+  sink is `mermaidWidget.renderInto`, which rests on mermaid's `securityLevel: 'strict'` DOMPurify
+  pass instead of on an allowlist. This origin holds the vault's directory handle in IndexedDB with
+  permission already granted, so a note carrying `<img src=x onerror=…>` would get read/write over
+  the whole vault the moment it was opened.
+  `<br>` is in because it is the only way to break a line inside a cell; `<a href>` and `<img src>`
+  are out because they need attributes. Side benefit: `Type<T>` renders instead of being swallowed.
+- **`renderCellContent(cell, text)` is that sink's ONE write site** — it used to be three
+  (`buildRow`, `restoreRenderedCell`, `updateDOM`'s per-cell diff, each doing its own
+  `cell.innerHTML = renderInlineMarkdown(...)`). They all call it now, and the single
+  `CELL_PARSER.innerHTML = renderInlineMarkdown(masked)` inside it is the only assignment left.
+  Collapsing them is what made maths in a cell safe to add; don't reopen a second one.
+- **Maths is MASKED out of the cell before the allowlist runs, and spliced back in as DOM.** The
+  order matters in both directions: on the way in, `$a_1 + b_2$` came back with its subscripts eaten
+  by the `_(.+?)_` italic rule — the old behaviour was not "maths didn't render", it MANGLED it; on
+  the way out, KaTeX's output is markup the allowlist would rightly escape into visible tag text.
+  So: strip the two sentinels from the cell text, `findMathRegions` over it, replace each region
+  with `\uE000<index>\uE001` (Private Use Area, written as escapes), run the **unmodified** allowlist
+  over the masked string, parse once into the shared module-level `<template>` (`CELL_PARSER` —
+  appending `.content` empties it, so a table re-dressing every cell allocates no template per cell),
+  then walk the fragment's text nodes and `splitText`/`replaceWith` each slot for a
+  `<span class="cm-table-math">` filled by `renderMath`.
+  - **Masked, not split at the math boundaries.** Running `renderInlineMarkdown` over the pieces
+    would break emphasis that spans a formula: `**bold $x$ end**` would lose its bold and show the
+    literal asterisks, because neither piece holds a matched pair. The emphasis rules must see the
+    whole cell, with each formula standing in as one inert token.
+  - **The inline-code ranges fed to `findMathRegions` use the SAME `` /`(.+?)`/g `` the allowlist
+    uses**, so both agree what is code and a `$` inside backticks stays literal.
+  - **Sentinel forgery is possible and is handled at the LOOKUP, not the strip.** Stripping the cell
+    text is not enough: `escapeText` leaves `&` alone by design, so `&#xE000;9&#xE001;` survives
+    every string stage and the HTML parser decodes it into real sentinels inside the text node
+    `fillMathSlots` walks. Measured — such a cell beside any real formula threw `undefined.latex` out
+    of `toDOM`, React unmounted and **`#root` was left empty on every open of the note**; the
+    in-range `&#xE000;0&#xE001;` rendered region 0 twice, doubling `cell.textContent`. So `MATH_SLOT`
+    matches a lone sentinel too, and a token naming no region — or one already in `used` — is
+    **deleted**. Escaping `&` is not the fix; it breaks the cell that means to show `&lt;br&gt;`.
+  - **The parse container must be an ordinary element, not a `<template>`.** Fragment parsing takes
+    its insertion mode from the context element; `<template>` parses "in template", which *ignores*
+    a stray `</br>` that `<td>` (and a `<div>`) turn into `<br>`. `CELL_HTML` admits `</br>` on
+    purpose, so a `<template>` silently rendered `one</br>two` as `onetwo`. Measured across all
+    thirteen allowlisted tags, open and close: that is the only divergence.
+  - **Holders are collected in full before any split** — `splitText` mutates the tree the
+    `TreeWalker` is walking and the walker's position does not survive its current node being split.
+  - **`katex.render` is a DOM builder, not a sink**: it builds with `createElement`/`createTextNode`,
+    so no note text is ever parsed as markup. And it is synchronous, which is required — `updateDOM`
+    may not go async. Don't lazy-import KaTeX in this path.
+  - **`output: 'html'` is load-bearing here**, not just cosmetic: MathML would put every formula in
+    `cell.textContent` TWICE, and `tableEdit`'s caret arithmetic, its copy path and `beginCellEdit`'s
+    "does the rendered text differ from the raw source" guard all read that. Its price is that
+    KaTeX's tree is entirely `aria-hidden` with no MathML beside it, so the span carries
+    `role="math"` + `aria-label` of the LaTeX source — without it a maths cell is announced as
+    **empty**, where before the change it at least read out its `$…$`.
+  - **`displayMode: false` even for `$$…$$`.** A cell is one line; `.katex-display`'s
+    `display:block; margin:1em 0; text-align:center` would break the row and the fitter's height
+    accounting. Deliberate divergence from Obsidian.
+  - Clicking a maths cell lands the caret at the **end** of it, because `beginCellEdit`'s
+    `textContent !== raw` guard now always fires there — exactly as it already did for `**bold**`.
+    Expected; do not "fix" it by weakening the guard.
+  - CSS: `.cm-table-math { white-space: nowrap }` (a formula is one atom — `.katex .base` says it per
+    base, this says it for the whole span; the fitter reads it through min-content as the column's
+    floor) **plus `.cm-table-widget .cm-table-math .katex-html > .newline { display: inline }`,
+    without which nowrap does not deliver it**: KaTeX breaks a top-level `\\` *structurally*, as a
+    `.newline` span that katex.css makes `display: block`, and `displayMode: false` makes that
+    unconditional rather than avoiding it. Measured, `$p \\ q$` in a cell rendered on two lines in a
+    65.8px row against a plain row's 39.4px. The leading `.cm-table-widget` is for SPECIFICITY —
+    katex.css is imported from `EditorPane` and so wins every tie against `index.css`. Environment
+    row separators (`matrix`, `aligned`) carry no `.newline` and are untouched: verified. And the SVG exemption `.cm-table-widget .cm-table-math svg { max-width: none; height:
+    inherit }` — `\sqrt` surds and stretchy delimiters are inline `<svg>`, which the widget's
+    `img, svg, video { height: auto }` cap would collapse. It **restates** `katex.css`'s own
+    `.katex svg { height: inherit }` rather than using `revert`, which would roll back the whole
+    author origin — KaTeX's rule included — and land on the UA's `auto`, the value being escaped.
+    And **the CELL holding a formula scrolls**, `th:has(.cm-table-math), td:has(.cm-table-math) {
+    overflow-x: auto }`: the nowrap raises the column's min-content floor, but `COMFORT_EM` caps what
+    a column may demand and `overflow-wrap: break-word` (the fitter's per-column last resort) cannot
+    touch an unbreakable formula, so an over-wide one **overhung its neighbour** — measured on a
+    five-column table, 18.9px past the cell at 1400px and 62.4px at 520px, with the rendered bands
+    differing pixel-for-pixel, i.e. real ink on the next column's prose. Scoped by `:has()` so
+    ordinary cells and a cell being edited (raw source, no `.cm-table-math`) are untouched. Do NOT
+    instead scroll the formula's own span (`display:inline-block; max-width:100%; overflow-x:auto`):
+    an inline-block baselines at its bottom margin edge, not its text's, so every formula would sit
+    off the text beside it and grow its row — and `vertical-align: bottom` does not recover a formula
+    taller than the line box. Cell scrolling costs nothing: measured, a formula's rect and the rect
+    of the text node beside it in the same cell are identical, math rows keep plain-row height, and
+    the fitter's per-column min-content/max-content are unchanged by the rule.
+    **Known cost:** an over-wide formula is then CLIPPED with no affordance on overlay-scrollbar
+    platforms (13–22px lost, measured at 820px). The fitter declined to shrink because `COMFORT_EM`
+    capped the column's demand below its true `tight` width — arguably an unbreakable column should
+    be exempt from that cap in `wordsWhole`. Deliberately NOT changed here; it is a fitter decision.
+- **Two structural facts the chips depend on and the fit must survive.** `.cm-table-widget` is
+  `position: relative`, because `contain: inline-size` is **size** containment only and does not
+  establish a containing block: measured without it, a chip at `top: 2px` escaped to `.cm-content`
+  and landed 60px down the page (`position` does not alter inline size, so the fit is untouched).
+  And **both chips sit fully inside the box**, never at a negative offset, which made the widget
+  scrollable back when the overflow was still on it. The chips are out of flow and the width probe is
+  still the container's **direct first child**.
+- **Re-fitting is driven by three probes inside the widget** — a zero-height block whose width *is*
+  the available text width, hidden text (normally sized, clipped by that box) whose width changes iff
+  the note's font metrics do, and a third hidden span holding the sample **twice — in `KaTeX_Main`
+  and in italic `KaTeX_Math`** — whose width moves when either of KaTeX's text webfonts lands (until
+  then it measures the serif fallback). Do NOT collapse those two into one: a maths *variable*
+  renders in KaTeX_Math-Italic, and with only KaTeX_Main sensed an all-variable formula grew 26.7px
+  after its font landed with no probe moving. The Size/AMS/Typewriter faces are still unsensed and
+  that is a known limit, not coverage — `FONT_PROBE_TEXT` is letters and digits, which the Size faces
+  do not even contain. All three probes are watched by one shared `ResizeObserver`, and the last two
+  are **summed into the single `fontWidth`**, so the `lastFont` gate covers both without a second
+  field. (`restoreFit` does not
+  screen for it — its `done.at.font` is the note's computed font shorthand, which KaTeX's webfonts
+  landing does not move — but it adopts the sum into `fit.lastFont`, so a pre-webfont cached fit
+  misses that gate and re-fits.) Without that third probe a table holding maths stays
+  fitted to pre-webfont metrics: nothing else in the widget notices KaTeX's fonts arriving. It is
+  created for every table, math-free ones included — one extra fit pass, and the font is bundled
+  locally. They are the fit's INPUTS and
+  nothing the fitter writes changes either, so a fit can't re-trigger one from inside the widget;
+  watching the container instead would notify on its own height change every time. That invariant
+  stops at the widget's edge: a fit changes the table's height, and where scrollbars take layout
+  space that can toggle the editor's own, moving `.cm-content`'s *percentage* padding. Chromium
+  bounds that at a round per frame and it hasn't been observed on overlay-scrollbar platforms — don't
+  restate the claim more broadly. Between them the probes cover window and sidebar resizes, the
+  Text-width and font-size settings, and a Google Font — or a KaTeX font — arriving late.
+- **A fit must not change the table's height after CodeMirror has measured it**, and three things
+  cooperate. Resize observations arrive *after* the frame in which CM measures, so a table laid out
+  at its natural size and fitted a moment later leaves CM's height map — and the caret the selection
+  layer drew from it — describing the taller table; nothing corrects that on its own, because CM
+  re-reads line heights only when its own content box changes, which on a short document it never
+  does. The symptom was a caret stranded hundreds of pixels below the click that placed it. So:
+  1. **`contain: inline-size` on `.cm-table-widget`.** Restoring `overflow-wrap: normal` gives the
+     table a real min-content again, which while still browser-laid-out propagates up and pushes
+     `.cm-content` *wider than its scroller* — so the first fit reads an inflated text width, fits
+     too generously, and a second fit corrects it a frame later. Containment makes the box's inline
+     size a function of its container alone: one fit is enough.
+  2. **The last fit is remembered per table source and re-applied in `toDOM`**, so a re-created table
+     (the caret leaving it, ⌘E, a tab switch, scrolling back) has its first layout already be its
+     final one. The entry carries the editor width and font it was computed at, read live from
+     `.cm-content` rather than remembered — a remembered value goes stale exactly when it matters,
+     since the editor can be resized while a table is showing its source.
+  3. **A widget's FIRST fit, if it did change the height, re-states the selection.** That is the one
+     public lever reaching the selection layer (it re-measures on `selectionSet`); `requestMeasure`
+     alone only refreshes the height map, and only when the content box moved. Restricted to the
+     first fit because later ones are resizes, where CM re-measures anyway.
+- **The fit's contract with the editing layer: a content change does not re-fit, a shape change
+  does.** The cell write-back calls `rekeyTableFit`, which points the memo at the new source **and
+  nothing else** — columns moving under the reader's hands mid-word is what the "a content change
+  alone never re-fits" rule already forbids, and without the re-key the cache would accumulate one
+  entry per character. A row or column change, a `⌘E` flip, or a source change from anywhere else
+  (an undo, another pane) calls `retuneTableFit`, which resets `lastAvail`/`lastFont`/`lastBreaks`
+  **and `fitted`** — required, because `fitted` licenses the height-map re-state at the end of
+  `applyFit`, and a shape change is precisely the case that changes an already-measured height.
+  `retuneTableFit` re-applies the remembered fit synchronously (style writes only) and schedules
+  `applyFit` for the next animation frame, coalesced per table. Leaving a cell re-renders it and does
+  **not** re-fit.
+- Cell padding is in **em, not px**, so it shrinks with the type; padding that stayed put would grow
+  into the space the text just gave up. Same for the inline-code chip's padding.
+- **Only unescaped pipes split a row.** `\|` is GFM's one way to put a pipe in a cell and is required
+  everywhere, code spans included. Splitting on every pipe used to merely mis-render such a row; once
+  rows are truncated to the header's column count it silently *drops* everything past the phantom
+  split, so the two must stay in step.
+
+Reading emphasis is DOM-built after the existing safe cell sink, with canonical native selection preservation in tableReadingSelection.ts. TableWidget options and tableFit keys distinguish effective read-only emphasis; active editable cells keep source.
+
+Mixed native selections have one endpoint map (CM position or table/cell text offset). Capture before
+CM redraw, including measure updates, and restore once afterward; CM's widget ignore rule checks
+only the anchor, so the read-only selection guard covers both endpoints. Never apply it in Edit.

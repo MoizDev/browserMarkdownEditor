@@ -1,30 +1,27 @@
 import { registerReaderHostCommands } from '../utils/documentReading';
 import { useSyncExternalStore } from 'react';
-import { subscribeDocumentKeyboard } from '../utils/documentKeyboard';
 import { getReadingPreferences,subscribeReadingPreferences,setWordEmphasis,updateReadingTypography } from '../utils/readingPreferences';
 import { readPdfTextViewState } from '../utils/readerViewState';
 import type { PdfReadingBinding } from '../types/reading';
 import type { ReaderIntegration } from '../types/reading';
-import React, { useEffect, useLayoutEffect, useRef, useState, useMemo, useCallback } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState, useMemo, useCallback, lazy, Suspense } from 'react';
+import type { EditorState } from '@codemirror/state';
 import BacklinksPanel from './BacklinksPanel';
+import ConfirmDialog from './ConfirmDialog';
 import DocumentPane from './DocumentPane';
+import type { PaneImageDelete } from './DocumentPane';
 import TabBar from './TabBar';
 import { getBacklinkNodes } from '../utils/graph';
 import { dismissOnEscape } from '../utils/escapeDismiss';
-import { focusWordCounts, subscribeWordCounts, type WordCounts } from '../utils/wordCountStore';
-import { isPdfFile, isCanvasFile, isCodeFile, isNotebookFile } from '../utils/fileTypes';
-import type { DocumentBufferStore } from '../utils/documentBuffers';
-import type { NativeCanvasHost } from '../types/nativeCanvas';
+import { isPdfFile, isCanvasFile, isCodeFile, isDrawingFile, isNotebookFile } from '../utils/fileTypes';
 import { paneSizes, paneById, paneOf, focusedPane, canGoBack, canGoForward, canSplitToPane, MAX_PANES } from '../utils/tabPanes';
 import type { WikiLinkTarget } from '../editor/wikiLinkComplete';
 import 'katex/dist/katex.min.css';
 import type { ActiveFile, ContentChangeOptions, DiskAction, OpenTab, GraphData, GraphNode, TabLayout, Theme, OpenNodeHandler, OpenNoteByNameHandler, EditorRevealRequest } from '../types';
 
-// Read the same resolved component idle prefetch filled, not a second lazy payload.
-import { getPdfPaneModuleSnapshot, loadPdfPane, subscribePdfPaneModule } from './pdfPaneModule';
-import { canvasPaneSlot } from './paneModules';
-import type { PdfPaneComponent } from './pdfPaneModule';
-import { useActivated, useFloatingSlot } from './floatingSlot';
+// Same reasoning as the drawing canvas: pdf.js + pdf-lib only load once a PDF
+// is actually opened.
+const PdfPane = lazy(() => import('./PdfPane'));
 
 /**
  * One PDF tab's reading binding, built once per document rather than once per
@@ -44,7 +41,7 @@ import { useActivated, useFloatingSlot } from './floatingSlot';
 const PdfPaneHost = React.memo(function PdfPaneHost({
     reading, tab, emphasisEnabled, typography, onEmphasisChange, onTypographyChange,
     registerKeyboardTarget, ...rest
-}: Omit<React.ComponentProps<PdfPaneComponent>, 'reading' | 'documentId'> & {
+}: Omit<React.ComponentProps<typeof PdfPane>, 'reading'> & {
     reading: ReaderIntegration;
     tab: OpenTab;
     emphasisEnabled: boolean;
@@ -53,53 +50,24 @@ const PdfPaneHost = React.memo(function PdfPaneHost({
     onTypographyChange: PdfReadingBinding['onTypographyChange'];
     registerKeyboardTarget: PdfReadingBinding['registerKeyboardTarget'];
 }) {
-    const activated = useActivated(rest.isVisible);
-    const module = useSyncExternalStore(subscribePdfPaneModule, getPdfPaneModuleSnapshot);
-    // A float must stay in its column during a cold restore (and divider drag),
-    // not cover the note beside it. Keep this off props so host memo still holds.
-    const loadingStyle = useFloatingSlot(rest.isVisible, rest.slotIndex ?? 0, rest.slotLeft ?? 0, rest.slotWidth ?? 100);
-    useEffect(() => {
-        if (activated && module.status === 'unloaded') void loadPdfPane().catch(() => {});
-    }, [activated, module.status]);
     const identity = reading.identityForTab(tab);
     const path = tab.file.path;
     const binding = React.useMemo<PdfReadingBinding>(() => ({
         ...reading,
         identity,
         // Read once, with the binding: it is the state this document OPENED
-        // with, including its source schema and write-protection metadata.
-        // Re-reading per render would validate and clone it for nothing.
+        // with, and re-reading it per render re-ran its validation and cloned
+        // the record for nothing.
         initialRecord: readPdfTextViewState(identity.vaultId, path),
         emphasisEnabled, typography, onEmphasisChange, onTypographyChange, registerKeyboardTarget,
     }), [reading, identity, path, emphasisEnabled, typography, onEmphasisChange, onTypographyChange, registerKeyboardTarget]);
-    if (!activated) return null;
-    if (module.status !== 'ready') return (
-        <div
-            className={`pdf-pane pdf-pane-message${rest.isVisible ? '' : ' pdf-pane-hidden'}${module.status === 'error' ? '' : ' is-waiting'}`}
-            style={loadingStyle}
-            role={module.status === 'error' ? 'alert' : 'status'}
-            onPointerDownCapture={() => { if (rest.isVisible) rest.onFocusPane(rest.file.path); }}
-        >
-            {module.status === 'error' ? <>
-                <span>The PDF reader could not be loaded.</span>
-                {module.reloadRequired && <span>Reload the app to try loading it again.</span>}
-                <button className="pdf-pane-action" onClick={() => { void loadPdfPane({ retry: true }).catch(() => {}); }}>Retry</button>
-            </> : 'Loading PDF…'}
-        </div>
-    );
-    const LoadedPdfPane = module.Component;
-    return <LoadedPdfPane reading={binding} documentId={tab.id} {...rest} />;
+    return <PdfPane reading={binding} {...rest} />;
 });
 // Whiteboards and notebooks float over their column for the same reason PDFs
 // do, and through the same geometry — see components/floatingSlot.ts.
-const CanvasPane = canvasPaneSlot.View;
+const CanvasPane = lazy(() => import('./CanvasPane'));
 
 interface EditorPaneProps {
-    contentOf(path: string): string | undefined;
-    documentBuffers: DocumentBufferStore;
-    nativeCanvasHost: NativeCanvasHost;
-    /** E4's App-owned editor host; DocumentPane adoption is the next wiring step. */
-    markdownSessions: import('../editor/markdownSession.types').MarkdownSessionHost;
     reading: ReaderIntegration;
     /** Every open document, flat. */
     tabs: OpenTab[];
@@ -137,14 +105,11 @@ interface EditorPaneProps {
     /** Path-explicit: several documents are editable at once, and a canvas's
      *  debounced save can land after its pane has gone away. */
     onContentChange: (path: string, content: string, options?: ContentChangeOptions) => void;
-    onNativeCanvasReady: import('../types/reading').NativeCanvasReady;
-    attachCanvasSession?: import('../utils/canvasSessionBridge').AttachCanvasSession;
     /** Resolve a document's DiskBar — its file changed or vanished on disk
      *  (OpenTab.disk). Stable, for DocumentPane's memo. */
     onDiskAction: (path: string, action: DiskAction) => Promise<void>;
-    onAnnotationPreflight: NonNullable<React.ComponentProps<PdfPaneComponent>['onAnnotationPreflight']>;
-    onPreparePdfPrint: (path: string) => Promise<{ bytes: Uint8Array; valid: () => boolean; validate: () => Promise<boolean> }>;
-    onUnsignedPdfCopy: NonNullable<React.ComponentProps<PdfPaneComponent>['onUnsignedPdfCopy']>;
+    /** Buffer content and write it immediately, skipping the save debounce. */
+    onFlushNow: (path: string, content: string) => void;
     /** Turn a PDF's pages a quarter and write the file (App.rotatePdf). */
     onRotatePdf: (path: string, delta: number, pageIndex?: number) => void;
     /** Read an unreadable tab's file again (OpenTab.readError); resolves true
@@ -155,6 +120,10 @@ interface EditorPaneProps {
     /** Write a notebook out as a PDF beside it (a row of its pane's ⋯ menu). */
     onExportNotebook: (file: ActiveFile) => void;
     onOpenNote: OpenNoteByNameHandler;
+    /** Every open document's EditorState, OWNED BY App so it outlives this
+     *  component — the graph view unmounts it. This component only hands it to
+     *  the panes and prunes it to the open documents. */
+    stateCache: Map<string, EditorState>;
     /** The [[ autocomplete's source. Baked into each cached state, so it must
      *  be stable for the app's life (App's is). */
     getWikiLinkTargets: () => WikiLinkTarget[];
@@ -231,8 +200,22 @@ const pct = (n: number) => n.toFixed(4);
 const PANE_WIDTH_STYLE: React.CSSProperties[] = Array.from(
     { length: MAX_PANES }, (_, i) => ({ flexGrow: `var(--pane-w-${i}, 1)` }));
 
-/** A kind change releases the old session even though the document id survives. */
-const paneKey = (tab: OpenTab) => `${tab.id}|${tab.representation.loadedKind}`;
+/**
+ * What a document's pane, and its cached EditorState, are held under.
+ *
+ * Its ID, because a path is not enough: renameFile/moveFile deliberately
+ * overwrite an existing name, so for one commit two different documents answer
+ * to the same path — and keyed by path React matched the survivor to the pane
+ * the OVERWRITTEN document was drawn in and kept that pane's view, while the
+ * state cache handed over its text and its undo history. The renamed file's
+ * first keystroke then saved the dead document's bytes over it.
+ *
+ * And its PATH, because a rename must still rebuild the view: the update
+ * listener that reports edits has the path baked into it (see DocumentPane), so
+ * a pane carried across a rename would go on reporting the old one and every
+ * edit after it would land nowhere. Injective either way — an id holds no '|'.
+ */
+const paneKey = (tab: OpenTab) => `${tab.id}|${tab.file.path}`;
 
 /** The least a pane may be left holding, as a percentage of the editor. */
 function paneFloorPct(totalPx: number): number {
@@ -287,12 +270,13 @@ interface PaneResize {
  * A PANE is a column owning its own set of tabs and showing one of them (see
  * utils/tabPanes.ts); most workspaces are one pane with a few tabs, which is
  * the ordinary tab strip. Each column is a DocumentPane owning its own
- * CodeMirror view; this component owns what is shared between them — the tab
- * strip, the status bar (which is about the FOCUSED pane's document), and the
- * PDF panes, which are deliberately NOT
+ * CodeMirror view; this component owns what is shared between them — handing
+ * App's per-document EditorState cache to the panes and pruning it, the tab
+ * strip, the status bar (which is about the FOCUSED pane's document), the
+ * image-delete confirmation, and the PDF panes, which are deliberately NOT
  * inside a pane so they can outlive it.
  */
-export default function EditorPane({ reading, tabs, contentOf, documentBuffers, nativeCanvasHost, markdownSessions, layout, theme, tabSize, rainbowBrackets, saveStatus, onSelectTab, onCloseTab, onReopenClosedTab, onClosePane, onMoveTab, onSplitTabToPane, onResizePanes, onNewNote, onPaneBack, onPaneForward, onFocusPane, onToggleMode, onContentChange, onNativeCanvasReady, attachCanvasSession, onDiskAction, onAnnotationPreflight, onPreparePdfPrint, onUnsignedPdfCopy, onRotatePdf, onRetryRead, onOpenNotebookSource, onExportNotebook, onOpenNote, getWikiLinkTargets, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
+export default function EditorPane({ reading, tabs, layout, theme, tabSize, rainbowBrackets, saveStatus, onSelectTab, onCloseTab, onReopenClosedTab, onClosePane, onMoveTab, onSplitTabToPane, onResizePanes, onNewNote, onPaneBack, onPaneForward, onFocusPane, onToggleMode, onContentChange, onDiskAction, onFlushNow, onRotatePdf, onRetryRead, onOpenNotebookSource, onExportNotebook, onOpenNote, stateCache, getWikiLinkTargets, onNotify, onConfirm, graph, onOpenNode, revealRequest, onRevealHandled }: EditorPaneProps) {
     const byPath = useMemo(() => new Map(tabs.map(t => [t.file.path, t])), [tabs]);
 
     // The columns on screen, the document each one shows, and the share of the
@@ -385,8 +369,8 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
     // What should hold the keyboard is the pane's to know (it owns the view),
     // when is this component's (it owns the tab bar) — so each note pane
     // registers a "take the keyboard" function here, by path: one pane per
-    // path is on screen at a time. A board (drawing, notebook, PDF) registers
-    // its interaction root.
+    // path is on screen at a time. A canvas pane registers nothing, and keeps
+    // what it does today.
     const pendingKeyboardPath = useRef<string|null>(null);
     const focusedPathRef = useRef<string | null>(null);
     const [keyboardTargets] = useState(() => new Map<string, () => void>());
@@ -439,9 +423,6 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
     const closeFromTabBar = useCallback((path: string) => {
         void Promise.resolve(onCloseTab(path)).then(handKeyboardToNote);
     }, [onCloseTab, handKeyboardToNote]);
-    // A document opened from outside the panes (the file tree) asks for the keyboard the same way; the open has
-    // already been dispatched, and a pane that mounts later takes it through `pendingKeyboardPath`.
-    useEffect(() => subscribeDocumentKeyboard(path => { pendingKeyboardPath.current = path; handKeyboardToNote(); }), [handKeyboardToNote]);
     // ── The keyboard chords that move between tabs ─────────────────────────
     //
     // ⌥⇥ / ⌥⇧⇥ walk the open documents, ⌥⇧W closes the focused one, ⌥⇧T puts the
@@ -569,6 +550,13 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
 
     // ── The status bar's word and character counts ─────────────────────────
     //
+    // Counted over a DEBOUNCED copy of the text, never over `focusedTab.content`
+    // directly: that string is new on every keystroke, so a plain useMemo would
+    // walk the whole document — split included — on every character, on the same
+    // frames the decoration pass already owns (see the live-preview skill for
+    // what that pass costs on a long note). Nobody reads a word count tick per
+    // character; a quarter of a second after typing stops is soon enough.
+    //
     // A canvas has no words and an unreadable tab holds no text, so neither is
     // counted at all — and neither is the count shown for them.
     // Code is not counted: "412 words" of Python measures nothing anybody wants
@@ -576,32 +564,75 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
     const countable = !!activeFile && !isCanvas && !unreadable && !isCode;
     const statusShown = backlinksAvailable || countable || !!saveStatus;
     /* The pill sits over the RIGHTMOST column, whichever pane is focused — and
-       a PDF, a notebook or a whiteboard there draws its page, zoom and minimap
-       controls in that same corner. Lifted above them rather than hidden: it
-       may be carrying counts for a markdown pane to the left, or a message. */
+       a PDF or a notebook there draws its page/zoom pills in that same corner.
+       Lifted above them rather than hidden: it may be carrying counts for a
+       markdown pane to the left, or a message. A drawing draws nothing there
+       (tldraw's help button is off in this build), so it is not lifted. */
     const cornerTab = paneTabs.length ? paneTabs[paneTabs.length - 1] : null;
     const liftStatus = !!cornerTab && !cornerTab.file.isHelp && !cornerTab.readError
-        && (isPdfFile(cornerTab.file.name) || isCanvasFile(cornerTab.file.name));
+        && (isPdfFile(cornerTab.file.name) || isNotebookFile(cornerTab.file.name));
     const countPath = countable ? activeFile!.path : null;
-    const wordCountRef = useRef<HTMLSpanElement>(null);
-    const charCountRef = useRef<HTMLSpanElement>(null);
-    useLayoutEffect(() => {
-        const write = ({ words, chars }: WordCounts) => {
-            if (wordCountRef.current) wordCountRef.current.textContent = `${words} ${words === 1 ? 'word' : 'words'}`;
-            if (charCountRef.current) charCountRef.current.textContent = `${chars} ${chars === 1 ? 'character' : 'characters'}`;
-        };
-        focusWordCounts(countPath);
-        const unsubscribe = subscribeWordCounts(write);
-        const text = countPath ? contentOf(countPath) : undefined;
-        if (text === undefined) {
-            if (wordCountRef.current) wordCountRef.current.textContent = '—';
-            if (charCountRef.current) charCountRef.current.textContent = '—';
-        } else {
-            const trimmed = text.trim();
-            write({ words: trimmed ? trimmed.split(/\s+/).length : 0, chars: text.length });
+    const liveText = countable ? focusedTab?.content ?? '' : '';
+    const [counted, setCounted] = useState<{ path: string | null; text: string }>(
+        { path: countPath, text: liveText });
+    // A SWITCH is not typing: showing the previous note's numbers for a quarter
+    // of a second beside the new note's name reads as a bug, so a change of
+    // document lands at once. Adjusted during render, React's pattern for state
+    // that follows a prop — the same one `showBacklinks` above uses.
+    if (counted.path !== countPath) setCounted({ path: countPath, text: liveText });
+    useEffect(() => {
+        const timer = setTimeout(() => setCounted(prev => (
+            prev.path === countPath && prev.text === liveText ? prev : { path: countPath, text: liveText }
+        )), 250);
+        return () => clearTimeout(timer);
+    }, [countPath, liveText]);
+    const counts = useMemo(() => {
+        const trimmed = counted.text.trim();
+        return { words: trimmed ? trimmed.split(/\s+/).length : 0, chars: counted.text.length };
+    }, [counted.text]);
+
+    // ── Embedded images ────────────────────────────────────────────────────
+    // Deleting one is the editor's only action that needs the app: it has to be
+    // confirmed first, since the picture goes to .Garbage with it. The document
+    // edit itself stays inside the editor subsystem — this only decides whether
+    // it happens (see imageWidget.ts).
+    const [imageDelete, setImageDelete] = useState<PaneImageDelete | null>(null);
+    const handleImageDelete = useCallback((request: PaneImageDelete) => setImageDelete(request), []);
+
+    const closeImageDelete = useCallback(() => setImageDelete(null), []);
+    // Not inside a state updater: StrictMode invokes those twice, and this one
+    // edits the document.
+    const runImageDelete = useCallback(() => {
+        imageDelete?.run();
+        setImageDelete(null);
+    }, [imageDelete]);
+
+    // (Escape, the click outside and the focus round trip are ConfirmDialog's.)
+
+    // A pending request names a position in the document that raised it, and
+    // that document can leave the screen while the dialog is up (a tab switch,
+    // ⌘N, the pane being closed). The question stops meaning anything then, so
+    // it is withdrawn rather than answered against the wrong note — removeEmbed
+    // would refuse it anyway, silently.
+    const visibleKey = panes.map(p => p.activePath).join('\n');
+    useEffect(() => {
+        const visible = new Set(visibleKey ? visibleKey.split('\n') : []);
+        setImageDelete(prev => (prev && visible.has(prev.path) ? prev : null));
+    }, [visibleKey]);
+
+    // Drop cached editor states for documents that are no longer open — the
+    // only thing that ever empties App's cache. Keyed on the joined key string
+    // so it doesn't run on every keystroke. It does not run while the graph
+    // view has this component unmounted; its first run on the way back clears
+    // whatever closed meanwhile, which nothing could adopt in between (ids
+    // never repeat — see App's newTabId).
+    const openTabsKey = tabs.map(paneKey).join('\n');
+    useEffect(() => {
+        const open = new Set(openTabsKey ? openTabsKey.split('\n') : []);
+        for (const key of stateCache.keys()) {
+            if (!open.has(key)) stateCache.delete(key);
         }
-        return () => { unsubscribe(); focusWordCounts(null); };
-    }, [countPath, contentOf]);
+    }, [openTabsKey, stateCache]);
 
     // ── Opening a tab as a column of its own ───────────────────────────────
     // A tab dragged out of its strip and dropped on the panes below leaves its
@@ -733,18 +764,7 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
         const drag = resizeRef.current;
         if (!drag) return;                  // a lost capture after a normal pointerup
         resizeRef.current = null;
-        if (drag.frame !== null) {
-            cancelAnimationFrame(drag.frame);
-            if (commit) {
-                const k = drag.edge;
-                const pair = drag.start[k] + drag.start[k + 1];
-                const left = clampEdge(drag.start[k] + ((drag.x - drag.x0) / drag.total) * 100, pair, drag.floor);
-                drag.live = drag.start.slice();
-                drag.live[k] = left;
-                drag.live[k + 1] = pair - left;
-                writePaneVars(drag.live);
-            }
-        }
+        if (drag.frame !== null) cancelAnimationFrame(drag.frame);
         if (drag.handle.hasPointerCapture?.(drag.pointerId)) {
             drag.handle.releasePointerCapture(drag.pointerId);
         }
@@ -903,8 +923,11 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                         // readable self, so a retry that succeeds REMOUNTS it
                         // and every mount-time step (the view built from the
                         // real text, the scroll-anchor hold) runs as on a fresh
-                        // open. The unreadable pane never builds a view.
+                        // open. stateKey stays the same: the unreadable pane
+                        // never builds a view, so there is nothing cached under
+                        // it to adopt.
                         key={`${paneKey(tab)}${tab.readError ? '|unread' : ''}`}
+                        stateKey={paneKey(tab)}
                         tab={tab}
                         paneId={panes[i].id}
                         isFocused={tab.file.path === focusedPath}
@@ -919,9 +942,7 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                         theme={theme}
                         tabSize={tabSize}
                         rainbowBrackets={rainbowBrackets}
-                        contentOf={contentOf}
-                        documentBuffers={documentBuffers}
-                        markdownSessions={markdownSessions}
+                        stateCache={stateCache}
                         registerKeyboardTarget={registerKeyboardTarget}
                         getWikiLinkTargets={getWikiLinkTargets}
                         onContentChange={onContentChange}
@@ -934,6 +955,7 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                         onToggleMode={onToggleMode}
                         onExportNotebook={onExportNotebook}
                         onOpenNote={onOpenNote}
+                        onImageDelete={handleImageDelete}
                         onNotify={onNotify}
                         onConfirm={onConfirm}
                         revealRequest={revealRequest}
@@ -1037,8 +1059,22 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                 // means "this document is some column's showing tab".
                 const slot = paneGeom.get(tab.file.path);
                 const visible = !!slot;
+                // The placeholder has to stand in the SAME column as the pane it
+                // is standing in for: bare `.pdf-pane` is full width and sits
+                // above the pane headers, so on the restore path — the one that
+                // can put a PDF straight into a column beside another — it
+                // covered the notes beside it until the lazy chunk arrived.
+                // Through the same variables as the pane itself, so it lines up
+                // even mid-drag.
+                const fallbackStyle = visible
+                    ? {
+                        left: `calc(var(--pane-x-${slot!.index}) * 1%)`,
+                        width: `calc(var(--pane-w-${slot!.index}) * 1%)`,
+                        right: 'auto' as const,
+                    }
+                    : undefined;
                 return (
-                    <React.Fragment
+                    <Suspense
                         // Same key as a pane (see paneKey): matched by path
                         // alone, the pane of an overwritten PDF was handed to
                         // the file that replaced it and went on showing the old
@@ -1047,6 +1083,11 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                         // diskRev: a reload from disk remounts it on the new
                         // file (App.reloadFromDisk).
                         key={`${paneKey(tab)}|${tab.diskRev ?? 0}`}
+                        fallback={visible ? (
+                            <div className="pdf-pane pdf-pane-message" style={fallbackStyle}>
+                                Loading PDF…
+                            </div>
+                        ) : null}
                     >
                         <PdfPaneHost
                             reading={reading}
@@ -1057,9 +1098,6 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                             onTypographyChange={updateReadingTypography}
                             registerKeyboardTarget={registerKeyboardTarget}
                             file={tab.file}
-                            theme={theme}
-                            nativeCanvasHost={nativeCanvasHost}
-                            onToggleMode={onToggleMode}
                             isVisible={visible}
                             isFocused={tab.file.path === focusedPath}
                             slotIndex={slot?.index ?? 0}
@@ -1067,23 +1105,16 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                             slotWidth={slot?.width ?? 100}
                             onFocusPane={onFocusPane}
                             mode={tab.mode}
-                            onNativeCanvasReady={onNativeCanvasReady}
-                            attachCanvasSession={attachCanvasSession}
-                            onPreparePrint={onPreparePdfPrint}
-                            onUnsignedPdfCopy={onUnsignedPdfCopy}
+                            content={tab.content}
+                            onContentChange={onContentChange}
+                            onFlushNow={onFlushNow}
                             onOpenNotebookSource={onOpenNotebookSource}
                             onRotate={onRotatePdf}
-                            // Unsaved bytes only: tab.dirty also counts native session journalling and
-                            // rebind work, which held Original behind "Applying annotations…" forever
-                            // after a completed save (t5zy/t606). The header keeps the combined flag.
-                            isDirty={documentBuffers.isDirty(tab.id)}
+                            isDirty={tab.dirty}
                             disk={tab.disk}
-                            pdfRebuild={tab.pdfRebuild}
-                            pdfRebuildApproval={tab.pdfRebuild?.approved ? tab.pdfRebuild : undefined}
-                            onAnnotationPreflight={onAnnotationPreflight}
                             onDiskAction={onDiskAction}
                         />
-                    </React.Fragment>
+                    </Suspense>
                 );
             })}
 
@@ -1095,7 +1126,7 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                 out: their slot draws the retry message, and a float would cover
                 it. */}
             {tabs.filter(t => !t.file.isHelp && !t.readError
-                && (t.representation.loadedKind === 'drawing' || t.representation.loadedKind === 'notebook')).map(tab => {
+                && (isDrawingFile(t.file.name) || isNotebookFile(t.file.name))).map(tab => {
                 const slot = paneGeom.get(tab.file.path);
                 const visible = !!slot;
                 const fallbackStyle = visible
@@ -1106,7 +1137,7 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                     }
                     : undefined;
                 return (
-                    <CanvasPane
+                    <Suspense
                         // Keyed as a PDF pane is: by the pane AND the path, so
                         // an overwritten file never inherits the old board's
                         // editor, and on diskRev, so a reload from disk
@@ -1119,23 +1150,23 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                                 </div>
                             </div>
                         ) : null}
+                    >
+                        <CanvasPane
                             file={tab.file}
-                            documentId={tab.id}
-                            nativeCanvasHost={nativeCanvasHost}
-                            representation={tab.representation}
                             isVisible={visible}
-                            isFocused={tab.file.path === focusedPath}
                             slotIndex={slot?.index ?? 0}
                             slotLeft={slot?.left ?? 0}
                             slotWidth={slot?.width ?? 100}
                             onFocusPane={onFocusPane}
                             registerKeyboardTarget={registerKeyboardTarget}
-                            onNativeCanvasReady={onNativeCanvasReady}
-                            attachCanvasSession={attachCanvasSession}
+                            content={tab.content}
+                            onContentChange={onContentChange}
+                            onConfirm={onConfirm}
                             theme={theme}
                             disk={tab.disk}
                             onDiskAction={onDiskAction}
                         />
+                    </Suspense>
                 );
             })}
 
@@ -1168,8 +1199,8 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                     )}
                     {countable && (
                         <>
-                            <span className="status-bar-item" ref={wordCountRef} />
-                            <span className="status-bar-item" ref={charCountRef} />
+                            <span className="status-bar-item">{counts.words} {counts.words === 1 ? 'word' : 'words'}</span>
+                            <span className="status-bar-item">{counts.chars} {counts.chars === 1 ? 'character' : 'characters'}</span>
                         </>
                     )}
                     {/* Always mounted, never conditional: it is written after
@@ -1188,6 +1219,19 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                         <p className="editor-empty-hint">Select a file from the sidebar to begin editing.</p>
                     </div>
                 </div>
+            )}
+            {imageDelete && (
+                <ConfirmDialog
+                    title="Delete image?"
+                    confirmLabel="Delete"
+                    danger
+                    onConfirm={runImageDelete}
+                    onCancel={closeImageDelete}
+                >
+                    <strong>{imageDelete.name}</strong> is removed from this note, and its file moves
+                    to this folder’s <code>.Garbage</code> unless another note here still shows it.
+                    Undo (⌘Z) brings both back.
+                </ConfirmDialog>
             )}
             {showBacklinks && backlinksAvailable && (
                 <BacklinksPanel

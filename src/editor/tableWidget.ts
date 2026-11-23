@@ -1,5 +1,4 @@
 import { WidgetType } from '@codemirror/view';
-import { countEditorWidget } from './editorPerf';
 import type { EditorView } from '@codemirror/view';
 import { preserveTableReadingSelection, queueTableReadingSelection } from './tableReadingSelection';
 import { createFitProbes, observeTableFit, rekeyTableFit, releaseTableFit, retuneTableFit } from './tableFit';
@@ -170,8 +169,7 @@ const CELL_PARSER = document.createElement('div');
 
 /** Inline-code spans, found with the SAME regex renderInlineMarkdown uses, so
  *  the two agree on what is code and a `$` inside backticks stays literal.
- *  Both regex and Lezer code spans are sorted/disjoint: findMathRegions now
- *  binary-searches them instead of scanning every span for each formula. */
+ *  (findMathRegions takes the unexported CharRange[]; this shape satisfies it.) */
 function inlineCodeRanges(text: string): { from: number; to: number }[] {
     const out: { from: number; to: number }[] = [];
     const re = /`(.+?)`/g;
@@ -502,7 +500,6 @@ export class TableWidget extends WidgetType {
         readonly emphasis: ReadingEmphasisOptions = { enabled: false, mode: 'edit', locale: '' },
     ) {
         super();
-        if (__BME_BENCH__) { countEditorWidget(); }
     }
 
     private effectiveEmphasis(): ReadingEmphasisOptions {

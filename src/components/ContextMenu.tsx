@@ -1,7 +1,7 @@
 import React, { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import TableSizeGrid from './TableSizeGrid';
 import { Check } from './icons';
-import type { ContextMenuRequest, ContextMenuSubmenu } from '../utils/contextMenu';
+import type { ContextMenuRequest } from '../utils/contextMenu';
 
 // Lazy so the icon set stays out of the main bundle — see utils/lucideIcons.ts.
 const EntryStylePicker = lazy(() => import('./EntryStylePicker'));
@@ -50,95 +50,23 @@ function place(point: number, size: number, limit: number): number {
     return Math.max(MARGIN, Math.min(flipped, limit - size - MARGIN));
 }
 
-/** The menu's bottom edge sits on `point`, unless it would not fit above (then it hangs below, as `place` does). */
-function placeAbove(point: number, size: number, limit: number): number {
-    const above = point - size;
-    return above >= MARGIN ? above : place(point, size, limit);
-}
-
-function SubmenuRows({ entries, activate, direction }: {
-    entries: ContextMenuSubmenu['entries'];
-    activate: (run: () => void | Promise<void>, keepOpen?: boolean) => void;
-    direction?: 'ltr' | 'rtl';
-}) {
-    const [child, setChild] = useState<{ entry: ContextMenuSubmenu; anchor: DOMRect; focus: boolean } | null>(null);
-    const childPanel = useRef<HTMLDivElement>(null);
-    const childTrigger = useRef<HTMLButtonElement>(null);
-    const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
-    useLayoutEffect(() => {
-        const el = childPanel.current;
-        if (!child || !el) { setPosition(null); return; }
-        const rect = el.getBoundingClientRect();
-        const right = child.anchor.right + MARGIN;
-        const leftSide = child.anchor.left - MARGIN - rect.width;
-        const left = direction === 'rtl' && leftSide >= MARGIN ? leftSide
-            : right + rect.width + MARGIN > window.innerWidth ? Math.max(MARGIN, leftSide) : right;
-        setPosition({ left, top: place(child.anchor.top, rect.height, window.innerHeight) });
-        if (child.focus) el.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
-    }, [child, direction]);
-
-    return <>
-        {entries.map(item => {
-            if (item.kind === 'separator') return <div key={item.id} className="context-menu-separator" role="separator" />;
-            if (item.kind === 'submenu') return <button key={item.id} type="button" className="context-menu-item"
-                role="menuitem" aria-haspopup="menu" aria-expanded={child?.entry.id === item.id}
-                disabled={item.disabled} data-tooltip={item.reason}
-                onMouseEnter={event => {
-                    if (!item.disabled && child?.entry.id !== item.id) {
-                        childTrigger.current = event.currentTarget;
-                        setChild({ entry: item, anchor: event.currentTarget.getBoundingClientRect(), focus: false });
-                    }
-                }}
-                onClick={event => {
-                    childTrigger.current = event.currentTarget;
-                    setChild({ entry: item, anchor: event.currentTarget.getBoundingClientRect(), focus: true });
-                }}
-                onKeyDown={event => {
-                    if (event.key !== (direction === 'rtl' ? 'ArrowLeft' : 'ArrowRight')) return;
-                    event.preventDefault();
-                    event.stopPropagation();
-                    childTrigger.current = event.currentTarget;
-                    setChild({ entry: item, anchor: event.currentTarget.getBoundingClientRect(), focus: true });
-                }}>{item.label}<span className="context-menu-item-arrow" aria-hidden="true">{direction === 'rtl' ? '◂' : '▸'}</span></button>;
-            return <button key={item.id} type="button" className={`context-menu-item${item.danger ? ' is-danger' : ''}`}
-                role={item.checked === undefined ? 'menuitem' : 'menuitemradio'} aria-checked={item.checked}
-                disabled={item.disabled} data-tooltip={item.reason} onMouseEnter={() => setChild(null)}
-                onClick={() => activate(item.run, item.keepOpen)}>
-                {item.checked !== undefined && <span className="context-menu-item-check" aria-hidden="true">{item.checked && <Check size={14} />}</span>}
-                {item.label}
-                {item.shortcut && <span style={{ marginInlineStart: 'auto', direction: 'ltr', unicodeBidi: 'isolate' }}>{item.shortcut}</span>}
-            </button>;
-        })}
-        {child && <div ref={childPanel} className="context-menu-panel" style={{ position: 'fixed',
-            left: position?.left ?? 0, top: position?.top ?? 0, ...(position ? null : HIDDEN_UNTIL_MEASURED) }}
-            onKeyDown={event => {
-                if (event.key === (direction === 'rtl' ? 'ArrowRight' : 'ArrowLeft')) {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    setChild(null);
-                    childTrigger.current?.focus();
-                    return;
-                }
-                if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
-                const rows = Array.from(childPanel.current?.querySelectorAll<HTMLButtonElement>(':scope > .context-menu > button:not(:disabled)') ?? []);
-                if (!rows.length) return;
-                event.preventDefault();
-                event.stopPropagation();
-                const index = rows.indexOf(document.activeElement as HTMLButtonElement);
-                const step = event.key === 'ArrowDown' ? 1 : -1;
-                rows[(index + step + rows.length) % rows.length].focus();
-            }}>
-            <div className="context-menu" role="menu" aria-label={child.entry.label} style={{ position: 'static' }}>
-                <SubmenuRows entries={child.entry.entries} activate={activate} direction={direction} />
-            </div>
-        </div>}
-    </>;
-}
-
 /**
- * The app's one context menu is shared by React and CodeMirror raisers. Its
- * viewport-point anchor needs scroll dismissal and flipping on both axes; the
- * capture-phase Escape also wins over the CodeMirror view behind it.
+ * The app's own right-click menu — the one surface every context menu in the
+ * app is drawn by, whoever raised it (the editor, a table cell, a file tree
+ * row).
+ *
+ * It is a component over a module-level store rather than a component per
+ * caller because the callers have nothing else in common: one of them is a DOM
+ * handler hung off a CodeMirror widget, which knows nothing about React. See
+ * utils/contextMenu.ts for why that store shape is the only one that works.
+ *
+ * Modelled on VaultMenu (the backlinks popover is the third dismissible
+ * surface), with three differences that all come from WHERE this one sits. It
+ * hangs from a point in the viewport rather than from a button, so a scroll
+ * invalidates its position and must dismiss it; it can be raised anywhere, so
+ * it flips on both axes instead of only leftwards; and it is drawn over
+ * CodeMirror, which binds Escape itself — so Escape here is capture-phase and
+ * stopped, the treatment ConfirmDialog.tsx already documents.
  */
 export default function ContextMenu({ request, onClose }: ContextMenuProps) {
     const menuRef = useRef<HTMLDivElement | null>(null);
@@ -153,8 +81,11 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
      *  place. */
     const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
 
-    /** The row and viewport rect of the active picker or command submenu. */
-    const [flyout, setFlyout] = useState<{ id: string; anchor: DOMRect; focus?: boolean } | null>(null);
+    /** The id of the row whose flyout is open, and that row's rect — the
+     *  flyout hangs off the row, like a native submenu. Two kinds of row open
+     *  one (the table size flyout and the folder style picker); which component
+     *  goes inside is decided at render time from the entry. */
+    const [flyout, setFlyout] = useState<{ id: string; anchor: DOMRect } | null>(null);
     const [panelPos, setPanelPos] = useState<{ left: number; top: number } | null>(null);
 
     /* One menu REPLACING another does not remount this component — the store
@@ -220,7 +151,7 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
         const rect = el.getBoundingClientRect();
         setPos({
             left: place(request.x, rect.width, window.innerWidth),
-            top: request.above ? placeAbove(request.y, rect.height, window.innerHeight) : place(request.y, rect.height, window.innerHeight),
+            top: place(request.y, rect.height, window.innerHeight),
         });
     }, [request, rowIndex]);
 
@@ -231,12 +162,11 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
         if (!flyout || !el) { setPanelPos(null); return; }
         const rect = el.getBoundingClientRect();
         const right = flyout.anchor.right + MARGIN;
-        const leftSide = flyout.anchor.left - MARGIN - rect.width;
-        const left = request.dir === 'rtl' && leftSide >= MARGIN ? leftSide
-            : right + rect.width + MARGIN > window.innerWidth ? Math.max(MARGIN, leftSide) : right;
+        const left = right + rect.width + MARGIN > window.innerWidth
+            ? Math.max(MARGIN, flyout.anchor.left - MARGIN - rect.width)
+            : right;
         setPanelPos({ left, top: place(flyout.anchor.top, rect.height, window.innerHeight) });
-        if (flyout.focus) el.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
-    }, [flyout, request.dir]);
+    }, [flyout]);
 
     /* Dismissal. Mirrors VaultMenu's, with the two listeners a menu
        anchored to a VIEWPORT POINT needs and the vault switcher's menu did not:
@@ -367,10 +297,9 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
             case 'Home': e.preventDefault(); moveFocus('first'); break;
             case 'End': e.preventDefault(); moveFocus('last'); break;
             case 'ArrowLeft':
-            case 'ArrowRight':
-                if (flyout && e.key === (request.dir === 'rtl' ? 'ArrowRight' : 'ArrowLeft')) {
-                    e.preventDefault(); closeFlyout();
-                }
+                // Only meaningful while a flyout is open — otherwise leave the
+                // key alone rather than swallowing it.
+                if (flyout) { e.preventDefault(); closeFlyout(); }
                 break;
             default: break;
         }
@@ -380,44 +309,32 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
      *  reaches here is ArrowLeft at the grid's left edge, which means "back to
      *  the menu". */
     const onPanelKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-        if (e.key === (request.dir === 'rtl' ? 'ArrowRight' : 'ArrowLeft')) {
-            e.preventDefault();
-            e.stopPropagation();
-            closeFlyout();
-            return;
-        }
-        if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
-        const entry = request.entries.find(item => item.id === flyout?.id);
-        if (entry?.kind !== 'submenu') return;
-        const rows = Array.from(panelRef.current?.querySelectorAll<HTMLButtonElement>(':scope > .context-menu > button:not(:disabled)') ?? []);
-        if (!rows.length) return;
+        if (e.key !== 'ArrowLeft') return;
         e.preventDefault();
-        const index = rows.indexOf(document.activeElement as HTMLButtonElement);
-        const step = e.key === 'ArrowDown' ? 1 : -1;
-        rows[(index + step + rows.length) % rows.length].focus();
+        closeFlyout();
     };
 
     /** Close FIRST, then act. A `run` that raises the app's dialog would
      *  otherwise be fighting this menu for the focus it is about to take. */
-    const activate = (run: () => void | Promise<void>, keepOpen = false) => {
-        if (!keepOpen) onClose();
+    const activate = (run: () => void | Promise<void>) => {
+        onClose();
         void run();
     };
 
-    // An unclaimed desktop-file drop opened a separate browser tab in D11;
-    // the app and dirty note stayed open. This surface consumes its own drops
-    // before the window-level fallback, just like the split divider.
+    // A file dropped from the desktop on an UNCANCELLED target navigates the
+    // whole app away to that file, taking every unsaved buffer with it. This
+    // menu is a plain div over the workspace, so it is one more surface that
+    // has to refuse a drop itself (the same rule as .view-content and the
+    // split divider).
     const cancelDrop = (e: React.DragEvent) => e.preventDefault();
 
     return (
         <>
             <div
                 ref={menuRef}
-                className={request.className ? `context-menu ${request.className}` : 'context-menu'}
+                className="context-menu"
                 role="menu"
                 aria-label={request.label}
-                lang={request.lang}
-                dir={request.dir}
                 // Focusable only as the fallback for a menu whose every row is
                 // disabled; -1 keeps it out of the Tab order.
                 tabIndex={-1}
@@ -455,7 +372,7 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
 
                     const index = rowIndex.get(entry.id) ?? 0;
 
-                    if (entry.kind === 'grid' || entry.kind === 'entry-style' || entry.kind === 'submenu') {
+                    if (entry.kind === 'grid' || entry.kind === 'entry-style') {
                         const open = flyout?.id === entry.id;
                         return (
                             <button
@@ -463,29 +380,22 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
                                 ref={el => { itemsRef.current[index] = el; }}
                                 className="context-menu-item"
                                 role="menuitem"
-                                aria-haspopup={entry.kind === 'submenu' ? 'menu' : true}
+                                aria-haspopup="true"
                                 aria-expanded={open}
                                 disabled={entry.disabled}
                                 data-tooltip={entry.reason}
-                                onMouseEnter={e => {
-                                    if (entry.kind === 'submenu' && !entry.disabled && !open) {
-                                        setFlyout({ id: entry.id, anchor: e.currentTarget.getBoundingClientRect() });
-                                    }
-                                }}
                                 onClick={e => {
                                     const anchor = e.currentTarget.getBoundingClientRect();
-                                    setFlyout(current => (current?.id === entry.id && entry.kind !== 'submenu'
-                                        ? null : { id: entry.id, anchor, focus: entry.kind === 'submenu' }));
+                                    setFlyout(current => (current?.id === entry.id ? null : { id: entry.id, anchor }));
                                 }}
                                 onKeyDown={e => {
-                                    const forward = request.dir === 'rtl' ? 'ArrowLeft' : 'ArrowRight';
-                                    if (e.key !== forward || (open && entry.kind !== 'submenu')) return;
+                                    if (e.key !== 'ArrowRight' || open) return;
                                     e.preventDefault();
-                                    setFlyout({ id: entry.id, anchor: e.currentTarget.getBoundingClientRect(), focus: entry.kind === 'submenu' });
+                                    setFlyout({ id: entry.id, anchor: e.currentTarget.getBoundingClientRect() });
                                 }}
                             >
                                 {entry.label}
-                                <span className="context-menu-item-arrow" aria-hidden="true">{request.dir === 'rtl' ? '◂' : '▸'}</span>
+                                <span className="context-menu-item-arrow" aria-hidden="true">▸</span>
                             </button>
                         );
                     }
@@ -501,10 +411,7 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
                             // Required when disabled: a dead row that says
                             // nothing is indistinguishable from a broken one.
                             data-tooltip={entry.reason}
-                            onMouseEnter={() => {
-                                if (request.entries.find(item => item.id === flyout?.id)?.kind === 'submenu') setFlyout(null);
-                            }}
-                            onClick={() => activate(entry.run, entry.keepOpen)}
+                            onClick={() => activate(entry.run)}
                         >
                             {hasChecks && (
                                 <span className="context-menu-item-check" aria-hidden="true">
@@ -512,7 +419,6 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
                                 </span>
                             )}
                             {entry.label}
-                            {entry.shortcut && <span style={{ marginInlineStart: 'auto', direction: 'ltr', unicodeBidi: 'isolate' }}>{entry.shortcut}</span>}
                         </button>
                     );
                 })}
@@ -526,13 +432,11 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
                 hangs off; the stylesheet gives it its chrome. */}
             {flyout && (() => {
                 const entry = request.entries.find(e => e.id === flyout.id);
-                if (!entry || (entry.kind !== 'grid' && entry.kind !== 'entry-style' && entry.kind !== 'submenu')) return null;
+                if (!entry || (entry.kind !== 'grid' && entry.kind !== 'entry-style')) return null;
                 return (
                     <div
                         ref={panelRef}
-                        className={request.className ? `context-menu-panel ${request.className}` : 'context-menu-panel'}
-                        lang={request.lang}
-                        dir={request.dir}
+                        className="context-menu-panel"
                         style={{
                             position: 'fixed',
                             left: panelPos ? panelPos.left : 0,
@@ -544,11 +448,7 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
                         onDragOver={cancelDrop}
                         onDrop={cancelDrop}
                     >
-                        {entry.kind === 'submenu' ? (
-                            <div className="context-menu" role="menu" aria-label={entry.label} style={{ position: 'static' }}>
-                                <SubmenuRows key={entry.id} entries={entry.entries} activate={activate} direction={request.dir} />
-                            </div>
-                        ) : entry.kind === 'grid' ? (
+                        {entry.kind === 'grid' ? (
                             <TableSizeGrid
                                 maxRows={entry.maxRows}
                                 maxCols={entry.maxCols}

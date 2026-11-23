@@ -1,5 +1,4 @@
 import { WidgetType } from '@codemirror/view';
-import { countEditorWidget } from './editorPerf';
 import type { EditorView } from '@codemirror/view';
 
 /**
@@ -158,7 +157,6 @@ export class MermaidWidget extends WidgetType {
 
     constructor(code: string) {
         super();
-        if (__BME_BENCH__) { countEditorWidget(); }
         this.code = code;
     }
 

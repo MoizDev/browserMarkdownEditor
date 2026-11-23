@@ -1,6 +1,6 @@
 ---
 name: vault-agent
-description: The AI agent panel ("VaultAgent") — the right-docked chat that runs Claude Code, Codex or OpenCode through a local background helper, how each CLI is launched (never-ask, full tools), the WebSocket/MCP protocol, the per-message context snapshot, the tool executor, the chat index in `.VaultAgent/`, and the installers/release. Load before touching shared/, helper/, components/AgentPanel/, utils/agent*.ts, utils/vaultAgent*.ts, utils/viewRegistry.ts, utils/nativeCanvasAgent*.ts, app/agentCanvas.ts / useAgentCanvasAccess.ts / useAgentHostDeps.ts, or anything the agent can read or change.
+description: The AI agent panel ("VaultAgent") — the right-docked chat that runs Claude Code, Codex or OpenCode through a local background helper, how each CLI is launched (never-ask, full tools), the WebSocket/MCP protocol, the per-message context snapshot, the tool executor, the chat index in `.VaultAgent/`, and the installers/release. Load before touching shared/, helper/, components/AgentPanel/, utils/agent*.ts, utils/vaultAgent*.ts, utils/viewRegistry.ts, canvasAgentOps.ts, or anything the agent can read or change.
 ---
 
 # VaultAgent: an agent CLI whose vault edits go through the editor
@@ -80,11 +80,11 @@ skill's context, tools or chat index reads one.
   streams `run.event` and ends in exactly one `run.done`/`run.error`), `AgentEvent`, ports, limits,
   `CanvasOp`. `shared/vaultAgentTools.ts` — the tool table (schemas + the descriptions the model
   reads), split out so the main chunk does not carry it. Pure data; both sides import them.
-- `src/types/vaultAgent.ts` — `AgentHost`/`VaultToolHost` (implemented once by `utils/agentHost.ts`, built in
-  the panel chunk from `getAgentHostDeps` (`useAgentHostDeps`, src/app), stable for the page's life, reading
-  App through `agentDepsRef`), `ChatMeta`, `AgentChange`.
-- `utils/viewRegistry.ts` — see `tabs-and-panes`; each mounted pane's reporter (`describe`, `live`,
-  `capture`, `pdfText`, `renderPage(WithInfo)`, `applyTextChanges`, `getText`, `canvas`, `replaceFromDisk`).
+- `src/types/vaultAgent.ts` — `AgentHost`/`VaultToolHost` (implemented once by `utils/agentHost.ts`,
+  built in the panel chunk from App's `getHostDeps`, stable for the page's life, reading App through
+  `agentDepsRef`), `ChatMeta`, `AgentChange`.
+- `utils/viewRegistry.ts` — see `tabs-and-panes`; each mounted pane's reporter (`describe`,
+  `capture`, `pdfText`, `renderPage`, `applyTextChanges`, `canvas`).
 
 ## Context: fresh, per message, from live panes (`utils/agentContext.ts`)
 
@@ -98,63 +98,14 @@ the focused drawing/notebook/PDF view rides along ONLY when its SHA-256 differs 
 
 ## Edits go through the app, never behind it
 
-A write the app did not make is no longer clobbered — every document save is versioned and an outside change
-reloads the note or raises a conflict bar (`tabs-and-panes` → "Outside changes") — but it costs the reader
-exactly that interruption, which is why the prompt still forbids the agent's own tools on vault files. So text
-edits (`vault_edit`/`vault_write`, refused as stale unless the text still equals what the agent read) go live
-view → the hidden note's Markdown session (`markdownSessions.dispatch`) → disk + `afterWrite`; create/mkdir refuse taken names
-(`useFileSystem().nameTaken`) and never truncate; move REFUSES a taken target; trash is
-`useTrashActions.performTrash` (src/app) without the question. Canvases: see the next section.
-
-- **Search never executes an agent-supplied regex on the UI thread.** `vault_search` goes through
-  `context/vaultIndex/` (tree order, bounded text residency, open-buffer overlays) and runs its
-  cancellable, deadline-bounded matcher in a worker owned by the index worker. Its scope limits
-  payload reads and results, never membership or another query's cached text. The same activation-owned,
-  4 MiB/file and 128 MiB total source-byte budget serves the sidebar; admission follows full-tree
-  order, not IO completion order. Incomplete results say so before the rows; a dirty open buffer,
-  including an empty one, outranks disk text. The index may persist text in browser IndexedDB, never
-  in the vault, and a changed activation or file revision fences late reads and publications.
-- **`afterWrite` primes the vault index with the text and stat already written**, only for the vault
-  activation captured by the tool operation. A late write from a vault being left must never prime
-  the new vault's same-named path; a save must not trigger a full vault walk.
-
-## Canvases: one App-owned native session, never a second editor
-
-Drawings (`.drawing`, legacy `.tldraw`), notebooks and PDF ink are read and changed only through the
-**native board session App owns** for that document (`whiteboard/`, see `pdf-and-drawings` /
-`board-gpu-path`); there is no tldraw and no parallel copy to edit.
-- **`canvas_apply`** → `agentHost.canvasApplyNative`: a closed board is first added as a tab *without
-  focus* (`addTabQuietly`, which seeds the buffer and baseline exactly as a click would), then
-  `utils/nativeCanvasAgentMutation.ts` acquires the session through `app/agentCanvas.ts`
-  `ensureNativeAgentRuntime` (15 s), and `whiteboard/host/nativeAgentMutation.ts` applies every op as ONE
-  undo step under a 30 s deadline. **No mounted pane, camera or input router is needed.** A legacy board
-  is admitted by the session's own conversion (consent and backup rules included); a refusal throws and
-  nothing else takes over. Write authority is the session's (`canWrite`/`writeBlockReason`) — emergency
-  read-only, the App's disk baseline and the session's seals stay authoritative; the request's own
-  mutation work retires in `finally`, the document session keeps serving autosave and the user.
-- **A PDF's ink is read or edited only from a clean, baselined buffer**: `ensureNativeAgentRuntime` pins
-  buffer identity, revision, source and baseline before its first await and re-checks them after every
-  await; a dirty PDF answers "Save the PDF before the agent reads or edits its ink."
-- **`canvas_shapes`**: an open board pages its shapes from the session (`canvasShapePage`, offset/limit/
-  revision; a revision change restarts at 0). A closed drawing/notebook is read from its closed source
-  projection (`acquireClosedCanvasSource`, `useAgentCanvasAccess`); a **closed PDF is refused** ("open it
-  in annotation mode").
-- **`vault_view`**: an open board answers from its live reporter's camera (`nativeCanvasView`), a closed
-  drawing/notebook/PDF is pictured from its admitted source (`nativeCanvasAgentRead.ts`) without opening a
-  tab; only when neither works does `openCanvasForAgent` add the tab and `showBeside` it
-  (`tabPanes.openInSidePane`, never moving focus; switches the main view off the graph) and wait
-  `CANVAS_MOUNT_TIMEOUT_MS` for a live reporter.
-- Closed-canvas reads are tracked per vault activation (`closedCanvasReads`) and aborted on a switch;
-  everything here loads with the first tool call (`useAgentCanvasAccess`), never at startup.
-
-## Read-only kinds
-- **EPUB** (`epub-reader`): `vault_read` returns only the open reader's bounded canonical visible/selected
-  text, or a precise "not loaded" error; unopened extraction, image capture, writes and search are refused.
-  Never infer empty writable prose from an EPUB tab.
-- **PDF text** is extracted per page from the open view's reporter or the closed PDF route
-  (`closedPdfAgent`, deadline-bounded); its text cannot be edited — annotate with `canvas_apply`.
-- The direct host (`agentHost`) and the executor (`vaultAgentTools`) each keep their own guards; never
-  remove one because the other exists.
+A write the app did not make is no longer clobbered — every document save is versioned and an outside
+change reloads the note or raises a conflict bar (`tabs-and-panes` → "Outside changes") — but it costs
+the reader exactly that interruption, which is why the prompt still forbids the agent's own tools on
+vault files. So text edits
+(`vault_edit`/`vault_write`, refused as stale unless the text still equals what the agent read) go live view → cached `EditorState`s + buffer → disk + `afterWrite`; create/mkdir refuse taken
+names (`entryNames.nameTaken`) and never truncate; move REFUSES a taken target; trash is
+`App.performTrash` without the question; canvas ops land in the live tldraw editor (`pdf-and-drawings`),
+opening a closed canvas beside the user via `openInSidePane` without moving the focus.
 
 ## How replies are shaped (brevity + teaching)
 
@@ -193,11 +144,15 @@ is a writing job). Teaching is **sticky per conversation** (`ChatStoreState.teac
   reply lands. `session.history` survives as the fallback: a chat with no tree file (made before this,
   or whose file was lost) is read from the CLI and becomes a straight-line tree it can then be
   branched from (`treeFromItems`).
-- **Which chat was on screen is remembered per vault** (`AgentPanel/openChatMemory.ts`, localStorage,
-  20 vaults) and restored when the index loads — but only if nothing is open yet (a chat picked or run
-  started meanwhile outranks it). Written at `openChat`, `selectAgent` (a new chat clears it), the draft
-  becoming a real chat mid-run, and `deleteChat`. The composer's unsent text is kept per `<vault>|<chat>`,
-  images excluded (object URLs die with the page).
+- **Which chat was on screen is remembered per vault** (`components/AgentPanel/openChatMemory.ts`,
+  localStorage, capped at 20 vaults) and put back when the index finishes loading — the transcripts
+  always survived a reload as files, but the panel used to reopen on a blank draft, so the
+  conversation LOOKED lost. Restored only when nothing is open yet: a chat picked, or a run started,
+  while the index was still loading is the user's own choice and outranks it. Written at the four
+  moments the choice changes — `openChat`, `selectAgent` (a new chat clears it, or reloading would
+  reopen the chat just stepped out of), the draft becoming a real chat mid-run, and `deleteChat`. The
+  composer's unsent text rides along in the same spirit (`Composer`, keyed `<vault>|<chat>`, images
+  deliberately excluded: object URLs do not survive the page that minted them).
 - **A branch is a SESSION of its own.** `activeSessionId` is the newest session on the branch being
   shown, but ONLY if no node off the branch carries it too (a session is a line: every fork below the
   first reply shares its parent's session, old answer included). User nodes record the session they
@@ -221,8 +176,8 @@ is a writing job). Teaching is **sticky per conversation** (`ChatStoreState.teac
   Network Access prompt. Later loads auto-connect only if `vaultAgentConnectedOnce` is set AND the
   permission query (`loopback-network`, then `local-network-access`/`local-network`) says granted — or
   the page itself is on loopback (dev), where no prompt exists and a 'denied' reading is ignored.
-- `useSidePanels` (src/app): `⌘⇧X` is a CAPTURE-phase listener — a Mod-Shift letter no keymap here
-  (CodeMirror, the board), Chrome or Edge claims; never ⌘⇧K (the user keeps it as deleteLine). `⌘E` is ignored
+- App: `⌘⇧X` is a CAPTURE-phase listener — a Mod-Shift letter no keymap here (CodeMirror,
+  tldraw), Chrome or Edge claims; never ⌘⇧K (the user keeps it as deleteLine). `⌘E` is ignored
   inside `[data-agent-panel]` (dropdowns are portalled and carry it too).
 - Header: the app's AI glyph (`StatusMark`, tinted and pulsed by `data-state`), the chat switcher,
   New chat, ⋯, close. **Which CLI runs the next chat is a pick-one section of the ⋯ menu** (`checked`
@@ -259,13 +214,14 @@ is a writing job). Teaching is **sticky per conversation** (`ChatStoreState.teac
   Releases (the panel links `releases/latest/download/<asset>` — the repo must stay public and publish
   no other "latest" release). "Run workflow" = the same builds and checks, publishing nothing.
   **Release checklist:** bump `SOURCE_VERSION` in `helper/src/buildInfo.ts` (source runs report it; the
-  tag sets a release build's; source is 0.2.2 today), push, dispatch once on the branch,
+  tag sets a release build's; 0.2.0 = the first with a terminal), push, dispatch once on the branch,
   tag that commit, then check `latest/download/vaultagent-release.json` names the new version. Bump
   `MIN_HELPER_VERSION` (now 0.1.2, the first unrestricted helper) only when the CHAT needs a newer
   helper — a feature with its own gate (`TERMINAL_VERSION`, `SELF_UPDATE_VERSION`) never raises it,
   or every older helper is locked out of the chat too. `PROTOCOL_VERSION` stays 1 for additive changes.
   The macOS job also checks `helper/ptyhost/vaultagent-pty` against `PINNED.json` (CI never rebuilds
-  it; see `integrated-terminal`). Every job that tests or compiles the helper runs `npm ci --ignore-scripts` first: since the terminal
+  it; see `integrated-terminal`). The release notes mention the terminal; there are no new assets.
+  Every job that tests or compiles the helper runs `npm ci --ignore-scripts` first: since the terminal
   it bundles npm packages (`@xterm/headless` + addons), and a bare checkout cannot resolve them.
 - **Self-update** (`helper/src/update.ts`; helpers ≥ `SELF_UPDATE_VERSION` 0.1.3, installed `serve`
   only — source / `--no-register` have no updater and answer `installed:false` / `unsupported`):
@@ -273,8 +229,7 @@ is a writing job). Teaching is **sticky per conversation** (`ChatStoreState.teac
     streams `update.progress` to the asker, replies `{from,to}` once the new binary is in place, then
     restarts 300 ms later. Refused (`busy`) while any run is active; `run.start`, `terminal.open` and
     `helper.uninstall` refused while updating. A restart ends every terminal shell, so the panel asks
-    first when `utils/terminalCount.ts` says any are open (update and uninstall alike). A copy not
-    running from `installLayout`'s path answers `installed:false`.
+    first when `utils/terminalCount.ts` says any are open (update and uninstall alike). A copy not running from `installLayout`'s path answers `installed:false`.
   - Source of truth is baked at build time — `RELEASES_BASE_URL` (`--releases-base` for tests, never
     from the wire): manifest from `latest/download/`, the asset from the VERSIONED tag URL. Assets are
     raw per-OS binaries (`UPDATE_ASSET_NAMES`: ad-hoc-signed single-arch macOS, the Windows exe, the
@@ -288,15 +243,15 @@ is a writing job). Teaching is **sticky per conversation** (`ChatStoreState.teac
     GitHub, as for the manual download; the sha guards corruption, not a compromised repo.
   - Panel (`agentBridge`): outdated helpers (< MIN) still connect, so they can be updated or
     uninstalled; `helperReady` gates the chat. The bridge owns the update (`update()`, `retain`s
-    itself; a socket close while restarting is not "lost"; a 90 s deadline → `update-lost`, kept across
-    redials; an undismissed outcome is shown on the next connection to that version). Download is
-    offered only when no helper is known installed (plus `foreign`); a self-updatable helper gets the
-    Update bar / ⋯ row; Uninstall is in the menu in every state.
+    itself; a socket close while restarting is not "lost"; 90 s deadline → `update-lost`, kept across redials; an undismissed updated/failed outcome survives a
+    disconnect and is shown on the next connection to that version). Download
+    is offered only when no helper is known to be installed (plus `foreign`); a connected self-
+    updatable helper gets the Update bar / ⋯ row instead; Uninstall is in the menu in every state.
   - **On every load** (once connected before), `components/agentUpdateHint.ts` runs
     `agentBridge.checkInBackground()` at idle (a dynamic import: the bridge stays out of the main
     chunk) — gated exactly like `autoConnect`, so no LNA prompt; `utils/agentUpdateNotice.ts` (a tiny
     store, imports nothing) puts a dot on the sidebar's agent button and the collapsed rail's expand
-    button. The dot ignores the bar's per-version dismissal; helpers below 0.1.3 cannot be asked.
+    button. The dot ignores the bar's per-version dismissal. Helpers below 0.1.3 cannot be asked, so get no dot unless outdated.
   - `CI=true bun helper/scripts/update-smoke.ts` (or `--replace-installed` locally — it replaces the
     user's install) runs bad-sha / broken-binary / good updates against a fake release on the real
     service manager.
@@ -310,3 +265,4 @@ after any adapter change: a shell call shows as a "Ran …" row, a vault edit ar
 diff card in the open editor, and the CLI driven against a fake model server with scratch
 `CLAUDE_CONFIG_DIR`/`CODEX_HOME`/`XDG_*` still starts only our MCP server.
 
+EPUB is a read-only kind with bounded visible/selected canonical text from its live reporter. Unloaded extraction and raster capture are unsupported; never infer empty writable prose. Direct host and executor retain independent guards; closed text edits now use versioned IO. No CLI or terminal restriction was added.

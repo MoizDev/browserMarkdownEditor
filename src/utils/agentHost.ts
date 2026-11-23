@@ -1,7 +1,5 @@
 import { readReaderViewState } from './readerViewState';
-import { routeEngines } from './engineRouting';
 import { canReadTabText,canUpdateTabContent } from './documentReading';
-import { canvasReadOnlyReason, sniffCanvas } from './canvasFormat';
 // App's side of the AI agent panel: the two host objects the panel and the
 // tool executor are handed (types/vaultAgent.ts), built ONCE for the app's life.
 //
@@ -15,8 +13,7 @@ import { canvasReadOnlyReason, sniffCanvas } from './canvasFormat';
 // the open editor (undoable), a new note refuses a taken name instead of
 // truncating it, a move carries its tabs, a deletion goes to `.Garbage`.
 
-import { isolateHistory } from '@codemirror/commands';
-import type { MarkdownSessionHost } from '../editor/markdownSession.types';
+import type { EditorState } from '@codemirror/state';
 import { MAX_MIRROR_FILE_BYTES, MAX_MIRROR_TOTAL_BYTES, type MirrorFile } from '../../shared/vaultAgentProtocol';
 import type { ActiveFile, EditorMode, FileTreeNode, MainView, OpenTab, TabLayout } from '../types';
 import type {
@@ -31,69 +28,41 @@ import { readPdfViewPos } from './pdfViewState';
 import { readCanvasViewPos } from './canvasViewState';
 import { isScrollAnchor } from '../editor/scrollAnchor';
 import {
-    isEpubFile, isCanvasFile, isDrawingFile, isNativeDrawingFile, isImageFile, isMarkdownFile, isNotebookFile, isPdfFile,
+    isEpubFile, isCanvasFile, isDrawingFile, isImageFile, isMarkdownFile, isNotebookFile, isPdfFile,
 } from './fileTypes';
 import { isTextFile } from './vaultSearch';
+import { nameTaken } from './entryNames';
 import {
-    CHAT_INDEX_FILE, CHAT_TREE_DIR, VAULT_AGENT_DIR, VAULT_ID_FILE, emptyChatIndex,
+    CHAT_INDEX_FILE, CHAT_TREE_DIR, VAULT_AGENT_DIR, VAULT_ID_FILE, emptyChatIndex, ensureVaultId,
     parseChatIndex, serializeChatIndex,
 } from './vaultAgentStore';
 import { emptyTree, parseTree, serializeTree, type ChatTree } from './chatTree';
 
 /** How long `openCanvasForAgent` waits for a canvas to mount and register. */
 const CANVAS_MOUNT_TIMEOUT_MS = 15_000;
-/** A mounted board registers a live reporter; a reporter without one is not a board. */
-const hasLiveBoard = (reporter: ViewReporter) => !!reporter.live;
 
 /** What the hosts need from App, re-read on every call. */
 export interface AgentHostDeps {
     vaultId: string | null;
-    handleIO: import('../types').VaultHandleIO;
-    ensureVaultId: import('../types').FileSystemContextValue['ensureVaultId'];
     root: FileSystemDirectoryHandle | null;
-    searchToken: object;
-    searchAgent: VaultToolHost['searchAgent'];
-    closedPdfAgent?: VaultToolHost['closedPdfAgent'];
     fileTree: FileTreeNode[];
     tabs: OpenTab[];
     layout: TabLayout;
     mainView: MainView;
-    /** App-owned Markdown sessions, including lazily created viewless sessions. */
-    markdownSessions: MarkdownSessionHost;
+    /** App's EditorState cache, keyed `${tab.id}|${path}`. */
+    stateCache: Map<string, EditorState>;
     readFile(handle: FileSystemFileHandle): Promise<string>;
     readFileVersioned: import('../types').FileSystemContextValue['readFileVersioned'];
-    statFile: import('../types').FileSystemContextValue['statFile'];
     writeFileVersioned: import('../types').FileSystemContextValue['writeFileVersioned'];
     readFileBytes(handle: FileSystemFileHandle): Promise<Uint8Array>;
     writeFile(handle: FileSystemFileHandle, content: string): Promise<void>;
     createFile(parent: FileSystemDirectoryHandle, name: string): Promise<FileSystemFileHandle>;
     createFolder(parent: FileSystemDirectoryHandle, name: string): Promise<FileSystemDirectoryHandle>;
-    nameTaken: import('../types').FileSystemContextValue['nameTaken'];
-    /** App-owned immutable closed source; projection and format classification stay in the consumer. */
-    acquireClosedCanvasSource?: (path: string, handle: FileSystemFileHandle, kind: 'drawing' | 'notebook' | 'pdf-ink',
-        guard: { readonly signal: AbortSignal; isCurrent(): boolean }) => Promise<import('./closedCanvasSource').ClosedCanvasSourceLease>;
-    /** One embedded picture of a closed board, read from the board's own folder (its `.Assets`), never from a tab. */
-    readClosedCanvasMedia?: (path: string, handle: FileSystemFileHandle, entry: import('../whiteboard/model/media').MediaEntry,
-        signal: AbortSignal) => Promise<Blob | null>;
-    /** Resolve or acquire the open tab's one canonical runtime, without attaching a view. */
-    ensureNativeAgentRuntime?: (path: string, signal: AbortSignal) => Promise<{
-        readonly identity: import('../types/nativeCanvas').NativeCanvasIdentity;
-        readonly runtime: import('../whiteboard/host/runtime').BoardRuntime;
-        isCurrent(): boolean;
-        canWrite(): boolean;
-        /** Named refusal for the facade's write block; null only when canWrite() holds. */
-        writeBlockReason(): string | null;
-        activateEditing(): void;
-        readMedia(entry: import('../whiteboard/model/media').MediaEntry, signal: AbortSignal): Promise<Blob | null>;
-    }>;
-    /** Offscreen, session-owned native-board projection; never reads through a mounted view. */
-    canvasShapePage?: VaultToolHost['canvasShapePage'];
-    /** The App-lifetime, path-explicit readable buffer accessor. */
-    contentOf(path: string): string | undefined;
-    snapshotOf(path: string): import('./documentBuffers').PinnedBufferSnapshot | undefined;
+    /** The save funnel (App.updateTabContent). */
+    updateTabContent(path: string, content: string): void;
     /** Everything a save does after its write, for a file written with no tab
      *  open: file time, asset reconcile, graph, search epoch. */
-    afterWrite(file: ActiveFile, before: string, after: string, version?: import('./diskVersion').DiskStat): void;
+    afterWrite(file: ActiveFile, before: string, after: string): void;
     renameEntry(node: FileTreeNode, newName: string): Promise<boolean>;
     moveEntry(node: FileTreeNode, target: FileSystemDirectoryHandle, targetPath: string): Promise<boolean>;
     /** Confirm-free trash (App.trashEntry). */
@@ -113,6 +82,27 @@ export interface AgentHostDeps {
 
 function splitPath(path: string): string[] {
     return path ? path.split('/') : [];
+}
+
+async function dirAt(root: FileSystemDirectoryHandle, path: string): Promise<FileSystemDirectoryHandle | null> {
+    let dir = root;
+    try {
+        for (const seg of splitPath(path)) dir = await dir.getDirectoryHandle(seg);
+        return dir;
+    } catch {
+        return null;
+    }
+}
+
+async function fileAt(root: FileSystemDirectoryHandle, path: string) {
+    const parent = await dirAt(root, parentVaultPath(path));
+    if (!parent) return null;
+    const name = path.slice(path.lastIndexOf('/') + 1);
+    try {
+        return { handle: await parent.getFileHandle(name), parentHandle: parent, name };
+    } catch {
+        return null;
+    }
 }
 
 function findNode(tree: FileTreeNode[], path: string): FileTreeNode | null {
@@ -136,7 +126,7 @@ function docKind(tab: OpenTab): AgentDocKind {
     if (tab.file.isHelp) return 'help';
     if (tab.representation?.loadedKind === 'epub' || isEpubFile(name)) return 'epub';
     if (isPdfFile(name)) return 'pdf';
-    if (isDrawingFile(name) || isNativeDrawingFile(name)) return 'drawing';
+    if (isDrawingFile(name)) return 'drawing';
     if (isNotebookFile(name)) return 'notebook';
     if (isMarkdownFile(name)) return 'markdown';
     if (isImageFile(name)) return 'image';
@@ -171,15 +161,16 @@ function rememberedPosition(deps: AgentHostDeps, path: string): RememberedPositi
     }
     if (!canReadTabText(tab)) return null;
     const anchor = readRecord<unknown>(SCROLL_ANCHORS_KEY)[scopedKey(path)];
-    const text = deps.contentOf(path);
-    return isScrollAnchor(anchor) && text !== undefined ? { kind: 'markdown', line: lineAt(text, anchor.pos) } : null;
+    return isScrollAnchor(anchor) ? { kind: 'markdown', line: lineAt(tab.content, anchor.pos) } : null;
 }
 
-/** Live readable text, or undefined when the loaded representation has no text authority. */
+/** The live text of an open, readable, text document: the mounted editor first
+ *  (it is ahead of `tab.content` by at most the commit in flight), else the tab
+ *  buffer. Undefined for anything else — a PDF's buffer is a tldraw snapshot. */
 function liveText(deps: AgentHostDeps, path: string): string | undefined {
     const tab = openTabAt(deps, path);
     if (!tab || !canReadTabText(tab)) return undefined;
-    return getView(path)?.getText?.() ?? deps.contentOf(path);
+    return getView(path)?.getText?.() ?? tab.content;
 }
 
 function applyToText(text: string, changes: TextChange[]): string {
@@ -214,119 +205,12 @@ function queue() {
 }
 
 export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
-    const nameTaken: AgentHostDeps['nameTaken'] = (dir, name) => getDeps().nameTaken(dir, name);
-    const dirAt = async (root: FileSystemDirectoryHandle, path: string): Promise<FileSystemDirectoryHandle | null> => {
-        let dir = root;
-        try {
-            for (const seg of splitPath(path)) dir = await getDeps().handleIO.dirIn(dir, seg);
-            return dir;
-        } catch { return null; }
-    };
-    const fileAt = async (root: FileSystemDirectoryHandle, path: string) => {
-        const parent = await dirAt(root, parentVaultPath(path));
-        if (!parent) return null;
-        const name = path.slice(path.lastIndexOf('/') + 1);
-        try { return { handle: await getDeps().handleIO.fileIn(parent, name), parentHandle: parent, name }; }
-        catch { return null; }
-    };
     const serializeIndex = queue();
     /** One write queue per chat transcript (see writeChatTree). */
     const treeQueues = new Map<string, ReturnType<typeof queue>>();
 
     const toolHost: VaultToolHost = {
-        vaultToken: () => { const deps = getDeps(); return deps.root ? deps.searchToken : null; },
-        searchAgent: (config, signal) => getDeps().searchAgent(config, signal),
-        async canvasShapePage(path, query, guard) {
-            const deps = getDeps();
-            if (deps.canvasShapePage) return deps.canvasShapePage(path, query, guard);
-            if (!deps.root || (!isDrawingFile(path) && !isNativeDrawingFile(path) && !isNotebookFile(path) && !isPdfFile(path))) return null;
-            const current = () => guard.isCurrent() && getDeps().root === deps.root && getDeps().searchToken === deps.searchToken;
-            const found =openTabAt(deps, path) ? undefined : await fileAt(deps.root, path);
-            guard.signal?.throwIfAborted();
-            if (!current()) throw new DOMException('Canvas tool source changed', 'AbortError');
-            const { readNativeCanvasShapePage } = await import('./nativeCanvasAgentRead');
-            return readNativeCanvasShapePage({ deps, path, handle: found?.handle, query,
-                guard: { signal: guard.signal, isCurrent: current } });
-        },
-        async nativeCanvasView(path, guard) {
-            const deps = getDeps();
-            // A closed canvas has no session to read; only an OPEN, admitted native canvas is read here.
-            const tab = deps.root ? openTabAt(deps, path) : undefined;
-            if (!deps.root || !tab) return null;
-            const kind = tab.representation.nativeCanvasKind;
-            const native = isNativeDrawingFile(path) ? true
-                : isDrawingFile(path) ? kind === 'drawing'
-                : isNotebookFile(path) ? kind === 'notebook'
-                    : isPdfFile(path) ? kind === 'pdfInk' : false;
-            if (!native) return null;
-            const current = () => guard.isCurrent() && getDeps().root === deps.root && getDeps().searchToken === deps.searchToken;
-            guard.signal?.throwIfAborted();
-            if (!current()) throw new DOMException('Canvas view source changed', 'AbortError');
-            // A mounted board that has a viewport answers from its own live camera, inversion and frame.
-            const live = getView(path)?.live;
-            if (live?.measured()) {
-                const base = guard.signal ?? new AbortController().signal;
-                const job = { signal: base, deadlineMs: 30_000 };
-                const info = await live.describe(job);
-                if (!current()) throw new DOMException('Canvas view source changed', 'AbortError');
-                const withSignal = (captureSignal?: AbortSignal) => ({ signal: captureSignal ? AbortSignal.any([base, captureSignal]) : base, deadlineMs: 30_000 });
-                return { info, wholeSheet: false,
-                    capture: (maxSide, captureSignal, page) => page !== undefined
-                        ? live.renderPage(page, maxSide, withSignal(captureSignal))
-                        : live.capture(maxSide, withSignal(captureSignal)) };
-            }
-            // A PDF's stored page is what a never-viewed ink board shows; it is the same record the classic reader keeps.
-            const stored = isPdfFile(path) ? readPdfViewPos(path) : undefined;
-            const { readNativeCanvasView } = await import('./nativeCanvasAgentRead');
-            return readNativeCanvasView({ deps, path, storedPage: stored ? stored.page + 1 : undefined,
-                guard: { signal: guard.signal, isCurrent: current } });
-        },
-        async nativeClosedPicture(path, page, maxSide, guard) {
-            const deps = getDeps();
-            // Only a CLOSED native drawing or notebook is pictured here; an open canvas is read through its session.
-            if (!deps.root || openTabAt(deps, path) || !(isNativeDrawingFile(path) || isNotebookFile(path))) return null;
-            const current = () => guard.isCurrent() && getDeps().root === deps.root && getDeps().searchToken === deps.searchToken;
-            const found = await fileAt(deps.root, path);
-            guard.signal?.throwIfAborted();
-            if (!found || !current()) return null;
-            const { readNativeClosedCanvasPicture } = await import('./nativeCanvasAgentRead');
-            return readNativeClosedCanvasPicture({ deps, path, handle: found.handle, page, maxSide,
-                guard: { signal: guard.signal, isCurrent: current } });
-        },
-        async nativePdfPicture(path, maxSide, guard) {
-            const deps = getDeps();
-            if (!deps.root || !isPdfFile(path)) return null;
-            const current = () => guard.isCurrent() && getDeps().root === deps.root && getDeps().searchToken === deps.searchToken;
-            const tab = openTabAt(deps, path);
-            // An OPEN PDF is read through nativeCanvasView (its last real view), never pictured here: a mounted or
-            // classic open PDF keeps its own route.
-            if (tab) return null;
-            // A CLOSED PDF is pictured from its admitted source, never by opening a tab.
-            const found = await fileAt(deps.root, path);
-            guard.signal?.throwIfAborted();
-            if (!found || !current()) return null;
-            const { readNativePdfPicture } = await import('./nativeCanvasAgentRead');
-            return readNativePdfPicture({ deps, path, handle: found.handle, maxSide,
-                guard: { signal: guard.signal, isCurrent: current } });
-        },
-        async canvasApplyNative(path, ops, guard) {
-            const deps = getDeps();
-            if (!deps.root || (!isDrawingFile(path) && !isNativeDrawingFile(path) && !isNotebookFile(path) && !isPdfFile(path))) return null;
-            const current = () => guard.isCurrent() && getDeps().root === deps.root && getDeps().searchToken === deps.searchToken;
-            guard.signal?.throwIfAborted();
-            if (!current()) throw new DOMException('Canvas tool source changed', 'AbortError');
-            if (!openTabAt(deps, path)) {
-                const node = findNode(deps.fileTree, path);
-                if (!node || node.kind !== 'file') throw new Error('The canvas file is unavailable');
-                if (!await deps.addTabQuietly(node, 'read')) throw new Error('The canvas could not be opened');
-            }
-            guard.signal?.throwIfAborted();
-            if (!current()) throw new DOMException('Canvas tool source changed', 'AbortError');
-            const { applyNativeCanvasOperations } = await import('./nativeCanvasAgentMutation');
-            return applyNativeCanvasOperations({ deps: getDeps(), path, ops,
-                guard: { signal: guard.signal, isCurrent: current } });
-        },
-        closedPdfAgent: () => getDeps().closedPdfAgent?.() ?? null,
+        vaultToken: () => getDeps().root,
 
         getFileTree: () => getDeps().fileTree,
 
@@ -337,7 +221,7 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             if (!dir) return null;
             const out: VaultDirEntry[] = [];
             try {
-                for await (const [name, handle] of getDeps().handleIO.entries(dir)) {
+                for await (const [name, handle] of dir.entries()) {
                     if (name === '.DS_Store' || name.endsWith('.crswap')) continue;
                     out.push({ name, kind: handle.kind });
                 }
@@ -358,7 +242,6 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
         openBuffer: path => liveText(getDeps(), path),
 
         async readText(path) {
-            if (isNativeDrawingFile(path)) return null;
             const deps = getDeps();
             const live = liveText(deps, path);
             if (live !== undefined) return live;
@@ -379,9 +262,8 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
         async applyTextChanges(path, expected, changes): Promise<HostResult> {
             const deps = getDeps();
             if (!deps.root) return { ok: false, reason: 'error', message: 'No vault is open.' };
-            if (isNativeDrawingFile(path)) return { ok: false, reason: 'invalid', message: 'Native .drawing whiteboards are changed with canvas_apply, not as text.' };
-            // A canvas on screen is a live board session, which would
-            // re-serialize over any text edit at its next change.
+            // A canvas is JSON on disk but a live tldraw store on screen, which
+            // would re-serialize over any text edit at its next change.
             if (isCanvasFile(path) || isPdfFile(path) || isEpubFile(path)) {
                 return { ok: false, reason: 'invalid', message: isEpubFile(path) ? 'EPUB is read-only; its source cannot be edited.' : 'Drawings, notebooks and PDFs are changed with canvas_apply, not as text.' };
             }
@@ -402,16 +284,21 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
                         return { ok: false, reason: 'stale' };
                     }
                 }
-                if (deps.contentOf(path) !== expected) return { ok: false, reason: 'stale' };
-                // The session owns both the undo history and the report to the save funnel,
-                // including when this is the first edit before a pane has ever mounted.
-                try {
-                    return await deps.markdownSessions.dispatch(tab.id, {
-                        changes, userEvent: 'input.agent', annotations: isolateHistory.of('full'),
-                    }) ? { ok: true } : { ok: false, reason: 'error', message: 'The editor closed or changed mid-edit.' };
-                } catch {
-                    return { ok: false, reason: 'stale' };
+                if (tab.content !== expected) return { ok: false, reason: 'stale' };
+                // Open but not on screen: the document's cached EditorState is what
+                // its next pane adopts, text AND undo history — update it so the
+                // agent's edit is one ⌘Z there too, and never leave it disagreeing
+                // with the buffer (the next mount would show the old text).
+                const next = applyToText(expected, changes);
+                // The exact key (App's paneKey), not a `|path` suffix: a path may
+                // itself contain `|`, and another document's state must not match.
+                const key = `${tab.id}|${path}`;
+                const cached = deps.stateCache.get(key);
+                if (cached && cached.doc.toString() === expected) {
+                    deps.stateCache.set(key, cached.update({ changes, userEvent: 'input.agent' }).state);
                 }
+                deps.updateTabContent(path, next);
+                return { ok: true };
             }
 
             // Closed: straight to disk, then the same tail a save runs.
@@ -422,30 +309,21 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             if (getDeps().root !== deps.root) return {ok:false,reason:'error',message:'The vault changed.'};
             if (read.text !== expected) return { ok: false, reason: 'stale' };
             const next = applyToText(expected, changes);
-            let written: import('./diskVersion').DiskStat;
             try {
                 const result=await deps.writeFileVersioned(found.handle,next,read.version);
                 if(result.status!=='written')return {ok:false,reason:'stale'};
-                written = result.version;
             } catch {
                 return { ok: false, reason: 'error', message: 'The file could not be written.' };
             }
-            deps.afterWrite({ name: found.name, path, kind: 'file', handle: found.handle, parentHandle: found.parentHandle }, expected, next, written);
+            deps.afterWrite({ name: found.name, path, kind: 'file', handle: found.handle, parentHandle: found.parentHandle }, expected, next);
             return { ok: true };
         },
 
         async createFile(path, content) {
-            if (isEpubFile(path) || isPdfFile(path) || (!isNativeDrawingFile(path) && !isTextFile(path))) return {ok:false,reason:'invalid',message:'Create accepts text documents and empty canvases; import an existing binary document.'};
+            if (isEpubFile(path) || isPdfFile(path) || !isTextFile(path)) return {ok:false,reason:'invalid',message:'Create accepts text documents only; import an existing binary document.'};
             const deps = getDeps();
             if (!deps.root) return { ok: false, reason: 'error', message: 'No vault is open.' };
             const root = deps.root;
-            const nativeKind = isNativeDrawingFile(path) || isDrawingFile(path) && routeEngines().canvas.drawing.engine === 'board' ? 'whiteboard'
-                : isNotebookFile(path) && routeEngines().canvas.notebook.engine === 'board' ? 'notebook' : null;
-            if (nativeKind) {
-                if (content.trim()) return { ok: false, reason: 'invalid', message: 'Create the native canvas empty, then use canvas_apply.' };
-                const { createEmptyNativeBytes } = await import('../whiteboard/host/emptyNative');
-                content = await createEmptyNativeBytes(nativeKind).text();
-            }
             const parent = await dirAt(root, parentVaultPath(path));
             if (!parent) return { ok: false, reason: 'no-parent' };
             const name = path.slice(path.lastIndexOf('/') + 1);
@@ -453,16 +331,11 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             // agent that asked for "Ideas.md" and silently got "Ideas (1).md"
             // would go on editing the one it named.
             if (await nameTaken(parent, name)) return { ok: false, reason: 'taken' };
-            if (getDeps().root !== root || getDeps().searchToken !== deps.searchToken) return { ok: false, reason: 'error', message: 'The vault changed before the file could be created.' };
             try {
                 const handle = await deps.createFile(parent, name);
                 if (content) {
                     await deps.writeFile(handle, content);
-                    let version: import('./diskVersion').DiskStat | undefined;
-                    try { version = await deps.statFile(handle) ?? undefined; } catch { /* The write succeeded; retry indexing later. */ }
-                    if (getDeps().root === root && getDeps().searchToken === deps.searchToken) {
-                        deps.afterWrite({ name, path, kind: 'file', handle, parentHandle: parent }, '', content, version);
-                    }
+                    deps.afterWrite({ name, path, kind: 'file', handle, parentHandle: parent }, '', content);
                 }
                 return { ok: true };
             } catch (err) {
@@ -501,7 +374,7 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             // By identity, not by spelling: moveFile copies a folder into the
             // target and then removes the source — with the target inside the
             // source, that removal takes the copy with it, bypassing .Garbage.
-            if (node.kind === 'directory' && await getDeps().handleIO.relativeTo(node.handle, toParent) !== null) {
+            if (node.kind === 'directory' && await node.handle.resolve(toParent) !== null) {
                 return { ok: false, reason: 'invalid', message: 'A folder cannot be moved into itself.' };
             }
             // renameFile/moveFile deliberately OVERWRITE (a user dragging onto a
@@ -543,38 +416,15 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
                 : { ok: false, reason: 'error', message: 'Nothing was moved; something inside may be in use.' };
         },
 
-        canvasWritable(path) {
-            const tab = openTabAt(getDeps(), path);
-            return !!tab && !tab.readError && tab.representation.status === 'ready' && !tab.representation.emergencyReadOnly;
-        },
-
         async openCanvasForAgent(path) {
             const deps = getDeps();
-            const open = openTabAt(deps, path);
-            if (isEpubFile(path) || open?.representation?.loadedKind === 'epub' || open?.readError) return null;
+            const open = openTabAt(deps,path);
+            if(isEpubFile(path)||open?.representation?.loadedKind==='epub'||open?.readError)return null;
             const pdf = isPdfFile(path);
             if (!pdf && !isCanvasFile(path)) return null;
-            // A legacy text canvas whose text the editor refuses is never mounted: no pane would ever register for it.
-            if (!pdf && !isNativeDrawingFile(path)) {
-                const captured = open ? deps.snapshotOf(path) : undefined;
-                try {
-                    if (open && captured && typeof captured.data !== 'string') return null;
-                    let text = typeof captured?.data === 'string' ? captured.data : open ? deps.contentOf(path) : undefined;
-                    if (open && text === undefined) return null;
-                    if (text === undefined) {
-                        const found = deps.root && await fileAt(deps.root, path);
-                        if (!found) return null;
-                        text = await deps.readFile(found.handle);
-                    }
-                    if (getDeps().root !== deps.root) return null;
-                    const reason = canvasReadOnlyReason(sniffCanvas(text, path));
-                    if (reason) throw new Error(reason);
-                } finally { captured?.release(); }
-            }
-            // The board mounts through its own native session (App's acquisition, legacy conversion and consent included).
-            // Its live reporter, registered by the mounted lease, is the only thing waited for.
+            const hasCanvas = (r: ViewReporter) => !!r.canvas;
             const now = getView(path);
-            if (now?.live) return now;
+            if (now?.canvas) return now;
 
             const tab = openTabAt(deps, path);
             if (!tab) {
@@ -588,15 +438,14 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
                 deps.setTabMode(path, 'edit');
             }
             deps.showBeside(path);
-            return whenViewReady(path, CANVAS_MOUNT_TIMEOUT_MS, hasLiveBoard);
+            return whenViewReady(path, CANVAS_MOUNT_TIMEOUT_MS, hasCanvas);
         },
     };
 
     const readVaultAgentFile = async (root: FileSystemDirectoryHandle, name: string): Promise<string | null> => {
         try {
-            const io = getDeps().handleIO;
-            const dir = await io.dirIn(root, VAULT_AGENT_DIR);
-            return await (await io.file(await io.fileIn(dir, name))).text();
+            const dir = await root.getDirectoryHandle(VAULT_AGENT_DIR);
+            return await (await (await dir.getFileHandle(name)).getFile()).text();
         } catch {
             return null;
         }
@@ -605,9 +454,8 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
     /** One writable, replaced whole — never createFile (it truncates, then walks
      *  the whole vault to refresh a tree this hidden folder is not in). */
     const writeVaultAgentFile = async (root: FileSystemDirectoryHandle, name: string, text: string) => {
-        const { handleIO: io, writeFile } = getDeps();
-        const dir = await io.dirIn(root, VAULT_AGENT_DIR, true);
-        await writeFile(await io.fileIn(dir, name, true), text);
+        const dir = await root.getDirectoryHandle(VAULT_AGENT_DIR, { create: true });
+        await getDeps().writeFile(await dir.getFileHandle(name, { create: true }), text);
     };
 
     /** `.VaultAgent/chats/<chatId>.json`. The id is ours (a UUID) and never a
@@ -615,16 +463,14 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
      *  anyway, because this writes inside the user's vault. */
     const chatTreeFile = async (root: FileSystemDirectoryHandle, chatId: string, create: boolean) => {
         if (!/^[0-9a-f-]{36}$/i.test(chatId)) return null;
-        const io = getDeps().handleIO;
-        const dir = await io.dirIn(root, VAULT_AGENT_DIR, create);
-        const chats = await io.dirIn(dir, CHAT_TREE_DIR, create);
-        return io.fileIn(chats, `${chatId}.json`, create);
+        const dir = await root.getDirectoryHandle(VAULT_AGENT_DIR, { create });
+        const chats = await dir.getDirectoryHandle(CHAT_TREE_DIR, { create });
+        return chats.getFileHandle(`${chatId}.json`, { create });
     };
 
     const readMirrorFile = async (dir: FileSystemDirectoryHandle, name: string): Promise<string | null> => {
         try {
-            const io = getDeps().handleIO;
-            const file = await io.file(await io.fileIn(dir, name));
+            const file = await (await dir.getFileHandle(name)).getFile();
             if (file.size > MAX_MIRROR_FILE_BYTES) return null;
             const text = await file.text();
             // Text only: a NUL is as good a binary sniff as any here.
@@ -655,23 +501,16 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
                 tabs,
                 focusedPath: focusedPathOf(deps.layout),
                 remembered: path => rememberedPosition(getDeps(), path),
-                // The same native read the tools use, guarded to this vault for its whole duration.
-                nativeView: (path, signal) => {
-                    const root = deps.root;
-                    return toolHost.nativeCanvasView
-                        ? toolHost.nativeCanvasView(path, { signal, isCurrent: () => getDeps().root === root })
-                        : Promise.resolve(null);
-                },
             };
         },
 
         ensureVaultUuid() {
             const root = getDeps().root;
             if (!root) return Promise.resolve(null);
-            // The SAME context minting the terminal uses, whose serialization
-            // is shared: two callers minting
+            // The SAME minting the terminal uses (utils/vaultAgentStore.ts),
+            // which is also where the serialization lives: two callers minting
             // for one vault would split it in two, and StrictMode runs both.
-            return getDeps().ensureVaultId(root, getDeps().writeFile);
+            return ensureVaultId(root, getDeps().writeFile);
         },
 
         async readChatIndex(): Promise<ChatIndex> {
@@ -702,7 +541,7 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             if (!root) return emptyTree();
             try {
                 const handle = await chatTreeFile(root, chatId, false);
-                return handle ? parseTree(await (await getDeps().handleIO.file(handle)).text()) : emptyTree();
+                return handle ? parseTree(await (await handle.getFile()).text()) : emptyTree();
             } catch {
                 // No folder, no file, or unreadable: an empty tree, and the CLI's
                 // own history takes over (chatStore.loadHistory).
@@ -732,10 +571,9 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             const root = getDeps().root;
             if (!root || !/^[0-9a-f-]{36}$/i.test(chatId)) return;
             try {
-                const io = getDeps().handleIO;
-                const dir = await io.dirIn(root, VAULT_AGENT_DIR);
-                const chats = await io.dirIn(dir, CHAT_TREE_DIR);
-                await io.remove(chats, `${chatId}.json`);
+                const dir = await root.getDirectoryHandle(VAULT_AGENT_DIR);
+                const chats = await dir.getDirectoryHandle(CHAT_TREE_DIR);
+                await chats.removeEntry(`${chatId}.json`);
             } catch { /* already gone */ }
         },
 
@@ -753,7 +591,7 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             const walk = async (dir: FileSystemDirectoryHandle, path: string, depth: number) => {
                 if (depth > 8) return;
                 try {
-                    for await (const [name, handle] of getDeps().handleIO.entries(dir)) {
+                    for await (const [name, handle] of dir.entries()) {
                         if (name === '.DS_Store' || name.endsWith('.crswap')) continue;
                         const child = `${path}/${name}`;
                         if (handle.kind === 'directory') await walk(handle, child, depth + 1);

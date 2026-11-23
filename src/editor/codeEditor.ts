@@ -208,21 +208,17 @@ export function codeLanguageFor(fileName: string): CodeLanguage | null {
 
 /** Grammars already fetched, keyed by the descriptor's own name. */
 const loaded = new Map<string, Extension>();
-const languageRequests = new WeakMap<EditorView, { generation: number; descriptor: LanguageDescription | null }>();
 
 /**
- * Load `language` into `view`'s compartment. A matching cached grammar is left
- * alone; a renamed file may need a different grammar even on its next mount.
+ * Load `language` into `view`'s compartment, once.
+ *
+ * A view that already holds a grammar is left alone: a pane re-adopting a
+ * cached EditorState has one, and reconfiguring would drop the folds and the
+ * completion state that state is carrying.
  */
-export async function loadCodeLanguage(view: EditorView, language: CodeLanguage | null, replace = false): Promise<void> {
-    const request = { generation: (languageRequests.get(view)?.generation ?? 0) + 1, descriptor: language?.description ?? null };
-    languageRequests.set(view, request);
+export async function loadCodeLanguage(view: EditorView, language: CodeLanguage): Promise<void> {
     const present = codeLanguageCompartment.get(view.state);
-    const hasGrammar = Array.isArray(present) ? present.length > 0 : present != null;
-    if (!language) {
-        if (replace && hasGrammar && view.dom.isConnected) view.dispatch({ effects: codeLanguageCompartment.reconfigure([]) });
-        return;
-    }
+    if (Array.isArray(present) ? present.length > 0 : present != null) return;
 
     let support = loaded.get(language.description.name);
     if (!support) {
@@ -236,11 +232,8 @@ export async function loadCodeLanguage(view: EditorView, language: CodeLanguage 
         }
         loaded.set(language.description.name, support);
     }
-    // A later rename or a removed pane must win over an older grammar load.
-    const latest = languageRequests.get(view);
-    if (!view.dom.isConnected || latest?.generation !== request.generation || latest.descriptor !== language.description) return;
-    const current = codeLanguageCompartment.get(view.state);
-    if (current === support) return;
+    // The pane may have gone while the chunk was in flight.
+    if (!view.dom.isConnected) return;
     view.dispatch({ effects: codeLanguageCompartment.reconfigure(support) });
 }
 

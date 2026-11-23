@@ -11,7 +11,6 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExter
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react';
 import { HELPER_NAME } from '../../../shared/vaultAgentProtocol';
 import { agentBridge } from '../../utils/agentBridge';
-import { writeStoredValue } from '../../utils/storage';
 import { openContextMenu } from '../../utils/contextMenu';
 import type { ContextMenuEntry } from '../../utils/contextMenu';
 import { detectArch, detectOs, isChromium } from '../../utils/platform';
@@ -291,7 +290,7 @@ export default function TerminalPanel({ takeFocus, onHide }: { takeFocus: boolea
     };
 
     const dismissFda = () => {
-        writeStoredValue(FDA_DISMISSED_KEY, '1');
+        try { localStorage.setItem(FDA_DISMISSED_KEY, '1'); } catch { /* asked again next time */ }
         setFdaDismissed(true);
     };
     const showFda = state.privacy?.backend === 'ptyhost' && state.privacy.fullDiskAccess === false && !fdaDismissed && !showGate;

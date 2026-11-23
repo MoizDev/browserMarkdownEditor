@@ -1,54 +1,12 @@
 import js from '@eslint/js'
-import { readFileSync } from 'node:fs'
 import globals from 'globals'
 import reactHooks from 'eslint-plugin-react-hooks'
 import reactRefresh from 'eslint-plugin-react-refresh'
 import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
-import { bmePlugin } from './eslint.rules.ts'
-
-// ONE native map feeds the backend, linker and lint. Refuse a damaged map
-// rather than quietly widening the prebuilt development engine's surface.
-const pdfiumMap = JSON.parse(readFileSync(new URL('./src/pdf/engine/pdfium/exports.json', import.meta.url), 'utf8')) as {
-  rows: { exports: string[] }[];
-}
-const pdfiumNativeExports = pdfiumMap.rows.flatMap(row => row.exports)
-if (pdfiumNativeExports.length !== 139 || new Set(pdfiumNativeExports).size !== 139) throw new Error('The canonical PDFium map must declare 139 unique native exports')
-
-// The tooltip rule's selectors (explained where the rule is set, below). Named, because
-// a later block that sets no-restricted-syntax replaces the whole option array and must
-// repeat them, never silently drop them.
-const tooltipRestrictions = [
-  {
-    selector: 'JSXOpeningElement[name.name=/^[a-z]/] > JSXAttribute[name.name="title"]',
-    message: 'Use data-tooltip (utils/tooltip.ts draws the app\'s own tooltip) — never the native title attribute.',
-  },
-  {
-    selector: 'AssignmentExpression[left.type="MemberExpression"][left.property.name="title"]:not([left.object.name="document"])',
-    message: 'Set dataset.tooltip (utils/tooltip.ts), not .title.',
-  },
-  {
-    selector: 'AssignmentExpression[left.type="MemberExpression"][left.computed=true][left.property.value="title"]',
-    message: 'Set dataset.tooltip (utils/tooltip.ts), not [\'title\'].',
-  },
-  {
-    selector: 'CallExpression[callee.property.name="setAttribute"][arguments.0.value="title"]',
-    message: 'Use data-tooltip, not the title attribute.',
-  },
-  {
-    selector: 'CallExpression[callee.property.name="setAttribute"][arguments.0.type="TemplateLiteral"][arguments.0.quasis.0.value.raw="title"]',
-    message: 'Use data-tooltip, not the title attribute.',
-  },
-  {
-    selector: 'CallExpression[callee.property.name="setAttributeNS"][arguments.1.value="title"]',
-    message: 'Use data-tooltip, not the title attribute.',
-  },
-]
 
 export default defineConfig([
-  // `planning/` is git-ignored and exists only in the main checkout: its evidence
-  // scripts are records of the planning run, not code of this repository.
-  globalIgnores(['dist', 'helper/dist', 'planning']),
+  globalIgnores(['dist', 'helper/dist']),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [
@@ -84,33 +42,31 @@ export default defineConfig([
       // it, late and unthemed. Intrinsic elements only (lowercase name): a
       // component's `title` prop (ConfirmDialog's) is data, and an SVG `<title>` is a
       // child, not an attribute. `document.title` is the tab title, not a tooltip.
-      'no-restricted-syntax': ['error', ...tooltipRestrictions],
-    },
-  },
-  {
-    // D7 R7: the old optional-break regex backtracked exponentially. PDF find and
-    // its anchors keep the bounded automaton, never a regular expression.
-    files: ['src/utils/pdfFind.ts', 'src/utils/pdfTextAnchors.ts'],
-    rules: {
-      'no-restricted-syntax': ['error', ...tooltipRestrictions,
-        { selector: 'Literal[regex]', message: 'PDF find/anchors use the bounded matcher, never a regular expression (D7 R7).' },
-        { selector: 'NewExpression[callee.name="RegExp"]', message: 'PDF find/anchors use the bounded matcher, never RegExp (D7 R7).' },
-        { selector: 'CallExpression[callee.name="RegExp"]', message: 'PDF find/anchors use the bounded matcher, never RegExp (D7 R7).' },
-      ],
-    },
-  },
-  {
-    // A raw localStorage write bypasses the IndexedDB recovery mirror, so another
-    // window's origin reset could erase it. Tab-only sessionStorage also goes through
-    // storage.ts, but stays out of that mirror: terminal IDs must not cross tabs.
-    files: ['src/**/*.{ts,tsx}'],
-    ignores: ['src/utils/storage.ts'],
-    rules: {
-      'no-restricted-properties': ['error',
-        ...['localStorage', 'sessionStorage'].flatMap(object =>
-          ['setItem', 'removeItem', 'clear'].map(property => ({
-            object, property, message: 'Use utils/storage.ts for browser storage mutations',
-          }))),
+      'no-restricted-syntax': ['error',
+        {
+          selector: 'JSXOpeningElement[name.name=/^[a-z]/] > JSXAttribute[name.name="title"]',
+          message: 'Use data-tooltip (utils/tooltip.ts draws the app\'s own tooltip) — never the native title attribute.',
+        },
+        {
+          selector: 'AssignmentExpression[left.type="MemberExpression"][left.property.name="title"]:not([left.object.name="document"])',
+          message: 'Set dataset.tooltip (utils/tooltip.ts), not .title.',
+        },
+        {
+          selector: 'AssignmentExpression[left.type="MemberExpression"][left.computed=true][left.property.value="title"]',
+          message: 'Set dataset.tooltip (utils/tooltip.ts), not [\'title\'].',
+        },
+        {
+          selector: 'CallExpression[callee.property.name="setAttribute"][arguments.0.value="title"]',
+          message: 'Use data-tooltip, not the title attribute.',
+        },
+        {
+          selector: 'CallExpression[callee.property.name="setAttribute"][arguments.0.type="TemplateLiteral"][arguments.0.quasis.0.value.raw="title"]',
+          message: 'Use data-tooltip, not the title attribute.',
+        },
+        {
+          selector: 'CallExpression[callee.property.name="setAttributeNS"][arguments.1.value="title"]',
+          message: 'Use data-tooltip, not the title attribute.',
+        },
       ],
     },
   },
@@ -139,110 +95,6 @@ export default defineConfig([
     files: ['src/context/**/*.tsx'],
     rules: {
       'react-refresh/only-export-components': 'off',
-    },
-  },
-  {
-    // Browser-run scripts and the run toolbox (verify-in-browser): plain Node
-    // modules whose init-script and page.evaluate closures run in the page, so
-    // both sets of globals are real here.
-    files: ['verify/**/*.{js,mjs}'],
-    extends: [js.configs.recommended],
-    languageOptions: {
-      ecmaVersion: 'latest',
-      sourceType: 'module',
-      globals: { ...globals.node, ...globals.browser },
-    },
-  },
-  {
-    // The repo's own rules (eslint.rules.ts). Each was added with the error it
-    // gives on a deliberately violating line, recorded in its commit.
-    files: ['**/*.{ts,tsx,js,mjs,cjs,jsx}'],
-    ignores: ['src/epub/vendor/**'],
-    plugins: { bme: bmePlugin },
-    rules: {
-      // G-INV-04. The owner's ban on code-based tests, everywhere.
-      'bme/no-tests': 'error',
-    },
-  },
-  {
-    files: ['src/pdf/**/*.{ts,tsx}'],
-    rules: { 'bme/pdfium-boundaries': ['error', pdfiumNativeExports] },
-  },
-  {
-    files: ['src/**/*.{ts,tsx}', 'shared/**/*.ts'],
-    plugins: { bme: bmePlugin },
-    rules: {
-      // G-INV-06's engine zones (contracts C6.3) and I-0's dark zone: the new
-      // engines import no React and no app layer, the whiteboard nothing of
-      // tldraw's (independence protocol), and nothing outside the three engine
-      // folders imports them until the package that wires a switch adds its
-      // importer to `darkExcept` here.
-      'bme/import-zones': ['error', [
-        {
-          files: ['src/platform/render', 'src/whiteboard', 'src/pdf'],
-          dark: true,
-          // PdfTiledView is itself a lazy switch target; its engine imports must
-          // stay behind that boundary rather than moving into PdfPane/App.
-          // These hooks are reached only through the lazy PdfTiledView chunk.
-          // Native clipboard adapters are consumed by lazy NativeCanvasEntry;
-          // their document-owned service lends commands to attached views.
-          // Agent reads load this projection only for a real tool call; its closed
-          // source authority is created by App's same canonical session store.
-          // These exact editing adapters are reached only from the lazy NativeCanvasEntry.
-          // PdfPane reads only the lightweight acquired-source slot to keep its
-          // native child mounted through save; acquisition and editing remain lazy.
-          darkExcept: ['src/platform/render', 'src/whiteboard', 'src/pdf', 'src/components/PdfPane.tsx', 'src/components/PdfTiledView.tsx', 'src/components/usePdfTextMirror.ts', 'src/components/usePdfTiledFind.tsx', 'src/components/usePdfTiledSelection.ts', 'src/components/usePdfTiledCopyMenu.ts', 'src/components/usePdfTiledTextReader.ts', 'src/components/usePdfTiledOutline.tsx', 'src/components/PdfTiledTextSurface.tsx', 'src/components/PdfTiledTextSurface.types.ts', 'src/components/whiteboard/NativeCanvasEntry.tsx', 'src/components/whiteboard/NativePdfEntry.tsx', 'src/components/whiteboard/nativeViewLease.ts', 'src/components/whiteboard/nativeClipboardController.ts', 'src/components/whiteboard/useNativeClipboard.ts', 'src/utils/nativeCanvasAgentRead.ts', 'src/utils/nativeCanvasAgentMutation.ts', 'src/utils/closedCanvasSource.ts',
-            'src/components/whiteboard/NativeCanvasEditing.tsx', 'src/components/whiteboard/NativeBoardChrome.tsx', 'src/components/whiteboard/NativeBoardChromeHost.tsx',
-            'src/components/whiteboard/nativeBoardActions.ts', 'src/components/whiteboard/nativeBoardContextMenu.ts', 'src/components/whiteboard/nativeBoardOperations.ts', 'src/components/whiteboard/nativeCameraOperations.ts',
-            'src/components/whiteboard/nativeCommandSource.ts', 'src/components/whiteboard/nativeEditingKeyboard.ts', 'src/components/whiteboard/nativeEditingLease.ts',
-            'src/components/whiteboard/nativeEditingCapabilityFactory.ts',
-            'src/components/whiteboard/NativePictureCrop.tsx', 'src/components/whiteboard/pictureCropStore.ts', 'src/components/whiteboard/nativePdfEditingLease.ts',
-            // App's lazy canonical PDF source bridge: App awaits this factory only on a PDF source.acquire,
-            // so it is the single non-view importer of the dark PDF session (same reach as NativePdfEntry).
-            'src/components/whiteboard/preparePdfInkAttempt.ts',
-            'src/components/whiteboard/nativeImportAdapter.ts', 'src/components/whiteboard/nativeLinkOperations.ts', 'src/components/whiteboard/nativeTextClipboard.ts',
-            'src/components/whiteboard/useNativeBoardLanguage.ts', 'src/components/whiteboard/useNativeSheetControls.tsx',
-            // The style panel is the board chrome's own switch: NativeBoardChrome renders it, and only the lazy board chunk does.
-            'src/components/whiteboard/chrome/StylePanel.tsx', 'src/components/whiteboard/chrome/styleIcons.tsx'],
-          // Switch-wiring files: the platform preview (bme.pdf.platformLayer, P-PL) and the generic
-          // platform pane hook. Dynamic or type-only imports only, so the chunk stays lazy.
-          // pdfSurfaceModules warms the PDF open path (dynamic imports only) from loadPdfPane, itself reached only when a
-          // PDF is opened or the vault holds one.
-          // App's closed-PDF agent seam (src/app/useAgentCanvasAccess) imports the contained host only on an
-          // awaited tiled tool call; its PDF gestures and a new canvas's empty bytes load on the gesture.
-          darkLazy: ['src/app/useAgentCanvasAccess.ts', 'src/app/agentCanvas.ts', 'src/app/pdfGestures.ts', 'src/app/useCreateEntries.tsx', 'src/utils/agentHost.ts', 'src/utils/recoveryCopy.ts', 'src/components/usePdfPlatformPreview.ts', 'src/components/platformPane/usePlatformPane.ts', 'src/components/PdfViewer.tsx', 'src/components/PdfTiledSurface.tsx', 'src/components/pdfSurfaceModules.ts', 'src/components/PdfTiledTextSurface.types.ts', 'src/components/whiteboard/ViewerHost.tsx', 'src/components/whiteboard/nativeViewPlatform.ts'],
-          message: 'The new engines stay dark until their switch is wired',
-        },
-        {
-          files: ['src/platform', 'src/whiteboard', 'src/pdf'],
-          noLocal: ['src/context', 'src/editor', 'src/components', 'src/App.tsx', 'src/main.tsx'],
-          noPackage: ['react', 'react-dom'],
-          message: 'Engines are React-free and reach the app through plain callbacks (contracts C6.3)',
-        },
-        {
-          files: ['src/platform'],
-          noLocal: ['src/utils', 'src/types', 'src/whiteboard', 'src/pdf', 'src/epub'],
-          message: 'src/platform imports nothing app-specific (contracts C6.3)',
-        },
-        {
-          files: ['src/whiteboard', 'src/pdf', 'src/platform'],
-          noPackage: ['tldraw', '@tldraw', 'perfect-freehand'],
-          message: 'No tldraw material in the new engines (independence protocol)',
-        },
-      ]],
-      // G-INV-22. Baseline (contracts R1-18): the two note-text sinks AGENTS.md
-      // names, the constant icon strings of three editor widgets, and the EPUB
-      // shared contained-frame srcdoc. Core turns the icon sinks into DOM builders; then they go.
-      'bme/html-sinks': ['error', [
-        { file: 'src/editor/tableWidget.ts', names: ['innerHTML'], rhs: 'any' },
-        { file: 'src/editor/mermaidWidget.ts', names: ['innerHTML'], rhs: 'any' },
-        { file: 'src/editor/headingFold.ts', names: ['innerHTML'], rhs: 'constant' },
-        { file: 'src/editor/imageWidget.ts', names: ['innerHTML'], rhs: 'constant' },
-        { file: 'src/editor/copyCodeWidget.ts', names: ['innerHTML'], rhs: 'constant' },
-        { file: 'src/platform/containedFrame.ts', names: ['srcdoc'], rhs: 'constant', identifiers: ['frameHTML'] },
-      ]],
-      // G-INV-FS: all File System Access calls stay in src/context/.
-      'bme/fs-access': ['error', []],
     },
   },
 ])

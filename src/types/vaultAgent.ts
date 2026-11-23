@@ -11,12 +11,11 @@
 // App's state changes. The wire protocol with the helper is
 // shared/vaultAgentProtocol.ts; what each pane reports is utils/viewRegistry.ts.
 
-import type { AgentId, CanvasOp, MirrorFile } from '../../shared/vaultAgentProtocol';
+import type { AgentId, MirrorFile } from '../../shared/vaultAgentProtocol';
 import type { ChatTree } from '../utils/chatTree';
 import type { EditorMode, FileTreeNode, TabLayout, Theme } from './index';
-import type { CanvasApplyResult, CanvasShapePage, CanvasShapeQuery, DrawingViewInfo, NotebookViewInfo, PdfViewInfo, TextChange, ViewReporter } from '../utils/viewRegistry';
+import type { TextChange, ViewReporter } from '../utils/viewRegistry';
 import type { AgentHostDeps } from '../utils/agentHost';
-import type { NativeClosedCanvasPicture, NativePdfPicture } from '../utils/nativeCanvasAgentRead';
 
 /* ───────────────────────── the vault's chat index (.VaultAgent/chats.json) ───────────────────────── */
 
@@ -79,9 +78,6 @@ export interface AgentWorkspaceSnapshot {
     focusedPath: string | null;
     /** Stored position for a tab that is not on screen. */
     remembered(path: string): RememberedPosition | null;
-    /** An open native drawing read from its own session, for a tab with no mounted pane. null = not open
-     *  natively; a failure rejects and the caller names it. The signal bounds the work, which then stops. */
-    nativeView?(path: string, signal: AbortSignal): Promise<NativeCanvasView | null>;
 }
 
 /* ───────────────────────── VaultToolHost — the agent's hands, implemented by App ───────────────────────── */
@@ -94,37 +90,15 @@ export interface VaultDirEntry {
 export type HostFailure = 'taken' | 'missing' | 'no-parent' | 'invalid' | 'stale' | 'busy' | 'error';
 export type HostResult = { ok: true } | { ok: false; reason: HostFailure; message?: string };
 
-export interface ClosedPdfAgentPage { page: number; text: string; quality?: 'partial'; warnings?: readonly string[] }
-export type ClosedPdfEmphasis = { kind: 'active' | 'inactive' | 'unavailable' | 'unknown'; reason?: string };
-export interface ClosedPdfAgentAccess {
-    read(path: string, bytes: Uint8Array, first: number, maxPages: number, maxChars: number,
-        signal: AbortSignal): Promise<{ pageCount: number; pages: ClosedPdfAgentPage[] }>;
-    render(path: string, bytes: Uint8Array, page: number, maxSide: number,
-        signal: AbortSignal): Promise<{ pageCount: number; png: Blob | null; emphasis?: ClosedPdfEmphasis }>;
-}
-
 /**
  * Every path is vault-relative and ALREADY normalized and validated by the
  * executor (vaultAgentTools.normalizeAgentPath): no leading '/', no '.', '..',
  * '\\', NUL or empty segment. The host may assume it.
  */
-/** A native canvas's view as the agent reads it: the recorded viewport, or the whole sheet when never viewed.
- * `capture` pictures the view, or one page (1-based) of a paged board. */
-export interface NativeCanvasView {
-    readonly info: DrawingViewInfo | NotebookViewInfo | PdfViewInfo;
-    readonly wholeSheet: boolean;
-    /** `region`, in board units (a page's own units when `page` is given), crops the picture to that rectangle. */
-    capture(maxSide: number, signal?: AbortSignal, page?: number, region?: AgentRegion): Promise<Blob>;
-}
-
-/** A rectangle the agent asked to see, in board units; width and height are finite and positive. */
-export interface AgentRegion { readonly x: number; readonly y: number; readonly w: number; readonly h: number }
-
 export interface VaultToolHost {
     /** Identity of the open vault — a new object on every switch, null with none.
      *  The executor captures it when a run starts and refuses once it changes. */
     vaultToken(): object | null;
-    searchAgent(config: { query: string; regex: boolean; caseSensitive: boolean; scope: string; maxResults: number }, signal?: AbortSignal): Promise<import('../utils/agentMatcher/types').MatchAnswer>;
     /** The file tree as the sidebar has it (root hidden folders excluded). */
     getFileTree(): FileTreeNode[];
     /** Direct children of a vault folder, straight from disk, hidden ones
@@ -138,23 +112,6 @@ export interface VaultToolHost {
      *  missing, a folder, or unreadable. */
     readText(path: string): Promise<string | null>;
     readBytes(path: string): Promise<Uint8Array | null>;
-    /** App-owned tiled engine access, or null when the classic viewer is selected. */
-    closedPdfAgent?(): ClosedPdfAgentAccess | null;
-    /** Session-owned live read or C5-admitted closed read; null means not a new board. */
-    canvasShapePage?(path: string, query: CanvasShapeQuery,
-        guard: { readonly signal?: AbortSignal; isCurrent(): boolean }): Promise<CanvasShapePage | null>;
-    /** Actual session mutation; null selects a genuinely different loaded representation. */
-    canvasApplyNative?(path: string, ops: CanvasOp[],
-        guard: { readonly signal?: AbortSignal; isCurrent(): boolean }): Promise<CanvasApplyResult | null>;
-    /** An OPEN native drawing read from its session with no mounted pane. null = not open natively (a closed
-     *  drawing opens through openCanvasForAgent); an open board's failure throws and never falls back to a view. */
-    nativeCanvasView?(path: string, guard: { readonly signal?: AbortSignal; isCurrent(): boolean }): Promise<NativeCanvasView | null>;
-    /** A CLOSED admitted native ink PDF's whole-sheet picture. null = not a native ink board (plain, notebook or
-     *  ordinary PDFs keep their closed text/view routes); a claimed board that fails admission throws. */
-    nativePdfPicture?(path: string, maxSide: number, guard: { readonly signal?: AbortSignal; isCurrent(): boolean }): Promise<NativePdfPicture | null>;
-    /** A closed native drawing or notebook pictured from its own bytes (one page of a notebook when `page` is given). */
-    nativeClosedPicture?(path: string, page: number | undefined, maxSide: number,
-        guard: { readonly signal?: AbortSignal; isCurrent(): boolean }): Promise<NativeClosedCanvasPicture | null>;
     /**
      * Apply `changes` (offsets into `expected`) to a text file. Refused as
      * 'stale' unless the current text (readText) still equals `expected`. Lands
@@ -174,8 +131,6 @@ export interface VaultToolHost {
      *  beside the user's focused pane without taking focus when it is not on
      *  screen, switches a PDF to annotate, and waits for it to mount. */
     openCanvasForAgent(path: string): Promise<ViewReporter | null>;
-    /** Rechecked at commit as a reload may revoke a canvas's write authority. */
-    canvasWritable(path: string): boolean;
 }
 
 /* ───────────────────────── change cards ───────────────────────── */

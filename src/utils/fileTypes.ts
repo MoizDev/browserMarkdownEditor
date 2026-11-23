@@ -1,13 +1,15 @@
-// `.tldraw` (the old drawing format, opened only to be converted) and `.notebook`
-// can contain legacy text canvases; `.drawing` is reserved for native boards and
-// must never be decoded as a text buffer.
-// Canvas documents are not prose and must not be content-indexed by search.
+// Which editor a file opens in: `.tldraw` and `.notebook` files render as a
+// tldraw canvas, everything else textual goes to CodeMirror.
+//
+// Deliberately separate from vaultSearch's isTextFile(): both canvas kinds ARE
+// text on disk (they're JSON snapshots), so they must keep flowing through the
+// normal readFile/writeFile/autosave path. They just must not be *shown* as
+// text, nor content-indexed by search.
 
 export const DRAWING_EXT = '.tldraw';
-export const NATIVE_DRAWING_EXT = '.drawing';
 
-/** A notebook is a board on ruled pages, with an export to PDF. Its own
- *  extension rather than a flag inside a drawing, so the file tree can say
+/** A notebook is a drawing on ruled pages, with an export to PDF. Its own
+ *  extension rather than a flag inside a `.tldraw`, so the file tree can say
  *  which is which and "New notebook" makes something unambiguous. */
 export const NOTEBOOK_EXT = '.notebook';
 
@@ -15,17 +17,18 @@ export function isDrawingFile(name: string): boolean {
     return name.toLowerCase().endsWith(DRAWING_EXT);
 }
 
-export function isNativeDrawingFile(name: string): boolean {
-    return name.toLowerCase().endsWith(NATIVE_DRAWING_EXT);
-}
-
 export function isNotebookFile(name: string): boolean {
     return name.toLowerCase().endsWith(NOTEBOOK_EXT);
 }
 
-/** Canvas document, including native binary whiteboards. */
+/** Either kind of tldraw-backed document: a canvas rather than a text editor. */
 export function isCanvasFile(name: string): boolean {
-    return isDrawingFile(name) || isNativeDrawingFile(name) || isNotebookFile(name);
+    return isDrawingFile(name) || isNotebookFile(name);
+}
+
+/** Append `.tldraw` unless the user already typed it. */
+export function ensureDrawingExt(name: string): string {
+    return isDrawingFile(name) ? name : `${name}${DRAWING_EXT}`;
 }
 
 /** Append `.notebook` unless the user already typed it. */
@@ -124,12 +127,11 @@ export function isImageFile(name: string): boolean {
 
 /* ── PDFs ────────────────────────────────────────────────────────────────
  * A PDF opens in a pane with two modes: View (the real PDF — scrollable,
- * text selectable) and Annotate (the app's own board over the pages).
- * Annotating writes into THAT FILE: it stays a genuine PDF, the ink drawn into
- * its pages, and gains the pristine original and the board's ink as embedded
- * attachments — so it opens in any viewer AND the ink stays editable here. See
- * src/pdf/writing/ and pdf/session/inkAcquisition.ts. A PDF annotated in the
- * older format is converted explicitly before it can be annotated again.
+ * text selectable) and Annotate (a tldraw canvas over rasterized pages).
+ * Annotating writes into THAT FILE: it stays a genuine PDF, strokes stamped
+ * onto its pages, and gains the pristine original and the tldraw snapshot as
+ * embedded attachments — so it opens in any viewer AND the strokes stay
+ * editable here. See utils/pdfAnnotation.ts.
  *
  * There is deliberately NO name test for "is this annotated". A PDF's role is
  * read from its attachments, so a renamed one of ours is still ours and a file

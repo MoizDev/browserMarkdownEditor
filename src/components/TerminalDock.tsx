@@ -11,7 +11,6 @@
 
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
-import { writeStoredValue } from '../utils/storage';
 
 const TerminalPanel = lazy(() => import('./TerminalPanel'));
 
@@ -72,7 +71,7 @@ export default function TerminalDock({ open, takeFocus, onHide }: TerminalDockPr
 
     const commit = useCallback((px: number) => {
         setHeight(px);
-        writeStoredValue(HEIGHT_KEY, String(px));
+        try { localStorage.setItem(HEIGHT_KEY, String(px)); } catch { /* not remembered */ }
     }, []);
 
     /** The most this dock may be right now: 70% of the workspace beside it. */

@@ -13,7 +13,6 @@ import { MAX_IMAGES_PER_MESSAGE } from '../../../shared/vaultAgentProtocol';
 import { Plus, X } from '../icons';
 import { ImagePrepError, looksLikeImage, prepareImage } from './imagePrep';
 import type { PreparedImage } from './chatStore';
-import { writeJSON } from '../../utils/storage';
 
 const MAX_TEXTAREA_PX = 220;
 const ACCEPT = 'image/png,image/jpeg,image/webp,image/gif';
@@ -288,7 +287,7 @@ function writeDraft(key: string | null, text: string): void {
         const keys = Object.keys(drafts);
         const kept = keys.length <= MAX_DRAFTS ? drafts : Object.fromEntries(
             keys.slice(keys.length - MAX_DRAFTS).map(k => [k, drafts[k]]));
-        writeJSON(DRAFTS_KEY, kept);
+        localStorage.setItem(DRAFTS_KEY, JSON.stringify(kept));
     } catch {
         // Full or blocked: the draft lives as long as the page does, as before.
     }

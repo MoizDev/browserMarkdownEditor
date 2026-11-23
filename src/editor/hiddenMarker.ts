@@ -1,5 +1,4 @@
 import { Decoration, WidgetType } from '@codemirror/view';
-import { countEditorWidget } from './editorPerf';
 
 /**
  * The span a hidden marker draws — CodeMirror's own widgetless replace (its
@@ -17,11 +16,6 @@ import { countEditorWidget } from './editorPerf';
  * caret ever needs to sit beside one of these buffers while it's absolute.
  */
 export class HiddenMarkerWidget extends WidgetType {
-    constructor() {
-        super();
-        if (__BME_BENCH__) { countEditorWidget(); }
-    }
-
     override eq(): boolean {
         return true;
     }

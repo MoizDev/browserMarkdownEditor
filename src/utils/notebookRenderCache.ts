@@ -22,14 +22,7 @@ export interface NotebookExport {
 }
 
 /** Returns null if the canvas has gone away since it registered. */
-export interface NativeNotebookExportJob {
-    readonly sourcePath: string;
-    isCurrent(): boolean;
-    run(signal: AbortSignal): Promise<{ paper: NotebookPaper; bytes: Uint8Array }>;
-    release(): void;
-}
-export interface NativeNotebookExporter { readonly kind: 'native'; prepare(): NativeNotebookExportJob }
-export type NotebookExporter = (() => Promise<NotebookExport | null>) | NativeNotebookExporter;
+export type NotebookExporter = () => Promise<NotebookExport | null>;
 
 const exporters = new Map<string, NotebookExporter>();
 
@@ -45,11 +38,6 @@ export function getNotebookExporter(path: string): NotebookExporter | undefined 
  *  over for the rest of the session. */
 export function clearNotebookRenderData(path: string): void {
     exporters.delete(path);
-}
-
-/** Session disposal must not remove a newer owner's exporter after a retarget. */
-export function removeNotebookExporter(exporter: NotebookExporter): void {
-    for (const [path, current] of exporters) if (current === exporter) exporters.delete(path);
 }
 
 /** Follow a rename or a move, or the next export looks under the new path,

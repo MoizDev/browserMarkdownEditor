@@ -1,0 +1,1684 @@
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import * as pdfjs from 'pdfjs-dist';
+import type { PDFDocumentProxy, PDFPageProxy, RenderTask } from 'pdfjs-dist';
+import {
+    getPdfInverted, readPdfViewPos, recordPdfNavigation, readThumbnailsOpen, subscribePdfInverted, writePdfViewPos, writeThumbnailsOpen,
+} from '../utils/pdfViewState';
+import PdfThumbnails, { ThumbnailsToggle, type PdfThumbnailsHandle } from './PdfThumbnails';
+import PdfInvertToggle from './PdfInvertToggle';
+import './PdfNativeEmphasis.css';
+import { readPageLinks, resolveDestination } from '../utils/pdfLinks';
+import type { PdfDocumentSession, PdfPageLease } from '../utils/pdfDocumentSession';
+import { pdfPageGeometry, projectPdfPageV1 } from '../utils/pdfPageText';
+import type { PdfLink, PdfLinkTarget } from '../utils/pdfLinks';
+import { bindPdfNativeEmphasis, pdfNativeEmphasisNotice } from '../utils/pdfNativeEmphasis';
+import type { PdfNativeEmphasisResult } from '../utils/pdfNativeEmphasis';
+import { registerView, type PdfViewInfo } from '../utils/viewRegistry';
+import { LEFT, RIGHT } from '../utils/pdfRotation';
+import { isPdfRotating, subscribePdfRotating } from '../utils/pdfRotating';
+import { mapPool } from '../utils/pool';
+import { RotateCcw, RotateCw } from './icons';
+
+/**
+ * The view half of a PDF: a pdf.js-rendered continuous scroll of pages.
+ *
+ * This replaced the browser's own viewer in an <iframe> for one reason the
+ * native viewer can never satisfy: it is a closed box — the embedding page
+ * cannot ask it what page the user is on, so neither "reopen where I left off"
+ * nor keeping the position across tab switches was possible. Rendering the
+ * pages ourselves makes the scroll position ours to read, persist and restore.
+ *
+ * What keeps parity with the native viewer:
+ * - Text is selectable/copyable via pdf.js's TextLayer (transparent spans over
+ *   the canvas), and ⌘F works because text layers are built for EVERY page of
+ *   ordinarily-sized documents, not just the visible ones.
+ * - Scrolling is a real DOM scroller (wheel, trackpad, PgUp/PgDn, arrows).
+ * - Fit-width by default, plus simple zoom controls.
+ *
+ * - The PDF's own links work: a table of contents jumps to its chapter, an
+ *   external URL opens in a new tab (see utils/pdfLinks.ts).
+ * - The current page is shown, and can be typed into to jump.
+ *
+ * Memory discipline: canvas BITMAPS are windowed (a page at Retina fit-width is
+ * ~25-31MB), so only pages near the viewport hold one — scrolled-away canvases
+ * are freed (width=0) and re-rendered on approach, and pages past CLEANUP_BEYOND
+ * also get page.cleanup() so pdf.js drops the parsed operator list. Link layers
+ * are cheap DOM. TEXT layers are NOT: at ~4.3KB of renderer memory per
+ * positioned span they are the largest single memory item in the app (hundreds
+ * of MB for a dense book), and they are never released — that is what makes ⌘F
+ * find text on pages you have never scrolled to. See the verify-in-browser and
+ * pdf-and-drawings skills before trading that away.
+ *
+ * The current position is tracked as {page, offset-within-page}, which survives
+ * zoom, container resizes and reloads of the underlying bytes (an annotated
+ * save swaps `data`; the ref carries the position onto the new document).
+ * Persisted (debounced) to localStorage 'pdfViewPositions' keyed by vault path.
+ */
+
+interface PdfViewerProps {
+    emphasisEnabled?: boolean;
+    onNativeEmphasisResult?(pageIndex: number, result?: PdfNativeEmphasisResult): void;
+    onLocation?(): void;
+    /** Vault path — the persistence key for page position + zoom. */
+    filePath: string;
+    /** The PDF bytes to display. A new array identity reloads the document. */
+    session: PdfDocumentSession;
+    /** True while this viewer's tab is in front. Gates the +/- zoom keys —
+     *  several viewers stay mounted (hidden) at once, and only the visible
+     *  one may respond to the keyboard. */
+    isActive: boolean;
+    /** Whether this pane is on screen. A PDF pane is kept MOUNTED when another
+     *  tab is shown and merely hidden with `visibility` (EditorPane), so
+     *  without this the viewer goes on holding every page bitmap it had
+     *  rastered and goes on extracting text for the whole document — behind a
+     *  whiteboard that is now competing with it for the main thread. */
+    isVisible?: boolean;
+    /**
+     * Turn the pages a quarter and write the file (App.rotatePdf).
+     *
+     * `pageIndex` names ONE page; left out, the whole document turns. The
+     * viewer does not rotate anything itself and holds no rotation state:
+     * `/Rotate` goes into the file, the pane remounts on the new bytes, and
+     * pdf.js reports the turned geometry like any other document's.
+     */
+    onRotate?: (delta: number, pageIndex?: number) => void;
+}
+
+interface DocState {
+    doc: PDFDocumentProxy;
+    /** Per-page size at scale 1, in PDF points. */
+    dims: Array<{ w: number; h: number }>;
+    /** Monotonic load counter — keys the page DOM and guards stale async work. */
+    gen: number;
+}
+
+interface PageState {
+    pagePromise?: Promise<PDFPageProxy>;
+    pageLease?: Promise<PdfPageLease>;
+    renderTask?: RenderTask;
+    /** What the bitmap in this page's canvas actually shows. */
+    rendered?: RenderTarget;
+    /** What the in-flight render will produce, so the window pass can tell
+     *  whether cancelling it would gain anything. */
+    rendering?: RenderTarget;
+    /** Latest ask from the window pass; the render loop chases it. */
+    want?: RenderTarget;
+    /** False once evicted — tells an in-flight render loop to stop. */
+    wantRender?: boolean;
+    /** A render loop is currently running for this page. */
+    busy?: boolean;
+    loopPromise?: Promise<void>;
+    /** True once this page's pdf.js state has been released (see cleanupPage);
+     *  cleared when it re-enters the render window. */
+    cleaned?: boolean;
+    textStarted?: boolean;
+    textPromise?: Promise<void>;
+    linksStarted?: boolean;
+    linksPromise?: Promise<void>;
+}
+
+/** Vertical padding above the first / below the last page, px. */
+const PAD_V = 20;
+/** Gap between pages, px. */
+const PAGE_GAP = 14;
+/** Horizontal breathing room subtracted from the container for fit-width. */
+/** Matches the zoom gesture's own settle: long enough that an animated resize
+ *  re-fits once at the size it lands on, short enough to feel immediate. */
+const RESIZE_SETTLE_MS = 180;
+
+const SIDE_GUTTER = 28;
+/** Render canvases this many pages beyond the visible range. */
+const RENDER_AHEAD = 1;
+/** Keep already-rendered canvases until this many pages out of view. */
+const EVICT_BEYOND = 3;
+/**
+ * Release a page's pdf.js state (parsed operator list + decoded images) once it
+ * is this far out of view.
+ *
+ * Deliberately much wider than EVICT_BEYOND. Freeing the canvas is cheap to
+ * undo — the bitmap is redrawn from an operator list pdf.js still holds — but
+ * cleanup() throws that list away too, so coming back costs a worker round-trip
+ * to re-parse the page. At 3 pages that would tax ordinary back-scrolling; at 12
+ * it only touches pages the reader has genuinely left behind.
+ */
+const CLEANUP_BEYOND = 12;
+/** Build text layers for the whole document up to this page count, so ⌘F can
+ *  find text anywhere. Beyond it (rare, book-sized), text follows the canvas
+ *  window instead of bloating the DOM with hundreds of thousands of spans. */
+const TEXT_EAGER_LIMIT = 300;
+const MIN_ZOOM = 0.4;
+const MAX_ZOOM = 4;
+
+/**
+ * Device-pixel ceiling for one page's bitmap.
+ *
+ * MEASURED: without it, this 40-page document at 4x zoom held two canvases of
+ * 9440x12216 — 231 megapixels, ~923MB of backing store — and zooming back out
+ * of it ran at 7fps with 1.3s of blocked main thread. The canvas grew with the
+ * zoom even though the viewport only ever showed a sliver of it.
+ *
+ * 2^24 px is ~67MB a page, in the same range as pdf.js's own viewer (its
+ * `maxCanvasPixels` default is 2^25). Past the ceiling a page is rendered A
+ * BAND AT A TIME rather than rendered softer — zoom exists to read fine print,
+ * so buying speed with sharpness would defeat the gesture. See pageRegion.
+ */
+const MAX_CANVAS_PIXELS = 2 ** 24;
+
+/** Backing-store multiplier. Capped at 2: past it the sharpness gain is
+ *  invisible but the bitmap cost doubles again. */
+const canvasDpr = () => Math.min(Math.max(window.devicePixelRatio || 1, 1), 2);
+
+async function pageText(session: PdfDocumentSession, pageNumber: number): Promise<string> {
+    const lease = await session.acquirePage(pageNumber - 1, 'agent');
+    try {
+        const content = await lease.page.getTextContent({ disableNormalization: true, includeMarkedContent: true });
+        return projectPdfPageV1(content.items, pdfPageGeometry(lease.page)).text;
+    } finally { lease.release(); }
+}
+
+/** Longest selection the agent is told about verbatim. */
+const MAX_SELECTED_TEXT = 20_000;
+
+/** Where every page sits, for one (document, container width, zoom). */
+interface Layout {
+    gen: number;
+    /** pdf.js render scale: PDF points → CSS pixels. */
+    scale: number;
+    pages: Array<{ w: number; h: number }>;
+    /** Each page's top edge in scroller content coordinates. */
+    tops: number[];
+    maxPageW: number;
+}
+
+/** A band of one page, in that page's own CSS pixels at the current layout
+ *  scale — the origin is the page's top-left corner, not the document's. */
+interface PageRect {
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+}
+
+/** One rasterization request, and everything needed to decide whether a bitmap
+ *  already in hand answers it. */
+interface RenderTarget {
+    emphasis: boolean;
+    scale: number;
+    /** The band to rasterize; `null` for the whole page, which is the case at
+     *  every zoom that fits inside MAX_CANVAS_PIXELS. */
+    rect: PageRect | null;
+    /** The strictly visible part of it, which is what must end up painted. */
+    need: PageRect | null;
+    /** `rect` pulled in by half its own margin (except where it already meets
+     *  a page edge): once the visible band escapes THIS, re-rendering buys
+     *  something. Deflating rather than using `rect` itself is what keeps a
+     *  scroll from re-rendering the instant it moves one pixel. */
+    trigger: PageRect | null;
+}
+
+const contains = (outer: PageRect, inner: PageRect): boolean =>
+    inner.x >= outer.x - 0.5 && inner.y >= outer.y - 0.5
+    && inner.x + inner.w <= outer.x + outer.w + 0.5
+    && inner.y + inner.h <= outer.y + outer.h + 0.5;
+
+/** Would the bitmap `have` describes still answer `want`? */
+function satisfies(have: RenderTarget | undefined, want: RenderTarget): boolean {
+    if (!have || have.scale !== want.scale || have.emphasis !== want.emphasis) return false;
+    // The whole page is wanted: only a whole-page bitmap will do, or zooming
+    // back out would leave a band stretched across the page.
+    if (want.rect === null) return have.rect === null;
+    // A whole-page bitmap covers any band of it.
+    if (have.rect === null) return true;
+    return have.trigger !== null && want.need !== null && contains(have.trigger, want.need);
+}
+
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+
+/**
+ * Which band of page `i` to rasterize, given where the reader is looking.
+ *
+ * Returns whole-page targets while the page fits the bitmap budget — the
+ * ordinary case, and the one where nothing about scrolling should re-render.
+ * Past it, the band is the visible strip grown by as much margin as the budget
+ * still affords, so scrolling at zoom moves around inside paint already done.
+ */
+function pageRegion(L: Layout, el: HTMLElement, i: number): Omit<RenderTarget, 'scale' | 'emphasis'> {
+    const { w, h } = L.pages[i];
+    const dpr = canvasDpr();
+    if (w * h * dpr * dpr <= MAX_CANVAS_PIXELS) return { rect: null, need: null, trigger: null };
+
+    // Pages are centred in the inner column, so the page's own origin sits at
+    // `left` in scroller content coordinates.
+    const left = (Math.max(el.clientWidth, L.maxPageW) - w) / 2;
+    const x = clamp(el.scrollLeft - left, 0, w);
+    const y = clamp(el.scrollTop - L.tops[i], 0, h);
+    const need: PageRect = {
+        x,
+        y,
+        // At least a pixel: a page that is in the render window but not yet on
+        // screen has an empty intersection, and a zero-sized canvas is invalid.
+        w: Math.max(1, clamp(el.scrollLeft - left + el.clientWidth, 0, w) - x),
+        h: Math.max(1, clamp(el.scrollTop - L.tops[i] + el.clientHeight, 0, h) - y),
+    };
+
+    // Grow it as far as the budget allows: solve (need.w + 2m)(need.h + 2m) =
+    // budget for the margin m. `room` floors at zero for the (tiny viewport,
+    // huge dpr) case where the visible strip alone is already over budget —
+    // then the band is the strip, which is the least that can be rendered.
+    const budget = MAX_CANVAS_PIXELS / (dpr * dpr);
+    const room = Math.max(0, budget - need.w * need.h);
+    const span = need.w + need.h;
+    const m = (Math.sqrt(span * span + 4 * room) - span) / 4;
+    const rx = Math.max(0, need.x - m);
+    const ry = Math.max(0, need.y - m);
+    const rect: PageRect = {
+        x: rx,
+        y: ry,
+        w: Math.min(w, need.x + need.w + m) - rx,
+        h: Math.min(h, need.y + need.h + m) - ry,
+    };
+
+    // Half the margin back off each side that is not already a page edge —
+    // which keeps `need` inside `trigger` the moment the render lands, so this
+    // can never ask for a re-render of what was just rendered.
+    const edge = (lo: number, hi: number, limit: number) =>
+        [lo <= 0.5 ? lo : lo + m / 2, hi >= limit - 0.5 ? hi : hi - m / 2] as const;
+    const [tx0, tx1] = edge(rect.x, rect.x + rect.w, w);
+    const [ty0, ty1] = edge(rect.y, rect.y + rect.h, h);
+    const trigger: PageRect = { x: tx0, y: ty0, w: tx1 - tx0, h: ty1 - ty0 };
+    return { rect, need, trigger };
+}
+
+/** Put the canvas where its bitmap belongs: filling the page, or pinned over
+ *  the band it was rendered for. */
+function placeCanvas(canvas: HTMLCanvasElement, rect: PageRect | null): void {
+    const s = canvas.style;
+    s.left = rect ? `${rect.x}px` : '';
+    s.top = rect ? `${rect.y}px` : '';
+    s.width = rect ? `${rect.w}px` : '';
+    s.height = rect ? `${rect.h}px` : '';
+}
+
+// Rounded finely (not to 2dp): a pinch step near MIN_ZOOM is ~0.4%, and a
+// coarser rounding would swallow it and leave the gesture stuck.
+const clampZoom = (z: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.round(z * 10000) / 10000));
+
+/** One-shot scroll anchor for a zoom step: keep the document point
+ *  {page, frac, fracX} under the same viewport point {vx, vy} — i.e. the spot
+ *  under the cursor stays put while everything scales around it. */
+interface ZoomAnchor {
+    page: number;
+    frac: number;
+    vy: number;
+    fracX: number;
+    vx: number;
+}
+
+/** A pinch (ctrl+wheel burst) in flight. While it lasts, zoom is a pure CSS
+ *  transform on the page column — compositor work, no relayout — and only
+ *  when it settles does the accumulated factor commit to a real layout. */
+interface PinchGesture {
+    /** Accumulated scale factor relative to the committed layout. */
+    k: number;
+    /** The pinned point in content coordinates (= the transform-origin). */
+    originX: number;
+    originY: number;
+    /** Where that point sits in the viewport (scroller-relative). */
+    vx: number;
+    vy: number;
+    timer: number | null;
+}
+
+function PdfViewer({ filePath, session, isActive, isVisible = true, onRotate, onLocation, emphasisEnabled = false, onNativeEmphasisResult }: PdfViewerProps) {
+    const [nativeNotice, setNativeNotice] = useState('');
+    const nativePages = useRef(new Map<number, PdfNativeEmphasisResult>());
+    const showNativeNotice = useCallback((index: number) => {
+        const result = nativePages.current.get(index);
+        setNativeNotice(pdfNativeEmphasisNotice(result));
+        nativeResult.current?.(index, result);
+    }, []);
+    const nativeResult = useRef(onNativeEmphasisResult);
+    nativeResult.current = onNativeEmphasisResult;
+    const emphasisRef = useRef(emphasisEnabled);
+    emphasisRef.current = emphasisEnabled;
+    const locationCallback = useRef(onLocation);
+    locationCallback.current = onLocation;
+    // Read once per mount: where this file was last left, and at what zoom.
+    // Keyed by vault as well as path — two vaults can both hold `refs/spec.pdf`
+    // and page 47 of one is nowhere in the other (see utils/storage.ts).
+    const [saved] = useState(() => readPdfViewPos(filePath));
+    const [zoom, setZoom] = useState<number>(() => clampZoom(saved?.zoom ?? 1));
+    const [docState, setDocState] = useState<DocState | null>(null);
+    const [error, setError] = useState<string | null>(null);
+    const [containerWidth, setContainerWidth] = useState(0);
+    /** Read by the ResizeObserver, which is created once and must not close over
+     *  a stale width when deciding "is this the first measurement". */
+    const containerWidthRef = useRef(0);
+    useEffect(() => { containerWidthRef.current = containerWidth; }, [containerWidth]);
+    /** Read by the ResizeObserver and the render loop, which are created once
+     *  and must not close over a stale `isVisible`. */
+    const visibleRef = useRef(isVisible);
+    useEffect(() => { visibleRef.current = isVisible; }, [isVisible]);
+    /** A width this pane was resized to while it was hidden, applied on the way
+     *  back in rather than re-rastering a document nobody is looking at. */
+    const pendingWidthRef = useRef<number | null>(null);
+    /** The page range under the viewport as of the last window pass — the pages
+     *  a hidden pane keeps, so coming back shows pixels rather than painting
+     *  them (see the hide effect). */
+    const onScreenRef = useRef<{ first: number; last: number } | null>(null);
+
+    const rootRef = useRef<HTMLDivElement | null>(null);
+    const scrollRef = useRef<HTMLDivElement | null>(null);
+    const innerRef = useRef<HTMLDivElement | null>(null);
+    useEffect(() => { if (isActive) scrollRef.current?.focus({ preventScroll: true }); }, [isActive]);
+    const zoomAnchorRef = useRef<ZoomAnchor | null>(null);
+    const gestureRef = useRef<PinchGesture | null>(null);
+    const canvasElsRef = useRef<Array<HTMLCanvasElement | null>>([]);
+    const textElsRef = useRef<Array<HTMLDivElement | null>>([]);
+    const linkElsRef = useRef<Array<HTMLDivElement | null>>([]);
+    /** Uncontrolled on purpose: the page number is written straight into the
+     *  input on every scroll pass. Holding it in React state would re-render the
+     *  whole page column each time the top edge crossed a page boundary. */
+    const pageInputRef = useRef<HTMLInputElement | null>(null);
+    /** What the box read the moment it took focus. While it is focused the
+     *  scroll pass deliberately leaves it alone, so its number goes stale as
+     *  soon as the user scrolls — and the blur path must not treat that stale
+     *  number as something they asked for. */
+    const pageInputFocusValueRef = useRef('');
+    /** The 0-based page the box is displaying. Usually the page under the top
+     *  edge, but not at the document's bottom — see updateWindow. */
+    const shownPageRef = useRef(0);
+    /** The page strip, and the page it opens on. Its current page is pushed
+     *  through the handle from the scroll pass, never through a prop — see
+     *  components/PdfThumbnails.tsx for why. */
+    const [thumbsOpen, setThumbsOpen] = useState(readThumbnailsOpen);
+    /** Pages shown inverted. A CSS filter on the page canvases only (see index.css),
+     *  so toggling it re-renders nothing and the text layer's selection keeps its colour. */
+    const inverted = useSyncExternalStore(subscribePdfInverted, getPdfInverted);
+    const [thumbsStart, setThumbsStart] = useState(() => saved?.page ?? 0);
+    const thumbsRef = useRef<PdfThumbnailsHandle | null>(null);
+    useEffect(() => { writeThumbnailsOpen(thumbsOpen); }, [thumbsOpen]);
+    const pageStatesRef = useRef<Map<number, PageState>>(new Map());
+    const textLayersRef = useRef<Set<InstanceType<typeof pdfjs.TextLayer>>>(new Set());
+    const docStateRef = useRef<DocState | null>(null);
+    const docGenRef = useRef(0);
+    const zoomRef = useRef(zoom);
+
+    /** The live position, updated on every scroll pass. Seeded from storage so
+     *  the first layout restores it; a data swap (annotated save) reuses it so
+     *  the reloaded document opens on the same page. */
+    const currentPosRef = useRef<{ page: number; offset: number }>({
+        page: saved?.page ?? 0,
+        offset: saved?.offset ?? 0,
+    });
+
+    // ── Position persistence (debounced) ───────────────────────────────────
+    const persistTimerRef = useRef<number | null>(null);
+    const persistNow = useCallback(() => {
+        persistTimerRef.current = null;
+        const { page, offset } = currentPosRef.current;
+        writePdfViewPos(filePath, { page, offset, zoom: zoomRef.current });
+    }, [filePath]);
+
+    const schedulePersist = useCallback(() => {
+        // Header surface actions read this memory synchronously, before the
+        // 400ms storage flush or the viewer's unmount cleanup can run.
+        writePdfViewPos(filePath, { ...currentPosRef.current, zoom: zoomRef.current }, false);
+        locationCallback.current?.();
+        if (persistTimerRef.current !== null) clearTimeout(persistTimerRef.current);
+        persistTimerRef.current = window.setTimeout(persistNow, 400);
+    }, [persistNow, filePath]);
+
+    // A pending write must not die with the pane (tab closed mid-scroll).
+    useEffect(() => () => {
+        if (persistTimerRef.current !== null) {
+            clearTimeout(persistTimerRef.current);
+            persistNow();
+        }
+    }, [persistNow]);
+
+    useEffect(() => {
+        zoomRef.current = zoom;
+        schedulePersist();
+    }, [zoom, schedulePersist]);
+
+    // ── Document loading ────────────────────────────────────────────────────
+    useEffect(() => {
+        let cancelled = false;
+        setError(null);
+        nativePages.current.clear();
+        setNativeNotice('');
+        nativeResult.current?.(0, undefined);
+        const gen = ++docGenRef.current;
+        // The containers themselves are created once and never replaced, so
+        // capturing them here for the cleanup is safe (and keeps lint honest).
+        const textLayers = textLayersRef.current;
+        const pageStates = pageStatesRef.current;
+        let documentLease: Awaited<ReturnType<PdfDocumentSession['acquire']>> | undefined;
+
+        (async () => {
+            try {
+                documentLease = await session.acquire();
+                if (cancelled) { documentLease.release(); return; }
+                const doc = documentLease.document;
+                // Every page's size, because the scroll height depends on all
+                // of them — but not ONE AT A TIME. Each is a round trip to the
+                // pdf.js worker and nothing is drawn until the last one lands,
+                // so a 200-page document showed "Loading PDF…" for 200 of them
+                // in a row (measured: 565ms, and it grows with the page count).
+                // Bounded rather than unleashed, for the reason utils/pool.ts
+                // gives; `mapPool` keeps the results in page order.
+                const dims = await mapPool(
+                    Array.from({ length: doc.numPages }, (_, i) => i),
+                    async (i) => {
+                        const lease = await session.acquirePage(i, 'render');
+                        try {
+                            const vp = lease.page.getViewport({ scale: 1 });
+                            return { w: vp.width, h: vp.height };
+                        } finally { lease.release(); }
+                    },
+                );
+                if (cancelled) return;
+                const ds: DocState = { doc, dims, gen };
+                // Set the ref synchronously: the re-anchor layout effect (which
+                // kicks the first window pass) runs before passive effects would
+                // have mirrored it.
+                docStateRef.current = ds;
+                canvasElsRef.current = [];
+                textElsRef.current = [];
+                linkElsRef.current = [];
+                setDocState(ds);
+            } catch (err) {
+                if (!cancelled) {
+                    console.error('Could not open PDF for viewing:', err);
+                    setError(err instanceof Error ? err.message : String(err));
+                }
+            }
+        })();
+
+        return () => {
+            cancelled = true;
+            docGenRef.current = gen + 1;
+            for (const layer of textLayers) layer.cancel();
+            textLayers.clear();
+            for (const st of pageStates.values()) {
+                st.wantRender = false;
+                st.renderTask?.cancel();
+                void Promise.allSettled([st.loopPromise, st.renderTask?.promise, st.textPromise, st.linksPromise]).then(async () => {
+                    (await st.pageLease)?.release();
+                }).catch(() => {});
+            }
+            pageStates.clear();
+            docStateRef.current = null;
+            setDocState(null);
+            documentLease?.release();
+        };
+    }, [session]);
+
+    // ── Fit-width layout ─────────────────────────────────────────────────────
+    /*
+     * The observed width is COALESCED, exactly as the pinch-zoom gesture below
+     * coalesces its own: committing it re-fits the document and restarts the
+     * rasterization of every windowed page, and a resize does not arrive once —
+     * it arrives on every frame of whatever is animating.
+     *
+     * The sidebar's 150ms width transition is the case that made this matter:
+     * collapsing the drawer replayed a full re-fit ~9 times, measured at ~500ms
+     * of blocked main thread for a gesture that changes nothing about the
+     * document. Pages are centred in the scroller, so they simply re-centre
+     * while the burst is in flight and re-fit once it quiets.
+     *
+     * The FIRST measurement commits immediately: there is no layout yet, and
+     * making the reader wait 180ms to see page one would be a worse trade than
+     * the one this is making.
+     */
+    useEffect(() => {
+        const el = scrollRef.current;
+        if (!el) return;
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        // Not while hidden: the slot is a percentage of the column, so every
+        // sidebar toggle and window resize re-fits and re-rasters the hidden
+        // panes too. The width is applied on the way back in (below).
+        const commit = (w: number) => {
+            if (!visibleRef.current) { pendingWidthRef.current = w; return; }
+            setContainerWidth(prev => (Math.abs(prev - w) < 1 ? prev : w));
+        };
+        const ro = new ResizeObserver(entries => {
+            const w = Math.round(entries[0].contentRect.width);
+            if (containerWidthRef.current <= 0) { commit(w); return; }
+            if (timer) clearTimeout(timer);
+            timer = setTimeout(() => { timer = null; commit(w); }, RESIZE_SETTLE_MS);
+        });
+        ro.observe(el);
+        return () => { ro.disconnect(); if (timer) clearTimeout(timer); };
+    }, []);
+
+    const layout = useMemo<Layout | null>(() => {
+        if (!docState || containerWidth <= 0) return null;
+        const avail = Math.max(120, containerWidth - SIDE_GUTTER * 2);
+        const maxW = Math.max(...docState.dims.map(d => d.w));
+        const scale = Math.min(8, Math.max(0.05, (avail / maxW) * zoom));
+        const pages = docState.dims.map(d => ({ w: d.w * scale, h: d.h * scale }));
+        const tops: number[] = [];
+        let y = PAD_V;
+        for (const p of pages) {
+            tops.push(y);
+            y += p.h + PAGE_GAP;
+        }
+        return { gen: docState.gen, scale, pages, tops, maxPageW: maxW * scale };
+    }, [docState, containerWidth, zoom]);
+    const layoutRef = useRef<typeof layout>(null);
+
+    // ── Page rendering (windowed) ───────────────────────────────────────────
+    const getState = useCallback((i: number): PageState => {
+        let st = pageStatesRef.current.get(i);
+        if (!st) {
+            st = {};
+            pageStatesRef.current.set(i, st);
+        }
+        return st;
+    }, []);
+
+    const getPage = useCallback((i: number): Promise<PDFPageProxy> => {
+        const st = getState(i);
+        st.pageLease ??= session.acquirePage(i, 'render');
+        st.pagePromise ??= st.pageLease.then(lease => lease.page);
+        return st.pagePromise;
+    }, [getState, session]);
+
+    const clearCanvas = useCallback((i: number) => {
+        const canvas = canvasElsRef.current[i];
+        if (canvas && canvas.width > 0) {
+            canvas.width = 0;
+            canvas.height = 0;
+            placeCanvas(canvas, null);
+        }
+    }, []);
+
+    /** Build the selectable-text overlay for one page. Geometry is stored in
+     *  page-percentages and font sizes ride the --scale-factor CSS variable, so
+     *  a text layer is built ONCE per page and zoom rescales it for free. */
+    const ensureText = useCallback((i: number): Promise<void> => {
+        const st = getState(i);
+        if (st.textStarted) return st.textPromise ?? Promise.resolve();
+        const container = textElsRef.current[i];
+        if (!container || !docStateRef.current) return Promise.resolve();
+        st.textStarted = true;
+        const gen = docGenRef.current;
+        st.textPromise = (async () => {
+            try {
+                const page = await getPage(i);
+                if (docGenRef.current !== gen || textElsRef.current[i] !== container) return;
+                const layer = new pdfjs.TextLayer({
+                    textContentSource: page.streamTextContent(),
+                    container,
+                    viewport: page.getViewport({ scale: 1 }),
+                });
+                textLayersRef.current.add(layer);
+                try {
+                    await layer.render();
+                } finally {
+                    textLayersRef.current.delete(layer);
+                }
+            } catch (err) {
+                // Teardown mid-build (tab closed, document reloaded) cancels
+                // the stream — that's shutdown, not a failure.
+                if ((err as Error)?.name !== 'AbortException') {
+                    console.error(`Could not build the text layer for PDF page ${i + 1}:`, err);
+                }
+            }
+        })();
+        return st.textPromise;
+    }, [getState, getPage]);
+
+    /**
+     * Put a page under the viewport's top edge — the one way to move to a page,
+     * shared by the page-number box and by link destinations.
+     *
+     * @param offset how far into the page to land, in scale-1 page units.
+     *
+     * Deliberately does NOT call updateWindow: the scroll it causes fires the
+     * container's own handler a frame later, which renders the newly-visible
+     * pages and refreshes the page number. Calling it here instead would make
+     * this depend on updateWindow — and updateWindow already (transitively)
+     * depends on the link layer, which depends on this.
+     */
+    const scrollToPage = useCallback((pageIndex: number, offset = 0) => {
+        const el = scrollRef.current;
+        const L = layoutRef.current;
+        if (!el || !L || L.pages.length === 0) return;
+        const i = Math.min(Math.max(0, pageIndex), L.pages.length - 1);
+        // ROUNDED UP, and never down. Page tops are fractional (page height ×
+        // a fit-width scale) but the browser snaps scrollTop to whole device
+        // pixels — so asking for tops[i] can land a fraction of a pixel ABOVE
+        // page i, where "which page is under the top edge" still answers i-1.
+        // Jumping to page 9 would then leave the box reading 8.
+        recordPdfNavigation(filePath, 'user-navigation');
+        el.scrollTop = Math.ceil(L.tops[i] + offset * L.scale);
+    }, [filePath]);
+
+    /**
+     * One page for the thumbnail strip, as a small JPEG.
+     *
+     * Straight from the document, not through the render window: a thumbnail
+     * must not take a canvas slot or a page state that the scroll pass evicts
+     * and cleans up on its own schedule. It lets pdf.js drop what it parsed for
+     * the page afterwards — unless the reader is holding that page, in which
+     * case the reader's own cleanup decides.
+     */
+    const renderThumbnail = useCallback(async (index: number, scale: number) => {
+        const doc = docStateRef.current?.doc;
+        if (!doc) throw new Error('The document is not open');
+        const lease = await session.acquirePage(index, 'thumbnail');
+        try {
+            const page = lease.page;
+            const viewport = page.getViewport({ scale });
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.max(1, Math.ceil(viewport.width));
+            canvas.height = Math.max(1, Math.ceil(viewport.height));
+            const ctx = canvas.getContext('2d');
+            if (!ctx) throw new Error('No 2D canvas context for a thumbnail');
+            await page.render({ canvas, canvasContext: ctx, viewport }).promise;
+            const blob = await new Promise<Blob | null>(res => canvas.toBlob(res, 'image/jpeg', 0.8));
+            canvas.width = 0;
+            canvas.height = 0;
+            if (!blob) throw new Error('Could not encode a thumbnail');
+            return URL.createObjectURL(blob);
+        } finally { lease.release(); }
+    }, [session]);
+
+    /** 0-based pages at least partly inside the scroll box, from the layout —
+     *  nothing is measured. */
+    const visiblePageIndices = useCallback((): number[] => {
+        const el = scrollRef.current;
+        const L = layoutRef.current;
+        if (!el || !L) return [];
+        const top = el.scrollTop;
+        const bottom = top + el.clientHeight;
+        const out: number[] = [];
+        for (let i = 0; i < L.pages.length; i++) {
+            if (L.tops[i] >= bottom) break;
+            if (L.tops[i] + L.pages[i].h > top) out.push(i);
+        }
+        return out;
+    }, []);
+
+    /* ── What the AI agent sees (utils/viewRegistry.ts) ──────────────────────
+       Registered once per file, and every method reads refs when CALLED — the
+       agent asks only when the user sends a message, so none of this costs a
+       scroll or a render anything. Registered while hidden too: a background
+       tab's reader still knows exactly where it was left. */
+    useEffect(() => registerView(filePath, {
+        kind: 'pdf',
+        describe(): PdfViewInfo {
+            const ds = docStateRef.current;
+            const pos = currentPosRef.current;
+            // Only a selection wholly inside THIS reader's pages: two PDFs can
+            // be on screen, and a selection in a note is not this document's.
+            const el = scrollRef.current;
+            const selection = window.getSelection();
+            let selectedText: string | null = null;
+            if (el && selection && !selection.isCollapsed
+                && selection.anchorNode && el.contains(selection.anchorNode)
+                && selection.focusNode && el.contains(selection.focusNode)) {
+                const t = selection.toString().trim();
+                if (t) selectedText = t.length > MAX_SELECTED_TEXT ? `${t.slice(0, MAX_SELECTED_TEXT)}…` : t;
+            }
+            return {
+                kind: 'pdf',
+                surface: 'original',
+                pageCount: ds?.dims.length ?? 0,
+                page: pos.page + 1,
+                // Negative in the air above page 1 (PAD_V); that is "the top of it".
+                offset: Math.min(1, Math.max(0, pos.offset)),
+                zoom: zoomRef.current,
+                visiblePages: visiblePageIndices().map(i => i + 1),
+                selectedText,
+                inverted: getPdfInverted(),
+            };
+        },
+        // The page canvases on screen, cropped to the scroll box, as one PNG —
+        // what the reader sees minus the chrome, and never inverted (that is a
+        // CSS filter; the canvases hold the real page).
+        async capture(maxSide) {
+            const el = scrollRef.current;
+            if (!el) return null;
+            const view = el.getBoundingClientRect();
+            if (!(view.width > 0 && view.height > 0) || !(maxSide > 0)) return null;
+            const scale = Math.min(canvasDpr(), maxSide / Math.max(view.width, view.height));
+            const out = document.createElement('canvas');
+            out.width = Math.max(1, Math.round(view.width * scale));
+            out.height = Math.max(1, Math.round(view.height * scale));
+            const ctx = out.getContext('2d');
+            if (!ctx) return null;
+            const bg = getComputedStyle(el).backgroundColor;
+            ctx.fillStyle = bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent' ? bg : '#808080';
+            ctx.fillRect(0, 0, out.width, out.height);
+            const clip = (r: DOMRect) => {
+                const left = Math.max(r.left, view.left);
+                const top = Math.max(r.top, view.top);
+                const right = Math.min(r.right, view.right);
+                const bottom = Math.min(r.bottom, view.bottom);
+                return right > left && bottom > top ? { left, top, right, bottom } : null;
+            };
+            for (const i of visiblePageIndices()) {
+                const canvas = canvasElsRef.current[i];
+                const pageEl = canvas?.parentElement;
+                if (!canvas || !pageEl) continue;
+                // The paper first: a page still rasterizing is white, as on screen.
+                const pr = clip(pageEl.getBoundingClientRect());
+                if (!pr) continue;
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect((pr.left - view.left) * scale, (pr.top - view.top) * scale, (pr.right - pr.left) * scale, (pr.bottom - pr.top) * scale);
+                if (canvas.width === 0) continue;
+                // The bitmap may be a band of the page (pageRegion), so map
+                // through the canvas's own on-screen box, not the page's.
+                const cr = canvas.getBoundingClientRect();
+                const ir = clip(cr);
+                if (!ir || cr.width <= 0 || cr.height <= 0) continue;
+                const kx = canvas.width / cr.width;
+                const ky = canvas.height / cr.height;
+                ctx.drawImage(
+                    canvas,
+                    (ir.left - cr.left) * kx, (ir.top - cr.top) * ky, (ir.right - ir.left) * kx, (ir.bottom - ir.top) * ky,
+                    (ir.left - view.left) * scale, (ir.top - view.top) * scale, (ir.right - ir.left) * scale, (ir.bottom - ir.top) * scale,
+                );
+            }
+            const png = await new Promise<Blob | null>(resolve => out.toBlob(resolve, 'image/png'));
+            out.width = 0;
+            out.height = 0;
+            return png;
+        },
+        async pdfText(pages) {
+            const doc = docStateRef.current?.doc;
+            if (!doc) return [];
+            const result: Array<{ page: number; text: string }> = [];
+            for (const n of pages) {
+                if (!Number.isInteger(n) || n < 1 || n > doc.numPages) continue;
+                result.push({ page: n, text: await pageText(session, n) });
+            }
+            return result;
+        },
+        // One page straight from the document, as the thumbnail strip renders
+        // it — never through the render window, whose slots the scroll pass
+        // owns.
+        async renderPage(pageNumber, maxSide) {
+            const ds = docStateRef.current;
+            const dims = ds?.dims[pageNumber - 1];
+            if (!ds || !dims || !(maxSide > 0)) return null;
+            const lease = await session.acquirePage(pageNumber - 1, 'agent');
+            try {
+                const page = lease.page;
+                const viewport = page.getViewport({ scale: maxSide / Math.max(dims.w, dims.h) });
+                const canvas = document.createElement('canvas');
+                canvas.width = Math.max(1, Math.ceil(viewport.width));
+                canvas.height = Math.max(1, Math.ceil(viewport.height));
+                const ctx = canvas.getContext('2d');
+                if (!ctx) return null;
+                await page.render({ canvas, canvasContext: ctx, viewport }).promise;
+                const png = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/png'));
+                canvas.width = 0;
+                canvas.height = 0;
+                return png;
+            } finally { lease.release(); }
+        },
+    }), [filePath, visiblePageIndices, session]);
+
+    const thumbSizes = useMemo(
+        () => docState?.dims.map(d => ({ width: d.w, height: d.h })) ?? [],
+        [docState],
+    );
+
+    const toggleThumbs = useCallback(() => {
+        setThumbsStart(shownPageRef.current);
+        setThumbsOpen(open => !open);
+    }, []);
+
+    /** Act on a clicked link: jump to its destination, or run its named action.
+     *  External URLs are excluded by the type — those are plain <a href>
+     *  elements, and the browser opens them without our help. */
+    const followLink = useCallback(async (target: Exclude<PdfLinkTarget, { kind: 'url' }>) => {
+        const doc = docStateRef.current?.doc;
+        const L = layoutRef.current;
+        if (!doc || !L) return;
+        try {
+            if (target.kind === 'action') {
+                const page = currentPosRef.current.page;
+                switch (target.action) {
+                    case 'FirstPage': scrollToPage(0); break;
+                    case 'LastPage': scrollToPage(L.pages.length - 1); break;
+                    case 'NextPage': scrollToPage(page + 1); break;
+                    case 'PrevPage': scrollToPage(page - 1); break;
+                    // GoBack/GoForward and the rest are viewer-history actions
+                    // this viewer has no equivalent for — ignore rather than
+                    // guess at something surprising.
+                    default: break;
+                }
+                return;
+            }
+            const lease = await session.acquire();
+            try {
+                const dest = await resolveDestination(lease.document, target.dest, getPage);
+                if (dest) scrollToPage(dest.pageIndex, dest.offset);
+            } finally { lease.release(); }
+        } catch (err) {
+            console.error('Could not follow this PDF link:', err);
+        }
+    }, [getPage, scrollToPage, session]);
+
+    /** One clickable element for one link box. An external URL is a real <a> so
+     *  it gets the browser's own affordances (middle-click, copy link address);
+     *  an in-document jump is a <button>, which is focusable and keyboard-
+     *  activatable without inventing a URL for a destination that has none. */
+    const createLinkElement = useCallback((link: PdfLink): HTMLElement => {
+        let el: HTMLElement;
+        if (link.target.kind === 'url') {
+            const anchor = document.createElement('a');
+            anchor.href = link.target.url;
+            anchor.target = '_blank';
+            anchor.rel = 'noopener noreferrer';
+            el = anchor;
+        } else {
+            const button = document.createElement('button');
+            button.type = 'button';
+            // The box is empty (the words it covers belong to the text layer),
+            // so without this it reads as an unnamed button. No tooltip either: one
+            // tooltip on every entry of a table of contents is just noise.
+            button.setAttribute('aria-label', 'Follow link');
+            const { target } = link;
+            button.addEventListener('click', () => { void followLink(target); });
+            el = button;
+        }
+        el.className = 'pdf-link';
+        if (link.title) {
+            el.dataset.tooltip = link.title;
+            // The URL anchor is as empty as the button, and its tooltip was its
+            // only name while it was a native `title`.
+            if (!el.hasAttribute('aria-label')) el.setAttribute('aria-label', link.title);
+        }
+        el.style.left = `${link.left}%`;
+        el.style.top = `${link.top}%`;
+        el.style.width = `${link.width}%`;
+        el.style.height = `${link.height}%`;
+        return el;
+    }, [followLink]);
+
+    /** Build the clickable-link overlay for one page. Like the text layer, the
+     *  geometry is in page-percentages, so it is built ONCE per page and every
+     *  zoom rescales it for free. */
+    const ensureLinks = useCallback((i: number): Promise<void> => {
+        const st = getState(i);
+        if (st.linksStarted) return st.linksPromise ?? Promise.resolve();
+        const container = linkElsRef.current[i];
+        if (!container || !docStateRef.current) return Promise.resolve();
+        st.linksStarted = true;
+        const gen = docGenRef.current;
+        st.linksPromise = (async () => {
+            try {
+                const links = await readPageLinks(await getPage(i));
+                if (docGenRef.current !== gen || linkElsRef.current[i] !== container) return;
+                for (const link of links) container.append(createLinkElement(link));
+            } catch (err) {
+                console.error(`Could not read the links on PDF page ${i + 1}:`, err);
+            }
+        })();
+        return st.linksPromise;
+    }, [getState, getPage, createLinkElement]);
+
+    /** Render one page's canvas, chasing `st.want` until the bitmap answers it
+     *  (a zoom or a scroll mid-render cancels the task and the loop goes again
+     *  against the new target). */
+    const renderLoop = useCallback(async (i: number, st: PageState) => {
+        st.busy = true;
+        const gen = docGenRef.current;
+        try {
+            while (st.wantRender && st.want && !satisfies(st.rendered, st.want)) {
+                const target = st.want;
+                const page = await getPage(i);
+                if (docGenRef.current !== gen || !st.wantRender) return;
+                const canvas = canvasElsRef.current[i];
+                if (!canvas) return;
+
+                const { rect } = target;
+                const vp = page.getViewport({ scale: target.scale });
+                const dpr = canvasDpr();
+                const cw = Math.max(1, Math.floor((rect ? rect.w : vp.width) * dpr));
+                const ch = Math.max(1, Math.floor((rect ? rect.h : vp.height) * dpr));
+
+                // Cold and warm paints use the same offscreen→blit route.
+                // Chromium antialiases a direct first paint differently from a
+                // blit (measured 145,932 differing channels after OFF), so mixing
+                // the routes cannot give an exact original-page restoration.
+                const work = document.createElement('canvas');
+                work.width = cw;
+                work.height = ch;
+                const ctx = work.getContext('2d');
+                if (!ctx) return;
+
+                const emphasis = await bindPdfNativeEmphasis(page, ctx, target.emphasis);
+                // Metadata can arrive after a new toggle/zoom/eviction request.
+                if (docGenRef.current !== gen || !st.wantRender || st.want !== target) {
+                    emphasis?.dispose();
+                    if (work !== canvas) { work.width = 0; work.height = 0; }
+                    continue;
+                }
+                const task = page.render({
+                    operationsFilter: emphasis?.operationsFilter,
+                    canvas: work,
+                    canvasContext: ctx,
+                    viewport: vp,
+                    // Band rendering is a translate on top of the dpr scale: the
+                    // viewport stays the whole page, and the canvas catches the
+                    // part of it that starts at the band's corner.
+                    transform: rect
+                        ? [dpr, 0, 0, dpr, -rect.x * dpr, -rect.y * dpr]
+                        : (dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined),
+                });
+                st.renderTask = task;
+                st.rendering = target;
+                try {
+                    await task.promise;
+                    const current = () => docGenRef.current === gen && !!st.wantRender && st.want === target;
+                    if (!current()) continue;
+                    await emphasis.verify({ viewport: vp, transform: rect
+                        ? [dpr, 0, 0, dpr, -rect.x * dpr, -rect.y * dpr]
+                        : (dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined) },
+                        probe => { st.renderTask = probe; }, current, !!rect);
+                    if (!current()) continue;
+                    if (work !== canvas) {
+                        canvas.width = cw;
+                        canvas.height = ch;
+                        canvas.getContext('2d')?.drawImage(work, 0, 0);
+                    }
+                    placeCanvas(canvas, rect);
+                    st.rendered = target;
+                    canvas.dataset.nativeEmphasis = String(target.emphasis);
+                    if (emphasis) {
+                        canvas.dataset.emphasizedGlyphs = String(emphasis.result.painted);
+                        nativePages.current.set(i, { ...emphasis.result });
+                        if (shownPageRef.current === i) showNativeNotice(i);
+                    }
+                } catch (err) {
+                    if (!(err instanceof pdfjs.RenderingCancelledException) && !(err instanceof DOMException && err.name === 'AbortError')) throw err;
+                } finally {
+                    emphasis?.dispose();
+                    st.renderTask = undefined;
+                    st.rendering = undefined;
+                    if (work !== canvas) {
+                        work.width = 0;
+                        work.height = 0;
+                    }
+                }
+                if (docGenRef.current !== gen) return;
+            }
+            if (docGenRef.current !== gen || !st.wantRender) return;
+            void ensureText(i);
+            void ensureLinks(i);
+        } catch (err) {
+            console.error(`Could not render PDF page ${i + 1}:`, err);
+        } finally {
+            st.busy = false;
+            if (!st.wantRender && docGenRef.current === gen) {
+                clearCanvas(i);
+                st.rendered = undefined;
+            }
+        }
+    }, [getPage, ensureText, ensureLinks, clearCanvas, showNativeNotice]);
+
+    const ensurePage = useCallback((i: number) => {
+        const L = layoutRef.current;
+        const el = scrollRef.current;
+        if (!L || !el) return;
+        const st = getState(i);
+        st.want = { emphasis: emphasisRef.current, scale: L.scale, ...pageRegion(L, el, i) };
+        st.wantRender = true;
+        // Back in the window — eligible to be released again once it leaves.
+        st.cleaned = false;
+        if (st.busy) {
+            // Already rendering: if what it will produce no longer answers the
+            // ask, cancel so the loop re-runs against the new one.
+            if (st.renderTask && !satisfies(st.rendering, st.want)) st.renderTask.cancel();
+            return;
+        }
+        if (satisfies(st.rendered, st.want)) {
+            void ensureText(i);
+            void ensureLinks(i);
+            return;
+        }
+        st.loopPromise = renderLoop(i, st);
+    }, [getState, renderLoop, ensureText, ensureLinks]);
+
+    const evictPage = useCallback((i: number) => {
+        const st = pageStatesRef.current.get(i);
+        if (!st || (!st.wantRender && !st.rendered)) return;
+        st.wantRender = false;
+        st.renderTask?.cancel();
+        if (!st.busy) {
+            clearCanvas(i);
+            st.rendered = undefined;
+        }
+    }, [clearCanvas]);
+
+    /**
+     * Hand a far-away page's memory back to pdf.js.
+     *
+     * Freeing the canvas is only half of what a page costs: the PDFPageProxy
+     * keeps its parsed operator list and its decoded images (a full-page scan is
+     * tens of MB) until asked, and every page ever scrolled past kept both for
+     * the life of the document. This is exactly what pdf.js's own viewer does in
+     * PDFPageView.destroy().
+     *
+     * cleanup() self-guards — it no-ops while a render task is live or the
+     * operator list is still streaming — so it can't interrupt a paint, and it
+     * touches nothing the already-built text or link layers depend on.
+     */
+    const cleanupPage = useCallback((i: number) => {
+        const st = pageStatesRef.current.get(i);
+        if (!st || !st.pagePromise || st.cleaned || st.busy || st.wantRender) return;
+        const gen = docGenRef.current;
+        st.cleaned = true;
+        const held = st.pageLease;
+        void Promise.allSettled([st.textPromise, st.linksPromise]).then(async () => {
+            if (docGenRef.current !== gen || st.busy || st.wantRender || !st.cleaned) return;
+            st.pageLease = undefined;
+            st.pagePromise = undefined;
+            (await held)?.release();
+        }).catch(() => { /* teardown races — nothing to release */ });
+    }, []);
+
+    /**
+     * Hand back everything this pane is holding while it is off screen, and
+     * take it again when it comes back.
+     *
+     * A PDF pane stays MOUNTED when you switch tabs — it is hidden with
+     * `visibility`, which is what makes coming back to it instant — but nothing
+     * ever told the viewer it was hidden. So it went on holding the page
+     * bitmaps it had rastered: the visible band plus EVICT_BEYOND either side,
+     * at devicePixelRatio, for every open PDF. Measured with two modest
+     * documents open behind a whiteboard: 322 page canvases and 62MB of
+     * bitmaps still resident, none of it on screen, and far more than that for
+     * a scanned book at a real page size.
+     *
+     * Eviction only ever ran inside `updateWindow`, which only runs on scroll
+     * or layout, so a hidden pane never reached it.
+     *
+     * WHAT IS ON SCREEN IS KEPT. Freeing everything made coming back a repaint:
+     * cheap for a vector page, not cheap for a scan, which is a JPEG decode and
+     * a draw per page — and that repaint is the one thing the reader is waiting
+     * on. So the pages under the viewport stay exactly as they were rastered
+     * (usually one, two across a page boundary) and the switch back is a
+     * `visibility` flip with the pixels already there. Everything else goes:
+     * the RENDER_AHEAD prefetch, the EVICT_BEYOND margin either side, and
+     * anything left from wherever the reader scrolled through. That is most of
+     * what a hidden pane was holding.
+     *
+     * The pdf.js page objects and the text layers stay either way, so ⌘F still
+     * works, and `updateWindow` refills the margin on the way in.
+     */
+    useEffect(() => {
+        if (isVisible) {
+            const pending = pendingWidthRef.current;
+            pendingWidthRef.current = null;
+            if (pending !== null && Math.abs(containerWidthRef.current - pending) >= 1) setContainerWidth(pending);
+            // A frame later: the pane has to be laid out before the window
+            // under its viewport means anything.
+            const id = requestAnimationFrame(() => updateWindowRef.current?.());
+            return () => cancelAnimationFrame(id);
+        }
+        const n = docStateRef.current?.dims.length ?? 0;
+        const seen = onScreenRef.current;
+        for (let i = 0; i < n; i++) {
+            if (seen && i >= seen.first && i <= seen.last) continue;
+            evictPage(i);
+        }
+    }, [isVisible, evictPage]);
+
+    /** One pass over the viewport: render pages near it, free pages far from
+     *  it, and record the current {page, offset} for persistence. */
+    const updateWindow = useCallback(() => {
+        const el = scrollRef.current;
+        const L = layoutRef.current;
+        if (!el || !L || !docStateRef.current) return;
+        const n = L.pages.length;
+        if (n === 0) return;
+        const top = el.scrollTop;
+        const bottom = top + el.clientHeight;
+
+        let first = 0;
+        while (first < n - 1 && L.tops[first] + L.pages[first].h + PAGE_GAP <= top) first++;
+        let last = first;
+        while (last < n - 1 && L.tops[last + 1] < bottom) last++;
+
+        // What is literally under the viewport, for the hide path below.
+        onScreenRef.current = { first, last };
+
+        const renderFrom = Math.max(0, first - RENDER_AHEAD);
+        const renderTo = Math.min(n - 1, last + RENDER_AHEAD);
+        const keepFrom = Math.max(0, first - EVICT_BEYOND);
+        const keepTo = Math.min(n - 1, last + EVICT_BEYOND);
+        const cleanFrom = Math.max(0, first - CLEANUP_BEYOND);
+        const cleanTo = Math.min(n - 1, last + CLEANUP_BEYOND);
+        for (let i = 0; i < n; i++) {
+            if (i >= renderFrom && i <= renderTo) ensurePage(i);
+            else {
+                const old = pageStatesRef.current.get(i)?.want;
+                // Retained offscreen bitmaps must not expose the old emphasis
+                // for a frame when scrolled back. Reclaim them; approach paints
+                // the current setting through the ordinary bounded window.
+                if (i < keepFrom || i > keepTo || (old && old.emphasis !== emphasisRef.current)) evictPage(i);
+                if (i < cleanFrom || i > cleanTo) cleanupPage(i);
+            }
+        }
+
+        // The position anchor is the top edge: restore sets scrollTop so that
+        // the same fraction of the same page sits under it again.
+        currentPosRef.current = { page: first, offset: (top - L.tops[first]) / L.pages[first].h };
+        // The page SHOWN is the one under the top edge, except at the very
+        // bottom of the document: a short final page plus padding may not fill
+        // the viewport, so its top can never reach the top edge. Without this,
+        // typing the last page number scrolls as far as it can and the box then
+        // snaps back to the page before it.
+        const maxScroll = el.scrollHeight - el.clientHeight;
+        const shown = maxScroll > 1 && top >= maxScroll - 1 ? last : first;
+        shownPageRef.current = shown;
+        showNativeNotice(shown);
+        thumbsRef.current?.setCurrentPage(shown);
+        // Written straight to the DOM rather than through state — see
+        // pageInputRef. Never while it's focused: that would fight the typing.
+        const input = pageInputRef.current;
+        if (input && document.activeElement !== input) input.value = String(shown + 1);
+        writePdfViewPos(filePath, { ...currentPosRef.current, zoom: zoomRef.current }, false);
+        schedulePersist();
+    }, [ensurePage, evictPage, cleanupPage, schedulePersist, filePath, showNativeNotice]);
+    /** So the hide/show effect above can call the latest `updateWindow` without
+     *  being re-created (and re-evicting) every time one of its deps moves. */
+    const updateWindowRef = useRef(updateWindow);
+    useEffect(() => { updateWindowRef.current = updateWindow; }, [updateWindow]);
+
+    // This changes paint only. Do not re-anchor, rebuild TextLayer, or remount
+    // the retained viewer: selection, native find and the page camera stay put.
+    useLayoutEffect(() => { updateWindow(); }, [emphasisEnabled, updateWindow]);
+
+    const scrollRafRef = useRef(0);
+    const scheduleWindowUpdate = useCallback(() => {
+        if (scrollRafRef.current) return;
+        scrollRafRef.current = requestAnimationFrame(() => {
+            scrollRafRef.current = 0;
+            updateWindow();
+        });
+    }, [updateWindow]);
+    useEffect(() => () => cancelAnimationFrame(scrollRafRef.current), []);
+
+    // Re-anchor whenever geometry changes (first layout, zoom, resize, reload):
+    // put the remembered {page, offset} back under the viewport's top edge,
+    // then render around it. Layout effect so the restored position paints
+    // first — no flash of page 1. A pinch/ctrl-wheel zoom leaves a one-shot
+    // cursor anchor instead, so the point under the pointer stays put.
+    useLayoutEffect(() => {
+        layoutRef.current = layout;
+        const el = scrollRef.current;
+        // A pinch commit's transform is cleared HERE, pre-paint and in the same
+        // frame the new layout lands, so there is never a visible snap between
+        // the transformed old layout and the committed new one. Any gesture
+        // still marked in-flight at this point was overtaken by another layout
+        // change (pill click, resize) — drop it.
+        if (innerRef.current) {
+            innerRef.current.style.transform = '';
+            innerRef.current.style.transformOrigin = '';
+        }
+        if (gestureRef.current) {
+            if (gestureRef.current.timer !== null) clearTimeout(gestureRef.current.timer);
+            gestureRef.current = null;
+        }
+        if (!layout || !el) return;
+        const n = layout.pages.length;
+        const anchor = zoomAnchorRef.current;
+        zoomAnchorRef.current = null;
+        if (anchor) {
+            const page = Math.min(Math.max(0, anchor.page), n - 1);
+            el.scrollTop = layout.tops[page] + anchor.frac * layout.pages[page].h - anchor.vy;
+            // Pages are centered in the inner column; anchor horizontally too
+            // so zooming into a page edge doesn't slide it away.
+            const innerW = Math.max(el.clientWidth, layout.maxPageW);
+            const pageLeft = (innerW - layout.pages[page].w) / 2;
+            el.scrollLeft = pageLeft + anchor.fracX * layout.pages[page].w - anchor.vx;
+        } else {
+            const pos = currentPosRef.current;
+            const page = Math.min(Math.max(0, Math.floor(pos.page)), n - 1);
+            // Rounded up for the same reason as scrollToPage: landing a
+            // fraction of a pixel short would re-read as the previous page,
+            // and that reading is what gets persisted for next time.
+            el.scrollTop = Math.ceil(layout.tops[page] + pos.offset * layout.pages[page].h);
+        }
+        updateWindow();
+    }, [layout, updateWindow]);
+
+    /** One zoom step, anchored at the viewport top edge — the pill buttons and
+     *  the +/- keys share this so they behave identically. */
+    const nudgeZoom = useCallback((factor: number) => {
+        setZoom(z => clampZoom(z * factor));
+    }, []);
+
+    /** Show whatever page the document is actually on — used to undo a typed
+     *  number that was abandoned or nonsense. */
+    const resetPageInput = useCallback(() => {
+        const input = pageInputRef.current;
+        if (input) input.value = String(shownPageRef.current + 1);
+    }, []);
+
+    /**
+     * Jump to the typed page. Out-of-range numbers are clamped rather than
+     * rejected — "999" in a 40-page document plainly means "the end".
+     *
+     * @param onlyIfChanged for the blur path. Clicking into the box and back
+     *        out must leave the view alone — and "unchanged" is measured
+     *        against what the box read when it took focus, NOT against the page
+     *        currently on screen: scrolling while the box is focused leaves it
+     *        showing a stale number, and committing that would yank the view
+     *        back to wherever the user was when they clicked in. Enter passes
+     *        false, so re-typing the current page IS a way to jump to its top.
+     */
+    const commitPageInput = useCallback((onlyIfChanged = false) => {
+        const input = pageInputRef.current;
+        const total = layoutRef.current?.pages.length ?? 0;
+        if (!input || total === 0) return;
+        if (onlyIfChanged && input.value === pageInputFocusValueRef.current) {
+            resetPageInput();       // nothing was typed — just re-sync the box
+            return;
+        }
+        const typed = parseInt(input.value.trim(), 10);
+        if (!Number.isFinite(typed)) {
+            resetPageInput();
+            return;
+        }
+        const page = Math.min(Math.max(1, typed), total);
+        if (onlyIfChanged && page === shownPageRef.current + 1) {
+            resetPageInput();       // undoes a clamp the user can't have meant
+            return;
+        }
+        scrollToPage(page - 1);
+        // Record the DISPLAYED page now rather than waiting for the scroll pass
+        // a frame later: a blur landing in between (Enter blurs the box itself)
+        // would otherwise redisplay the page we just left. Only this ref, never
+        // currentPosRef — that one anchors persistence and is written from the
+        // scroll we actually got, which is not always the one we asked for (the
+        // browser clamps at the end of the document).
+        shownPageRef.current = page - 1;
+        input.value = String(page);
+        pageInputFocusValueRef.current = input.value;
+    }, [scrollToPage, resetPageInput]);
+
+    const handlePageInputBlur = useCallback(() => commitPageInput(true), [commitPageInput]);
+
+    const handlePageInputKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
+        // Never let a page number reach the app's shortcuts (or this viewer's
+        // own +/- zoom keys, which ignore inputs but not every key does).
+        e.stopPropagation();
+        if (e.key === 'Enter') {
+            commitPageInput();
+            // Hand the keyboard back so scrolling and the zoom keys work again.
+            e.currentTarget.blur();
+        } else if (e.key === 'Escape') {
+            resetPageInput();
+            e.currentTarget.blur();
+        }
+    }, [commitPageInput, resetPageInput]);
+
+    /** Land the accumulated pinch factor as a real zoom commit: one relayout,
+     *  one window re-render — instead of one per wheel event, which is what
+     *  made pinching stutter (every tick relaid out every page, restyled every
+     *  text-layer span and restarted the visible pdf.js rasterizations). */
+    const commitGesture = useCallback(() => {
+        const g = gestureRef.current;
+        gestureRef.current = null;
+        if (!g) return;
+        if (g.timer !== null) clearTimeout(g.timer);
+        const el = scrollRef.current;
+        const L = layoutRef.current;
+        const inner = innerRef.current;
+        // Nothing to commit (or nowhere to commit it): drop the transform now.
+        if (!el || !L || !inner || Math.abs(g.k - 1) < 0.001) {
+            if (inner) {
+                inner.style.transform = '';
+                inner.style.transformOrigin = '';
+            }
+            return;
+        }
+        // Whatever now sits under the gesture's viewport point must stay there
+        // after the commit. Under transform scale(k) with origin O, the visual
+        // position of content point q is O + (q − O)·k − scroll, so invert:
+        const qY = g.originY + (el.scrollTop + g.vy - g.originY) / g.k;
+        const qX = g.originX + (el.scrollLeft + g.vx - g.originX) / g.k;
+        const n = L.pages.length;
+        let page = 0;
+        while (page < n - 1 && L.tops[page] + L.pages[page].h + PAGE_GAP <= qY) page++;
+        const frac = (qY - L.tops[page]) / L.pages[page].h;
+        const innerW = Math.max(el.clientWidth, L.maxPageW);
+        const pageLeft = (innerW - L.pages[page].w) / 2;
+        const fracX = (qX - pageLeft) / L.pages[page].w;
+        zoomAnchorRef.current = { page, frac, vy: g.vy, fracX, vx: g.vx };
+        // The layout effect clears the transform in the same pre-paint pass
+        // that applies the new sizes, so the handoff never flashes.
+        setZoom(z => clampZoom(z * g.k));
+    }, []);
+
+    // Trackpad pinches arrive as wheel events with ctrlKey set (the browser
+    // convention, also produced by ctrl/⌃ + a mouse wheel). Zoom the DOCUMENT,
+    // not the app: preventDefault stops the browser's own page zoom, which
+    // needs a NATIVE non-passive listener — React's synthetic onWheel can't
+    // guarantee that. Plain (ctrl-less) wheels fall through to normal scrolling.
+    //
+    // While the pinch is in flight the zoom is only a CSS transform pinned at
+    // the cursor (transform-origin = the point under it), which the compositor
+    // applies for free; the expensive relayout + re-rasterization happens once,
+    // when the burst goes quiet for SETTLE_MS.
+    useEffect(() => {
+        const root = rootRef.current;
+        if (!root) return;
+        const SETTLE_MS = 180;
+        const onWheel = (e: WheelEvent) => {
+            if (!e.ctrlKey) return;
+            e.preventDefault();
+            const el = scrollRef.current;
+            const L = layoutRef.current;
+            const inner = innerRef.current;
+            if (!el || !L || !inner || L.pages.length === 0) return;
+
+            let g = gestureRef.current;
+            if (!g) {
+                // Pin the content point under the cursor for the whole gesture
+                // (moving the origin mid-gesture would make the view jump).
+                const rect = el.getBoundingClientRect();
+                const vx = e.clientX - rect.left;
+                const vy = e.clientY - rect.top;
+                g = gestureRef.current = {
+                    k: 1,
+                    originX: el.scrollLeft + vx,
+                    originY: el.scrollTop + vy,
+                    vx,
+                    vy,
+                    timer: null,
+                };
+                inner.style.transformOrigin = `${g.originX}px ${g.originY}px`;
+            }
+
+            // Pinch deltas are small pixel increments; a discrete mouse-wheel
+            // notch is ±100+. Clamp so one notch can't triple the scale, and
+            // clamp the TARGET so the transform never overshoots MIN/MAX zoom.
+            const d = Math.max(-50, Math.min(50, e.deltaY));
+            const target = clampZoom(zoomRef.current * g.k * Math.exp(-d * 0.01));
+            g.k = target / zoomRef.current;
+            inner.style.transform = `scale(${g.k})`;
+
+            if (g.timer !== null) clearTimeout(g.timer);
+            g.timer = window.setTimeout(commitGesture, SETTLE_MS);
+        };
+        root.addEventListener('wheel', onWheel, { passive: false });
+        return () => root.removeEventListener('wheel', onWheel);
+    }, [commitGesture]);
+
+    /**
+     * Turn the document (or, with ⌥ held, just the page being read).
+     *
+     * ⌥ for one page rather than a second pair of buttons: rotating the whole
+     * document is what a sideways scan needs and is what the control should
+     * say plainly, while a single crooked page in an otherwise straight scan is
+     * the rarer repair. The page comes from `shownPageRef`, the same number the
+     * page box shows, so "this page" means the one under the top edge.
+     */
+    const rotate = useCallback((delta: number, onePage: boolean) => {
+        onRotate?.(delta, onePage ? shownPageRef.current : undefined);
+    }, [onRotate]);
+    /** A turn of THIS file is being written. Shown on the buttons, never used
+     *  to block them: a second click while one is pending queues a second
+     *  quarter turn, which is what the user asked for. */
+    const readRotating = useCallback(() => isPdfRotating(filePath), [filePath]);
+    const rotating = useSyncExternalStore(subscribePdfRotating, readRotating);
+
+    // +/- (and =, its unshifted key) step the zoom exactly like the pill
+    // buttons — but only for the front tab's viewer, never while typing in an
+    // input/editor, and never with modifiers held (⌘± stays browser zoom).
+    useEffect(() => {
+        if (!isActive) return;
+        const onKey = (e: KeyboardEvent) => {
+            if (e.metaKey || e.ctrlKey || e.altKey) return;
+            const t = e.target as HTMLElement | null;
+            if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+            if (e.key === '+' || e.key === '=') {
+                e.preventDefault();
+                nudgeZoom(1.2);
+            } else if (e.key === '-') {
+                e.preventDefault();
+                nudgeZoom(1 / 1.2);
+            } else if (e.code === 'BracketLeft' || e.code === 'BracketRight') {
+                // Next to each other under the right hand, and free: this
+                // viewer has no other bracket gesture. By CODE, not key: the
+                // modifier that means "this page only" everywhere else is ⌥,
+                // and ⌥] on a Mac is not `]` at all — but this handler ignores
+                // modified keys anyway, so the keys turn the whole document and
+                // ⌥-clicking a button is the way to turn one page.
+                e.preventDefault();
+                rotate(e.code === 'BracketRight' ? RIGHT : LEFT, false);
+            }
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [isActive, nudgeZoom, rotate]);
+
+    // A drag that starts on the page is a text selection, and must be able to
+    // sweep straight across a link instead of stopping dead at its edge. Links
+    // sit above the text layer (they'd never be clickable otherwise), so the
+    // drag has to switch them off for its duration — the same trick pdf.js's
+    // own viewer uses. A drag that STARTS on a link is a click, and is left
+    // alone. Plain DOM listeners: this must not re-render anything.
+    useEffect(() => {
+        const el = scrollRef.current;
+        if (!el) return;
+        const onPointerDown = (e: PointerEvent) => {
+            if (!(e.target as Element | null)?.closest?.('.pdf-link')) el.classList.add('pdf-selecting');
+        };
+        const onPointerUp = () => el.classList.remove('pdf-selecting');
+        el.addEventListener('pointerdown', onPointerDown);
+        // On the window, not the container: a drag routinely ends outside it.
+        window.addEventListener('pointerup', onPointerUp);
+        window.addEventListener('pointercancel', onPointerUp);
+        return () => {
+            el.removeEventListener('pointerdown', onPointerDown);
+            window.removeEventListener('pointerup', onPointerUp);
+            window.removeEventListener('pointercancel', onPointerUp);
+        };
+    }, []);
+
+    // Build text layers for the whole document (bounded), so ⌘F finds matches
+    // on pages that were never scrolled into view. Sequential, with a yield
+    // between pages, so it never competes with the visible-page renders.
+    // Keyed on WHETHER a layout exists, never on the layout itself: `layout` is a
+    // fresh object on every zoom step and every container resize, which cancelled
+    // and restarted this 300-iteration pass (and its 300 setTimeout yields) each
+    // time. ensureText is idempotent so nothing was rebuilt, but a single pinch
+    // commit scheduled hundreds of pointless macrotasks. This boolean flips false
+    // → true once per document and then stays put.
+    const hasLayout = layout !== null;
+    // ...and not while the pane is hidden. Up to 300 TextLayer.render calls,
+    // each with a worker round trip, were still running after the reader had
+    // switched to a whiteboard — which is exactly when tldraw is mounting and
+    // wants the main thread. It resumes where it left off when the pane comes
+    // back, and `ensureText` is idempotent, so nothing is redone.
+    useEffect(() => {
+        if (!docState || !hasLayout || !isVisible || docState.dims.length > TEXT_EAGER_LIMIT) return;
+        let cancelled = false;
+        (async () => {
+            for (let i = 0; i < docState.dims.length && !cancelled; i++) {
+                await ensureText(i);
+                await new Promise(r => setTimeout(r, 0));
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [docState, hasLayout, isVisible, ensureText]);
+
+    /**
+     * The page boxes — one per page, built ONCE per layout.
+     *
+     * This list used to be rebuilt inline on every render of the viewer, with
+     * three INLINE arrow refs per page. An inline ref is a new function each
+     * time, so React detached and reattached every one of them: 1,200 refs on a
+     * 400-page document, each detach writing `null` into the very arrays the
+     * render loop reads, plus the reconciliation of 400 boxes — on every render,
+     * and the viewer re-renders for the page number, the zoom, the native
+     * notice and (now) its own visibility. Switching back to a 400-page PDF
+     * cost 305-757ms, scaling with the page count rather than with anything on
+     * screen.
+     *
+     * `pageRef` hands back the SAME function for a given slot every time, so
+     * React leaves the refs alone, and the memo means an unrelated re-render
+     * reconciles one element instead of four hundred.
+     */
+    const pageRefs = useRef(new Map<string, (el: HTMLElement | null) => void>());
+    const pageRef = useCallback((kind: 'canvas' | 'text' | 'link', i: number) => {
+        const key = `${kind}:${i}`;
+        let fn = pageRefs.current.get(key);
+        if (!fn) {
+            const target = kind === 'canvas' ? canvasElsRef : kind === 'text' ? textElsRef : linkElsRef;
+            fn = (el: HTMLElement | null) => {
+                (target.current as (HTMLElement | null)[])[i] = el;
+            };
+            pageRefs.current.set(key, fn);
+        }
+        return fn;
+    }, []);
+    const pageEls = useMemo(() => (layout && docState ? layout.pages.map((p, i) => (
+        <div
+            key={`${docState.gen}:${i}`}
+            className="pdf-viewer-page"
+            style={{ width: p.w, height: p.h, marginBottom: PAGE_GAP }}
+        >
+            <canvas width={0} height={0} ref={pageRef('canvas', i) as React.Ref<HTMLCanvasElement>} />
+            <div className="textLayer" ref={pageRef('text', i)} />
+            {/* Above the text layer, or its links could never be clicked; see
+                .pdf-selecting. */}
+            <div className="pdf-link-layer" ref={pageRef('link', i)} />
+        </div>
+    )) : null), [layout, docState, pageRef]);
+
+    if (error) {
+        return (
+            <div className="pdf-viewer" ref={rootRef}>
+                <div className="pdf-pane-message">Could not display this PDF: {error}</div>
+            </div>
+        );
+    }
+
+    return (
+        <div className={`pdf-viewer${thumbsOpen ? ' has-thumbs' : ''}${inverted ? ' is-inverted' : ''}`} ref={rootRef}
+            onWheelCapture={event => { if (!event.ctrlKey) recordPdfNavigation(filePath, 'user-scroll'); }}
+            onKeyDownCapture={event => { if (['PageDown', 'PageUp', 'ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) recordPdfNavigation(filePath, 'user-scroll'); }}>
+            {thumbsOpen && docState && (
+                <PdfThumbnails
+                    key={docState.gen}
+                    ref={thumbsRef}
+                    sizes={thumbSizes}
+                    renderThumbnail={renderThumbnail}
+                    onSelect={scrollToPage}
+                    initialPage={thumbsStart}
+                />
+            )}
+            <div
+                className="pdf-viewer-scroll"
+                ref={scrollRef}
+                onScroll={scheduleWindowUpdate}
+                tabIndex={-1}
+            >
+                {layout && docState ? (
+                    <div
+                        ref={innerRef}
+                        className="pdf-viewer-inner"
+                        style={{
+                            padding: `${PAD_V}px 0`,
+                            // Drives the text layers' size and font scaling
+                            // (pdf.js contract), so zoom never rebuilds them.
+                            '--scale-factor': String(layout.scale),
+                        } as React.CSSProperties}
+                    >
+                        {pageEls}
+                    </div>
+                ) : (
+                    <div className="pdf-pane-message">Loading PDF…</div>
+                )}
+            </div>
+            {layout && (
+                <div className="pdf-viewer-controls">
+                    {emphasisEnabled && nativeNotice && <span className="pdf-native-emphasis-notice" role="status">{nativeNotice}</span>}
+                    <div className="pdf-viewer-pill">
+                        <ThumbnailsToggle open={thumbsOpen} onToggle={toggleThumbs} />
+                        <PdfInvertToggle />
+                        {onRotate && (
+                            <>
+                                {/* A quarter turn, written into the file — see
+                                    utils/pdfRotate.ts. ⌥-click turns only the
+                                    page being read; the tooltip says so,
+                                    because an invisible modifier that nothing
+                                    announces may as well not exist. */}
+                                <button
+                                    className={rotating ? 'pdf-viewer-rotate-btn is-busy' : 'pdf-viewer-rotate-btn'}
+                                    aria-busy={rotating}
+                                    onClick={e => rotate(LEFT, e.altKey)}
+                                    data-tooltip="Rotate left ([) — hold ⌥ for this page only"
+                                    aria-label="Rotate the document left"
+                                >
+                                    <RotateCcw size={15} className="pdf-viewer-rotate-ccw" />
+                                </button>
+                                <button
+                                    className={rotating ? 'pdf-viewer-rotate-btn is-busy' : 'pdf-viewer-rotate-btn'}
+                                    aria-busy={rotating}
+                                    onClick={e => rotate(RIGHT, e.altKey)}
+                                    data-tooltip="Rotate right (]) — hold ⌥ for this page only"
+                                    aria-label="Rotate the document right"
+                                >
+                                    <RotateCw size={15} />
+                                </button>
+                            </>
+                        )}
+                    </div>
+                    <div className="pdf-viewer-pill pdf-viewer-pages">
+                        <input
+                            ref={pageInputRef}
+                            className="pdf-viewer-page-input"
+                            // Not type="number": the spinner arrows are far too
+                            // heavy for a control this size. inputMode still
+                            // gets the numeric keypad on touch.
+                            type="text"
+                            inputMode="numeric"
+                            autoComplete="off"
+                            spellCheck={false}
+                            // Sized to the document's widest page number, so the
+                            // pill never resizes as you scroll past page 9 —
+                            // but never below two digits, or a short document
+                            // would give you a slot too cramped to type in.
+                            style={{ width: `${Math.max(2, String(layout.pages.length).length)}ch` }}
+                            data-tooltip="Current page — type a number and press Enter to jump"
+                            aria-label="Page number"
+                            onFocus={e => {
+                                pageInputFocusValueRef.current = e.currentTarget.value;
+                                e.currentTarget.select();
+                            }}
+                            onKeyDown={handlePageInputKeyDown}
+                            onBlur={handlePageInputBlur}
+                        />
+                        <span className="pdf-viewer-page-total">/ {layout.pages.length}</span>
+                    </div>
+                    <div className="pdf-viewer-pill pdf-viewer-zoom">
+                        <button onClick={() => nudgeZoom(1 / 1.2)} data-tooltip="Zoom out (-)" aria-label="Zoom out">−</button>
+                        <button onClick={() => setZoom(clampZoom(1))} data-tooltip="Reset to fit width" aria-label="Reset zoom">
+                            {Math.round(zoom * 100)}%
+                        </button>
+                        <button onClick={() => nudgeZoom(1.2)} data-tooltip="Zoom in (+)" aria-label="Zoom in">+</button>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
+// Memoized: the parent re-renders on every keystroke anywhere in the app, but
+// this only needs to re-render when its document or its own state changes.
+export default React.memo(PdfViewer);

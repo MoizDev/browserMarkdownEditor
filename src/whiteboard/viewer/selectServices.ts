@@ -142,7 +142,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const attachments = createBoardAttachmentResolver({ runtime, render: runtime.render, point: options.point, camera: options.camera, current: mutable });
     const connectorHints = createConnectorHints({ runtime, overlay: options.overlay, view: options.camera, current: mutable, invalidate: requestFrame });
     const shapeHandles = createShapeHandles({ runtime, overlay: options.overlay, view: options.camera, current: mutable, visible: mutable,
-        hint: connectorHints.setTarget, binding: connectorHints.setBinding,
+        hint: connectorHints.setTarget, binding: connectorHints.setBinding, editText: options.editSticky,
         sampleToSurface: physicalSurface, alwaysSnap: options.alwaysSnap ?? (() => false), guides: setGuides,
         invalidate: requestFrame, hold: () => session.beginGesture(), registerPending,
         show: ops => showTransform(ops), waitUntilReady: options.preview.waitUntilReady, waitUntilIdle: options.preview.waitUntilIdle,
@@ -637,6 +637,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     };
     // The host routes select through this tool so handles win over body picking for both pointer and keyboard input.
     const selectContext: BoardSelectGestureContext = { ...select, sampleToSurface: physicalSurface, beginHandle,
+        brushOverHandle: sample => shapeHandles.isEndOrLabel(physicalSurface(sample), sample.time),
         insideSelection: sample => selectionHandles.contains({ x: sample.x, y: sample.y }, sample.time),
         // The selection's picture is built at rest when a press lands on it: a drag's first move then only moves that picture,
         // and a build takes frames that the first move cannot wait for.

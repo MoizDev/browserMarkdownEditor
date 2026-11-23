@@ -155,6 +155,42 @@ export async function preparePdfPrint(deps: Pick<PdfGestureDeps,
   return { bytes: disk.bytes, valid, validate };
 }
 
+const LEFT_AS_IT_IS = 'The file has been left as it is.';
+const ANNOTATED_REFUSAL = 'This PDF carries annotations made here, and they are drawn against the pages as they are. Rotating would move every mark, so it is left alone.';
+
+/** Why a PDF's pages could not be turned, in the person's words: what the inspection found (or the engine refused), what
+ * that means for the file, and what they can do. The raw reasons ("PDF ink is read-only: signed.", "PDF attachment or
+ * page resources changed during rotation") were shown as they were. */
+function rotationRefusal(cause: string | undefined): string {
+  switch (cause) {
+    case 'signed': return `This PDF is signed, and turning its pages would break the signature. ${LEFT_AS_IT_IS} To rotate it, create an unsigned copy and rotate that.`;
+    case 'encrypted': return `This PDF is encrypted, so its pages cannot be turned here. ${LEFT_AS_IT_IS}`;
+    case 'notebook-source': return 'This PDF was exported from a notebook. Turn the pages in the notebook and export it again.';
+    case 'resource-limit': return `This PDF is too large to turn its pages here. ${LEFT_AS_IT_IS}`;
+    case 'missing-attachment': case 'invalid-marker': case 'invalid-write-mark': case 'nested-source':
+      return `The annotations saved inside this PDF are incomplete or damaged, and turning its pages could lose them. ${LEFT_AS_IT_IS}`;
+    case 'unsafe-policy': case 'ambiguous': case 'unsupported-format':
+      return `This PDF has parts this app cannot rewrite with certainty (forms, permissions or an unusual structure), so its pages were not turned. ${LEFT_AS_IT_IS}`;
+    default: return `This PDF could not be read well enough to turn its pages safely. ${LEFT_AS_IT_IS}`;
+  }
+}
+
+/** The same for a failure that surfaced as an error: the writer's own refusals arrive by name across the worker. */
+function rotationFailure(err: unknown): string {
+  const name = err instanceof Error ? err.name : '', message = err instanceof Error ? err.message : String(err);
+  if (name === 'AbortError') return 'The PDF changed while its pages were being turned, so nothing was saved. Try again.';
+  if (name === 'UnsupportedSecurity' || /encrypt/i.test(message)) return rotationRefusal('encrypted');
+  if (/signed/i.test(message)) return rotationRefusal('signed');
+  if (/^Annotated PDFs cannot be rotated/.test(message)) return ANNOTATED_REFUSAL;
+  if (name === 'ResourceLimit') return rotationRefusal('resource-limit');
+  // The writer turns the pages, then re-reads what it saved: anything besides the turn having changed is refused.
+  if (/changed during rotation|geometry changed|page count changed/.test(message)) {
+    return `Turning this PDF's pages would also have changed other parts of the file, so nothing was saved. ${LEFT_AS_IT_IS}`;
+  }
+  if (name === 'InvalidPdf' || name === 'PageError') return rotationRefusal(undefined);
+  return `Could not turn this PDF's pages (${message.replace(/[.\s]+$/, '')}). ${LEFT_AS_IT_IS}`;
+}
+
 /**
  * Turn a PDF's pages a quarter at a time, and write it.
  *
@@ -258,11 +294,11 @@ export async function rotatePdf(deps: Pick<PdfGestureDeps,
             token: { vaultEpoch: readerEpochAtCall, documentId: id, session: rotationSession.serial, bytesGeneration: generationAtCall } });
           check();
           if (acquisition.kind === 'read-only') {
-            notifyRef.current(`This PDF cannot be rotated safely. ${acquisition.reason}`); return;
+            notifyRef.current(rotationRefusal(acquisition.cause)); return;
           }
           if (!acquisition.isCurrent() || acquisition.source.outerFingerprint !== expected.hash) throw new Error('The PDF source does not match its disk baseline.');
           if (acquisition.kind !== 'plain') {
-            notifyRef.current('This PDF carries annotations made here, and they are drawn against the pages as they are. Rotating would move every mark, so it is left alone.'); return;
+            notifyRef.current(ANNOTATED_REFUSAL); return;
           }
           const { rotateNativePdfSource } = await import('../pdf/writing/rotationClient');
           check();
@@ -281,7 +317,7 @@ export async function rotatePdf(deps: Pick<PdfGestureDeps,
         const role = await readPdfRole(bytes);
         if (!canRotatePdfRole(role)) {
           notifyRef.current(role.kind === 'annotated'
-            ? 'This PDF carries annotations made here, and they are drawn against the pages as they are. Rotating would move every mark, so it is left alone.'
+            ? ANNOTATED_REFUSAL
             : `This PDF cannot be rotated safely. ${pdfRoleNotice(role) ?? 'Open its source notebook to change its pages.'}`);
           return;
         }
@@ -346,7 +382,7 @@ export async function rotatePdf(deps: Pick<PdfGestureDeps,
       bumpSaveEpoch();
     } catch (err) {
       console.error('Could not rotate the PDF:', err);
-      notifyRef.current(`Could not rotate this PDF: ${err instanceof Error ? err.message : String(err)}`);
+      notifyRef.current(rotationFailure(err));
     }
   };
 

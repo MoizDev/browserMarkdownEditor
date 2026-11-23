@@ -28,6 +28,7 @@ import type { Notify, Tell } from './useAppDialogs';
 import type { IndexGraphRef, NativePolicy, PdfRebuildEntry, ReconcileJob, RecoveryEvent, SetDiskState, SetTabs } from './types';
 import { hasHostedNativeOwner, hasWritableHostedNativeOwner } from './nativeOwners';
 import { describeReadError } from './readErrors';
+import { clearSaveNotice, showSaveNotice } from '../utils/saveNotices';
 import { tracksAssets } from './tracksAssets';
 
 /** Everything the save funnel reads from App. Refs are App's own `useRef`s. */
@@ -124,7 +125,6 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
    */
   const flushChainsRef = useRef(new Map<string, Promise<unknown>>());
   // Documents whose failed save the person was already told about: told once, until a save of it succeeds again.
-  const saveFailureToldRef = useRef(new Set<string>());
   const guardedRef = useRef(false);
   const beforeUnload = useCallback((event: BeforeUnloadEvent) => {
     event.preventDefault();
@@ -285,7 +285,7 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
     if (!pdfWriteAllowed()) return 'skipped';
     if (isPdf) {
       const refusal = nativeSource ? undefined : pdfSnapshotRefusal(snapshot);
-      if (refusal) { setSaveStatus('Not saved'); notifyRef.current(new PdfBuildRefused(refusal).message); return 'skipped'; }
+      if (refusal) { setSaveStatus('Not saved'); showSaveNotice(id, new PdfBuildRefused(refusal).message); return 'skipped'; }
       if (!closing && pdfEntry?.value.role.kind === 'annotated' && pdfEntry.value.role.writeMark.kind === 'foreign' && !pdfEntry.approved) return 'skipped';
     }
     // Captured now too: a vault switch clears every baseline right after its
@@ -484,22 +484,20 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
         if (current && graphAtCall && graphAtCall === indexGraphRef.current) void graphAtCall.client.dropOverlay(path).catch(() => {});
         notifySearchChanges();
         bumpSaveEpoch();
-        saveFailureToldRef.current.delete(id);
+        clearSaveNotice(id);
         return 'written';
       } catch (err) {
-        if (err instanceof PdfBuildRefused) { setSaveStatus('Not saved'); notifyRef.current(err.message); return 'skipped'; }
+        if (err instanceof PdfBuildRefused) { setSaveStatus('Not saved'); showSaveNotice(id, err.message); return 'skipped'; }
         if (err instanceof SaveSuperseded) return 'failed';
         console.error('Auto-save failed:', err);
         // Never silent, for any document: the person is told it was not saved and why; the tab stays dirty, so the next edit's
         // save tries again. A drawing or notebook used to fail into the console alone.
-        // Once per document until a save succeeds: every keystroke's retry raising the dialog again would bury the editor.
+        // A notice, never a dialog: this fires while the person types, and a dialog took their next keys (utils/saveNotices.ts).
+        // One per document, replaced by a retry that fails again and removed by the save that succeeds.
         setSaveStatus('Not saved');
-        if (!saveFailureToldRef.current.has(id)) {
-          saveFailureToldRef.current.add(id);
-          const why = describeReadError(err).replace(/[.\s]+$/, '');
-          notifyRef.current(isPdf ? `The PDF was not saved: ${why}. Your next change tries again.`
-            : `“${path.split('/').pop()}” was not saved: ${why}. Your next change tries again.`);
-        }
+        const why = describeReadError(err).replace(/[.\s]+$/, '');
+        showSaveNotice(id, isPdf ? `The PDF was not saved: ${why}. Your next change tries again.`
+          : `“${path.split('/').pop()}” was not saved: ${why}. Your next change tries again.`);
         return 'failed';
       }
     };

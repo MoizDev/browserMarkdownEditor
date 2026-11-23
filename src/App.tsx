@@ -57,6 +57,7 @@ import { useReaderIntegration } from './app/useReaderIntegration';
 import { useGlobalShortcuts } from './app/useGlobalShortcuts';
 import { useRecoveryActions } from './app/useRecoveryActions';
 import { requestDocumentKeyboard } from './utils/documentKeyboard';
+import SaveNotices from './components/SaveNotices';
 import { opensInApp } from './utils/documentReading';
 import type { FileTreeNode } from './types';
 
@@ -722,7 +723,7 @@ export default function App() {
           and outside the editor, because the questions it asks are the file
           tree's (which is visible in the graph view too). */}
       {dialogHost}
-      {updateNotice}
+      <SaveNotices>{updateNotice}</SaveNotices>
     </div>
   );
 }

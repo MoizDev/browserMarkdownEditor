@@ -2157,6 +2157,46 @@ body.is-resizing-panes * {
 
 .app-update-notice button:hover { color: var(--text-accent); }
 
+/* The notice column: save failures stacked above the update notice, same card. Never focused (utils/saveNotices.ts);
+   only the cards take the pointer, so the column's empty corners never swallow a click on the page under them. */
+.app-notices {
+  position: fixed;
+  z-index: 1000;
+  right: 20px;
+  /* Clear of the status pill (bottom 10px, ~28px tall) by the same 10px it keeps from the window edge. */
+  bottom: 48px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  max-width: min(420px, calc(100vw - 40px));
+  pointer-events: none;
+}
+
+.app-notices .app-update-notice {
+  position: static;
+  pointer-events: auto;
+}
+
+.app-notices-saves {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.app-notices-saves:empty { display: none; }
+
+.app-save-notice {
+  align-items: flex-start;
+  line-height: 1.4;
+}
+
+.app-save-notice span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .status-bar {
   position: absolute;
   right: 12px;

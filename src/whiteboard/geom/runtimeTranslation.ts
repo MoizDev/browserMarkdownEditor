@@ -89,7 +89,9 @@ export async function createBoardTranslationPlan(options: BoardTranslationOption
                 }
                 if (compensation.length) { candidate = await project([...initial, ...compensation]); assert(); }
                 const scope = await acquireBoardGeometryScope(runtime, roots.map(root => root.id), { doc: candidate, signal: request, current: active, cooperate: options.cooperate });
-                return { scope, compensation };
+                // The plan detaches a connector end whose target is not moving: those ends are committed with the move.
+                const detached = initial.filter(op => op.key === 'start' || op.key === 'end');
+                return { scope, compensation, detached };
             };
             let staged = await stage(delta), final: BoardGeometryScope | undefined, transferred = false;
             try {
@@ -110,7 +112,7 @@ export async function createBoardTranslationPlan(options: BoardTranslationOption
                     guides = result.guides.filter(guide => (guide.featureAxis ?? guide.axis) === 'x' ? useX : useY);
                     if (snapX || snapY) { delta = { x: delta.x + snapX, y: delta.y + snapY }; staged.scope.release(); staged = await stage(delta); }
                 }
-                assert(); const ops: NodeSetOp[] = [...staged.compensation];
+                assert(); const ops: NodeSetOp[] = [...staged.detached, ...staged.compensation];
                 for (const root of roots) {
                     const actual = staged.scope.logicalBounds(root.id), before = worldPose(doc, root.id);
                     const geometry: ChangeGeometry = { resolvedTip: (d, connector, terminal) => source.geometry.resolvedTip(d, connector, terminal),

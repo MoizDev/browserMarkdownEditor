@@ -1,11 +1,11 @@
 import { isLocked } from '../change/commands';
-import { poseInParent, worldPose } from '../change/coordinates';
+import { poseInParent, worldPose, worldToLocal } from '../change/coordinates';
 import type { ChangeGeometry, WorldPose } from '../change/coordinates';
 import type { Op, Transaction } from '../change/ops';
-import { isSheetParent } from '../model/doc';
+import { childrenOf, isSheetParent } from '../model/doc';
 import type { BoardDoc } from '../model/doc';
-import type { NodeId } from '../model/ids';
-import type { Node } from '../model/nodes';
+import type { NodeId, ParentId } from '../model/ids';
+import type { ConnectorNode, Node } from '../model/nodes';
 import type { Vec2 } from './path';
 import { constrainedTranslation } from './transforms';
 
@@ -23,6 +23,8 @@ export class TranslationPlan {
     private readonly fingerprints: readonly Fingerprint[];
     private readonly host: BoardDoc['host'];
     private cancelled = false;
+    // Every node this plan moves: the selection and everything inside it. A bound end whose target is outside this set is detached.
+    private readonly moving: ReadonlySet<NodeId>;
     constructor(private readonly doc: BoardDoc, ids: readonly NodeId[], private readonly geometry: ChangeGeometry) {
         const selected = new Set(ids), fingerprints = new Map<NodeId, Fingerprint>(), roots: RootSnapshot[] = [];
         for (const id of selected) {
@@ -41,6 +43,22 @@ export class TranslationPlan {
             if (!covered) roots.push({ node: { ...node }, pose: worldPose(doc, id), centre: { ...geometry.worldBoundsCenter(doc, node) } });
         }
         this.roots = roots; this.fingerprints = [...fingerprints.values()]; this.host = doc.host;
+        const moving = new Set<NodeId>(selected), pending: NodeId[] = [...selected];
+        for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
+            for (const child of childrenOf(doc, next as ParentId)) if (!moving.has(child.id)) { moving.add(child.id); pending.push(child.id); }
+        }
+        this.moving = moving;
+    }
+    // A connector moved with none of the shapes it is bound to is a free arrow: its bound ends would re-resolve to their
+    // targets, so the body never moved (measured: a bound arrow dragged alone stayed put and stayed bound). With a bound shape
+    // in the move, both bindings persist, as they do when the shape is dragged on its own.
+    private detachUnmovedEnds(node: Readonly<ConnectorNode>, ops: Op[]): void {
+        if ([node.start.attach, node.end.attach].some(attach => attach && this.moving.has(attach.target))) return;
+        for (const terminal of ['start', 'end'] as const) {
+            if (!node[terminal].attach) continue;
+            const local = worldToLocal(this.doc, node, this.geometry.resolvedTip(this.doc, node, terminal));
+            ops.push({ t: 'set', id: node.id, key: terminal, value: { x: local.x, y: local.y, attach: null } });
+        }
     }
     private validate(): void {
         if (this.cancelled || this.doc.host !== this.host) throw new TransformInvalidated();
@@ -58,6 +76,7 @@ export class TranslationPlan {
             const desired = { x: root.pose.x + delta.x, y: root.pose.y + delta.y, rotation: root.pose.rotation };
             const geometry: ChangeGeometry = { resolvedTip: (doc, connector, terminal) => this.geometry.resolvedTip(doc, connector, terminal),
                 worldBoundsCenter: () => ({ x: root.centre.x + delta.x, y: root.centre.y + delta.y }) };
+            if (root.node.kind === 'connector') this.detachUnmovedEnds(root.node, ops);
             const next = poseInParent(this.doc, root.node, root.node.parent, desired, geometry);
             if (next.page !== root.node.page) ops.push({ t: 'set', id: root.node.id, key: 'page', value: next.page });
             if (next.x !== root.node.x) ops.push({ t: 'set', id: root.node.id, key: 'x', value: next.x });

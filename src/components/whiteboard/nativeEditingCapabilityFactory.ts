@@ -4,7 +4,7 @@ import { isLocked } from '../../whiteboard/change/commands';
 import { insertClipboardText } from '../../whiteboard/clipboard/insertText';
 import { flattenNativeSelection } from '../../whiteboard/host/nativeFlatten';
 import { convertMediaCard } from '../../whiteboard/media/cards';
-import { resolveEmbedCandidate } from '../../whiteboard/media/embed';
+import { EMBED_PROVIDER_NAMES, resolveEmbedCandidate } from '../../whiteboard/media/embed';
 
 /** One view borrows the document's actual media pipeline; no new job queue or asset store. */
 export function createNativeEditingCapabilities(context: NativeEditingCapabilityContext): NativeEditingCapabilities {
@@ -45,6 +45,7 @@ export function createNativeEditingCapabilities(context: NativeEditingCapability
             const captured = binding.controller.captureInsertionTarget();
             const value = await context.requestText({ title: context.t('dialog.insertEmbed'),
                 body: context.t('dialog.embedBody'), confirmLabel: context.t('dialog.create'),
+                list: { label: context.t('dialog.embedProviders'), items: EMBED_PROVIDER_NAMES },
                 input: { label: context.t('dialog.url'), initialValue: '', placeholder: 'https://…',
                     validate: input => resolveEmbedCandidate(input, environment, manifest) ? null : context.t('dialog.embedInvalid') } });
             if (value === null) return;

@@ -3,6 +3,7 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
+        { key: "dialog.embedProviders", text: "Supported providers", reason: "Not translated yet: this board language shows the English heading." },
         { key: "dialog.url", text: "URL", reason: "URL is the standard abbreviation, used unchanged in this language." },
         { key: "styles.headBar", text: "Bar", reason: "Same wording as English in this language." },
         { key: "commands.exportPng", text: "PNG", reason: "International file format or paper size designation." },
@@ -17,6 +18,7 @@ export default defineBoardLanguage({
     strings: {
         "dialog.insertEmbed": "Gömme ekle",
         "dialog.embedBody": "Desteklenen bir gömme sağlayıcısından bağlantı girin. Yükle seçene kadar gömme yüklenmez.",
+        "dialog.embedProviders": "Supported providers",
         "dialog.url": "URL",
         "crop.aspect": "En boy oranı",
         "crop.zoom": "Yakınlaştırma",

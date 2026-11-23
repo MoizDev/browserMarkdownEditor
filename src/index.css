@@ -2420,6 +2420,27 @@ body.is-resizing-panes * {
   color: var(--text-muted);
 }
 
+.confirm-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 12px 0 18px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+.confirm-list-label {
+  flex-basis: 100%;
+  margin-bottom: 2px;
+}
+
+.confirm-list-item {
+  padding: 2px 7px;
+  border: 1px solid var(--border, currentColor);
+  border-radius: 999px;
+}
+
 .confirm-body strong {
   color: var(--text-normal);
   font-weight: 600;

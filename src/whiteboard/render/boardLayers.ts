@@ -135,7 +135,7 @@ interface Estimate {
     demandPublished: boolean;
     done: boolean;
 }
-function sameToken(a: RenderToken, b: RenderToken): boolean {
+export function sameToken(a: RenderToken, b: RenderToken): boolean {
     return a.vaultEpoch === b.vaultEpoch && a.documentId === b.documentId
         && a.bytesGeneration === b.bytesGeneration && a.session === b.session;
 }

@@ -116,7 +116,8 @@ export function createCurveCircleRootsJob(curve: ExactCurve, centre: Vec2, radiu
                     }
                     if (cells.length) { cells = []; algebraicCurve = undefined; }
                     const item = stack.pop();
-                    if (!item) return finish({ status: 'done', roots: Object.freeze(roots) });
+                    // A copy: cancel() empties the job's own roots array after the caller's finally, which a frozen array refuses (measured: the arc bend preview threw 'Cannot assign to read only property length').
+                    if (!item) return finish({ status: 'done', roots: Object.freeze([...roots]) });
                     const control = signs(item.curve);
                     if (control.every(value => value === 0)) return finish({ status: 'uncertain', reason: 'Curve is coincident with circle' });
                     if (!control[0]) append(pointBox(item.curve[0]));

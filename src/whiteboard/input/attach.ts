@@ -365,7 +365,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   const wheelActivity = () => { services.textInput?.cancelPending(); services.cancelMotion?.() }
   const auxclick = (event: MouseEvent) => { if (event.button === 1 || event.button === 2) event.preventDefault() }
   const doubleClick = (event: MouseEvent) => {
-    if (!current() || !editable() || event.button !== 0) return
+    // A double-click with Shift, accel or Ctrl is no gesture at all (catalogue S§12): it creates no text and edits nothing.
+    if (!current() || !editable() || event.button !== 0 || event.shiftKey || event.ctrlKey || event.metaKey) return
     let handled = false
     try {
       if (services.handleDoubleClick) handled = services.handleDoubleClick(

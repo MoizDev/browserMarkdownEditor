@@ -45,7 +45,7 @@ export function createTextInputBridge(ports: TextInputRoutingPorts): TextInputBr
                     if (!ports.isCurrent() || !stillValid() || manager.current !== binding || target === null) return false;
                     // Use the original point: a deferred blank hit must never move with a later camera.
                     if (target === 'blank') return manager.create(point.x, point.y, null) !== null;
-                    return manager.start(target.node, { anchor: target.offset, focus: target.offset });
+                    return manager.start(target.node);
                 } catch (error) { ports.error(error); return false; }
             };
             const target = ports.locate(x, y, request.signal);

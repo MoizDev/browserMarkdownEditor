@@ -35,7 +35,8 @@ export interface TextInputBridge {
     cancelPending(): boolean;
     flush(): void;
 }
-export type TextInputHit = { readonly node: NodeId; readonly offset: number } | 'blank' | null;
+/** A double-click's target. Editing it selects all its text (catalogue S§12), so no caret offset is resolved. */
+export type TextInputHit = { readonly node: NodeId } | 'blank' | null;
 export interface TextInputRoutingPorts {
     readonly manager: TextEditingManager;
     selected(): NodeId | null;

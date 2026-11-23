@@ -53,6 +53,12 @@ function stepFrom(from: Vec2, direction: Vec2, distance: number): Vec2 {
     const length = Math.hypot(direction.x, direction.y);
     return { x: from.x + direction.x / length * distance, y: from.y + direction.y / length * distance };
 }
+/** A perpendicular leg must be a full leg long: a shorter last segment puts the arrowhead on the corner, where it points along the
+ * turn instead of into the edge. Measured: a 12-unit leg at width 2 drew the head pointing down beside a left edge it was meant to enter. */
+function legMatches(direction: Vec2 | undefined, from: Vec2, toward: Vec2 | undefined, leg: number | undefined): boolean {
+    if (!direction) return true;
+    return directionMatches(direction, from, toward) && Math.hypot(toward!.x - from.x, toward!.y - from.y) >= leg! - 1e-9;
+}
 function directionMatches(direction: Vec2 | undefined, from: Vec2, toward: Vec2 | undefined): boolean {
     if (!direction) return true;
     if (!toward) return false;
@@ -115,8 +121,8 @@ export function* routeElbowSteps(request: ElbowStepRequest): Generator<void, Elb
     let best: { points: Vec2[]; bends: number; length: number; id: number } | undefined;
     for (let id = 0; id < candidates.length; id++) {
         const points = simplify(candidates[id]);
-        if (!points.every(finitePoint) || !directionMatches(request.startDirection, points[0], points[1])
-            || !directionMatches(request.endDirection, points[points.length - 1], points[points.length - 2])) continue;
+        if (!points.every(finitePoint) || !legMatches(request.startDirection, points[0], points[1], request.leg)
+            || !legMatches(request.endDirection, points[points.length - 1], points[points.length - 2], request.leg)) continue;
         if (!(yield* request.validPort(points, 'start')) || !(yield* request.validPort(points, 'end')) || (yield* request.crossesForbidden(points))) continue;
         let length = 0;
         for (let i = 1; i < points.length; i++) length += Math.abs(points[i].x - points[i - 1].x) + Math.abs(points[i].y - points[i - 1].y);

@@ -1,4 +1,4 @@
-// Run through bme-lock run (exploration) or bme-lock bench (a declared timing window).
+// Exploratory by default; an accepted timing also needs BME_BENCH_WINDOW_MINUTES (lib/bench/lock.mjs).
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runBenchmark } from '../lib/bench/runner.mjs';

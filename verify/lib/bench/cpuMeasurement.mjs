@@ -10,21 +10,15 @@ function cpuMilliseconds(text) {
     const [day, time] = text.includes('-') ? text.split('-') : ['0', text];
     return (Number(day) * 86400 + time.split(':').reverse().reduce((sum, value, i) => sum + Number(value) * 60 ** i, 0)) * 1000;
 }
+/** Interactive processes the person running the bench knows about and accepts as background
+ * (an editor, a coding agent), named as `BME_BENCH_AGENT_PIDS=label:pid,label:pid`. Their CPU is
+ * reported under their label instead of as unknown load. Only labels and PIDs are kept, never argv. */
 export async function collectAgentRoots() {
-    // hc ls intentionally has no PID; get supplies it. Keep only addresses,
-    // agent kinds and PIDs, never agent argv/prompts or process command arguments.
-    const listing = JSON.parse((await exec('hc', ['ls', '--json'], { maxBuffer: 4 * 1024 ** 2 })).stdout);
-    const terminals = listing.terminals.filter(t => t.state === 'live' && /^t[a-z0-9]+$/.test(t.address)
-        && ['pi', 'claude-code', 'codex'].includes(t.agent));
-    const roots = [];
-    let next = 0;
-    await Promise.all(Array.from({ length: Math.min(4, terminals.length) }, async () => {
-        while (next < terminals.length) {
-            const terminal = terminals[next++];
-            const detail = JSON.parse((await exec('hc', ['get', terminal.address], { maxBuffer: 4 * 1024 ** 2 })).stdout);
-            if (Number.isInteger(detail.pid)) roots.push({ address: terminal.address, agent: terminal.agent, pid: detail.pid });
-        }
-    }));
+    const roots = (process.env.BME_BENCH_AGENT_PIDS ?? '').split(',').filter(Boolean).map(entry => {
+        const [agent, pid] = entry.includes(':') ? entry.split(':') : ['agent', entry];
+        if (!/^\d+$/.test(pid)) throw new Error(`BME_BENCH_AGENT_PIDS entries are label:pid; got ${entry}`);
+        return { agent, pid: Number(pid) };
+    });
     return roots.sort((a, b) => a.pid - b.pid);
 }
 export function runtimeClass(comm) {
@@ -64,7 +58,7 @@ export async function sampleCPU(agentRoots, previousBench = new Map()) {
             || (previous?.comm === proc.comm && proc.cpuMs >= previous.cpuMs);
         if (registered.has(proc.pid)) proc.benchAssociation = registered.get(proc.pid);
         const agent = ancestor(proc, pid => agents.has(pid));
-        // A real agent's root is labelled from hc. Another runtime/build/browser
+        // A declared agent root keeps its label. Another runtime/build/browser
         // never inherits an agent label merely because an agent launched it.
         proc.role = bench ? 'bench' : agents.has(proc.pid) ? `agent:${agents.get(proc.pid).agent}`
             : runtimeClass(proc.comm) ?? (agent ? `agent-tree:${agents.get(agent).agent}` : 'system/other');

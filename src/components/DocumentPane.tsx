@@ -1352,6 +1352,7 @@ function DocumentPane({
         if (isPdf && mode === 'read' && controller) entries.push(
             {kind:'command',id:'pdf-text',label:'Read extracted text',checked:controller.capabilities().surface==='pdf-text',disabled:!controller.showPdfText || tab.readerStatus?.phase==='loading' || !!tab.disk || tab.dirty,reason:tab.disk?'Resolve the PDF disk change first':tab.dirty?'Wait for annotations to finish saving':undefined,run:()=>{void controller.showPdfText?.().catch(error=>onNotify(String(error)))}},
             {kind:'command',id:'pdf-original',label:'Original PDF',checked:controller.capabilities().surface==='pdf-original',run:()=>{void controller.showPdfOriginal?.().catch(error=>onNotify(String(error)))}},
+            ...(controller.printPdf ? [{kind:'command' as const,id:'pdf-print',label:'Print…',run:()=>controller.printPdf?.()}] : []),
         );
         if(canToggleMode) entries.push({kind:'command',id:'change-mode',label: canAnnotate ? 'Toggle view/annotate mode' : 'Toggle read/edit mode',run:()=>onToggleMode(path)});
         // Not for a .tex: a markdown table is not a `tabular`, and writing one

@@ -3543,33 +3543,6 @@ body.is-resizing-panes * {
 ::highlight(pdf-find-current) { background-color: color-mix(in srgb, #ff8a00 60%, transparent); color: transparent; }
 
 /* ── Bottom-right controls: page number, then zoom ── */
-.pdf-pane-print {
-  position: absolute;
-  z-index: 13;
-  top: 8px;
-  /* The annotator menu owns the left corner; PDF features owns the right. */
-  left: 50%;
-  transform: translateX(-50%);
-  padding: 5px 10px;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 6px;
-  background: var(--background-secondary);
-  color: var(--text-muted);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.pdf-pane-print:hover {
-  background: var(--background-modifier-hover);
-  color: var(--text-normal);
-}
-
-.pdf-pane-print:focus-visible {
-  outline: 2px solid var(--interactive-accent);
-  outline-offset: 2px;
-}
-
 .pdf-viewer-controls {
   position: absolute;
   right: 16px;

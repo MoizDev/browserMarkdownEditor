@@ -1,47 +1,81 @@
 import type { LaserContext, LaserPoint } from './basicTools'
 
-export interface LaserTrailFrame { readonly points: readonly LaserPoint[]; readonly opacity: number }
+// Ephemeral chrome only: nothing here reaches the document, history or persistence. The shared scheduler owns the clock
+// and the animation frames; `frame` is pure in its time argument.
+export const LASER_IDLE_MS = 1200
+export const LASER_FADE_MS = 500
+/** A held stroke keeps only its newest points, so a long hold draws a bounded trail (the bound the trail had before sessions). */
+const MAX_POINTS = 512
 
-// Ephemeral chrome only. The shared scheduler owns the clock and animation frames.
+interface Session {
+  readonly strokes: LaserPoint[][]
+  /** A stroke of this session is being drawn: the session never stops while the pointer is down. */
+  open: boolean
+  /** The last pointer activity: a point's time while drawing, the release time after it. */
+  activeAt: number
+}
+
+export interface LaserStroke { readonly points: readonly LaserPoint[] }
+
+/** Strokes made within the idle timeout of each other share one session, and a session fades as one: once it has been idle
+ * for `LASER_IDLE_MS`, every stroke loses its oldest points together on an ease-in curve over `LASER_FADE_MS`. Nothing
+ * is faded per point, so a stroke cannot outlive the strokes it was drawn with. */
 export class LaserTrail implements LaserContext {
-  private points: LaserPoint[] = []
-  private endedAt: number | null = null
-  private visible = true
-  constructor(private readonly now: () => number, private readonly invalidate: () => void, private readonly wakeAt: (deadline: number | null) => void, private readonly reducedMotion: () => boolean) {}
+  private sessions: Session[] = []
+  private drawing: LaserPoint[] | null = null
+
+  constructor(private readonly now: () => number) {}
+
+  get active(): boolean { return this.sessions.length > 0 }
+
   append(point: LaserPoint): void {
-    if (!this.visible) return
-    this.endedAt = null
-    this.points.push(point)
-    if (this.points.length === 1) this.wakeAt(point.time + 2000)
-    this.invalidate()
+    if (!this.drawing) {
+      const last = this.sessions.at(-1)
+      let session = last && point.time < last.activeAt + LASER_IDLE_MS ? last : undefined
+      if (!session) { session = { strokes: [], open: false, activeAt: point.time }; this.sessions.push(session) }
+      session.open = true; session.activeAt = point.time
+      this.drawing = []; session.strokes.push(this.drawing)
+    }
+    this.drawing.push(point)
+    if (this.drawing.length > MAX_POINTS) this.drawing.splice(0, this.drawing.length - MAX_POINTS)
+    this.sessions.at(-1)!.activeAt = point.time
   }
+
   finish(): void {
-    if (!this.points.length) return
-    this.endedAt = this.now()
-    this.wakeAt(this.endedAt + (this.reducedMotion() ? 2000 : 1500))
-    this.invalidate()
+    const session = this.sessions.at(-1)
+    if (!this.drawing || !session) return
+    this.drawing = null
+    session.open = false
+    session.activeAt = this.now()
   }
+
   cancel(): void { this.clear() }
-  hide(): void { this.visible = false; this.clear() }
-  show(): void { this.visible = true }
-  frame(time: number): LaserTrailFrame | null {
-    if (!this.visible || !this.points.length) return null
-    if (this.endedAt !== null && time >= this.endedAt + 2000) { this.clear(); return null }
-    if (this.endedAt === null) {
-      let first = 0
-      while (first < this.points.length && this.points[first].time + 2000 <= time) first++
-      if (first) this.points = this.points.slice(first)
-      if (!this.points.length) { this.wakeAt(null); return null }
-      this.wakeAt(this.points[0].time + 2000)
-    } else if (!this.reducedMotion() && time >= this.endedAt + 1500) this.wakeAt(Math.min(time + 16, this.endedAt + 2000))
-    const opacity = this.endedAt === null || this.reducedMotion() ? 1 : Math.max(0, Math.min(1, (this.endedAt + 2000 - time) / 500))
-    return { points: this.points, opacity }
+
+  /** Drops every session at once; true when there was a trail to drop. */
+  clear(): boolean {
+    const had = this.sessions.length > 0
+    this.sessions = []; this.drawing = null
+    return had
   }
-  private clear(): void {
-    if (!this.points.length && this.endedAt === null) return
-    this.points = []
-    this.endedAt = null
-    this.wakeAt(null)
-    this.invalidate()
+
+  /** The strokes still visible at `time`, faded sessions already trimmed. A finished session is dropped here. */
+  frame(time: number): readonly LaserStroke[] {
+    const out: LaserStroke[] = []
+    this.sessions = this.sessions.filter(session => {
+      const idleEnd = session.activeAt + LASER_IDLE_MS
+      if (session.open || time < idleEnd) {
+        for (const stroke of session.strokes) if (stroke.length) out.push({ points: stroke })
+        return true
+      }
+      const progress = Math.min(1, (time - idleEnd) / LASER_FADE_MS)
+      if (progress >= 1) return false
+      const eased = progress * progress
+      for (const stroke of session.strokes) {
+        const removed = Math.floor(stroke.length * eased)
+        if (removed < stroke.length) out.push({ points: removed ? stroke.slice(removed) : stroke })
+      }
+      return true
+    })
+    return out
   }
 }

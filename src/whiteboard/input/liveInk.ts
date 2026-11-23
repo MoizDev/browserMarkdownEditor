@@ -184,7 +184,8 @@ export class LiveInk implements GestureOwner {
     const point = this.point
     this.context.toLocal(sample, point)
     const pressure = sample.source === 'pen' && sample.buttons === 0 && sample.pressure === 0 && this.last ? this.last.pressure : sample.pressure
-    this.builder.append(point.x, point.y, this.context.builderOptions.pressure ? pressure : undefined, modifiers.shift)
+    // Cmd or Ctrl, either one on macOS too, turns the angle snap off for a Shift run.
+    this.builder.append(point.x, point.y, this.context.builderOptions.pressure ? pressure : undefined, modifiers.shift, !modifiers.accel && !modifiers.control)
     this.last = sample
     this.dirty = true
   }

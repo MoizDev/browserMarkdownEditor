@@ -7,6 +7,8 @@ export interface ToolRegistration {
   readonly id: string
   readonly persistence: 'persistent' | 'single-use'
   readonly hasVariants?: boolean
+  /** A tool the tool lock may keep chosen; absent means lockable. */
+  readonly lockable?: boolean
 }
 
 export interface ToolChoice {
@@ -160,7 +162,8 @@ export class ToolState {
   complete(start: ToolStateSnapshot): void {
     const keep = this.keepToolEpoch === start.selectionEpoch
     this.keepToolEpoch = null
-    if (this.snapshot.selectionEpoch !== start.selectionEpoch || this.snapshot.locked || keep) return
+    const lockable = this.registry.get(start.active.id)?.lockable !== false
+    if (this.snapshot.selectionEpoch !== start.selectionEpoch || (this.snapshot.locked && lockable) || keep) return
     if (this.registry.get(start.active.id)?.persistence === 'single-use') this.setTool(this.selectId)
   }
 

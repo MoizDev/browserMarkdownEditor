@@ -7,6 +7,7 @@ import type { NodeId, SheetId } from '../model/ids';
 import type { BoardSession } from '../session/BoardSession';
 import type { ToolState } from './gesture';
 import type { RealSample } from './tool';
+import { snapStraightEnd } from './straightInk';
 import type { DryInkIdentity, InkIdentity, InkPresentation } from './liveInk';
 import type { PaintClip } from '../render/paintStream';
 
@@ -29,7 +30,7 @@ export interface InkContinuation {
     readonly captureDeviceScale: number;
     current(): boolean;
     toLocal(sample: RealSample): Readonly<{ x: number; y: number }>;
-    commit(endpoint: RealSample, signal: AbortSignal): Promise<DryInkIdentity | null>;
+    commit(endpoint: RealSample, signal: AbortSignal, snapAngle: boolean): Promise<DryInkIdentity | null>;
 }
 
 /** The last real pen stroke is session-owned. Its original samples stay leased until
@@ -75,13 +76,13 @@ export function createInkContinuation(options: InkContinuationOptions): (sample:
             && options.tools.getLastStroke() === node.id && doc.nodes.get(node.id) === node && node.samples === original;
         return { identity, presentation, first, declaredMaxScale: options.declaredMaxScale(),
             captureDeviceScale: options.captureDeviceScale(), current, toLocal,
-            async commit(endpoint, signal) {
+            async commit(endpoint, signal, snapAngle) {
             const check = () => {
                 signal.throwIfAborted();
                 if (!current()) throw new DOMException('Ink continuation became stale', 'AbortError');
             };
             check();
-            const { x, y } = toLocal(endpoint);
+            const { x, y } = snapStraightEnd(first, toLocal(endpoint), snapAngle);
             if (!Number.isFinite(x) || !Number.isFinite(y)) throw new RangeError('Ink continuation coordinate is invalid');
             const previous = samples.retain(original);
             try {

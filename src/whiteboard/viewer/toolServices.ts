@@ -9,6 +9,7 @@ import type { ViewState, Viewport } from '../../platform/types';
 import type { BoardRuntime } from '../host/runtime';
 import type { BoardInputServices } from '../input/attach';
 import { eraserTool, laserTool, type LaserPoint } from '../input/basicTools';
+import { LaserTrail } from '../input/laserTrail';
 import type { ToolChoice } from '../input/gesture';
 import type { MappingHistory } from '../input/pointer';
 import type { PointerRoute } from '../input/pointerRouter';
@@ -153,18 +154,35 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
     const pending = new Set<() => void>();
     const registerPending = (cancel: () => void) => { if (!editable()) throw new DOMException('View is not editable', 'AbortError'); pending.add(cancel); return () => { pending.delete(cancel); }; };
     let brush: ZoomBox | null = null, column: { x: number; y: number; width: number | null } | null = null;
-    let svg: SVGSVGElement | null = null, laser: LaserPoint[] = [], laserActive = false, deadline: (() => void) | null = null;
+    let svg: SVGSVGElement | null = null, deadline: (() => void) | null = null;
     const invalidate = () => options.interaction.invalidate();
-    const scheduleLaser = () => {
+    const laserTrail = new LaserTrail(() => performance.now());
+    let laserSheet: string | null = null;
+    // The eraser's path while it erases. A pointer that stops consumes its trail from the oldest end over ERASE_TRAIL_MS.
+    const ERASE_TRAIL_MS = 350;
+    let erasePath: { x: number; y: number; time: number }[] = [];
+    const scheduleTrails = () => {
         deadline?.(); deadline = null;
-        if (!laser.length || !current()) return;
+        if ((!laserTrail.active && erasePath.length < 2) || !current()) return;
         deadline = getPlatformRuntime().scheduler.scheduleDeadline(performance.now() + 32, () => { deadline = null; if (current()) invalidate(); });
     };
+    const dropTrails = (): boolean => {
+        const hadLaser = laserTrail.clear(), hadErase = erasePath.length > 0;
+        erasePath = [];
+        deadline?.(); deadline = null;
+        if (hadLaser || hadErase) invalidate();
+        return hadLaser;
+    };
     const laserContext = {
-        append(p: LaserPoint) { if (!current()) return; if (!laserActive) { laser = []; laserActive = true; }
-            laser.push({ ...p }); if (laser.length > 512) laser.splice(0, laser.length - 512); invalidate(); scheduleLaser(); },
-        finish() { laserActive = false; scheduleLaser(); },
-        cancel() { laserActive = false; laser = []; deadline?.(); deadline = null; invalidate(); },
+        append(p: LaserPoint) { if (!current()) return; laserTrail.append(p); invalidate(); scheduleTrails(); },
+        finish() { laserTrail.finish(); scheduleTrails(); },
+        cancel() { laserTrail.cancel(); deadline?.(); deadline = null; invalidate(); },
+    };
+    const erasePoint = (p: { x: number; y: number; time: number }) => {
+        if (!current()) return;
+        erasePath.push({ x: p.x, y: p.y, time: p.time });
+        if (erasePath.length > 512) erasePath.splice(0, erasePath.length - 512);
+        invalidate(); scheduleTrails();
     };
     const zoom: ZoomBrushContext = {
         toSurface: options.sampleToSurface,
@@ -193,7 +211,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         if (!editable()) return null;
         switch (choice.id) {
             case 'select': return route(select.tool, undefined);
-            case 'eraser': return route(eraserTool, select.eraser);
+            case 'eraser': return route(eraserTool, { ...select.eraser, trail: erasePoint });
             case 'laser': return route(laserTool, laserContext);
             case 'zoom': return route(zoomBrushTool, zoom);
             case 'text': return route(textTool, textContext);
@@ -221,7 +239,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         for (const cancel of [...pending]) { pending.delete(cancel); try { cancel(); } catch (error) { ui.error(error); } cancelled = true; }
         try { if (options.imports.cancelPending()) cancelled = true; } catch (error) { ui.error(error); }
         if (!text.manager.current) preview.clear();
-        brush = null; column = null; laserContext.cancel(); return cancelled;
+        brush = null; column = null; laserContext.cancel(); erasePath = []; return cancelled;
     };
     const paste = (event: ClipboardEvent) => {
         if (!event.defaultPrevented && editable() && options.focused() && !ui.modalOpen() && !text.manager.current) options.imports.paste(event);
@@ -259,28 +277,43 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         ownsWheel: ui.ownsWheel, cameraChanged: options.interaction.cameraChanged, error: ui.error, pointerChanged: ui.pointerChanged,
         hover: event => { ui.hover?.(event); trackHover(event); }, contextMenu: contextMenuAt, drop: event => options.imports.drop(event), linkAt: ui.linkAt,
         penModeChanged: ui.penModeChanged, persistToolLock: ui.persistToolLock, clearLatches: ui.clearLatches, cancelPendingGestures: cancelPending,
+        clearLaserTrail: dropTrails,
         keyboardContextMenu: select.keyboardContextMenu,
     };
     const writeOverlays = (frame: ScheduledFrame) => {
         if (!current() || frame.token.vaultEpoch !== token.vaultEpoch || frame.token.documentId !== token.documentId
             || frame.token.bytesGeneration !== token.bytesGeneration || frame.token.session !== token.session) return;
         select.writeOverlays(frame); text.writeOverlays(frame);
-        laser = laser.filter(p => frame.timestamp - p.time < 800);
-        if (!laser.length && !brush && !column) { svg?.remove(); svg = null; deadline?.(); deadline = null; return; }
+        // A laser trail belongs to the page it was drawn on: a page switch drops every session.
+        const sheet = runtime.selection.getSnapshot().sheet;
+        if (sheet !== laserSheet) { laserSheet = sheet; laserTrail.clear(); }
+        const laserStrokes = laserTrail.frame(frame.timestamp);
+        erasePath = erasePath.filter(p => frame.timestamp - p.time < ERASE_TRAIL_MS);
+        if (!laserStrokes.length && erasePath.length < 2 && !brush && !column) { svg?.remove(); svg = null; deadline?.(); deadline = null; return; }
         if (!svg) { svg = document.createElementNS(svgNS, 'svg'); svg.setAttribute('aria-hidden', 'true');
             svg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible'; options.overlay.append(svg); }
         svg.setAttribute('viewBox', `0 0 ${frame.view.viewport.width} ${frame.view.viewport.height}`); svg.replaceChildren();
-        if (laser.length === 1) {
-            const p = worldToSurface(laser[0], frame.view.camera), dot = document.createElementNS(svgNS, 'circle');
-            dot.setAttribute('cx', String(p.x)); dot.setAttribute('cy', String(p.y)); dot.setAttribute('r', '1.5');
-            dot.setAttribute('fill', '#ff4040'); dot.setAttribute('opacity', String(Math.max(0, Math.min(1, 1 - (frame.timestamp - laser[0].time) / 800)))); svg.append(dot);
+        // Each laser stroke is one element at 0.7 opacity, so an overlap inside one stroke is not drawn darker.
+        for (const stroke of laserStrokes) {
+            if (stroke.points.length === 1) {
+                const p = worldToSurface(stroke.points[0], frame.view.camera), dot = document.createElementNS(svgNS, 'circle');
+                dot.setAttribute('cx', String(p.x)); dot.setAttribute('cy', String(p.y)); dot.setAttribute('r', '2');
+                dot.setAttribute('fill', '#ff4040'); dot.setAttribute('opacity', '0.7'); svg.append(dot);
+                continue;
+            }
+            let d = '';
+            stroke.points.forEach((point, i) => { const p = worldToSurface(point, frame.view.camera); d += `${i ? 'L' : 'M'}${p.x} ${p.y}`; });
+            const path = document.createElementNS(svgNS, 'path');
+            path.setAttribute('d', d); path.setAttribute('fill', 'none'); path.setAttribute('stroke', '#ff4040');
+            path.setAttribute('stroke-linecap', 'round'); path.setAttribute('stroke-linejoin', 'round'); path.setAttribute('stroke-width', '4');
+            path.setAttribute('opacity', '0.7'); svg.append(path);
         }
-        for (let i = 1; i < laser.length; i++) {
-            const a = worldToSurface(laser[i - 1], frame.view.camera), b = worldToSurface(laser[i], frame.view.camera);
-            const line = document.createElementNS(svgNS, 'line');
-            line.setAttribute('x1', String(a.x)); line.setAttribute('y1', String(a.y)); line.setAttribute('x2', String(b.x)); line.setAttribute('y2', String(b.y));
-            line.setAttribute('stroke', '#ff4040'); line.setAttribute('stroke-linecap', 'round'); line.setAttribute('stroke-width', '3');
-            line.setAttribute('opacity', String(Math.max(0, Math.min(1, 1 - (frame.timestamp - laser[i].time) / 800)))); svg.append(line);
+        if (erasePath.length > 1) {
+            let d = '';
+            erasePath.forEach((point, i) => { const p = worldToSurface(point, frame.view.camera); d += `${i ? 'L' : 'M'}${p.x} ${p.y}`; });
+            const path = document.createElementNS(svgNS, 'path');
+            path.setAttribute('d', d); path.setAttribute('fill', 'none'); path.setAttribute('stroke-linecap', 'round'); path.setAttribute('stroke-linejoin', 'round');
+            path.setAttribute('stroke-width', '12'); path.style.stroke = 'var(--text-muted)'; path.setAttribute('opacity', '0.5'); svg.append(path);
         }
         if (brush || column) {
             const box = brush ?? (() => { const p = worldToSurface(column!, frame.view.camera); return { x: p.x, y: p.y,
@@ -289,7 +322,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
             rect.setAttribute('x', String(box.x)); rect.setAttribute('y', String(box.y)); rect.setAttribute('width', String(box.width)); rect.setAttribute('height', String(box.height));
             rect.setAttribute('fill', 'rgba(80,145,255,0.12)'); rect.setAttribute('stroke', '#6a9fff'); rect.setAttribute('stroke-width', '1.5'); svg.append(rect);
         }
-        scheduleLaser();
+        scheduleTrails();
     };
     const dispose = () => {
         if (disposed) return; cancelPending(); disposed = true; endHoverPick(); options.surface.removeEventListener('paste', paste);

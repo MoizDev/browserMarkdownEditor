@@ -84,6 +84,8 @@ export interface BoardInputServices {
   penModeChanged?(enabled: boolean): void
   persistToolLock?(locked: boolean): void
   clearLatches?(): void
+  /** Clears a laser trail that is still on screen; true when there was one (Escape then keeps the laser selected). */
+  clearLaserTrail?(): boolean
   cancelPendingGestures(): boolean
 }
 
@@ -104,6 +106,8 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
   let completeTool = false
   /** The tool the stylus eraser end displaced; it returns when that end lifts (F-INPUT-009). */
   let restoreTool: string | null = null
+  /** Set while the displaced tool is put back: that change must not cancel the erase it follows, which is still committing. */
+  let restoringTool = false
   let spaceHeld = false
   let zoomHeld = false
   // F-TOOL-009: the quick overview is Shift pressed while Z is held. Shift pressed first is the direct zoom route, not this.
@@ -210,6 +214,13 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
         return { tool: secondaryPan, context: event }
       }
       if (event.type === 'pointerdown' && event.button !== 0) return null
+      // Cmd/Ctrl pressed over Draw or Highlight erases for as long as it is held, then the tool it came from returns (the
+      // same restoreTool the stylus eraser end uses). Shift keeps the press a stroke, so it never erases.
+      if (event.type === 'pointerdown' && modifiers.accel && !modifiers.shift && (choice.id === 'pen' || choice.id === 'highlighter')
+        && editable() && services.tools.getRegistration('eraser')) {
+        restoreTool = choice.id; services.tools.setTool('eraser')
+        return services.resolveTool({ id: 'eraser' }, sample, modifiers, event)
+      }
       if (spaceHeld) { temporaryPan = true; return { tool: hand, context: undefined } }
       if (zoomHeld) {
         // The overview's press lands the destination and returns to Draw while Z is still held: no gesture follows.
@@ -265,7 +276,10 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       // A non-editable view must not write the single-use reset: complete() can persist ui.tool to the shared document.
       if (reason === 'up' && start && completeTool && editable()) services.tools.complete(start)
       completeTool = false
-      if (restoreTool !== null && editable() && services.tools.getRegistration(restoreTool)) services.tools.setTool(restoreTool)
+      if (restoreTool !== null && editable() && services.tools.getRegistration(restoreTool)) {
+        restoringTool = true
+        try { services.tools.setTool(restoreTool) } finally { restoringTool = false }
+      }
       restoreTool = null
       temporaryPan = false
       start = null
@@ -488,8 +502,14 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
       }
       if (id === 'escape') {
         if (overview.active) { overview.escape(); zoomHeld = false; return true }
+        // A laser trail still on screen is cleared first and the laser stays chosen; this is read before the
+        // pending-gesture cancel below, which clears the trail too.
+        const laserCleared = services.clearLaserTrail?.() ?? false
         const continuationCancelled = cancelContinuations(), cancelled = services.cancelPendingGestures()
-        if (pointer.interrupt('escape') || cancelled || continuationCancelled) return true
+        const interrupted = pointer.interrupt('escape')
+        if (laserCleared || interrupted || cancelled || continuationCancelled) return true
+        // With nothing to cancel, Escape returns the chosen tool to Select; a persistent tool would otherwise stay chosen.
+        if (editable() && services.tools.getSnapshot().active.id !== 'select') { services.tools.escape(); return true }
       }
       if (id === 'undo') {
         const continuationCancelled = cancelContinuations(), cancelled = services.cancelPendingGestures()
@@ -546,15 +566,19 @@ export function attachBoardInput(view: BoardInputView, session: BoardSession, se
     const snapshot = services.tools.getSnapshot()
     if (snapshot.selectionEpoch !== toolEpoch) {
       toolEpoch = snapshot.selectionEpoch
-      services.textInput?.cancelPending()
-      cancelContinuations(); services.cancelPendingGestures()
-      if (cursor.active) cursor.escape()
-      pointer.interrupt('flush')
+      if (!restoringTool) {
+        services.textInput?.cancelPending()
+        cancelContinuations(); services.cancelPendingGestures()
+        if (cursor.active) cursor.escape()
+        pointer.interrupt('flush')
+      }
     }
     if (current() && editable() && !services.tools.syncingDocument) {
       const ops: Op[] = []
       const tool = TOOLS.find(id => id === snapshot.active.id)
-      if (tool && session.doc.ui.tool !== tool) ops.push({ t: 'board', key: 'ui.tool', value: tool })
+      // A displaced tool is not the person's choice: writing the eraser into the document would bump its revision, and the
+      // erase starting from that press would find the scene not ready. Restoring the tool writes nothing either way.
+      if (tool && restoreTool === null && session.doc.ui.tool !== tool) ops.push({ t: 'board', key: 'ui.tool', value: tool })
       const lockChanged = session.doc.view.toolLock !== snapshot.locked
       if (lockChanged) ops.push({ t: 'board', key: 'view.toolLock', value: snapshot.locked })
       try {

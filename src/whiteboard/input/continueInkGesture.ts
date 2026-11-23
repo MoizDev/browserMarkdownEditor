@@ -2,6 +2,7 @@ import { LocalCurveBuilder, type CurvePublication } from '../ink/curve';
 import type { BoardSession } from '../session/BoardSession';
 import type { InkContinuation } from './continueInk';
 import { WetInkHandover } from './liveInk';
+import { snapStraightEnd } from './straightInk';
 import type { CancelReason, FinishReason, GestureOwner, Modifiers, RealSample } from './tool';
 
 export interface InkContinuationGestureOptions {
@@ -23,6 +24,7 @@ export class InkContinuationGesture implements GestureOwner {
     private endpoint: RealSample;
     private snapshot: CurvePublication | null = null;
     private dirty = true;
+    private snapAngle = false;
     private ended = false;
     private running = false;
     private cleaned = false;
@@ -41,16 +43,17 @@ export class InkContinuationGesture implements GestureOwner {
         this.cleaned = true;
         try { this.unregister?.(); } finally { this.unregister = undefined; this.release(); }
     }
-    update(samples: readonly RealSample[], _modifiers: Modifiers): void {
+    update(samples: readonly RealSample[], modifiers: Modifiers): void {
         if (this.ended || this.cleaned) return;
         if (!this.valid()) { this.cancel('invalidated'); return; }
+        this.snapAngle = modifiers.shift && !modifiers.accel && !modifiers.control;
         for (const sample of samples) if (this.pointerIds.has(sample.pointerId)) this.endpoint = sample;
         if (samples.length) { this.dirty = true; this.options.invalidate(); }
     }
     /** Called from the shared input frame, never by an independent animation loop. */
     publish(): void {
         if (this.ended || !this.dirty || !this.valid()) return;
-        const end = this.plan.toLocal(this.endpoint), first = this.plan.first;
+        const first = this.plan.first, end = snapStraightEnd(first, this.plan.toLocal(this.endpoint), this.snapAngle);
         if (![first.x, first.y, end.x, end.y].every(Number.isFinite)) throw new RangeError('Invalid continuation preview');
         const curve = new LocalCurveBuilder({ pressure: false, declaredMaxScale: this.plan.declaredMaxScale, precision: 'float64' },
             this.plan.captureDeviceScale, this.plan.presentation.fairTol);
@@ -65,7 +68,7 @@ export class InkContinuationGesture implements GestureOwner {
         try { this.publish(); }
         catch (error) { try { this.cancel('invalidated'); } finally { this.options.error(error); } return; }
         this.ended = true; this.running = true;
-        void this.plan.commit(this.endpoint, this.controller.signal).then(dry => {
+        void this.plan.commit(this.endpoint, this.controller.signal, this.snapAngle).then(dry => {
             if (this.controller.signal.aborted || this.cleaned || !dry || !this.snapshot) {
                 dry?.release?.(); this.options.handover.clear(this.plan.identity); return;
             }

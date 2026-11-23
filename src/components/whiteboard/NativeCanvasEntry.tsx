@@ -84,7 +84,7 @@ function NativeViewer({ props, identity, board, onError }: {
             const current = latest.current;
             view = createNativeViewLease({ host: nativeCanvasHost, identity, board,
                 parameters: { mode: 'view', visible: current.isVisible, focused: current.isFocused, theme: current.theme, inverted: false },
-                limits: { min, max }, insets: { left, right, top, bottom }, onError, onNotice: setNotice,
+                limits: { min, max }, insets: { left, right, top, bottom }, readonlyAccessibility: true, onError, onNotice: setNotice,
                 onNoticeCleared: clearNotice });
         } catch (error) { onError(error); return; }
         setLease(view);
@@ -219,7 +219,7 @@ export function AttachedViewer({ props, identity, lease, inverted, setInverted, 
     return <ViewerHost name={props.file.name} documentId={props.documentId} vaultEpoch={props.identity.vaultActivation}
         isVisible={props.isVisible} isFocused={props.isFocused} theme={props.theme} inverted={inverted}
         view={editingChrome ? lease.view : viewer} layers={view.layers} platform={view.platform} readiness={view.readiness} paint={view.paint} reason={view.reason ?? (editingChrome ? '' : VIEW_REASON)}
-        readOnly={editingChrome ? board.isReadOnly || !editingWritable : true} admitting={!!editingChrome && !!editingAdmitting} externalAccessibility={!!editingChrome}
+        readOnly={editingChrome ? board.isReadOnly || !editingWritable : true} admitting={!!editingChrome && !!editingAdmitting} externalAccessibility
         readOnlyNotice={editingChrome ? (board.readOnlyReason ?? VIEW_REASON) : VIEW_REASON} registerKeyboardTarget={register} onFocus={onFocus}
         chrome={<>{editingChrome ? editingChrome({ minimapOpen, setMinimapOpen, inverted, setInverted, zoom: navigation.zoom }) : <div className="native-canvas-navigation" role="toolbar" aria-label="Canvas navigation">
             {sheets.length > 1 && <label>Sheet <select value={selected.sheet} onChange={event => {

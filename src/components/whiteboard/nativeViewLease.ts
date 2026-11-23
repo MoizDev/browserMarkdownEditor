@@ -38,6 +38,7 @@ import type { ViewerEngine, ViewerSnapshot, ViewerViewParams } from '../../white
 import { paintKey, type BoardViewLease, type BoardViewParameters, type BoardViewSnapshot } from './boardHostRuntime';
 import { createNativeViewPlatform } from './nativeViewPlatform';
 import { createNativeEditingLease, type NativeEditingToolOptions, type NativeEmbedInfrastructure } from './nativeEditingLease';
+import { createBoardAccessibilityDom } from '../../whiteboard/viewer/accessibilityDom';
 import type { NativeClipboardService } from './useNativeClipboard';
 import { gpuUnavailableText } from '../../utils/renderStatus';
 
@@ -133,6 +134,8 @@ export function createNativeViewLease(options: {
     limits: ZoomLimits;
     insets: ViewportInsets;
     pdfBackdrop?: NativePdfBackdrop;
+    /** A board's read-only view mirrors its objects for screen readers, with the skip link and live region the editing view has. */
+    readonlyAccessibility?: boolean;
     cameraHandoff?: NativeCameraHandoff;
     readPdfMedia?(id: MediaId, signal: AbortSignal): Promise<Blob>;
     editing?: {
@@ -664,6 +667,11 @@ export function createNativeViewLease(options: {
             },
             attachInput(interaction, overlay) {
                 detachSurface(); surface = interaction;
+                // Only a view with no editing lease builds this mirror; editing builds the full one in its own input host.
+                const mirror = options.readonlyAccessibility && !edit ? createBoardAccessibilityDom({ runtime, engine: viewer, surface: interaction, overlay,
+                    current, visible: () => parameters.visible, schedule: callback => { const frame = requestAnimationFrame(() => callback());
+                        return () => cancelAnimationFrame(frame); },
+                    reveal: id => { if (id) viewer.focusNode(id); }, error: options.onError, readOnly: true }) : null;
                 const measure = () => {
                     if (surface !== interaction || disposed) return;
                     // Platform metrics remain authoritative once attached. This
@@ -673,7 +681,7 @@ export function createNativeViewLease(options: {
                 };
                 resize = new ResizeObserver(measure); resize.observe(interaction); measure();
                 const detach = navigation.attachInput(interaction, overlay);
-                return () => { detach(); if (surface === interaction) detachSurface(); };
+                return () => { mirror?.dispose(); detach(); if (surface === interaction) detachSurface(); };
             },
         },
         getSnapshot() {

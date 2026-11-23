@@ -132,6 +132,10 @@ refusals wait once, sized (`awaitSizedCapacity`). Ruled paper also has a PDF wri
 - A tile still decoding is left out (the stand-in shows); its entry waits in `awaitingDecode` asking no frames and
   recomposes once the decode settles. Only the resting scale's entries are asked; tiles a zoom composed on its way
   wait for their scale. The tile demand never aborts an acquire someone still waits for.
+- On a device, a picture whose texture this device already holds (`textureHeld`: texture ready, not a video, no item
+  of it drawn on the CPU) starts a new snapshot released, as the image route leaves it; a CPU draw that needs the
+  bitmap (`reacquireReleased`) or a gone texture (`reacquireImage`) fetches it again. Each new snapshot otherwise
+  decoded every picture on screen once more, only for the route to drop it unread.
 - A picture is hashed and verification-decoded once: the residency source (`media/residencySource.ts`) admits a Blob
   once and inspection skips the decode for content already verified in this page. Re-inspecting per raster job
   queued whole-picture decodes ahead of the tiles (measured: first tile raster 215 → 150 ms).

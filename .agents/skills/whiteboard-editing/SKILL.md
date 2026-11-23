@@ -41,6 +41,9 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   session's `gestureHolds` must equal that count or the command is refused. Flip uses this.
 - Read-only is the session's `isReadOnly` (admission or apply's seal; a developer setting can force it per kind,
   `utils/engineRouting.ts`) plus per-node `locked` (`isLocked` walks ancestors). Save must honour it too.
+  A read-only board view still gets the accessibility mirror (skip link, live region, object list): the view lease builds
+  `viewer/accessibilityDom.ts` with `readOnly: true` (`nativeViewLease.ts`, `readonlyAccessibility`), which omits the drawing
+  cursor and pen-mode helper, and whose skip link only moves focus.
 - The AI agent edits boards through the same transactions (`whiteboard/agent/`, `change/agentBatch.ts`;
   `vault-agent` skill).
 

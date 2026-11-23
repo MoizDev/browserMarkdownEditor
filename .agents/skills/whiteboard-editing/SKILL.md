@@ -61,23 +61,22 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   Highlight is a temporary whole-item eraser (`input/attach.ts`, `holdAccelEraser`), never the chosen tool.
 - Pen mode (`ToolState.penMode`, `penTransitions.ts`) routes a stylus to ink or eraser while touch pans. The eraser
   removes whole items (`input/basicTools.ts`); there is no partial erase.
-- The laser (`input/laserTrail.ts`) is a session-level fade, never saved; the board's Escape clears a visible trail first and leaves the laser chosen (`input/attach.ts`).
+- The laser (`input/laserTrail.ts`) is a session fade, never saved; Escape clears a visible trail before it
+  returns the tool to Select (`input/attach.ts`).
 - A bar press dragged off the bar goes to `ToolState.beginChromeDrag` → `input/chromeDrag.ts` (router-owned): the
   shape is created where the pointer is released. A click never leaves the bar, so it only selects the tool.
-- Select (`tools/select.ts`, `input/selectGesture.ts`, `viewer/selectServices.ts`): click; marquee (`isWrapMode`
-  makes Cmd/Ctrl the full-containment key on Mac, Ctrl elsewhere); Alt-drag scribble. Both select live while the drag
-  runs and Escape restores the start selection. Handles and transforms: `viewer/selectionHandles.ts`,
-  `shapeHandles.ts`, `stickyHandles.ts`, `tools/transformDrivers.ts`. Handles draw larger for a coarse pointer
-  (`viewer/pointerKind.ts`, the last pointer type decides).
+- Select (`tools/select.ts`, `input/selectGesture.ts`, `viewer/selectServices.ts`): click, marquee (`isWrapMode`
+  makes Cmd/Ctrl the full-containment key), Alt-drag scribble; both select live and Escape restores the start
+  selection. Handles: `viewer/selectionHandles.ts`, `shapeHandles.ts`, `stickyHandles.ts`; a coarse pointer draws
+  them larger (`viewer/pointerKind.ts`).
 - Creation: `viewer/creationTools.ts` (`boardCreationTool`: figure, text, sticky, frame, connector, polyline) and the
   text tool in `text/edit/tool.ts`. A frame's border double-click fits it to its children (`viewer/frameBorderFit.ts`).
-- Arrow ends (`input/connectorHandles.ts`, `input/bindingPrecision.ts`): a binding is precise after 320 ms on its
-  target, after 600 ms of hover with the arrow tool, or on a slow entry; a fast entry binds to the centre. Alt is
-  exact, Cmd/Ctrl skips binding. `viewer/connectorHints.ts` draws the stub, cross and ring.
+- Arrow ends (`input/connectorHandles.ts`, `input/bindingPrecision.ts`, `viewer/connectorHints.ts`): precise after
+  320 ms of rest, 600 ms of arrow-tool hover, or on a slow entry; a fast entry binds to the centre. Alt is exact,
+  Cmd/Ctrl skips binding.
 - Navigation: `input/navigation.ts` and the wheel, touch and pinch modules (`cameraZoom.ts`, `oneFingerZoom.ts`,
-  `touchDoubleTap.ts`, `panFling.ts`, `zoomBrush.ts`). Edge scrolling is `input/edgeScroll.ts`. Space + arrow pages
-  through `viewer/keyboardNavigation.ts`, which glides on the platform scheduler (`rendering-platform`). Back to
-  content (`viewer/backToContent.ts`) and the helper column (`viewer/helperButtons.ts`) are chrome-level.
+  `touchDoubleTap.ts`, `panFling.ts`, `zoomBrush.ts`, `edgeScroll.ts`). Space + arrow pages through
+  `viewer/keyboardNavigation.ts`, gliding on the platform scheduler (`rendering-platform`).
 
 ## Keyboard
 

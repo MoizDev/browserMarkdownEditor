@@ -48,3 +48,19 @@
     background: color-mix(in srgb, var(--interactive-accent) 16%, transparent);
     pointer-events: none;
 }
+
+/* With the zoom controls stacked over the tool bar (ViewerHost), the row it stands on tops out at 112px
+   (8 + 50 bar + 8 + 46 zoom): the same 8px clear above it. */
+.board-viewer-host[data-chrome-stacked] .native-minimap {
+    bottom: 120px;
+}
+
+/* Panes go down to 200px, narrower than the 200px map with its border and 16px margins (234px): there it shows at 80%,
+   anchored to its corner. A transform, so its offsets above are unchanged and dragging (which maps through the frame's
+   getBoundingClientRect) follows the drawn size. Measured: a 207px pane cut the map's left edge off. */
+@container (width < 234px) {
+    .native-minimap {
+        transform: scale(0.8);
+        transform-origin: bottom right;
+    }
+}

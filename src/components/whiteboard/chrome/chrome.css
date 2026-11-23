@@ -42,6 +42,39 @@
     overflow-x: auto;
 }
 
+/* A pane too narrow for both on one row (ViewerHost's CHROME_STACK_BELOW_PX) puts the zoom controls above the
+   bar's right end: in the three-column grid the bar took every pixel and the zoom column, at 0px, was pushed past
+   the pane's edge. The bar stays centred and scrolls its tools when even it does not fit. */
+.board-viewer-host[data-chrome-stacked] .board-chrome-bottom {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.board-viewer-host[data-chrome-stacked] .board-chrome-zoom {
+    grid-row: 1;
+    grid-column: 1;
+}
+
+.board-viewer-host[data-chrome-stacked] .board-chrome-bottom > .board-chrome-tools {
+    grid-row: 2;
+    grid-column: 1;
+}
+
+/* In a narrow pane the Actions grid (150px), centred under its button, ran 38px past the pane's right edge: it opens
+   from the button's right end instead. */
+.board-viewer-host[data-chrome-stacked] .board-chrome-action-popup {
+    left: auto;
+    right: 0;
+    transform: none;
+}
+
+/* There the More tools popover (five columns, 226px) would hang past a narrow pane's edge: it spans the bar instead,
+   as many columns as fit. */
+.board-viewer-host[data-chrome-stacked] .board-chrome-more {
+    inset-inline-start: 0;
+    grid-template-columns: repeat(auto-fill, 40px);
+    justify-content: center;
+}
+
 /* The header and any page controls are one in-flow column, so a row added below the header
    pushes nothing over it. The column stays click-through; its children opt back in. */
 .board-chrome-top {

@@ -45,12 +45,32 @@ export interface ViewerHostProps<T extends object> {
     readonly chrome?: ReactNode;
 }
 
+/** Below this host width the zoom controls stack above the tool bar instead of beside it. Measured: the bar is 446px
+ *  at its natural width and the zoom pill 132px (100%, Minimap), inside an 8px overlay inset with 8px gaps, so
+ *  side by side needs 742px; the margin is for a longer zoom label. Five panes of 307px pushed the pill past the
+ *  pane's edge. The CSS keyed on `data-chrome-stacked` (chrome.css, viewerHost.css, nativeMinimap.css, index.css's
+ *  lifted status pill) lifts everything that stood on the bottom row by the zoom row's height. */
+const CHROME_STACK_BELOW_PX = 780;
+
 /** No engine import: the lazy route supplies the real session and view. */
 export default function ViewerHost<T extends object>({
     name, documentId, vaultEpoch, isVisible, isFocused, theme, inverted, reason, readOnlyNotice, readOnly = true, externalAccessibility = false,
     view, layers, platform, registerKeyboardTarget, onFocus, chrome, readiness, paint,
 }: ViewerHostProps<T>) {
     const [surface, setSurface] = useState<HTMLDivElement | null>(null);
+    const hostRef = useRef<HTMLDivElement | null>(null);
+    // A ResizeObserver reports after layout and before paint, so the stacked layout never shows a frame late.
+    useLayoutEffect(() => {
+        const host = hostRef.current;
+        if (!host) return;
+        const observer = new ResizeObserver(entries => {
+            const width = entries[entries.length - 1]?.contentRect.width ?? host.clientWidth;
+            // A hidden pane keeps its last geometry; a zero width (detached, collapsed) decides nothing.
+            if (width > 0) host.toggleAttribute('data-chrome-stacked', width < CHROME_STACK_BELOW_PX);
+        });
+        observer.observe(host);
+        return () => observer.disconnect();
+    }, []);
     const [interaction, setInteraction] = useState<HTMLDivElement | null>(null);
     const [overlay, setOverlay] = useState<HTMLDivElement | null>(null);
     const interactionRef = useRef<HTMLDivElement | null>(null);
@@ -92,7 +112,7 @@ export default function ViewerHost<T extends object>({
         });
     }, []);
 
-    return <div className="board-viewer-host" onContextMenu={event => event.preventDefault()} onPointerDownCapture={() => { if (isVisible) onFocus(); }} onClick={returnKeyboard}>
+    return <div ref={hostRef} className="board-viewer-host" onContextMenu={event => event.preventDefault()} onPointerDownCapture={() => { if (isVisible) onFocus(); }} onClick={returnKeyboard}>
         <BoardAccessibility name={name} source={view.accessibility} isVisible={isVisible} readOnly={readOnly}
             mirrorEnabled={!externalAccessibility} interactionRef={captureInteraction}>
             <div className="board-viewer-surface" ref={setSurface} aria-hidden="true" />

@@ -196,7 +196,7 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   `commandPaletteModel.ts`, `commandPaletteGroups.ts`; `commandPalette.open` opens it; it lays over the chrome's middle row (`.board-chrome-middle`), so the docked style panel never moves under it), `ZoomControls.tsx`,
   `BoardHeader.tsx`, menus (`mainMenu.ts`, `preferencesMenu.ts`, `themeMenu.ts`, `languageMenu.ts`), `boardCommands.ts`.
 - The minimap is `components/whiteboard/NativeMinimap.tsx`; its open state is `boardPreferences.minimapOpen`.
-- Context menus are the app's own (`openBoardContextMenu.ts`, `nativeBoardContextMenu.ts`; `app-context-menu`).
+- Context menus are the app's own (`nativeBoardContextMenu.ts`; `app-context-menu`).
   Dialogs and notices are the app's own UI; no native confirm/alert/prompt/tooltip. A board's notices (the render
   notices included) show together in its own `.board-viewer-notice` box, each with Dismiss, newest last (`useBoardNotices`,
   `BoardNoticeStack`): a new notice never replaces one, and only Dismiss counts as dismissing. In viewing and editing alike, a bare

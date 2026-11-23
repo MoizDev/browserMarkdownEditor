@@ -5,6 +5,8 @@ import type { BoardInputView } from '../input/attach';
 import type { ToolStateSnapshot } from '../input/gesture';
 import type { NodeId } from '../model/ids';
 import { createAccessibilityOrder } from './accessibilityOrder';
+import { selectableAtFocus } from '../selection';
+import { helperIcon, helperIconPaths, helperStack } from './helperButtons';
 import type { ViewerAccessibilitySnapshot, ViewerEngine } from './types';
 
 export interface BoardAccessibilityDomOptions {
@@ -44,17 +46,27 @@ export function createBoardAccessibilityDom(options: BoardAccessibilityDomOption
     options.overlay.append(enterCanvas);
     const canvasFocus = () => { enterCanvas.style.clipPath = 'none'; enterCanvas.style.outline = '2px solid #75b7ff'; };
     const canvasBlur = () => { enterCanvas.style.clipPath = 'inset(50%)'; enterCanvas.style.outline = ''; };
-    const enter = () => { if (active()) options.surface.focus({ preventScroll: true }); };
+    // The skip link (tldraw's "Move focus to canvas"): the first object in reading order is selected and brought into view,
+    // and focus moves to the canvas, so a keyboard user lands on content rather than an empty canvas.
+    const enter = () => {
+        if (!active()) return;
+        const doc = options.runtime.session.doc, state = options.runtime.selection.getSnapshot();
+        for (const node of doc.children.get(state.focus) ?? []) {
+            if (selectableAtFocus(doc, node.id, state.focus, state.sheet) === node.id) { options.reveal(node.id); break; }
+        }
+        options.surface.focus({ preventScroll: true });
+    };
     enterCanvas.addEventListener('focus', canvasFocus); enterCanvas.addEventListener('blur', canvasBlur); enterCanvas.addEventListener('click', enter);
     const cursor = document.createElement('div');
     cursor.setAttribute('aria-hidden', 'true');
     cursor.style.cssText = 'position:absolute;left:0;top:0;width:12px;height:12px;border:2px solid #75b7ff;border-radius:50%;box-shadow:0 0 0 1px #fff;transform:translate(-50%,-50%);pointer-events:none;display:none;z-index:1';
     options.overlay.append(cursor);
+    // A helper button: it shows while pen mode has latched, in the helper column under the top bar (helperButtons.ts).
     const exitPenMode = document.createElement('button');
-    exitPenMode.type = 'button'; exitPenMode.textContent = 'Exit pen mode';
+    exitPenMode.type = 'button'; exitPenMode.className = 'board-helper-button board-helper-exit-pen';
+    exitPenMode.append(helperIcon(helperIconPaths.close), 'Exit pen mode');
     exitPenMode.setAttribute('aria-label', 'Exit pen mode');
-    exitPenMode.style.cssText = 'position:absolute;top:8px;right:8px;z-index:2;pointer-events:auto;padding:5px 9px;border:1px solid #75b7ff;border-radius:5px;background:var(--background-primary,#25262a);color:var(--text-normal,#fff);font:inherit';
-    exitPenMode.hidden = true; options.overlay.append(exitPenMode);
+    exitPenMode.hidden = true; helperStack(options.overlay).append(exitPenMode);
     const rows = new Map<NodeId, { item: HTMLLIElement; button: HTMLButtonElement }>();
     let disposed = false, scheduled: (() => void) | undefined, activate: (() => void) | undefined;
     let lastTool = '', lastSelection = '', lastCursorActive = false, lastAnnouncement = '', announcementVersion = 0;

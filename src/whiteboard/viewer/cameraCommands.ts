@@ -1,8 +1,9 @@
 import type { CameraController, Point, ViewportInsets } from '../../platform/render/camera';
-import { centredCamera, contentBounds, fitTarget, pageStackBounds, unionRects, type ContentRect } from '../commands/contentBounds';
+import { centredCamera, contentBounds, fitEdges, fitTarget, pageStackBounds, unionRects, type ContentRect } from '../commands/contentBounds';
 import type { BoardRuntime } from '../host/runtime';
 import { resetBoardZoom, stepBoardZoom } from '../input/cameraZoom';
 import type { NodeId } from '../model/ids';
+import { tweenCamera, type CameraTween } from './cameraTween';
 
 export interface BoardCameraCommandsOptions {
     readonly runtime: BoardRuntime;
@@ -19,9 +20,11 @@ export interface BoardCameraCommandsOptions {
 export function createBoardCameraCommands(options: BoardCameraCommandsOptions) {
     const { runtime, camera, surface } = options, session = runtime.session, doc = session.doc, owner = session.owner;
     const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
-    let disposed = false, serial = 0, pending: AbortController | undefined, cursor: Point | null = null;
+    let disposed = false, serial = 0, pending: AbortController | undefined, cursor: Point | null = null, glide: CameraTween | undefined;
     const current = () => !disposed && options.current() && runtime.session === session && session.owner === owner && session.doc === doc;
-    const cancel = () => { serial++; pending?.abort(); pending = undefined; };
+    const cancel = () => { serial++; pending?.abort(); pending = undefined; cancelGlide(); };
+    // A glide is the view's own motion; the person taking the view back (a press or a wheel turn on the board) ends it.
+    const cancelGlide = () => { glide?.cancel(); glide = undefined; };
     const viewport = () => camera.viewport;
     const moved = (event: PointerEvent) => {
         if (!current()) return;
@@ -33,6 +36,8 @@ export function createBoardCameraCommands(options: BoardCameraCommandsOptions) {
     const left = () => { cursor = null; };
     surface.addEventListener('pointermove', moved, { passive: true });
     surface.addEventListener('pointerleave', left, { passive: true });
+    surface.addEventListener('pointerdown', cancelGlide, { passive: true });
+    surface.addEventListener('wheel', cancelGlide, { passive: true });
     const centre = (): Point => ({ x: viewport().width / 2, y: viewport().height / 2 });
     const notify = () => { if (current()) options.changed(); };
     const zoom = (value: number, anchor?: Point) => {
@@ -71,6 +76,26 @@ export function createBoardCameraCommands(options: BoardCameraCommandsOptions) {
             centreOn(bounds, plan.z, plan.edges);
         })().catch(error => { if (active()) options.error(error); }).finally(() => { if (pending === controller) pending = undefined; });
     };
+    /** Back to content centres the selection, or the sheet's content when nothing is selected, and never zooms past 100%: it
+     * keeps a smaller zoom and only steps a larger one down to 1. Its glide takes 220 ms (tldraw's back-to-content move). */
+    const backToContent = () => {
+        cancel(); if (!current()) return;
+        const state = runtime.selection.getSnapshot();
+        const controller = new AbortController(); pending = controller;
+        const turn = serial, revision = doc.rev, first = camera.camera, starting = { x: first.x, y: first.y, z: first.z }, view = viewport();
+        const active = () => current() && pending === controller && !controller.signal.aborted && serial === turn && doc.rev === revision
+            && runtime.selection.getSnapshot() === state && camera.camera.x === starting.x && camera.camera.y === starting.y && camera.camera.z === starting.z
+            && viewport().width === view.width && viewport().height === view.height && viewport().dpr === view.dpr;
+        const fence = () => { if (!active()) throw new DOMException('Board view changed', 'AbortError'); };
+        void (async () => {
+            const roots: NodeId[] = state.selected.length ? [...state.selected] : (doc.children.get(state.sheet) ?? []).map(child => child.id);
+            const content = await contentBounds(runtime, roots, { signal: controller.signal, fence, cooperate });
+            fence();
+            if (!content) return;
+            const target = centredCamera(content, camera.clampZoom(Math.min(1, starting.z)), view, fitEdges(doc, view, false));
+            glide = tweenCamera({ from: starting, target, durationMs: 220, apply: next => { camera.setCamera(next); notify(); } });
+        })().catch(error => { if (active()) options.error(error); }).finally(() => { if (pending === controller) pending = undefined; });
+    };
     const run = (id: string): boolean => {
         if (!current()) return false;
         switch (id) {
@@ -80,7 +105,7 @@ export function createBoardCameraCommands(options: BoardCameraCommandsOptions) {
             case 'camera.zoomOutCursor': cancel(); stepped(-1, true); return true;
             case 'camera.reset': cancel(); reset(); return true;
             case 'camera.fit': fit(false); return true;
-            case 'camera.backToContent': fit(false, true); return true;
+            case 'camera.backToContent': backToContent(); return true;
             case 'camera.selection': if (!runtime.selection.getSnapshot().selected.length) return false; fit(true); return true;
             default: return false;
         }
@@ -88,5 +113,6 @@ export function createBoardCameraCommands(options: BoardCameraCommandsOptions) {
     return { run, cancel, dispose() {
         if (disposed) return; disposed = true; cancel(); cursor = null;
         surface.removeEventListener('pointermove', moved); surface.removeEventListener('pointerleave', left);
+        surface.removeEventListener('pointerdown', cancelGlide); surface.removeEventListener('wheel', cancelGlide);
     } };
 }

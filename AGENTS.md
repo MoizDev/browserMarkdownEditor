@@ -30,7 +30,7 @@ use Google; the local VaultAgent helper serves AI and terminal. Stack: **React 1
 6**, KaTeX, mermaid, idb-keyval, xterm.js, and in-house engines — PDFium as wasm (`src/pdf/`), our own board
 for drawings, notebooks and PDF ink (`src/whiteboard/`), one render platform for every canvas pane
 (`src/platform/render/`) — whose assets and fonts are local and integrity-checked: no CDN is a dependency of
-drawing a line. **Zero tldraw code**, ever; `.tldraw` is only a legacy import (`whiteboard/PROVENANCE.md`).
+drawing a line.
 
 ## Commands
 

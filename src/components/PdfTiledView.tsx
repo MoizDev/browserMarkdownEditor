@@ -800,8 +800,8 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
         {visibleNotice && <div className="pdf-tiled-notice" role="status">
             <div>{visibleNotice}</div>
             <div className="pdf-tiled-notice-actions">
-                <button onClick={() => { void retry(); }} disabled={!retryDocument || retryBusy === session}>Retry</button>
-                {!pageNotice && <button onClick={() => { sessionNotices.delete(session); setNoticeState({ session, notice: undefined }); }}>Dismiss</button>}
+                <button type="button" className="disk-bar-btn" onClick={() => { void retry(); }} disabled={!retryDocument || retryBusy === session}>Retry</button>
+                {!pageNotice && <button type="button" className="disk-bar-btn" onClick={() => { sessionNotices.delete(session); setNoticeState({ session, notice: undefined }); }}>Dismiss</button>}
             </div>
             {!retryDocument && <div className="pdf-tiled-notice-hint">Retry is unavailable.</div>}
         </div>}

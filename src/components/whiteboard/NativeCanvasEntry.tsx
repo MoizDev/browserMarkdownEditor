@@ -88,7 +88,7 @@ export interface NativeEditingChromeContext {
 }
 export function AttachedViewer({ props, identity, lease, inverted, setInverted, notice, setNotice, editingChrome, editingWritable }: {
     props: NativeCanvasEntryProps; identity: NativeCanvasIdentity; lease: NativeViewLease; inverted: boolean;
-    setInverted(value: boolean): void; notice: string | null; setNotice(message: string): void;
+    setInverted(value: boolean): void; notice: string | null; setNotice(message: string | null): void;
     editingChrome?: (context: NativeEditingChromeContext) => ReactNode;
     editingWritable?: boolean;
 }) {
@@ -179,7 +179,12 @@ export function AttachedViewer({ props, identity, lease, inverted, setInverted, 
                 current={current} currentRevision={getRevision} capturePage={capturePage} jump={jump} onError={reportThumbnailError} />}
             {notice && <span role="status">{notice}</span>}
         </div>}
-        {editingChrome && notice && <span role="status">{notice}</span>}
+        {/* The editing board's notices (a picture that could not be shown, no usable GPU, ...): a bare span here sat unstyled in the
+            chrome fragment and never appeared on screen. They persist until replaced, so the person can put one away. */}
+        {editingChrome && notice && <div className="board-viewer-notice board-viewer-notice-dismissible" role="status">
+            <span>{notice}</span>
+            <button type="button" className="disk-bar-btn" onClick={() => setNotice(null)}>Dismiss</button>
+        </div>}
         {board.doc.kind === 'whiteboard' && <NativeMinimap thumbnail={thumbnail?.key === thumbnailKey ? thumbnail : null} currentCamera={cameraState.camera} viewport={cameraState.viewport}
             isVisible={props.isVisible && minimapOpen} currentOwner={minimapCurrent} onNavigate={navigateMinimap} onFocus={onFocus} />}
         {minimapOpen && minimapNotice && <div className="board-viewer-notice" role="status">{minimapNotice}</div>}</>} />;

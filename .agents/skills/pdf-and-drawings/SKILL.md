@@ -1,143 +1,155 @@
 ---
 name: pdf-and-drawings
-description: Native PDFium reading, editable PDF ink, explicit legacy conversion, native notebook PDF exports and canvas document lifetimes. Load before touching pdf modules, paper.ts, notebook modules, PDF/canvas panes or their imports.
+description: PDF and canvas documents end to end — the contained PDFium engine and pool, PDF tile layers, the PDF pane's Original/Text/Annotate routes, editable PDF ink and its saved-source rebind, legacy (.tldraw/.notebook/old-annotated PDF) conversion, notebook PDF export, writers, print and capture, canvas document sessions, and the lazy-chunk import rules. Load before touching src/pdf/, PdfPane/PdfTiled*/pdfPaneModule, components/whiteboard/Native*Entry, CanvasPane, whiteboard/host/ (sessions, PDF ink, notebook export), utils/paper.ts or utils/pdfBuild*.ts, or anything a PDF or canvas pane imports.
 ---
 
-# Native PDF and canvas documents
+# PDF and canvas documents
 
-`src/pdf/` owns the contained PDFium engine, pool, canonical text, tiles, fonts and isolated writers.
-`src/whiteboard/` owns editable ink and its renderability admission. `PdfPane` uses only the native
-reader and native annotation host. The old pdf.js reader/worker and tldraw PDF annotation pane have
-been removed. Older PDF annotation DATA remains supported through explicit conversion, not a renderer
-fallback. `pdf-lib` is permitted only in lazy metadata/writer operations, never reader startup.
+Drawing pixels is `rendering-platform` (shared) and `board-gpu-path` (boards). Editing a board is
+`whiteboard-editing`. This skill is the documents: where bytes come from, who owns them, how they are written back.
 
-One engine ships: the committed from-source build in `src/pdf/vendor/pdfium/` (recipe and rebuild in
-`build/pdfium/`), loaded the same way in dev and production; `build/pdfiumAssets.ts` serves/emits it at
-`pdfium/<buildId>/` and fails dev/build on any byte that differs from `manifest.json`. Its glue/WASM load
-only when a PDF first opens. Swap engine files and manifest together, never edit them, and never restore an
-old parser fallback: a load failure is `EngineBroken` with a truthful message.
-Load `rendering-platform` for shared frame/layer/capture changes and `verify-in-browser` for a real look.
+## Map
+
+| Area | Where |
+|---|---|
+| PDFium engine (committed WASM build) | `src/pdf/vendor/pdfium/` (rebuilt by `build/pdfium/`), glue in `pdf/engine/` |
+| Opaque frame that spawns engine workers | `pdf/contained/` (`broker.ts`, `bridge.ts`); worker side `pdf/worker/` |
+| The one app-wide pool | `pdf/pool/pool.ts`, reached via `pdf/session/startup.ts` (`getSharedPdfPool`) |
+| PDF page tiles (a platform layer) | `pdf/layer/` (`tileLayer.ts`, `texturePool.ts`, `tileMirror.ts`, `versionBridge.ts`) |
+| Text, find, selection, links, emphasis | `pdf/text/`, `pdf/overlay/`, `pdf/emphasis/` |
+| PDF+ink sessions, hosts, conversion | `pdf/session/`, `whiteboard/host/*Pdf*`, `whiteboard/host/pdfInk*` |
+| Writers (save, rotate, notebook, unsigned copy) | `pdf/writing/`, `utils/pdfBuild*.ts`, `utils/pdfWrite*.ts` |
+| PDF pane (React) | `components/PdfPane.tsx` → lazy `PdfTiledSurface` (Original), `PdfTiledTextSurface` (Text), `whiteboard/NativePdfEntry` (Annotate) |
+| Canvas pane | `components/CanvasPane.tsx` → lazy `whiteboard/NativeCanvasEntry` |
+| Board format and model | `whiteboard/format/` (binary `.drawing`, `NATIVE_VERSION`), `whiteboard/model/` |
+
+**File kinds** (`utils/fileTypes.ts`): `.drawing` is the native binary board and must never be decoded as text;
+`.tldraw` and `.notebook` may hold legacy JSON, opened through the governed legacy mapping
+(`whiteboard/host/legacyAcquisition.ts`: read-only or editable-after-conversion). A PDF's role (plain, annotated,
+notebook export) is read from its attachments, never its name. pdf.js and tldraw are gone; no reader or writer may
+come back to either.
+
+## Engine
+
+- One engine ships: the committed from-source build, loaded the same way in dev and production.
+  `build/pdfiumAssets.ts` serves/emits it at `pdfium/<buildId>/` and fails dev and build on any byte that differs from
+  `manifest.json`. Swap engine files and manifest together, never edit them, never add a parser fallback: a load
+  failure is `EngineBroken` with a truthful message. Its glue/WASM load only when a PDF first opens.
+- Native symbols are lint-checked against `pdf/engine/pdfium/exports.json` (`bme/pdfium-boundaries`).
+- The contained frame only creates and watches workers; each page talks to its worker over a direct `MessagePort`.
+  Vault teardown invalidates in-flight acquisition before an old worker can publish into the next vault.
+- Pool/native replies are privileged input: geometry and affines, text schema, links/outline, attachments and writer
+  replies are validated fresh (`pool/validation*.ts`). Events are hints. Only definitive raster failures poison
+  raster; cancellation, worker death and `FontPending` do not.
+- Share opens, font and region work across waiters; keep priority-zero close and bounded page windows. Recovery is
+  bounded; Retry is source-scoped (`retryPdfPool`). Never inflate credits/caps to hide a refusal.
+- Fonts are the 14 pinned payloads in `vendor/pdf-fonts` (`pdf/fonts/catalogue.ts`). Profiles hash approved ids plus
+  actual SHAs; a font epoch change revokes models, tiles, find, selection and capture. Known charset beats a
+  conflicting language; ambiguous Chinese uses SC; mixed/unknown stays unknown.
+- `pdf-lib` is allowed only in lazy metadata/writer work, never reader startup.
+
+## PDF tiles (`pdf/layer/`)
+
+- A tile owns its own pooled GPU texture (`texturePool.ts`); its CPU bitmap lease is released once GPU-resident.
+  `evictGpu` clears the free pool, then off-view and other-scale tiles, farthest first; a tile on screen or drawn by
+  the last prepared frame stays. `releaseGpu` releases every page texture at once.
+- Zoom deliberately holds rasters during the gesture (`ZOOM_GESTURE_HOLD_MAX_MS`, 48 ms): rastering through it cost
+  about 10x the PDFium CPU.
+- Tiles mirror into the session (`tileMirror.ts`): pixels belong to the document session, not the layer. After a
+  byte-generation change, `versionBridge.ts` shows old mirrors as non-current stand-ins; cover "Updating" until a
+  current, complete, sharp frame presents. Never replay a raw frame or accept a stale geometry proof.
+- `drawnPageRects()` lists pages painted at least once at the current source and layout; a board over the PDF claims
+  only those as opaque (`board-gpu-path`).
+- PDF Text uses the same source and pool without mounting Original's compositor. Word emphasis stays in the original
+  page view; Text is an explicit separate action, never OCR.
 
 ## Source, authority and lifetime
 
-- The App-owned source/session outlives views. Hiding, graph trips and view aborts release view work,
-  not transferred source ownership (`session/ownedInkAcquisition.ts`). Retain actual bytes and full tokens.
-- `acquirePdfInkSource` admits plain/native or explicit read-only. Plain has `board:null`; only positive
-  plain admission permits a canonical empty board. A refusal must never become an empty canvas.
-- Roles come from the complete AF/EmbeddedFiles union and Filespec `/Desc`, not a filename, attachment
-  count or partial native inventory. Unknown attachments must survive writes. `utils/pdfRoleRead.ts`
-  performs lazy metadata inspection without loading a renderer.
-- BOTH actual outer and pristine PDFs need safe write proof. `utils/pdfWriteSafety.ts` runs in the
-  mature-parser worker and refuses signatures/ByteRange/certification, encryption and unknown policy.
-  Foreign-mark consent, a raw role or a native signature count cannot mint that proof. Mutation,
-  worker assembly, post-await publication and App's final versioned IO all recheck it.
-- Keep render/copy/capture/write/print/high-quality-print independent. Unknown is not permission.
-  Source/font changes revoke text, find, selection and queued copy; genuine limitation notices remain.
-- `canWriteSource` excludes ONLY the hosted board's own read-only flag from full App write eligibility;
-  `canWrite` includes it. Calling full write eligibility from the board's read-only predicate recurses.
-- A saved byte generation changes a source, not its retained document/undo owner. Admission completion
-  may use strict acquisition identity; later editing activation checks the live owner/session serial,
-  not equality with an old `getSessionIdentity()` snapshot object.
-
-## Real editing and saved-source rebind
-
-- `NativeCanvasEditing` promotes only after actual input, chrome, styles, shortcuts, commands, context
-  menu and paired embed presentation services attach. An API existing is not editing readiness.
-- Tool/embed services belong to the DOM view, not each platform enable/disable pulse. Recreating or
-  removing their layers during a topology seal causes a synchronous attach/remove/render loop.
-  Dispose on real view retirement; transient input cancellation must not change its own layer topology.
-- `PdfPane` keeps an admitted native child mounted through dirty ink and rebind using the actual source
-  slot (`host/pdfInkSourceState.ts`). A lazy outer role refresh, dirty bit or temporary write revocation
-  must not unmount that child and discard its camera, history or unsaved work.
-- PDF HOST metadata belongs to `session/inkHost.ts`. Allocate one write ID before frozen serialization;
-  pin without changing live undo/dirty state. Preserve opaque HOST ext. Every document save goes through
-  App's versioned IO against the actual disk baseline, never directly from a worker.
-- The pane's OWN autosave does not rebind: `useSaveFunnel` keeps the byte generation (the writer builds from
-  pristine + full ink, so the new bytes are what the pane already paints) and `pdfInkRebind` skips a same-generation
-  write. A rebind covers with input detached, dropping presses for ~150 ms; only outside changes may cause one.
-- Rebind only to freshly inspected saved bytes and an authoritative forward generation with the same
-  pristine source. The real prepare→runtime caller invokes `runtime.adoptPaintSource` before publishing
-  ready. Spatial `scene.ready` is not source permission; presentation still needs its real sharp proof.
-- Future pins retain the WHOLE immutable `render.capturePaintBinding()` bundle: token, factories and
-  renderer retainer. Updating a token alone retags old work. `scene.setPaintBinding` installs the bundle
-  atomically; existing pins retain their old factories/token. Current overlays use `runtime.paintBinding`.
-- Platform document tokens are immutable. Detach old input/platform, transfer the genuine camera, then
-  attach a new platform/view lease with the real new token. There is no token-update API. A retiring
-  pane must not checkpoint through its temporarily revoked writer; App retains document and undo.
-- Old mirrors are non-current, non-capture stand-ins. Cover Updating opaquely until a genuinely current,
-  complete, sharp frame presents. Never replay a raw frame or accept a stale geometry/profile proof.
+- The App-owned source/session outlives views. Hiding, graph trips and view aborts release view work, not source
+  ownership (`pdf/session/ownedInkAcquisition.ts`). Retain actual bytes and full tokens.
+- `acquirePdfInkSource` admits plain/native or explicit read-only. Plain has `board: null`; only a positive plain
+  admission permits a canonical empty board. A refusal must never become an empty canvas.
+- Roles come from the complete AF/EmbeddedFiles union and Filespec `/Desc`, not a filename, attachment count or
+  partial inventory (`utils/pdfRole.ts`, `utils/pdfRoleRead.ts` for lazy inspection). Unknown attachments survive
+  every write.
+- BOTH the outer and pristine PDFs need write-safety proof (`pdf/writing/` via `pdfWriteSafety`): signatures,
+  ByteRange/certification, encryption and unknown policy are refused. Consent, a raw role or a signature count cannot
+  mint that proof. Mutation, worker assembly, post-await publication and App's versioned IO all recheck it.
+- Render, copy, capture, write, print and high-quality print are independent permissions; unknown is not permission.
+- `canWriteSource` excludes ONLY the hosted board's own read-only flag; `canWrite` includes it. Calling full write
+  eligibility from the board's read-only predicate recurses.
+- A saved byte generation changes a source, not its retained document/undo owner. Later editing checks the live
+  owner/session serial, not equality with an old `getSessionIdentity()` object.
 - Physical PDF pages cannot be added, deleted, resized or reflowed as notebook sheets.
 
-## Explicit legacy conversion
+## Editing a PDF (Annotate) and the saved-source rebind
 
-`acquireLegacyPdfInkCandidate().prepare` requires the actual C5/visual gate, custom confirmation,
-foreign-mark consent when applicable and `NativeCanvasHost.keepConversionBackup` of EXACT outer bytes.
-App independently enforces the backup before first overwrite; a JSON hash is not the outer disk hash.
+- `NativeCanvasEditing` promotes only after input, chrome, styles, shortcuts, commands, context menu and paired embed
+  presentation all attach. An API existing is not editing readiness.
+- Tool/embed services belong to the DOM view, not each platform enable/disable pulse: recreating their layers during
+  a topology seal causes a synchronous attach/remove/render loop.
+- `PdfPane` keeps an admitted native child mounted through dirty ink and rebind using the actual source slot
+  (`whiteboard/host/pdfInkSourceState.ts`). A role refresh, dirty bit or temporary write revocation must not unmount
+  it and lose camera, history or unsaved work.
+- PDF HOST metadata belongs to `pdf/session/inkHost.ts`: one write id before frozen serialization; preserve opaque
+  HOST ext. Every save goes through App's versioned IO (`useSaveFunnel`), never directly from a worker.
+- The pane's own autosave does not rebind: the writer builds from pristine + full ink, so the new bytes are what the
+  pane already paints, and `pdfInkRebind` skips a same-generation write. A rebind covers with input detached
+  (~150 ms of dropped presses), so only outside changes may cause one.
+- Rebind only to freshly inspected saved bytes with a forward generation and the same pristine. The caller invokes
+  `runtime.adoptPaintSource` before publishing ready. Pins retain the WHOLE `capturePaintBinding()` bundle (token,
+  factories, retainer); `scene.setPaintBinding` installs it atomically. Updating a token alone retags old work.
+- Platform document tokens are immutable: detach old input/platform, transfer the camera, attach a new platform with
+  the new token. There is no token-update API.
 
-`createPreviewHost()` is non-saveable. Mint the final host with
-`createPdfInkConversionHost(ready, previousFrames)` and pass that EXACT object, actual final native
-board and media to `createConvertedPdfInkSource`. It produces branded `kind:'legacy-converted'`, not a
-forged native/plain source. Final immutable C5/visual qualification is separate from preview admission.
-Ownership transfers only on success; App take detaches preparation cancellation from document lifetime.
-The first verified native write/reopen completes migration. Cancellation/refusal leaves the original.
+## Legacy conversion (old annotated PDFs, `.tldraw`, `.notebook`)
 
-HOST media projection excludes only validated, owned bookkeeping fields (`session/inkHostMedia.ts`).
-Preserve unknown keys/raw contents, even identical hashes; invalid schemas full-scan. Never bypass the
-missing-media guard, invent media receipts or fall back to folder `.Assets` for embedded PDF media.
+- `acquireLegacyPdfInkCandidate().prepare` needs the C5/visual gate, the app's own confirmation, foreign-mark consent
+  when applicable, and `NativeCanvasHost.keepConversionBackup` of the EXACT outer bytes; App enforces the backup
+  before the first overwrite. A JSON hash is not the outer disk hash.
+- `createPreviewHost()` is non-saveable. The final host is `createPdfInkConversionHost(ready, previousFrames)`; pass
+  that exact object, the native board and media to `createConvertedPdfInkSource` (branded
+  `kind: 'legacy-converted'`). Ownership transfers only on success; the first verified native write and reopen
+  completes migration; cancellation leaves the original untouched.
+- HOST media projection excludes only validated bookkeeping fields (`pdf/session/inkHostMedia.ts`). Never invent
+  media receipts or fall back to the folder's `.Assets` for embedded PDF media.
 
-## Writers, exports and capture
+## Writers, exports, print, capture
 
-- Writers are isolated, serialized, role-sealed and never replay failed writes. Rebuild from pristine
-  plus current ink and preserved attachments, never already-stamped outer pages. Worker proofs do not
-  grant disk authority. Recovery uses `host/pdfInkAssembly.ts`, never JSON disguised as PDF/pristine alone.
-- Opaque workers have no WebCrypto digest API. PDF artifacts/write marks use the actual pure SHA-256
-  byte digest (`utils/pdfWriteArtifacts.ts`); keep cancellation/yields and exact mark verification.
-- Live ink/notebook exports use the incremental sink. One path start, bounded command pieces, one path
-  end/paint: painting each chunk changes joins, winding, fill and alpha. Preserve groups/clips/resources;
-  use shared governed CPU transport, one in-flight request, physical retirement and cancellation.
-- Native notebook output is `buildNativeNotebookFromEmittedPdf` with the actual revision and one frozen
-  write ID, followed by independent fresh geometry/corner/pointer/full-union/hash verification.
-  `finishGeneratedNotebookPdf` is the explicit generated-only no-engine route, selected BEFORE work,
-  never a fallback after a failed eligible native operation. Its worker accepts no imported PDF/ink build.
-- PDF+ink PNG composes `PdfInkBackdrop.captureSnapshot` with the genuine board snapshot under ONE C4
-  parent capture. Do not nest queued `captureRegion` calls. Pin before awaiting, preserve isolation getters,
-  encode from the same CPU target and keep storage/slot charged until physical cleanup settles.
-- Embedded-media receipts come only from the real issuer with the actual source and runtime job context.
-  Current-byte capture is a retained full checkpoint including unsaved ink/media, not disk/pristine aliases.
-  Capture after commit remains inside that SAME running job; no nested jobs/deadlock or forever receipts.
-- `prepareUnsignedPdfCopy` is copy-only for its admitted signature/AP subset. Warn and allocate a distinct
-  collision-free target, preserve exact signed raw bytes, independently verify safety and refuse unsupported
-  graphs. Never overwrite the signed original or claim cryptographic signature validation.
-- PDF-pane print hands exact saved original bytes to the browser after flushing pending ink. It is not a
-  raster spooler. Keep print policy/stale-handoff checks through awaits; close a stale reserved tab.
-- Native board print/export shares one focused pin (`useNativeClipboard.pinFocusedBoard`): drawing sheets
-  use `whiteboardPrint`, notebooks `notebookPrint`, PDF-backed boards `pagedPrintSnapshot`. `printBoard.ts`
-  is their sole print surface; menus and Mod-P reach that service, never a second pin. JSON copy/export
-  likewise shares the chunked `clipboard/copyJson.buildBoardJson` producer and `exportDelivery`.
+- Writers are isolated, serialized, role-sealed and never replay a failed write. Rebuild from pristine + current ink +
+  preserved attachments, never from already-stamped pages (`whiteboard/host/pdfInkAssembly.ts` for recovery).
+- Opaque workers have no WebCrypto digest: marks use the pure SHA-256 in `utils/pdfWriteArtifacts.ts`.
+- Live ink/notebook export uses the incremental sink: one path start, bounded command pieces, one path end/paint.
+  Painting each chunk changes joins, winding, fill and alpha.
+- Native notebook output is `buildNativeNotebookFromEmittedPdf` with one frozen write id, then independent
+  geometry/pointer/union/hash verification. `finishGeneratedNotebookPdf` (`pdf/writing/client.ts`) is the
+  generated-only no-engine route, chosen BEFORE work, never a fallback after a failed native one.
+- Ruled paper is defined in three places that must agree: geometry and hex colours in `utils/paper.ts`, the board's
+  `Rgba` values in `whiteboard/host/notebookPaper.ts` (shared with `proceduralPaper.ts`), and pdf-lib `rgb` in
+  `utils/pdfBuild.ts` (main-bundle `paper.ts` must stay free of pdf-lib).
+- `prepareUnsignedPdfCopy` is copy-only: a distinct collision-free target, the signed original untouched, no claim of
+  signature validation.
+- PDF-pane print hands the exact saved bytes to the browser after flushing pending ink, not a raster spool.
+- Board print/export share one focused pin in `components/whiteboard/useNativeClipboard.ts`: drawings use
+  `whiteboard/export/whiteboardPrint.ts`, notebooks `notebookPrint.ts`, PDF-backed boards `pagedPrintSnapshot`;
+  `components/whiteboard/printBoard.ts` is the only print surface. JSON copy/export share
+  `whiteboard/clipboard/copyJson.ts` (`buildBoardJson`) and `exportDelivery.ts`.
+- PDF+ink PNG composes `PdfInkBackdrop.captureSnapshot` with the board snapshot under ONE parent capture
+  (`rendering-platform`, Capture).
 
-## Reader, fonts and module boundaries
+## Canvas document sessions
 
-- Pool/native DTO validation is privileged: geometry/all affines, text schema, links/outline, attachments
-  and writer replies need strict fresh data. Events are hints, not authority. Definitive raster failures
-  alone poison raster; cancellation, worker death and FontPending do not.
-- Share opens/font/region work across waiters, keep priority-zero close and bounded memory/page windows.
-  Recovery is bounded; Retry is source-scoped. Do not inflate credits/caps to hide a resource refusal.
-- Fonts are the pinned 14 payloads in `vendor/pdf-fonts`. Availability IDs are not used-face evidence;
-  profiles hash approved IDs plus actual SHAs. Numeric epochs revoke models/tiles/find/selection/capture.
-  Known charset wins conflicting language; ambiguous Chinese uses SC. Mixed/unknown language stays unknown.
-- PDF Text uses the same App source/pool, without mounting Original's compositor. Original/Annotate word
-  emphasis stays in the original page view; Text is an explicit separate action, never OCR.
-- Native canvases and PDF layers import platform only through lazy routes. A static pdf-lib/tldraw/engine
-  import in App defeats the bundle split. Keep filesystem access in context and save work in App.
-- Existing legacy drawing/notebook panes remain separate lazy consumers of tldraw until their own cutover;
-  give tldraw local asset URLs. No PDF reader or writer may depend on tldraw's CDN to draw a line.
-- Ruled paper has two active definitions, `utils/paper.ts` and `utils/pdfBuild.ts`; change both.
+- App owns each canvas document's session (`utils/canvasSessionBridge.ts`, `NativeCanvasHost` in
+  `types/nativeCanvas.ts`); StrictMode and extra panes attach to the same engine session. The board runtime (model,
+  scene, history, journal) outlives every view (`attachView` attaches view resources only).
+- A content source pins one revision synchronously (`whiteboard/session/BoardSession.ts`); a build job never reads
+  the live document.
 
-## Per-tile GPU textures and board claims
+## Module boundaries
 
-- A PDF tile owns its own pooled GPU texture (`texturePool.ts` reuses free textures); its CPU bitmap lease is released once the
-  tile is GPU-resident. `evictGpu` clears the free pool, then frees off-view and other-scale tiles, farthest first; a tile on
-  screen or drawn by the last prepared frame stays. `releaseGpu` releases every page texture now.
-- `drawnPageRects()` (PDF page layer, notebook paper) lists the pages painted at least once at the current source and layout.
-  A board claims those pages as opaque (C1) and no others: `board-gpu-path`.
-- A device never builds the board's dense tile adapter. Dense tiles are canvas2d's (`board-gpu-path`).
+- PDF and canvas panes reach the engines only through lazy chunks (`PdfPane`'s `lazy()` routes, `CanvasPane` →
+  `NativeCanvasEntry`); `prefetchPanes.ts` warms them at idle by the kinds the vault holds (markdown-only fetches
+  none). A static engine import from App or a non-listed component defeats the split; the lint dark zone
+  (`rendering-platform`, Boundaries) catches most of them. Filesystem access stays in context; saves in App.
+- No PDF or board may depend on a CDN to draw a line: engine, fonts and renderer assets are local and
+  integrity-checked.

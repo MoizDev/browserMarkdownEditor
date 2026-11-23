@@ -216,7 +216,11 @@ export function installKeyboard(root: HTMLElement, actions: KeyboardActions, mac
       const accelDown = mac ? event.metaKey : event.ctrlKey
       if (accelDown && !event.altKey && BROWSER_ZOOM_KEYS.has(event.key)) event.preventDefault()
       // Windows opens the menu bar when Alt is released alone; a gesture or zoom that Alt joins must not reach it.
-      if (event.key === 'Alt' && actions.gestureActive?.()) event.preventDefault()
+      // The press is still reported as a modifier: the early return below would otherwise hide Alt from a zoom hold's cursor.
+      if (event.key === 'Alt' && actions.gestureActive?.()) {
+        event.preventDefault()
+        actions.modifierChanged?.({ shift: event.shiftKey, alt: event.altKey, control: event.ctrlKey, accel: mac ? event.metaKey : event.ctrlKey })
+      }
     }
     if (event.defaultPrevented || !actions.visible() || actions.modalOpen() || actions.editing() || textOwned(event.target, root) || event.isComposing || event.keyCode === 229 || event.key === 'Dead' || event.getModifierState('AltGraph')) return
     if (!root.contains(event.target as Node)) return

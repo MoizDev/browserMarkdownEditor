@@ -41,6 +41,15 @@
     pointer-events: none;
 }
 
+/* A selected shape, drawn over the picture and under the window. Its minimum keeps a line or a dot visible. */
+.native-minimap-selected {
+    position: absolute;
+    min-width: 2px;
+    min-height: 2px;
+    background: var(--interactive-accent);
+    pointer-events: none;
+}
+
 .native-minimap-viewport {
     position: absolute;
     box-sizing: border-box;

@@ -7,6 +7,9 @@ import type { AttachCanvasSession } from '../../utils/canvasSessionBridge';
 import { prepareNativeRuntime } from '../../whiteboard/host/prepareNativeRuntime';
 import { registerNativeNotebookExporter } from '../../whiteboard/host/registerNativeNotebookExporter';
 import { pinNativeSheetThumbnailBounds } from '../../whiteboard/host/sheetThumbnailBounds';
+import { contentBounds, type ContentRect } from '../../whiteboard/commands/contentBounds';
+import { tweenCamera } from '../../whiteboard/viewer/cameraTween';
+import type { Camera } from '../../platform/types';
 import { boardPageStack } from '../../whiteboard/model/pages';
 import { useDocumentClipboard, useNativeClipboard } from './useNativeClipboard';
 import type { ComposedBoardSession } from '../../whiteboard/session/factoryTypes';
@@ -15,7 +18,7 @@ import { useNativeBoardAcquisition } from './useNativeBoardAcquisition';
 import { createNativeViewLease, type NativeViewLease } from './nativeViewLease';
 import ViewerHost from './ViewerHost';
 import NativeNotebookThumbnails from './NativeNotebookThumbnails';
-import NativeMinimap, { type NativeMinimapThumbnail } from './NativeMinimap';
+import NativeMinimap, { type NativeMinimapBox, type NativeMinimapThumbnail } from './NativeMinimap';
 import { getBoardPreferences, subscribeBoardPreferences, updateBoardPreferences } from '../../utils/boardPreferences';
 import { NativeCanvasEditing, type NativeEditingViewOptions, type NativeEditingRenderContext } from './NativeCanvasEditing';
 import type { BoardSessionPort, HostedBoardAdapter } from './boardSessionAdapter';
@@ -35,6 +38,9 @@ function cameraSnapshotReader(lease: NativeViewLease) {
         return value;
     };
 }
+
+/** Selected shapes the minimap paints; a larger selection shows its first shapes' boxes. */
+const MINIMAP_HIGHLIGHT_LIMIT = 64;
 
 function readMinimapOpen(): boolean {
     return getBoardPreferences().minimapOpen;
@@ -147,12 +153,47 @@ export function AttachedViewer({ props, identity, lease, inverted, setInverted, 
         })();
         return () => controller.abort();
     }, [minimapOpen, props.isVisible, board, lease, sheet, revision, sceneRevision, fontEpoch, minimapCurrent, thumbnailKey]);
-    const navigateMinimap = useCallback((centre: { x: number; y: number }) => {
+    // One glide at a time: a newer map move (a click, a drag's first step) replaces the one in flight.
+    const minimapGlide = useRef<{ cancel(): void } | undefined>(undefined);
+    useEffect(() => () => { minimapGlide.current?.cancel(); }, []);
+    const navigateMinimap = useCallback((centre: { x: number; y: number }, mode: 'glide' | 'jump') => {
         if (!minimapCurrent()) return;
-        const camera = lease.camera.camera, viewport = lease.camera.viewport;
-        lease.camera.setCamera({ x: centre.x - viewport.width / (2 * camera.z), y: centre.y - viewport.height / (2 * camera.z), z: camera.z });
-        lease.changed();
+        minimapGlide.current?.cancel(); minimapGlide.current = undefined;
+        const from = lease.camera.camera, viewport = lease.camera.viewport;
+        const target = { x: centre.x - viewport.width / (2 * from.z), y: centre.y - viewport.height / (2 * from.z), z: from.z };
+        const apply = (next: Camera) => { lease.camera.setCamera(next); lease.changed(); };
+        if (mode === 'jump') { apply(target); return; }
+        // 320 ms is tldraw's medium animation (options.ts animationMediumMs); the map's own reduced-motion setting applies.
+        minimapGlide.current = tweenCamera({ from: { ...from }, target, durationMs: 320, apply });
     }, [lease, minimapCurrent]);
+    // The selection's exact boxes, so the map can paint them. Read per shape with the scene's cached bounds, capped so a
+    // huge selection cannot queue an unbounded walk.
+    const [highlights, setHighlights] = useState<readonly NativeMinimapBox[]>([]);
+    const selectedIds = selected.selected;
+    useEffect(() => {
+        setHighlights([]);
+        if (!minimapOpen || !props.isVisible || board.doc.kind !== 'whiteboard' || !selectedIds.length) return;
+        const controller = new AbortController();
+        const ids = selectedIds.slice(0, MINIMAP_HIGHLIGHT_LIMIT);
+        void (async () => {
+            try {
+                await lease.runtime.ready;
+                const boxes: NativeMinimapBox[] = [];
+                for (const id of ids) {
+                    const box = await contentBounds(lease.runtime, [id], { signal: controller.signal,
+                        fence: () => { if (controller.signal.aborted || !minimapCurrent()) throw new DOMException('Minimap selection changed', 'AbortError'); },
+                        cooperate: () => new Promise<void>(resolve => setTimeout(resolve, 0)) });
+                    if (box) boxes.push(box);
+                }
+                if (!controller.signal.aborted && minimapCurrent()) setHighlights(boxes);
+            } catch (error) {
+                if (!controller.signal.aborted && !(error instanceof DOMException && error.name === 'AbortError')) {
+                    setMinimapNotice(error instanceof Error ? error.message : 'Minimap is unavailable.');
+                }
+            }
+        })();
+        return () => controller.abort();
+    }, [minimapOpen, props.isVisible, board, lease, selectedIds, revision, minimapCurrent]);
     const { onFocusPane, registerKeyboardTarget } = props;
     const path = props.file.path;
     const onFocus = useCallback(() => onFocusPane(path), [onFocusPane, path]);
@@ -193,7 +234,7 @@ export function AttachedViewer({ props, identity, lease, inverted, setInverted, 
             <button type="button" className="disk-bar-btn" onClick={() => setNotice(null)}>Dismiss</button>
         </div>}
         {board.doc.kind === 'whiteboard' && <NativeMinimap thumbnail={thumbnail?.key === thumbnailKey ? thumbnail : null} currentCamera={cameraState.camera} viewport={cameraState.viewport}
-            isVisible={props.isVisible && minimapOpen} currentOwner={minimapCurrent} onNavigate={navigateMinimap} onFocus={onFocus} />}
+            isVisible={props.isVisible && minimapOpen} currentOwner={minimapCurrent} highlights={highlights} onNavigate={navigateMinimap} onFocus={onFocus} />}
         {minimapOpen && minimapNotice && <div className="board-viewer-notice" role="status">{minimapNotice}</div>}</>} />;
 }
 

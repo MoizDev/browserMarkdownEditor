@@ -3,7 +3,6 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "rtl",
     englishTerms: [
-        { key: "dialog.embedProviders", text: "Supported providers", reason: "Not translated yet: this board language shows the English heading." },
         { key: "dialog.url", text: "URL", reason: "URL is the standard abbreviation, used unchanged in this language." },
         { key: "commands.exportPng", text: "PNG", reason: "International file format or paper size designation." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -17,7 +16,7 @@ export default defineBoardLanguage({
     strings: {
         "dialog.insertEmbed": "הוספת הטמעה",
         "dialog.embedBody": "הזינו קישור מספק הטמעות נתמך. ההטמעה לא תיטען עד שתבחרו בטעינה.",
-        "dialog.embedProviders": "Supported providers",
+        "dialog.embedProviders": "ספקים נתמכים",
         "dialog.url": "URL",
         "crop.aspect": "יחס גובה-רוחב",
         "crop.zoom": "הגדלה",

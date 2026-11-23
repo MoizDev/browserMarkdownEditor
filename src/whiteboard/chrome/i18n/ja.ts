@@ -3,7 +3,6 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
-        { key: "dialog.embedProviders", text: "Supported providers", reason: "Not translated yet: this board language shows the English heading." },
         { key: "dialog.url", text: "URL", reason: "URL is the standard abbreviation, used unchanged in this language." },
         { key: "commands.exportPng", text: "PNG", reason: "International file format or paper size designation." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -17,7 +16,7 @@ export default defineBoardLanguage({
     strings: {
         "dialog.insertEmbed": "埋め込みを挿入",
         "dialog.embedBody": "対応している埋め込みプロバイダーのリンクを入力してください。「読み込む」を選ぶまで埋め込みは読み込まれません。",
-        "dialog.embedProviders": "Supported providers",
+        "dialog.embedProviders": "対応プロバイダー",
         "dialog.url": "URL",
         "crop.aspect": "縦横比",
         "crop.zoom": "ズーム",

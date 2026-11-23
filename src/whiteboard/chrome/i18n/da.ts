@@ -3,7 +3,6 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
-        { key: "dialog.embedProviders", text: "Supported providers", reason: "Not translated yet: this board language shows the English heading." },
         { key: "chrome.system", text: "System", reason: "Same wording as English in this language." },
         { key: "styles.start", text: "Start", reason: "Same wording as English in this language." },
         { key: "colours.violet", text: "Violet", reason: "Same wording as English in this language." },
@@ -25,7 +24,7 @@ export default defineBoardLanguage({
     strings: {
         "dialog.insertEmbed": "Indsæt indlejring",
         "dialog.embedBody": "Indtast et link fra en understøttet udbyder af indlejringer. Indlejringen indlæses først, når du vælger Indlæs.",
-        "dialog.embedProviders": "Supported providers",
+        "dialog.embedProviders": "Understøttede udbydere",
         "dialog.url": "URL",
         "crop.aspect": "Billedformat",
         "crop.zoom": "Forstørrelse",

@@ -20,6 +20,8 @@ export interface StretchLeavesOptions {
     readonly current: () => boolean;
     readonly signal?: AbortSignal;
     readonly cooperate?: () => Promise<void>;
+    /** The transform's own gesture hold, when the keyboard or menu queue takes one before calling: the source is current under it. */
+    readonly heldGestures?: number;
 }
 export interface StretchLeavesPlan {
     readonly doc: BoardRuntime['session']['doc'];
@@ -38,7 +40,7 @@ export async function prepareStretchBoardLeaves(options: StretchLeavesOptions): 
     const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
     let font: number | undefined, released = false, scope: BoardGeometryScope | undefined; const leases: Lease[] = [];
     const current = () => !released && !signal.aborted && options.current() && session.owner === owner && session.doc === doc && doc.rev === revision
-        && !session.isReadOnly && !session.isGestureActive && runtime.selection.getSnapshot() === selection
+        && !session.isReadOnly && session.gestureHolds === (options.heldGestures ?? 0) && runtime.selection.getSnapshot() === selection
         && (font === undefined || runtime.render.text.fonts.epoch === font);
     const check = () => { signal.throwIfAborted(); if (!current()) throw new DOMException('Stretch source changed', 'AbortError'); };
     const release = () => {

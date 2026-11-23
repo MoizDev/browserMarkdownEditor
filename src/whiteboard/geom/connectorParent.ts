@@ -7,15 +7,15 @@ import type { Attachment } from '../model/nodes';
  * sheet). Catalogue a.5 (ArrowBindingUtil: the closest common frame-like ancestor, else the common ancestor, else the page). A free
  * end binds nothing, so the arrow keeps the container it has. */
 export function bindingContainer(doc: Readonly<BoardDoc>, start: Readonly<Attachment> | null | undefined,
-    end: Readonly<Attachment> | null | undefined): ParentId | null {
+    end: Readonly<Attachment> | null | undefined, parentOf: (id: NodeId) => ParentId | undefined = id => doc.nodes.get(id)?.parent): ParentId | null {
     if (!start || !end) return null;
     const chain = (target: NodeId): ParentId[] => {
         const out: ParentId[] = [];
-        let parent = doc.nodes.get(target)?.parent;
+        let parent = parentOf(target);
         for (let depth = 0; parent !== undefined && depth <= 64; depth++) {
             out.push(parent);
             if (isSheetParent(doc, parent)) break;
-            parent = doc.nodes.get(parent as NodeId)?.parent;
+            parent = parentOf(parent as NodeId);
         }
         return out;
     };

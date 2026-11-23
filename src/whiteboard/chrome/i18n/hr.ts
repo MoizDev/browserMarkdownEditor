@@ -3,7 +3,6 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
-        { key: "dialog.embedProviders", text: "Supported providers", reason: "Not translated yet: this board language shows the English heading." },
         { key: "dialog.url", text: "URL", reason: "URL is the standard abbreviation, used unchanged in this language." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
         { key: "commands.copyAsJson", text: "JSON", reason: "International file format or paper size designation." },
@@ -17,7 +16,7 @@ export default defineBoardLanguage({
     strings: {
         "dialog.insertEmbed": "Umetni ugradnju",
         "dialog.embedBody": "Unesite poveznicu podržanog pružatelja ugradnji. Ugradnja se ne učitava dok ne odaberete Učitaj.",
-        "dialog.embedProviders": "Supported providers",
+        "dialog.embedProviders": "Podržani pružatelji",
         "dialog.url": "URL",
         "crop.aspect": "Omjer stranica",
         "crop.zoom": "Zumiranje",

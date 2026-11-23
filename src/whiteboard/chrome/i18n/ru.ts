@@ -3,7 +3,6 @@ import { defineBoardLanguage } from '../boardLanguageTable';
 export default defineBoardLanguage({
     dir: "ltr",
     englishTerms: [
-        { key: "dialog.embedProviders", text: "Supported providers", reason: "Not translated yet: this board language shows the English heading." },
         { key: "dialog.url", text: "URL", reason: "URL is the standard abbreviation, used unchanged in this language." },
         { key: "commands.exportPng", text: "PNG", reason: "International file format or paper size designation." },
         { key: "commands.exportSvg", text: "SVG", reason: "International file format or paper size designation." },
@@ -17,7 +16,7 @@ export default defineBoardLanguage({
     strings: {
         "dialog.insertEmbed": "Вставить встраивание",
         "dialog.embedBody": "Введите ссылку от поддерживаемого поставщика встраиваний. Встраивание не загрузится, пока вы не выберете «Загрузить».",
-        "dialog.embedProviders": "Supported providers",
+        "dialog.embedProviders": "Поддерживаемые сервисы",
         "dialog.url": "URL",
         "crop.aspect": "Соотношение сторон",
         "crop.zoom": "Масштаб",

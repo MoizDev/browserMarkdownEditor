@@ -41,6 +41,9 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   session's `gestureHolds` must equal that count or the command is refused. Flip uses this.
 - Read-only is the session's `isReadOnly` (admission or apply's seal; a developer setting can force it per kind,
   `utils/engineRouting.ts`) plus per-node `locked` (`isLocked` walks ancestors). Save must honour it too.
+  A read-only board view still gets the accessibility mirror (skip link, live region, object list): the view lease builds
+  `viewer/accessibilityDom.ts` with `readOnly: true` (`nativeViewLease.ts`, `readonlyAccessibility`), which omits the drawing
+  cursor and pen-mode helper, and whose skip link only moves focus.
 - The AI agent edits boards through the same transactions (`whiteboard/agent/`, `change/agentBatch.ts`;
   `vault-agent` skill).
 
@@ -201,7 +204,7 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   `commandPaletteModel.ts`, `commandPaletteGroups.ts`; `commandPalette.open` opens it; it lays over the chrome's middle row (`.board-chrome-middle`), so the docked style panel never moves under it), `ZoomControls.tsx`,
   `BoardHeader.tsx`, menus (`mainMenu.ts`, `preferencesMenu.ts`, `themeMenu.ts`, `languageMenu.ts`), `boardCommands.ts`.
 - The minimap is `components/whiteboard/NativeMinimap.tsx`; its open state is `boardPreferences.minimapOpen`.
-- Context menus are the app's own (`openBoardContextMenu.ts`, `nativeBoardContextMenu.ts`; `app-context-menu`).
+- Context menus are the app's own (`nativeBoardContextMenu.ts`; `app-context-menu`).
   Dialogs and notices are the app's own UI; no native confirm/alert/prompt/tooltip. A board's notices (the render
   notices included) show together in its own `.board-viewer-notice` box, each with Dismiss, newest last (`useBoardNotices`,
   `BoardNoticeStack`): a new notice never replaces one, and only Dismiss counts as dismissing. In viewing and editing alike, a bare

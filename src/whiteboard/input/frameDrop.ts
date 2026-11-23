@@ -9,6 +9,7 @@ import { isSheetParent } from '../model/doc';
 import type { NodeId, ParentId } from '../model/ids';
 import type { FrameNode, Node } from '../model/nodes';
 import { keysBetween, needsRekey } from '../model/orderKey';
+import { bindingContainer } from '../geom/connectorParent';
 
 export interface FrameDropOptions {
     readonly runtime: BoardRuntime;
@@ -122,6 +123,21 @@ export async function prepareFrameDrop(options: FrameDropOptions): Promise<Frame
             // Default: preserve the enclosing non-frame scope; among overlapping frames use the deepest, then topmost.
             const parent = best?.frame.id ?? boundary;
             if (parent !== moved.parent) destinations.push({ id: moved.id, parent });
+        }
+        // An arrow bound to a moved shape follows it: it joins the container its two ends now share (catalogue a.5), in this same
+        // transaction. Arrows bound to a moved shape's children are left where they are; only the moved roots' attachments count.
+        const landed = new Map<NodeId, ParentId>(destinations.map(item => [item.id, item.parent]));
+        const parentAfter = (id: NodeId): ParentId | undefined => landed.get(id) ?? candidate.nodes.get(id)?.parent;
+        const followers = new Set<NodeId>();
+        for (const root of roots) for (const id of candidate.attachedTo.get(root.id) ?? []) if (!selected.has(id)) followers.add(id);
+        for (const id of followers) {
+            check(); const arrow = candidate.nodes.get(id);
+            if (!arrow || arrow.kind !== 'connector' || isLocked(candidate, arrow)) continue;
+            const container = bindingContainer(candidate, arrow.start.attach, arrow.end.attach, parentAfter);
+            if (container === null || container === arrow.parent) continue;
+            const holder = isSheetParent(candidate, container) ? undefined : candidate.nodes.get(container as NodeId);
+            if (holder && isLocked(candidate, holder)) continue;
+            destinations.push({ id: arrow.id, parent: container });
         }
         if (!destinations.length) return null;
         const ops: NodeSetOp[] = [], grouped = new Map<ParentId, NodeId[]>();

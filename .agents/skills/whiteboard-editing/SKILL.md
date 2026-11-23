@@ -30,13 +30,15 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
 - **One shared history per document** (`change/history.ts`, byte-limited at 256 MB, `onHistoryLimit` tells the
   person). Steps coalesce per key (`historyCoalesce.ts`); typing has its own coalescing marks
   (`text/edit/typingHistory.ts`) but no second undo stack. Selection is session state, never an undo step; a step
-  restores the selection it was made with.
+  restores the selection it was made with. A style press (the style panel's whole press, a held slider key) is one step.
 - **Previews never change the document.** A gesture shows its effect through `viewer/preview.ts` (the preview
   layers have a permanent slot, `previewSlot.ts`: inserting layers mid-gesture changed the topology, which seals
   platform input and cancelled the gesture itself). Only a completed, still-current pointer-up applies its
   preflighted transaction (`tools/transform.ts`).
 - Geometry for a change is prepared off-thread (`render.prepareChangeGeometry` / `pinChangeGeometry`, the exact
   jobs in `geom/`); a commit waits for it rather than guessing.
+- A command run under a transform's own held gesture declares it (`heldGestures`, `commands/flipLeaves.ts`): the
+  session's `gestureHolds` must equal that count or the command is refused. Flip and the keyboard transform use this.
 - Read-only is the session's `isReadOnly` (admission or apply's seal; a developer setting can force it per kind,
   `utils/engineRouting.ts`) plus per-node `locked` (`isLocked` walks ancestors). Save must honour it too.
 - The AI agent edits boards through the same transactions (`whiteboard/agent/`, `change/agentBatch.ts`;
@@ -45,35 +47,67 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
 ## Tools and input
 
 - Tools are registered in `input/boardTools.ts`. `persistent` (select, pen, highlighter, eraser, hand, laser) stay
-  chosen; `single-use` (zoom, text, sticky, figure, frame, connector, polyline, media) return to Select after one
-  use (`ToolState` in `input/gesture.ts`) unless the tool lock is on or `keepToolOnce` was armed. Escape returns
-  to Select. Tool choice is session UI state, never history.
+  chosen. `single-use` (text, sticky, figure, frame, connector, polyline, media) return to Select after one use;
+  zoom is single-use and **not lockable** (`lockable: false`). `ToolState` (`input/gesture.ts`) keeps a lockable
+  single-use tool when the tool lock is on (`Q`, Preferences, the padlock over the bar) or `keepToolOnce` was armed.
+  Escape returns the chosen tool to Select (`ToolState.escape`). Tool choice is session UI state, never history.
 - A tool whose work lands after pointer-up returns to Select itself (`completesTool` in `input/pointerRouter.ts`).
 - **One gesture owner at a time** (`input/router.ts`, `InputRouter`): tools receive normalised `RealSample`s only,
   stamped with an `InputToken` (vault epoch, tab, session and view generations). A replaced view cannot finish its
   successor's contact; check the token before acting on anything async.
-- Ink: `input/liveInk.ts` (wet curve), `sessionInk.ts`, `continueInk*.ts`, `straightInk.ts`; delegated ink
-  (`delegatedInk.ts`) uses the browser's ink presenter when present. Pen mode (`ToolState.penMode`) and
-  `penTransitions.ts` route a stylus to ink or eraser while touch pans. The eraser removes whole items
-  (`input/basicTools.ts`); there is no partial erase.
-- Select (`tools/select.ts`, `viewer/selectServices.ts`): click, marquee (Ctrl = full containment), scribble/lasso (Alt+drag);
-  handles and transforms in `viewer/selectionHandles.ts`, `shapeHandles.ts`, `stickyHandles.ts`,
-  `tools/transformDrivers.ts`. Creation tools are `viewer/creationTools.ts`.
+- Draw and highlight: `input/liveInk.ts` (wet curve), `sessionInk.ts`, `continueInk*.ts` (Shift-click continues the
+  last stroke), `straightInk.ts` (Shift: a straight run whose direction snaps to 15°; Cmd/Ctrl turns the snap off);
+  delegated ink (`delegatedInk.ts`) uses the browser's ink presenter when present. Cmd/Ctrl held over Draw or
+  Highlight is a temporary whole-item eraser (`input/attach.ts`, `holdAccelEraser`), never the chosen tool.
+- Pen mode (`ToolState.penMode`, `penTransitions.ts`) routes a stylus to ink or eraser while touch pans. The eraser
+  removes whole items (`input/basicTools.ts`); there is no partial erase.
+- The laser (`input/laserTrail.ts`) is a session-level fade, never saved; the board's Escape clears a visible trail first and leaves the laser chosen (`input/attach.ts`).
+- A bar press dragged off the bar goes to `ToolState.beginChromeDrag` → `input/chromeDrag.ts` (router-owned): the
+  shape is created where the pointer is released. A click never leaves the bar, so it only selects the tool.
+- Select (`tools/select.ts`, `input/selectGesture.ts`, `viewer/selectServices.ts`): click; marquee (`isWrapMode`
+  makes Cmd/Ctrl the full-containment key on Mac, Ctrl elsewhere); Alt-drag scribble. Both select live while the drag
+  runs and Escape restores the start selection. Handles and transforms: `viewer/selectionHandles.ts`,
+  `shapeHandles.ts`, `stickyHandles.ts`, `tools/transformDrivers.ts`. Handles draw larger for a coarse pointer
+  (`viewer/pointerKind.ts`, the last pointer type decides).
+- Creation: `viewer/creationTools.ts` (`boardCreationTool`: figure, text, sticky, frame, connector, polyline) and the
+  text tool in `text/edit/tool.ts`. A frame's border double-click fits it to its children (`viewer/frameBorderFit.ts`).
+- Arrow ends (`input/connectorHandles.ts`, `input/bindingPrecision.ts`): a binding is precise after 320 ms on its
+  target, after 600 ms of hover with the arrow tool, or on a slow entry; a fast entry binds to the centre. Alt is
+  exact, Cmd/Ctrl skips binding. `viewer/connectorHints.ts` draws the stub, cross and ring.
+- Navigation: `input/navigation.ts` and the wheel, touch and pinch modules (`cameraZoom.ts`, `oneFingerZoom.ts`,
+  `touchDoubleTap.ts`, `panFling.ts`, `zoomBrush.ts`). Edge scrolling is `input/edgeScroll.ts`. Space + arrow pages
+  through `viewer/keyboardNavigation.ts`, which glides on the platform scheduler (`rendering-platform`). Back to
+  content (`viewer/backToContent.ts`) and the helper column (`viewer/helperButtons.ts`) are chrome-level.
 
 ## Keyboard
 
 - **One table** (`boardBindings` in `input/keyboard.ts`) supplies both dispatch and the shortcuts dialog
-  (`components/whiteboard/chrome/ShortcutsDialog.tsx`); add a shortcut there, never a stray listener. Extra
-  bindings that need app state go through `components/whiteboard/nativeEditingKeyboard.ts` with the same commands.
+  (`components/whiteboard/chrome/ShortcutsDialog.tsx`, grouped by `shortcutGroups`). Add a row there, next to its
+  related rows, never a stray listener. Commands that need app state go through
+  `components/whiteboard/nativeEditingKeyboard.ts` with the same command ids. Chords are drawn by `bindingChord`, so
+  the dialog and the tooltips read the same row.
+- Row fields: `accel` is Cmd on Mac and Ctrl elsewhere; `shift` and `alt` are as named. Shifted digits and Alt letters
+  match by physical `code`. `repeat` lets a held key repeat the row; a held key otherwise repeats only the shortcut
+  it started (`started`). `alias` rows dispatch but are never listed (`b`/`x` for Draw, `Backspace` for Delete, the
+  `tool.bar.N` digits, the unmodified `=`/`-` beside `Cmd+=`/`Cmd+-`, the arrow families). `dialogOnly` rows are
+  listed but never dispatched: a momentary mode (`zoom.hold`, `zoom.quick`, `pan.camera`) or a family the dispatcher
+  reads from the key (`tool.bar.position`, `nudge.move`); `chordKey` is the cap the dialog draws for them.
+  `required` rows still work while the Keyboard shortcuts preference is off (Delete, `help.shortcuts`,
+  `accessibility.repeat`, `accessibility.contextMenu`, `style.adjust`). `group` picks the dialog section; the
+  `text-formatting` rows are the text editor's keys, which the board's dispatch skips.
 - The listener is on the board's interaction root: a key reaches the board only while focus is inside it. Opening
   a document from the tree hands it the keyboard (`utils/documentKeyboard.ts` → `EditorPane`'s keyboard-target
   registry; `ViewerHost` registers the interaction root), and a pointer click on a board toolbar button hands it
   back (`returnKeyboard` in `ViewerHost.tsx`), except a button that opens a popup or a keyboard activation. A new
   floating control must keep this: a click that strands focus outside the root silently kills every shortcut.
-- Order inside `keydown`: paged/arrow navigation (arrows nudge a selection, else pan), then a printable unbound key
-  with a selection starts typing into it (`typeText`), then Space/`z` hold pan/zoom, then the binding. A bound key is
-  a shortcut before it is text (⇧/ opens the dialog, never types `?`). Read-only boards run only view,
-  accessibility, select and navigation bindings. Shifted digits and Alt letters match by physical `code`.
+  Closing a popup returns focus through `components/whiteboard/chrome/boardFocus.ts`; leaving a text edit does so in `viewer/textEditor.ts` (`returnFocus`).
+- Order inside `keydown`: browser zoom keys (Cmd/Ctrl `+` `-` `0`) are taken first; then the guards (modal open,
+  editing, a text-owned target); the keyboard cursor when active; Escape; paged keys and arrows (arrows nudge a
+  selection, Space held pages the view, otherwise they pan); a printable unbound key with a selection starts typing
+  into it (`typeText`; Space never does); Space and `z` hold pan and zoom; then the binding. A bound key is a shortcut
+  before it is text (⇧/ opens the dialog, never types `?`). Modifier releases are debounced 150 ms
+  (`input/modifierRelease.ts`). A read-only board runs only the `view` and `accessibility` rows, `select.*`,
+  `tool.select`, `tool.hand` and `preferences.*`.
 - Every gesture or shortcut a person can use belongs in the help page (`utils/helpDoc.ts`, owned by AGENTS.md's
   rule): a user-facing change is not finished until it is described there.
 
@@ -84,6 +118,10 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   Chromium's **EditContext** (`text/edit/host.ts`) with a hidden textarea fallback; IME composition,
   character bounds and format updates come through it. Layout and caret come from the shared layout engine
   (`text/layout*.ts`, `caretIndex.ts`); the edit layer never measures a second copy of the text.
+- Typed typography (quotes, dashes, ellipsis, arrows, symbols) and wrapping a selection with a typed bracket or
+  quote are `text/edit/rules.ts`; both are skipped inside code and while a backtick is open.
+- The formatting bar above a selection is `viewer/textFormatToolbar.ts`: it shows a format as on only when every
+  character of the selection carries it. Its icons are Lucide data (see `PROVENANCE.md`).
 - While a node is being edited its paint is exact (`editingChanged`); a figure's label growth is measured exactly as
   an edit measures it (`text/edit/growth.ts`).
 - Links in text are normalised through `text/edit/format.ts` (`linkUrl`) and opened only by an explicit gesture.
@@ -101,26 +139,34 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
 
 - Media enters by the media tool, drop or paste (`media/ingest.ts`, `clipboard/`): sniffed, inspected and stored
   in the document's media store (`media/store.ts`); decoding runs in `media/decode.worker.ts`. SVG and video decode
-  in opaque contained frames (`contained-frames` skill). Crop is `NativeCropDialog.tsx` + `media/crop.ts`.
+  in opaque contained frames (`contained-frames` skill).
+- **Crop is in-canvas**: `components/whiteboard/NativePictureCrop.tsx` (the crop bar and the floating controls over
+  the picture) with `pictureCropStore.ts`, `nativeCropGeometry.ts` and the geometry in `media/crop.ts`. Enter applies,
+  Escape cancels, and a click outside applies.
 - A pasted URL becomes a `linkcard`, or an `embed` for a known provider (`clipboard/insertText.ts`,
   `media/embed.ts`: seventeen providers in `EmbedProvider`, YouTube via youtube-nocookie; identifier-only path rules
-  so a link cannot smuggle a second address).
+  so a link cannot smuggle a second address). A pasted link fills a selected link-carrying item instead.
 - **Embeds are inert until the person loads them** (`viewer/cardControls.ts`, `host/nativeEmbeds.ts`): consent is
   per node, URL and view lifetime, never saved. Opening a link (`media/openLink.ts`) and fetching a card preview are
   explicit gestures, never done while rendering. URL policy is `security/urlPolicy.ts`.
 
 ## Chrome and commands
 
-- `components/whiteboard/chrome/`: `ToolStrip.tsx` (tools; `toolChoices.ts` for the figures on the bar and its
-  More-tools menu), `PenPanel.tsx` (colours and width), `BoardHeader.tsx`, `ZoomControls.tsx`, menus
-  (`mainMenu.ts`, `preferencesMenu.ts`, `themeMenu.ts`, `languageMenu.ts`), `boardCommands.ts`.
+- `components/whiteboard/chrome/`: `ToolStrip.tsx` (the bar, the padlock, the figure slot, More tools;
+  `toolChoices.ts` for the figures on the bar and in More tools), `StylePanel.tsx` (+ `styleIcons.tsx`,
+  `stylePanelStore.ts`; its row model is `src/whiteboard/chrome/stylePanel.ts`), `CommandPalette.tsx` (+
+  `commandPaletteModel.ts`, `commandPaletteGroups.ts`; `commandPalette.open` opens it), `ZoomControls.tsx`,
+  `BoardHeader.tsx`, menus (`mainMenu.ts`, `preferencesMenu.ts`, `themeMenu.ts`, `languageMenu.ts`), `boardCommands.ts`.
+- The minimap is `components/whiteboard/NativeMinimap.tsx`; its open state is `boardPreferences.minimapOpen`.
 - Context menus are the app's own (`openBoardContextMenu.ts`, `nativeBoardContextMenu.ts`; `app-context-menu`).
   Dialogs and notices are the app's own UI; no native confirm/alert/prompt/tooltip. A board's notices (the render
   notices included) show in its own `.board-viewer-notice` box with Dismiss, in viewing and editing alike: a bare
   `role="status"` element with no place in the layout is in the DOM and nowhere on screen.
 - Board preferences persist in `localStorage['bme.whiteboard.preferences']` (`utils/boardPreferences.ts`).
 - Copy/cut/paste are listened on the board surface (`useNativeClipboard.ts`); paste classifies native records,
-  legacy, Excalidraw and HTML (`clipboard/paste.ts`), each admitted as an external source.
+  legacy, Excalidraw and HTML (`clipboard/paste.ts`), each admitted as an external source. A plain paste of board
+  content stays where it was copied when it came from this board and sheet and overlaps the view, else it lands in the view's centre (`clipboard/placement.ts`); Cmd/Ctrl+D repeats the last
+  copy's offset (`clipboard/duplicateRepeat.ts`).
 
 ## Checking an editing change
 

@@ -109,6 +109,10 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   creation and by the end drag's commit; a release keeps an arc's radius (`geom/connectorBend.ts`). Creation drops a drag under 10
   units (`CONNECTOR_MIN_LENGTH`, `viewer/creationTools.ts`). An elbow's target hint draws its edge dots and anchor circle
   (`viewer/connectorHints.ts` `elbowHintOf`, `setTarget`); its arrow-tool hover draws the dots without an anchor.
+  An elbow end on an edge is an edge port: `geom/resolveConnector.ts` `edgePort` takes the outward world axis of the edge
+  its anchor sits on, and `geom/elbow.ts` builds the routes that leave or arrive along it, `elbowLeg(width)` out (tip gap
+  6 × width, the head, and a shaft as long); the route may not run through the shape before that anchor.
+  `render/conservativeConnector.ts` pads its envelope by the same leg.
 - Translation commits positions rounded to 1e-6 board units (`geom/runtimeTranslation.ts`, `cleanPlacement`); the
   live preview keeps exact arithmetic, so a grid-snapped drop no longer commits 119.99999999999994.
 - Navigation: `input/navigation.ts` and the wheel, touch and pinch modules (`cameraZoom.ts`, `oneFingerZoom.ts`,

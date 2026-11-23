@@ -30,6 +30,7 @@ import { record, integer, boolean, invalidPdfReply } from './validationCommon';
 import { rebuildPdfTextReply } from '../text/rebuildReply';
 import type { PdfTextDetail } from '../worker/protocol';
 import { reportWorkerMemory, releaseWorkerMemory } from '../../platform/render/workerMemory';
+import { auditCount } from '../../platform/render/renderAudit';
 
 const validators = createPdfReplyValidators();
 const workerOwners = new WeakMap<WorkerClient, BootstrapPort>();
@@ -474,6 +475,8 @@ class Pool implements PdfPool {
         if (!job.progress && job.op === 'page.tile' && job.priority <= 1 && Number.isSafeInteger(job.args.page)) {
             job.progress = beginPdfPageWork(job.doc.key, job.args.page as number);
         }
+        // Which worker each visible/prefetch tile went to: how a large window's open spreads (or queues) across the pool.
+        if (job.op === 'page.tile') auditCount('pdf-pool', `tile:p${job.priority}:w${this.slots.indexOf(slot)}`);
         const attempt = { controller: new AbortController(), preempted: false };
         const signal = AbortSignal.any([job.signal, attempt.controller.signal]);
         let rasterFailurePage: number | undefined;

@@ -41,6 +41,8 @@ function cameraSnapshotReader(lease: NativeViewLease) {
 
 /** Selected shapes the minimap paints; a larger selection shows its first shapes' boxes. */
 const MINIMAP_HIGHLIGHT_LIMIT = 64;
+/** A bounds query that the scene's rebuild aborts is retried this many times, this many milliseconds apart. */
+const MINIMAP_BOUNDS_ATTEMPTS = 5, MINIMAP_BOUNDS_RETRY_MS = 60;
 
 function readMinimapOpen(): boolean {
     return getBoardPreferences().minimapOpen;
@@ -179,10 +181,21 @@ export function AttachedViewer({ props, identity, lease, inverted, setInverted, 
             try {
                 await lease.runtime.ready;
                 const boxes: NativeMinimapBox[] = [];
+                const fence = () => { if (controller.signal.aborted || !minimapCurrent()) throw new DOMException('Minimap selection changed', 'AbortError'); };
+                const cooperate = () => new Promise<void>(resolve => setTimeout(resolve, 0));
                 for (const id of ids) {
-                    const box = await contentBounds(lease.runtime, [id], { signal: controller.signal,
-                        fence: () => { if (controller.signal.aborted || !minimapCurrent()) throw new DOMException('Minimap selection changed', 'AbortError'); },
-                        cooperate: () => new Promise<void>(resolve => setTimeout(resolve, 0)) });
+                    // The scene rebuilds as the selection settles, and contentBounds then aborts with "Scene geometry changed".
+                    // That abort is a retry, not a failure: the query runs again once the scene is quiet, and only a map
+                    // that keeps losing the race reports it.
+                    let box: ContentRect | null = null;
+                    for (let attempt = 1; ; attempt++) {
+                        try { box = await contentBounds(lease.runtime, [id], { signal: controller.signal, fence, cooperate }); break; }
+                        catch (error) {
+                            const retry = error instanceof DOMException && error.name === 'AbortError' && attempt < MINIMAP_BOUNDS_ATTEMPTS;
+                            if (!retry || controller.signal.aborted) throw error;
+                            await new Promise<void>(resolve => setTimeout(resolve, MINIMAP_BOUNDS_RETRY_MS));
+                        }
+                    }
                     if (box) boxes.push(box);
                 }
                 if (!controller.signal.aborted && minimapCurrent()) setHighlights(boxes);

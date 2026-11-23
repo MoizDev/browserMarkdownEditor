@@ -72,5 +72,5 @@ function AttachedNativeBoardChrome({ runtime, language, preferences, mac, onRead
         translate={(key, values) => translateBoard(lang.table, key, values)} languages={availableBoardLocales()}
         selectLanguage={locale => language.select(locale)} toolState={tools} toolShortcut={tooltip} shortcuts={shortcutGroups(mac, runtime.session.doc.kind !== 'whiteboard')}
         localPreferences={{ ...local, setView: (key, value) => { if (props.currentOwner()) preferences.setView(key, value); },
-            setSession: (key, value) => preferences.setSession(key, value) }} stylePanel={{ snapshot: panel, commands: styles.commands }} />;
+            setSession: (key, value) => preferences.setSession(key, value) }} stylePanel={{ snapshot: panel, commands: styles.commands }} paletteStyles={styles.commands} />;
 }

@@ -61,5 +61,5 @@ export function NativeBoardChromeHost({ lease, confirm, canWrite, capturePage, n
             }} />
     </div></div> : undefined;
     return <><NativeBoardChrome {...props} currentOwner={styleOwner} sheetName={sheets.sheetName} openSheets={sheets.openSheets}
-        pageControls={paper} />{sheets.menu}</>;
+        pageControls={paper} paletteSheets={sheets.controls} />{sheets.menu}</>;
 }

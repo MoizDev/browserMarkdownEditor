@@ -15,7 +15,7 @@ export function localizeBoardChrome(t: BoardTranslate) {
         preferenceLabel: (key: PreferenceLabel) => t(`preferences.${key}`),
         // The menu's row is an opener with an ellipsis; the dialog's title shares the key without one.
         actionLabel: (key: MainAction) => t(key === 'exportPng' || key === 'exportSvg' || key === 'exportPdf' || key === 'exportJson' ? `commands.${key}`
-            : key === 'keyboardShortcuts' ? 'chrome.keyboardShortcutsMenu' : `chrome.${key}`),
+            : key === 'keyboardShortcuts' ? 'chrome.keyboardShortcutsMenu' : key === 'commandPalette' ? 'chrome.commandPaletteMenu' : `chrome.${key}`),
         text: (key: string) => t(`chrome.${key}`),
         // Only English ships this label so far; other tables fall back to it (translatedOr), never to the raw key.
     };

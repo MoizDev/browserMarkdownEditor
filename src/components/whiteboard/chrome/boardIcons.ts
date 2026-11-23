@@ -31,6 +31,11 @@ const close: IconNode[] = [['path', { d: 'M18 6 6 18' }], ['path', { d: 'm6 6 12
 
 export const navigationIcons = { zoomIn: plus, zoomOut: minus, chevronLeft, chevronRight, arrowLeft, close } as const;
 
+/** The command palette's glyphs: Lucide's search and check (ISC), with the navigation chevrons above. */
+const search: IconNode[] = [['circle', { cx: 11, cy: 11, r: 8 }], ['path', { d: 'm21 21-4.3-4.3' }]];
+const check: IconNode[] = [['path', { d: 'M20 6 9 17l-5-5' }]];
+export const paletteIcons = { search, chevronRight, chevronLeft, check } as const;
+
 /** Undo, Redo, Delete and Duplicate in the bar, keyed by the command each one runs. */
 export const headerCommandIcons: Readonly<Record<'undo' | 'redo' | 'delete' | 'duplicate', IconNode[]>> = {
     undo, redo, delete: trash, duplicate: copy,

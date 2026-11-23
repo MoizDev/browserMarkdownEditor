@@ -34,12 +34,14 @@ export interface BoardChromeProps extends BoardHeaderProps {
     readonly debug?: DebugOverlayProps;
     /** Paper controls of a paged host; they sit under the header, never over it. */
     readonly pageControls?: ReactNode;
+    /** The command palette; it sits between the header and the bar, above the bar when open. */
+    readonly palette?: ReactNode;
 }
 
 /** The view supplies live session state; these controls do not own a second selection or history. */
 export function BoardChrome({ locale, direction, selectedTool, toolLabel, toolShortcut, toolsLabel, moreLabel,
     readOnly, readOnlyReason, toolDisabledReason, focusMode, focusModeLabel, exitFocusMode, lastFigure, toolLockLabel, toolLock,
-    onBarTools, selectTool, zoomControls, stylePanel, debug, pageControls, ...header }: BoardChromeProps) {
+    onBarTools, selectTool, zoomControls, stylePanel, debug, pageControls, palette, ...header }: BoardChromeProps) {
     const choices = toolChoices(toolLabel, toolShortcut, lastFigure);
     const lock: ToolLockView | undefined = toolLock && {
         locked: toolLock.locked, label: toolLockLabel, shortcut: toolShortcut('lock'), toggle: toolLock.toggle,
@@ -57,6 +59,7 @@ export function BoardChrome({ locale, direction, selectedTool, toolLabel, toolSh
             {pageControls}
             {stylePanel && <div className="board-chrome-pen"><DockedStylePanel {...stylePanel} /></div>}
         </div>
+        {palette}
         <div className="board-chrome-bottom">
             {stylePanel && <StylePopoverAnchor {...stylePanel} />}
             <ToolStrip primary={choices.primary} more={choices.more} selected={selectedTool} lock={lock} onShown={onBarTools}

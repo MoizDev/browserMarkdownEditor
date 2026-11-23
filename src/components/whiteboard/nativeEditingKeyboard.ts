@@ -17,6 +17,8 @@ export function createNativeEditingKeyboard(options: {
     readonly camera: ReturnType<typeof createNativeCameraOperations>;
     readonly preferences: BoardPreferenceState;
     readonly openShortcuts: () => boolean;
+    /** Opens the command palette of the chrome; false when the chrome has not attached it. */
+    readonly openCommandPalette: () => boolean;
     /** Inverts the one picture selected; false when none is, so the key does nothing. */
     readonly invertPicture: () => boolean;
     /** Enter on the one picture selected opens its crop editor; false when that picture cannot be cropped (K§10.2). */
@@ -78,6 +80,7 @@ export function createNativeEditingKeyboard(options: {
             case 'embed.insert': return runAction('insertEmbed');
             case 'media.invert': return options.invertPicture();
             case 'help.shortcuts': return options.openShortcuts();
+            case 'commandPalette.open': return options.openCommandPalette();
             case 'accessibility.repeat': return options.lease.editing?.repeatAnnouncement() ?? false;
             case 'preferences.theme': {
                 const theme = getBoardPreferences().colorScheme;

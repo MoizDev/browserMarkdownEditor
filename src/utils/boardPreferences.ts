@@ -20,11 +20,13 @@ export interface BoardPreferences {
     colorScheme: 'light' | 'dark' | 'system';
     /** The navigation panel's minimap, shared by every board and tab. Collapsed until the person opens it. */
     minimapOpen: boolean;
+    /** The command palette's most recent rows, newest first (at most 20 are kept; the palette shows five). */
+    paletteRecents: string[];
 }
 const defaults: BoardPreferences = {
     version: 1, isSnapMode: false, isWrapMode: false, isDynamicResizeMode: false,
     animationSpeed: 1, areKeyboardShortcutsEnabled: true, enhancedA11yMode: false,
-    inputMode: null, isZoomDirectionInverted: false, edgeScrolling: true, locale: 'en', colorScheme: 'system', minimapOpen: false,
+    inputMode: null, isZoomDirectionInverted: false, edgeScrolling: true, locale: 'en', colorScheme: 'system', minimapOpen: false, paletteRecents: [],
 };
 // Until the user chooses, motion follows the OS: a reduced-motion request starts at speed 0 (camera.md F-A11Y-005).
 function osAnimationSpeed(): number {
@@ -51,6 +53,9 @@ function clamp(value: unknown): BoardPreferences {
         locale,
         colorScheme: input.colorScheme === 'light' || input.colorScheme === 'dark' || input.colorScheme === 'system' ? input.colorScheme : defaults.colorScheme,
         minimapOpen: flag('minimapOpen', defaults.minimapOpen),
+        paletteRecents: Array.isArray(input.paletteRecents)
+            ? input.paletteRecents.filter((item): item is string => typeof item === 'string' && item.length > 0 && item.length <= 120).slice(0, 20)
+            : defaults.paletteRecents,
     };
 }
 let current: BoardPreferences | undefined;

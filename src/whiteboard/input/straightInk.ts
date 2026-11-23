@@ -3,18 +3,33 @@ import type { SampleBuilder, SampleSequence } from '../ink/samples';
 
 interface Endpoint { readonly x: number; readonly y: number; readonly pressure: number | undefined }
 
+/** A straight run's direction snaps to 15-degree steps while Shift is held; its length is kept. */
+const ANGLE_STEP = Math.PI / 12;
+export function snapStraightEnd(anchor: { readonly x: number; readonly y: number }, end: { readonly x: number; readonly y: number }, enabled: boolean): { x: number; y: number } {
+    const dx = end.x - anchor.x, dy = end.y - anchor.y, length = Math.hypot(dx, dy);
+    if (!enabled || !(length > 0)) return { x: end.x, y: end.y };
+    const angle = Math.round(Math.atan2(dy, dx) / ANGLE_STEP) * ANGLE_STEP;
+    return { x: anchor.x + Math.cos(angle) * length, y: anchor.y + Math.sin(angle) * length };
+}
+
 /** A Shift run is one replaceable real segment, not a polyline through all
  * pointer samples. The immutable prefix stays in the canonical curve builder. */
 export class StraightInkBuilder {
     private pending: Endpoint | null = null;
     private hasAnchor = false;
+    // The last freehand point: where the current straight run starts.
+    private anchorX = 0;
+    private anchorY = 0;
     constructor(private readonly builder: LocalCurveBuilder) {}
-    append(x: number, y: number, pressure: number | undefined, straight: boolean): void {
+    append(x: number, y: number, pressure: number | undefined, straight: boolean, snapAngle = false): void {
         if (!this.hasAnchor) {
-            this.builder.append(x, y, pressure, 'freehand'); this.hasAnchor = true; return;
+            this.builder.append(x, y, pressure, 'freehand'); this.hasAnchor = true; this.anchorX = x; this.anchorY = y; return;
         }
-        if (straight) { this.pending = Object.freeze({ x, y, pressure }); return; }
-        this.flush(); this.builder.append(x, y, pressure, 'freehand');
+        if (straight) {
+            const end = snapStraightEnd({ x: this.anchorX, y: this.anchorY }, { x, y }, snapAngle);
+            this.pending = Object.freeze({ x: end.x, y: end.y, pressure }); return;
+        }
+        this.flush(); this.builder.append(x, y, pressure, 'freehand'); this.anchorX = x; this.anchorY = y;
     }
     /** A key-up without another pointer move still seals the last straight endpoint. */
     flush(): boolean {

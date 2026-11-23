@@ -41,8 +41,9 @@ Constants are in `types.ts` (`RenderConstants`, documented per field) with value
    unless `backendPreference: 'canvas2d'`, which never asks. The broker grants one of `maxVisiblePaneContexts` (5)
    visible-pane contexts (8 app contexts, 1 always reserved for the terminal even when closed). A sixth visible pane
    stays on canvas2d and upgrades when a slot frees (`onSlotAvailable`); it never evicts a visible neighbour.
-3. The broker creates the context with `RENDER_CONSTANTS.contextAttributes` (`powerPreference: 'default'` on
-   purpose, see `constants.ts`; `failIfMajorPerformanceCaveat: true`; no antialias/depth/stencil). It refuses a
+3. The broker creates the context with `RENDER_CONSTANTS.contextAttributes` (`powerPreference: 'high-performance'`,
+   so a dual-GPU machine gets its discrete GPU, see `constants.ts`; `failIfMajorPerformanceCaveat: true`; no
+   antialias/depth/stencil). It refuses a
    **software** context (`softwareRenderer`: the unmasked renderer matches SwiftShader, llvmpipe, softpipe, lavapipe,
    Basic Render Driver, WARP or "software"), at each build and each restore: measured, Chrome 157 with
    `--use-angle=swiftshader` hands out SwiftShader despite `failIfMajorPerformanceCaveat`. Then the device qualifies
@@ -70,7 +71,10 @@ Constants are in `types.ts` (`RenderConstants`, documented per field) with value
 - **The person is told** when a pane really runs on canvas2d: `SurfaceCallbacks.onGpuUnavailable(cause)` →
   `options.onNotice('gpu-unavailable', cause)`, cause `no-webgl2 | software | unsupported | gpu-error`, text from
   `gpuUnavailableText` (`platform/renderStatus.ts`). Device causes show once per app session, `gpu-error` (the
-  second-error latch) once per document session; never for budget, a bridge, memory or a context loss. Other pane
+  second-error latch) once per document session; never for a bridge, memory or a context loss. A budget fallback
+  (`fallback:budget`, no GPU slot) that lasts 1 s raises cause `too-many-panes`, withdrawn through
+  `PlatformPaneOptions.onNoticeCleared` at the pane's first GPU frame (unreachable today: the layout stops at five
+  panes and the broker gives five visible panes a GPU). Other pane
   notices: `memory-pressure`, `cpu-floor-denied`, `cpu-pinned`. All appear in the app's own UI, never a native
   dialog.
 

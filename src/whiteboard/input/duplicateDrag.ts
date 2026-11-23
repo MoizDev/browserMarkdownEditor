@@ -22,7 +22,7 @@ export interface DuplicateDragPreview {
     readonly guides: readonly BoardSnapGuide[];
 }
 export interface DuplicateDragPlan {
-    preview(point: Vec2, shift: boolean, accel: boolean, signal: AbortSignal, commit?: boolean): Promise<DuplicateDragPreview>;
+    preview(point: Vec2, shift: boolean, accel: boolean, signal: AbortSignal, commit?: boolean, speed?: number): Promise<DuplicateDragPreview>;
     commit(value: DuplicateDragPreview): void;
     cancel(): void;
 }
@@ -86,9 +86,9 @@ export async function createDuplicateDragPlan(options: BoardTranslationOptions):
     const attachment = (value: ConnectorNode['start']['attach']) => value
         ? { ...value, target: ids.get(value.target) ?? value.target } : null;
     return {
-        async preview(point, shift, accel, request, commit = false) {
+        async preview(point, shift, accel, request, commit = false, speed = 0) {
             check(request); const turn = ++serial;
-            const base = await translation.preview(point, shift, accel, request); check(request);
+            const base = await translation.preview(point, shift, accel, request, speed); check(request);
             if (turn !== serial) throw new DOMException('Duplicate drag superseded', 'AbortError');
             if (!base.ops.length) {
                 clear(); const value = Object.freeze({ ops: Object.freeze([]), roots: clonedRoots, guides: base.guides });

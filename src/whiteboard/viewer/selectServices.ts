@@ -268,7 +268,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
                 await options.preview.waitUntilIdle(controller.signal);
                 if (!active()) throw new DOMException('Keyboard nudge became stale', 'AbortError');
                 plan = await createBoardTranslationPlan({ runtime, ids, down: { x: 0, y: 0 }, zoom: () => options.camera().camera.z,
-                    alwaysSnap: () => false, current: active, signal: controller.signal });
+                    alwaysSnap: () => false, current: active, signal: controller.signal, snap: false });
                 const preview = await plan.preview({ x: delta.x * scale, y: delta.y * scale }, false, false, controller.signal);
                 const notebook = preview.ops.length ? await prepareNotebookTranslation({ runtime, ids, preview, signal: controller.signal, current: active }) : null;
                 try {
@@ -512,34 +512,38 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         writeRegion(frame.view.camera);
         writeHover(frame.view.camera);
     };
-    // One line per guide, kept and moved: a frame writes a line's ends only when they changed. By reading: the frame used to
-    // replace every line with a new element each time it was written, which is what the drag's guides did at every move.
-    let guideLines: { readonly line: SVGLineElement; readonly last: Float64Array }[] = [];
+    // All guides are one path, rebuilt only when the guide list or the camera changes. Each alignment is a line with a cross
+    // (×) on every point that lands on it; each gap is a line with a tick at both ends. Arms are 4 CSS px, a 1 px stroke.
+    let guidePath: SVGPathElement | null = null, guidesDrawn: readonly BoardSnapGuide[] | undefined;
+    const guideCamera = new Float64Array(3).fill(Number.NaN);
     const writeGuides = (camera: ViewState['camera']) => {
-        if (!guides.length) { guideSvg?.remove(); guideSvg = null; guideLines = []; return; }
-        if (!guideSvg) {
+        if (!guides.length) { guideSvg?.remove(); guideSvg = null; guidePath = null; guidesDrawn = undefined; return; }
+        if (!guideSvg || !guidePath) {
             guideSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
             guideSvg.setAttribute('aria-hidden', 'true'); guideSvg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible';
-            options.overlay.append(guideSvg); guideLines = [];
+            guidePath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            guidePath.setAttribute('fill', 'none'); guidePath.setAttribute('stroke', '#f276bd'); guidePath.setAttribute('stroke-width', '1');
+            guidePath.setAttribute('shape-rendering', 'crispEdges');
+            guideSvg.append(guidePath); options.overlay.append(guideSvg); guidesDrawn = undefined;
         }
-        for (let i = 0; i < guides.length; i++) {
-            const guide = guides[i];
+        if (guidesDrawn === guides && guideCamera[0] === camera.x && guideCamera[1] === camera.y && guideCamera[2] === camera.z) return;
+        guidesDrawn = guides; guideCamera[0] = camera.x; guideCamera[1] = camera.y; guideCamera[2] = camera.z;
+        const arm = 4;
+        let d = '';
+        for (const guide of guides) {
             const from = guide.axis === 'x' ? { x: guide.value, y: guide.from } : { x: guide.from, y: guide.value };
             const to = guide.axis === 'x' ? { x: guide.value, y: guide.to } : { x: guide.to, y: guide.value };
             const a = worldToSurface(from, camera), b = worldToSurface(to, camera);
-            let entry = guideLines[i];
-            if (!entry) {
-                const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-                line.setAttribute('stroke', '#f276bd'); line.setAttribute('stroke-width', '1'); guideSvg.append(line);
-                entry = { line, last: new Float64Array(4).fill(Number.NaN) }; guideLines.push(entry);
+            d += `M${a.x} ${a.y}L${b.x} ${b.y}`;
+            for (const point of guide.marks ?? []) {
+                const p = worldToSurface(point, camera);
+                d += `M${p.x - arm} ${p.y - arm}L${p.x + arm} ${p.y + arm}M${p.x + arm} ${p.y - arm}L${p.x - arm} ${p.y + arm}`;
             }
-            const v = entry.last;
-            if (v[0] !== a.x) { v[0] = a.x; entry.line.setAttribute('x1', String(a.x)); }
-            if (v[1] !== a.y) { v[1] = a.y; entry.line.setAttribute('y1', String(a.y)); }
-            if (v[2] !== b.x) { v[2] = b.x; entry.line.setAttribute('x2', String(b.x)); }
-            if (v[3] !== b.y) { v[3] = b.y; entry.line.setAttribute('y2', String(b.y)); }
+            if (guide.kind === 'equal-gap') for (const end of [a, b]) {
+                d += guide.axis === 'y' ? `M${end.x} ${end.y - arm}L${end.x} ${end.y + arm}` : `M${end.x - arm} ${end.y}L${end.x + arm} ${end.y}`;
+            }
         }
-        while (guideLines.length > guides.length) guideLines.pop()!.line.remove();
+        guidePath.setAttribute('d', d);
     };
     // Hover outline (catalogue S§2): the shape a press would pick, outlined while the Select tool is idle and it is not selected.
     // Its box is the node's own rotated extent from the geometry scope, the same measure the selection frame uses.

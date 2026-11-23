@@ -1,7 +1,7 @@
 import type { Rect } from '../../platform/types';
 import { worldPose } from '../change/coordinates';
 import type { BoardRuntime } from '../host/runtime';
-import { isSheetParent, type BoardDoc } from '../model/doc';
+import { childrenOf, isSheetParent, type BoardDoc } from '../model/doc';
 import type { NodeId, ParentId, SheetId } from '../model/ids';
 import type { SpatialRef } from '../pick';
 import { selectableAtFocus } from '../selection';
@@ -37,10 +37,11 @@ export async function collectSnapCandidates(options: {
     let work = 0, started = performance.now();
     const due = () => ++work >= 256 || performance.now() - started >= 3;
     const tick = async () => { check(); await cooperate(); check(); work = 0; started = performance.now(); };
-    const selected = new Set<NodeId>(), ancestors = new Set<NodeId>();
+    const selected = new Set<NodeId>();
     for (const id of options.selected) { selected.add(id); if (due()) await tick(); }
-    for (const id of selected) { for (const ancestor of ancestorChain(doc, id)) ancestors.add(ancestor); if (due()) await tick(); }
-    const excluded = (id: NodeId) => ancestors.has(id) || ancestorChain(doc, id).some(ancestor => selected.has(ancestor));
+    // The selection's own subtree never snaps to itself. Its ancestor frames do stay targets (a child lines up with its
+    // frame's edges), while its ancestor groups are not targets: a group is recursed into, so its members are.
+    const excluded = (id: NodeId) => selected.has(id) || ancestorChain(doc, id).some(ancestor => selected.has(ancestor));
     const xs = [bounds.x, bounds.x + bounds.width / 2, bounds.x + bounds.width];
     const ys = [bounds.y, bounds.y + bounds.height / 2, bounds.y + bounds.height];
     const strips: { axis: 'x' | 'y'; value: number; maxDistance: number }[] = [];
@@ -50,6 +51,16 @@ export async function collectSnapCandidates(options: {
     strips.push({ axis: 'y', value: bounds.y + bounds.height / 2, maxDistance: bounds.height / 2 + threshold },
         { axis: 'x', value: bounds.x + bounds.width / 2, maxDistance: bounds.width / 2 + threshold });
     const candidates = new Set<NodeId>();
+    // A group is never a snap target as a whole: its members are, and a connector (arrow) is never a target at all.
+    const snapLeaves = function* (id: NodeId): Generator<NodeId> {
+        const pending: NodeId[] = [id];
+        for (let guard = 0; pending.length && guard < 100_000; guard++) {
+            const next = pending.pop()!, node = doc.nodes.get(next);
+            if (!node || node.kind === 'connector') continue;
+            if (node.kind === 'group') { for (const child of childrenOf(doc, node.id)) pending.push(child.id as NodeId); continue; }
+            yield next;
+        }
+    };
     for (const strip of strips) {
         check();
         const cursor = scene.spatialCursor({ sheetId: options.sheet, purpose: 'selectable', request: { kind: 'strip', ...strip } });
@@ -67,7 +78,7 @@ export async function collectSnapCandidates(options: {
                 if (ref) {
                     const resolved = scene.resolveSpatial(ref); if (!resolved) throw new DOMException('Snap candidate expired', 'AbortError');
                     const promoted = selectableAtFocus(doc, resolved.id, options.focus, options.sheet);
-                    if (promoted && !excluded(promoted)) candidates.add(promoted);
+                    if (promoted) for (const id of snapLeaves(promoted)) { if (!excluded(id)) candidates.add(id); if (due()) await tick(); }
                 }
                 if (due() || (!ref && !complete)) await tick();
             }

@@ -1,7 +1,11 @@
 import type { Op } from '../change/ops';
 import { prepareNotebookTransform } from './notebookTranslation';
 import { preparePolylineControl, type PolylineControlPreview } from '../geom/polylineControls';
-import { snapBoardBounds, type BoardSnapGuide } from '../geom/runtimeSnap';
+import { SNAP_MAX_SPEED, snapBoardBounds, type BoardSnapGuide } from '../geom/runtimeSnap';
+import { polylineMatrix } from '../geom/polylinePoints';
+import type { Vec2 } from '../geom/path';
+import type { BoardDoc } from '../model/doc';
+import { PointerPace } from './pointerPace';
 import type { BoardRuntime } from '../host/runtime';
 import type { NodeId } from '../model/ids';
 import { worldPose } from '../change/coordinates';
@@ -50,6 +54,7 @@ export function polylineHandleGesture(first: RealSample, modifiers: Modifiers, o
     const { runtime } = options, session = runtime.session, doc = session.doc, owner = session.owner, revision = doc.rev;
     const selection = runtime.selection.getSnapshot(), release = options.hold(), pointerIds = new Set([first.pointerId]);
     let sample = first, keys = modifiers, sequence = 0, ended = false, cleaned = false;
+    const pace = new PointerPace(first);
     const current = () => !cleaned && options.current() && session.owner === owner && session.doc === doc
         && doc.rev === revision && runtime.selection.getSnapshot() === selection;
     let controller: AbortController | undefined, preview: PolylineControlPreview | undefined, unregister: (() => void) | undefined;
@@ -69,9 +74,13 @@ export function polylineHandleGesture(first: RealSample, modifiers: Modifiers, o
         try {
             let point = raw, guides: readonly BoardSnapGuide[] = [];
             const active = () => current() && !request.signal.aborted && turn === sequence;
-            if (options.snap && options.snap.alwaysSnap() !== detach) {
+            // A vertex snaps to points (other shapes' corners and centres, the polyline's other vertices), never to edges, and
+            // not while the pointer moves fast. The grid applies unless Cmd/Ctrl is held.
+            const objects = !!options.snap && options.snap.alwaysSnap() !== detach && pace.speed() < SNAP_MAX_SPEED, grid = !!options.snap && !detach;
+            if (options.snap && (objects || grid)) {
                 const snapped = await snapBoardBounds({ runtime, bounds: { x: raw.x, y: raw.y, width: 0, height: 0 }, selected: [options.id],
-                    zoom: options.snap.zoom(), current: active, signal: request.signal, cooperate: options.cooperate });
+                    zoom: options.snap.zoom(), current: active, signal: request.signal, cooperate: options.cooperate,
+                    objects, grid, gaps: false, points: true, ownPoints: otherVertices(doc, options.id, options.index) });
                 if (!active()) throw new DOMException('Polyline snap became stale', 'AbortError');
                 point = { x: raw.x + snapped.delta.x, y: raw.y + snapped.delta.y }; guides = snapped.guides;
             }
@@ -114,7 +123,10 @@ export function polylineHandleGesture(first: RealSample, modifiers: Modifiers, o
         update(samples, next) {
             if (ended || cleaned) return;
             if (!current()) { cancel(); return; }
-            keys = next; for (const value of samples) if (pointerIds.has(value.pointerId)) sample = value;
+            keys = next;
+            const following = samples.filter(value => pointerIds.has(value.pointerId));
+            pace.observe(following);
+            for (const value of following) sample = value;
             void render(false);
         },
         finish(reason: FinishReason) {
@@ -124,4 +136,13 @@ export function polylineHandleGesture(first: RealSample, modifiers: Modifiers, o
         },
         cancel(_reason: CancelReason) { cancel(); },
     };
+}
+
+/** The edited polyline's other vertices in world space. The vertices either side of the handle are skipped: a vertex never
+ * snaps onto the segment it is already joined by. */
+function otherVertices(doc: BoardDoc, id: NodeId, index: number): Vec2[] {
+    const node = doc.nodes.get(id);
+    if (!node || node.kind !== 'polyline') return [];
+    const [a, b, c, d, e, f] = polylineMatrix(doc, id);
+    return node.points.flatMap((point, k) => k === index || Math.abs(k - index) === 1 ? [] : [{ x: a * point.x + c * point.y + e, y: b * point.x + d * point.y + f }]);
 }

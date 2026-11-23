@@ -38,6 +38,7 @@ import type { createBoardPointQuery } from './pointQuery';
 import type { createBoardRegionQuery } from './regionQuery';
 import { createBoardAttachmentResolver } from './attachments';
 import { createShapeHandles } from './shapeHandles';
+import { createConnectorHints } from './connectorHints';
 import { createStickyHandles } from './stickyHandles';
 import { createCardControls, type BoardCardActions } from './cardControls';
 import { createSelectionHandles } from './selectionHandles';
@@ -131,7 +132,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
         if (framed || !current()) return;
         const view = options.camera();
         selectionHandles.writeLive(view, transformPreview ? transformOffset ?? 'hidden' : null);
-        shapeHandles.writeLive(view, transformOffset); stickyHandles.writeLive(view, transformOffset);
+        shapeHandles.writeLive(view, transformOffset); connectorHints.writeLive(view); stickyHandles.writeLive(view, transformOffset);
         writeGuides(view.camera);
     };
     const showTransform = (ops: readonly Op[], live = false) => { transformPreview = true; transformOffset = translationOf(ops); options.preview.showOps(ops, live); followMove(); requestFrame(); };
@@ -139,7 +140,9 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const toSurface = (point: Vec2) => worldToSurface(point, options.camera().camera);
     const physicalSurface = (sample: RealSample) => sampleSurface(sample, options.sampleToSurface);
     const attachments = createBoardAttachmentResolver({ runtime, render: runtime.render, point: options.point, camera: options.camera, current: mutable });
+    const connectorHints = createConnectorHints({ runtime, overlay: options.overlay, view: options.camera, current: mutable, invalidate: requestFrame });
     const shapeHandles = createShapeHandles({ runtime, overlay: options.overlay, view: options.camera, current: mutable, visible: mutable,
+        hint: connectorHints.setTarget, binding: connectorHints.setBinding,
         sampleToSurface: physicalSurface, alwaysSnap: options.alwaysSnap ?? (() => false), guides: setGuides,
         invalidate: requestFrame, hold: () => session.beginGesture(), registerPending,
         show: ops => showTransform(ops), waitUntilReady: options.preview.waitUntilReady, waitUntilIdle: options.preview.waitUntilIdle,
@@ -500,7 +503,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
             || frame.token.bytesGeneration !== token.bytesGeneration || frame.token.session !== token.session) return;
         overlaysFramed = true;
         drawGrid(frame);
-        navigation.present(frame); selectionHandles.write(frame, transformPreview ? transformOffset ?? 'hidden' : null); shapeHandles.write(frame, transformOffset); stickyHandles.write(frame, transformOffset); cardControls.write(frame); backToContent.update(frame);
+        navigation.present(frame); selectionHandles.write(frame, transformPreview ? transformOffset ?? 'hidden' : null); shapeHandles.write(frame, transformOffset); connectorHints.write(frame); stickyHandles.write(frame, transformOffset); cardControls.write(frame); backToContent.update(frame);
         writeGuides(frame.view.camera);
         writeRegion(frame.view.camera);
     };
@@ -645,8 +648,8 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
     const tool = { id: boardSelectTool.id, begin(sample: RealSample, modifiers: Modifiers) {
         return boardSelectTool.begin(sample, modifiers, selectContext);
     } };
-    return { select, tool, eraser, beginHandle, doubleClickHandle, handleCommand, keyboardContextMenu, lockedAt, nudge, transform, navigate, command, stickyNeighbour, setGuides, navigation, writeOverlays: (frame: ScheduledFrame) => auditTimed('select-overlay', () => writeOverlays(frame)), cancelPending,
-        dispose() { if (disposed) return; cancelPending(); disposed = true; keyboardContext?.dispose(); backToContent.dispose(); cameraCommands.dispose(); selectionCommands.dispose(); styleShortcuts.dispose(); navigation.dispose(); selectionHandles.dispose(); shapeHandles.dispose(); stickyHandles.dispose(); cardControls.dispose(); scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); guideSvg?.remove(); guideSvg = null; svg = null; shape = null;
+    return { select, tool, eraser, beginHandle, doubleClickHandle, handleCommand, keyboardContextMenu, lockedAt, nudge, transform, navigate, command, stickyNeighbour, setGuides, setConnectorTarget: connectorHints.setTarget, navigation, writeOverlays: (frame: ScheduledFrame) => auditTimed('select-overlay', () => writeOverlays(frame)), cancelPending,
+        dispose() { if (disposed) return; cancelPending(); disposed = true; keyboardContext?.dispose(); backToContent.dispose(); cameraCommands.dispose(); selectionCommands.dispose(); styleShortcuts.dispose(); navigation.dispose(); selectionHandles.dispose(); shapeHandles.dispose(); connectorHints.dispose(); stickyHandles.dispose(); cardControls.dispose(); scheduled?.(); scheduled = null; options.preview.clear(); svg?.remove(); guideSvg?.remove(); guideSvg = null; svg = null; shape = null;
             regionPreview = null; scribbleSource = null; scribbleTail = null; scribblePoints = []; scribbleCount = 0; },
     };
 }

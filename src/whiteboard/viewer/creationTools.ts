@@ -7,6 +7,7 @@ import { inverse } from '../geom/affine';
 import { acquireBoardGeometryScope } from '../commands/geometryScope';
 import { figureClickBox, figureDragBox } from '../geom/figures';
 import { snapBoardBounds, type BoardSnapGuide } from '../geom/runtimeSnap';
+import { boardSnapGrid, nearestBoardGridCoordinate } from '../geom/gridSnap';
 import { gridRectangle } from '../input/gridCreation';
 import { notebookGrowthOp } from '../commands/pagesAndSheets';
 import { styleGeometryMetrics } from '../geom/styleMetrics';
@@ -23,6 +24,7 @@ import type { FigureShape } from '../model/styles';
 import type { createBoardRenderServices } from '../render/services';
 import { EMPTY_RICH_TEXT } from '../text/richText';
 import type { AttachmentRequest } from './attachments';
+import { PRECISE_HOLD_MS, PRECISE_SPEED } from '../input/bindingPrecision';
 import type { BoardPreview } from './preview';
 
 type CreationKind = 'figure' | 'text' | 'sticky' | 'frame' | 'connector' | 'polyline';
@@ -36,6 +38,8 @@ export interface BoardCreationContext {
     readonly figure?: FigureShape;
     readonly preview: Pick<BoardPreview, 'show' | 'showOps' | 'waitUntilReady' | 'armCommit' | 'finishCommit' | 'cancelCommit' | 'clear'>;
     readonly guides?: (guides: readonly BoardSnapGuide[]) => void;
+    /** The arrow target hint, shown while the pointer is over a shape an arrow end would bind to. */
+    readonly hint?: (target: NodeId | null) => void;
     readonly alwaysSnap?: () => boolean;
     current(): boolean;
     editText(id: Node['id']): void | Promise<void>;
@@ -65,6 +69,10 @@ class CreationGesture implements GestureOwner {
     private previewRequest: AbortController | undefined;
     private previewGeneration = 0;
     private lastMovedAt: number;
+    // When the pointer first left the press point, and the speed (CSS px per ms) of the last move: the start's hold and the end's gate.
+    private departedAt: number | undefined;
+    private speed = Number.POSITIVE_INFINITY;
+    private lastTime: number;
     private sample: RealSample;
     private readonly downModifiers: Modifiers;
     private modifiers: Modifiers;
@@ -72,7 +80,7 @@ class CreationGesture implements GestureOwner {
     private released = false;
     constructor(private readonly down: RealSample, modifiers: Modifiers, private readonly context: BoardCreationContext) {
         const doc = context.runtime.session.doc, selection = context.runtime.selection.getSnapshot();
-        this.pointerIds = new Set([down.pointerId]); this.sample = down; this.lastMovedAt = down.time; this.downModifiers = modifiers; this.modifiers = modifiers;
+        this.pointerIds = new Set([down.pointerId]); this.sample = down; this.lastMovedAt = down.time; this.lastTime = down.time; this.downModifiers = modifiers; this.modifiers = modifiers;
         this.downSurface = sampleSurface(down, context.sampleToSurface); this.lastSurface = this.downSurface;
         this.revision = doc.rev; this.toolStart = context.runtime.tools.getSnapshot(); this.toolEpoch = this.toolStart.selectionEpoch;
         this.document = doc; this.owner = context.runtime.session.owner; this.selection = selection; this.parent = selection.focus;
@@ -159,8 +167,9 @@ class CreationGesture implements GestureOwner {
         if (moved && this.context.runtime.session.doc.view.grid && node.kind === 'figure' && node.shape === 'rectangle' && this.parentPose.rotation === 0) {
             this.context.guides?.([]); return gridRectangle(node, this.parentPose);
         }
-        // Default: creation snapping is off unless Always Snap is inverted by the accelerator.
-        if ((this.context.alwaysSnap?.() ?? false) === modifiers.accel
+        // Default: creation snapping is off unless Always Snap is inverted by the accelerator. An arrow's free end is the exception:
+        // it follows the grid whenever grid mode is on, and never snaps to objects (catalogue a.3, a.4).
+        if ((node.kind !== 'connector' && (this.context.alwaysSnap?.() ?? false) === modifiers.accel)
             || Math.hypot(surface.x - this.downSurface.x, surface.y - this.downSurface.y) < CLICK_SLOP_CSS) {
             this.context.guides?.([]); return node;
         }
@@ -174,11 +183,21 @@ class CreationGesture implements GestureOwner {
                 return { x: pose.x + c * x - s * y, y: pose.y + s * x + c * y };
             };
             const point = endpoint(node);
-            if (node.kind === 'connector' && !modifiers.accel) {
-                const attached = await this.context.resolveAttachment(point, signal, { precise: modifiers.shift, exact: modifiers.alt,
-                    input: sample.source === 'keyboard' ? 'mouse' : sample.source });
-                if (!active()) throw new DOMException('Creation snap invalidated', 'AbortError');
-                if (attached) { this.context.guides?.([]); return node; }
+            if (node.kind === 'connector') {
+                // Ctrl (on macOS too) and Cmd skip binding; a bound end is never snapped, and a free end follows the grid only.
+                if (!modifiers.accel && !modifiers.control) {
+                    const attached = await this.context.resolveAttachment(point, signal, { precise: false, exact: modifiers.alt, route: node.route,
+                        input: sample.source === 'keyboard' ? 'mouse' : sample.source });
+                    if (!active()) throw new DOMException('Creation snap invalidated', 'AbortError');
+                    this.context.hint?.(attached?.target ?? null);
+                    if (attached) { this.context.guides?.([]); return node; }
+                } else this.context.hint?.(null);
+                this.context.guides?.([]);
+                const grid = boardSnapGrid(runtime.session.doc);
+                if (!grid) return node;
+                const gx = nearestBoardGridCoordinate(point.x, grid.origin.x, grid.step.x), gy = nearestBoardGridCoordinate(point.y, grid.origin.y, grid.step.y);
+                return this.node({ ...sample, x: sample.x + (gx.coordinateRepresentable ? gx.coordinate - point.x : 0),
+                    y: sample.y + (gy.coordinateRepresentable ? gy.coordinate - point.y : 0) }, modifiers);
             }
             const snapped = await snapBoardBounds({ runtime, bounds: { ...point, width: 0, height: 0 }, selected: [],
                 zoom: this.context.camera.camera.z, current: active, signal });
@@ -216,6 +235,9 @@ class CreationGesture implements GestureOwner {
         for (const sample of samples) if (this.pointerIds.has(sample.pointerId)) {
             const surface = sampleSurface(sample, this.context.sampleToSurface);
             if (surface.x !== this.lastSurface.x || surface.y !== this.lastSurface.y) this.lastMovedAt = sample.time;
+            if (this.departedAt === undefined && (surface.x !== this.downSurface.x || surface.y !== this.downSurface.y)) this.departedAt = sample.time;
+            this.speed = Math.hypot(surface.x - this.lastSurface.x, surface.y - this.lastSurface.y) / Math.max(1, sample.time - this.lastTime);
+            this.lastTime = sample.time;
             this.lastSurface = surface; this.sample = sample;
         }
         try { this.draw(); } catch (error) { this.cancel('invalidated'); this.context.onError(error); }
@@ -278,17 +300,26 @@ class CreationGesture implements GestureOwner {
         const { render, runtime } = this.context, signal = this.controller.signal;
         let node = await this.snapped(this.sample, this.modifiers, signal);
         if (node.kind === 'connector') {
-            const request = (sample: RealSample, keys: Modifiers, dwell: boolean): AttachmentRequest => ({ precise: keys.shift || dwell, exact: keys.alt,
-                input: sample.source === 'keyboard' ? 'mouse' : sample.source });
+            // Precision is earned, not switched (catalogue §7). The start is precise when the press rested on its target 320 ms before
+            // the pointer left; the end when it rested there 320 ms or arrived slower than 0.5 px/ms. A precise end on the start's
+            // shape is forced precise. Creation resolves its ends at release: the drag shows the target, not a binding.
+            const startPrecise = this.departedAt !== undefined && this.departedAt - this.down.time >= PRECISE_HOLD_MS;
+            const endPrecise = this.sample.time - this.lastMovedAt >= PRECISE_HOLD_MS || this.speed < PRECISE_SPEED;
             const world = (point: { x: number; y: number }) => {
                 const pose = this.parentPose, c = Math.cos(pose.rotation), s = Math.sin(pose.rotation);
                 const x = node.x + point.x, y = node.y + point.y;
                 return { x: pose.x + c * x - s * y, y: pose.y + s * x + c * y };
             };
-            const start = this.downModifiers.accel ? null : await this.context.resolveAttachment(world(node.start), signal, request(this.down, this.downModifiers, false));
+            const start = this.downModifiers.accel || this.downModifiers.control ? null : await this.context.resolveAttachment(world(node.start), signal,
+                { precise: startPrecise, exact: this.downModifiers.alt, route: node.route, input: this.down.source === 'keyboard' ? 'mouse' : this.down.source });
             if (!this.valid()) throw new DOMException('Creation invalidated', 'AbortError');
-            const end = this.modifiers.accel ? null : await this.context.resolveAttachment(world(node.end), signal,
-                request(this.sample, this.modifiers, this.sample.time - this.lastMovedAt >= 1000));
+            let end = this.modifiers.accel || this.modifiers.control ? null : await this.context.resolveAttachment(world(node.end), signal,
+                { precise: target => endPrecise || (start?.precise === true && start.target === target), exact: this.modifiers.alt, route: node.route,
+                    input: this.sample.source === 'keyboard' ? 'mouse' : this.sample.source });
+            // Both ends on one precise anchor of one shape would be a zero-length arrow: the end steps 0.05 along x (as the handle drag does).
+            if (end && start && start.target === end.target && start.anchor.x === end.anchor.x && start.anchor.y === end.anchor.y) {
+                end = { ...end, precise: true, anchor: { x: end.anchor.x + 0.05 <= 1 ? end.anchor.x + 0.05 : end.anchor.x - 0.05, y: end.anchor.y } };
+            }
             node = { ...node, start: { ...node.start, attach: start }, end: { ...node.end, attach: end } };
         }
         if ('font' in node && !await render.text.fonts.load({ family: node.font, bold: false, italic: false })) throw new Error('The creation font could not be loaded');
@@ -348,7 +379,7 @@ class CreationGesture implements GestureOwner {
     private cleanup(): void {
         if (this.released) return;
         this.released = true;
-        try { this.context.guides?.([]); this.context.preview.clear(); } finally { this.unregister(); this.release(); }
+        try { this.context.guides?.([]); this.context.hint?.(null); this.context.preview.clear(); } finally { this.unregister(); this.release(); }
     }
 }
 export function boardCreationTool(id: CreationKind): Tool<BoardCreationContext> {

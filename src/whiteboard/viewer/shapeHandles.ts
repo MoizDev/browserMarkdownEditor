@@ -6,6 +6,7 @@ import { isLocked } from '../change/commands';
 import { worldPose } from '../change/coordinates';
 import { acquireBoardGeometryScope } from '../commands/geometryScope';
 import { connectorBody, connectorBodyPoint } from '../geom/connectors';
+import { bindingSegments, type BindingSegment } from './connectorHints';
 import type { ConnectorControl } from '../geom/connectorControls';
 import type { Vec2 } from '../geom/path';
 import type { BoardSnapGuide } from '../geom/runtimeSnap';
@@ -49,6 +50,10 @@ export interface ShapeHandleOptions {
     readonly cancelCommit: () => void;
     readonly clear: () => void;
     readonly resolveAttachment: (point: Vec2, signal: AbortSignal, request?: AttachmentRequest) => Promise<Attachment | null>;
+    /** The arrow target hint: the shape an endpoint drag would bind to, or null. */
+    readonly hint: (target: NodeId | null) => void;
+    /** The bound ends' stubs of the selected arrow, or null. */
+    readonly binding: (segments: readonly BindingSegment[] | null) => void;
     readonly error: (error: unknown) => void;
     readonly cooperate?: () => Promise<void>;
 }
@@ -67,7 +72,7 @@ export function createShapeHandles(options: ShapeHandleOptions) {
     const presented = new PresentedHistory<{ camera: ViewState['camera']; handles: readonly Handle[]; count: number }>();
     let controlPending: AbortController | undefined, headBusy = false;
     const current = () => !disposed && options.current() && options.visible() && session.doc === doc;
-    const clear = () => { handles = []; selected = null; svg?.remove(); svg = undefined; group = undefined;
+    const clear = () => { handles = []; selected = null; svg?.remove(); svg = undefined; group = undefined; options.binding(null);
         rendered = null; renderedCount = 0; forgetCamera(renderedCamera); presented.clear(); options.invalidate(); };
     const refresh = () => {
         const turn = ++generation; controller?.abort(); controller = new AbortController(); const signal = controller.signal;
@@ -113,6 +118,7 @@ export function createShapeHandles(options: ShapeHandleOptions) {
                 } else {
                     const prepared = await runtime.render.prepareForPick(node, signal, doc);
                     const geometry = prepared.connector; if (!geometry) throw new Error('Connector geometry is unavailable');
+                    options.binding(bindingSegments(node, geometry));
                     next.push({ hit: { kind: 'connector-end', terminal: 'start' }, point: geometry.start.tipWorld },
                         { hit: { kind: 'connector-end', terminal: 'end' }, point: geometry.end.tipWorld });
                     const a = geometry.start.aimWorld, b = geometry.end.aimWorld;
@@ -194,7 +200,7 @@ export function createShapeHandles(options: ShapeHandleOptions) {
             const snap = { zoom: () => options.view().camera.z, alwaysSnap: options.alwaysSnap, guides: options.guides };
             if (hit.kind === 'polyline-vertex' || hit.kind === 'polyline-midpoint') return polylineHandleGesture(sample, modifiers,
                 { ...common, index: hit.index, insert: hit.kind === 'polyline-midpoint', snap });
-            if (hit.kind === 'connector-end') return connectorEndHandleGesture(sample, modifiers, { ...common, terminal: hit.terminal, snap,
+            if (hit.kind === 'connector-end') return connectorEndHandleGesture(sample, modifiers, { ...common, terminal: hit.terminal, hint: options.hint, binding: options.binding,
                 sampleToSurface: options.sampleToSurface, resolveAttachment: options.resolveAttachment });
             return connectorControlGesture(sample, modifiers, { ...common, control: hit.control, zoom: () => options.view().camera.z });
         },

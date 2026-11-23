@@ -24,6 +24,7 @@ import { textTool } from '../text/edit/tool';
 import { createBoardAttachmentResolver } from './attachments';
 import { boardCreationTool } from './creationTools';
 import { contentBounds, type ContentRect } from '../commands/contentBounds';
+import { notePointerSource } from './pointerKind';
 import { createBoardInkServices } from './inkServices';
 import type { KeyboardContextRequest } from './keyboardContext';
 import { createBoardPointQuery } from './pointQuery';
@@ -325,7 +326,8 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         resolveTool: (choice, sample, modifiers) => resolve(choice, sample, modifiers),
         resolveKeyboardTool: (choice, sample, modifiers) => resolve(choice, sample, modifiers), resolveChromeDrag, zoomBrush: () => zoom,
         keyboardCursorInitial: ui.keyboardCursorInitial, keyboardCursorVisible: ui.keyboardCursorVisible, keyboardNavigation: ui.keyboardNavigation,
-        ownsWheel: ui.ownsWheel, cameraChanged: options.interaction.cameraChanged, error: ui.error, pointerChanged: ui.pointerChanged,
+        ownsWheel: ui.ownsWheel, cameraChanged: options.interaction.cameraChanged, error: ui.error,
+        pointerChanged: sample => { notePointerSource(sample.source); ui.pointerChanged?.(sample); },
         hover: event => { ui.hover?.(event); trackHover(event); }, contextMenu: contextMenuAt, drop: event => options.imports.drop(event), linkAt: ui.linkAt,
         penModeChanged: ui.penModeChanged, persistToolLock: ui.persistToolLock, clearLatches: ui.clearLatches, cancelPendingGestures: cancelPending,
         clearLaserTrail: dropTrails,

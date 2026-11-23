@@ -1,5 +1,6 @@
 import { worldToSurface } from '../../platform/render/camera';
 import { cameraChanged, forgetCamera } from './cameraCache';
+import { handleRadius, pointerIsCoarse } from './pointerKind';
 import type { ScheduledFrame } from '../../platform/render/scheduler';
 import type { ViewState } from '../../platform/types';
 import { isLocked } from '../change/commands';
@@ -61,7 +62,7 @@ export function createShapeHandles(options: ShapeHandleOptions) {
     let controller: AbortController | undefined, svg: SVGSVGElement | undefined, group: SVGGElement | undefined;
     // The group's translation in surface pixels, as last written: a drag's offset moves every handle by one transform.
     let groupX = Number.NaN, groupY = Number.NaN;
-    let rendered: readonly Handle[] | null = null, renderedCount = 0;
+    let rendered: readonly Handle[] | null = null, renderedCount = 0, renderedCoarse = false;
     // The camera the group was built for: x, y, z as numbers, NaN until built.
     const renderedCamera = new Float64Array(3).fill(Number.NaN);
     const presented = new PresentedHistory<{ camera: ViewState['camera']; handles: readonly Handle[]; count: number }>();
@@ -149,8 +150,9 @@ export function createShapeHandles(options: ShapeHandleOptions) {
         }
         // Checked first and unconditionally, so the cache tracks the camera even on a frame rebuilt for the handles alone.
         const cameraMoved = cameraChanged(renderedCamera, camera);
-        if (rendered !== handles || cameraMoved) {
-            group.replaceChildren(); rendered = handles; renderedCount = 0;
+        // The dots are drawn at their coarse size for a finger or a pen (catalogue I§4.5), so a change of pointer redraws them.
+        if (rendered !== handles || cameraMoved || renderedCoarse !== pointerIsCoarse()) {
+            group.replaceChildren(); rendered = handles; renderedCount = 0; renderedCoarse = pointerIsCoarse();
         }
         // A large imported polyline cannot rebuild thousands of SVG commands in one frame.
         const limit = Math.min(handles.length, renderedCount + 1024);
@@ -159,7 +161,7 @@ export function createShapeHandles(options: ShapeHandleOptions) {
             const end = Math.min(limit, renderedCount + 256);
             while (renderedCount < end) {
                 const handle = handles[renderedCount++], p = worldToSurface(handle.point, camera);
-                const r = handle.hit.kind === 'connector-control' || handle.hit.kind === 'polyline-midpoint' ? 3 : 5;
+                const r = handleRadius(handle.hit.kind === 'connector-control' || handle.hit.kind === 'polyline-midpoint' ? 3 : 5);
                 parts.push(`M ${p.x - r} ${p.y} a ${r} ${r} 0 1 0 ${2 * r} 0 a ${r} ${r} 0 1 0 ${-2 * r} 0 Z`);
             }
             path.setAttribute('d', parts.join(' ')); path.setAttribute('fill', '#ffffff');

@@ -12,6 +12,7 @@ import type { BoardRuntime } from '../host/runtime';
 import { PresentedHistory } from '../input/presentedHistory';
 import { childrenOf, hasOpaqueDescendant } from '../model/doc';
 import type { NodeId } from '../model/ids';
+import { handleRadius, pointerIsCoarse } from './pointerKind';
 
 export type SelectionHandleHit = Readonly<{ kind: 'resize'; handle: ResizeHandle }> | Readonly<{ kind: 'rotate'; centre: Vec2; orientation: number }>;
 export interface SelectionHandleOptions {
@@ -52,21 +53,21 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 /** `last` holds the value each attribute was last written with: circles x, y pairs at 0–15, the grip at 16–17, the stem's
  * x1, y1, x2, y2 at 18–21. A frame compares numbers here and touches the DOM only for what moved, so an unmoved handle
  * costs no attribute read and no write. */
-interface HandleNodes { readonly path: SVGPolygonElement; readonly stem: SVGLineElement; readonly rotate: SVGCircleElement; readonly circles: SVGCircleElement[]; readonly last: Float64Array }
+interface HandleNodes { coarse: boolean; readonly path: SVGPolygonElement; readonly stem: SVGLineElement; readonly rotate: SVGCircleElement; readonly circles: SVGCircleElement[]; readonly last: Float64Array }
 /** Builds one frame's handle elements once, in paint order: outline, stem, rotation grip, then the resize handles. */
 function buildHandleNodes(parent: SVGSVGElement, handleCount: number): HandleNodes {
     const path = document.createElementNS(SVG_NS, 'polygon'), stem = document.createElementNS(SVG_NS, 'line'), rotate = document.createElementNS(SVG_NS, 'circle');
     path.setAttribute('fill', 'none'); path.setAttribute('stroke', '#75b7ff'); path.setAttribute('stroke-width', '1.5');
     stem.setAttribute('stroke', '#75b7ff'); stem.setAttribute('stroke-width', '1.5');
-    rotate.setAttribute('r', '3'); rotate.setAttribute('fill', '#ffffff'); rotate.setAttribute('stroke', '#75b7ff'); rotate.setAttribute('stroke-width', '1.5');
+    rotate.setAttribute('r', String(handleRadius(3))); rotate.setAttribute('fill', '#ffffff'); rotate.setAttribute('stroke', '#75b7ff'); rotate.setAttribute('stroke-width', '1.5');
     parent.append(path, stem, rotate);
     const circles = Array.from({ length: handleCount }, () => {
         const circle = document.createElementNS(SVG_NS, 'circle');
-        circle.setAttribute('r', '4'); circle.setAttribute('fill', '#ffffff'); circle.setAttribute('stroke', '#75b7ff'); circle.setAttribute('stroke-width', '1.5');
+        circle.setAttribute('r', String(handleRadius(4))); circle.setAttribute('fill', '#ffffff'); circle.setAttribute('stroke', '#75b7ff'); circle.setAttribute('stroke-width', '1.5');
         parent.append(circle); return circle;
     });
     auditCount('select-handles', 'node-build', 1, { nodes: 3 + handleCount });
-    return { path, stem, rotate, circles, last: new Float64Array(PROJECTED + 4).fill(Number.NaN) };
+    return { coarse: pointerIsCoarse(), path, stem, rotate, circles, last: new Float64Array(PROJECTED + 4).fill(Number.NaN) };
 }
 
 export function createSelectionHandles(options: SelectionHandleOptions) {
@@ -132,6 +133,12 @@ export function createSelectionHandles(options: SelectionHandleOptions) {
         projectInto(shape, view, drawn, moving ? moving.x : 0, moving ? moving.y : 0);
         const nodes = handleNodes ??= buildHandleNodes(svg, handles.length);
         const last = nodes.last;
+        // The handles grow for a finger or a pen, the size the catalogue uses for a coarse pointer (I§4.5).
+        if (nodes.coarse !== pointerIsCoarse()) {
+            nodes.coarse = !nodes.coarse;
+            nodes.rotate.setAttribute('r', String(handleRadius(3)));
+            for (const circle of nodes.circles) circle.setAttribute('r', String(handleRadius(4)));
+        }
         let outline = false;
         for (let i = 0; i < handles.length; i++) {
             const x = drawn[2 * i], y = drawn[2 * i + 1];

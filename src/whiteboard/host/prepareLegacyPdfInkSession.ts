@@ -6,6 +6,7 @@ import { getSessionIdentity } from '../../utils/sessionIdentity';
 import { acquireLegacyBoard, rehostLegacyBoard, type LegacyBoardAcquisition } from './legacyAcquisition';
 import type { NativeLoadReply } from '../workers/nativeLoad';
 import { acquireNativeBoard } from './nativeAcquisition';
+import { importFailure, importNotice } from '../import/report';
 import { inspectPdfVisualModel } from './pdfVisualPreflight';
 import { prepareAcceptedPdfInkSession, type PreparePdfInkSessionOptions } from './preparePdfInkSession';
 
@@ -66,6 +67,7 @@ export async function prepareLegacyPdfInkSession(options: PreparePdfInkSessionOp
         const memory = {
             reserve(bytes: number) { const lease = cache.reserve(bytes); if (lease) live += lease.bytes; return lease; },
             release(lease: Parameters<typeof cache.release>[0]) { cache.release(lease); live -= lease.bytes; },
+            whenAvailable: (wake: () => void, bytes?: number) => cache.whenAvailable?.(wake, bytes),
         };
         try {
             const job = { session: `${documentId}:${identity.session}`, epoch: identity.vaultActivation, revision: identity.bytesGeneration };
@@ -75,7 +77,7 @@ export async function prepareLegacyPdfInkSession(options: PreparePdfInkSessionOp
                 kind: 'pdf-ink', host: hostBlock, token, zMax: options.zMax, memory, nativeReport, identity: job,
                 isCurrent, readAsset: (src, assetSignal) => host.readLegacyAsset(identity, src, assetSignal), signal: internal.signal });
             preview = await convert(source.createPreviewHost());
-            if (preview.status !== 'editable') throw new Error(`Legacy PDF ink cannot be converted: ${preview.legacyReport.unrepresentable.map(issue => issue.reason).join('; ')}`);
+            if (preview.status !== 'editable') throw new Error(importFailure('The old ink on this PDF could not be read', preview.legacyReport.unrepresentable));
             const visual = await inspectPdfVisualModel(preview.native.load, { signal: internal.signal });
             if (visual.status !== 'known') throw visualFailure('preview', visual);
             const qualificationFor = (board: Blob, report: NativeLoadReply, checkedVisual: typeof visual) => ({ board,
@@ -117,7 +119,8 @@ export async function prepareLegacyPdfInkSession(options: PreparePdfInkSessionOp
             if (accepted.board !== qualification.board) { await accepted.release(); throw new Error('Converted PDF source changed its qualified board'); }
             transferred = true;
             const prepared = await prepareAcceptedPdfInkSession(options, accepted, detach);
-            return { ...prepared, async dispose() { try { await prepared.dispose(); } finally { detach(); } } };
+            const notice = final.status === 'editable' ? importNotice(final.legacyReport) : null;
+            return { ...prepared, importNotice: notice, async dispose() { try { await prepared.dispose(); } finally { detach(); } } };
         } finally { try { preview?.dispose(); } finally { try { final?.dispose(); } finally { cache.close(); } } }
     } catch (error) {
         if (!transferred) await candidate?.release();

@@ -18,6 +18,7 @@ import { createBoardEncoderBounds } from './encoderBounds';
 import { createEmptyNativeBytes } from './emptyNative';
 import { createBoardJournal } from './journal';
 import { acquireLegacyBoard, type LegacyBoardAcquisition } from './legacyAcquisition';
+import { groupIssueText, importFailure, importNotice } from '../import/report';
 import { createNativeMediaRestore } from './nativeMediaRestore';
 import { createOwnedBoardRuntime, type OwnedBoardRuntime } from './ownedRuntime';
 import { elbowAdmissionRefusal } from '../geom/elbowAdmission';
@@ -93,6 +94,7 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
             const memory = {
                 reserve(bytes: number) { const lease = cache.reserve(bytes); if (lease) live += lease.bytes; return lease; },
                 release(lease: Parameters<typeof cache.release>[0]) { cache.release(lease); live -= lease.bytes; },
+                whenAvailable: (wake: () => void, bytes?: number) => cache.whenAvailable?.(wake, bytes),
             };
             try {
                 legacy = await acquireLegacyBoard({ bytes: original, kind: options.representation === 'drawing' ? 'whiteboard' : 'notebook',
@@ -105,16 +107,13 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
             } finally { cache.close(); }
             signal.throwIfAborted();
             if (!host.isCurrent(identity)) throw new DOMException('Canvas session ended', 'AbortError');
-            if (legacy.status !== 'editable') {
-                const issues = legacy.legacyReport.unrepresentable.map(issue => issue.reason).join('; ');
-                throw new Error(`Legacy board could not be converted${issues ? `: ${issues}` : '.'}`);
-            }
+            if (legacy.status !== 'editable') throw new Error(importFailure('This old board could not be read', legacy.legacyReport.unrepresentable));
             acquired = legacy.native;
             nativeBytes = legacy.bytes;
         }
         if (acquired.status !== 'editable') {
-            const issues = acquired.report.issues.map(issue => issue.reason).join('; ');
-            throw new Error(`Board could not be opened for editing${issues ? `: ${issues}` : '.'}`);
+            const issues = groupIssueText(acquired.report.issues.map(issue => issue.reason));
+            throw new Error(`Board could not be opened for editing${issues ? `: ${issues}.` : '.'}`);
         }
         const { load, samples } = acquired, doc = load.doc;
         media = new MediaStore();
@@ -213,6 +212,8 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
         return {
             legacyOriginalSha256: legacy?.status === 'editable' ? diskHash : null,
             conversionPending: legacy?.status === 'editable',
+            // What the conversion left out or repaired, said once in the board's own notice.
+            importNotice: legacy?.status === 'editable' ? importNotice(legacy.legacyReport) : null,
             acceptPinnedSource(source: import('../../utils/documentBuffers').DeferredSource) {
                 try { if (pinned.dirty) { pinned.accept(source); return true; } return false; } finally { pinned.release(); }
             },

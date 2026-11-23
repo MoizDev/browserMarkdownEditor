@@ -1,14 +1,14 @@
 # Classic PDF runtime assets (P-02a) and the following diagnostics package (P-02b)
 
 Every behavioural run enters the real production app through Open Vault and its file tree. No
-app module is imported by a run. Build/serve/static/browser commands take the run's corresponding
-`bme-lock` grant. Only Playwright 1.63.0 and the pinned Chrome for Testing are accepted.
+app module is imported by a run. Only Playwright 1.63.0 and the pinned Chrome for Testing
+(`node verify/install-browser.mjs`; `CHROME_PATH` overrides the path) are accepted.
 
 ## Reproduce P-02a
 
-1. Build this source with the seat's scratch Vite recipe, adding `pdfClassicAssets()` from
-   `build/pdfClassicAssets.ts` to its plugin list until I-3 wires the production config. Serve on a
-   seat-owned port with `vite preview --strictPort` through the serve lock.
+1. Build this source with a scratch Vite config (outDir outside the repo), adding `pdfClassicAssets()`
+   from `build/pdfClassicAssets.ts` to its plugin list until I-3 wires the production config. Serve
+   on a free port you choose with `vite preview --strictPort`.
 2. Generate the corpus twice in fresh directories and compare bytes:
 
    ```sh
@@ -41,7 +41,8 @@ app module is imported by a run. Build/serve/static/browser commands take the ru
    worker bodies, fixture/oracle hashes, all named arms, and a positive PDF-asset fetch control.
 
 `local` is a separate, explicitly named arm: it additionally requires the three SHA-checked
-rights-unverified JBIG2/CCITT witnesses at the absolute planning evidence path and
+rights-unverified JBIG2/CCITT witnesses (pdf.js upstream test PDFs, not in the repo) in the folder
+named by `BME_PDF_UPSTREAM_FIXTURES` and
 `LOCAL_JPX_WITNESS=<scratch-positive-jpx-metadata.json>`. No witness is silently skipped. The
 positive JPX is an authored 4×4 checker made locally with existing OpenJPEG 2.5.4; its PDF SHA and
 encoder binary SHA are recorded, but it is **a local positive witness, encoder not pinned**. It is
@@ -89,19 +90,19 @@ The final production rule must be re-run at integration.
 
 - Unfixed production build d53ae0a: authored CCITT/CJK and local JPX/JBIG2 were blank, decoder
   warnings/null-image messages appeared, and no notice was shown. The genuine blank control was
-  clean. Original reports/screenshots: `W/scratch/p-e/baseline/` (pre-I-0 npx driver, pinned CfT).
+  clean. Original reports/screenshots: `<run scratch>/baseline/` (pre-I-0 npx driver, pinned CfT).
 - Asset build 6a407c1: authored CCITT, CJK and JBIG2 content returned. `bug_jpx.pdf` still emitted
   an out-of-bounds decoder error despite a successful OpenJPEG fetch; it is now explicitly the
   P-02b decode-failure/notice arm, not a positive-ink fixture (p-lead ruling).
 - Generator v2 corrects the independently specified CCITT black/white polarity with explicit
   `/Decode [1 0]`; its two fresh outputs match. This is an authored-input correction before
   fixture adoption, not a change to accept the broken app's pixels.
-- First identity-bound P-02a local run (dark, DPR 1): `W/scratch/p-e/gate-view-a2/report.json`.
+- First identity-bound P-02a local run (dark, DPR 1): `<run scratch>/gate-view-a2/report.json`.
   All eight cases passed, all 8/16 CCITT/JPX landmarks matched, no decoder warning, no additional
   off-origin request, zero Markdown PDF requests, positive PDF-assets control. Screenshots of the
   CCITT right-half ink and JPX checker were inspected. The matrix results are recorded in the
   package handoff after all four cases and the mutant have run.
-- Proposed lint policy: `W/scratch/p-e/lint-policy/lint-witness.json` — five old sites and sixth
+- Proposed lint policy: `<run scratch>/lint-policy/lint-witness.json` — five old sites and sixth
   caller/namespace/dynamic escapes fail; type-only/sole-adapter controls pass.
 
 ## Stated false passes and losses

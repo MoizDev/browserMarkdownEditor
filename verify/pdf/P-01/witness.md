@@ -10,7 +10,7 @@ The extended G3 diagnostic reached the expected split after an observed three-fr
 boundary: whole→band, band→whole and inside-trigger failed with one expected versus two observed
 work canvases; outside-trigger and band zoom-out passed. Earlier extra-blit/backing failures were
 premature sampling during warm-up, not established product cleanup defects. Corrected evidence:
-`W/scratch/p-a/P-01/witness-g3-settled/latest-report.json`.
+`<run scratch>/P-01/witness-g3-settled/latest-report.json`.
 
 A fresh-context image check (`witness-g3-ref-inside`) did not establish byte equality: geometry and
 dark-pixel count796505 matched, RGBA SHA256 did not. No tolerance was added and no equivalence is
@@ -37,15 +37,15 @@ final current-density glyph ink exists; native text DOM identity survived; maxim
 drawing-state roots was1. The old completed target was discarded and a second work canvas allocated.
 This is not a lucky scroll-speed failure, setup failure or a timing/scroll-hole result.
 
-Full report (hc t2wr, exit1):
-`W/scratch/p-a/P-01/witness-all/reports/2026-11-13T23-26-34.085Z-D1-G2-equivalent-342e0118-400e-4dff-bb78-e754b8c5f1f1.json`.
-The initial render-only run (t2vx, exit1) observed the same named failure. Lint subsequently passed
-(t2ws); the original no-ex-assign lint finding was corrected, not relaxed.
+Full report (exit1):
+`<run scratch>/P-01/witness-all/reports/2026-11-13T23-26-34.085Z-D1-G2-equivalent-342e0118-400e-4dff-bb78-e754b8c5f1f1.json`.
+The initial render-only run (exit1) observed the same named failure. Lint subsequently passed;
+the original no-ex-assign lint finding was corrected, not relaxed.
 
 ## Identity and observation
 
 - CfT157.0.8103.39, worktree Playwright1.63.0, fresh contexts, 1440×900, DPR2, dark.
-- Unmodified V-01a toolbox **527faea**, exported to `W/scratch/p-a/toolbox-527faea/verify/lib`
+- Unmodified V-01a toolbox **527faea**, exported to `<run scratch>/toolbox-527faea/verify/lib`
   under p-lead's explicit permission; imported file bytes are checked against that commit and their
   SHA256 is recorded. No private attestation implementation or changed helper.
 - Strict **raw-route** served-body binding, awaited before assertions. Each case recorded12 bound
@@ -75,18 +75,19 @@ Seed1346651697, Node26.0.0/zlib1.2.12; two clean generation invocations produced
 bytes. Frozen identities are in the PDF manifest. No external text/font program; NOASSERTION with
 proposed CC0-1.0 pending owner approval.
 
-Preparation and execution are **separate grants**, avoiding a nested build under a run slot:
+Preparation and execution are **separate phases**; a run serves what was prepared and never rebuilds:
 
 ```sh
-L build -- node verify/pdf/P-01/prepare.mjs --base d53ae0a \
+node verify/pdf/P-01/prepare.mjs --base d53ae0a \
   --source "$SCRATCH/source-old-holds" --scratch "$SCRATCH/old-holds" \
   --variant holds --toolbox "$TOOLBOX/verify/lib"
-L run -- node verify/pdf/P-01/G2.mjs --prepared "$SCRATCH/old-holds/prepared.json" \
+node verify/pdf/P-01/G2.mjs --prepared "$SCRATCH/old-holds/prepared.json" \
   --reference "$SCRATCH/old-holds/prepared.json" --fixture "$SCRATCH/fixtures-a/dense-one-page.pdf" --scratch "$SCRATCH/witness-all" \
   --toolbox "$TOOLBOX/verify/lib" --phase all --port 6384
 ```
 
-The source and output must be separate external scratch paths. Preparation refuses a dirty scratch
+`SCRATCH` must be inside the toolbox's scratch folder (`BME_SCRATCH`, else a per-worktree folder
+under the OS temp dir); the source and output must be separate paths there. Preparation refuses a dirty scratch
 source, validates every patch anchor and performs an owned npm ci (no dependency symlink). Vite uses
 private cache/output and hidden maps; those maps are attribution data, not application instrumentation.
 `serveApp({build:false})` owns/stops the private preview in finally; no preview remains between runs.

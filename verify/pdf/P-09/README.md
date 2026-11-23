@@ -41,29 +41,27 @@ scratch. Fixtures contain authored text/geometry and legacy serialized **data**,
 
 ## Build and run
 
-Follow the shared HOWTO and reserved ports. Slow commands run in hc background terminals, with
-`bme-lock` for build/static/run/serve. Classic pdf.js runs are weight1 (PDFium pool is weight2).
-Every preview has an EXIT cleanup in the browser-run shell; a failed gate must not leave it idle.
-Set CHROME_PATH to HOWTO §5's exact Chrome for Testing executable, never installed/bundled Chrome.
+Install the pinned browser once (`node verify/install-browser.mjs`; `CHROME_PATH` overrides the
+path, never installed/bundled Chrome). Use a free port you choose with `--strictPort`. Every preview
+has an EXIT cleanup in the shell that runs the browser; a failed gate must not leave it idle.
 
 ```sh
-export S=/Users/adham/Developer/bme-impl/scratch/p-c
-L=/Users/adham/Developer/bme-impl/scratch/bin/bme-lock
-# Shared tooling and fixture helpers are now in-tree. Fresh output dirs only.
+S="$(mktemp -d)/p-09"   # any fresh folder outside the repo
+# Shared tooling and fixture helpers are in-tree. Fresh output dirs only.
 node verify/fixtures/pdf/generators/role-authority-and-read-failure.mjs \
   --out "$S/fixtures-a" --seed 1346651697 > "$S/fixtures-a.jsonl"
 node verify/fixtures/pdf/generators/role-authority-and-read-failure.mjs \
   --out "$S/fixtures-b" --seed 1346651697 > "$S/fixtures-b.jsonl"
 # V-05 owns independent two-run/manifest admission. Oracle JSON is registered too.
 
-# Private config: this worktree root, own cacheDir/outDir; source must be committed.
-"$L" build -- env BUILD_CONFIG="$S/vite.config.mjs" sh -c '
+# Private config: this worktree root, own cacheDir/outDir under $S; source must be committed.
+BUILD_CONFIG="$S/vite.config.mjs" sh -c '
   node verify/pdf/P-09/identity.mjs source "$PWD" "$S/build.json" &&
   ./node_modules/.bin/vite build --config "$BUILD_CONFIG" &&
   node verify/pdf/P-09/identity.mjs artifacts "$PWD" "$S/dist" "$S/build.json"'
-# Start preview with hc run --bg and a serve grant; retain its terminal ID for cleanup.
-# In the hc browser-run shell: trap 'hc kill <serve-id>; hc rm <serve-id>' EXIT
-"$L" run -- env BUILD_IDENTITY="$S/build.json" CHROME_PATH="$CHROME_PATH" \
+./node_modules/.bin/vite preview --config "$S/vite.config.mjs" --port 6420 --strictPort &
+trap 'kill $!' EXIT
+BUILD_IDENTITY="$S/build.json" \
   node verify/pdf/P-09/corpus.mjs http://localhost:6420 "$S/fixtures-a" "$S/results" \
   verify/fixtures/pdf/manifest.json
 ```
@@ -97,13 +95,13 @@ No app function is evaluated or called; only external CDP and public Worker APIs
 
 ## Scratch source mutants
 
-Inside a build grant, run `prepare-mutant.mjs NEW_DIR NAME`, then the normal production build with
-its config and the same source/artifact identity wrapper. It APFS-clones an independent installation
-(no node_modules symlink), patches source exactly once and records the patch. Serve on a reserved
+Run `prepare-mutant.mjs NEW_DIR NAME`, then the normal production build with its config and the
+same source/artifact identity wrapper. It copies an independent installation (an APFS clone on
+macOS; no node_modules symlink), patches source exactly once and records the patch. Serve on a free
 port, then qualify (with the same automatic preview cleanup):
 
 ```sh
-"$L" run -- env BUILD_IDENTITY="$M/build.json" CHROME_PATH="$CHROME_PATH" \
+BUILD_IDENTITY="$M/build.json" \
   node verify/pdf/P-09/qualify-mutant.mjs http://localhost:6421 "$S/fixtures-a" "$M/result" no-guard
 ```
 

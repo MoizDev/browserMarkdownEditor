@@ -12,7 +12,8 @@ for (const name of ['src', 'shared', 'public', 'index.html', 'package.json', 'pa
   catch (error) { if (error.code !== 'ENOENT') throw error; }
 }
 // macOS APFS clone: independent writable files, never a symlink/shared install.
-execFileSync('/bin/cp', ['-cR', path.join(root, 'node_modules'), path.join(destination, 'node_modules')]);
+if (process.platform === 'darwin') execFileSync('/bin/cp', ['-cR', path.join(root, 'node_modules'), path.join(destination, 'node_modules')]);
+else await cp(path.join(root, 'node_modules'), path.join(destination, 'node_modules'), { recursive: true, verbatimSymlinks: true });
 const patches = {
   'no-guard': [['src/utils/pdfAttachmentInventory.ts', '    try {\n        const doc = await PDFDocument.load(bytes,', "    return { kind: 'plain', generation, alreadyAnnotated: false, original: bytes, snapshot: '', notebookSource: null };\n    try {\n        const doc = await PDFDocument.load(bytes,"]],
   'null-plain': [['src/utils/pdfAttachmentInventory.ts', "if (!(ef instanceof PDFDict)) return failure('null');", "if (!(ef instanceof PDFDict)) return { kind: 'plain', generation, alreadyAnnotated: false, original: bytes, snapshot: '', notebookSource: null };"]],

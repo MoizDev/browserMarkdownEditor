@@ -14,7 +14,9 @@ This is the board's own route. Editing (tools, selection, text) is `whiteboard-e
 2. **Request** (`viewer/attachView.ts`, `requestPaint`): asks the paint services for a stream of the view. On a
    device the first request is the view's world; once that is up, the whole sheet is asked ONCE with no world, keyed
    by revision, sheet, theme, sensitivity and ink band (`SceneKey`). A camera change inside one band asks nothing:
-   the tiles follow the camera. On canvas2d a request stands while it holds the viewport at the same ink realisation
+   the tiles follow the camera. While a zoom is still going a request at an equal or one-finer band stands too (a finer
+   band's outline draws at a coarser scale, never the reverse) and the camera's band is asked once it settles: wheel
+   steps alternating across the band at 100% asked the whole scene every step (40 steps: 40 requests → 2). On canvas2d a request stands while it holds the viewport at the same ink realisation
    (`paintRequestScope.ts`); while a zoom is still going (moving, or a scale change within `ZOOM_SETTLE_MS` 250) it
    stands one ink band across, on a board with pictures only while its picture tiles still cover the screen, and
    the exact scale is asked once the zoom settles. Asked per step, every pan and zoom step presented twice. The 2D
@@ -139,6 +141,9 @@ refusals wait once, sized (`awaitSizedCapacity`). Ruled paper also has a PDF wri
 - A picture is hashed and verification-decoded once: the residency source (`media/residencySource.ts`) admits a Blob
   once and inspection skips the decode for content already verified in this page. Re-inspecting per raster job
   queued whole-picture decodes ahead of the tiles (measured: first tile raster 215 → 150 ms).
+- A finer tile whose bitmap goes mid-upload (a CPU trim, a new snapshot) is asked for again at once by the upload
+  pump (`reacquireImage`, counted `image:tile:upload-lost`). Left to the next compose, at rest none came: a drawing
+  shown again after a tab switch kept its picture's stand-in for good.
 
 ## Memory and waits
 

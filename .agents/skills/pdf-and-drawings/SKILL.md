@@ -53,6 +53,9 @@ come back to either.
 - A tile owns its own pooled GPU texture (`texturePool.ts`); its CPU bitmap lease is released once GPU-resident.
   `evictGpu` clears the free pool, then off-view and other-scale tiles, farthest first; a tile on screen or drawn by
   the last prepared frame stays. `releaseGpu` releases every page texture at once.
+- An opaque one-colour tile (blank page: the producer scans every raster, `pdfTileUniformColour`) is, on a device, a
+  1x1 texture of its own bytes (`Entry.solid`, `tile-upload:solid`): no tile-sized texture or upload (doc12 zoom:
+  34.9 → 19.6 Mpx). Opaque only, so it samples what a textured neighbour does; canvas2d, mirrors and bridges keep the bitmap.
 - Zoom deliberately holds rasters during the gesture (`ZOOM_GESTURE_HOLD_MAX_MS`, 48 ms): rastering through it cost
   about 10x the PDFium CPU.
 - Tiles mirror into the session (`tileMirror.ts`): pixels belong to the document session, not the layer. After a

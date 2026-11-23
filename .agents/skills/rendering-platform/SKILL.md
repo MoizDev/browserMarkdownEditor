@@ -67,7 +67,11 @@ Constants are in `types.ts` (`RenderConstants`, documented per field) with value
   (`fallback:2d-bridge`, with its pixel count). A bridge that cannot present within `BRIDGE_WAIT_MS` (300 ms) is
   skipped (`fallback:2d-bridge-skipped`): the GPU resizes directly and draws from the textures it kept. Measured:
   waiting on a bridge that could not fit the CPU pool left 'Updating' up for good.
-- A governor refusal of a resize is pressure, not a fallback: the pane keeps its picture and waits.
+- A governor refusal of a resize is pressure, not a fallback: the pane keeps its picture and waits, sized
+  (`SurfaceBackingOptions.wake`): a pane behind its 2D picture asks no frame of its own, so unwoken nothing retried it.
+- Hiding zeroes the GPU canvas and stages its backing (`GpuPaneCandidate.zeroed`): shown again, the kept GPU rebuilds as
+  scratch behind the 2D picture until `selectGpu` promotes it. Left 'displayed', the rebuild was charged as a second
+  display, refused, and a PDF stayed on its blurred 2D picture for good after a tab switch.
 - **The person is told** when a pane really runs on canvas2d: `SurfaceCallbacks.onGpuUnavailable(cause)` →
   `options.onNotice('gpu-unavailable', cause)`, cause `no-webgl2 | software | unsupported | gpu-error`, text from
   `gpuUnavailableText` (`platform/renderStatus.ts`). Device causes show once per app session, `gpu-error` (the

@@ -33,6 +33,9 @@ export interface LiveInkContext {
   readonly presentation: InkPresentation
   readonly builderOptions: SampleBuilderOptions
   readonly captureDeviceScale: number
+  /** One CSS pixel of pointer input in local units at pointer down (1 / zoom): the coarsest grid the
+   * pointer's samples can sit on (ink/dequantize.ts). */
+  readonly inputPixelWorld: number
   // Capture style, target sheet and local transform at down; implementations write
   // through the session transaction and preserve the same id/lease for undo/redo.
   /** Writes the sample's local point into `out`. */
@@ -118,7 +121,8 @@ export class LiveInk implements GestureOwner {
   constructor(first: RealSample, modifiers: Modifiers, private readonly context: LiveInkContext, private readonly handover: WetInkHandover) {
     this.pointerIds = new Set([first.pointerId])
     this.read = { identity: context.identity, presentation: context.presentation, sample: first, curveSequence: -1 }
-    this.builder = new StraightInkBuilder(new LocalCurveBuilder(context.builderOptions, context.captureDeviceScale, context.presentation.fairTol))
+    this.builder = new StraightInkBuilder(new LocalCurveBuilder(context.builderOptions, context.captureDeviceScale, context.presentation.fairTol,
+      undefined, context.inputPixelWorld))
     this.append(first, modifiers)
     context.clearRedoAtDown()
     context.invalidate()

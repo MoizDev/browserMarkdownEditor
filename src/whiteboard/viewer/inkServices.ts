@@ -51,7 +51,7 @@ export function createBoardInkServices(options: BoardInkServicesOptions): Pick<B
             const captureDeviceScale = camera.camera.z * camera.viewport.dpr;
             const declaredMaxScale = Math.max(8, camera.camera.z * 8);
             return {
-                sheet, page, color, width, captureDeviceScale, declaredMaxScale,
+                sheet, page, color, width, captureDeviceScale, declaredMaxScale, inputPixelWorld: 1 / camera.camera.z,
                 rememberStroke: id => runtime.tools.rememberStroke(id),
                 nextSequence: () => runtime.tools.nextInkSequence(),
                 admit: builder => samples.commit(builder),

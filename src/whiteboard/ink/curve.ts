@@ -1,7 +1,8 @@
 import { AuthoringSamples } from './canonicalize';
 import type { OmissionCertificate } from './canonicalize';
+import { PointerDequantizer, type DequantizedSample } from './dequantize';
 import { createOmissionCertificate } from './omission';
-import type { SampleBuilder, SampleBuilderOptions, SampleSequence, SegmentKind } from './samples';
+import { validateSample, type SampleBuilder, type SampleBuilderOptions, type SampleSequence, type SegmentKind } from './samples';
 
 export const CURVE_VERSION = 1;
 export const CURVE_CORNER_DOT = -0.5;
@@ -183,32 +184,55 @@ function packingDisplacement(before: SampleSequence, after: SampleSequence, firs
     return bound === 0 ? 0 : bound + 64 * Number.EPSILON * magnitude;
 }
 
+/** The builder's samples followed by the dequantizer's provisional tail, as one sequence. */
+function withTail(base: SampleSequence, tail: readonly DequantizedSample[]): SampleSequence {
+    const prefix = base.count, count = prefix + tail.length;
+    const check = (i: number) => { if (!Number.isInteger(i) || i < 0 || i >= count) throw new RangeError('Invalid authoring sample index'); };
+    return Object.freeze({
+        count,
+        x: (i: number) => { check(i); return i < prefix ? base.x(i) : tail[i - prefix].x; },
+        y: (i: number) => { check(i); return i < prefix ? base.y(i) : tail[i - prefix].y; },
+        pressure: (i: number) => { check(i); return i < prefix ? base.pressure(i) : tail[i - prefix].pressure; },
+        segmentKind: (i: number) => { check(i); check(i + 1); return i + 1 < prefix ? base.segmentKind(i) : tail[i + 1 - prefix].kind; },
+    });
+}
+
 export class LocalCurveBuilder {
     readonly samples: AuthoringSamples;
     readonly parameters: CurveParameters;
     private sequence = 0;
     private completed = false;
+    private readonly dequantizer: PointerDequantizer | undefined;
+    /** `inputPixelWorld` (one CSS pixel of pointer input, in world units) is given only for live pointer
+     * input, whose samples may sit on the pointer's grid (ink/dequantize.ts); replayed or generated
+     * samples are never moved. */
     constructor(options: SampleBuilderOptions, captureDeviceScale: number,
-        fairingToleranceWorld?: number, certificate?: OmissionCertificate) {
+        fairingToleranceWorld?: number, certificate?: OmissionCertificate, inputPixelWorld?: number) {
         this.parameters = curveParameters(options.declaredMaxScale, fairingToleranceWorld, options.maxDpr ?? 3);
         this.samples = new AuthoringSamples(options, captureDeviceScale, certificate ?? createOmissionCertificate(this.parameters),
             (before, after, first, count) => packingDisplacement(before, after, first, count, this.parameters));
+        this.dequantizer = inputPixelWorld === undefined ? undefined : new PointerDequantizer(inputPixelWorld, captureDeviceScale);
     }
     append(x: number, y: number, pressure: number | undefined, incomingKind: SegmentKind = 'freehand', pins = 0): void {
         if (this.completed) throw new Error('Completed ink cannot be extended by a later release event');
-        this.samples.append(x, y, pressure, incomingKind, pins);
+        if (!this.dequantizer) { this.samples.append(x, y, pressure, incomingKind, pins); return; }
+        validateSample(x, y, pressure, this.samples.options.pressure);
+        for (const s of this.dequantizer.push(x, y, pressure, incomingKind, pins)) this.samples.append(s.x, s.y, s.pressure, s.kind, s.pins);
     }
     publish(): CurvePublication {
         if (this.completed) throw new Error('Completed ink has already published its final prefix');
-        const samples = this.samples.snapshot();
-        const packet = this.publication(samples);
+        const base = this.samples.snapshot(), tail = this.dequantizer?.provisional() ?? [];
+        const packet = this.publication(base, tail);
         this.samples.markPublished();
         return packet;
     }
-    private publication(samples: SampleSequence): CurvePublication {
+    private publication(base: SampleSequence, tail: readonly DequantizedSample[]): CurvePublication {
+        const samples = tail.length ? withTail(base, tail) : base;
         if (!samples.count) throw new Error('Empty ink has no geometry publication');
         const spanCount = samples.count - 1;
-        const finalizedSpanCount = Math.max(0, spanCount - 3);
+        // The provisional tail still moves (by under one grid step) as later samples arrive, so only the
+        // builder's own samples can finalize; every span the tail can reach stays replaceable.
+        const finalizedSpanCount = Math.max(0, base.count - 4);
         const sequence = ++this.sequence;
         return Object.freeze({
             sequence, phase: 'wet-real', parameters: this.parameters, samples,
@@ -220,8 +244,11 @@ export class LocalCurveBuilder {
     }
     finish(): Readonly<{ samples: SampleBuilder; publication: CurvePublication; }> {
         if (this.completed) throw new Error('Ink has already completed');
-        // Capture exactly what was displayed. No final fitting or omission runs here.
-        const canonical = this.samples.snapshot(), publication = this.publication(canonical);
+        // Capture exactly what was displayed. No final fitting runs here: the provisional tail settles
+        // exactly where `publish` last drew it (the same estimates from the same samples), and thinning
+        // it is the usual certificate against those very positions, within its 0.08 device px.
+        for (const s of this.dequantizer?.flush() ?? []) this.samples.append(s.x, s.y, s.pressure, s.kind, s.pins);
+        const canonical = this.samples.snapshot(), publication = this.publication(canonical, []);
         const samples = this.samples.finish();
         this.completed = true;
         return Object.freeze({ samples, publication });

@@ -113,7 +113,9 @@ class BoardSelectGesture implements GestureOwner {
     private region(): SelectRegion {
         return this.startKeys.alt && this.hit === null
             ? { kind: 'scribble', points: this.points }
-            : { kind: 'marquee', start: { x: this.down.x, y: this.down.y }, end: { x: this.last.x, y: this.last.y }, containment: this.keys.control };
+            // Full containment is the platform's accelerator held while boxing: ⌘ on macOS, Ctrl elsewhere. It read Ctrl, which a
+            // Mac sends as a right click (the press pans), so containment was unreachable there.
+            : { kind: 'marquee', start: { x: this.down.x, y: this.down.y }, end: { x: this.last.x, y: this.last.y }, containment: this.keys.accel };
     }
     private activateDrag(): void {
         if (!this.valid() || this.hit === undefined || this.transform) return;

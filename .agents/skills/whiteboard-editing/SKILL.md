@@ -61,7 +61,8 @@ adapting or transcribing its code is not (`src/whiteboard/PROVENANCE.md`; the li
   (`delegatedInk.ts`) uses the browser's ink presenter when present. Pen mode (`ToolState.penMode`) and
   `penTransitions.ts` route a stylus to ink or eraser while touch pans. The eraser removes whole items
   (`input/basicTools.ts`); there is no partial erase.
-- Select (`tools/select.ts`, `viewer/selectServices.ts`): click, marquee (Ctrl = full containment), scribble/lasso (Alt+drag);
+- Select (`input/selectGesture.ts`, `viewer/selectServices.ts`): click, marquee (the accelerator — ⌘ on macOS, Ctrl elsewhere — =
+  full containment; a mac Ctrl press is a right click), scribble/lasso (Alt+drag);
   handles and transforms in `viewer/selectionHandles.ts`, `shapeHandles.ts`, `stickyHandles.ts`,
   `tools/transformDrivers.ts`. Creation tools are `viewer/creationTools.ts`.
 

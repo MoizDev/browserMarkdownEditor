@@ -353,7 +353,7 @@ Colour and thickness live in the panel at the top right; it is the same panel in
 Style keys for the selection: \`Alt + F\` fills a figure, \`Alt + Shift + F\` gives it a lined fill, \`Alt + T\` makes it white, and \`Shift + Q\` copies the style of what is under the pointer.
 
 ### Selecting and arranging
-- Click to select; \`Shift\`-click adds or removes; drag a box on empty space to select what is in it. Hold \`Alt\` and drag on empty space to draw a free path that selects what it crosses. \`Cmd/Ctrl + A\` selects everything on the sheet, and \`Tab\` / \`Shift + Tab\` step through items.
+- Click to select; \`Shift\`-click adds or removes; drag a box on empty space to select everything it touches; hold \`Cmd\` (\`Ctrl\` on Windows and Linux) while you drag the box to select only what lies wholly inside it. You can press \`Delete\` the moment you let go: it removes what the box selected. Hold \`Alt\` and drag on empty space to draw a free path that selects what it crosses. \`Cmd/Ctrl + A\` selects everything on the sheet, and \`Tab\` / \`Shift + Tab\` step through items.
 - Drag to move (\`Shift\` keeps the move straight), drag a corner or edge to resize (\`Shift\` keeps the proportions, \`Alt\` resizes from the centre), drag the rotate handle to turn (\`Shift\` snaps the angle). \`Alt\`-drag moves a copy and leaves the original.
 - Arrow keys nudge the selection (\`Shift\` for farther). \`Cmd/Ctrl + D\` duplicates, \`Delete\` or \`Backspace\` removes.
 - \`Cmd/Ctrl + G\` groups and \`Cmd/Ctrl + Shift + G\` ungroups; double-click inside a selected group to select one thing in it. \`Shift + L\` locks the selection so it can't be moved by accident (right-click a locked item to unlock it; Menu → Edit → **Unlock all** unlocks everything).

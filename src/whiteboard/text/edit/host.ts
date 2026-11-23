@@ -233,6 +233,7 @@ export class EditHost {
     }
 
     focus(): void { this.element.focus({ preventScroll: true }); this.sync(); }
+    hasFocus(): boolean { return document.activeElement === this.element; }
     finishComposition(commit: boolean): void {
         if (!this.composing) return;
         if (!commit) {

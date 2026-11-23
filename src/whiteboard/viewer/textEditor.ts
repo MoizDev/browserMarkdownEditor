@@ -67,6 +67,8 @@ export interface BoardTextEditorOptions {
         /** Opens the directional neighbour of the edited note once its own edit has committed. */
         stickyNeighbour?(direction: 'left' | 'right' | 'up' | 'down'): boolean;
         command(name: string, selection: EditSelection): void;
+        /** Opens the command palette of the board chrome; the edit is already finished when this runs. */
+        commandPalette?(): void;
         selectionChanged(node: NodeId | null, selection: EditSelection | null): void;
         touchHandles(show: boolean): void;
         reducedMotion(): boolean;
@@ -328,6 +330,7 @@ export function createBoardTextEditor(options: BoardTextEditorOptions) {
                 announce(message) { live.textContent = message; },
                 compositionFormat() { requestFrame(); },
                 command: options.ui.command,
+                commandPalette: () => options.ui.commandPalette?.(),
                 autoScroll(x, y) { scroll = { x, y }; scheduleScroll(); }, stopAutoScroll: stopScroll,
                 touchHandles(value) { handles = value; options.ui.touchHandles(value); requestFrame(); },
                 menu: openTextMenu, openLink: options.ui.openLink, stickyNeighbour: direction => stickyNeighbour(direction),

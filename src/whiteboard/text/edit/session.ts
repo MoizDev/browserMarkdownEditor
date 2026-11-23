@@ -56,6 +56,8 @@ export interface EditSessionServices extends Omit<EditTransactions, 'typing' | '
      *  <body>, and every board shortcut listens on the board's root, so the keyboard must go back there first. */
     returnFocus(): void;
     finish(): void;
+    /** Opens the command palette once the edit has finished (Cmd/Ctrl+K). */
+    commandPalette?(): void;
 }
 
 function point(transform: TextTransform, x: number, y: number): { x: number; y: number } {
@@ -246,6 +248,7 @@ export class TextEditSession {
         if (!this.canEdit()) return false;
         if (name === 'enter' && this.services.singleLine) return this.command('finish');
         if (name === 'select-all') return this.selectAll();
+        if (name === 'palette') return this.command('finish') && (this.services.commandPalette?.(), true);
         const marks: Readonly<Record<string, ToggleMark>> = { bold: 'b', b: 'b', italic: 'i', i: 'i', underline: 'u', u: 'u',
             strike: 's', s: 's', code: 'code', highlight: 'hl', hl: 'hl' };
         const mark = Object.hasOwn(marks, name) ? marks[name] : undefined;
@@ -499,6 +502,8 @@ export class TextEditSession {
     pointerMove(pointer: TextPointer): void { this.pointer.move(pointer); }
     pointerUp(id: number): void { this.pointer.up(id); }
     focus(): void { this.sync(); this.host.focus(); }
+    /** False once focus has left the editor (a chrome control, the tree): a press on the shape then moves it instead of editing. */
+    hasFocus(): boolean { return this.host.hasFocus(); }
     insertText(text: string): void {
         if (this.closed || !text) return;
         const from = Math.min(this.selection.anchor, this.selection.focus), to = Math.max(this.selection.anchor, this.selection.focus);

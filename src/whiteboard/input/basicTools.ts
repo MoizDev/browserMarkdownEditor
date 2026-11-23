@@ -15,6 +15,8 @@ export interface EraserContext extends SweepQueueServices {
   commit(ids: ReadonlySet<NodeId>): void
   clearPreview(): void
   error(error: unknown): void
+  /** The erasing pointer's path, drawn by the view as a trail that consumes itself. */
+  trail?(point: RealSample): void
 }
 
 class EraserGesture implements GestureOwner {
@@ -24,9 +26,10 @@ class EraserGesture implements GestureOwner {
   private readonly release: () => void
   private readonly controller = new AbortController()
   private unregister: (() => void) | null = null
-  private last: InkPoint
+  private last: RealSample
   private ended = false
   private cancelled = false
+  private moved = false
   constructor(sample: RealSample, modifiers: Modifiers, private readonly context: EraserContext) {
     this.pointerIds = new Set([sample.pointerId])
     this.last = sample
@@ -73,9 +76,14 @@ class EraserGesture implements GestureOwner {
       }
     }
   }
-  private collect(point: InkPoint, modifiers: Modifiers): void {
+  private collect(point: RealSample, modifiers: Modifiers): void {
     const from = this.last
     this.last = point
+    if (from !== point) {
+      // The first move starts the trail at the press point; every later move adds only its own point.
+      if (!this.moved) { this.moved = true; this.context.trail?.(from) }
+      this.context.trail?.(point)
+    }
     this.queue.add(from, point, modifiers.accel)
   }
 }

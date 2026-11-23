@@ -277,11 +277,25 @@ export class TextEditSession {
                 try { this.host.sync(); } catch (error) { this.services.reportError(error); }
             }
         }
+        if (name === 'tab' || name === 'untab') return this.tab(name === 'untab');
         if (!['undo', 'redo', 'finish', 'link', 'paste-plain', 'paste-inverted', 'paste-plain-inverted'].includes(name)) return false;
         try {
             if (name === 'undo' || name === 'redo' || name === 'finish') this.typingHistory.close();
             this.services.command(name, this.selection); return true;
         } catch (error) { this.services.reportError(error); return false; }
+    }
+
+    /** Tab types a tab character over the selection; Shift+Tab removes the tab character just before a collapsed caret. */
+    private tab(outdent: boolean): boolean {
+        const from = Math.min(this.selection.anchor, this.selection.focus), to = Math.max(this.selection.anchor, this.selection.focus);
+        if (outdent) {
+            if (from !== to || this.services.plainText()[from - 1] !== '\t') return true;
+            this.replace({ from: from - 1, to: from, text: '', selection: { anchor: from - 1, focus: from - 1 } }, 'typing');
+        } else {
+            this.replace({ from, to, text: '\t', selection: { anchor: from + 1, focus: from + 1 } }, 'typing');
+        }
+        this.host.sync();
+        return true;
     }
 
     private keydown(event: KeyboardEvent): void {

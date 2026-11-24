@@ -1,6 +1,6 @@
 import type { RenderToken } from '../../platform/render/types';
 import type { Applied } from '../change/ops';
-import type { BoardDoc } from '../model/doc';
+import { childrenOf, type BoardDoc } from '../model/doc';
 import type { NodeId, SheetId } from '../model/ids';
 import { createNode, type Node } from '../model/nodes';
 import { boardPageStack } from '../model/pages';
@@ -215,12 +215,14 @@ export class SessionScene implements SceneSpatial {
         while (!this.ready) { signal?.throwIfAborted(); this.controller.signal.throwIfAborted(); this.step(16, performance.now() + 3); await cooperate(); }
         const node = this.options.doc.nodes.get(id);
         if (!node) return null;
-        const version = this.versions.get(id) ?? 0, serial = this.serial;
-        const captured = createNode(node);
-        await this.cache.ensure(id, version, signal ?? this.controller.signal, jobSignal => this.options.realize(captured, jobSignal));
+        const serial = this.serial, jobs = this.geometryOwners(node).map(owner =>
+            ({ id: owner.id, version: this.versions.get(owner.id) ?? 0, captured: createNode(owner) }));
+        await Promise.all(jobs.map(job => this.cache.ensure(job.id, job.version, signal ?? this.controller.signal,
+            jobSignal => this.options.realize(job.captured, jobSignal))));
         signal?.throwIfAborted();
-        if (this.disposed || this.serial !== serial || !this.options.doc.nodes.has(id) || (this.versions.get(id) ?? 0) !== version) throw new DOMException('Scene geometry changed', 'AbortError');
-        this.pendingNodes.set(id, (this.pendingNodes.get(id) ?? 0) | Flag.Bounds | Flag.Paint);
+        if (this.disposed || this.serial !== serial || !this.options.doc.nodes.has(id)
+            || jobs.some(job => !this.options.doc.nodes.has(job.id) || (this.versions.get(job.id) ?? 0) !== job.version)) throw new DOMException('Scene geometry changed', 'AbortError');
+        for (const job of jobs) this.pendingNodes.set(job.id, (this.pendingNodes.get(job.id) ?? 0) | Flag.Bounds | Flag.Paint);
         this.serial++; this.options.invalidate();
         while (!this.ready) { signal?.throwIfAborted(); this.controller.signal.throwIfAborted(); this.step(16, performance.now() + 3); await cooperate(); }
         return this.worldBounds(id);
@@ -237,10 +239,13 @@ export class SessionScene implements SceneSpatial {
             while (!this.ready) { stop.throwIfAborted(); this.controller.signal.throwIfAborted(); this.step(16, performance.now() + 3); await cooperate(); }
         };
         await settle();
-        const jobs: { readonly id: NodeId; readonly version: number; readonly node: Readonly<Node> }[] = [];
+        const jobs: { readonly id: NodeId; readonly version: number; readonly node: Readonly<Node> }[] = [], queued = new Set<NodeId>();
         for (const id of ids) {
             const node = this.options.doc.nodes.get(id);
-            if (node) jobs.push({ id, version: this.versions.get(id) ?? 0, node: createNode(node) });
+            if (node) for (const owner of this.geometryOwners(node)) {
+                if (queued.has(owner.id)) continue;
+                queued.add(owner.id); jobs.push({ id: owner.id, version: this.versions.get(owner.id) ?? 0, node: createNode(owner) });
+            }
         }
         let next = 0;
         const realise = async () => {
@@ -263,6 +268,18 @@ export class SessionScene implements SceneSpatial {
         const out = new Map<NodeId, SceneBounds | null>();
         for (const id of ids) out.set(id, this.worldBounds(id));
         return out;
+    }
+    /** The nodes whose own geometry bounds `node`: itself, or for a group every member through nested groups. A group has no
+     * geometry of its own (the publication aggregates its members), and realising one threw "Groups aggregate child geometry
+     * in Scene": every old board with a group failed to open, its first fit asking for the group's exact bounds. */
+    private geometryOwners(node: Readonly<Node>): Readonly<Node>[] {
+        if (node.kind !== 'group') return [node];
+        const owners: Readonly<Node>[] = [], stack: Readonly<Node>[] = [node];
+        for (let visited = 0; stack.length; visited++) {
+            if (visited > this.options.doc.nodes.size) throw new Error('Scene group ancestry is cyclic');
+            for (const child of childrenOf(this.options.doc, stack.pop()!.id)) (child.kind === 'group' ? stack : owners).push(child);
+        }
+        return owners;
     }
     query(options: SceneQueryOptions, output?: QueryBuffer, visitor?: NearestVisitor): SpatialQuery {
         if (!this.ready) throw new Error('Scene publication is pending');

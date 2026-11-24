@@ -28,6 +28,24 @@ export interface JobAuthority {
     drain(): Promise<void>;
     dispose(): void;
 }
+/** Runs `elapsed` once the page has been visible for `ms` in total. A hidden tab clamps timers (to 1 s and more) and stops
+ * animation frames, so a board opened or restored in a background tab made slow progress and a wall-clock deadline failed it
+ * for good: "Content job deadline elapsed", still shown once the tab came forward (emulated hidden tab, an old board of 150
+ * strokes). Time the page cannot run does not count; with no document (a worker) it is a plain timer. Returns the cancel. */
+function visibleDeadline(ms: number, elapsed: () => void): () => void {
+    const doc = typeof document === 'undefined' ? null : document;
+    let left = ms, startedAt = 0, timer: ReturnType<typeof setTimeout> | undefined;
+    const arm = () => { startedAt = performance.now(); timer = setTimeout(fire, Math.min(left, 2147483647)); };
+    const pause = () => { clearTimeout(timer); timer = undefined; left -= performance.now() - startedAt; };
+    function fire() { doc?.removeEventListener('visibilitychange', change); elapsed(); }
+    function change() {
+        if (doc!.visibilityState === 'hidden') { if (timer !== undefined) pause(); }
+        else if (timer === undefined) { if (left <= 0) fire(); else arm(); }
+    }
+    doc?.addEventListener('visibilitychange', change);
+    if (!doc || doc.visibilityState !== 'hidden') arm();
+    return () => { clearTimeout(timer); doc?.removeEventListener('visibilitychange', change); };
+}
 function validCounter(value: number): boolean { return Number.isSafeInteger(value) && value >= 0; }
 function cancelled(reason: string): DOMException { return new DOMException(reason, 'AbortError'); }
 
@@ -74,7 +92,7 @@ export function createJobAuthority(session: string, vaultEpoch: number, generati
             const abort = () => controller.abort(options.signal?.reason ?? cancelled('Content job cancelled'));
             options.signal?.addEventListener('abort', abort, { once: true });
             if (options.signal?.aborted) abort();
-            const timer = setTimeout(() => controller.abort(cancelled('Content job deadline elapsed')), Math.min(options.deadlineMs, 2147483647));
+            const stopDeadline = visibleDeadline(options.deadlineMs, () => controller.abort(cancelled('Content job deadline elapsed')));
             const assertCurrent = () => { if (!isCurrent(job)) throw cancelled('Stale or cancelled content job'); };
             const operation = tail.then(async () => {
                 assertCurrent();
@@ -92,7 +110,7 @@ export function createJobAuthority(session: string, vaultEpoch: number, generati
             controller.signal.addEventListener('abort', replyAbort, { once: true });
             if (controller.signal.aborted) replyAbort();
             const settled = operation.finally(() => {
-                clearTimeout(timer);
+                stopDeadline();
                 options.signal?.removeEventListener('abort', abort);
                 controller.signal.removeEventListener('abort', replyAbort);
                 outstanding.delete(job.request);

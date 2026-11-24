@@ -394,12 +394,15 @@ class DeviceFrame implements ControlledFrame {
                 executing = true;
                 this.#backend.uploadUniforms();
                 this.#backend.beginReplay();
-                for (const record of this.#replayList()) {
-                    if (record.pipeline) record.pipeline.draw(record.command!, record.context!);
-                    else if (record.quad) this.#backend.runQuad(record.quad, record.quadCommand!);
-                    else record.run!();
-                }
-                const stateSwitches = this.#backend.endReplay();
+                let stateSwitches = 0;
+                // Draws leave their state to the next draw; the end of the replay (a thrown one too) restores the baseline once.
+                try {
+                    for (const record of this.#replayList()) {
+                        if (record.pipeline) record.pipeline.draw(record.command!, record.context!);
+                        else if (record.quad) this.#backend.runQuad(record.quad, record.quadCommand!);
+                        else record.run!();
+                    }
+                } finally { stateSwitches = this.#backend.endReplay(); }
                 serial = this.#backend.issue();
                 for (const [native, state] of this.#retained) Object.assign(native, state);
                 this.#closed = true;

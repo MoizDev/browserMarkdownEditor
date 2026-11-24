@@ -214,6 +214,9 @@ draws differently because a GPU exists.
   string keys or snapshot arrays. On a tiled GPU the cost is render-target switches (`gpu:target-switch`).
 - Mask clips and groups need isolation targets planned in prepare (`host.reserveIsolation`).
 - **Uploads belong in prepare.** A route's `uploadPrepared()` (`render/gpu/contracts.ts`) runs at the end of every
+- **State stays between the draws of one replay**: a draw marks the device dirty and the baseline (`#reset`, ~45 GL calls)
+  is restored once, before a raw write (`gl()`) or at `endReplay` (a thrown replay too). Reset per draw, a settling dense
+  notebook spent 55 of 90 s in `#reset`. Buffer creation reads its size back once per device, never per buffer.
   prepare, because a device refuses `writeBuffer`/`writeTexture` once a pass is recorded in the frame, and
   `encodeOffscreen` runs after the earlier layers' passes. Anything staged after that upload is a composer bug and
   fails the frame (`routeText.ts`, "staged after its upload"), never a silent draw from rows that lack it.

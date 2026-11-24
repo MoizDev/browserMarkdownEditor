@@ -335,6 +335,12 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     #cMask = -1;
     // Program, blend and framebuffer changes the current replay issued (the audit's gl:state).
     #replaySwitches = 0;
+    // Inside a replay a draw leaves its state for the next draw (the cache above is what makes that cheap) and marks the device
+    // dirty; the baseline (#reset) is restored once, before a raw write (`gl()`) or at the replay's end. Reset after every draw,
+    // the cache never hit across draws: measured, a dense notebook's settling frame of ~2,700 draws spent 55 of 90 s main thread
+    // in #reset (about 45 GL calls per draw), 117 ms of submit per frame.
+    #replaying = false;
+    #dirty = false;
     readonly #uniformBindings: number;
     readonly #maxAttributes: number;
     readonly #maxElementIndex: number;
@@ -1466,7 +1472,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
         return {
             signal: work.signal, uniformAlignment: this.limits.uniformAlignment, maxViewport: this.limits.maxViewport,
             // The frame's raw GL writes (scissor, colour mask, blits, clears) all come through here, so the cache forgets first.
-            healthy: check, gl: () => { check(); this.#forgetState(); return this.#healthy(); }, reset: () => this.#reset(),
+            healthy: check, gl: () => { check(); if (this.#dirty) this.#reset(); else this.#forgetState(); return this.#healthy(); }, reset: () => this.#reset(),
             buffer: handle => {
                 const native = this.#pin(work.encoding, handle, 'buffer');
                 return { handle, buffer: native.buffer, bytes: native.bytes, uses: native.uses,
@@ -1855,12 +1861,15 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
     }
 
     #beginReplay(): void {
-        this.#forgetState();
+        if (this.#dirty) this.#reset(); else this.#forgetState();
         this.#replaySwitches = 0;
+        this.#replaying = true;
     }
 
+    /** Ends the replay, a thrown one included (the frame calls it in a finally): the baseline is restored once for the whole replay. */
     #endReplay(): number {
-        this.#forgetState();
+        this.#replaying = false;
+        if (this.#dirty) this.#reset(); else this.#forgetState();
         return this.#replaySwitches;
     }
 
@@ -2012,7 +2021,13 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
                 gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
                 gl.drawArraysInstanced(topology, command.first, command.count, command.instances);
             }
-        } finally { this.#reset(); }
+        } finally { this.#afterDraw(); }
+    }
+
+    /** A draw inside a replay leaves its state (see #dirty); outside one it restores the baseline at once. */
+    #afterDraw(): void {
+        if (this.#replaying) this.#dirty = true;
+        else this.#reset();
     }
 
     #drawQuad(program: NativeProgram, sampler: Objects['sampler'], command: QuadCommand): void {
@@ -2040,7 +2055,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
             gl.disable(gl.STENCIL_TEST);
             gl.disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
             gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-        } finally { this.#reset(); }
+        } finally { this.#afterDraw(); }
     }
 
     #healthy(): WebGL2RenderingContext {
@@ -2680,6 +2695,7 @@ class Webgl2Device implements GfxDevice, Webgl2Owner {
      * Touched binding sets are bounded by device limits; cached VAOs never keep a deleted buffer alive.
      */
     #reset(): void {
+        this.#dirty = false;
         this.#forgetState();
         const gl = this.#gl;
         if (!gl || this.#lost || gl.isContextLost()) return;

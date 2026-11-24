@@ -201,7 +201,7 @@ function PdfAttachedFrame({ props, lease, viewer, onFocus, register, inverted, s
     const navigation = useSyncExternalStore(lease.subscribe, lease.getNavigationSnapshot, lease.getNavigationSnapshot);
     const pages = lease.runtime.session.doc.host.kind === 'pdf-ink' ? lease.runtime.session.doc.host.pages.length : 0;
     return <div style={{ position: 'relative', width: '100%', height: '100%' }}>
-        {!detach && <ViewerHost name={props.file.name} documentId={props.identity.documentId} vaultEpoch={props.identity.vaultActivation}
+        {!detach && <ViewerHost name={props.file.name} noun="PDF" documentId={props.identity.documentId} vaultEpoch={props.identity.vaultActivation}
             isVisible={props.isVisible} isFocused={props.isFocused} theme={props.theme} inverted={inverted}
             view={viewer} layers={view.layers} platform={view.platform} reason={view.reason ?? VIEW_REASON}
             readiness={view.readiness} paint={view.paint}

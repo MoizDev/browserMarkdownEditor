@@ -1149,7 +1149,7 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                         fallback={visible ? (
                             <div className="canvas-pane" style={fallbackStyle}>
                                 <div className="drawing-pane drawing-pane-loading">
-                                    {isNotebookFile(tab.file.name) ? 'Loading notebook…' : 'Loading whiteboard…'}
+                                    {isNotebookFile(tab.file.name) ? 'Loading notebook…' : 'Loading drawing…'}
                                 </div>
                             </div>
                         ) : null}

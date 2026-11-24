@@ -3,7 +3,7 @@ import { usePlatformPane, type UsePlatformPaneOptions } from '../platformPane/us
 import BoardAccessibility, { type BoardAccessibilitySource } from './BoardAccessibility';
 import type { PlatformPane } from '../../platform/render/attachPlatformPane.types';
 import type { RenderToken } from '../../platform/render/types';
-import BoardPaintStatus, { type BoardPaintProgress, type BoardReadiness } from './BoardPaintStatus';
+import BoardPaintStatus, { type BoardNoun, type BoardPaintProgress, type BoardReadiness } from './BoardPaintStatus';
 import { getContextMenu } from '../../utils/contextMenu';
 import './viewerHost.css';
 
@@ -21,6 +21,7 @@ export interface ViewerViewHandle {
 }
 export interface ViewerHostProps<T extends object> {
     readonly name: string;
+    readonly noun: BoardNoun;
     readonly documentId: string;
     readonly vaultEpoch: number;
     readonly isVisible: boolean;
@@ -56,7 +57,7 @@ const CHROME_STACK_BELOW_PX = 780;
 
 /** No engine import: the lazy route supplies the real session and view. */
 export default function ViewerHost<T extends object>({
-    name, documentId, vaultEpoch, isVisible, isFocused, theme, inverted, reason, readOnlyNotice, readOnly = true, admitting = false, externalAccessibility = false,
+    name, noun, documentId, vaultEpoch, isVisible, isFocused, theme, inverted, reason, readOnlyNotice, readOnly = true, admitting = false, externalAccessibility = false,
     view, layers, platform, registerKeyboardTarget, onFocus, chrome, readiness, paint,
 }: ViewerHostProps<T>) {
     const [surface, setSurface] = useState<HTMLDivElement | null>(null);
@@ -120,7 +121,7 @@ export default function ViewerHost<T extends object>({
             <div className="board-viewer-surface" ref={setSurface} aria-hidden="true" />
             <div className="board-viewer-overlay" ref={setOverlay} />
         </BoardAccessibility>
-        <BoardPaintStatus readiness={readiness} paint={paint} isVisible={isVisible} reason={reason} />
+        <BoardPaintStatus readiness={readiness} paint={paint} isVisible={isVisible} reason={reason} noun={noun} />
         {readOnly && !admitting && (reason ?? readOnlyNotice) && <div className="board-viewer-notice" role="status">{reason ?? readOnlyNotice}</div>}
         {chrome}
     </div>;

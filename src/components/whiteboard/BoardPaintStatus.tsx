@@ -12,12 +12,15 @@ export interface BoardPaintStatusProps {
     readonly isVisible: boolean;
     /** The session's failure or read-only message; for a scene failure it is the actual error. */
     readonly reason: string | null;
+    /** What the person calls the document: a notebook said "Loading drawing…" while it opened. */
+    readonly noun: BoardNoun;
 }
+export type BoardNoun = 'drawing' | 'notebook' | 'PDF';
 
 /** The renderer's honest status over the board. Loading until complete pixels exist; a pending mark while the last
  * coherent pixels stay on screen; the actual error on failure. It is display only: it never blocks input or saving,
  * and it never claims readiness that the renderer has not reported. */
-export default function BoardPaintStatus({ readiness, paint, isVisible, reason }: BoardPaintStatusProps) {
+export default function BoardPaintStatus({ readiness, paint, isVisible, reason, noun }: BoardPaintStatusProps) {
     const pending = isVisible && readiness !== 'failed' && readiness !== 'loading' && paint?.kind === 'pending';
     // An ordinary edit repaints in a frame or two; showing the mark at once flashed it on every stroke.
     const [shown, setShown] = useState(false);
@@ -28,16 +31,16 @@ export default function BoardPaintStatus({ readiness, paint, isVisible, reason }
     }, [pending]);
     if (!isVisible || !readiness) return null;
     if (readiness === 'failed') {
-        const message = paint?.kind === 'failed' ? paint.message : reason ?? 'This drawing could not be drawn.';
+        const message = paint?.kind === 'failed' ? paint.message : reason ?? `This ${noun} could not be drawn.`;
         return <div className="board-paint-status board-paint-status-failed" role="alert" data-paint-state="failed">{message}</div>;
     }
     if (readiness === 'loading') {
         const waiting = paint?.kind === 'pending' && paint.reason === 'waiting-memory';
         return <div className="board-paint-status board-paint-status-loading" role="status" data-paint-state="loading">
-            {waiting ? 'Waiting for memory to draw this board…' : 'Loading drawing…'}</div>;
+            {waiting ? `Waiting for memory to draw this ${noun}…` : `Loading ${noun}…`}</div>;
     }
     if (paint?.kind === 'failed') {
-        return <div className="board-paint-status board-paint-status-failed" role="alert" data-paint-state="failed">Drawing error: {paint.message}</div>;
+        return <div className="board-paint-status board-paint-status-failed" role="alert" data-paint-state="failed">Could not draw this {noun}: {paint.message}</div>;
     }
     if (paint?.kind === 'pending' && shown) {
         return <div className="board-paint-status board-paint-status-pending" role="status" data-paint-state="pending">

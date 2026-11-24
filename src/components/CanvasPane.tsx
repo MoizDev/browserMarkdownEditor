@@ -68,7 +68,7 @@ function CanvasPane({ file, documentId, nativeCanvasHost, representation, onNati
     const session = useSyncExternalStore(subscribeSessionIdentity, () => getSessionIdentity(documentId), () => undefined);
     const identity = canvas && session ? nativeCanvasHost.identity(documentId) : undefined;
     const route = routes.canvas[isNotebook ? 'notebook' : 'drawing'];
-    const label = isNotebook ? 'Loading notebook…' : 'Loading whiteboard…';
+    const label = isNotebook ? 'Loading notebook…' : 'Loading drawing…';
     return <div className={`canvas-pane${isVisible ? '' : ' canvas-pane-hidden'}`} style={slotStyle}
         data-board-theme={loadedKind === 'drawing' ? boardTheme : undefined}
         onPointerDownCapture={() => { if (isVisible) onFocusPane(file.path); }}>

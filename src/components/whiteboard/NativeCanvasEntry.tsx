@@ -30,7 +30,9 @@ import type { BoardSessionPort, HostedBoardAdapter } from './boardSessionAdapter
 import './NativeCanvasEntry.css';
 import { yieldToHost } from '../../platform/yieldToHost';
 
-const VIEW_REASON = 'This native canvas is currently available in read-only mode.';
+/** A board that opened in the view route although it is not old (the developer's emergency switch, a failed editing
+ * chunk), named as the person names it: it said "This native canvas…" for a notebook as for a drawing. */
+const viewOnlyReason = (kind: NativeCanvasIdentity['kind']) => `This ${kind === 'notebook' ? 'notebook' : 'drawing'} is open for viewing only.`;
 const reportThumbnailError = (error: unknown) => { console.error('Notebook thumbnail unavailable:', error); };
 
 function cameraSnapshotReader(lease: NativeViewLease) {
@@ -146,9 +148,9 @@ function NativeViewer({ props, identity, board, adapter, onError }: {
             setLease(previous => previous === view ? null : previous); view.dispose();
         };
     }, [board, identity, nativeCanvasHost, min, max, left, right, top, bottom, onError, setNotice, clearNotice]);
-    if (!lease) return <div className="canvas-pane-message is-waiting" role="status">Preparing canvas view…</div>;
+    if (!lease) return <div className="canvas-pane-message is-waiting" role="status">Preparing {identity.kind === 'notebook' ? 'notebook' : 'drawing'} view…</div>;
     return <AttachedViewer props={props} identity={identity} lease={lease} inverted={inverted} setInverted={setInverted} notices={notices}
-        oldBoard={oldBoard} viewNotice={oldBoard ? null : VIEW_REASON} />;
+        oldBoard={oldBoard} viewNotice={oldBoard ? null : viewOnlyReason(identity.kind)} />;
 }
 
 export interface NativeEditingChromeContext {
@@ -158,7 +160,7 @@ export interface NativeEditingChromeContext {
     readonly setInverted: (value: boolean) => void;
     readonly zoom: number;
 }
-export function AttachedViewer({ props, identity, lease, inverted, setInverted, notices, editingChrome, editingWritable, editingAdmitting, oldBoard, viewNotice = VIEW_REASON }: {
+export function AttachedViewer({ props, identity, lease, inverted, setInverted, notices, editingChrome, editingWritable, editingAdmitting, oldBoard, viewNotice = viewOnlyReason(identity.kind) }: {
     props: NativeCanvasEntryProps; identity: NativeCanvasIdentity; lease: NativeViewLease; inverted: boolean;
     setInverted(value: boolean): void; notices: BoardNotices;
     editingChrome?: (context: NativeEditingChromeContext) => ReactNode;
@@ -291,11 +293,11 @@ export function AttachedViewer({ props, identity, lease, inverted, setInverted, 
     const pageCount = board.doc.kind === 'notebook' && board.doc.host.kind === 'notebook' ? board.doc.host.paper.pageCount : 0;
     // An old board's own read-only reason is written for the agent and the write seams; its strip says it to the person.
     const viewReason = oldBoard && view.reason === board.readOnlyReason ? null : view.reason;
-    return <ViewerHost name={props.file.name} documentId={props.documentId} vaultEpoch={props.identity.vaultActivation}
+    return <ViewerHost name={props.file.name} noun={board.doc.kind === 'notebook' ? 'notebook' : 'drawing'} documentId={props.documentId} vaultEpoch={props.identity.vaultActivation}
         isVisible={props.isVisible} isFocused={props.isFocused} theme={props.theme} inverted={inverted}
         view={editingChrome ? lease.view : viewer} layers={view.layers} platform={view.platform} readiness={view.readiness} paint={view.paint} reason={viewReason ?? (editingChrome ? '' : viewNotice)}
         readOnly={editingChrome ? board.isReadOnly || !editingWritable : true} admitting={!!editingChrome && !!editingAdmitting} externalAccessibility
-        readOnlyNotice={editingChrome ? (board.readOnlyReason ?? VIEW_REASON) : viewNotice ?? ''} registerKeyboardTarget={register} onFocus={onFocus}
+        readOnlyNotice={editingChrome ? (board.readOnlyReason ?? viewOnlyReason(identity.kind)) : viewNotice ?? ''} registerKeyboardTarget={register} onFocus={onFocus}
         chrome={<>{editingChrome ? editingChrome({ minimapOpen, setMinimapOpen, inverted, setInverted, zoom: navigation.zoom })
             : viewCamera && <ReadOnlyBoardChrome camera={viewCamera} zoom={navigation.zoom} minimapOpen={minimapOpen} kind={board.doc.kind}
                 sheets={sheets} sheet={selected.sheet} setSheet={id => { const target = sheets.find(item => item.id === id); if (target) selection.setSheet(target.id); }} inverted={inverted} setInverted={setInverted}
@@ -379,7 +381,7 @@ function NativeCanvasAcquisition({ props, onRetry }: { props: NativeCanvasEntryP
     }, [identity, documentId, nativeCanvasHost, deadlineMs, zMax, onError]);
     const acquisition = useMemo(() => createNativeAcquisitionOptions<ComposedBoardSession>({ host: nativeCanvasHost,
         identity, attachCanvasSession: attach, onNativeCanvasReady: ready, prepare, onError,
-        emergencyReadOnly: emergencyPolicy, emergencyReadOnlyReason: VIEW_REASON,
+        emergencyReadOnly: emergencyPolicy, emergencyReadOnlyReason: viewOnlyReason(identity.kind),
     }), [nativeCanvasHost, identity, attach, ready, prepare, onError, emergencyPolicy]);
     const acquired = useNativeBoardAcquisition(acquisition);
     useEffect(() => {

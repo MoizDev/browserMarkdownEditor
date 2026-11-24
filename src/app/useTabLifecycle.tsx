@@ -391,6 +391,14 @@ export function useTabLifecycle(deps: UseTabLifecycleDeps) {
     const tab = tabsRef.current.find(t => t.file.path === path);
     if (!tab || !canChangeTabMode(tab)) return;
     const mode = requestedMode ?? (tab.mode === 'edit' ? 'read' : 'edit');
+    // A PDF whose DiskBar is up answers that first. Switched under it, Annotate refused with "The PDF source is not
+    // eligible for editing", and leaving Annotate with unsaved ink left the pane on "Applying annotations…" behind
+    // "The board is read-only" (review runs): neither names the bar, which is the only thing that can be done.
+    const held = tab.representation.loadedKind === 'pdf' && mode !== tab.mode ? diskStateRef.current.get(tab.id) : undefined;
+    if (held) {
+      notifyRef.current(`This PDF ${held === 'deleted' ? 'was deleted' : 'changed'} on disk. Choose in the bar above it first, then switch.`);
+      return;
+    }
     // A page turn being written: Annotate waits for it and opens on the turned pages (utils/pdfTurnHold.ts), so the
     // tab's mode stays what is on screen meanwhile; the same toggle again takes the request back.
     if (tab.representation.loadedKind === 'pdf' && pdfTurnHeld(tab.id)) {
@@ -436,7 +444,7 @@ export function useTabLifecycle(deps: UseTabLifecycleDeps) {
       t.file.path === path && canChangeTabMode(t)
         ? { ...t, mode }
         : t));
-  }, [flushTab, documentBuffers, documentSessions, currentVaultIdRef, notifyRef, readerEpochRef, setTabs, tabsRef]);
+  }, [flushTab, documentBuffers, documentSessions, currentVaultIdRef, diskStateRef, notifyRef, readerEpochRef, setTabs, tabsRef]);
   useEffect(() => { changeTabModeRef.current = changeTabMode; }, [changeTabMode]);
   const toggleTabMode = useCallback((path: string | null) => changeTabMode(path), [changeTabMode]);
 

@@ -767,6 +767,10 @@ export default function PdfTiledView({ reading, session, document: pdf, filePath
                 const restored = cameraForPagedPosition({ ...pos, zoom: pos.zoom ?? 1 }, next, stack, INSETS, LIMITS);
                 if (restored) {
                     camera.current = clamp(restored); initialized.current = true;
+                    // The page field reads the restored page, not 0: persist() is what sets it, and it waits for a camera
+                    // move (and skips turns) — measured, after a turn on page 3 the field said 1 until the next scroll.
+                    const opened = pagedPosition(camera.current, next, stack, INSETS)?.page ?? pos.page;
+                    setPage(opened); thumbsRef.current?.setCurrentPage(opened);
                     if (!paperShown.current) {
                         // The same projection the page layer paints with (pagePresentation), so no page moves when it lands.
                         const view = { camera: camera.current, viewport: next, epoch: 0, moving: false };

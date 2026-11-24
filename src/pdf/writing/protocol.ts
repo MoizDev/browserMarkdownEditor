@@ -72,8 +72,8 @@ export interface StagedWriterResult {
 
 /** Each save gets a separate mutable writer session; a session id is not a native pointer. */
 /** Why the writer would not turn a PDF's pages; App words each one for the person. */
-export type RotationRefusal = 'signed' | 'encrypted' | 'annotated' | 'notebook-source' | 'missing-attachment' | 'unsafe-policy'
-    | 'unsupported-format' | 'unsupported-rotation';
+export type RotationRefusal = 'signed' | 'encrypted' | 'legacy-annotations' | 'newer-annotations' | 'other-engine' | 'foreign-change' | 'notebook-source'
+    | 'missing-attachment' | 'unsafe-policy' | 'unsupported-format' | 'unsupported-rotation';
 
 export interface WriterOperations {
     'writer.prepareSource': {
@@ -110,7 +110,8 @@ export interface WriterOperations {
         args: { bytes: ArrayBuffer; notebookSource: { path: string } };
         result: { bytes: ArrayBuffer; sha256: string; path: string; geometries: PageGeometry[] };
     };
-    /** Plans an incremental /Rotate update (rotationUpdate.ts): the appendix to write after `base` source bytes. */
+    /** Plans an incremental /Rotate update (rotationUpdate.ts): the appendix to write after `base` source bytes. A PDF
+     * annotated here turns with its marks (inkRotation.ts). */
     'writer.rotate': {
         args: { source: Blob; turns: { all: number; pages: Array<[number, number]> } };
         result: { kind: 'refused'; cause: RotationRefusal } | { kind: 'unchanged' }

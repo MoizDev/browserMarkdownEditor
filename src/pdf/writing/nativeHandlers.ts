@@ -104,7 +104,7 @@ export const createPdfWriterRuntime: CreatePdfWriterRuntime = async options => {
             const args = object(value), turns = object(args.turns);
             if (!(args.source instanceof Blob) || !Number.isSafeInteger(turns.all) || !Array.isArray(turns.pages) ||
                 (turns.pages as unknown[]).some(entry => !Array.isArray(entry) || entry.length !== 2 || !entry.every(Number.isSafeInteger))) throw new PdfEngineError('InvalidPdf', 'Invalid rotation request');
-            return rotateNativePdf(args as unknown as WriterOperations['writer.rotate']['args'], ctx);
+            return rotateNativePdf(runtime, args as unknown as WriterOperations['writer.rotate']['args'], ctx);
         }),
         'writer.verifyRotation': serial(async (value, ctx) => {
             const args = object(value);

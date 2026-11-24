@@ -84,9 +84,9 @@ export function usePdfActions(deps: UsePdfActionsDeps) {
       getVaultActivation, readFileSnapshot, notifyRef, rootHandleRef, currentVaultIdRef,
       readerEpochRef, tabsRef, documentBuffers, documentSessions, setTabs, nativePoliciesRef,
       bytesGenerationsRef, bumpBytesGeneration, flushingRef, flushChainsRef, writeFileVersionedRef,
-      diskStateRef, setDiskState, pdfSeedForRef,
+      diskStateRef, setDiskState, pdfSeedForRef, flushTab,
     }, path, delta, pageIndex), [
-      readFileSnapshot, setDiskState, bumpBytesGeneration, documentSessions, documentBuffers,
+      readFileSnapshot, setDiskState, bumpBytesGeneration, documentSessions, documentBuffers, flushTab,
       getVaultActivation, bytesGenerationsRef, currentVaultIdRef, diskStateRef, flushChainsRef, flushingRef,
       nativePoliciesRef, notifyRef, pdfSeedForRef, readerEpochRef, rootHandleRef, setTabs, tabsRef,
       writeFileVersionedRef,

@@ -20,7 +20,7 @@
 import { asQuarter } from '../../utils/pdfRotation';
 import {
     PdfObjectReader, PdfSyntaxError, asInt, dictGet, keywordAt, parseObjectHeader, parseValue, readStartXref, readXrefSection,
-    sameValue, serializeValue, skipSpace,
+    sameValue, serializeValue, skipSpace, streamDataStart,
 } from './rotationReader';
 import type { PdfDictValue, PdfValue } from './rotationReader';
 
@@ -103,33 +103,48 @@ export async function readPageTree(reader: PdfObjectReader, yieldNow?: () => Pro
     return pages;
 }
 
-/** The section this writer appended last, if the file still ends with one; null when it does not.
- * Strict: anything but exactly the shape this writer produces is not "ours" and is never replaced. */
-export async function readOwnRotationSection(bytes: Uint8Array): Promise<OwnRotationSection | null> {
+/** One object of an appended section: a dictionary, or a dictionary with its stream (a direct /Length). */
+export interface AppendedObject {
+    readonly gen: number;
+    readonly dict: PdfDictValue;
+    readonly offset: number;
+    readonly stream?: { readonly start: number; readonly length: number };
+}
+
+/** A section this app appended (marked with `mark`) that the file still ends with; null when it does not.
+ * Strict: anything but exactly the shape appendObjects writes is not "ours" and is never replaced. */
+export async function readAppendedSection(bytes: Uint8Array, mark: string):
+    Promise<{ base: number; kind: 'table' | 'stream'; objects: Map<number, AppendedObject> } | null> {
     let xref: number;
     try { xref = readStartXref(bytes); } catch { return null; }
     // The marker is the line right before the final xref section.
     const lineEnd = xref - 1;
     if (bytes[lineEnd] !== 10) return null;
     let lineStart = lineEnd;
-    while (lineStart > 0 && bytes[lineStart - 1] !== 10 && lineEnd - lineStart < 64) lineStart--;
+    while (lineStart > 0 && bytes[lineStart - 1] !== 10 && lineEnd - lineStart < 80) lineStart--;
     const line = latin1(bytes, lineStart, lineEnd);
-    if (!line.startsWith(ROTATION_MARK)) return null;
-    const baseText = line.slice(ROTATION_MARK.length);
+    if (!line.startsWith(mark)) return null;
+    const baseText = line.slice(mark.length);
     if (!/^\d{1,10}$/.test(baseText)) return null;
-    const base = Number(baseText), opening = `\n${ROTATION_MARK}${base}\n`;
+    const base = Number(baseText), opening = `\n${mark}${base}\n`;
     if (base <= 0 || base + opening.length > lineStart || latin1(bytes, base, base + opening.length) !== opening) return null;
     try {
         const prefixXref = readStartXref(bytes, base);
-        const objects = new Map<number, { gen: number; dict: PdfDictValue; rotate: number; offset: number }>();
+        const objects = new Map<number, AppendedObject>();
         let at = base + opening.length;
         while (skipSpace(bytes, at) < xref) {
             const offset = skipSpace(bytes, at), header = parseObjectHeader(bytes, offset), value = parseValue(bytes, header.end);
-            const end = keywordAt(bytes, value.end, 'endobj');
-            if (end < 0 || value.value.kind !== 'dict' || objects.has(header.num)) return null;
-            const type = dictGet(value.value, 'Type'), rotate = asInt(dictGet(value.value, 'Rotate'));
-            if (type?.kind !== 'name' || type.value !== 'Page' || rotate === undefined || rotate % 90 !== 0 || rotate < 0 || rotate >= 360) return null;
-            objects.set(header.num, { gen: header.gen, dict: value.value, rotate, offset });
+            if (value.value.kind !== 'dict' || objects.has(header.num)) return null;
+            let end = keywordAt(bytes, value.end, 'endobj'), stream: AppendedObject['stream'];
+            if (end < 0) {
+                const start = streamDataStart(bytes, value.end), length = asInt(dictGet(value.value, 'Length'));
+                if (start < 0 || length === undefined || length < 0 || start + length > lineStart) return null;
+                const after = keywordAt(bytes, start + length, 'endstream');
+                end = after < 0 ? -1 : keywordAt(bytes, after, 'endobj');
+                if (end < 0) return null;
+                stream = { start, length };
+            }
+            objects.set(header.num, { gen: header.gen, dict: value.value, offset, ...(stream ? { stream } : {}) });
             at = end;
         }
         if (skipSpace(bytes, at) !== xref || !objects.size) return null;
@@ -153,8 +168,21 @@ export async function readOwnRotationSection(bytes: Uint8Array): Promise<OwnRota
     } catch { return null; }
 }
 
+/** The page-turn section this writer appended last, if the file still ends with one; null when it does not. */
+export async function readOwnRotationSection(bytes: Uint8Array): Promise<OwnRotationSection | null> {
+    const section = await readAppendedSection(bytes, ROTATION_MARK);
+    if (!section) return null;
+    const objects = new Map<number, { gen: number; dict: PdfDictValue; rotate: number; offset: number }>();
+    for (const [num, object] of section.objects) {
+        const type = dictGet(object.dict, 'Type'), rotate = asInt(dictGet(object.dict, 'Rotate'));
+        if (object.stream || type?.kind !== 'name' || type.value !== 'Page' || rotate === undefined || rotate % 90 !== 0 || rotate < 0 || rotate >= 360) return null;
+        objects.set(num, { gen: object.gen, dict: object.dict, rotate, offset: object.offset });
+    }
+    return { base: section.base, kind: section.kind, objects };
+}
+
 /** The page dictionary as written, with /Rotate set (and only that changed). */
-function turnedDictionary(page: PdfRotationPage, rotate: number): string {
+export function turnedDictionary(page: PdfRotationPage, rotate: number): string {
     const entries = new Map(page.dict.entries);
     entries.delete('Rotate');
     entries.set('Rotate', { kind: 'number', value: rotate, raw: String(rotate) });
@@ -168,21 +196,24 @@ function trailerValue(trailer: PdfDictValue, key: string): string | undefined {
 
 const encoder = new TextEncoder();
 
-/** Builds the appended section for `pages` (index → final angle) over the prefix `bytes[0, base)`. */
-function appendSection(prefix: PdfObjectReader, base: number, prevXref: number, tree: readonly PdfRotationPage[],
-    changes: ReadonlyArray<readonly [number, number]>): Uint8Array {
+/** An object to append: its number and generation, and its body (a dictionary, or a dictionary and its stream). */
+export interface ObjectBody { readonly num: number; readonly gen: number; readonly body: Uint8Array }
+
+/** Builds a section of `objects` over the prefix `bytes[0, base)`, marked with `mark` where it starts and right
+ * before its cross-reference section, which is of the prefix's own kind (table or stream) and points back
+ * through /Prev. Objects are redefinitions: their numbers must already lie below the trailer's /Size. */
+export function appendObjects(prefix: PdfObjectReader, base: number, prevXref: number, mark: string, objects: readonly ObjectBody[]): Uint8Array {
     const trailer = prefix.last.trailer, size = asInt(dictGet(trailer, 'Size'));
     if (size === undefined || size <= 0) throw new PdfSyntaxError('PDF trailer has no /Size');
-    const parts: string[] = [], offsets: Array<[number, number, number]> = [];
+    const parts: Uint8Array[] = [], offsets: Array<[number, number, number]> = [];
     let length = 0;
-    const push = (text: string) => { parts.push(text); length += text.length; };
-    const marker = `${ROTATION_MARK}${base}\n`;
+    const push = (part: string | Uint8Array) => { const bytes = typeof part === 'string' ? encoder.encode(part) : part; parts.push(bytes); length += bytes.length; };
+    const marker = `${mark}${base}\n`;
     push(`\n${marker}`);
-    for (const [index, rotate] of changes) {
-        const page = tree[index];
-        if (page.num >= size) throw new PdfSyntaxError('PDF page object lies beyond the trailer /Size');
-        offsets.push([page.num, base + length, page.gen]);
-        push(`${page.num} ${page.gen} obj\n${turnedDictionary(page, rotate)}\nendobj\n`);
+    for (const object of objects) {
+        if (object.num >= size) throw new PdfSyntaxError('PDF object lies beyond the trailer /Size');
+        offsets.push([object.num, base + length, object.gen]);
+        push(`${object.num} ${object.gen} obj\n`); push(object.body); push('\nendobj\n');
     }
     push(marker);
     const xref = base + length;
@@ -195,6 +226,12 @@ function appendSection(prefix: PdfObjectReader, base: number, prevXref: number, 
         const last = groups.at(-1);
         if (last && last.at(-1)![0] + 1 === row[0]) last.push(row); else groups.push([row]);
     }
+    const join = () => {
+        const out = new Uint8Array(length);
+        let at = 0;
+        for (const part of parts) { out.set(part, at); at += part.length; }
+        return out;
+    };
     if (prefix.last.kind === 'table') {
         let table = 'xref\n';
         for (const group of groups) {
@@ -202,7 +239,7 @@ function appendSection(prefix: PdfObjectReader, base: number, prevXref: number, 
             for (const [, offset, gen] of group) table += `${String(offset).padStart(10, '0')} ${String(gen).padStart(5, '0')} n\r\n`;
         }
         push(`${table}trailer\n<< /Size ${size} ${common.join(' ')} >>\nstartxref\n${xref}\n%%EOF\n`);
-        return encoder.encode(parts.join(''));
+        return join();
     }
     // A cross-reference stream, matching the file's own last section. Uncompressed:
     // a handful of 7-byte rows is not worth a filter readers must then support.
@@ -218,12 +255,19 @@ function appendSection(prefix: PdfObjectReader, base: number, prevXref: number, 
         data[row + 1] = offset >>> 24 & 0xff; data[row + 2] = offset >>> 16 & 0xff; data[row + 3] = offset >>> 8 & 0xff; data[row + 4] = offset & 0xff;
         data[row + 5] = gen >>> 8 & 0xff; data[row + 6] = gen & 0xff;
     });
-    const head = `${self} 0 obj\n<< /Type /XRef /Size ${size + 1} /W [1 4 2] /Index [${index.join(' ')}] ${common.join(' ')} /Length ${data.length} >>\nstream\n`;
-    const tail = `\nendstream\nendobj\nstartxref\n${xref}\n%%EOF\n`;
-    const text = encoder.encode(parts.join('') + head), end = encoder.encode(tail);
-    const out = new Uint8Array(text.length + data.length + end.length);
-    out.set(text); out.set(data, text.length); out.set(end, text.length + data.length);
-    return out;
+    push(`${self} 0 obj\n<< /Type /XRef /Size ${size + 1} /W [1 4 2] /Index [${index.join(' ')}] ${common.join(' ')} /Length ${data.length} >>\nstream\n`);
+    push(data);
+    push(`\nendstream\nendobj\nstartxref\n${xref}\n%%EOF\n`);
+    return join();
+}
+
+/** Builds the appended section for `pages` (index → final angle) over the prefix `bytes[0, base)`. */
+function appendSection(prefix: PdfObjectReader, base: number, prevXref: number, tree: readonly PdfRotationPage[],
+    changes: ReadonlyArray<readonly [number, number]>): Uint8Array {
+    return appendObjects(prefix, base, prevXref, ROTATION_MARK, changes.map(([index, rotate]) => {
+        const page = tree[index];
+        return { num: page.num, gen: page.gen, body: encoder.encode(turnedDictionary(page, rotate)) };
+    }));
 }
 
 /** Plans the turn over `bytes`. Null means the file already shows these angles: nothing to write. */

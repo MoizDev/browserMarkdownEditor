@@ -67,9 +67,10 @@ export function importFailure(prefix: string, issues: readonly ImportIssue[]): s
 }
 
 /** The board's own notice after an import that opened: what was left out, and the repairs the person would care
- * about, each grouped and counted, then `closing` (where the left-out items are kept). Null when there is nothing worth
- * reading. */
-export function importNotice(report: ImportReport, closing: string): string | null {
+ * about, each grouped and counted, then `closing` (where the left-out items are kept), told how many were left out so
+ * its pronoun agrees: "1 item … could not be shown (…). They are still in the file" read wrong. Null when there is
+ * nothing worth reading. */
+export function importNotice(report: ImportReport, closing: (leftOut: number) => string): string | null {
     const parts: string[] = [];
     const lost = report.unrepresentable.filter(issue => issue.item);
     if (lost.length) {
@@ -90,5 +91,5 @@ export function importNotice(report: ImportReport, closing: string): string | nu
         parts.push(sentence[0].toUpperCase() + sentence.slice(1));
     }
     if (!parts.length) return null;
-    return `${parts.join(' ')} ${closing}`;
+    return `${parts.join(' ')} ${closing(lost.length)}`;
 }

@@ -222,8 +222,10 @@ export async function prepareNativeRuntime(options: PrepareNativeRuntimeOptions)
         const legacyReport = legacy?.status === 'editable' ? legacy.legacyReport : undefined;
         const oldBoard: NativeOldBoard | undefined = oldPictures && legacyReport ? {
             kind: options.representation,
-            notice: importNotice(legacyReport, 'They are still in the file, which is never changed.'),
-            copyNotice: importNotice(legacyReport, 'This copy keeps them in its file, and the original is unchanged.'),
+            notice: importNotice(legacyReport, leftOut => leftOut === 0 ? 'The file itself is never changed.'
+                : `${leftOut === 1 ? 'It is' : 'They are'} still in the file, which is never changed.`),
+            copyNotice: importNotice(legacyReport, leftOut => leftOut === 0 ? 'The original is unchanged.'
+                : `This copy keeps ${leftOut === 1 ? 'it' : 'them'} in its file, and the original is unchanged.`),
             async copySource(copySignal, view): Promise<NativeBoardCopySource> {
                 copySignal.throwIfAborted();
                 if (!owned?.board || !host.isCurrent(identity)) throw new DOMException('Canvas session ended', 'AbortError');

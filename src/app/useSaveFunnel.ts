@@ -30,6 +30,7 @@ import { hasHostedNativeOwner, hasWritableHostedNativeOwner } from './nativeOwne
 import { describeReadError } from './readErrors';
 import { clearSaveNotice, showSaveNotice } from '../utils/saveNotices';
 import { tracksAssets } from './tracksAssets';
+import { loadChunk } from '../platform/chunkLoad';
 
 /** Everything the save funnel reads from App. Refs are App's own `useRef`s. */
 export interface UseSaveFunnelDeps {
@@ -309,7 +310,7 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
       if (!closing) return 'skipped';
       try {
         const data = isPdf && !nativeSource
-          ? await (await import('../utils/pdfBuildClient')).buildAnnotatedPdfAsync(pdfData!.original, snapshot, pdfData!.overlays)
+          ? await (await loadChunk(() => import('../utils/pdfBuildClient'))).buildAnnotatedPdfAsync(pdfData!.original, snapshot, pdfData!.overlays)
           : await buildCaptured();
         assertPdfWriteAuthority();
         if (nativeSource && (!sessionAtCall || documentSessions.get(id) !== sessionAtCall || !hasWritableHostedNativeOwner(sessionAtCall, id))) return 'failed';
@@ -341,7 +342,7 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
         // Off the main thread: stamping overlays costs ~150ms per annotated
         // page (~4.2s at 30 pages), which would land as stutter under the pen.
         const data = isPdf && !nativeSource
-          ? await (await import('../utils/pdfBuildClient')).buildAnnotatedPdfAsync(pdfData!.original, snapshot, pdfData!.overlays)
+          ? await (await loadChunk(() => import('../utils/pdfBuildClient'))).buildAnnotatedPdfAsync(pdfData!.original, snapshot, pdfData!.overlays)
           : await buildCaptured();
         // A PDF's baseline is hashed in the background at open; never write
         // without it (seedPdfBaseline).
@@ -406,7 +407,7 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
           if (isPdf && !selfSave) bumpBytesGeneration(id);
         }
         if (isPdf && data instanceof Uint8Array) {
-          const aliases = (await import('../utils/pdfBuildClient')).pdfBuildAliases(data);
+          const aliases = (await loadChunk(() => import('../utils/pdfBuildClient'))).pdfBuildAliases(data);
           if (aliases.length) notifyRef.current(`Attachments with conflicting names were preserved under recovered names: ${aliases.join(', ')}.`);
         }
         if (pdfEntry && pdfRebuildRef.current.get(id) === pdfEntry) {
@@ -694,19 +695,21 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
       return changed ? next : prev;
     });
   }, [documentSessions, setTabs, tabsRef]);
+  /** Write out everything pending now — what leaving the page does — for a reload the app offers (useUpdateNotice). */
+  const checkpointNow = useCallback(async () => {
+    checkpointSessions((id, source) => {
+      const prior = documentBuffers.get(id)?.source;
+      if (!sourceIsNewer(source, prior)) return;
+      sessionReportRef.current(id, source);
+    });
+    void recoveryEvent({ type: 'checkpoint' });
+    await checkpointAll();
+  }, [checkpointAll, documentBuffers, recoveryEvent, sessionReportRef]);
   useEffect(() => {
     const unsubscribe = subscribePending(() => { syncExitGuard(); settleCleanTabs(); });
     syncExitGuard();
     const visibility = () => { if (document.visibilityState === 'hidden') { void recoveryEvent({ type: 'checkpoint' }); void checkpointAll(); } };
-    const pagehide = () => {
-      checkpointSessions((id, source) => {
-        const prior = documentBuffers.get(id)?.source;
-        if (!sourceIsNewer(source, prior)) return;
-        sessionReportRef.current(id, source);
-      });
-      void recoveryEvent({ type: 'checkpoint' });
-      void checkpointAll();
-    };
+    const pagehide = () => { void checkpointNow(); };
     document.addEventListener('visibilitychange', visibility);
     window.addEventListener('pagehide', pagehide);
     return () => {
@@ -716,9 +719,9 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
       window.removeEventListener('beforeunload', beforeUnload);
       guardedRef.current = false;
     };
-  }, [beforeUnload, checkpointAll, documentBuffers, syncExitGuard, settleCleanTabs, recoveryEvent, sessionReportRef]);
+  }, [beforeUnload, checkpointAll, checkpointNow, syncExitGuard, settleCleanTabs, recoveryEvent]);
 
   return {
     writeFileRef, writeFileVersionedRef, clearSaveTimer, flushChainsRef, syncExitGuard, flushTab,
-    scheduleSave, updateTabContent, };
+    scheduleSave, updateTabContent, checkpointNow, };
 }

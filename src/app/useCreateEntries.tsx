@@ -8,6 +8,7 @@ import { requestDocumentKeyboard } from '../utils/documentKeyboard';
 import { reportVault } from '../utils/perfHooks';
 import type { AppDialogs, Tell } from './useAppDialogs';
 import type { SetTabs } from './types';
+import { loadChunk } from '../platform/chunkLoad';
 
 /** The App-scope values `useCreateEntries` reads, named as App names them. */
 export interface UseCreateEntriesDeps {
@@ -54,7 +55,7 @@ export function useCreateEntries(deps: UseCreateEntriesDeps) {
       }
       let nativeBytes: Blob | undefined;
       if (nativeKind) {
-        const { createEmptyNativeBytes } = await import('../whiteboard/host/emptyNative');
+        const { createEmptyNativeBytes } = await loadChunk(() => import('../whiteboard/host/emptyNative'));
         nativeBytes = createEmptyNativeBytes(nativeKind);
       }
       // Encode before fresh-file creation. A failed native encoder never creates

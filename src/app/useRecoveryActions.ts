@@ -5,6 +5,7 @@ import type { MarkdownSessionHost } from '../editor/markdownSession.types';
 import type { DocumentBufferStore } from '../utils/documentBuffers';
 import type { RecoveryEntry } from '../utils/recoveryJournal';
 import type { RecoveryInspection } from '../components/RecoverySurface';
+import { loadChunk } from '../platform/chunkLoad';
 
 /** Everything the recovery actions read from App. Refs are App's own `useRef`s. */
 export interface UseRecoveryActionsDeps {
@@ -43,7 +44,7 @@ export function useRecoveryActions(deps: UseRecoveryActionsDeps) {
   } = deps;
 
   const inspectRecovery = useCallback(async (entry: RecoveryEntry): Promise<RecoveryInspection> =>
-    (await import('./recoveryActions')).inspectRecovery({
+    (await loadChunk(() => import('./recoveryActions'))).inspectRecovery({
       getVaultActivation, rootHandle, currentVaultId, recentVaults, handleIO, resolveFileHandle,
       resolveVaultFile, readFileSnapshot, readBoardAsset, rootHandleRef, currentVaultIdRef,
     }, entry), [
@@ -52,7 +53,7 @@ export function useRecoveryActions(deps: UseRecoveryActionsDeps) {
     ]);
 
   const recoverEntry = useCallback(async (entry: RecoveryEntry) =>
-    (await import('./recoveryActions')).recoverEntry({
+    (await loadChunk(() => import('./recoveryActions'))).recoverEntry({
       inspectRecovery, getVaultActivation, rootHandleRef, currentVaultIdRef, tabsRef, documentBuffers,
       markdownSessions, contentOf, hasUnsaved,
     }, entry), [
@@ -61,7 +62,7 @@ export function useRecoveryActions(deps: UseRecoveryActionsDeps) {
     ]);
 
   const saveRecoveryCopy = useCallback(async (entry: RecoveryEntry) =>
-    (await import('./recoveryActions')).saveRecoveryCopy({
+    (await loadChunk(() => import('./recoveryActions'))).saveRecoveryCopy({
       getVaultActivation, recentVaults, handleIO, resolveVaultFile, readFileSnapshot, putBoardAsset,
       writeConflictCopy, writeFileVersioned, rootHandleRef, currentVaultIdRef, announce, tabsRef, hasUnsaved,
     }, entry), [

@@ -134,6 +134,14 @@ The agent's trash is `performTrash` without the question, under the same ref.
   `parentHandle` IS its parent node's `handle`.
 - Publishing is **ticketed** (`publishTree`): a walk publishes only if no later-started walk already has and
   its root is still open; root and tree are written only via `commitRoot`/`commitTree`.
+- **The walk is all-or-nothing, on purpose**: a folder whose listing throws fails the whole tree as a
+  `FolderReadError` naming it, and a startup walk turns that into `vaultProblem` (the problem screen) — never a
+  partial tree, because tabs, restore, the index and asset retirement all read a missing entry as deleted.
+- **Startup never waits silently** (`openAtStartup`, `startupRef` tickets, `utils/startupProgress.ts`): the mount's
+  reopen, "Restore 'X'" and Try again each report their step (and the walk its pending folders) for the loading
+  screen and one console line; `isLoading` is settled in a `finally`, and a vault opened from the loading screen
+  supersedes the startup, whose late writes then no-op (`recordVault` also re-checks the root before setting the id).
+  The `b58f06ad` permit placement in `listDir` (one directory's enumeration per permit) is load-bearing.
 - **Do not refresh the tree for something it cannot show** (a picture written into a hidden `.Assets`).
 - **Hidden entries — ONE predicate**, `utils/vaultEntries.ts` `isHiddenVaultEntry` (the observer's
   `isIgnoredChangePath` is built on it): `.Assets`, `.Garbage`, `.DS_Store`, `.appearance.json` per folder;
@@ -212,6 +220,9 @@ both names; nothing else spells `'.Assets'`.**
 - The list lives in IndexedDB `recent-vaults`, capped at `MAX_STORED_VAULTS` (30); the menu shows Settings →
   "Recent vaults shown" (`recentVaultLimit`, clamped on read). **Pinned** vaults (`StoredVault.pinned`) sit
   outside both caps. Unknown stored keys are not shape-checked (older entries read as unpinned).
+- **An unreadable list is never an empty one** (`readList` retries, the last time over its own connection, then
+  throws): every mutation writes back what it read, and "unreadable = []" once re-minted the open vault's id over the
+  whole list, orphaning its session and pruning every other vault's. Never open `keyval-store` with a version.
 - **The handle is what's stored, so `isSameEntry` is the only identity test** (two handles for one folder are
   always distinct objects). Every read-modify-write goes through one module-level promise queue — StrictMode
   double-mounts would otherwise mint two ids for one folder.

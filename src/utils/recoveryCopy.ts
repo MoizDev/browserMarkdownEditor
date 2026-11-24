@@ -1,4 +1,5 @@
 import type { RecoveryEntry } from './recoveryJournal';
+import { loadChunk } from '../platform/chunkLoad';
 
 type CopyData = string | Uint8Array | Blob;
 export interface RecoveryMediaAsset {
@@ -34,7 +35,7 @@ export async function materializeRecoveryCopy(entry: Pick<RecoveryEntry, 'kind' 
     if (typeof copy === 'string' || copy instanceof Uint8Array || copy instanceof Blob) return copy;
     if (!copy || copy.kind !== 'recipe') throw new Error('Invalid recovery copy');
     if (entry.kind === 'drawing' || entry.kind === 'notebook' || entry.kind === 'pdf') {
-        await import('../whiteboard/host/recoveryCopy');
+        await loadChunk(() => import('../whiteboard/host/recoveryCopy'));
         signal.throwIfAborted();
     }
     const registration = serializers.get(entry.kind);

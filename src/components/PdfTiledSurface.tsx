@@ -5,6 +5,7 @@ import { getSessionIdentity, subscribeSessionIdentity } from '../utils/sessionId
 import type { PdfTiledPresentation, PdfTiledSource } from '../pdf/session/hostTypes';
 import PdfTiledView from './PdfTiledView';
 import PdfPasswordCoordinator from './PdfPasswordCoordinator';
+import { loadChunk } from '../platform/chunkLoad';
 
 interface Props {
     reading: PdfReadingBinding;
@@ -47,13 +48,13 @@ export default function PdfTiledSurface(props: Props) {
         // The platform's entry is needed the moment the source opens: fetched in parallel, not after (it was requested
         // ~90 ms after the source modules, once engine init and the document open were done). The pane's own import of
         // it owns any failure.
-        void import('../platform/render/cpuEntry').catch(() => {});
-        void Promise.all([import('../pdf/session/sourceRuntime'), import('../pdf/session/passwords')]).then(async ([{ ensurePdfTiledSourceFactory }, store]) => {
+        void loadChunk(() => import('../platform/render/cpuEntry')).catch(() => {});
+        void Promise.all([loadChunk(() => import('../pdf/session/sourceRuntime')), loadChunk(() => import('../pdf/session/passwords'))]).then(async ([{ ensurePdfTiledSourceFactory }, store]) => {
             if (!controller.signal.aborted) setPasswords(store);
             const factory = await ensurePdfTiledSourceFactory();
             controller.signal.throwIfAborted();
             if (retry > 0 && identity) {
-                const { retryPdfPool } = await import('../pdf/session/startup');
+                const { retryPdfPool } = await loadChunk(() => import('../pdf/session/startup'));
                 await retryPdfPool({ vaultEpoch: reading.identity.vaultEpoch, documentId: reading.identity.documentId,
                     bytesGeneration: identity.bytesGeneration, session: identity.serial });
                 controller.signal.throwIfAborted();
@@ -73,7 +74,7 @@ export default function PdfTiledSurface(props: Props) {
         if (!key) return;
         let disposed = false;
         let release: (() => void) | undefined;
-        void import('../pdf/session/startup').then(({ retainPdfFocus }) => {
+        void loadChunk(() => import('../pdf/session/startup')).then(({ retainPdfFocus }) => {
             if (disposed) return;
             const lease = retainPdfFocus(reading.identity.documentId);
             lease.setFocused(props.visible && props.focused);

@@ -1,9 +1,10 @@
 import { authorizePdfRole, rememberPdfOuter, type PdfRole } from './pdfRole';
+import { loadChunk } from '../platform/chunkLoad';
 
 /** Metadata inspection is lazy and independent of every renderer. Refusals stay tagged. */
 export async function readPdfRole(bytes: Uint8Array, generation = ''): Promise<PdfRole> {
     try {
-        const { inspectPdfRoleAsync } = await import('./pdfBuildClient');
+        const { inspectPdfRoleAsync } = await loadChunk(() => import('./pdfBuildClient'));
         const role = await inspectPdfRoleAsync(bytes, generation);
         rememberPdfOuter(role, bytes);
         authorizePdfRole(role);

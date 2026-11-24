@@ -5,6 +5,7 @@ import type { DocumentSessionStore } from '../utils/documentSessions';
 import type { NativePolicy } from './types';
 import type { Notify } from './useAppDialogs';
 import { registerConversionRestore } from '../utils/conversionRestore';
+import { loadChunk } from '../platform/chunkLoad';
 
 /**
  * Restoring a file's pre-conversion copy from Trash, found by its recorded
@@ -34,7 +35,7 @@ export function useConversionRestore(deps: UseConversionRestoreDeps): void {
   } = deps;
 
   const restoreBeforeConversion = useCallback(async (node: FileTreeNode) =>
-    (await import('./conversionRestore')).restoreBeforeConversion({
+    (await loadChunk(() => import('./conversionRestore'))).restoreBeforeConversion({
       announce, notify, documentSessions, getVaultActivation, handleIO, listTrash, readFileVersioned,
       restoreConversionCopy, rootHandle, tabsRef, nativePoliciesRef, trashInFlightRef, reconcileQueueRef,
     }, node), [

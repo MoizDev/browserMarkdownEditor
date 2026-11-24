@@ -1,6 +1,7 @@
 import { WidgetType } from '@codemirror/view';
 import { countEditorWidget } from './editorPerf';
 import type { EditorView } from '@codemirror/view';
+import { loadChunk } from '../platform/chunkLoad';
 
 /**
  * Mermaid is loaded ON FIRST USE, not at startup.
@@ -18,7 +19,16 @@ import type { EditorView } from '@codemirror/view';
  * property that keeps diagrams from flickering.
  */
 let mermaidPromise: Promise<typeof import('mermaid').default> | null = null;
-const getMermaid = () => (mermaidPromise ??= import('mermaid').then(m => m.default));
+// Through loadChunk (bounded, retried once), and a failed load is forgotten so the next diagram asks again: kept, one
+// dropped request left every diagram on "Rendering diagram…" for the page.
+const getMermaid = () => {
+    if (!mermaidPromise) {
+        const attempt = loadChunk(() => import('mermaid')).then(m => m.default);
+        mermaidPromise = attempt;
+        attempt.catch(() => { if (mermaidPromise === attempt) mermaidPromise = null; });
+    }
+    return mermaidPromise;
+};
 
 /**
  * Mermaid renders asynchronously, but CodeMirror widgets must produce DOM

@@ -11,6 +11,7 @@
 // vault file. This module is the picker's business alone.
 
 import type { IconNode } from './entryStyle';
+import { loadChunk } from '../platform/chunkLoad';
 
 export interface LucideIcon {
     name: string;
@@ -49,8 +50,8 @@ let loading: Promise<LucideIcon[]> | null = null;
 export function loadLucideIcons(): Promise<LucideIcon[]> {
     loading ??= (async () => {
         const [nodes, tags] = await Promise.all([
-            import('lucide-static/icon-nodes.json'),
-            import('lucide-static/tags.json'),
+            loadChunk(() => import('lucide-static/icon-nodes.json')),
+            loadChunk(() => import('lucide-static/tags.json')),
         ]);
         // Through `unknown`: TypeScript infers the literal shape of a 700KB
         // JSON file, and `[string, object]` pairs widen to `(string|object)[]`

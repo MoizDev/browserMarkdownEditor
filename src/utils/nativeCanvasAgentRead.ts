@@ -14,6 +14,7 @@ import { prepareNativeExport } from '../whiteboard/host/nativeExport';
 import type { ClosedCanvasSourceLease } from './closedCanvasSource';
 import { getPdfInkSourceState } from '../whiteboard/host/preparePdfInkSession';
 import { boardPageStack } from '../whiteboard/model/pages';
+import { loadChunk } from '../platform/chunkLoad';
 
 /** Loaded only by an actual canvas tool request; source ownership stays in App. */
 export async function readNativeCanvasShapePage(options: {
@@ -165,13 +166,13 @@ export async function readNativePdfPicture(options: {
     let admitted: PdfInkAcquisition | undefined;
     try {
         check();
-        const { acquirePdfInkSource } = await import('../pdf/session/inkAcquisition');
+        const { acquirePdfInkSource } = await loadChunk(() => import('../pdf/session/inkAcquisition'));
         admitted = await acquirePdfInkSource({ outer: lease.bytes, token: lease.token, signal: lease.signal,
             isCurrent: () => lease.isCurrent() && guard.isCurrent() });
         check();
         if (admitted.kind === 'plain') return null;
         if (admitted.kind === 'read-only') {
-            const { inspectPdfRole } = await import('./pdfAttachmentInventory');
+            const { inspectPdfRole } = await loadChunk(() => import('./pdfAttachmentInventory'));
             const role = await inspectPdfRole(new Uint8Array(await lease.bytes.arrayBuffer()), String(lease.token.bytesGeneration));
             check();
             if (role.kind === 'annotated' || role.kind === 'ambiguous' || role.kind === 'newer') {

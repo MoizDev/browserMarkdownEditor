@@ -434,6 +434,16 @@ export interface VaultHandleIO {
   sameEntry: (a: FileSystemHandle, b: FileSystemHandle) => Promise<boolean>;
 }
 
+/** Why the open vault's folder list could not be read. `folder` is vault-relative ('' = the vault's own top
+ *  level), or null when the failure was not a folder's listing. */
+export interface VaultProblem {
+  vault: string;
+  folder: string | null;
+  message: string;
+  /** The vault's own folder is not there any more (moved, renamed, deleted, or its drive is gone). */
+  missing: boolean;
+}
+
 export interface FileSystemContextValue {
   handleIO: VaultHandleIO;
   ensureVaultId: (root: FileSystemDirectoryHandle, writeFile: (handle: FileSystemFileHandle, text: string) => Promise<unknown>) => Promise<string | null>;
@@ -444,6 +454,10 @@ export interface FileSystemContextValue {
   registerBeforeRootChange: (callback: () => Promise<void>) => () => void;
   fileTree: FileTreeNode[];                               // FileSystemContext.jsx:71
   isLoading: boolean;                                     // FileSystemContext.jsx:72
+  /** The open vault's folder list could not be read, and why — shown instead of an empty workspace. */
+  vaultProblem: VaultProblem | null;
+  /** Read the open vault's folder list again (the problem screen's Try again). */
+  retryVault: () => Promise<void>;
   previousVault: FileSystemDirectoryHandle | null;       // FileSystemContext.jsx:73
   /** The vault the address bar asked for, when it is known to this browser but
    *  its permission has lapsed — `requestPermission` needs a click, and a page

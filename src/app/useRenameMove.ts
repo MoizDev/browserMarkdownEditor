@@ -25,6 +25,7 @@ import { getView, moveView } from '../utils/viewRegistry';
 import { describeReadError } from './readErrors';
 import type { FlushTab, IndexGraphRef, RecoveryEvent, SetLayout, SetTabs } from './types';
 import type { Notify } from './useAppDialogs';
+import { loadChunk } from '../platform/chunkLoad';
 
 /** The App-scope values `useRenameMove` reads, named as App names them. */
 export interface UseRenameMoveDeps {
@@ -211,7 +212,7 @@ export function useRenameMove(deps: UseRenameMoveDeps) {
           } else if (live.representation.loadedKind === 'pdf' && typeof snapshot === 'string') {
             const pdf = getPdfRenderData(from);
             if (!pdf) throw Error('Pending PDF edits cannot be preserved yet. Keep this tab open and retry.');
-            data = await (await import('../utils/pdfBuildClient')).buildAnnotatedPdfAsync(pdf.original, snapshot, pdf.overlays);
+            data = await (await loadChunk(() => import('../utils/pdfBuildClient'))).buildAnnotatedPdfAsync(pdf.original, snapshot, pdf.overlays);
           } else data = snapshot;
           if (data instanceof Blob) data = new Uint8Array(await data.arrayBuffer());
           if (__BME_BENCH__) {

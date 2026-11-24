@@ -16,6 +16,7 @@ import { EMPTY_LAYOUT, focusedPath as focusedPathOf, visiblePaths } from '../uti
 import { setActiveFilePath } from '../utils/activeFile';
 import { RECOVERY_SESSION_BINDING, hasHostedNativeOwner } from './nativeOwners';
 import type { NativePolicy } from './types';
+import { loadChunk } from '../platform/chunkLoad';
 
 /** What the open-documents hook reads from App. */
 export interface UseOpenDocumentsDeps {
@@ -107,7 +108,7 @@ export function useOpenDocuments(deps: UseOpenDocumentsDeps) {
         let adapter = get(id);
         if (!adapter) {
           const [{ EditorState }, { history }, { createMarkdownSession }] = await Promise.all([
-            import('@codemirror/state'), import('@codemirror/commands'), import('../editor/markdownSession'),
+            loadChunk(() => import('@codemirror/state')), loadChunk(() => import('@codemirror/commands')), loadChunk(() => import('../editor/markdownSession')),
           ]);
           const current = tabsRef.current.find(tab => tab.id === id);
           if (!current || !canUpdateTabContent(current) || getVaultActivation() !== activation

@@ -138,6 +138,11 @@ are copy-only (`recoveryCopy`), never applied to the live file.
 - **`restoreLayout` drops nothing**: rows past `MAX_PANES` and unaccounted paths become tabs of the last column
   (issue #8). **Only a GONE file is dropped**; an unreadable one gets one re-read then comes back as a
   `readError` tab, keeping its place. Retry (`retryUnreadTab`) is serialized per id and matches on id.
+- **Every read the pass makes has a deadline** (`utils/fileReadDeadline.ts`, carried by the context's reads): a read (or a re-validating resolve) that does not
+  answer comes back as a `readError` tab — never dropped, never holding the others — and the guide tab's chunk
+  failing comes back the same way (Retry reloads it). The vault index starts after `INDEX_WAIT_MS` however the pass
+  is doing. **A pass that cannot finish keeps `restoringRef`** (persistence stays shut for that vault): the first
+  layout change after an unfinished restore was once written as the vault's whole session.
 - Restoring documents follow renames/moves and never come back from Trash: the pass publishes
   `restorePendingRef` (`utils/pendingRestore.ts`), which `retargetTabs`, `handleTrash` and the bin's Replace
   update synchronously inside `trackVaultMove`; it waits for ANY move in flight, re-resolves survivors from the

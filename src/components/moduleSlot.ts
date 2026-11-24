@@ -1,4 +1,5 @@
 import { createElement, useEffect, useSyncExternalStore, type ComponentType, type ReactNode } from 'react';
+import { loadChunk } from '../platform/chunkLoad';
 
 /**
  * A lazily loaded component rendered DIRECTLY once its module has arrived, instead of through `React.lazy` behind a
@@ -8,6 +9,10 @@ import { createElement, useEffect, useSyncExternalStore, type ComponentType, typ
  * A slot is a module snapshot: a warm load renders on the first pass, a cold one shows `fallback` until the module is
  * there and renders on the next pass with nothing throttling it. `load()` is shared, so an idle warm-up and the render
  * that needs the module wait on one import.
+ *
+ * The import goes through `loadChunk` (bounded, retried once, a gone chunk told apart), and a failure is thrown to the
+ * nearest ErrorBoundary — whose Try again calls `retryFailedModuleSlots`, so the remounted View imports afresh instead
+ * of rethrowing the failure it remembered (React.lazy, which this replaced, keeps a rejected import for the page).
  */
 export interface ModuleSlot<P extends object> {
     /** Starts (or joins) the import; after a failure the next call imports again. */
@@ -15,6 +20,13 @@ export interface ModuleSlot<P extends object> {
     /** Renders the component once loaded, `fallback` before; a failed import is thrown to the nearest error boundary as
      * `React.lazy` would. */
     readonly View: ComponentType<P & { readonly fallback?: ReactNode }>;
+}
+
+const failedSlots = new Set<() => void>();
+
+/** Let every slot whose import failed try again on its next render (an ErrorBoundary's Try again). */
+export function retryFailedModuleSlots(): void {
+    for (const reset of [...failedSlots]) reset();
 }
 
 type Snapshot<P extends object> =
@@ -29,14 +41,19 @@ export function moduleSlot<P extends object>(importer: () => Promise<{ default: 
     const publish = (next: Snapshot<P>) => { snapshot = next; for (const listener of [...listeners]) listener(); };
     const subscribe = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; };
     const read = () => snapshot;
+    const reset = () => {
+        failedSlots.delete(reset);
+        if (snapshot.status === 'error') publish({ status: 'idle' });
+    };
     const load = (): Promise<ComponentType<P>> => {
         if (task) return task;
-        const next = importer().then(module => {
+        const next = loadChunk(importer).then(module => {
             publish({ status: 'ready', Component: module.default });
             return module.default;
         }, error => {
             // A cached failed import is retried by the next load (a remount or a warm-up), never in a loop.
             task = null;
+            failedSlots.add(reset);
             publish({ status: 'error', error });
             throw error;
         });

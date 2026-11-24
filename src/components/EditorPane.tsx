@@ -23,6 +23,7 @@ import type { ActiveFile, ContentChangeOptions, DiskAction, OpenTab, GraphData, 
 // Read the same resolved component idle prefetch filled, not a second lazy payload.
 import { getPdfPaneModuleSnapshot, loadPdfPane, subscribePdfPaneModule } from './pdfPaneModule';
 import { canvasPaneSlot } from './paneModules';
+import { ErrorBoundary, PartFailure, PartFailureBox } from './ErrorBoundary';
 import type { PdfPaneComponent } from './pdfPaneModule';
 import { useActivated, useFloatingSlot } from './floatingSlot';
 
@@ -81,9 +82,9 @@ const PdfPaneHost = React.memo(function PdfPaneHost({
             onPointerDownCapture={() => { if (rest.isVisible) rest.onFocusPane(rest.file.path); }}
         >
             {module.status === 'error' ? <>
-                <span>The PDF reader could not be loaded.</span>
-                {module.reloadRequired && <span>Reload the app to try loading it again.</span>}
-                <button className="pdf-pane-action" onClick={() => { void loadPdfPane({ retry: true }).catch(() => {}); }}>Retry</button>
+                <PartFailure error={module.error} what={<strong>{tab.file.name}</strong>}
+                    retry={() => { void loadPdfPane({ retry: true }).catch(() => {}); }} />
+                {module.reloadRequired && <span className="unread-pane-hint">If it keeps failing, reload the app.</span>}
             </> : 'Loading PDF…'}
         </div>
     );
@@ -93,6 +94,11 @@ const PdfPaneHost = React.memo(function PdfPaneHost({
 // Whiteboards and notebooks float over their column for the same reason PDFs
 // do, and through the same geometry — see components/floatingSlot.ts.
 const CanvasPane = canvasPaneSlot.View;
+
+/** Where a floating pane (PDF, board) stands over its column — the geometry its own loading state uses. */
+function floatingFailureStyle(index: number): React.CSSProperties {
+    return { left: `calc(var(--pane-x-${index}) * 1%)`, width: `calc(var(--pane-w-${index}) * 1%)`, right: 'auto' };
+}
 
 interface EditorPaneProps {
     contentOf(path: string): string | undefined;
@@ -897,14 +903,29 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                 (even until a divider is dragged). */}
             <div className={`editor-split${paneCount > 1 ? ' is-split' : ''}`} ref={splitRef}>
                 {paneTabs.map((tab, i) => (
-                    <DocumentPane
-                        reading={reading}
+                    <ErrorBoundary
+                        label={`The pane of ${tab.file.path}`}
                         // An unreadable document's pane is keyed apart from its
                         // readable self, so a retry that succeeds REMOUNTS it
                         // and every mount-time step (the view built from the
                         // real text, the scroll-anchor hold) runs as on a fresh
                         // open. The unreadable pane never builds a view.
                         key={`${paneKey(tab)}${tab.readError ? '|unread' : ''}`}
+                        fallback={(error, retry) => (
+                            <div className="editor-slot" style={PANE_WIDTH_STYLE[i]}>
+                                <div className="editor-slot-header">
+                                    <div className="editor-slot-nav" />
+                                    <span className="editor-slot-title" data-tooltip={tab.file.path}>{tab.file.name}</span>
+                                    <div className="editor-slot-actions" />
+                                </div>
+                                <div className="editor-slot-body">
+                                    <PartFailureBox error={error} retry={retry} what={<strong>{tab.file.name}</strong>} />
+                                </div>
+                            </div>
+                        )}
+                    >
+                    <DocumentPane
+                        reading={reading}
                         tab={tab}
                         paneId={panes[i].id}
                         isFocused={tab.file.path === focusedPath}
@@ -939,6 +960,7 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                         revealRequest={revealRequest}
                         onRevealHandled={onRevealHandled}
                     />
+                    </ErrorBoundary>
                 ))}
                 {/* Drawn over the panes rather than as a border on them (a PDF
                     pane floats above its column and would otherwise cover it) —
@@ -1038,7 +1060,8 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                 const slot = paneGeom.get(tab.file.path);
                 const visible = !!slot;
                 return (
-                    <React.Fragment
+                    <ErrorBoundary
+                        label={`The PDF pane of ${tab.file.path}`}
                         // Same key as a pane (see paneKey): matched by path
                         // alone, the pane of an overwritten PDF was handed to
                         // the file that replaced it and went on showing the old
@@ -1047,6 +1070,11 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                         // diskRev: a reload from disk remounts it on the new
                         // file (App.reloadFromDisk).
                         key={`${paneKey(tab)}|${tab.diskRev ?? 0}`}
+                        fallback={(error, retry) => slot && (
+                            <div className="canvas-pane" style={floatingFailureStyle(slot.index)}>
+                                <PartFailureBox error={error} retry={retry} what={<strong>{tab.file.name}</strong>} />
+                            </div>
+                        )}
                     >
                         <PdfPaneHost
                             reading={reading}
@@ -1083,7 +1111,7 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                             onAnnotationPreflight={onAnnotationPreflight}
                             onDiskAction={onDiskAction}
                         />
-                    </React.Fragment>
+                    </ErrorBoundary>
                 );
             })}
 
@@ -1098,20 +1126,22 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                 && (t.representation.loadedKind === 'drawing' || t.representation.loadedKind === 'notebook')).map(tab => {
                 const slot = paneGeom.get(tab.file.path);
                 const visible = !!slot;
-                const fallbackStyle = visible
-                    ? {
-                        left: `calc(var(--pane-x-${slot!.index}) * 1%)`,
-                        width: `calc(var(--pane-w-${slot!.index}) * 1%)`,
-                        right: 'auto' as const,
-                    }
-                    : undefined;
+                const fallbackStyle = visible ? floatingFailureStyle(slot!.index) : undefined;
                 return (
-                    <CanvasPane
+                    <ErrorBoundary
+                        label={`The canvas pane of ${tab.file.path}`}
                         // Keyed as a PDF pane is: by the pane AND the path, so
                         // an overwritten file never inherits the old board's
                         // editor, and on diskRev, so a reload from disk
                         // remounts it on the new file (App.reloadFromDisk).
                         key={`${paneKey(tab)}|${tab.diskRev ?? 0}`}
+                        fallback={(error, retry) => visible && (
+                            <div className="canvas-pane" style={fallbackStyle}>
+                                <PartFailureBox error={error} retry={retry} what={<strong>{tab.file.name}</strong>} />
+                            </div>
+                        )}
+                    >
+                    <CanvasPane
                         fallback={visible ? (
                             <div className="canvas-pane" style={fallbackStyle}>
                                 <div className="drawing-pane drawing-pane-loading">
@@ -1136,6 +1166,7 @@ export default function EditorPane({ reading, tabs, contentOf, documentBuffers, 
                             disk={tab.disk}
                             onDiskAction={onDiskAction}
                         />
+                    </ErrorBoundary>
                 );
             })}
 

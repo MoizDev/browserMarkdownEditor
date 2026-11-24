@@ -6,6 +6,7 @@ import { graphForTree } from './graphView';
 import { newIndexSession } from './session';
 import { indexTree, indexTreeDelta } from './tree';
 import { WriteEchoFilter } from './writeEcho';
+import { loadChunk } from '../../platform/chunkLoad';
 
 export interface IndexProgress { phase: 'sweeping' | 'idle'; done: number; total: number }
 
@@ -65,7 +66,7 @@ export function useIndexGraph(options: {
         refreshMedia.current = refresh;
         const start = () => {
             if (starting) return starting;
-            starting = import('./client').then(({ VaultIndexClient }) => {
+            starting = loadChunk(() => import('./client')).then(({ VaultIndexClient }) => {
                 if (!live || getActivation() !== activation) throw new DOMException('Vault changed', 'AbortError');
                 const session = newIndexSession(vaultId ?? `activation:${activation}`);
                 const client: VaultIndexClient = new VaultIndexClient(session, snapshot => {

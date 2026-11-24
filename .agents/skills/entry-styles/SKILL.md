@@ -130,7 +130,7 @@ parent's file, which is not loaded.
 
 `lucide-static`'s `icon-nodes.json` (1,818 icons, ~91 KB gz) and `tags.json` (~43 KB gz), both behind a
 dynamic `import()` and built as their own chunks. **Nothing the main bundle reaches may import
-`lucideIcons.ts`**; `EntryStylePicker` is `React.lazy` in `ContextMenu` for that reason. App and board
+`lucideIcons.ts`**; `EntryStylePicker` is a module slot in `ContextMenu` for that reason. App and board
 chrome icons that need Lucide artwork copy the node data verbatim into source
 (`components/icons.tsx`, `whiteboard/chrome/boardIcons.ts`, `toolIcons.tsx`) and draw it with
 `LucideGlyph` — never by importing the set.

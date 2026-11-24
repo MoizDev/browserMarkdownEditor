@@ -1,30 +1,58 @@
 import type React from 'react';
 import { useCallback, useEffect, useState } from 'react';
 import type { OpenTab } from '../types';
+import type { DocumentSessionStore } from '../utils/documentSessions';
 import { watchForNewVersion } from '../utils/versionPoll';
 import { anyPending } from '../utils/unloadCoordinator';
+import { setCrashCheckpoint } from '../utils/crashCheckpoint';
 
 export interface UseUpdateNoticeDeps {
   flushingRef: React.MutableRefObject<Map<string, number>>;
   tabsRef: React.MutableRefObject<OpenTab[]>;
   hasUnsaved: (tab: OpenTab) => boolean;
+  documentSessions: DocumentSessionStore;
+  /** Write out everything pending, as leaving the page does (useSaveFunnel). */
+  checkpointNow: () => Promise<void>;
   notifyRef: React.MutableRefObject<(message: string) => void>;
 }
 
-/** A newer build was deployed: offer a reload, never one that drops work. */
+/** How long a reload the app offers waits for pending saves before it refuses and says why. */
+const SAVE_BEFORE_RELOAD_MS = 5000;
+
+/**
+ * A newer build was deployed: offer a reload, never one that drops work. The same "save, then reload" serves every
+ * reload the app itself offers — the update notice, a pane whose code is gone from the server, the error screens —
+ * and is registered for main.tsx's last-resort boundary (utils/crashCheckpoint.ts).
+ */
 export function useUpdateNotice(deps: UseUpdateNoticeDeps) {
-  const { flushingRef, tabsRef, hasUnsaved, notifyRef } = deps;
+  const { flushingRef, tabsRef, hasUnsaved, documentSessions, checkpointNow, notifyRef } = deps;
   const [updateAvailable, setUpdateAvailable] = useState(false);
   useEffect(() => watchForNewVersion(() => setUpdateAvailable(true)), []);
-  const reloadUpdatedApp = useCallback(() => {
-    // Do not discard an in-flight save, a not-yet-committed text edit, or ink
-    // still held by a canvas serializer. Conflicts remain for the reader to fix.
-    if (flushingRef.current.size || anyPending() || tabsRef.current.some(hasUnsaved)) {
+  // Do not discard an in-flight save, a not-yet-committed text edit, or ink
+  // still held by a canvas serializer. Conflicts remain for the reader to fix.
+  const unsaved = useCallback(() => flushingRef.current.size > 0 || anyPending()
+    || tabsRef.current.some(tab => hasUnsaved(tab) || documentSessions.hasPendingEdits(tab.id)), [documentSessions, flushingRef, hasUnsaved, tabsRef]);
+  const saveAll = useCallback(async () => {
+    if (!unsaved()) return true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        checkpointNow().catch(error => { console.error('Could not save before reloading:', error); }),
+        new Promise<void>(resolve => { timer = setTimeout(resolve, SAVE_BEFORE_RELOAD_MS); }),
+      ]);
+    } finally { clearTimeout(timer); }
+    return !unsaved();
+  }, [checkpointNow, unsaved]);
+  const saveAndReload = useCallback(async () => {
+    if (!await saveAll()) {
       notifyRef.current('Finish saving your changes and resolve any disk conflicts before reloading.');
-      return;
+      return false;
     }
     window.location.reload();
-  }, [hasUnsaved, flushingRef, notifyRef, tabsRef]);
+    return true;
+  }, [notifyRef, saveAll]);
+  useEffect(() => { setCrashCheckpoint(saveAll); }, [saveAll]);
+  const reloadUpdatedApp = useCallback(() => { void saveAndReload(); }, [saveAndReload]);
   const dismissUpdate = useCallback(() => setUpdateAvailable(false), []);
-  return { updateAvailable, reloadUpdatedApp, dismissUpdate };
+  return { updateAvailable, reloadUpdatedApp, saveAndReload, dismissUpdate };
 }

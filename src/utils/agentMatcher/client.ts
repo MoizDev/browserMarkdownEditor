@@ -1,5 +1,6 @@
 import type { WorkerClient } from '../../platform/workers';
 import type { MatchAnswer, MatchBatch, MatchConfig, MatchFile, MatchProgress } from './types';
+import { loadChunk } from '../../platform/chunkLoad';
 
 const CHUNK_CHARS = 64 * 1024;
 // Matching line by line limits input granularity, not one regex match's runtime.
@@ -32,7 +33,7 @@ export async function matchAgentSearch(
     options: { signal?: AbortSignal; vaultToken: object | null; isCurrent(): boolean },
 ): Promise<MatchAnswer> {
     const epoch = ownerEpoch;
-    const { createWorkerClient, WorkerHostError } = await import('../../platform/workers');
+    const { createWorkerClient, WorkerHostError } = await loadChunk(() => import('../../platform/workers'));
     // A vault can close while the lazy chunk loads. Never resurrect its owner afterwards.
     if (epoch !== ownerEpoch || options.signal?.aborted || !options.isCurrent()) {
         return { out: [], count: 0, fileCount: 0, stopped: false, incomplete: true, reason: 'the search was cancelled' };

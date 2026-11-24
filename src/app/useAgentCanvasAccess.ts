@@ -11,6 +11,7 @@ import type { AttachCanvasSession } from '../utils/canvasSessionBridge';
 import type { DocumentBufferStore } from '../utils/documentBuffers';
 import type { DocumentSessionStore } from '../utils/documentSessions';
 import type { NativePolicy } from './types';
+import { loadChunk } from '../platform/chunkLoad';
 
 // The per-process counter behind the closed PDF agent's document identities (see
 // closedPdfAccess): a module-level sequence, so it never repeats within a page load.
@@ -61,7 +62,7 @@ export function useAgentCanvasAccess(deps: UseAgentCanvasAccessDeps) {
       const token = { vaultEpoch, documentId: `agent-pdf-${serial.toString(36)}`, bytesGeneration: 0, session: serial };
       const isCurrent = () => !signal.aborted && rootHandleRef.current === root && currentVaultIdRef.current === vault &&
         readerEpochRef.current.epoch === vaultEpoch && getVaultActivation() === activation;
-      const [startup, agent] = await Promise.all([import('../pdf/session/startup'), import('../pdf/text/agentAccess')]);
+      const [startup, agent] = await Promise.all([loadChunk(() => import('../pdf/session/startup')), loadChunk(() => import('../pdf/text/agentAccess'))]);
       if (!isCurrent()) throw new DOMException('Vault changed', 'AbortError');
       const access = agent.createClosedPdfAgentAccess(startup.getSharedPdfPool(), () => ({ token, isCurrent }));
       return { access, isCurrent };
@@ -83,7 +84,7 @@ export function useAgentCanvasAccess(deps: UseAgentCanvasAccessDeps) {
   }, [getVaultActivation, currentVaultIdRef, readerEpochRef, rootHandleRef]);
 
   const ensureNativeAgentRuntime = useCallback<NonNullable<AgentHostDeps['ensureNativeAgentRuntime']>>(async (path, signal) =>
-    (await import('./agentCanvas')).ensureNativeAgentRuntime({
+    (await loadChunk(() => import('./agentCanvas'))).ensureNativeAgentRuntime({
       tabsRef, documentBuffers, nativePoliciesRef, nativeCanvasHost, attachNativeCanvasSession,
       onNativeCanvasReady, ensureCanvasBridge, announce,
     }, path, signal), [
@@ -100,7 +101,7 @@ export function useAgentCanvasAccess(deps: UseAgentCanvasAccessDeps) {
   }, [rootHandle, tabs, getVaultActivation]);
   useEffect(() => () => { for (const read of closedCanvasReads.current) read.controller.abort(); }, []);
   const acquireClosedAgentCanvas = useCallback<NonNullable<AgentHostDeps['acquireClosedCanvasSource']>>(async (path, handle, kind, guard) =>
-    (await import('./agentCanvas')).acquireClosedAgentCanvas({
+    (await loadChunk(() => import('./agentCanvas'))).acquireClosedAgentCanvas({
       rootHandleRef, bufferPathIdsRef, tabsRef, documentSessions, getVaultActivation, handleIO,
       readFileSnapshot, statFile, verifyVaultFileIdentity, closedCanvasVersions, closedCanvasReads,
     }, path, handle, kind, guard), [
@@ -110,7 +111,7 @@ export function useAgentCanvasAccess(deps: UseAgentCanvasAccessDeps) {
 
   /** A closed board's embedded picture, read from its own folder's `.Assets` (the same reader recovery uses). */
   const readClosedAgentCanvasMedia = useCallback<NonNullable<AgentHostDeps['readClosedCanvasMedia']>>(async (path, handle, entry, signal) =>
-    (await import('./agentCanvas')).readClosedAgentCanvasMedia({
+    (await loadChunk(() => import('./agentCanvas'))).readClosedAgentCanvasMedia({
       rootHandleRef, getVaultActivation, readBoardAsset, resolveVaultFile,
     }, path, handle, entry, signal), [
       getVaultActivation, readBoardAsset, resolveVaultFile, rootHandleRef,

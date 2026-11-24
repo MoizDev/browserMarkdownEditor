@@ -195,7 +195,9 @@ come back to either.
   (`components/moduleSlot.ts`: `pdfSurfaceModules.ts`, `paneModules.ts`), never `React.lazy` + `Suspense`, whose
   reveal React 19 holds until its fallback has been up 300 ms however early the chunk lands. `prefetchPanes.ts` warms
   them at idle by the kinds the vault holds (markdown-only fetches none); `loadPdfPane` also warms the whole open path
-  (surface, source runtime, passwords, startup, `cpuEntry`) and pre-boots the engine. A static engine import from App or a non-listed component defeats the split; the lint dark zone
+  (surface, source runtime, passwords, startup, `cpuEntry`) and pre-boots the engine. Every `import()` a person waits
+  on goes through `platform/chunkLoad.ts` `loadChunk` (bounded, retried once, a 404 = `gone` → the update notice),
+  and a slot's failure is thrown to the pane's `ErrorBoundary`, whose Try again re-imports. A static engine import from App or a non-listed component defeats the split; the lint dark zone
   (`rendering-platform`, Boundaries) catches most of them. Filesystem access stays in context; saves in App.
 - No PDF or board may depend on a CDN to draw a line: engine, fonts and renderer assets are local and
   integrity-checked.

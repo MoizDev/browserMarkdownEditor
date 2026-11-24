@@ -3,6 +3,7 @@ import type { FileTreeNode } from '../types';
 import { prefetchPanes } from '../components/prefetchPanes';
 import { collectFiles } from '../utils/tree';
 import { isDrawingFile, isEpubFile, isNativeDrawingFile, isNotebookFile, isPdfFile } from '../utils/fileTypes';
+import { loadChunk } from '../platform/chunkLoad';
 
 function whenIdle(run: () => void): void {
   if (window.requestIdleCallback) window.requestIdleCallback(run, { timeout: 4000 });
@@ -33,6 +34,6 @@ export function usePanePrefetch(fileTree: FileTreeNode[]): void {
     // A PDF's gestures (rotate, print, unsigned copy) load on first use; warm
     // them beside its pane, so a turn of the page never waits on a fetch and
     // two quick clicks run in the order they were made.
-    if (kinds.pdf) whenIdle(() => { void import('./pdfGestures').catch(() => {}); });
+    if (kinds.pdf) whenIdle(() => { void loadChunk(() => import('./pdfGestures')).catch(() => {}); });
   }, [fileTree]);
 }

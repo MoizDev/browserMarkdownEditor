@@ -1,10 +1,13 @@
-import React, { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { moduleSlot } from './moduleSlot';
+import { ErrorBoundary, PartFailureBox } from './ErrorBoundary';
 import TableSizeGrid from './TableSizeGrid';
 import { Check } from './icons';
 import type { ContextMenuRequest, ContextMenuSubmenu } from '../utils/contextMenu';
 
 // Lazy so the icon set stays out of the main bundle — see utils/lucideIcons.ts.
-const EntryStylePicker = lazy(() => import('./EntryStylePicker'));
+// A module slot, not React.lazy: a failed fetch is tried again on Try again rather than kept for the page.
+const EntryStylePicker = moduleSlot(() => import('./EntryStylePicker')).View;
 
 interface ContextMenuProps {
     /** What to draw, where to hang it, and who to give focus back to. One
@@ -555,7 +558,9 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
                                 onPick={(rows, cols) => activate(() => entry.pick(rows, cols))}
                             />
                         ) : (
-                            <Suspense fallback={<div className="folder-style-picker folder-style-loading">Loading icons…</div>}>
+                            <ErrorBoundary label="The icon picker" fallback={(error, retry) => (
+                                <div className="folder-style-picker folder-style-failure"><PartFailureBox error={error} retry={retry} what="the icon picker" /></div>
+                            )}>
                                 {/* Lazy, and that is the whole bundle argument:
                                     this is the only route to the Lucide set, so
                                     a session that never opens it never fetches
@@ -563,12 +568,13 @@ export default function ContextMenu({ request, onClose }: ContextMenuProps) {
                                     NOT close the menu — colour and icon are two
                                     choices and are usually both wanted. */}
                                 <EntryStylePicker
+                                    fallback={<div className="folder-style-picker folder-style-loading">Loading icons…</div>}
                                     icon={entry.icon}
                                     color={entry.color}
                                     onChange={entry.pick}
                                     onClose={closeFlyout}
                                 />
-                            </Suspense>
+                            </ErrorBoundary>
                         )}
                     </div>
                 );

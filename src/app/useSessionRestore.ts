@@ -16,6 +16,31 @@ import { mergeLayouts, relabelPaths, restoreLayout } from '../utils/tabPanes';
 import { newTabId } from './documentIds';
 import { describeReadError, isNotFound } from './readErrors';
 import type { SetLayout, SetTabs } from './types';
+import { isFileReadTimeout, withinFileDeadline } from '../utils/fileReadDeadline';
+
+// Every read here has a deadline (utils/fileReadDeadline.ts; the reads themselves carry it, and the path lookups are
+// given the same one below). Measured: one read that never settled (a cloud file not downloaded yet, a stalled
+// volume) brought back no tab at all, kept the session's persistence shut and the index unstarted for the page.
+/** The vault index starts after this however the restore is doing; it used to wait for the restore to settle. */
+const INDEX_WAIT_MS = 8000;
+/** How long the restore waits for the app's own moves to finish before it gives up (keeping the saved session). */
+const MOVES_WAIT_MS = 15_000;
+
+/** Wait for the app's in-flight moves to settle, or report false after MOVES_WAIT_MS. */
+async function movesSettled(moves: Set<Promise<unknown>>): Promise<boolean> {
+  const deadline = performance.now() + MOVES_WAIT_MS;
+  while (moves.size) {
+    const left = deadline - performance.now();
+    if (left <= 0) return false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([Promise.allSettled([...moves]), new Promise(resolve => { timer = setTimeout(resolve, left); })]);
+    clearTimeout(timer);
+  }
+  return true;
+}
+
+/** The restore could not finish; its claim keeps the vault's saved session from being written over. */
+class RestoreIncomplete extends Error {}
 
 export interface UseSessionRestoreDeps {
   fileTree: FileTreeNode[];
@@ -192,6 +217,13 @@ export function useSessionRestore(deps: UseSessionRestoreDeps): void {
       }),
     };
     restorePendingRef.current = pending;
+    // The index waits for the restore so a restored pane paints first — but never for longer than this.
+    const indexTimer = setTimeout(indexRestoreSettled, INDEX_WAIT_MS);
+    // Set when this pass cannot finish: it then keeps `restoringRef` (persistence stays shut for the vault) instead
+    // of releasing it, because the first layout change after an unfinished restore was written as the vault's WHOLE
+    // session — measured: a help-guide chunk that failed to load restored nothing, and the next note opened
+    // replaced four saved tabs for good.
+    let incomplete = false;
     (async () => {
       try {
         // Read concurrently, not one after another: the workspace (the link's
@@ -203,7 +235,13 @@ export function useSessionRestore(deps: UseSessionRestoreDeps): void {
         // single merge and restoreLayout see exactly what they did.
         const readVersions = new Map<PendingRestoreEntry, DiskVersion>();
         await Promise.all(pending.entries.map(async entry => {
-          if (entry.help) { entry.content = await loadHelpDoc(); return; }
+          if (entry.help) {
+            // The guide is a chunk of its own: one that fails to load comes back as a tab saying so (Try again
+            // loads it again), never as a reason to restore nothing.
+            try { entry.content = await loadHelpDoc(); }
+            catch (err) { entry.content = ''; entry.readError = describeReadError(err); }
+            return;
+          }
           if (entry.dropped) return;
           for (;;) {
             // Resolved by the entry's CURRENT path from the vault root, not
@@ -218,7 +256,7 @@ export function useSessionRestore(deps: UseSessionRestoreDeps): void {
               break;
             }
             try {
-              const { handle } = await resolveVaultFile(root, path);
+              const { handle } = await withinFileDeadline(resolveVaultFile(root, path), path);
               const { text, version } = await readFileVersioned(handle);
               // Read at the old path and renamed since is still right: a rename
               // or move is a byte-for-byte copy.
@@ -235,7 +273,7 @@ export function useSessionRestore(deps: UseSessionRestoreDeps): void {
               // went — read it there, rather than leave out a note the reader
               // only renamed. The path is compared even with no move left in
               // flight: one can have finished while the failed read settled.
-              if (vaultMovesRef.current.size) await Promise.allSettled([...vaultMovesRef.current]);
+              if (vaultMovesRef.current.size && !await movesSettled(vaultMovesRef.current)) throw new RestoreIncomplete('moves did not settle');
               if (!entry.dropped && entry.path !== path) continue;
               if (entry.dropped) break;
               // GONE and UNREADABLE are different answers, and only the first
@@ -252,6 +290,11 @@ export function useSessionRestore(deps: UseSessionRestoreDeps): void {
               // says it could not be read, holding no text (OpenTab.readError).
               if (isNotFound(err)) {
                 entry.dropped = true;
+              } else if (isFileReadTimeout(err)) {
+                // Not read again at once: a read that did not answer in ten seconds is not cured by a second one,
+                // and the pane's Try again is right there.
+                console.warn('A restored tab did not answer; keeping it:', path, err);
+                entry.readError = describeReadError(err);
               } else if (entry.readError === undefined) {
                 entry.readError = describeReadError(err);
                 continue;
@@ -276,22 +319,31 @@ export function useSessionRestore(deps: UseSessionRestoreDeps): void {
         // that started and finished inside these awaits.
         const live = new Map<PendingRestoreEntry, FileTreeFileNode>();
         for (;;) {
-          while (vaultMovesRef.current.size) await Promise.allSettled([...vaultMovesRef.current]);
+          if (!await movesSettled(vaultMovesRef.current)) throw new RestoreIncomplete('moves did not settle');
           const seen = pending.epoch;
           live.clear();
           for (const entry of pending.entries) {
             if (entry.help || entry.dropped || (entry.content === undefined && entry.readError === undefined)) continue;
             try {
-              const { handle, parentHandle } = await resolveVaultFile(root, entry.path);
+              const { handle, parentHandle } = await withinFileDeadline(resolveVaultFile(root, entry.path), entry.path);
               if (classifyRequestedKind(entry.origin) !== classifyRequestedKind(handle.name) || isNativeDrawingFile(entry.origin) !== isNativeDrawingFile(handle.name)) {
                 if (isEpubFile(handle.name) || isPdfFile(handle.name) || isNativeDrawingFile(handle.name)) { entry.content=''; entry.readError=undefined; readVersions.delete(entry); }
                 else try { const read=await readFileVersioned(handle); entry.content=read.text; entry.readError=undefined; readVersions.set(entry,read.version); }
                 catch(error){entry.content='';entry.readError=describeReadError(error);}
               }
               live.set(entry, { name: handle.name, kind: 'file', path: entry.path, handle, parentHandle });
-            } catch {
-              // Gone (or a folder now) — left out, like a note deleted since the
-              // session was written.
+            } catch (error) {
+              // A path that did not ANSWER is not a path that is gone: keep the tab (as unreadable) on the
+              // tree's node for it, or the session written after the merge would no longer hold it.
+              const node = isFileReadTimeout(error) ? vaultFiles.find(f => f.path === entry.path) : undefined;
+              if (node) {
+                entry.content = '';
+                entry.readError = describeReadError(error);
+                readVersions.delete(entry);
+                live.set(entry, node);
+              }
+              // Otherwise gone (or a folder now) — left out, like a note deleted
+              // since the session was written.
             }
           }
           if (pending.epoch === seen && vaultMovesRef.current.size === 0) break;
@@ -318,8 +370,10 @@ export function useSessionRestore(deps: UseSessionRestoreDeps): void {
           if (claimed.has(entry.path)) continue;
           if (entry.help) {
             const id = newTabId();
-            seedDocumentBuffer(id, entry.path, entry.content!, true);
-            restored.push({ id, file: { name: 'Help Guide', isHelp: true, path: entry.path }, mode: 'read', dirty: false, representation: representationFor('Help Guide', true) });
+            seedDocumentBuffer(id, entry.path, entry.content!, entry.readError === undefined);
+            restored.push(entry.readError !== undefined
+              ? { id, file: { name: 'Help Guide', isHelp: true, path: entry.path }, mode: 'read', dirty: false, readError: entry.readError, representation: representationFor('Help Guide', true, 0, true) }
+              : { id, file: { name: 'Help Guide', isHelp: true, path: entry.path }, mode: 'read', dirty: false, representation: representationFor('Help Guide', true) });
           } else {
             const node = live.get(entry);
             if (!node) continue;
@@ -428,8 +482,12 @@ export function useSessionRestore(deps: UseSessionRestoreDeps): void {
           return [...restored.filter(t => !open.has(t.file.path)), ...prev];
         });
         setLayout(prev => mergeLayouts(restoredLayout, prev));
+      } catch (err) {
+        incomplete = true;
+        console.error('The saved tabs could not be restored; the saved session is kept as it was:', err);
       } finally {
-        release();
+        if (!incomplete) release();
+        clearTimeout(indexTimer);
         if (restorePendingRef.current === pending) restorePendingRef.current = null;
         // The link has been dealt with, whichever way this ended. On success
         // this lands in the merge's batch, so the writer sees the note active

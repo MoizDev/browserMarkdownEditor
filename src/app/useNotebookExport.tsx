@@ -7,6 +7,7 @@ import type { Ask, Notify, Tell } from './useAppDialogs';
 import { ensureNotebookExt, isNotebookFile, stripPdfExt } from '../utils/fileTypes';
 import { joinVaultPath, parentVaultPath } from '../utils/paths';
 import { collectFiles } from '../utils/tree';
+import { loadChunk } from '../platform/chunkLoad';
 
 /**
  * A notebook's PDF export and the hand-back from an exported PDF to its
@@ -79,7 +80,7 @@ export function useNotebookExport(deps: UseNotebookExportDeps) {
 
   /** Export the notebook's frozen render; destination consent is a separate transaction. */
   const handleExportNotebook = useCallback(async (file: ActiveFile) =>
-    (await import('./notebookExport')).handleExportNotebook({
+    (await loadChunk(() => import('./notebookExport'))).handleExportNotebook({
       tell, notify, getVaultActivation, tabsRef, rootHandleRef, currentVaultIdRef, readerEpochRef,
       notebookExportInFlightRef, ask, trashInFlightRef, reconcileQueueRef, inspectExportTarget,
       writeNotebookExport, exportedNotebooksRef,

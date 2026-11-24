@@ -1,3 +1,5 @@
+import { loadChunk } from '../platform/chunkLoad';
+
 export type PdfPaneComponent = typeof import('./PdfPane')['default'];
 
 export type PdfPaneModuleSnapshot =
@@ -35,15 +37,15 @@ export function loadPdfPane(options: { retry?: boolean } = {}): Promise<PdfPaneC
     // The pane is only the first of a chain the open waits on; its routes, the engine's modules and the engine itself are
     // warmed beside it (pdfSurfaceModules.ts), not after it, so an idle prefetch leaves nothing for the first click to
     // fetch and a reload's restored PDF does not wait for one chunk before asking for the next.
-    void import('./pdfSurfaceModules').then(surfaces => surfaces.warmPdfOpenPath()).catch(() => {});
-    const next = import('./PdfPane').then(
+    void loadChunk(() => import('./pdfSurfaceModules')).then(surfaces => surfaces.warmPdfOpenPath()).catch(() => {});
+    const next = loadChunk(() => import('./PdfPane')).then(
         module => {
             publish({ status: 'ready', attempt, Component: module.default });
             return module.default;
         },
         error => {
-            // Browsers may cache a failed module. One explicit retry may work;
-            // another rejection must explain reload instead of spinning forever.
+            // loadChunk has already retried once and says whether the chunk is gone (a reload is
+            // then the only cure); a second failed explicit retry also points at reload.
             publish({ status: 'error', attempt, error, reloadRequired: attempt > 1 });
             throw error;
         },

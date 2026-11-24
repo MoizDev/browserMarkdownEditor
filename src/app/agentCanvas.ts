@@ -13,6 +13,7 @@ import type { DocumentSessionStore } from '../utils/documentSessions';
 import { newTabId } from './documentIds';
 import type { NativePolicy } from './types';
 import type { UseAgentCanvasAccessDeps } from './useAgentCanvasAccess';
+import { loadChunk } from '../platform/chunkLoad';
 
 /**
  * The agent's hands on canvases: a live board's native runtime, and a closed
@@ -61,8 +62,8 @@ export async function ensureNativeAgentRuntime(deps: Pick<AgentCanvasDeps,
   let pinTransferred = false;
   try {
   const [{ ensureNativeBoard }, { createNativeAcquisitionOptions }, { prepareNativeRuntime }, { getBoardRuntime }] = await Promise.all([
-    import('../components/whiteboard/acquireNativeBoard'), import('../components/whiteboard/nativeAcquisitionOptions'),
-    import('../whiteboard/host/prepareNativeRuntime'), import('../whiteboard/host/runtime'),
+    loadChunk(() => import('../components/whiteboard/acquireNativeBoard')), loadChunk(() => import('../components/whiteboard/nativeAcquisitionOptions')),
+    loadChunk(() => import('../whiteboard/host/prepareNativeRuntime')), loadChunk(() => import('../whiteboard/host/runtime')),
   ]);
   signal.throwIfAborted();
   if (!nativeCanvasHost.isCurrent(identity)) throw new DOMException('Canvas session ended', 'AbortError');
@@ -74,7 +75,7 @@ export async function ensureNativeAgentRuntime(deps: Pick<AgentCanvasDeps,
     if (!pdfPin?.ok) throw new Error(pdfPin?.message ?? 'The PDF source is unavailable.');
     const pin = pdfPin;
     const changed = () => new Error('The PDF changed while the agent was reading it; try again.');
-    const { preparePdfInkAttempt } = await import('../components/whiteboard/preparePdfInkAttempt');
+    const { preparePdfInkAttempt } = await loadChunk(() => import('../components/whiteboard/preparePdfInkAttempt'));
     if (!pdfPinHolds(pin)) throw changed();
     const prepared = await preparePdfInkAttempt({ host: nativeCanvasHost, identity, deadlineMs: 30_000, zMax: BOARD_Z_MAX,
       legacyConversion: false, requireExistingNative: true, onError,
@@ -121,7 +122,7 @@ export async function ensureNativeAgentRuntime(deps: Pick<AgentCanvasDeps,
       if (kind === 'pdf') {
         // A PDF's embedded media lives only in its owned source, read through the lease-checked facade
         // (same as the view and clipboard). It never goes through the drawing asset path below.
-        const { getPdfInkSourceState } = await import('../whiteboard/host/preparePdfInkSession');
+        const { getPdfInkSourceState } = await loadChunk(() => import('../whiteboard/host/preparePdfInkSession'));
         const state = getPdfInkSourceState(identity.documentId);
         if (!state) throw new DOMException('Canvas session ended', 'AbortError');
         const blob = await state.readMedia(entry.id, mediaSignal);
@@ -155,7 +156,7 @@ export async function acquireClosedAgentCanvas(deps: Pick<AgentCanvasDeps,
     && getVaultActivation() === activation && !bufferPathIdsRef.current.has(path)
     && !tabsRef.current.some(tab => tab.file.path === path);
   try {
-    const { acquireClosedCanvasSource } = await import('../utils/closedCanvasSource');
+    const { acquireClosedCanvasSource } = await loadChunk(() => import('../utils/closedCanvasSource'));
     const lease = await acquireClosedCanvasSource({ root, activation, path, handle, kind, signal, documentId: newTabId(),
       sessions: documentSessions, versions: closedCanvasVersions, io: { handleIO, readFileSnapshot, statFile, verifyVaultFileIdentity }, isCurrent });
     return { ...lease, async release() { try { await lease.release(); } finally { closedCanvasReads.current.delete(read); } } };

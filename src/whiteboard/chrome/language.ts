@@ -1,4 +1,5 @@
 import locales from '../../utils/boardLocales.json';
+import { loadChunk } from '../../platform/chunkLoad';
 
 export interface LanguageTable {
     readonly dir: 'ltr' | 'rtl';
@@ -18,7 +19,7 @@ const cache = new Map<string, Promise<LanguageTable>>();
 async function fetchTable(code: string): Promise<LanguageTable> {
     const load = files[`./i18n/${code}.ts`];
     if (!load || !boardLocales.some(item => item.code === code && item.ready)) throw new RangeError(`Unsupported board language: ${code}`);
-    const value = (await load()).default;
+    const value = (await loadChunk(load)).default;
     if (!value || !value.strings || !Array.isArray(value.englishTerms) || (value.dir !== 'ltr' && value.dir !== 'rtl')) {
         throw new Error(`Invalid board language table: ${code}`);
     }

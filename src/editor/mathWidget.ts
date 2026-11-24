@@ -1,5 +1,6 @@
 import { WidgetType } from '@codemirror/view';
 import { countEditorWidget } from './editorPerf';
+import { loadChunk } from '../platform/chunkLoad';
 
 /* ── KaTeX, fetched when a formula first needs it ───────────────────────────
  * KaTeX is ~250KB of the main bundle — the largest single library in it, bigger
@@ -21,7 +22,7 @@ let katex: Katex | null = null;
 let loading: Promise<void> | null = null;
 
 function loadKatex(): Promise<void> {
-    loading ??= import('katex').then(m => { katex = m.default; }).catch(() => { loading = null; });
+    loading ??= loadChunk(() => import('katex')).then(m => { katex = m.default; }).catch(() => { loading = null; });
     return loading;
 }
 

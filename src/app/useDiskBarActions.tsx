@@ -7,6 +7,7 @@ import type { DocumentSessionStore } from '../utils/documentSessions';
 import type { DiskVersion } from '../utils/diskVersion';
 import type { Ask, Tell } from './useAppDialogs';
 import type { FlushTab, IndexGraphRef, NativePolicy, PdfRebuildEntry, RecoveryEvent, SetDiskState, SetTabs } from './types';
+import { loadChunk } from '../platform/chunkLoad';
 
 /** The App-scope values `useDiskBarActions` reads, named as App names them. */
 export interface UseDiskBarActionsDeps {
@@ -63,7 +64,7 @@ export function useDiskBarActions(deps: UseDiskBarActionsDeps) {
    */
   const resolvingRef = useRef(new Set<string>());
   const handleDiskAction = useCallback(async (path: string, action: DiskAction) =>
-    (await import('./diskBarActions')).handleDiskAction({
+    (await loadChunk(() => import('./diskBarActions'))).handleDiskAction({
       tabsRef, rootHandleRef, pdfRebuildRef, diskStateRef, nativePoliciesRef, bytesGenerationsRef,
       sessionReportRef, retryUnreadTabRef, indexGraphRef, setTabs, setDiskState, setPdfRebuildNotice,
       currentPdfOwner, keepPdfBaseline, flushTab, documentBuffers, documentSessions, removeTab, hasUnsaved,

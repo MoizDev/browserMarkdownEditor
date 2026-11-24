@@ -9,8 +9,10 @@
 // which is exactly what the user just asked for. A dock RESTORED open on load
 // is not a click and goes through autoConnect() in the panel instead.
 
+import { loadChunk } from '../platform/chunkLoad';
+
 export function connectHelperForTerminal(): void {
-    import('../utils/agentBridge').then(({ agentBridge }) => {
+    loadChunk(() => import('../utils/agentBridge')).then(({ agentBridge }) => {
         const s = agentBridge.getState();
         // 'idle' = waiting for this click; a 'failed' with no redial scheduled
         // is waiting for one too (the screen's Retry). Anything else is already

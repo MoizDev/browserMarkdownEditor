@@ -14,6 +14,7 @@ import { createNativeEmbedHost } from '../utils/nativeEmbedHost';
 import { hasHostedNativeOwner, hasWritableHostedNativeOwner } from './nativeOwners';
 import type { AppDialog, Ask } from './useAppDialogs';
 import type { DiskHold, NativePolicy, RecoveryEvent, RecoveryJournal } from './types';
+import { loadChunk } from '../platform/chunkLoad';
 
 /** What the native-canvas host hook reads from App. */
 export interface UseNativeCanvasHostDeps {
@@ -95,7 +96,7 @@ export function useNativeCanvasHost(deps: UseNativeCanvasHostDeps) {
       clipboard: nativeClipboard,
       embeds: nativeEmbeds,
       async createEditingCapabilities(context) {
-        const { createNativeEditingCapabilities } = await import('../components/whiteboard/nativeEditingCapabilityFactory');
+        const { createNativeEditingCapabilities } = await loadChunk(() => import('../components/whiteboard/nativeEditingCapabilityFactory'));
         return createNativeEditingCapabilities(context);
       },
       identity(id) {
@@ -172,7 +173,7 @@ export function useNativeCanvasHost(deps: UseNativeCanvasHostDeps) {
             if (dirty && (!baseline || baseline !== baselineAtPin)) throw new Error('The canvas disk baseline changed during acquisition.');
             let diskHash: string;
             if (baseline) diskHash = baseline.hash;
-            else { const { hashBytes } = await import('../utils/diskVersion'); diskHash = await hashBytes(await disk.arrayBuffer()); }
+            else { const { hashBytes } = await loadChunk(() => import('../utils/diskVersion')); diskHash = await hashBytes(await disk.arrayBuffer()); }
             if (!isCurrent() || signal.aborted) throw new DOMException('Canvas source changed', 'AbortError');
             observedDiskHash = diskHash;
             if (!dirty) return { input: disk, diskHash };
@@ -189,7 +190,7 @@ export function useNativeCanvasHost(deps: UseNativeCanvasHostDeps) {
             signal.throwIfAborted();
             if (!isCurrent() || !observedDiskHash) throw new DOMException('Canvas source changed', 'AbortError');
             const disk = await acquireDisk(signal);
-            const { hashBytes } = await import('../utils/diskVersion');
+            const { hashBytes } = await loadChunk(() => import('../utils/diskVersion'));
             const hash = await hashBytes(await disk.arrayBuffer());
             if (!isCurrent() || signal.aborted || hash !== observedDiskHash) throw new DOMException('Canvas disk baseline changed', 'AbortError');
           },

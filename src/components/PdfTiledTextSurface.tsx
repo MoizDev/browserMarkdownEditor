@@ -5,6 +5,7 @@ import { usePdfTiledTextReader } from './usePdfTiledTextReader';
 import { tiledOriginalToText } from '../pdf/text/viewMapping';
 import type { PdfViewPos } from '../utils/pdfViewState';
 import type { PdfTextAnchor, PdfTextTypography } from '../utils/pdfReadingText';
+import { loadChunk } from '../platform/chunkLoad';
 
 const DEFAULT_TYPOGRAPHY: PdfTextTypography = { family: 'serif', size: 18, leading: 1.6, measure: 'comfortable', margins: 'medium', theme: 'follow-app' };
 
@@ -26,7 +27,7 @@ export default function PdfTiledTextSurface({ source, reading, filePath, findMem
         if (!isVisible || !isFocused) return;
         const session = source.session, document = source.document.poolDocument, token = session.token;
         let cancelled = false, release: (() => void) | undefined;
-        void import('../pdf/session/startup').then(({ retainPdfFocus }) => {
+        void loadChunk(() => import('../pdf/session/startup')).then(({ retainPdfFocus }) => {
             if (cancelled || !session.isCurrent() || document.closed || document.token.vaultEpoch !== token.vaultEpoch ||
                 document.token.documentId !== token.documentId || document.token.bytesGeneration !== token.bytesGeneration ||
                 document.token.session !== token.session || (readingEpoch !== undefined && (readingEpoch !== token.vaultEpoch || readingDocument !== token.documentId))) return;

@@ -12,6 +12,7 @@ import { getView } from '../utils/viewRegistry';
 import { PdfBuildRefused, pdfSnapshotRefusal } from '../utils/pdfBuildRefusal';
 import { describeReadError } from './readErrors';
 import { RECOVERY_SESSION_BINDING } from './nativeOwners';
+import { loadChunk } from '../platform/chunkLoad';
 
 /** Everything the PDF actions read from App. Refs are App's own `useRef`s. */
 export interface UsePdfActionsDeps {
@@ -60,7 +61,7 @@ export function usePdfActions(deps: UsePdfActionsDeps) {
 
   const unsignedCopyInFlight = useRef(false);
   const handleUnsignedPdfCopy = useCallback(async (identity: ReaderIdentity, displayed: DiskVersion) =>
-    (await import('./pdfGestures')).handleUnsignedPdfCopy({
+    (await loadChunk(() => import('./pdfGestures'))).handleUnsignedPdfCopy({
       getVaultActivation, readFileSnapshot, writeDistinctCopy, ask, tell, rootHandleRef, documentBuffers,
       documentSessions, diskStateRef, setDiskState, currentPdfOwner, unsignedCopyInFlight,
     }, identity, displayed), [
@@ -69,7 +70,7 @@ export function usePdfActions(deps: UsePdfActionsDeps) {
     ]);
 
   const preparePdfPrint = useCallback(async (path: string) =>
-    (await import('./pdfGestures')).preparePdfPrint({
+    (await loadChunk(() => import('./pdfGestures'))).preparePdfPrint({
       readBytesVersioned, rootHandleRef, tabsRef, activeTabPathRef, documentBuffers, documentSessions,
       flushingRef, flushTab, flushChainsRef, diskStateRef, setDiskState, pdfSeedForRef,
     }, path), [
@@ -79,7 +80,7 @@ export function usePdfActions(deps: UsePdfActionsDeps) {
 
   /** Turn a PDF's pages a quarter at a time and write it (pdfGestures.rotatePdf says how). */
   const rotatePdf = useCallback(async (path: string, delta: number, pageIndex?: number) =>
-    (await import('./pdfGestures')).rotatePdf({
+    (await loadChunk(() => import('./pdfGestures'))).rotatePdf({
       getVaultActivation, readFileSnapshot, notifyRef, rootHandleRef, currentVaultIdRef,
       readerEpochRef, tabsRef, documentBuffers, documentSessions, setTabs, nativePoliciesRef,
       bytesGenerationsRef, bumpBytesGeneration, flushingRef, flushChainsRef, writeFileVersionedRef,

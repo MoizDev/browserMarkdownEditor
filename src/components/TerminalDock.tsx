@@ -9,11 +9,14 @@
 // terminal downloads none of it. (Closing renders null; the shells live in the
 // panel chunk's module store, so unmounting this never ends one.)
 
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 import { writeStoredValue } from '../utils/storage';
+import { moduleSlot } from './moduleSlot';
+import { ErrorBoundary, PartFailureBox } from './ErrorBoundary';
 
-const TerminalPanel = lazy(() => import('./TerminalPanel'));
+// A module slot, not React.lazy, so a failed fetch is tried again on Try again rather than kept for the page.
+const TerminalPanel = moduleSlot(() => import('./TerminalPanel')).View;
 
 const HEIGHT_KEY = 'terminalHeight';
 const MIN_HEIGHT = 120;
@@ -191,9 +194,9 @@ export default function TerminalDock({ open, takeFocus, onHide }: TerminalDockPr
                 onDoubleClick={() => commit(DEFAULT_HEIGHT)}
             />
             <div className="workspace-terminal" ref={dockRef} style={style} data-terminal="">
-                <Suspense fallback={<div className="workspace-terminal-loading" />}>
-                    <TerminalPanel takeFocus={takeFocus} onHide={onHide} />
-                </Suspense>
+                <ErrorBoundary label="The terminal" fallback={(error, retry) => <PartFailureBox error={error} retry={retry} what="the terminal" />}>
+                    <TerminalPanel fallback={<div className="workspace-terminal-loading" />} takeFocus={takeFocus} onHide={onHide} />
+                </ErrorBoundary>
             </div>
         </>
     );

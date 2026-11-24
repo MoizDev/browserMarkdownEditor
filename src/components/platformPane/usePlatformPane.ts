@@ -2,6 +2,7 @@ import { useCallback, useLayoutEffect, useRef, useSyncExternalStore, type RefObj
 import type { PlatformLayerDefinition, PlatformPane, PlatformPaneOptions } from '../../platform/render';
 import type { RenderToken } from '../../platform/render/types';
 import { getSessionIdentity, subscribeSessionIdentity } from '../../utils/sessionIdentity';
+import { loadChunk } from '../../platform/chunkLoad';
 
 export interface UsePlatformPaneOptions<T extends object> {
     readonly host: HTMLElement | null;
@@ -62,7 +63,7 @@ export function usePlatformPane<T extends object>(options: UsePlatformPaneOption
         if (!tokenCurrent()) return;
         let cancelled = false;
         let owned: PlatformPane | null = null;
-        void import('../../platform/render/cpuEntry').then(({ attachPlatformPane }) => {
+        void loadChunk(() => import('../../platform/render/cpuEntry')).then(({ attachPlatformPane }) => {
             if (cancelled || !tokenCurrent()) return;
             const state = current.current;
             const attached = attachPlatformPane(host, {

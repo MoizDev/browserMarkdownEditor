@@ -10,6 +10,7 @@ import { materializeRecoveryCopy, recoveryCopyMedia } from '../utils/recoveryCop
 import { recoveryAdapter } from '../utils/recoveryAdapters';
 import { fingerprintSnapshot } from '../utils/snapshotFingerprint';
 import type { UseRecoveryActionsDeps } from './useRecoveryActions';
+import { loadChunk } from '../platform/chunkLoad';
 
 /**
  * The recovery surface's three actions: compare a journal entry with the file,
@@ -97,7 +98,7 @@ export async function recoverEntry(deps: Pick<RecoveryActionsDeps,
   const recoveredText = typeof payload === 'string' ? payload : payload && typeof payload === 'object' && 'kind' in payload && payload.kind === 'markdown' && 'text' in payload && typeof payload.text === 'string' ? payload.text : undefined;
   if (recoveredText === undefined || !canReadTabText(tab)) throw new Error('This document cannot yet apply its recovered changes; save a copy instead.');
   const expected = contentOf(entry.path), revision = documentBuffers.revisionForDocument(tab.id)?.revision;
-  const { isolateHistory } = await import('@codemirror/commands');
+  const { isolateHistory } = await loadChunk(() => import('@codemirror/commands'));
   const latest = current();
   if (expected === undefined || !latest || documentBuffers.revisionForDocument(tab.id)?.revision !== revision || hasUnsaved(latest)) throw new Error('The document changed while recovery was being prepared.');
   if (!await markdownSessions.dispatch(tab.id, { changes: { from: 0, to: expected.length, insert: recoveredText }, userEvent: 'input.recover', annotations: isolateHistory.of('full') })) throw new Error('The document changed while recovery was being prepared.');

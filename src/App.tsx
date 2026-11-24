@@ -1,4 +1,4 @@
-import { Suspense, lazy, useCallback, useLayoutEffect, useRef } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useRef, type ReactNode } from 'react';
 import { useFileSystem } from './context/FileSystemContext';
 import './index.css';
 import FileExplorer from './components/FileExplorer';
@@ -9,7 +9,7 @@ import ContextMenu from './components/ContextMenu';
 import EditorPane from './components/EditorPane';
 import TerminalDock from './components/TerminalDock';
 import RecoverySurface from './components/RecoverySurface';
-import { LoadingScreen, WelcomeScreen } from './components/WelcomeScreen';
+import { LoadingScreen, VaultProblemScreen, WelcomeScreen } from './components/WelcomeScreen';
 import { closeContextMenu } from './utils/contextMenu';
 import { useRefuseUnclaimedDrop } from './app/useRefuseUnclaimedDrop';
 import { useLiveVault } from './app/useLiveVault';
@@ -58,20 +58,45 @@ import { useGlobalShortcuts } from './app/useGlobalShortcuts';
 import { useRecoveryActions } from './app/useRecoveryActions';
 import { requestDocumentKeyboard } from './utils/documentKeyboard';
 import SaveNotices from './components/SaveNotices';
+import { moduleSlot } from './components/moduleSlot';
+import { AppFailure, AppRecoveryProvider, ErrorBoundary, PartFailureBox } from './components/ErrorBoundary';
 import { opensInApp } from './utils/documentReading';
 import type { FileTreeNode } from './types';
 
 // The AI agent panel and everything under it (its CSS, the WebSocket bridge,
 // the reply renderer, the aicss components) load on first open — a reader who
 // never opens it downloads none of it.
-const AgentPanel = lazy(() => import('./components/AgentPanel'));
+// Module slots, not React.lazy: React.lazy keeps a rejected import for the life of the page, so one dropped request
+// (or a redeploy) made the panel unopenable until reload; a slot imports again on its boundary's Try again.
+const AgentPanel = moduleSlot(() => import('./components/AgentPanel')).View;
 // Opened on demand and never on the way to typing: Settings, the Trash bin and
 // the graph are each a panel the reader asks for, so none of them belongs in
 // the chunk that has to land before the editor does. `prefetchPanes` warms the
 // heavy ones at idle; these are small enough to fetch on the click.
-const SettingsPanel = lazy(() => import('./components/SettingsPanel'));
-const TrashPanel = lazy(() => import('./components/TrashPanel'));
-const GraphView = lazy(() => import('./components/GraphView'));
+const SettingsPanel = moduleSlot(() => import('./components/SettingsPanel')).View;
+const TrashPanel = moduleSlot(() => import('./components/TrashPanel')).View;
+const GraphView = moduleSlot(() => import('./components/GraphView')).View;
+
+/** A lazy panel's failure, inside the panel's own place (the agent dock, the main view). */
+function panelFailure(what: string) {
+  return (error: unknown, retry: () => void) => (
+    <div className="part-failure-host">
+      <PartFailureBox error={error} retry={retry} what={what} />
+    </div>
+  );
+}
+
+/** A modal panel's failure (Settings, Trash): the same card over the workspace, closable as the panel was. */
+function modalFailure(what: string, close: () => void) {
+  return (error: unknown, retry: () => void) => (
+    <div className="settings-overlay" onClick={close}>
+      <div className="part-failure-card" onClick={event => event.stopPropagation()}>
+        <PartFailureBox error={error} retry={retry} what={what} />
+        <button type="button" className="part-failure-close" aria-label={`Close ${what}`} onClick={close}>×</button>
+      </div>
+    </div>
+  );
+}
 
 /**
  * The composition root. Every piece of the app's state lives in a module of its
@@ -91,6 +116,8 @@ export default function App() {
     registerBeforeRootChange,
     fileTree,
     isLoading,
+    vaultProblem,
+    retryVault,
     previousVault,
     linkedVault,
     recentVaults,
@@ -179,6 +206,8 @@ export default function App() {
   });
 
   const { showSettings, setShowSettings, openSettings, showTrash, setShowTrash, openTrash } = useOverlayPanels(rootHandle);
+  const closeSettings = useCallback(() => setShowSettings(false), [setShowSettings]);
+  const closeTrash = useCallback(() => setShowTrash(false), [setShowTrash]);
   const { searchOpen, setSearchOpen, openSearch, closeSearch, handleToggleExpand, expandPaths, collapsePaths } = useExplorerState(rootHandle);
   const { restorePendingRef, vaultMovesRef, trackVaultMove, pendingFor, trashInFlightRef } = useVaultMoves();
 
@@ -286,7 +315,7 @@ export default function App() {
 
   const {
     writeFileRef, writeFileVersionedRef, clearSaveTimer, flushChainsRef, syncExitGuard,
-    flushTab, scheduleSave, updateTabContent
+    flushTab, scheduleSave, updateTabContent, checkpointNow
   } = useSaveFunnel({
     writeFile, writeFileBytes, writeFileVersioned, writeConflictCopy, getVaultActivation,
     currentVaultIdRef, rootHandleRef, indexGraphRef, recoveryEvent, trashInFlightRef, notifyRef, tellRef,
@@ -398,9 +427,9 @@ export default function App() {
   });
 
   const {
-    updateAvailable, reloadUpdatedApp, dismissUpdate
+    updateAvailable, reloadUpdatedApp, saveAndReload, dismissUpdate
   } = useUpdateNotice({
-    flushingRef, tabsRef, hasUnsaved, notifyRef
+    flushingRef, tabsRef, hasUnsaved, documentSessions, checkpointNow, notifyRef
   });
 
   const {
@@ -488,6 +517,8 @@ export default function App() {
   // eslint-disable-next-line react-hooks/refs -- the claim lives in refs by design (useSessionPersistence)
   const sessionRestored = sessionRootRef.current === rootHandle && sessionVaultIdRef.current === currentVaultId;
 
+  const appRecovery = useMemo(() => ({ saveAndReload }), [saveAndReload]);
+
   const updateNotice = updateAvailable && (
     <div className="app-update-notice" role="status">
       <span>A new version is available.</span>
@@ -496,8 +527,18 @@ export default function App() {
     </div>
   );
 
+  // Every screen below is drawn inside one boundary that App itself sits above, so a part that fails to draw leaves
+  // App — its tabs, buffers and save machinery — mounted, and the failure screen can still save before reloading.
+  const guard = (screen: ReactNode) => (
+    <AppRecoveryProvider value={appRecovery}>
+      <ErrorBoundary label="The workspace" fallback={(error, retry) => <AppFailure error={error} retry={retry} />}>
+        {screen}
+      </ErrorBoundary>
+    </AppRecoveryProvider>
+  );
+
   if (!rootHandle && !isLoading) {
-    return (
+    return guard(
       <WelcomeScreen
         linkedVault={linkedVault}
         previousVault={previousVault}
@@ -511,9 +552,25 @@ export default function App() {
     );
   }
 
-  if (isLoading) return <LoadingScreen>{updateNotice}</LoadingScreen>;
+  if (isLoading) {
+    return guard(
+      <LoadingScreen onOpenOther={() => { void pickDirectorySafely(); }} onReload={() => window.location.reload()}>
+        {dialogHost}
+        {updateNotice}
+      </LoadingScreen>
+    );
+  }
 
-  return (
+  if (vaultProblem) {
+    return guard(
+      <VaultProblemScreen problem={vaultProblem} onRetry={() => { void retryVault(); }} onOpenOther={() => { void pickDirectorySafely(); }}>
+        {dialogHost}
+        {updateNotice}
+      </VaultProblemScreen>
+    );
+  }
+
+  return guard(
     <div className="workspace">
       {sidebarCollapsed && (
         <div className="sidebar-rail">
@@ -524,6 +581,7 @@ export default function App() {
         className={`workspace-sidebar${sidebarCollapsed ? ' collapsed' : ''}${isDraggingSidebar ? ' resizing' : ''}`}
         style={{ width: sidebarCollapsed ? 0 : sidebarWidth }}
       >
+        <ErrorBoundary label="The sidebar" fallback={panelFailure('the sidebar')}>
         <FileExplorer
           readSnapshot={handleIO.file}
           rootHandle={rootHandle}
@@ -571,10 +629,16 @@ export default function App() {
           theme={theme}
           onToggleTheme={toggleTheme}
         />
+        </ErrorBoundary>
       </div>
       {!sidebarCollapsed && <div className="workspace-resize-handle" onMouseDown={startResize} />}
       <div className="workspace-main">
-        {currentVaultId && rootHandle && <RecoverySurface key={currentVaultId} vaultId={currentVaultId} activePath={activeTabPath} inspect={inspectRecovery} recover={recoverEntry} saveCopy={saveRecoveryCopy} status={announce} journal={recoveryJournal} />}
+        {currentVaultId && rootHandle && (
+          // An offer surface: if it cannot draw, the workspace goes on without it (the console says why).
+          <ErrorBoundary key={currentVaultId} label="The recovery offers" fallback={() => null}>
+            <RecoverySurface vaultId={currentVaultId} activePath={activeTabPath} inspect={inspectRecovery} recover={recoverEntry} saveCopy={saveRecoveryCopy} status={announce} journal={recoveryJournal} />
+          </ErrorBoundary>
+        )}
         {indexProblem?.activation === searchActivation && (
           <div className="disk-bar" role="alert">
             <span className="disk-bar-message">{indexProblem.kind === 'permission' ? 'Vault access is needed to update the search index.' : 'Search index unavailable.'}</span>
@@ -582,8 +646,9 @@ export default function App() {
           </div>
         )}
         {mainView === 'graph' ? (
-          <Suspense fallback={<div className="workspace-agent-loading">Loading…</div>}>
+          <ErrorBoundary label="The graph view" fallback={panelFailure('the graph view')}>
           <GraphView
+            fallback={<div className="workspace-agent-loading">Loading…</div>}
             key={`${searchActivation}:${sessionRestored ? currentVaultId : ''}`}
             vaultKey={sessionRestored && currentVaultId
               ? `vault:${currentVaultId}` : `activation:${searchActivation}`}
@@ -595,7 +660,7 @@ export default function App() {
             onOpenNode={handleOpenNode}
             theme={theme}
           />
-          </Suspense>
+          </ErrorBoundary>
         ) : (
           <EditorPane
             contentOf={contentOf}
@@ -645,7 +710,9 @@ export default function App() {
         {/* After the main view and outside its ternary, so the graph view never
             unmounts it; the shells themselves live in a module store and
             outlive the dock either way. */}
-        <TerminalDock open={terminalOpen} takeFocus={terminalOpenedByUser} onHide={hideTerminal} />
+        <ErrorBoundary label="The terminal" fallback={(error, retry) => terminalOpen && <div className="part-failure-host is-dock"><PartFailureBox error={error} retry={retry} what="the terminal" /></div>}>
+          <TerminalDock open={terminalOpen} takeFocus={terminalOpenedByUser} onHide={hideTerminal} />
+        </ErrorBoundary>
       </div>
       {agentPanelOpen && (
         <>
@@ -654,14 +721,14 @@ export default function App() {
             className="workspace-agent-panel"
             style={{ width: agentPanelWidth }}
           >
-            <Suspense fallback={<div className="workspace-agent-loading">Loading…</div>}>
-              <AgentPanel vault={agentVault} theme={theme} getHostDeps={getAgentHostDeps} takeFocus={agentOpenedByReader} onClose={closeAgentPanel} />
-            </Suspense>
+            <ErrorBoundary label="The agent panel" fallback={panelFailure('the agent panel')}>
+              <AgentPanel fallback={<div className="workspace-agent-loading">Loading…</div>} vault={agentVault} theme={theme} getHostDeps={getAgentHostDeps} takeFocus={agentOpenedByReader} onClose={closeAgentPanel} />
+            </ErrorBoundary>
           </div>
         </>
       )}
       {showSettings && (
-        <Suspense fallback={null}>
+        <ErrorBoundary label="Settings" fallback={modalFailure('Settings', closeSettings)}>
         <SettingsPanel
           editorFontSize={editorFontSize}
           codeFontSize={codeFontSize}
@@ -695,17 +762,17 @@ export default function App() {
           onRecentVaultLimitChange={setRecentVaultLimit}
           onShowVaultInTitleChange={setShowVaultInTitle}
           onResetDefaults={handleResetDefaults}
-          onClose={() => setShowSettings(false)}
+          onClose={closeSettings}
         />
-        </Suspense>
+        </ErrorBoundary>
       )}
       {/* Over the workspace like Settings, and before ConfirmDialog for the
           same reason the menu is: nearly everything this panel does raises a
           question, and the dialog has to cover the panel that asked it. */}
       {showTrash && (
-        <Suspense fallback={null}>
+        <ErrorBoundary label="The Trash" fallback={modalFailure('the Trash', closeTrash)}>
         <TrashPanel
-          onClose={() => setShowTrash(false)}
+          onClose={closeTrash}
           onCrawl={listTrash}
           onCopy={handleTrashCopy}
           onRestore={handleTrashRestore}
@@ -714,7 +781,7 @@ export default function App() {
           onReadText={handleTrashReadText}
           onReadFile={handleTrashReadFile}
         />
-        </Suspense>
+        </ErrorBoundary>
       )}
       {/* Before the dialog, so ConfirmDialog still covers it: a menu row can
           raise a question (Move to Trash), and the menu closes first anyway. */}

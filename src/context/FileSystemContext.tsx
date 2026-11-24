@@ -16,6 +16,8 @@ import { perfRoot, reportVault } from '../utils/perfHooks';
 import { sortTrashChildren, sortTrashRoot } from '../utils/trash';
 import { ENTRY_STYLE_FILE } from '../utils/entryStyle';
 import { Limiter } from '../utils/pool';
+import { beginStartup, finishStartup, startupStep, startupWalk, type WalkProgress } from '../utils/startupProgress';
+import { byteReadMs, withinFileDeadline } from '../utils/fileReadDeadline';
 import { isGitName, isHiddenEntryName } from '../utils/vaultEntries';
 import { findDirNode, shareTree, spliceDir } from '../utils/treeShare';
 import { hashBytes, sameStat } from '../utils/diskVersion';
@@ -25,7 +27,7 @@ import {
 } from '../utils/vaultChanges';
 import type { VaultChangeBatch } from '../utils/vaultChanges';
 import type {
-    FileTreeNode, FileSystemContextValue, RecentVault, StoredVault, VaultOpenResult,
+    FileTreeNode, FileSystemContextValue, RecentVault, StoredVault, VaultOpenResult, VaultProblem,
     TrashItem, TrashRestoreMode, TrashRestoreResult, VersionedWriteResult, BoardAssetAccess, BoardOwnerAccess,
 } from '../types';
 
@@ -254,8 +256,30 @@ async function buildFileTree(
     dirHandle: FileSystemDirectoryHandle,
     path = '',
     reuse?: ReadonlyMap<string, FileTreeNode>,
+    progress?: WalkProgress,
 ): Promise<FileTreeNode[]> {
-    return (await listDir(dirHandle, path, reuse)).children;
+    return (await listDir(dirHandle, path, reuse, new Limiter(WALK_CONCURRENCY), progress)).children;
+}
+
+/**
+ * A folder of the vault could not be listed. The walk is all-or-nothing, so one such folder fails the whole tree —
+ * and before this named it, that surfaced as an EMPTY sidebar with no tabs restored and no word of why (one macOS-
+ * protected or vanished folder anywhere did it on every load). A partial tree is not published instead: the tree is
+ * what tabs, the session restore, the index and asset retirement read as "what exists", and a folder missing from it
+ * would read as deleted; nothing proves all of them would tell "unreadable" apart from "gone".
+ */
+function describeError(error: unknown): string {
+    if (!(error instanceof Error) || !error.message) return String(error);
+    return error.name && error.name !== 'Error' ? `${error.name}: ${error.message}` : error.message;
+}
+
+export class FolderReadError extends Error {
+    readonly folder: string;
+    constructor(folder: string, cause: unknown) {
+        super(`${folder || 'The vault folder'}: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+        this.name = 'FolderReadError';
+        this.folder = folder;
+    }
 }
 
 // Reuse the same locale/options ordering without constructing a collator for
@@ -279,6 +303,7 @@ async function listDir(
     path = '',
     reuse?: ReadonlyMap<string, FileTreeNode>,
     limiter: Limiter = new Limiter(WALK_CONCURRENCY),
+    progress?: WalkProgress,
 ): Promise<{ children: FileTreeNode[]; styleFile?: FileSystemFileHandle }> {
     const children: FileTreeNode[] = [];
     let styleFile: FileSystemFileHandle | undefined;
@@ -289,37 +314,45 @@ async function listDir(
     const subdirs: { index: number; name: string; handle: FileSystemDirectoryHandle; path: string }[] = [];
 
     await limiter.run(async () => {
-        for await (const [name, handle] of dirHandle.entries()) {
-            if (name === ENTRY_STYLE_FILE && handle.kind === 'file') styleFile = handle;
-            if (isHiddenEntryName(name, !path, handle.kind)) continue;
+        progress?.begin(path);
+        let files = 0;
+        try {
+            for await (const [name, handle] of dirHandle.entries()) {
+                if (name === ENTRY_STYLE_FILE && handle.kind === 'file') styleFile = handle;
+                if (isHiddenEntryName(name, !path, handle.kind)) continue;
 
-            const entryPath = path ? `${path}/${name}` : name;
+                const entryPath = path ? `${path}/${name}` : name;
 
-            if (handle.kind === 'directory') {
-                const kept = reuse?.get(name);
-                if (kept && kept.kind === 'directory') {
-                    children.push(kept);
-                    continue;
+                if (handle.kind === 'directory') {
+                    const kept = reuse?.get(name);
+                    if (kept && kept.kind === 'directory') {
+                        children.push(kept);
+                        continue;
+                    }
+                    // A placeholder keeps this child's place in the list while its own
+                    // walk runs; the sort below is by name and kind, so the slot is
+                    // filled before anything reads it.
+                    subdirs.push({ index: children.length, name, handle, path: entryPath });
+                    children.push(null as unknown as FileTreeNode);
+                } else {
+                    files++;
+                    children.push({
+                        name,
+                        kind: 'file',
+                        path: entryPath,
+                        handle,
+                        parentHandle: dirHandle,
+                    });
                 }
-                // A placeholder keeps this child's place in the list while its own
-                // walk runs; the sort below is by name and kind, so the slot is
-                // filled before anything reads it.
-                subdirs.push({ index: children.length, name, handle, path: entryPath });
-                children.push(null as unknown as FileTreeNode);
-            } else {
-                children.push({
-                    name,
-                    kind: 'file',
-                    path: entryPath,
-                    handle,
-                    parentHandle: dirHandle,
-                });
             }
+        } catch (error) {
+            throw new FolderReadError(path, error);
         }
+        progress?.end(path, files);
     });
 
     await Promise.all(subdirs.map(async dir => {
-        const sub = await listDir(dir.handle, dir.path, undefined, limiter);
+        const sub = await listDir(dir.handle, dir.path, undefined, limiter, progress);
         children[dir.index] = {
             name: dir.name,
             kind: 'directory',
@@ -658,8 +691,8 @@ function isGone(err: unknown): boolean {
 async function readSnapshot(handle: FileSystemFileHandle): Promise<{ file: File; buf: ArrayBuffer }> {
     for (let attempt = 0; ; attempt++) {
         try {
-            const file = await handle.getFile();
-            return { file, buf: await file.arrayBuffer() };
+            const file = await withinFileDeadline(handle.getFile(), handle.name);
+            return { file, buf: await withinFileDeadline(file.arrayBuffer(), handle.name, byteReadMs(file.size)) };
         } catch (err) {
             if (attempt === 0 && (err as DOMException | undefined)?.name === 'NotReadableError') continue;
             throw err;
@@ -796,6 +829,11 @@ async function relistDirs(
    vault has folders, and the sidebar said "Loading vault…" for the sum of it. */
 const WALK_CONCURRENCY = 12;
 
+/** How long opening a vault waits to record it in the recent list (an IndexedDB read and write, and an identity
+ *  check against each stored vault), and how long the id waits for the menu's labels to come with it. */
+const RECORD_WAIT_MS = 4000;
+const LABEL_WAIT_MS = 1500;
+
 /** The watcher's polling cadence — see FileSystemProvider's watcher effect. */
 const POLL_THROTTLE_MS = 3000;
 const POLL_INTERVAL_MS = 15000;
@@ -805,6 +843,15 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
     const [rootHandle, setRootHandle] = useState<FileSystemDirectoryHandle | null>(null);
     const [fileTree, setFileTree] = useState<FileTreeNode[]>([]);
     const [isLoading, setIsLoading] = useState(true);
+    /** The open vault's tree could not be read (the walk is all-or-nothing): what to show instead of a workspace. */
+    const [vaultProblem, setVaultProblem] = useState<VaultProblem | null>(null);
+    /**
+     * The startup flow that owns `isLoading` — the mount's reopen of the last vault, "Restore 'X'", or a problem's
+     * Try again. A later one, or a vault the person opens from the loading screen, supersedes it: every state write
+     * it makes after an await checks its ticket first, so a call that settles a minute late (a woken disk, a slow
+     * storage answer) cannot pull the app back to a vault the person has already left.
+     */
+    const startupRef = useRef(0);
     const [previousVault, setPreviousVault] = useState<FileSystemDirectoryHandle | null>(null);
     /** What the address bar asked for and could not be given silently — the
      *  handle is known but its permission has lapsed, and `requestPermission`
@@ -998,10 +1045,10 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
      * old one's rows when a slow walk finished after a switch.
      */
     const refreshTree = useCallback(async (handle: FileSystemDirectoryHandle | null | undefined) => {
-        if (!handle) return;
+        if (!handle) return false;
         const ticket = ++treeTicketRef.current;
         const tree = await loadTree(handle);
-        if (tree) publishTree(ticket, handle, tree);
+        return !!tree && publishTree(ticket, handle, tree);
     }, [loadTree, publishTree]);
 
     /** Patch the tree after a write the context made itself (a conflict copy, a
@@ -1013,13 +1060,17 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         else await refreshTree(root);
     }, [publishTree, refreshTree]);
 
+    /** Bumped by every write of the recent list, so labels that land late never replace a newer list. */
+    const recentListGenRef = useRef(0);
     /**
      * Publish a stored list to the menu. Every write to `recentVaults` goes
      * through here or, in `recordVault` alone, through `menuVaults` directly —
      * only so that it can set the list in the same batch as the current id.
      */
     const publishVaults = useCallback(async (list: StoredVault[], root?: FileSystemDirectoryHandle | null) => {
-        setRecentVaults(await menuVaults(list, root));
+        const vaults = await menuVaults(list, root);
+        recentListGenRef.current++;
+        setRecentVaults(vaults);
     }, []);
 
     /**
@@ -1039,20 +1090,98 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
      * everything already tolerates: it lags `rootHandle` on every open anyway.
      */
     const recordVault = useCallback(async (handle: FileSystemDirectoryHandle) => {
-        try {
+        const work = (async () => {
             const { list, id } = await rememberVault(handle);
-            const vaults = await menuVaults(list, handle);
+            // The labels are the vault menu's alone, and each can cost a `resolve` round trip per stored vault: one
+            // that never answered held the open vault off the screen (measured, injected). They get a moment to
+            // land in the same batch as the id (what the link needs: see above), and otherwise follow it.
+            const labelling = menuVaults(list, handle);
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            const vaults = await Promise.race([
+                labelling,
+                new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), LABEL_WAIT_MS); }),
+            ]).finally(() => clearTimeout(timer));
+            // Answered after the person moved on (a startup left from its loading screen): this id must not land
+            // on the vault open now, or that vault's session and records would be filed under another's id.
+            if (rootHandleRef.current !== handle) return;
+            const generation = ++recentListGenRef.current;
             setCurrentVaultId(id);
-            setRecentVaults(vaults);
-        } catch (err) {
-            console.warn('Could not record the opened vault:', err);
-        }
+            setRecentVaults(vaults ?? list.map(vault => ({ ...vault, label: vault.name })));
+            if (!vaults) void labelling.then(labelled => {
+                if (rootHandleRef.current === handle && recentListGenRef.current === generation) setRecentVaults(labelled);
+            }, () => {});
+        })();
+        work.catch(err => { console.warn('Could not record the opened vault:', err); });
+        // Bounded too: a switch or startup does not wait on browser storage for longer than this. A late answer
+        // still lands (guarded above), and until it does the vault simply has no id — nothing is saved under one.
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const late = await Promise.race([
+            work.then(() => false, () => false),
+            new Promise<true>(resolve => { timer = setTimeout(() => resolve(true), RECORD_WAIT_MS); }),
+        ]).finally(() => clearTimeout(timer));
+        if (late) console.warn(`Recording "${handle.name}" in the recent vault list has not finished after ${RECORD_WAIT_MS / 1000} s (browser storage or a stored folder is not answering); going on without it.`);
+    }, []);
+
+    /** End a startup flow's hold on the loading screen — only if no later flow or switch has taken it over. */
+    const settleStartup = useCallback((ticket: number) => {
+        if (startupRef.current !== ticket) return;
+        finishStartup();
+        setIsLoading(false);
+    }, []);
+
+    /** The person opened a vault themselves: whatever startup was still running no longer speaks for the app. */
+    const supersedeStartup = useCallback(() => {
+        startupRef.current++;
+        finishStartup();
+        setIsLoading(false);
+        setVaultProblem(null);
     }, []);
 
     /**
+     * Commit a vault the browser already lets us read, record it, and walk it — the shared tail of the mount's
+     * reopen, "Restore 'X'" and a problem's Try again. A walk that fails names its folder (FolderReadError) in
+     * `vaultProblem` rather than leaving an empty sidebar; one that never settles stays on the loading screen,
+     * which names the folder it is waiting on (utils/startupProgress.ts).
+     */
+    const openAtStartup = useCallback(async (ticket: number, handle: FileSystemDirectoryHandle) => {
+        const live = () => startupRef.current === ticket;
+        commitRoot(handle);
+        // Before the tree walk, so the vault menu is already right on the first
+        // render that has a vault to show.
+        startupStep('record', handle.name);
+        await recordVault(handle);
+        if (!live()) return;
+        startupStep('walk');
+        const walkTicket = ++treeTicketRef.current;
+        try {
+            const tree = await buildFileTree(handle, '', undefined, startupWalk());
+            if (live()) publishTree(walkTicket, handle, tree);
+        } catch (error) {
+            console.error('Failed to build file tree:', error);
+            if (!live() || rootHandleRef.current !== handle) return;
+            const cause = error instanceof FolderReadError ? error.cause : error;
+            setVaultProblem({
+                vault: handle.name,
+                folder: error instanceof FolderReadError ? error.folder : null,
+                message: describeError(cause),
+                // Measured: a vault folder deleted while the browser kept its handle opened as an EMPTY vault, with
+                // its name still in the sidebar and three "Failed to build file tree" lines in the console only.
+                missing: error instanceof FolderReadError && error.folder === '' && (cause as DOMException)?.name === 'NotFoundError',
+            });
+        }
+    }, [commitRoot, recordVault, publishTree]);
+
+    /**
      * On mount, try to restore the previously saved directory handle from IndexedDB.
+     *
+     * The loading screen is up until this settles, and it ALWAYS settles on a throw (`finally`). A call that never
+     * settles is reported step by step to utils/startupProgress.ts, which the loading screen turns into words and
+     * a way on after a few seconds, and the console gets once.
      */
     useEffect(() => {
+        const ticket = ++startupRef.current;
+        const live = () => startupRef.current === ticket;
+        beginStartup('recent-vaults');
         (async () => {
             // The address bar wins over the last-used vault: a link is an
             // instruction, and a stored handle is only a default. Both are read
@@ -1061,57 +1190,82 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             const linked = readLocation().vault;
             let stored: StoredVault[] = [];
             try {
-                stored = await loadRecentVaults();
-            } catch (err) {
-                console.warn('Could not load the recent vault list:', err);
-            }
-            const target = findLinkedVault(linked, stored);
+                try {
+                    stored = await loadRecentVaults();
+                } catch (err) {
+                    console.warn('Could not load the recent vault list:', err);
+                }
+                if (!live()) return;
+                const target = findLinkedVault(linked, stored);
 
-            try {
-                if (target) {
-                    // queryPermission needs no user gesture; requestPermission
-                    // does, and there has been none — this is a page load. So a
-                    // lapsed grant is handed to App to ask for with a button.
-                    const permission = await target.handle.queryPermission({ mode: 'readwrite' });
-                    if (permission === 'granted') {
-                        commitRoot(target.handle);
-                        await recordVault(target.handle);
-                        await refreshTree(target.handle);
-                        setIsLoading(false);
+                try {
+                    if (target) {
+                        // queryPermission needs no user gesture; requestPermission
+                        // does, and there has been none — this is a page load. So a
+                        // lapsed grant is handed to App to ask for with a button.
+                        startupStep('permission', target.handle.name);
+                        const permission = await target.handle.queryPermission({ mode: 'readwrite' });
+                        if (!live()) return;
+                        if (permission === 'granted') {
+                            await openAtStartup(ticket, target.handle);
+                            return;
+                        }
+                        const labelled = (await labelVaults([target]))[0];
+                        if (!live()) return;
+                        setLinkedVault(labelled);
+                        settleStartup(ticket);
+                        const vaults = await menuVaults(stored, target.handle);
+                        if (live()) { recentListGenRef.current++; setRecentVaults(vaults); }
                         return;
                     }
-                    setLinkedVault((await labelVaults([target]))[0]);
-                    await publishVaults(stored, target.handle);
-                    setIsLoading(false);
-                    return;
-                }
 
-                const storedHandle = await get<FileSystemDirectoryHandle>(IDB_KEY);
-                if (storedHandle) {
-                    // queryPermission does not require a user gesture, unlike requestPermission
-                    const permission = await storedHandle.queryPermission({ mode: 'readwrite' });
-                    if (permission === 'granted') {
-                        commitRoot(storedHandle);
-                        // Before the tree walk, so the vault menu is already
-                        // right on the first render that has a vault to show.
-                        await recordVault(storedHandle);
-                        await refreshTree(storedHandle);
-                        setIsLoading(false); // Fix: Ensure loading state is turned off
-                        return;
-                    } else if (permission === 'prompt') {
-                        // Store it so we can show a "Restore Previous Vault" button
-                        setPreviousVault(storedHandle);
+                    startupStep('stored-vault');
+                    const storedHandle = await get<FileSystemDirectoryHandle>(IDB_KEY);
+                    if (!live()) return;
+                    if (storedHandle) {
+                        // queryPermission does not require a user gesture, unlike requestPermission
+                        startupStep('permission', storedHandle.name);
+                        const permission = await storedHandle.queryPermission({ mode: 'readwrite' });
+                        if (!live()) return;
+                        if (permission === 'granted') {
+                            await openAtStartup(ticket, storedHandle);
+                            return;
+                        } else if (permission === 'prompt') {
+                            // Store it so we can show a "Restore Previous Vault" button
+                            setPreviousVault(storedHandle);
+                        }
                     }
+                } catch (err) {
+                    console.warn('Could not restore directory handle:', err);
                 }
+                if (!live()) return;
+                // No vault restored. The welcome screen shows none of the recent
+                // list, so it need not wait for the list's labels; the list still
+                // loads, so whatever the user opens next lands on top of a
+                // complete history.
+                settleStartup(ticket);
+                const vaults = await menuVaults(stored, null);
+                if (live()) { recentListGenRef.current++; setRecentVaults(vaults); }
             } catch (err) {
-                console.warn('Could not restore directory handle:', err);
+                console.warn('Vault startup failed:', err);
+            } finally {
+                settleStartup(ticket);
             }
-            // No vault restored — the list still loads, so whatever the user
-            // opens next lands on top of a complete history.
-            await publishVaults(stored, null);
-            setIsLoading(false);
         })();
-    }, [refreshTree, recordVault, publishVaults, commitRoot]);
+    }, [openAtStartup, settleStartup]);
+
+    /** Read the open vault's tree again after it failed (`vaultProblem`): the problem screen's Try again. */
+    const retryVault = useCallback(async () => {
+        const handle = rootHandleRef.current;
+        if (!handle) return;
+        const ticket = ++startupRef.current;
+        beginStartup('walk');
+        setVaultProblem(null);
+        setIsLoading(true);
+        try { await openAtStartup(ticket, handle); }
+        catch (err) { console.warn('Could not read the vault again:', err); }
+        finally { settleStartup(ticket); }
+    }, [openAtStartup, settleStartup]);
 
 
     /**
@@ -1144,7 +1298,8 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             // Picking the folder already open is a no-op, not a vault switch —
             // keep the handle the app (and every open tab) is already using.
             if (await isCurrentVault(handle)) {
-                await refreshTree(rootHandleRef.current);
+                // Picked from a loading screen that is stuck on this same vault: a walk that lands is a way out.
+                if (await refreshTree(rootHandleRef.current) && isLoading) supersedeStartup();
                 return 'ok';
             }
             // Walk before committing, exactly as openVaultHandle does — see the
@@ -1160,6 +1315,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             try { if (previousRoot) await beforeRootChangeRef.current?.(); }
             catch (error) { if (previousRoot) await set(IDB_KEY, previousRoot); throw error; }
             setPreviousVault(null);
+            supersedeStartup();
             commitRoot(handle);
             commitTree(tree, handle);
             await recordVault(handle);
@@ -1181,7 +1337,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             pickerOpenRef.current = false;
             switchInFlightRef.current = false;
         }
-    }, [refreshTree, loadTree, recordVault, isCurrentVault, commitRoot, commitTree]);
+    }, [refreshTree, loadTree, recordVault, isCurrentVault, commitRoot, commitTree, supersedeStartup, isLoading]);
 
     /**
      * Take one vault off the recent list. Nothing on disk is touched: the list
@@ -1278,6 +1434,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             try { if (previousRoot) await beforeRootChangeRef.current?.(); }
             catch (error) { if (previousRoot) await set(IDB_KEY, previousRoot); throw error; }
             setPreviousVault(null);
+            supersedeStartup();
             commitRoot(handle);
             commitTree(tree, handle);
             await recordVault(handle);
@@ -1295,7 +1452,7 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         } finally {
             switchInFlightRef.current = false;
         }
-    }, [loadTree, recordVault, isCurrentVault, commitRoot, commitTree]);
+    }, [loadTree, recordVault, isCurrentVault, commitRoot, commitTree, supersedeStartup]);
 
     /**
      * Take the grant a linked vault still needs.
@@ -1333,8 +1490,8 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
      * even for CRLF-authored files.
      */
     const readFile = useCallback(async (fileHandle: FileSystemFileHandle) => {
-        const file = await fileHandle.getFile();
-        return decodeDocumentText(await file.arrayBuffer()).replace(/\r\n?/g, '\n');
+        const { buf } = await readSnapshot(fileHandle);
+        return decodeDocumentText(buf).replace(/\r\n?/g, '\n');
     }, []);
 
     /**
@@ -1352,8 +1509,8 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
      * them irreversibly.
      */
     const readFileBytes = useCallback(async (fileHandle: FileSystemFileHandle) => {
-        const file = await fileHandle.getFile();
-        return new Uint8Array(await file.arrayBuffer());
+        const { buf } = await readSnapshot(fileHandle);
+        return new Uint8Array(buf);
     }, []);
 
     /** Write raw bytes to a file handle. */
@@ -2034,17 +2191,21 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         try {
             const permission = await previousVault.requestPermission({ mode: 'readwrite' });
             if (permission === 'granted') {
-                commitRoot(previousVault);
+                const ticket = ++startupRef.current;
+                beginStartup('record');
+                setVaultProblem(null);
                 setIsLoading(true);
-                await recordVault(previousVault);
-                await refreshTree(previousVault);
-                setPreviousVault(null);
-                setIsLoading(false);
+                try {
+                    await openAtStartup(ticket, previousVault);
+                    if (startupRef.current === ticket) setPreviousVault(null);
+                } finally {
+                    settleStartup(ticket);
+                }
             }
         } catch (err) {
             console.error('Error restoring vault permission:', err);
         }
-    }, [previousVault, refreshTree, recordVault, commitRoot]);
+    }, [previousVault, openAtStartup, settleStartup]);
 
     /**
      * Move a file — or a whole folder — into the Trash: the `.Garbage` folder
@@ -2450,9 +2611,9 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         let blob: File;
         const endRead = beginForegroundRead();
         try {
-            try { blob = await handle.getFile(); } catch (error) {
+            try { blob = await withinFileDeadline(handle.getFile(), handle.name); } catch (error) {
                 if (!(error instanceof DOMException) || error.name !== 'NotReadableError') throw error;
-                blob = await handle.getFile();
+                blob = await withinFileDeadline(handle.getFile(), handle.name);
             }
         } finally { endRead(); }
         signal?.throwIfAborted();
@@ -2916,6 +3077,8 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         nameTaken: entryExists,
         fileTree,
         isLoading,
+        vaultProblem,
+        retryVault,
         previousVault,
         linkedVault,
         recentVaults,
@@ -2978,6 +3141,8 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         registerBeforeRootChange,
         fileTree,
         isLoading,
+        vaultProblem,
+        retryVault,
         previousVault,
         linkedVault,
         recentVaults,

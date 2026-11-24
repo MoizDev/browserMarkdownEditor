@@ -1,6 +1,7 @@
 import type { NativeEmbedHost } from '../types/nativeCanvas';
 import type { EmbedContainment, EmbedContainmentApproval, EmbedContainmentOptions } from '../platform/embedContainment.types';
 import { EMBED_PROVIDER_ORIGINS } from '../platform/embedPolicy';
+import { loadChunk } from '../platform/chunkLoad';
 
 /** App-lifetime registry and lazy platform binding; documents cannot grant origins or consent. */
 export function createNativeEmbedHost(): NativeEmbedHost {
@@ -16,7 +17,7 @@ export function createNativeEmbedHost(): NativeEmbedHost {
                 || options.manifest.origins.some((origin, index) => origin !== manifest.origins[index])) {
                 throw new Error('Embed providers do not match the App registry');
             }
-            const platform = await import('../platform/embedContainment');
+            const platform = await loadChunk(() => import('../platform/embedContainment'));
             approval = platform.isEmbedContainmentApproved;
             return platform.createEmbedContainment({ ...options, manifest });
         },

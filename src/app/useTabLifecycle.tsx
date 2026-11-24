@@ -24,6 +24,7 @@ import { isCanvasFile, isNativeDrawingFile } from '../utils/fileTypes';
 import { describeReadError, isNotFound } from './readErrors';
 import { hasHostedNativeOwner } from './nativeOwners';
 import { tracksAssets } from './tracksAssets';
+import { loadHelpDoc } from '../utils/helpDocLoader';
 
 /** How many closed documents ⌥⇧T can reach back through. Session-only and
  *  bounded: a long session closes hundreds of tabs and nobody reaches past a
@@ -306,6 +307,26 @@ export function useTabLifecycle(deps: UseTabLifecycleDeps) {
         setTabs(prev => prev.map(t => t.id === tab.id ? { ...t, file: {...t.file,handle}, readError: undefined, disk: undefined, readerCapabilities: undefined, diskRev: (t.diskRev ?? 0) + 1, representation: representationFor(t.file.name, false, t.representation.generation + 1) } : t));
         return true;
       } finally { retryingReadsRef.current.delete(tab.id); }
+    }
+    // The guide's text is a chunk of the app, not a file: a restore that could not fetch it kept its tab, unreadable.
+    if (tab?.readError && tab.file.isHelp) {
+      if (retryingReadsRef.current.has(tab.id)) return false;
+      retryingReadsRef.current.add(tab.id);
+      try {
+        const content = await loadHelpDoc();
+        if (!tabsRef.current.some(t => t.id === tab.id)) return false;
+        if (!documentBuffers.get(tab.id)) seedDocumentBuffer(tab.id, tab.file.path, content, true);
+        documentBuffers.report(tab.id, content, true);
+        documentBuffers.setReadable(tab.id, true);
+        setTabs(prev => prev.map(t => t.id === tab.id && t.readError
+          ? { ...t, readError: undefined, representation: representationFor(t.file.name, true, t.representation.generation + 1) } : t));
+        return true;
+      } catch (err) {
+        setTabs(prev => prev.map(t => t.id === tab.id && t.readError ? { ...t, readError: describeReadError(err) } : t));
+        return false;
+      } finally {
+        retryingReadsRef.current.delete(tab.id);
+      }
     }
     if (!tab?.readError || !tab.file.handle) return !!tab && !tab.readError;
     if (retryingReadsRef.current.has(tab.id)) return false;

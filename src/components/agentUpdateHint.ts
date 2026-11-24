@@ -10,6 +10,7 @@ import { useSyncExternalStore } from 'react';
 import {
     CONNECTED_ONCE_KEY, getAgentUpdateNotice, subscribeAgentUpdateNotice, type AgentUpdateNotice,
 } from '../utils/agentUpdateNotice';
+import { loadChunk } from '../platform/chunkLoad';
 
 export function useAgentUpdateNotice(): AgentUpdateNotice {
     return useSyncExternalStore(subscribeAgentUpdateNotice, getAgentUpdateNotice);
@@ -38,7 +39,7 @@ export function scheduleAgentUpdateCheck(): void {
         return;
     }
     const run = () => {
-        import('../utils/agentBridge').then(m => m.agentBridge.checkInBackground()).catch(() => { /* the panel reports problems; a hint does not */ });
+        loadChunk(() => import('../utils/agentBridge')).then(m => m.agentBridge.checkInBackground()).catch(() => { /* the panel reports problems; a hint does not */ });
     };
     const idle = (window as unknown as { requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number }).requestIdleCallback;
     if (idle) idle(run, { timeout: 5000 });

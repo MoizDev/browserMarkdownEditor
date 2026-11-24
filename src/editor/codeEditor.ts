@@ -34,6 +34,7 @@ import {
     keymap, lineNumbers, rectangularSelection,
 } from '@codemirror/view';
 import { rainbowBrackets } from './rainbowBrackets';
+import { loadChunk } from '../platform/chunkLoad';
 
 /** Holds the grammar, which arrives after the state is built. */
 export const codeLanguageCompartment = new Compartment();
@@ -155,7 +156,7 @@ function racketParser(scheme: StreamParser<unknown>): StreamParser<unknown> {
 }
 
 async function loadRacket(): Promise<LanguageSupport> {
-    const { scheme } = await import('@codemirror/legacy-modes/mode/scheme');
+    const { scheme } = await loadChunk(() => import('@codemirror/legacy-modes/mode/scheme'));
     return new LanguageSupport(StreamLanguage.define(racketParser(scheme as StreamParser<unknown>)));
 }
 

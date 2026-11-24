@@ -4,6 +4,7 @@ import { perfRoot } from '../utils/perfHooks';
 import { GraphLayoutClient } from './graphLayoutClient';
 import { getGraphLayout, putGraphLayout, queueGraphLayoutSave } from '../utils/graphLayoutStore';
 import type { StoredGraphLayout } from '../utils/graphLayoutStore';
+import { loadChunk } from '../platform/chunkLoad';
 
 /**
  * GraphView — an Obsidian-style "Neural Brain" graph of the vault.
@@ -201,7 +202,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
         };
         const memory = getGraphLayout(vaultKey);
         if (memory || !vaultKey.startsWith('vault:')) start(memory);
-        else void import('../context/vaultIndex/persistence').then(db => db.loadLayout(vaultKey.slice(6))).then(start, () => start());
+        else void loadChunk(() => import('../context/vaultIndex/persistence')).then(db => db.loadLayout(vaultKey.slice(6))).then(start, () => start());
         return () => {
             live = false;
             if (!owner) return;
@@ -468,7 +469,7 @@ export default function GraphView({ nodes, links, activeFilePath, onOpenNode, th
                     const snapshot = layout.snapshot();
                     putGraphLayout(vaultKey, snapshot);
                     if (vaultKey.startsWith('vault:')) queueGraphLayoutSave(vaultKey, async () => {
-                        const { saveLayout } = await import('../context/vaultIndex/persistence');
+                        const { saveLayout } = await loadChunk(() => import('../context/vaultIndex/persistence'));
                         await saveLayout(vaultKey.slice(6), snapshot);
                     });
                 }

@@ -9,6 +9,7 @@ import { sameStat } from '../utils/diskVersion';
 import { getNotebookExporter } from '../utils/notebookRenderCache';
 import type { UseNotebookExportDeps } from './useNotebookExport';
 import { isCancellation } from '../platform/workers/envelope';
+import { loadChunk } from '../platform/chunkLoad';
 
 /**
  * A notebook's Export to PDF: the render, then the destination transaction.
@@ -45,7 +46,7 @@ export async function handleExportNotebook(deps: Pick<NotebookExportDeps,
     if (typeof exporter === 'function') {
       const exported = await exporter();
       if (!exported || !isCurrent()) return;
-      const { buildNotebookPdfAsync } = await import('../utils/pdfBuildClient');
+      const { buildNotebookPdfAsync } = await loadChunk(() => import('../utils/pdfBuildClient'));
       paper = exported.paper;
       bytes = await buildNotebookPdfAsync(paper, exported.overlays, { path: file.path, exportedAt: Date.now() });
     } else {

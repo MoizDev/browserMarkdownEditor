@@ -118,12 +118,12 @@ when the user EXPLICITLY asks for a code-based test, write it — only that test
 - **Long-running async work over the vault is serialized, never merely started** — trashing a folder,
   asset reconciles, the recent-vaults read-modify-write and every vault switch each hold an in-flight
   ref or a promise queue: `StrictMode` (on, `main.tsx`) double-runs effects; users click twice mid-copy.
-- **The PDF/canvas module split is bundle-size discipline enforced by import discipline** —
-  native runtimes, worker clients and rendering services stay behind their lazy hosts, as the lint dark zone
-  (`bme/import-zones` `darkExcept`/`darkLazy`) enforces; load `pdf-and-drawings` before adding an import. Chunks
-  warm at idle (`components/prefetchPanes.ts`) by the kinds the vault holds: markdown-only fetches none.
-  The PDFium engine is committed (`src/pdf/vendor/pdfium/`, rebuilt by `build/pdfium/`); dev and production
-  load those exact bytes, and `build/pdfiumAssets.ts` fails the build on any mismatch with its manifest.
+- **The PDF/canvas module split is bundle-size discipline enforced by import discipline** — engines stay behind
+  their lazy hosts (lint `bme/import-zones`); load `pdf-and-drawings` before adding an import. Chunks warm at idle
+  by the kinds the vault holds (markdown-only fetches none); the committed PDFium bytes are integrity-checked.
+- **Nothing a person waits on waits silently forever.** Startup reports its step (`utils/startupProgress.ts`) and
+  settles in a `finally`; every UI `import()` goes through `platform/chunkLoad.ts` `loadChunk`; each pane and lazy
+  panel has its own `ErrorBoundary` (never `React.lazy`); the build id lives in `version.json`, never in a chunk.
 - **`readFile` normalizes `\r\n → \n`, and everything downstream depends on it**; a reader that skips it drifts on CRLF.
 - **The user guide is `utils/helpDoc.ts`**, one string opened as a read-mode tab (one source line per paragraph):
   a user-facing change is not finished until it describes its gestures. Its pseudo-path is a **bare name**.

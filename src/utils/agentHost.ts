@@ -39,6 +39,7 @@ import {
     parseChatIndex, serializeChatIndex,
 } from './vaultAgentStore';
 import { emptyTree, parseTree, serializeTree, type ChatTree } from './chatTree';
+import { loadChunk } from '../platform/chunkLoad';
 
 /** How long `openCanvasForAgent` waits for a canvas to mount and register. */
 const CANVAS_MOUNT_TIMEOUT_MS = 15_000;
@@ -244,7 +245,7 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             const found =openTabAt(deps, path) ? undefined : await fileAt(deps.root, path);
             guard.signal?.throwIfAborted();
             if (!current()) throw new DOMException('Canvas tool source changed', 'AbortError');
-            const { readNativeCanvasShapePage } = await import('./nativeCanvasAgentRead');
+            const { readNativeCanvasShapePage } = await loadChunk(() => import('./nativeCanvasAgentRead'));
             return readNativeCanvasShapePage({ deps, path, handle: found?.handle, query,
                 guard: { signal: guard.signal, isCurrent: current } });
         },
@@ -277,7 +278,7 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             }
             // A PDF's stored page is what a never-viewed ink board shows; it is the same record the classic reader keeps.
             const stored = isPdfFile(path) ? readPdfViewPos(path) : undefined;
-            const { readNativeCanvasView } = await import('./nativeCanvasAgentRead');
+            const { readNativeCanvasView } = await loadChunk(() => import('./nativeCanvasAgentRead'));
             return readNativeCanvasView({ deps, path, storedPage: stored ? stored.page + 1 : undefined,
                 guard: { signal: guard.signal, isCurrent: current } });
         },
@@ -289,7 +290,7 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             const found = await fileAt(deps.root, path);
             guard.signal?.throwIfAborted();
             if (!found || !current()) return null;
-            const { readNativeClosedCanvasPicture } = await import('./nativeCanvasAgentRead');
+            const { readNativeClosedCanvasPicture } = await loadChunk(() => import('./nativeCanvasAgentRead'));
             return readNativeClosedCanvasPicture({ deps, path, handle: found.handle, page, maxSide,
                 guard: { signal: guard.signal, isCurrent: current } });
         },
@@ -305,7 +306,7 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             const found = await fileAt(deps.root, path);
             guard.signal?.throwIfAborted();
             if (!found || !current()) return null;
-            const { readNativePdfPicture } = await import('./nativeCanvasAgentRead');
+            const { readNativePdfPicture } = await loadChunk(() => import('./nativeCanvasAgentRead'));
             return readNativePdfPicture({ deps, path, handle: found.handle, maxSide,
                 guard: { signal: guard.signal, isCurrent: current } });
         },
@@ -322,7 +323,7 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
             }
             guard.signal?.throwIfAborted();
             if (!current()) throw new DOMException('Canvas tool source changed', 'AbortError');
-            const { applyNativeCanvasOperations } = await import('./nativeCanvasAgentMutation');
+            const { applyNativeCanvasOperations } = await loadChunk(() => import('./nativeCanvasAgentMutation'));
             return applyNativeCanvasOperations({ deps: getDeps(), path, ops,
                 guard: { signal: guard.signal, isCurrent: current } });
         },
@@ -443,7 +444,7 @@ export function createAgentHosts(getDeps: () => AgentHostDeps): AgentHost {
                 : isNotebookFile(path) && routeEngines().canvas.notebook.engine === 'board' ? 'notebook' : null;
             if (nativeKind) {
                 if (content.trim()) return { ok: false, reason: 'invalid', message: 'Create the native canvas empty, then use canvas_apply.' };
-                const { createEmptyNativeBytes } = await import('../whiteboard/host/emptyNative');
+                const { createEmptyNativeBytes } = await loadChunk(() => import('../whiteboard/host/emptyNative'));
                 content = await createEmptyNativeBytes(nativeKind).text();
             }
             const parent = await dirAt(root, parentVaultPath(path));

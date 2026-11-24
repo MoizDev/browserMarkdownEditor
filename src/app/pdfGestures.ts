@@ -23,6 +23,7 @@ import { createCanvasSessionBridge } from '../utils/canvasSessionBridge';
 import { bindRecoveryAdapter } from '../utils/recoveryAdapters';
 import { hasHostedNativeOwner, RECOVERY_SESSION_BINDING } from './nativeOwners';
 import type { UsePdfActionsDeps } from './usePdfActions';
+import { loadChunk } from '../platform/chunkLoad';
 
 /**
  * The PDF gestures that only ever run on a PDF the reader is looking at:
@@ -69,7 +70,7 @@ export async function handleUnsignedPdfCopy(deps: Pick<PdfGestureDeps,
     check();
     if (version.hash !== displayed.hash) { setDiskState(source.id, 'conflict'); throw new Error('The PDF changed on disk. Resolve that change before creating an unsigned copy.'); }
     const [{ prepareUnsignedPdfCopy }, { getSharedPdfPool }] = await Promise.all([
-      import('../pdf/writing/unsignedCopyClient'), import('../pdf/session/startup'),
+      loadChunk(() => import('../pdf/writing/unsignedCopyClient')), loadChunk(() => import('../pdf/session/startup')),
     ]);
     check();
     const prepared = await prepareUnsignedPdfCopy({ pool: getSharedPdfPool(), source: snapshot.blob.slice(0, snapshot.blob.size, 'application/pdf'),
@@ -294,7 +295,7 @@ async function writeTurns(deps: RotateDeps, path: string, id: string, turns: Pen
       check(); setDiskState(id, 'conflict'); return failed;
     }
     check();
-    const [{ rotatePdfIncrementally }] = await Promise.all([import('../pdf/writing/rotationClient')]);
+    const [{ rotatePdfIncrementally }] = await Promise.all([loadChunk(() => import('../pdf/writing/rotationClient'))]);
     check();
     const result = await rotatePdfIncrementally({ source: snapshot.blob.slice(0, snapshot.blob.size, 'application/pdf'),
       turns: { all: turns.all % 4, pages: [...turns.pages].map(([page, amount]) => [page, amount % 4] as [number, number]) }, signal: controller.signal });

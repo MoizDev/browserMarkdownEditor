@@ -1491,7 +1491,10 @@ function DocumentPane({
                         <span className="unread-pane-hint">
                             {unsupported
                                 ? 'This file’s format is not supported by this build. Nothing was changed, and its tab is kept.'
-                                : 'Another program may be using it, it may not be downloaded yet, or it can’t be opened right now. Nothing was changed, and its tab is kept.'}
+                                : file.isHelp
+                                    // The guide is a part of the app, fetched when shown — not a file anyone else holds.
+                                    ? 'The guide is downloaded with the app, and it could not be just now. Its tab is kept.'
+                                    : 'Another program may be using it, it may not be downloaded yet, or it can’t be opened right now. Nothing was changed, and its tab is kept.'}
                         </span>
                         <span className="unread-pane-detail" data-tooltip={tab.readError}>{tab.readError}</span>
                         {!unsupported && (

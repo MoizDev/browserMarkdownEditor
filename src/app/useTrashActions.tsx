@@ -9,6 +9,7 @@ import type { DocumentSessionStore } from '../utils/documentSessions';
 import { collectFiles } from '../utils/tree';
 import type { FlushTab } from './types';
 import type { AppDialogs, Ask, Notify, Tell } from './useAppDialogs';
+import { loadChunk } from '../platform/chunkLoad';
 
 /** Which open documents trashing `node` takes. A folder's own path is never a
  *  document's — except that the Help guide's pseudo-path is a bare name, so a
@@ -232,7 +233,7 @@ export function useTrashActions(deps: UseTrashActionsDeps) {
 
   /** Put one trashed item back beside the `.Garbage` it was found in. */
   const handleTrashRestore = useCallback(async (item: TrashItem): Promise<TrashRestoreResult> =>
-    (await import('./trashBin')).handleTrashRestore({
+    (await loadChunk(() => import('./trashBin'))).handleTrashRestore({
       rootHandleRef, tabsRef, trashInFlightRef, reconcileQueueRef, showStatus, tell, askChoice,
       restoreFromTrash, removeTab, flushTab, preparePdfDeparture, documentSessions, requeueAssetsAffected,
       writeEntryStyles, pendingFor, trackVaultMove,
@@ -244,14 +245,14 @@ export function useTrashActions(deps: UseTrashActionsDeps) {
 
   /** Erase one trashed item. One of the app's two points of no return. */
   const handleTrashCopy = useCallback(async (item: TrashItem) =>
-    (await import('./trashBin')).handleTrashCopy({
+    (await loadChunk(() => import('./trashBin'))).handleTrashCopy({
       rootHandle, trashInFlightRef, reconcileQueueRef, announce, notify, getVaultActivation, copyTrashFile,
     }, item), [
       announce, copyTrashFile, getVaultActivation, notify, rootHandle, reconcileQueueRef, trashInFlightRef,
     ]);
 
   const handleTrashDelete = useCallback(async (item: TrashItem) =>
-    (await import('./trashBin')).handleTrashDelete({
+    (await loadChunk(() => import('./trashBin'))).handleTrashDelete({
       trashInFlightRef, reconcileQueueRef, ask, tell, deleteFromTrash,
     }, item), [
       ask, tell, deleteFromTrash, reconcileQueueRef, trashInFlightRef,
@@ -259,7 +260,7 @@ export function useTrashActions(deps: UseTrashActionsDeps) {
 
   /** Erase every `.Garbage` in the vault. The other point of no return. */
   const handleTrashEmpty = useCallback(async (count: number) =>
-    (await import('./trashBin')).handleTrashEmpty({
+    (await loadChunk(() => import('./trashBin'))).handleTrashEmpty({
       trashInFlightRef, reconcileQueueRef, ask, tell, emptyTrash,
     }, count), [
       ask, tell, emptyTrash, reconcileQueueRef, trashInFlightRef,

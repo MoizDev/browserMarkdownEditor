@@ -20,6 +20,7 @@ import { describeReadError } from './readErrors';
 import type { Ask, Tell } from './useAppDialogs';
 import type { FlushTab, IndexGraphRef, NativePolicy, PdfRebuildEntry, RecoveryEvent, SetDiskState, SetTabs } from './types';
 import type { UseDiskBarActionsDeps } from './useDiskBarActions';
+import { loadChunk } from '../platform/chunkLoad';
 
 /**
  * The DiskBar's buttons. A document only gets a DiskBar when its file changed
@@ -113,7 +114,7 @@ export async function handleDiskAction(deps: Pick<DiskBarActionDeps,
       }
       if (!isPdf || typeof content !== 'string') return content;
       if (!pdf) return null;
-      const { buildAnnotatedPdfAsync } = await import('../utils/pdfBuildClient');
+      const { buildAnnotatedPdfAsync } = await loadChunk(() => import('../utils/pdfBuildClient'));
       return buildAnnotatedPdfAsync(pdf.original, content, pdf.overlays);
     } };
   };

@@ -252,6 +252,33 @@ export async function readLegacyRecords(text: string, options: LegacyRecordOptio
     }
     const byId = new Map<NodeId, Node>();
     for (const node of nodes) if (!byId.has(node.id)) byId.set(node.id, node);
+    // A board holds at most 64 nested containers (the model's V-2 limit); the old app had none. An item deeper than that is left
+    // out and named, as any item the board cannot hold is: past the limit, load repair could only open the board read-only,
+    // and an old board that cannot be admitted editable fails whole (measured: 70 nested groups, "Container nesting exceeds 64").
+    const shapeById = new Map(shapes.map(shape => [shape.id as string, shape]));
+    const tooDeep = (node: Node): boolean => {
+        const seen = new Set<Node>([node]);
+        for (let depth = 1, current = node; ; depth++) {
+            if (depth > 64) return true;
+            const parent = byId.get(current.parent as NodeId);
+            // A root, a missing parent or a cycle: repair decides those.
+            if (!parent || seen.has(parent)) return false;
+            seen.add(parent); current = parent;
+        }
+    };
+    const deep = nodes.filter(tooDeep);
+    if (deep.length) {
+        const left = new Set(deep);
+        for (const node of deep) {
+            const shape = shapeById.get(node.id);
+            if (shape) preserve(shape.source, shape.id, 'shape');
+            report.refuse(node.id, 'Nested more than 64 levels deep', legacyItemName(shape?.type));
+            if (byId.get(node.id) === node) byId.delete(node.id);
+        }
+        let kept = 0;
+        for (const node of nodes) if (!left.has(node)) nodes[kept++] = node;
+        nodes.length = kept;
+    }
     if (options.kind !== 'whiteboard' && nodes.length) {
         if (!options.preparePages) throw new Error('Paged import requires page geometry');
         const pageForRoot = await options.preparePages(shapes, nodes, sheets, envelope.paper);

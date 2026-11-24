@@ -36,8 +36,15 @@ export class ReportBuilder {
     }
 }
 
-const plural = (count: number, noun: string) => count === 1 ? noun
-    : /(s|x|ch|sh)$/.test(noun) ? `${noun}es` : /[^aeiou]y$/.test(noun) ? `${noun.slice(0, -1)}ies` : `${noun}s`;
+// A noun phrase is counted by its head: "2 pictures without their files", "3 items off the pages". Pluralised as one word,
+// two missing pictures read "2 picture without its files".
+const plural = (count: number, noun: string): string => {
+    if (count === 1) return noun;
+    const without = / without its (.+)$/.exec(noun);
+    if (without) return `${plural(count, noun.slice(0, without.index))} without their ${plural(count, without[1])}`;
+    if (noun.endsWith(' off the pages')) return `${plural(count, noun.slice(0, -' off the pages'.length))} off the pages`;
+    return /(s|x|ch|sh)$/.test(noun) ? `${noun}es` : /[^aeiou]y$/.test(noun) ? `${noun.slice(0, -1)}ies` : `${noun}s`;
+};
 
 /** Groups equal texts, most frequent first, as "text (×3)", capped at `cap` distinct texts then "+N more".
  * One reason per shape joined raw printed the user's board as "Invalid stroke coordinate or pressure; …" 45 times. */

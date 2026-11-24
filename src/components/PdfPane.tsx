@@ -857,7 +857,9 @@ function PdfPane({ documentId, reading, file, theme, nativeCanvasHost, attachCan
                 {printError && <> {printError}</>}
             </ConfirmDialog>}
             {(disk || pdfRebuild) && <DiskBar name={file.name} state={disk ?? pdfRebuild!.state} pdfRebuild={disk ? undefined : pdfRebuild} unsaved={isDirty} mineLost={diskMineLost} path={file.path} onAction={onDiskAction} />}
-            {legacyOffer && !legacyConversion && <div className="pdf-signed-notice" role="status" onContextMenu={event => event.preventDefault()}>
+            {/* Not again once chosen in this visit: unsaved ink or a DiskBar turns canConvertLegacy off, and the converted board
+                came up under a disabled "Convert legacy annotations…" offer for as long as either lasted. */}
+            {legacyOffer && !legacyConversion && legacyConversionEntry !== annotateEntry && <div className="pdf-signed-notice" role="status" onContextMenu={event => event.preventDefault()}>
                 <span>These annotations use Classic format. The original PDF remains available to read.</span>
                 <button type="button" className="pdf-pane-action" disabled={!canConvertLegacy}
                     data-tooltip={!canConvertLegacy ? 'Conversion requires a current, unchanged PDF with verified write safety.' : undefined}

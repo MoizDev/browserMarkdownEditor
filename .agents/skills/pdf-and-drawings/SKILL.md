@@ -72,7 +72,10 @@ come back to either.
   about 10x the PDFium CPU.
 - Tiles mirror into the session (`tileMirror.ts`): pixels belong to the document session, not the layer. After a
   byte-generation change, `versionBridge.ts` shows old mirrors as non-current stand-ins; cover "Updating" until a
-  current, complete, sharp frame presents. Never replay a raw frame or accept a stale geometry proof.
+  current, complete, sharp frame presents. Never replay a raw frame or accept a stale geometry proof. That frame is
+  proved on the backend that presented it (`coverage(view, backend !== 'canvas2d')`): a WebGL2 tile drops its bitmap
+  once uploaded, so a canvas2d proof never passes there, and a board covered at a bridge's expiry stayed under
+  "Updating PDF view…" for good. An expiry over pages already shown sharp covers nothing (`inkBackdrop.ts`).
 - Until its first present, `PdfTiledView` lays blank paper (`.pdf-tiled-paper`, `pagePresentation` boxes) under the
   canvas, so the picture lands in place; PDF wait labels (`.is-waiting`) fade in only after 400 ms.
 - The wheel (and ctrl+wheel pinch) is taken on `.pdf-tiled-content`, not the surface: links are overlay buttons.

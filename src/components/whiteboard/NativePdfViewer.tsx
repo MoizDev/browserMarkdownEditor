@@ -132,9 +132,9 @@ function PdfViewLease({ props, sourceState, handoff, awaitingPresentation, rebin
                     const current = latest.current;
                     const paired: NativePdfBackdrop & { readonly sourceToken: typeof source.source.token; isCurrentSource(): boolean } = {
                         ...backdrop, sourceToken: source.source.token, isCurrentSource: () => currentSource(source),
-                        notePresentation() {
+                        notePresentation(backend) {
                             if (!alive || abort.signal.aborted || !currentSource(source)) return;
-                            backdrop.notePresentation?.(); presented();
+                            backdrop.notePresentation?.(backend); presented();
                         },
                         assertCaptureCurrent() { if (!currentSource(source)) throw new Error('PDF backdrop source is updating'); },
                     };

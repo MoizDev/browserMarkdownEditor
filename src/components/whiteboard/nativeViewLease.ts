@@ -8,7 +8,7 @@ import { cameraForPagedPosition, fitWidthZ, pagedPosition, surfaceToWorld, type 
 import type { Rect, ViewState } from '../../platform/types';
 import type { RenderToken } from '../../platform/render/types';
 import { createPlatformCapturer } from '../../platform/render/captureRuntime';
-import type { CompositorCaptureOptions } from '../../platform/render/compositor.types';
+import type { CompositorBackend, CompositorCaptureOptions } from '../../platform/render/compositor.types';
 import type { CaptureRequest, CaptureSnapshot } from '../../platform/render/capture';
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { NativeCanvasHost, NativeCanvasIdentity } from '../../types/nativeCanvas';
@@ -52,7 +52,7 @@ export interface NativePdfBackdrop {
     readonly sourceToken?: RenderToken;
     isCurrentSource?(): boolean;
     setVisible(visible: boolean, focused: boolean): void;
-    notePresentation?(): void;
+    notePresentation?(backend: CompositorBackend): void;
     dispose(): void;
 }
 
@@ -535,7 +535,7 @@ export function createNativeViewLease(options: {
                 if (presentation && renderAuditEnabled() && !certifyPresentation(presentation)) auditCount('embed', 'uncertified:' + (!presentation.complete ? 'incomplete'
                     : !presentation.sharp ? 'not-sharp' : presentation.staleVersion ? 'stale' : 'identity'));
                 viewer.presentationAccepted(presentation && certifyPresentation(presentation) ? presentation : null);
-                if (presentation && certifyPresentation(presentation)) backdrop?.notePresentation?.();
+                if (presentation && certifyPresentation(presentation)) backdrop?.notePresentation?.(presentation.backend);
                 if (presentation && certifyPresentation(presentation)) recordBoardPresentation(performance.now(), presentation.backend);
                 // A sharp, complete frame at full quality ends reduced quality: that notice is withdrawn. A refused CPU floor can hold
                 // under a sharp frame, so the platform alone withdraws it (cleared here, it flashed for one frame).

@@ -1,6 +1,7 @@
 import { fitWidthZ, pageAt, pageStack } from '../../platform/render';
 import type { Rect, RenderToken, ViewState } from '../../platform/render';
 import type { CaptureRequest, CaptureSnapshot } from '../../platform/render/capture';
+import type { CompositorBackend } from '../../platform/render/compositor.types';
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import { awaitSessionDisposals, getSessionIdentity } from '../../utils/sessionIdentity';
 import { assertPdfCaptureAllowed, assertPdfRenderAllowed, tiledPdfCapabilities } from '../../utils/pdfCapabilities';
@@ -38,6 +39,10 @@ const sameToken = (a: RenderToken, b: RenderToken) => a.vaultEpoch === b.vaultEp
 const currentToken = (token: RenderToken) => {
     const identity = getSessionIdentity(token.documentId);
     return !!identity && identity.serial === token.session && identity.bytesGeneration === token.bytesGeneration;
+};
+const sharpOn = (tiles: ReturnType<ReturnType<typeof pdfPageLayerDefinition>['current']>, view: ViewState, backend: CompositorBackend) => {
+    const coverage = tiles?.coverage(view, backend !== 'canvas2d');
+    return !!coverage?.complete && coverage.sharp;
 };
 function waitFor<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
     if (!signal) return promise;
@@ -120,6 +125,8 @@ export async function createPdfInkBackdrop(options: PdfInkBackdropOptions): Prom
     retained.views.add(lease);
     let disposed = false, updating = false;
     let latestView: ViewState | null = null;
+    // The backend of the board's last certified presentation (complete, sharp, current): what the next frame is judged on.
+    let presentedOn: CompositorBackend | undefined;
     const sync = () => {
         const views = [...retained.views].filter(view => view.visible);
         pdf.setVisible(views.length > 0);
@@ -158,8 +165,13 @@ export async function createPdfInkBackdrop(options: PdfInkBackdropOptions): Prom
         if (!lease.visible || !bridge) return;
         const refresh = () => {
             if (!isCurrent() || transition.isActive(bridge)) return;
-            layer.current()?.expireBridge();
-            if (!updating) { updating = true; options.onUpdating?.(true); }
+            const tiles = layer.current();
+            tiles?.expireBridge();
+            // Covered only when the current pages cannot replace the old version's stand-ins at the next frame: a board already
+            // showing them sharp lost nothing, and covering it flashed the opaque cover and detached input mid-stroke (the expiry
+            // lands 2 s after Original advanced the generation; measured: back to Annotate at once, 19-34 ms flashes, 2 of 3).
+            if (updating || presentedOn && latestView && sharpOn(tiles, latestView, presentedOn)) return;
+            updating = true; options.onUpdating?.(true);
         };
         unsubscribeTransition = transition.subscribe(refresh); refresh();
     };
@@ -233,10 +245,13 @@ export async function createPdfInkBackdrop(options: PdfInkBackdropOptions): Prom
     };
     return { pages: document.pages.map(page => ({ width: page.width, height: page.height })), layers: [definition], setVisible, captureSnapshot,
         fontEpoch: () => getPdfFontEpoch(pdf.docKey),
-        notePresentation() {
+        notePresentation(backend) {
+            presentedOn = backend;
             if (!updating || !latestView || !isCurrent() || !lease.visible || !options.isVisible()) return;
-            const coverage = layer.current()?.coverage(latestView, false);
-            if (!coverage?.complete || !coverage.sharp) return;
+            // The pages are proved on the backend that presented, as the compositor proves them (definition.ts). Proved on canvas2d
+            // always, a WebGL2 board never cleared 'Updating PDF view…': its tiles give their bitmaps up once uploaded, so the CPU
+            // test failed on every sharp frame (measured: back to Annotate 1.3 s after Original, 3 of 3 runs covered for good).
+            if (!sharpOn(layer.current(), latestView, backend)) return;
             updating = false; options.onUpdating?.(false);
         },
         async resolveGeometry(page, signal) {

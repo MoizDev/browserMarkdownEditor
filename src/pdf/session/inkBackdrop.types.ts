@@ -1,5 +1,6 @@
 import type { PageGeometry } from '../../platform/types';
 import type { PlatformLayerDefinition, Rect } from '../../platform/render';
+import type { CompositorBackend } from '../../platform/render/compositor.types';
 import type { CaptureRequest, CaptureSnapshot } from '../../platform/render/capture';
 import type { MemoryAllocator } from '../../platform/render/memoryGovernor';
 import type { PdfPool } from '../pool/types';
@@ -31,7 +32,7 @@ export interface PdfInkBackdrop {
     /** The document's font-profile epoch. A snapshot pins the epoch it was taken at; a font provided
      * later advances it and invalidates that snapshot, so a capture re-pins only by taking a new one. */
     fontEpoch(): number;
-    /** Call only after a real committed current shared frame, never a bridge presentation. */
-    notePresentation(): void;
+    /** Call only after a real committed current shared frame, never a bridge presentation, naming the backend that presented it. */
+    notePresentation(backend: CompositorBackend): void;
     dispose(): void;
 }

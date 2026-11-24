@@ -53,9 +53,9 @@ export async function createNativePdfEditingLease(options: {
         if (!current() || !host.canWriteSource(identity)) throw new DOMException('PDF source changed', 'AbortError');
         const paired: NativePdfBackdrop & { readonly sourceToken: typeof source.source.token; isCurrentSource(): boolean } = {
             ...backdrop, sourceToken: source.source.token, isCurrentSource: current,
-            notePresentation() {
+            notePresentation(backend) {
                 if (signal.aborted || !current()) return;
-                backdrop.notePresentation?.();
+                backdrop.notePresentation?.(backend);
                 options.onPresented();
             },
             assertCaptureCurrent() { if (!current()) throw new DOMException('PDF source changed', 'AbortError'); },

@@ -285,6 +285,12 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
      * composer's encodeOffscreen runs after the passes of the layers encoded before it (measured: a rectangle and a text selected together,
      * rotated on WebGL2, demoted the pane to canvas2d each time the underlay had drawn first). */
     let convertStale = false;
+    /** Set when encodeOffscreen recorded this frame's conversion and cleared once the frame is settled (offscreenSettled). The cells
+     * are on their pages only once that frame is submitted: until then the staging texture, its shelves and the pending list stay, so
+     * a discarded frame's conversion runs again in the next one. Counted done at encode, a discarded conversion left its cells blank
+     * and its page marked written, and the next conversion's load of that never-stored page failed the frame (invalid-input), twice
+     * in a row on an old 2,881-stroke notebook, which latched its pane on canvas2d for the session (CfT 157, WebGL2). */
+    let converting = false;
     const pending: PendingCell[] = [];
     let pendingCount = 0;
     const pageRuns: PageRun[] = [];
@@ -360,7 +366,7 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
         pipelines = [undefined, undefined, undefined, undefined]; convertPipeline = null;
         pipelinesReady = false; pipelinesPending = false; failed = false;
         mono = null; colour = null; white = null; whiteLease = null; sampler = null;
-        clearStageTimer(); stage = null; convertBuffer = null; convertLease = null; convertCapacity = 0; pendingCount = 0; pageRunCount = 0;
+        clearStageTimer(); stage = null; convertBuffer = null; convertLease = null; convertCapacity = 0; pendingCount = 0; pageRunCount = 0; converting = false;
         convertStale = false;
         // Stand-in records name the atlases this device just disposed: none may be drawn from again.
         standIns.clear(); standAccount.reset();
@@ -997,16 +1003,21 @@ export const createTextRoute: CreateTextRoute = (host: LayerHost, audit: string)
                 const target = run.page.target;
                 if (!target) throw new Error('R8 text page without a conversion target');
                 const viewport = { x: 0, y: 0, width: ATLAS_PAGE, height: ATLAS_PAGE };
-                // A page that has never been stored starts clear: a load of a target with no contents is refused (measured: invalid-input on every fresh page).
-                const gpuPass = passes.begin(target, viewport, { clear: run.page.stored ? null : [0, 0, 0, 0], stencil: false });
-                run.page.stored = true;
+                // Its other texels stay; a page the device holds no colour for (never stored, or its storing frame discarded) starts clear.
+                const gpuPass = passes.begin(target, viewport, { clear: null, orClear: [0, 0, 0, 0], stencil: false });
                 gpuPass.draw({ pipeline, bindings: { uniforms: [], textures: [{ binding: 0, texture: staged.texture, sampler }] },
                     vertices: [{ buffer: convertBuffer, offset: run.first * INSTANCE_BYTES, bytes: run.count * INSTANCE_BYTES }],
                     first: 0, count: 4, instances: run.count, scissor: viewport });
                 gpuPass.end();
             }
+            converting = true;
+        },
+        offscreenSettled(submitted: boolean): void {
+            if (!converting) return;
+            converting = false;
+            if (!submitted) { auditCount(audit, 'text:convert-discarded'); return; }
             // The staging texture is free again: its cells are on their pages. Its shelves reset, and so does the pending list.
-            staged.packer.reset();
+            stage?.packer.reset();
             pendingCount = 0; pageRunCount = 0;
             armStageIdle();
         },

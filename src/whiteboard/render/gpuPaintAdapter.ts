@@ -225,6 +225,8 @@ export interface GpuPaintAdapter {
     readyInkNodeIds(): ReadonlySet<string> | null;
     /** Encodes the composed tiles of one band onto the frame's offscreen targets. */
     encodeOffscreen(passes: OffscreenPasses, view: ViewState, band: PaintBand): void;
+    /** See TileComposer.offscreenSettled. */
+    offscreenSettled(submitted: boolean): void;
     /** Lays one band's tiles. `omitNodes` is accepted for the callers that still pass it; the omission is applied in prepare. */
     drawGpu(pass: GpuPass, view: ViewState, band: PaintBand, omitNodes?: ReadonlySet<string>): void;
     coverage(view: ViewState): { complete: boolean; sharp: boolean; staleVersion?: boolean };
@@ -421,6 +423,9 @@ export function createGpuPaintAdapter(reference: CanvasPaintAdapter, host: Layer
             const set = composer.inkComposed(lastView, nodes);
             inkMemo = { frame: lastFrame, paint: presented, set };
             return set;
+        },
+        offscreenSettled(submitted: boolean): void {
+            if (!disposed) composer.offscreenSettled(submitted);
         },
         encodeOffscreen(passes: OffscreenPasses, view: ViewState, band: PaintBand): void {
             if (disposed) return;

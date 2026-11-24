@@ -182,7 +182,12 @@ draws differently because a GPU exists.
 
 - **A frame survives only two refusals**: a full uniform ring (`ArenaError 'out-of-budget'`) and an isolation
   shortfall (`guardIsolation`, an unplanned clip/group target). Any other throw cancels the whole frame and every
-  pass recorded before it: work that changed state (an atlas conversion) must not be counted done before submit.
+  pass recorded before it: work that changed state (an atlas conversion) must not be counted done before submit. A frame
+  whose offscreen passes were recorded can still be discarded (a critical draw the uniform ring refused, a later throw, a pane
+  gone before submit): `Layer.offscreenSettled(submitted)` says which, once per frame, and a layer takes back what it counted
+  (`tileComposer` drops the tiles it marked composed; the text route converts its cells again; measured: 7–9 discarded
+  conversions per dense notebook load). A load of a target the layer cannot prove stored asks `orClear`, decided by the device
+  from what it stored; a plain load of an unstored target fails the frame (`invalid-input`, audit site `pass:load`).
 - **No synchronous GL read on the frame path**: `getError`, `checkFramebufferStatus`, `getParameter`,
   `readPixels`, `getBufferSubData`, a blocking `clientWaitSync` each wait for the GPU process (measured: 17–24 ms
   per LARGE drag start/release from one `checkFramebufferStatus`). They belong at device creation, once per kind of

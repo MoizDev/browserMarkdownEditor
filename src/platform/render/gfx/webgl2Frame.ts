@@ -223,13 +223,15 @@ function slice(buffer: FrameBuffer, value: BufferSlice | UniformSlice): void {
 function clearDescriptor(desc: PassDesc, target: FrameTarget, retained: Retention): void {
     rect(desc.viewport);
     if (desc.clearViewport) rect(desc.clearViewport);
-    if (!['store', 'discard'].includes(desc.store)) throw new ArenaError('invalid-input');
+    if (!['store', 'discard'].includes(desc.store)) throw new ArenaError('invalid-input', { site: 'pass:store' });
     if (desc.load.kind === 'clear') colour(desc.load.color);
-    else if (desc.load.kind !== 'load' || target.handle === 'surface' || !retained.colorStored) throw new ArenaError('invalid-input');
-    if (target.handle === 'surface' && (desc.load.kind !== 'clear' || desc.load.color[3] !== 1 || desc.store !== 'store')) {
-        throw new ArenaError('invalid-input');
+    else if (desc.load.kind !== 'load' || target.handle === 'surface' || !retained.colorStored) {
+        throw new ArenaError('invalid-input', { site: 'pass:load', kind: desc.load.kind, surface: target.handle === 'surface', stored: retained.colorStored });
     }
-    if (target.stencil !== !!desc.stencil) throw new ArenaError('invalid-input');
+    if (target.handle === 'surface' && (desc.load.kind !== 'clear' || desc.load.color[3] !== 1 || desc.store !== 'store')) {
+        throw new ArenaError('invalid-input', { site: 'pass:surface-load' });
+    }
+    if (target.stencil !== !!desc.stencil) throw new ArenaError('invalid-input', { site: 'pass:stencil', target: target.stencil });
     if (desc.stencil) {
         if (!['store', 'discard'].includes(desc.stencil.store)) throw new ArenaError('invalid-input');
         if (desc.stencil.load.kind === 'clear') {
@@ -330,14 +332,17 @@ class DeviceFrame implements ControlledFrame {
     acquireTarget(desc: TargetRequest): TargetLease | null {
         return this.guard(() => this.#backend.acquireTarget(desc));
     }
-    beginPass(desc: PassDesc): GpuPass {
+    beginPass(requested: PassDesc): GpuPass {
         return this.guard(() => {
-            if (this.#pass || desc.target === 'surface' && this.#surface) throw new ArenaError('invalid-input');
-            const target = this.#backend.target(desc.target);
+            if (this.#pass || requested.target === 'surface' && this.#surface) throw new ArenaError('invalid-input', { site: 'pass:open', open: !!this.#pass });
+            const target = this.#backend.target(requested.target);
             const saved = this.retention(target);
+            // A load that may start clear: decided here, from what the device stored (this frame's earlier passes included).
+            const desc: PassDesc = requested.load.kind === 'load' && requested.load.orClear && !saved.colorStored
+                ? { ...requested, load: { kind: 'clear', color: requested.load.orClear } } : requested;
             clearDescriptor(desc, target, saved);
             if (desc.viewport.width > this.#backend.maxViewport[0] || desc.viewport.height > this.#backend.maxViewport[1]) {
-                throw new ArenaError('invalid-input');
+                throw new ArenaError('invalid-input', { site: 'pass:viewport', viewport: { ...desc.viewport } });
             }
             // Opaque handles are identity tokens, not serializable descriptor data.
             const copy: PassDesc = { ...desc, viewport: { ...desc.viewport }, load: structuredClone(desc.load),

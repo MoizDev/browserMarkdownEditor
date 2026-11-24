@@ -255,6 +255,9 @@ export interface TileComposer {
     warm(prepared: PreparedPaint2d, maxMs: number): boolean;
     /** Encodes the composed targets of one band; the frame's surface pass then draws them with `drawGpu`. */
     encodeOffscreen(passes: OffscreenPasses, view: ViewState, band: PaintBand): void;
+    /** Whether the frame of the last encodes was submitted: a tile composed into a frame that was discarded is let go, so its position
+     * reads missing and composes again (see Layer.offscreenSettled). Idempotent per frame: each band's layer forwards it. */
+    offscreenSettled(submitted: boolean): void;
     /** Lays the frame's tiles of one band. Draws only: no allocation, no upload, no readback. */
     drawGpu(pass: GpuPass, view: ViewState, band: PaintBand): void;
     coverage(view: ViewState): { complete: boolean; sharp: boolean; staleVersion?: boolean };
@@ -472,6 +475,10 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
     const drawsCam = { x: NaN, y: NaN, z: NaN, w: NaN, h: NaN, dpr: NaN };
     // Set when a draw list is not usable for the view asked: the next frame must prepare, and the layer is critical until it does.
     let wantFrame = false;
+    // The store keys of the tiles this frame's encode composed, until the frame is settled (offscreenSettled). A tile is marked
+    // composed when its pass is recorded; a frame discarded after that (its uniform ring refused a critical draw, another layer threw)
+    // never wrote the target, and the position would draw that target's old or uncleared pixels for good.
+    let composedUnsettled: TileKey[] = [];
     const listUsable = (view: ViewState): boolean => drawsFrame === frame || (drawsEpoch === evictEpoch && drawsCam.x === view.camera.x &&
         drawsCam.y === view.camera.y && drawsCam.z === view.camera.z && drawsCam.w === view.viewport.width &&
         drawsCam.h === view.viewport.height && drawsCam.dpr === view.viewport.dpr);
@@ -1570,6 +1577,7 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
                 pass.end();
                 if (refused) { store.remove(slice.key); wantFrame = true; host.markIncomplete('encode-refused'); continue; }
                 auditCount(audit, 'tile:compose', 1, { px: target.size * target.size });
+                composedUnsettled.push(slice.key);
                 entry.dirty = false; entry.composed = true; entry.revision = validRevision;
                 slots.set(entry, { mode: slice.mode, count: position.slices.length, inkNodes: slice.inkNodes,
                     firstOrder: position.slices.map(part => part.firstOrder), live: position.live,
@@ -1945,6 +1953,17 @@ export function createTileComposer(options: TileComposerOptions): TileComposer {
             }
             uploadPrepared();
             return changed;
+        },
+        offscreenSettled(submitted: boolean): void {
+            for (const route of routeList) route.offscreenSettled?.(submitted);
+            const keys = composedUnsettled, encoded = routesEncodedFrame === frame;
+            composedUnsettled = [];
+            if (submitted || (!keys.length && !encoded)) return;
+            // The routes' conversions run again in the next encode; the tiles' runs are retired, so their positions compose again.
+            let dropped = 0;
+            for (const key of keys) if (entryOfKey(key)) { store.remove(key); dropped++; }
+            auditCount(audit, 'encode:discarded', dropped);
+            wantFrame = true; host.invalidate('tile-encode-discarded');
         },
         encodeOffscreen(passes: OffscreenPasses, _view: ViewState, band: PaintBand): void {
             // A route that converts its own inputs on the GPU (the text masks) does it once per frame, before any tile pass reads them.

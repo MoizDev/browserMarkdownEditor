@@ -22,7 +22,7 @@ import { createProceduralPaper, type ProceduralPaper } from './proceduralPaper';
 import { FULL_REGION_CHANGES, type RegionChanges } from '../scene/boundsVersions';
 
 /** The composer's offscreen encode (PLAN §3.3, wave 2). Today's adapter has none, so the layer's call is guarded: a no-op. */
-type OffscreenEncoder = { encodeOffscreen?(passes: OffscreenPasses, view: ViewState, band: PaintBand): void };
+type OffscreenEncoder = { encodeOffscreen?(passes: OffscreenPasses, view: ViewState, band: PaintBand): void; offscreenSettled?(submitted: boolean): void };
 /** The adapter's GPU eviction (h2); typeof-guarded until impl/gpu's `Layer.evictGpu` lands on this branch. */
 type GpuEvicting = { evictGpu?(bytes: number, frameId: number): number };
 type GpuProtecting = { protectFrame?(frameId: number, view: ViewState): void };
@@ -408,6 +408,10 @@ class NotebookPaperLayer implements Layer {
     encodeOffscreen(passes: OffscreenPasses, view: ViewState): void {
         const encoder = this.gpu as OffscreenEncoder;
         if (!this.disposed && typeof encoder.encodeOffscreen === 'function') encoder.encodeOffscreen(passes, view, 'content');
+    }
+    offscreenSettled(submitted: boolean): void {
+        const encoder = this.gpu as OffscreenEncoder;
+        if (!this.disposed && typeof encoder.offscreenSettled === 'function') encoder.offscreenSettled(submitted);
     }
     draw2d(ctx: CanvasRenderingContext2D, view: ViewState): void {
         const ready = this.ready, cam = view.camera, vp = view.viewport;

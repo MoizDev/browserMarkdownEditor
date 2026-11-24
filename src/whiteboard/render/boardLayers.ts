@@ -260,7 +260,7 @@ export interface BoardLayerPair extends Readonly<[PlatformLayerDefinition, Platf
     memory(): MemoryAllocator | null;
 }
 /** The composer's offscreen encode (PLAN §3.3, wave 2). Today's adapter has none, so the layer's call is guarded: a no-op. */
-type OffscreenEncoder = { encodeOffscreen?(passes: OffscreenPasses, view: ViewState, band: PaintBand): void };
+type OffscreenEncoder = { encodeOffscreen?(passes: OffscreenPasses, view: ViewState, band: PaintBand): void; offscreenSettled?(submitted: boolean): void };
 /** The layer's GPU eviction hook (`Layer.evictGpu` on impl/gpu) and the adapter's method behind it (h2). Typeof-guarded
  * until impl/gpu merges: an absent method frees nothing. */
 type GpuEvicting = { evictGpu?(bytes: number, frameId: number): number };
@@ -1204,6 +1204,10 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 encodeOffscreen(passes, view) {
                     const encoder = gpu as OffscreenEncoder | null;
                     if (typeof encoder?.encodeOffscreen === 'function') encoder.encodeOffscreen(passes, view, band);
+                },
+                offscreenSettled(submitted) {
+                    const encoder = gpu as OffscreenEncoder | null;
+                    if (typeof encoder?.offscreenSettled === 'function') encoder.offscreenSettled(submitted);
                 },
                 // The band's last draw laid nothing: on the GPU, by the composer's draw list; a canvas2d draw is not known empty.
                 drewNothing: () => drewNothing[band],

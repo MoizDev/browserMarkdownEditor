@@ -186,7 +186,8 @@ export interface DrawCommand {
 export interface PassDesc {
     target: TargetHandle | 'surface';
     viewport: RectI;
-    load: { kind: 'clear'; color: RgbaP } | { kind: 'load' };
+    /** `orClear`: a target with no stored colour is cleared to it instead of refused (OffscreenPasses.begin). */
+    load: { kind: 'clear'; color: RgbaP } | { kind: 'load'; orClear?: RgbaP };
     // A clear covers this rectangle only (a shared atlas holds other regions); default is the whole viewport.
     clearViewport?: RectI;
     store: 'store' | 'discard';

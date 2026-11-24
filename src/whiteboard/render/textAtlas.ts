@@ -90,8 +90,6 @@ export interface AtlasEntry extends Indexed {
  * target its coverage is converted into on the GPU (`target`), created on the page's own lease and destroyed with it. */
 export class AtlasPage {
     readonly packer: ShelfPacker;
-    /** False until a pass has stored into the page: its first conversion clears it (a load of a never-stored target is refused). */
-    stored = false;
     readonly entries = new Set<AtlasEntry>();
     /** Runs that pin an entry on this page, counted at pin time. Kept here so an eviction test is O(1), not a scan of the page. */
     pinned = 0;

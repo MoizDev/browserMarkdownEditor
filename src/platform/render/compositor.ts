@@ -187,6 +187,8 @@ export class GpuCompositor implements PaneCompositor {
     #deferredBindings = new Set<CompositorLayer | null>();
     #report: CompositorCoverage | null = null;
     readonly #encodings = new Set<FrameEncoder>();
+    /** The layers whose offscreen passes an encoder recorded, told once whether that frame was submitted (Layer.offscreenSettled). */
+    readonly #settling = new Map<FrameEncoder, CompositorLayer['layer'][]>();
     /** The frame's draw scope, reused: one record and one pass set for the compositor's life, emptied per encode. A pass from an
      * earlier frame is not in the set (each is removed when its layer finishes, and the set is cleared), so it is refused as before. */
     #frameScope: DrawScope | null = null;
@@ -514,7 +516,7 @@ export class GpuCompositor implements PaneCompositor {
             if (criticalDeferred) {
                 auditCount('compositor', 'refuse:uniform-ring');
                 this.#encodings.delete(encoder);
-                this.#options.owner.discardFrame(encoder);
+                this.#discard(encoder);
                 this.#failure(new ArenaError('out-of-budget'));
                 return null;
             }
@@ -525,7 +527,7 @@ export class GpuCompositor implements PaneCompositor {
             return {
                 submit: (): ScheduledSubmission | null => {
                     if (done || this.#disposed || epoch !== this.#epoch || !this.#drawable(snapshot, frame)) {
-                        this.#options.owner.discardFrame(owned);
+                        this.#discard(owned);
                         this.#encodings.delete(owned);
                         done = true;
                         return null;
@@ -533,6 +535,7 @@ export class GpuCompositor implements PaneCompositor {
                     try {
                         const submitStarted = timed ? performance.now() : 0;
                         const submitted = owned.submit();
+                        this.#settle(owned, true);
                         auditCount('compositor', 'gl:state', submitted.stateSwitches);
                         if (timed) {
                             const now = performance.now();
@@ -566,7 +569,7 @@ export class GpuCompositor implements PaneCompositor {
                     } catch (error) {
                         done = true;
                         this.#encodings.delete(owned);
-                        this.#options.owner.discardFrame(owned);
+                        this.#discard(owned);
                         this.#failure(error);
                         throw error;
                     }
@@ -575,13 +578,28 @@ export class GpuCompositor implements PaneCompositor {
                     if (done) return;
                     done = true;
                     this.#encodings.delete(owned);
-                    this.#options.owner.discardFrame(owned);
+                    this.#discard(owned);
                 },
             };
         } catch (error) {
-            if (encoder) { this.#encodings.delete(encoder); this.#options.owner.discardFrame(encoder); }
+            if (encoder) { this.#encodings.delete(encoder); this.#discard(encoder); }
             this.#failure(error);
             return null;
+        }
+    }
+
+    /** Discards an encoder's recorded frame: every layer whose offscreen passes it held hears that they never reached the device. */
+    #discard(encoder: FrameEncoder): void {
+        try { this.#options.owner.discardFrame(encoder); }
+        finally { this.#settle(encoder, false); }
+    }
+
+    #settle(encoder: FrameEncoder, submitted: boolean): void {
+        const layers = this.#settling.get(encoder);
+        if (!layers) return;
+        this.#settling.delete(encoder);
+        for (const layer of layers) {
+            try { layer.offscreenSettled?.(submitted); } catch (error) { this.#failure(error); }
         }
     }
 
@@ -608,7 +626,7 @@ export class GpuCompositor implements PaneCompositor {
             this.#atlasRegions.clear();
             try { offscreen = this.#encodeOffscreen(snapshot, frame, encoder, drawScope); } finally { this.#active = null; }
             if (!offscreen) {
-                this.#encodings.delete(encoder); this.#options.owner.discardFrame(encoder);
+                this.#encodings.delete(encoder); this.#discard(encoder);
                 return null;
             }
             auditCount('compositor', 'offscreen-on-refuse', offscreen);
@@ -620,13 +638,14 @@ export class GpuCompositor implements PaneCompositor {
             return {
                 submit: (): ScheduledSubmission | null => {
                     if (done || this.#disposed || epoch !== this.#epoch || !this.#drawable(snapshot, frame)) {
-                        this.#options.owner.discardFrame(owned);
+                        this.#discard(owned);
                         this.#encodings.delete(owned);
                         done = true;
                         return null;
                     }
                     try {
                         const submitted = owned.submit();
+                        this.#settle(owned, true);
                         auditCount('compositor', 'gl:state', submitted.stateSwitches);
                         this.#lastSubmissionSerial = submitted.serial;
                         done = true;
@@ -635,7 +654,7 @@ export class GpuCompositor implements PaneCompositor {
                     } catch (error) {
                         done = true;
                         this.#encodings.delete(owned);
-                        this.#options.owner.discardFrame(owned);
+                        this.#discard(owned);
                         this.#failure(error);
                         throw error;
                     }
@@ -644,11 +663,11 @@ export class GpuCompositor implements PaneCompositor {
                     if (done) return;
                     done = true;
                     this.#encodings.delete(owned);
-                    this.#options.owner.discardFrame(owned);
+                    this.#discard(owned);
                 },
             };
         } catch (error) {
-            if (encoder) { this.#encodings.delete(encoder); this.#options.owner.discardFrame(encoder); }
+            if (encoder) { this.#encodings.delete(encoder); this.#discard(encoder); }
             this.#failure(error);
             return null;
         }
@@ -854,7 +873,7 @@ export class GpuCompositor implements PaneCompositor {
         this.#lastSubmissionSerial = 0;
         this.#available = false;
         this.#retryPending = false;
-        for (const encoder of this.#encodings) this.#options.owner.discardFrame(encoder);
+        for (const encoder of this.#encodings) this.#discard(encoder);
         this.#encodings.clear();
         this.#active = null; this.#prepared = null; this.#isolationPlan = null; this.#isolationReadyFrame = -1;
         this.#shortfalls = []; this.#snapshot = null; this.#report = null; this.#metrics = null;
@@ -907,6 +926,10 @@ export class GpuCompositor implements PaneCompositor {
             for (const binding of snapshot.layers) {
                 const layer = binding.layer;
                 if (!layer.encodeOffscreen) continue;
+                if (layer.offscreenSettled) {
+                    const settling = this.#settling.get(encoder);
+                    if (settling) settling.push(layer); else this.#settling.set(encoder, [layer]);
+                }
                 this.#drawingBinding = binding;
                 run.layer = layer; run.auditId = (binding as { id?: string }).id ?? 'layer';
                 const timed = renderAuditEnabled();
@@ -926,13 +949,13 @@ export class GpuCompositor implements PaneCompositor {
     }
 
     /** Opens one offscreen pass for the layer being encoded (Layer.encodeOffscreen's `begin`). One pass is open at a time. */
-    #beginOffscreen(target: TargetHandle, viewport: RectI, options: { clear: RgbaP | null; stencil: boolean }): GpuPass {
+    #beginOffscreen(target: TargetHandle, viewport: RectI, options: { clear: RgbaP | null; stencil: boolean; orClear?: RgbaP }): GpuPass {
         const run = this.#offscreen, encoder = run.encoder, drawScope = run.drawScope, layer = run.layer;
         if (!encoder || !drawScope || !layer || run.open) throw new ArenaError('invalid-input');
         const atlas = layer.atlas === true ? this.#atlasRegion(encoder, target, viewport, options) : null;
         const raw = encoder.beginPass({ target: atlas ? atlas.target : target, viewport: atlas ? atlas.viewport : viewport,
             ...(atlas ? { clearViewport: atlas.clear } : {}),
-            load: options.clear ? { kind: 'clear', color: options.clear } : { kind: 'load' }, store: 'store',
+            load: options.clear ? { kind: 'clear', color: options.clear } : { kind: 'load', ...(options.orClear ? { orClear: options.orClear } : {}) }, store: 'store',
             ...(options.stencil ? { stencil: { load: { kind: 'clear', value: 0 }, store: 'discard' } as const } : {}) });
         const scope = new ScopedPass(raw, this.#endOffscreen);
         run.passes++;

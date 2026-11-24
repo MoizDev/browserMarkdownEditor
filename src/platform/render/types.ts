@@ -49,7 +49,9 @@ export type GpuReleaseReason = 'hidden' | 'context-lost' | 'pressure';
 /** Begins one pass into a layer-owned target; the returned pass must be ended before the next begins and before
  * `encodeOffscreen` returns. `clear` null loads the target's previous contents (an incremental tile update). */
 export interface OffscreenPasses {
-    begin(target: TargetHandle, viewport: RectI, options: { clear: RgbaP | null; stencil: boolean }): GpuPass;
+    /** `clear: null` loads the target's stored colour. With `orClear`, a target that holds none (never stored, or its storing frame
+     * was discarded) starts cleared to it instead of failing the frame: the device knows what it stored, a layer only what it asked. */
+    begin(target: TargetHandle, viewport: RectI, options: { clear: RgbaP | null; stencil: boolean; orClear?: RgbaP }): GpuPass;
 }
 
 /** One stream's ordered contribution to a pane (contracts.md C4.3:512–547).
@@ -87,6 +89,11 @@ export interface Layer {
      * are created and admitted in `prepare`; this only draws, like `drawGpu`. A layer that composes its tiles here makes
      * their pixels on the GPU instead of rastering them on the CPU and uploading (rendering-design §5). */
     encodeOffscreen?(passes: OffscreenPasses, view: ViewState): void;
+    /** Optional, GPU only. Called once for each frame whose `encodeOffscreen` ran, when that frame is submitted (`true`) or discarded
+     * (`false`). Work an offscreen pass did is on the device only once its frame is submitted: a layer that counts it done at encode
+     * (cells converted into an atlas page) must take that back on a discard. A refused frame (a full uniform ring, a draw that threw,
+     * a pane gone before submit) discards every pass it recorded. */
+    offscreenSettled?(submitted: boolean): void;
     draw2d(ctx: CanvasRenderingContext2D, view: ViewState): void;
     releaseGpu(reason: GpuReleaseReason): void;
     /** Optional, GPU only. Partial eviction under memory pressure: frees up to `bytes` of GPU memory, least recently used

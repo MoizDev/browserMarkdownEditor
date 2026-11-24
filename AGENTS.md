@@ -127,8 +127,8 @@ when the user EXPLICITLY asks for a code-based test, write it — only that test
 - **`readFile` normalizes `\r\n → \n`, and everything downstream depends on it**; a reader that skips it drifts on CRLF.
 - **The user guide is `utils/helpDoc.ts`**, one string opened as a read-mode tab (one source line per paragraph):
   a user-facing change is not finished until it describes its gestures. Its pseudo-path is a **bare name**.
-- **A canvas pane presents on canvas2d first and swaps to WebGL2 once qualified; both must work and look the
-  same, and no drop to canvas2d is silent** — each is counted (`fallback:…`) (`rendering-platform`,
+- **A canvas pane asks for WebGL2 once it has a size and shows whichever backend presents first; both must work and look
+  the same, and no drop to canvas2d is silent** — each is counted (`fallback:…`) (`rendering-platform`,
   `board-gpu-path`). Editing a board — tools, input, keys, text, history — is `whiteboard-editing`.
 
 ## Conventions & gotchas

@@ -455,11 +455,12 @@ export class PaneLifecycle<T extends object> {
         this.first2DPresented = true;
     }
 
-    /** Complete current coverage, not upload completion alone, authorizes the compositor's swap. */
-    presentGpu(grant: GpuGrant, token: FrameToken, view: MirrorView, revision: string, complete: boolean): boolean {
+    /** Complete current coverage, not upload completion alone, authorizes the compositor's swap. The swap follows a 2D picture,
+     * or is `first`: nothing has been presented since the pane was shown, so the blank 2D canvas has nothing to bridge. */
+    presentGpu(grant: GpuGrant, token: FrameToken, view: MirrorView, revision: string, complete: boolean, first = false): boolean {
         const current = this.options.currentFrameToken();
         const currentView = this.options.currentView();
-        if (!complete || !this.canDraw() || !this.first2DPresented || !current || !currentView ||
+        if (!complete || !this.canDraw() || !(this.first2DPresented || first) || !current || !currentView ||
             token.viewLease !== this.surface.stamp.viewLease || token.deviceGeneration !== grant.generation ||
             renderTokenKey(token) !== renderTokenKey(this.surface.stamp.documentToken) ||
             !sameFrame(token, current) || viewKey(view) !== viewKey(currentView) || revision !== this.options.currentRevision() ||

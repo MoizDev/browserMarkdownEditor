@@ -97,6 +97,9 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
     let gpu: QualifiedGpuPane | null = null;
     let cpuPresented = false;
     let gpuRequested = false;
+    // A complete picture (either backend) has been presented since the pane was last shown. Until then nothing is on screen for the
+    // 2D picture to protect, so a GPU that qualifies first draws the first picture itself (see onReady).
+    let shownPresented = false;
     /** The 2D bridge of a GPU resize: when it began (null when none is pending), whether this resize skipped it, and its wake. */
     let bridgeSince: number | null = null, bridgeSkipped = false, bridgeTimer: ReturnType<typeof setTimeout> | null = null;
     // The visible-context cap is full: this pane draws on canvas2d until a slot frees (the broker's budget fallback). The person is
@@ -432,16 +435,23 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
             gpu.bundle.compositor.setLayout(layout);
             gpu.bundle.compositor.setAppearance(options.readAppearance());
             surfaceHost.stage(gpu.bundle.compositor);
+            // The GPU is asked for as soon as the pane has a size, beside the first 2D picture. Ready before that picture was
+            // presented, it draws the first picture: the 2D one was only a bridge to it, and a dense board's 2D picture is a CPU
+            // raster of every stroke (measured, WebGL2: Notes4 4 s, Strokes-3 8.5 s of main thread before the GPU was even asked).
+            if (!cpuPresented && !shownPresented && bridgeSince === null) cpuPresented = true;
             lifecycle?.invalidate('gpu-ready');
         },
     });
     const requestGpu = (): void => {
-        if (backendPreference === 'canvas2d' || disposed || !visible || !cpuPresented || gpuRequested || !lifecycle) return;
+        if (backendPreference === 'canvas2d' || disposed || !visible || gpuRequested || !lifecycle) return;
         gpuRequested = true;
         const canvas = host.ownerDocument.createElement('canvas');
         canvas.width = 0; canvas.height = 0;
-        // A failed GPU request demotes this pane; it is not the document's failure.
-        void lifecycle.surface.requestGpu(canvas, lifecycle.surface.stamp).catch(error => candidate.fail(error, 'request'));
+        // A failed GPU request demotes this pane; it is not the document's failure. A request the broker could not consider (the pane
+        // not drawable yet, or a newer surface) is asked again by the next frame that has a size.
+        void lifecycle.surface.requestGpu(canvas, lifecycle.surface.stamp)
+            .then(result => { if (result.kind === 'ineligible' || result.kind === 'stale') gpuRequested = false; })
+            .catch(error => candidate.fail(error, 'request'));
     };
     try {
         lifecycle = new PaneLifecycle<T>({
@@ -498,6 +508,8 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                         let drawing = drawCompositor();
                         if (!drawing) return null;
                         let planned = computeSurfaceMetrics(size.physical, size.nominalDpr, drawing.target.limits, grant.pixelGrant);
+                        // The pane has a drawable size: its GPU is asked for now, not after the first 2D picture (see onReady).
+                        if (drawing === compositor && !gpuRequested && planned.kind === 'ready') queueMicrotask(requestGpu);
                         if (!bridgeSkipped && drawing !== compositor && surfaceHost.current === drawing && planned.kind === 'ready' &&
                             (drawing.surface.width !== planned.backingWidth || drawing.surface.height !== planned.backingHeight)) {
                             // Resizing a displayed GL canvas destroys its last complete pixels before
@@ -649,7 +661,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                                     endBridge();
                                 } else if (surfaceHost.current !== drawing) {
                                     const view = mirrorView();
-                                    if (!view || !gpu || !lifecycle?.presentGpu(gpu.grant, frame.token, view, revision, complete)) {
+                                    if (!view || !gpu || !lifecycle?.presentGpu(gpu.grant, frame.token, view, revision, complete, !shownPresented)) {
                                         if (__BME_BENCH__) presented.cancelObservation?.();
                                         return null;
                                     }
@@ -666,6 +678,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
                                 }
                                 auditFrame(drawing.backend, performance.now() - encodeStart);
                                 touchedFrame = frame.frameId;
+                                shownPresented = true;
                                 if (qualityScale < 1) auditCount('pane', 'quality-below-1');
                                 if (drawing !== compositor) { candidate.presented(frame.token.deviceGeneration); bridgeSkipped = false; if (budgetNoticeTimer !== null || budgetNoticeShown) endBudgetNotice(); }
                                 lastReport = { frameId: frame.frameId, revision, backend: drawing.backend, complete, sharp, staleVersion,
@@ -765,7 +778,7 @@ export const attachPlatformPane: AttachPlatformPane = <T extends object>(host: H
         if (disposed || visible === next) return;
         visible = next;
         if (!next) {
-            cpuPresented = false; gpuRequested = false; lastReport = null; options.onPresentation(null);
+            cpuPresented = false; gpuRequested = false; shownPresented = false; lastReport = null; options.onPresentation(null);
             endBridge(); bridgeSkipped = false;
             lifecycle?.hidePane();
             surfaceHost.clearStaged();

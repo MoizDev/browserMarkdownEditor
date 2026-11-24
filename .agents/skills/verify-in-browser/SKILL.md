@@ -95,8 +95,8 @@ button. PDFs: pdf-lib through `verify/fixtures/lib/pdf.mjs`, or a small file kep
 
 ## WebGL2 and canvas2d
 
-- **Every pane presents canvas2d first**, then swaps to WebGL2 once the device qualifies (`rendering-platform`). A
-  check of "the GPU path" must look after the swap.
+- **A pane asks for WebGL2 as soon as it has a size** (`rendering-platform`): a light board usually presents canvas2d
+  first and swaps, a dense one often presents WebGL2 directly. A check of "the GPU path" must look after the swap.
 - **WebGL2**: headless CfT with no flags uses the machine's real GPU where there is one (measured on macOS:
   `ANGLE Metal Renderer: Apple M4 Pro`).
 - **canvas2d**: launch with `args: ['--disable-webgl']`. The audit then counts `context:unavailable:no-webgl2`

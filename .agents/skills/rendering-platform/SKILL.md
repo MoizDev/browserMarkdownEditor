@@ -34,10 +34,11 @@ Constants are in `types.ts` (`RenderConstants`, documented per field) with value
 ## How a pane gets its backend
 
 1. A React host calls `usePlatformPane` (`components/platformPane/`), which `import()`s `cpuEntry` and calls
-   `attachPlatformPane(host, options)`. Every pane **starts on canvas2d**: the first picture is always the 2D
-   compositor's.
-2. Only after that first CPU picture presents (`cpuPresented`) does `requestGpu` ask the broker for a context —
-   unless `backendPreference: 'canvas2d'`, which never asks. The broker grants one of `maxVisiblePaneContexts` (5)
+   `attachPlatformPane(host, options)`. Every pane **starts drawing on canvas2d**.
+2. As soon as a frame has a drawable size, `requestGpu` asks the broker for a context, beside the first 2D picture —
+   unless `backendPreference: 'canvas2d'`, which never asks. A GPU that qualifies before any picture was presented since
+   the pane was shown draws the first picture itself (`shownPresented`, `presentGpu(…, first)`): asked only after the 2D
+   picture, a dense board rastered every stroke on the CPU first (measured: 4–8.5 s of main thread). The broker grants one of `maxVisiblePaneContexts` (5)
    visible-pane contexts (8 app contexts, 1 always reserved for the terminal even when closed). A sixth visible pane
    stays on canvas2d and upgrades when a slot frees (`onSlotAvailable`); it never evicts a visible neighbour.
 3. The broker creates the context with `RENDER_CONSTANTS.contextAttributes` (`powerPreference: 'high-performance'`,

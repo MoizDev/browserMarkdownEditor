@@ -24,6 +24,7 @@ import { bindRecoveryAdapter } from '../utils/recoveryAdapters';
 import { hasHostedNativeOwner, RECOVERY_SESSION_BINDING } from './nativeOwners';
 import type { UsePdfActionsDeps } from './usePdfActions';
 import { loadChunk } from '../platform/chunkLoad';
+import { isFileReadTimeout } from '../utils/fileReadDeadline';
 
 /**
  * The PDF gestures that only ever run on a PDF the reader is looking at:
@@ -183,6 +184,8 @@ function rotationRefusal(cause: RotationRefusal | undefined): string {
 function rotationFailure(err: unknown): string {
   const name = err instanceof Error ? err.name : '', message = err instanceof Error ? err.message : String(err);
   if (name === 'AbortError') return 'The PDF changed while its pages were being turned, so nothing was saved. Try again.';
+  // A file that never answered (a cloud placeholder, a sleeping share) is "nothing changed, try again", never content.
+  if (isFileReadTimeout(err)) return `${message} Its pages were not turned and nothing was changed; try again once it is available.`;
   if (name === 'UnsupportedSecurity' || /encrypt/i.test(message)) return rotationRefusal('encrypted');
   if (/signed/i.test(message)) return rotationRefusal('signed');
   if (/failed verification/.test(message)) return `The turned PDF did not pass its check, so nothing was saved. ${LEFT_AS_IT_IS}`;
@@ -198,7 +201,7 @@ type RotateDeps = Pick<PdfGestureDeps,
 >;
 
 /** Turns pressed but not yet taken by a write, per document: quarter turns for every page, and per page. */
-interface PendingTurns { all: number; pages: Map<number, number>; presses: number; run: Promise<void> }
+interface PendingTurns { all: number; pages: Map<number, number>; presses: number; run: Promise<void>; savedConversion?: boolean }
 const pendingTurns = new Map<string, PendingTurns>();
 
 /**
@@ -249,6 +252,15 @@ export function rotatePdf(deps: RotateDeps, path: string, delta: number, pageInd
       for (let round = 0; round < 3; round++) {
         if (!await saveInkBeforeTurn(deps, path, id)) return;
         const step = await queueTurn(deps, path, id, entry);
+        if (step === 'save-conversion') {
+          // Converted Classic annotations reach the file at their first save, which the conversion leaves to the first change
+          // (pdf-and-drawings, Legacy conversion). A turn pressed before one writes it if it can; a board with nothing to save
+          // yet is told so, rather than "convert first" just after converting (measured: the forced save is 'skipped').
+          entry.savedConversion = true;
+          if (await deps.flushTab(path, true) === 'written') continue;
+          deps.notifyRef.current(`These annotations were converted but are not saved into the PDF until your next change in Annotate. Make one, then turn the pages: they turn with their annotations. ${LEFT_AS_IT_IS}`);
+          return;
+        }
         if (step !== 'pending-ink') { outcome = step; return; }
       }
       deps.notifyRef.current('This PDF has annotations still being saved. Try again in a moment.');
@@ -279,7 +291,7 @@ async function saveInkBeforeTurn(deps: RotateDeps, path: string, id: string): Pr
 }
 
 /** One write of the pending turns, on the per-tab chain `flushTab` uses; 'pending-ink' when ink arrived while it waited. */
-function queueTurn(deps: RotateDeps, path: string, id: string, entry: PendingTurns): Promise<PdfRotationOutcome | 'pending-ink'> {
+function queueTurn(deps: RotateDeps, path: string, id: string, entry: PendingTurns): Promise<PdfRotationOutcome | 'pending-ink' | 'save-conversion'> {
   const chains = deps.flushChainsRef.current;
   const chained = (chains.get(id) ?? Promise.resolve()).then(() => {
     // From here on, presses queue for the next write.
@@ -291,7 +303,7 @@ function queueTurn(deps: RotateDeps, path: string, id: string, entry: PendingTur
   return chained;
 }
 
-async function writeTurns(deps: RotateDeps, path: string, id: string, turns: PendingTurns): Promise<PdfRotationOutcome | 'pending-ink'> {
+async function writeTurns(deps: RotateDeps, path: string, id: string, turns: PendingTurns): Promise<PdfRotationOutcome | 'pending-ink' | 'save-conversion'> {
   const {
     getVaultActivation, readFileSnapshot, notifyRef, rootHandleRef, currentVaultIdRef, readerEpochRef, tabsRef,
     documentBuffers, documentSessions, setTabs, nativePoliciesRef, bytesGenerationsRef, bumpBytesGeneration,
@@ -343,7 +355,11 @@ async function writeTurns(deps: RotateDeps, path: string, id: string, turns: Pen
     const result = await rotatePdfIncrementally({ source: snapshot.blob.slice(0, snapshot.blob.size, 'application/pdf'),
       turns: { all: turns.all % 4, pages: [...turns.pages].map(([page, amount]) => [page, amount % 4] as [number, number]) }, signal: controller.signal });
     check();
-    if (result.kind === 'refused') { notifyRef.current(rotationRefusal(result.cause)); return failed; }
+    if (result.kind === 'refused') {
+      // Classic annotations this session has already converted (its native owner is hosted) are only unsaved, not refused.
+      if (result.cause === 'legacy-annotations' && !turns.savedConversion && hasHostedNativeOwner(documentSessions.get(id), id)) return 'save-conversion';
+      notifyRef.current(rotationRefusal(result.cause)); return failed;
+    }
     if (result.kind === 'unchanged') return { kind: 'unchanged' };
     if (pendingInk()) return 'pending-ink';
     if (__BME_BENCH__) {

@@ -14,9 +14,11 @@ export function setCrashCheckpoint(checkpoint: Checkpoint): void {
     registered = checkpoint;
 }
 
-/** Resolves true when nothing is left unsaved, false when something is or nothing could be asked. */
+/** Resolves true when nothing is left unsaved, false when something is. Nothing registered means App failed before
+ *  its first effects ran — before any document could be opened, so there is nothing to lose: answering false there
+ *  told a person whose app never started that "some changes could not be saved". */
 export async function runCrashCheckpoint(): Promise<boolean> {
-    if (!registered) return false;
+    if (!registered) return true;
     try { return await registered(); }
     catch (error) {
         console.error('Could not save pending work after the app failed:', error);

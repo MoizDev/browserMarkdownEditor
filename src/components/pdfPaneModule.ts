@@ -10,6 +10,10 @@ export type PdfPaneModuleSnapshot =
 
 let snapshot: PdfPaneModuleSnapshot = Object.freeze({ status: 'unloaded', attempt: 0 });
 let task: Promise<PdfPaneComponent> | undefined;
+// Whether a pane is waiting on the import in flight. A warm-up's failure is not the pane's to show: measured against
+// moduleSlot's twin of this, a slow first visit's idle warm-up timed out and the first PDF opened showed its error
+// without an attempt of its own.
+let wanted = false;
 const listeners = new Set<() => void>();
 
 export function getPdfPaneModuleSnapshot(): PdfPaneModuleSnapshot {
@@ -31,7 +35,8 @@ function publish(next: PdfPaneModuleSnapshot): void {
 /** Measured: an already-prefetched PDF still waited 303ms to read (second: 3ms).
  * React.lazy owns a separate pending payload; a warm import is not a warm lazy
  * component. Keep its exact default here for direct rendering, not a wrapper. */
-export function loadPdfPane(options: { retry?: boolean } = {}): Promise<PdfPaneComponent> {
+export function loadPdfPane(options: { retry?: boolean; background?: boolean } = {}): Promise<PdfPaneComponent> {
+    if (!options.background) wanted = true;
     if (task && (snapshot.status !== 'error' || !options.retry)) return task;
     const attempt = snapshot.attempt + 1;
     // The pane is only the first of a chain the open waits on; its routes, the engine's modules and the engine itself are
@@ -46,7 +51,10 @@ export function loadPdfPane(options: { retry?: boolean } = {}): Promise<PdfPaneC
         error => {
             // loadChunk has already retried once and says whether the chunk is gone (a reload is
             // then the only cure); a second failed explicit retry also points at reload.
-            publish({ status: 'error', attempt, error, reloadRequired: attempt > 1 });
+            const shown = wanted;
+            wanted = false;
+            if (shown) publish({ status: 'error', attempt, error, reloadRequired: attempt > 1 });
+            else { task = undefined; publish({ status: 'unloaded', attempt: 0 }); }
             throw error;
         },
     );

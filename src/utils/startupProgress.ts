@@ -19,14 +19,18 @@ export interface StartupSnapshot {
     readonly vault: string | null;
     readonly foldersRead: number;
     readonly filesFound: number;
-    /** The folder whose listing has been pending the longest, vault-relative ('' is the vault's own top level). */
+    /** The folder that has gone longest without answering — since it began listing, or since the last entry it
+     *  yielded — vault-relative ('' is the vault's own top level). */
     readonly waitingOn: string | null;
     readonly waitingMs: number;
 }
 
-/** What a walk reports per folder: the folder starts listing, then finishes with this many files. */
+/** What a walk reports per folder: the folder starts listing, yields each entry, then finishes with this many files. */
 export interface WalkProgress {
     begin(path: string): void;
+    /** The folder answered with another entry. A big or slow folder that keeps answering is not one that has stopped:
+     *  timed from `begin` alone, a folder of a few thousand files on a slow disk read as "not answering". */
+    seen(path: string): void;
     end(path: string, files: number): void;
 }
 
@@ -104,6 +108,7 @@ export function startupWalk(): WalkProgress | undefined {
     if (!current) return undefined;
     return {
         begin(path) { if (run === current) current.pending.set(path, performance.now()); },
+        seen(path) { if (run === current && current.pending.has(path)) current.pending.set(path, performance.now()); },
         end(path, files) {
             if (run !== current) return;
             current.pending.delete(path);

@@ -1,6 +1,7 @@
 import type React from 'react';
 import { useCallback, useEffect, useState } from 'react';
 import type { OpenTab } from '../types';
+import type { DocumentBufferStore } from '../utils/documentBuffers';
 import type { DocumentSessionStore } from '../utils/documentSessions';
 import { watchForNewVersion } from '../utils/versionPoll';
 import { anyPending } from '../utils/unloadCoordinator';
@@ -11,6 +12,7 @@ export interface UseUpdateNoticeDeps {
   tabsRef: React.MutableRefObject<OpenTab[]>;
   hasUnsaved: (tab: OpenTab) => boolean;
   documentSessions: DocumentSessionStore;
+  documentBuffers: DocumentBufferStore;
   /** Write out everything pending, as leaving the page does (useSaveFunnel). */
   checkpointNow: () => Promise<void>;
   notifyRef: React.MutableRefObject<(message: string) => void>;
@@ -25,13 +27,17 @@ const SAVE_BEFORE_RELOAD_MS = 5000;
  * and is registered for main.tsx's last-resort boundary (utils/crashCheckpoint.ts).
  */
 export function useUpdateNotice(deps: UseUpdateNoticeDeps) {
-  const { flushingRef, tabsRef, hasUnsaved, documentSessions, checkpointNow, notifyRef } = deps;
+  const { flushingRef, tabsRef, hasUnsaved, documentSessions, documentBuffers, checkpointNow, notifyRef } = deps;
   const [updateAvailable, setUpdateAvailable] = useState(false);
   useEffect(() => watchForNewVersion(() => setUpdateAvailable(true)), []);
   // Do not discard an in-flight save, a not-yet-committed text edit, or ink
   // still held by a canvas serializer. Conflicts remain for the reader to fix.
+  // `dirty`, `disk` and the buffer's own revision are asked too: a document held in a disk conflict (its autosave is
+  // skipped until the DiskBar is answered), one whose file is gone, and one whose last save failed have no timer, no
+  // write in flight and no pending edit, so `hasUnsaved` alone called them saved and the reload dropped the only copy.
   const unsaved = useCallback(() => flushingRef.current.size > 0 || anyPending()
-    || tabsRef.current.some(tab => hasUnsaved(tab) || documentSessions.hasPendingEdits(tab.id)), [documentSessions, flushingRef, hasUnsaved, tabsRef]);
+    || tabsRef.current.some(tab => hasUnsaved(tab) || documentSessions.hasPendingEdits(tab.id)
+      || tab.dirty || !!tab.disk || documentBuffers.isDirty(tab.id)), [documentBuffers, documentSessions, flushingRef, hasUnsaved, tabsRef]);
   const saveAll = useCallback(async () => {
     if (!unsaved()) return true;
     let timer: ReturnType<typeof setTimeout> | undefined;

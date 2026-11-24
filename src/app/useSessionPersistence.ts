@@ -49,6 +49,15 @@ export function useSessionPersistence(deps: UseSessionPersistenceDeps) {
    * switch cannot release the gate a later pass holds.
    */
   const restoringRef = useRef<object | null>(null);
+  /**
+   * The vault whose restore could NOT finish: its stored session is the only record of the tabs that did not come
+   * back, so nothing is written over it for the rest of this page (the first layout change after an unfinished
+   * restore used to be filed as the vault's whole session — measured: four saved tabs replaced for good by the next
+   * note opened). Its own ref, not `restoringRef` held shut: that one is also what outside-change checks wait on
+   * (useOutsideChanges), and holding it for the page stopped files changed or deleted elsewhere from ever being
+   * noticed. Cleared by the next claim of a vault (useSessionRestore).
+   */
+  const sessionSealedRef = useRef<string | null>(null);
   useEffect(() => {
     if (!rootHandle) return;
     // A failed vault-id write can prevent any restore claim; do not leave that
@@ -103,6 +112,7 @@ export function useSessionPersistence(deps: UseSessionPersistenceDeps) {
     if (sessionRootRef.current !== rootHandle) return;        // the workspace is still the old vault's
     if (sessionVaultIdRef.current !== currentVaultId) return; // …or this vault's restore has not run yet
     if (restoringRef.current) return;                         // …or is still reading (see restoringRef)
+    if (sessionSealedRef.current === currentVaultId) return;  // …or could not finish (see sessionSealedRef)
     writeSession(currentVaultId, {
       // Stamped, because a record written before panes and tabs swapped axes
       // means the opposite by the same `groups` row — readSession migrates it
@@ -120,5 +130,5 @@ export function useSessionPersistence(deps: UseSessionPersistenceDeps) {
       active: focusedPathOf(layout),
     });
   }, [layout, currentVaultId, rootHandle]);
-  return { sessionRootRef, sessionVaultIdRef, restoringRef };
+  return { sessionRootRef, sessionVaultIdRef, restoringRef, sessionSealedRef };
 }

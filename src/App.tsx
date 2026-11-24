@@ -226,7 +226,7 @@ export default function App() {
 
   const { recoveryJournal, recoveryEvent } = useRecoveryJournal(announce);
   const {
-    sessionRootRef, sessionVaultIdRef, restoringRef
+    sessionRootRef, sessionVaultIdRef, restoringRef, sessionSealedRef
   } = useSessionPersistence({
     rootHandle, currentVaultId, layout, indexRestoreSettled
   });
@@ -342,6 +342,17 @@ export default function App() {
   } = useVaultOpeners({
     pickDirectoryFromFileSystem, openRecentVault, openFolderAsVault, canLeavePdfVault, notify, tell
   });
+  // "Open another vault…" on the loading and problem screens. Neither draws the workspace's notice bar, so a pick
+  // that was refused or failed is said in a dialog: unsaid, the button did nothing at all, on the two screens whose
+  // whole purpose is a way on.
+  const openOtherVault = useCallback(() => {
+    void pickDirectorySafely().then(result => {
+      if (result === 'ok') return;
+      void tell(result === 'busy'
+        ? { title: 'Still opening a folder', body: 'The app is still reading a folder that was picked a moment ago. Wait for it to finish, or reload the app to stop it.', confirmLabel: 'OK' }
+        : { title: 'That folder could not be opened', body: 'Nothing was changed. Check that the folder still exists and that this browser may read it, then try again.', confirmLabel: 'OK' });
+    });
+  }, [pickDirectorySafely, tell]);
 
   const {
     releaseOverwritten, removeTab, closeDocuments, closeTab, reopenClosedTab, retryUnreadTab,
@@ -376,7 +387,7 @@ export default function App() {
     fileTree, rootHandle, currentVaultId, isLoading, recentVaults, readFileVersioned, resolveVaultFile,
     rememberAssetRefs, seedPdfBaseline, seedDocumentBuffer, documentBuffers, indexRestoreSettled,
     initialLocation, linkPendingRef, setPendingLinkFile, sessionRootRef, sessionVaultIdRef, restoringRef,
-    restorePendingRef, vaultMovesRef, rootHandleRef, currentVaultIdRef, layoutRef, assetRefsRef,
+    sessionSealedRef, notifyRef, restorePendingRef, vaultMovesRef, rootHandleRef, currentVaultIdRef, layoutRef, assetRefsRef,
     boardBaselinesRef, setTabs, setLayout
   });
 
@@ -429,7 +440,7 @@ export default function App() {
   const {
     updateAvailable, reloadUpdatedApp, saveAndReload, dismissUpdate
   } = useUpdateNotice({
-    flushingRef, tabsRef, hasUnsaved, documentSessions, checkpointNow, notifyRef
+    flushingRef, tabsRef, hasUnsaved, documentSessions, documentBuffers, checkpointNow, notifyRef
   });
 
   const {
@@ -554,7 +565,7 @@ export default function App() {
 
   if (isLoading) {
     return guard(
-      <LoadingScreen onOpenOther={() => { void pickDirectorySafely(); }} onReload={() => window.location.reload()}>
+      <LoadingScreen onOpenOther={openOtherVault} onReload={() => window.location.reload()}>
         {dialogHost}
         {updateNotice}
       </LoadingScreen>
@@ -563,7 +574,7 @@ export default function App() {
 
   if (vaultProblem) {
     return guard(
-      <VaultProblemScreen problem={vaultProblem} onRetry={() => { void retryVault(); }} onOpenOther={() => { void pickDirectorySafely(); }}>
+      <VaultProblemScreen problem={vaultProblem} onRetry={() => { void retryVault(); }} onOpenOther={openOtherVault}>
         {dialogHost}
         {updateNotice}
       </VaultProblemScreen>

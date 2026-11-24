@@ -22,9 +22,10 @@ function warm(key: string, load: () => Promise<unknown>): void {
 export function prefetchPanes(kinds: CanvasKinds): void {
     if (!kinds.epub && !kinds.pdf && !kinds.drawing && !kinds.nativeDrawing && !kinds.notebook) return;
     const run = () => {
-        if (kinds.epub) warm('epub', epubPaneSlot.load);
-        if (kinds.pdf) warm('pdf', loadPdfPane);
-        if (kinds.drawing || kinds.nativeDrawing || kinds.notebook) warm('canvas', () => Promise.all([canvasPaneSlot.load(), nativeCanvasEntrySlot.load()]));
+        const background = { background: true } as const;
+        if (kinds.epub) warm('epub', () => epubPaneSlot.load(background));
+        if (kinds.pdf) warm('pdf', () => loadPdfPane(background));
+        if (kinds.drawing || kinds.nativeDrawing || kinds.notebook) warm('canvas', () => Promise.all([canvasPaneSlot.load(background), nativeCanvasEntrySlot.load(background)]));
     };
     if (window.requestIdleCallback) window.requestIdleCallback(run, { timeout: 4000 });
     else setTimeout(run, 1500);

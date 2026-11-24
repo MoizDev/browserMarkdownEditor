@@ -61,6 +61,8 @@ export interface UseSessionRestoreDeps {
   sessionRootRef: React.MutableRefObject<FileSystemDirectoryHandle | null>;
   sessionVaultIdRef: React.MutableRefObject<string | null | undefined>;
   restoringRef: React.MutableRefObject<object | null>;
+  sessionSealedRef: React.MutableRefObject<string | null>;
+  notifyRef: React.MutableRefObject<(message: string) => void>;
   restorePendingRef: React.MutableRefObject<PendingRestore | null>;
   vaultMovesRef: React.MutableRefObject<Set<Promise<unknown>>>;
   rootHandleRef: React.MutableRefObject<FileSystemDirectoryHandle | null>;
@@ -82,6 +84,7 @@ export function useSessionRestore(deps: UseSessionRestoreDeps): void {
     fileTree, rootHandle, currentVaultId, isLoading, recentVaults, readFileVersioned, resolveVaultFile,
     rememberAssetRefs, seedPdfBaseline, seedDocumentBuffer, documentBuffers, indexRestoreSettled,
     initialLocation, linkPendingRef, setPendingLinkFile, sessionRootRef, sessionVaultIdRef, restoringRef,
+    sessionSealedRef, notifyRef,
     restorePendingRef, vaultMovesRef, rootHandleRef, currentVaultIdRef, layoutRef, assetRefsRef,
     boardBaselinesRef, setTabs, setLayout,
   } = deps;
@@ -135,6 +138,7 @@ export function useSessionRestore(deps: UseSessionRestoreDeps): void {
     // vault's files must not hold this one's gate — a vault with nothing to
     // read would otherwise persist nothing until that pass finished.
     restoringRef.current = null;
+    sessionSealedRef.current = null;
     const vaultFiles = collectFiles(fileTree);
 
     // The note the address bar names, when it belongs HERE. Resolved through
@@ -219,11 +223,6 @@ export function useSessionRestore(deps: UseSessionRestoreDeps): void {
     restorePendingRef.current = pending;
     // The index waits for the restore so a restored pane paints first — but never for longer than this.
     const indexTimer = setTimeout(indexRestoreSettled, INDEX_WAIT_MS);
-    // Set when this pass cannot finish: it then keeps `restoringRef` (persistence stays shut for the vault) instead
-    // of releasing it, because the first layout change after an unfinished restore was written as the vault's WHOLE
-    // session — measured: a help-guide chunk that failed to load restored nothing, and the next note opened
-    // replaced four saved tabs for good.
-    let incomplete = false;
     (async () => {
       try {
         // Read concurrently, not one after another: the workspace (the link's
@@ -483,10 +482,17 @@ export function useSessionRestore(deps: UseSessionRestoreDeps): void {
         });
         setLayout(prev => mergeLayouts(restoredLayout, prev));
       } catch (err) {
-        incomplete = true;
+        // This pass cannot finish, so the vault's stored session is sealed for the page (sessionSealedRef) — the
+        // first layout change after an unfinished restore was otherwise written as the vault's WHOLE session
+        // (measured: a help-guide chunk that failed to load restored nothing, and the next note opened replaced
+        // four saved tabs for good). Said out loud, because what is opened from here on is not remembered either.
         console.error('The saved tabs could not be restored; the saved session is kept as it was:', err);
+        if (sessionRootRef.current === root && sessionVaultIdRef.current === currentVaultId) {
+          sessionSealedRef.current = currentVaultId;
+          notifyRef.current('Your saved tabs could not be reopened this time. They are kept as they were, and reloading tries again; tabs opened until then are not remembered.');
+        }
       } finally {
-        if (!incomplete) release();
+        release();
         clearTimeout(indexTimer);
         if (restorePendingRef.current === pending) restorePendingRef.current = null;
         // The link has been dealt with, whichever way this ended. On success
@@ -496,7 +502,7 @@ export function useSessionRestore(deps: UseSessionRestoreDeps): void {
         indexRestoreSettled();
       }
     })();
-  }, [fileTree, rootHandle, currentVaultId, readFileVersioned, rememberAssetRefs, seedPdfBaseline, recentVaults, initialLocation, resolveVaultFile, isLoading, indexRestoreSettled, seedDocumentBuffer, documentBuffers, assetRefsRef, boardBaselinesRef, currentVaultIdRef, layoutRef, linkPendingRef, restorePendingRef, restoringRef, rootHandleRef, sessionRootRef, sessionVaultIdRef, setLayout, setPendingLinkFile, setTabs, vaultMovesRef]);
+  }, [fileTree, rootHandle, currentVaultId, readFileVersioned, rememberAssetRefs, seedPdfBaseline, recentVaults, initialLocation, resolveVaultFile, isLoading, indexRestoreSettled, seedDocumentBuffer, documentBuffers, assetRefsRef, boardBaselinesRef, currentVaultIdRef, layoutRef, linkPendingRef, restorePendingRef, restoringRef, sessionSealedRef, notifyRef, rootHandleRef, sessionRootRef, sessionVaultIdRef, setLayout, setPendingLinkFile, setTabs, vaultMovesRef]);
 
   // A vault taken off the recent list (the minus in the vault menu) mints a new
   // id if it is ever opened again, so its stored session would be unreachable

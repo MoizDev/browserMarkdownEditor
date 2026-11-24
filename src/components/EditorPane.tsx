@@ -60,7 +60,8 @@ const PdfPaneHost = React.memo(function PdfPaneHost({
     // not cover the note beside it. Keep this off props so host memo still holds.
     const loadingStyle = useFloatingSlot(rest.isVisible, rest.slotIndex ?? 0, rest.slotLeft ?? 0, rest.slotWidth ?? 100);
     useEffect(() => {
-        if (activated && module.status === 'unloaded') void loadPdfPane().catch(() => {});
+        // Also while a warm-up's import is in flight: joining it makes its outcome this pane's to show (pdfPaneModule.ts).
+        if (activated && (module.status === 'unloaded' || module.status === 'loading')) void loadPdfPane().catch(() => {});
     }, [activated, module.status]);
     const identity = reading.identityForTab(tab);
     const path = tab.file.path;

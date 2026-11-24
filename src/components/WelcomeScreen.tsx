@@ -124,7 +124,11 @@ export function LoadingScreen({ onOpenOther, onReload, children }: LoadingScreen
   // Polled, not subscribed (see startupProgress.ts): the tick above is what re-renders this.
   const snapshot = readStartup();
   const slow = !!snapshot && snapshot.stepMs >= STARTUP_SLOW_MS;
-  const choices = slow && now >= waitUntil;
+  // A walk is stalled when ONE folder has not answered, not when the walk is long: a healthy vault of many thousands
+  // of folders takes longer than this to read, and it was told its folders were "usually on a cloud drive" and
+  // offered a way out on every load while its counts were still climbing. Every other step is a single call.
+  const stalled = slow && (snapshot.step !== 'walk' || snapshot.waitingMs >= STARTUP_SLOW_MS);
+  const choices = stalled && now >= waitUntil;
   const fileSystem = snapshot?.step === 'walk' || snapshot?.step === 'permission';
   return (
     <div className="welcome-screen">
@@ -149,8 +153,8 @@ export function LoadingScreen({ onOpenOther, onReload, children }: LoadingScreen
                   <button className="welcome-btn startup-btn" onClick={onReload}>Reload</button>
                 </div>
               </>
-            ) : (
-              <p className="startup-hint">Still waiting. The choices come back in a moment if it does not finish.</p>
+            ) : stalled && (
+              <p className="startup-hint">Still waiting. The choices come back in half a minute if it has not finished.</p>
             )}
           </>
         )}

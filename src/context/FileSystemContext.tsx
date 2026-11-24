@@ -318,6 +318,7 @@ async function listDir(
         let files = 0;
         try {
             for await (const [name, handle] of dirHandle.entries()) {
+                progress?.seen(path);
                 if (name === ENTRY_STYLE_FILE && handle.kind === 'file') styleFile = handle;
                 if (isHiddenEntryName(name, !path, handle.kind)) continue;
 
@@ -1292,14 +1293,26 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
         if (pickerOpenRef.current || switchInFlightRef.current) return 'busy';
         pickerOpenRef.current = true;
         switchInFlightRef.current = true;
+        let held = true;
+        const letGo = () => {
+            if (!held) return;
+            held = false;
+            pickerOpenRef.current = false;
+            switchInFlightRef.current = false;
+        };
 
         try {
             const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
             // Picking the folder already open is a no-op, not a vault switch —
             // keep the handle the app (and every open tab) is already using.
             if (await isCurrentVault(handle)) {
-                // Picked from a loading screen that is stuck on this same vault: a walk that lands is a way out.
-                if (await refreshTree(rootHandleRef.current) && isLoading) supersedeStartup();
+                // No switch follows, so nothing is held over this walk: picked from a loading screen stuck on this
+                // same vault, it waits on the same folder that never answers, and holding the guards for it turned
+                // every later "Open another vault…" into a silent 'busy' for the rest of the page.
+                letGo();
+                // A walk that lands is a way out of that loading screen, and of the problem screen once the folder
+                // was fixed (it used to stay up over the vault it had just read).
+                if (await refreshTree(rootHandleRef.current)) supersedeStartup();
                 return 'ok';
             }
             // Walk before committing, exactly as openVaultHandle does — see the
@@ -1334,10 +1347,9 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
             console.error('Error picking directory:', err);
             return 'error';
         } finally {
-            pickerOpenRef.current = false;
-            switchInFlightRef.current = false;
+            letGo();
         }
-    }, [refreshTree, loadTree, recordVault, isCurrentVault, commitRoot, commitTree, supersedeStartup, isLoading]);
+    }, [refreshTree, loadTree, recordVault, isCurrentVault, commitRoot, commitTree, supersedeStartup]);
 
     /**
      * Take one vault off the recent list. Nothing on disk is touched: the list

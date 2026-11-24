@@ -12,6 +12,6 @@ export const nativePdfEntrySlot = moduleSlot(() => import('./whiteboard/NativePd
  * files at 325 ms, cpuEntry at 396 ms, first tiles at 470 ms. Idempotent: every import is the module cache's. */
 export function warmPdfOpenPath(): Promise<unknown> {
     // A failure is not reported here: the open that needs the module imports it again and owns the error.
-    return Promise.all([pdfTiledSurfaceSlot.load(), loadChunk(() => import('../pdf/session/sourceRuntime')), loadChunk(() => import('../pdf/session/passwords')),
+    return Promise.all([pdfTiledSurfaceSlot.load({ background: true }), loadChunk(() => import('../pdf/session/sourceRuntime')), loadChunk(() => import('../pdf/session/passwords')),
         loadChunk(() => import('../pdf/session/startup')).then(startup => startup.warmPdfEngine()), loadChunk(() => import('../platform/render/cpuEntry'))]);
 }

@@ -417,6 +417,12 @@ export function useSaveFunnel(deps: UseSaveFunnelDeps) {
         if (pdfEntry && pdfRebuildRef.current.get(id) === pdfEntry) {
           pdfEntry.baseline = result.version;
           setPdfRebuildNotice(id, { state: 'kept', generation: pdfEntry.value.role.generation, approved: pdfEntry.approved, copyName: pdfEntry.copyName });
+        } else if (isPdf && pdfRebuildRef.current.has(id) && getBaseline(id) === result.version) {
+          // A rebuild notice speaks for the file it inspected. A write that did not go through it (converted Classic
+          // ink's first save, native ink) replaced that file, so "Before the first save, a copy is kept in Trash" stayed
+          // up after the save and after later turns; its entry would also call the next reader version a conflict.
+          pdfRebuildRef.current.delete(id);
+          setPdfRebuildNotice(id, undefined);
         }
         // Stamped here, the one save funnel, rather than re-statted: the
         // explorer's Modified-time sort then moves the note to the top without

@@ -209,23 +209,11 @@ export class SessionScene implements SceneSpatial {
         if (!this.ready) return { revision: this.options.doc.rev, quality: BoundsQuality.Pending, ink: null, selectable: null };
         return this.live.worldBounds(id);
     }
+    /** One node's exact bounds, on the bounded path of ensureExactBoundsMany: a group's members are realised a few at a time,
+     * never all at once (a 10,000-member group started 10,000 geometry builds together). A member that changed meanwhile keeps
+     * the bounds it has, which its own invalidation publishes; the answer is the node's bounds once the scene has published. */
     async ensureExactBounds(id: NodeId, signal?: AbortSignal): Promise<SceneBounds | null> {
-        if (this.disposed) throw new DOMException('Scene is disposed', 'AbortError');
-        const cooperate = this.options.cooperate ?? yieldToHost;
-        while (!this.ready) { signal?.throwIfAborted(); this.controller.signal.throwIfAborted(); this.step(16, performance.now() + 3); await cooperate(); }
-        const node = this.options.doc.nodes.get(id);
-        if (!node) return null;
-        const serial = this.serial, jobs = this.geometryOwners(node).map(owner =>
-            ({ id: owner.id, version: this.versions.get(owner.id) ?? 0, captured: createNode(owner) }));
-        await Promise.all(jobs.map(job => this.cache.ensure(job.id, job.version, signal ?? this.controller.signal,
-            jobSignal => this.options.realize(job.captured, jobSignal))));
-        signal?.throwIfAborted();
-        if (this.disposed || this.serial !== serial || !this.options.doc.nodes.has(id)
-            || jobs.some(job => !this.options.doc.nodes.has(job.id) || (this.versions.get(job.id) ?? 0) !== job.version)) throw new DOMException('Scene geometry changed', 'AbortError');
-        for (const job of jobs) this.pendingNodes.set(job.id, (this.pendingNodes.get(job.id) ?? 0) | Flag.Bounds | Flag.Paint);
-        this.serial++; this.options.invalidate();
-        while (!this.ready) { signal?.throwIfAborted(); this.controller.signal.throwIfAborted(); this.step(16, performance.now() + 3); await cooperate(); }
-        return this.worldBounds(id);
+        return (await this.ensureExactBoundsMany([id], signal)).get(id) ?? null;
     }
     /** Exact bounds for many nodes, published once. The geometry is realised a few at a time and the scene steps to ONE
      * publication for them all: a node whose geometry changed meanwhile keeps the bounds it has (its own invalidation publishes).

@@ -486,9 +486,11 @@ export const attachView: AttachView = options => {
         void (async () => {
             const ready = await runtime.ready;
             let box: readonly [number, number, number, number] | null = null;
+            // One bounded realisation and one publication for every id; a node whose geometry changed meanwhile reveals the bounds
+            // the scene has for it (its own invalidation publishes the new ones), rather than failing the reveal.
+            const exact = await ready.ensureExactBoundsMany([...ids], controller.signal);
             for (const id of ids) {
-                controller.signal.throwIfAborted();
-                const bounds = await ready.ensureExactBounds(id, controller.signal), next = bounds?.selectable;
+                const next = exact.get(id)?.selectable;
                 if (next) box = box ? [Math.min(box[0], next[0]), Math.min(box[1], next[1]), Math.max(box[2], next[2]), Math.max(box[3], next[3])] : next;
             }
             if (!disposed && view.visible && revealJob === controller && !controller.signal.aborted && box) {

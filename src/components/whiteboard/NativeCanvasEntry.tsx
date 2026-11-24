@@ -395,11 +395,16 @@ function NativeCanvasAcquisition({ props, onRetry }: { props: NativeCanvasEntryP
     // A copy asked for from the tree before the file's bytes were read (a `.tldraw` an earlier build already converted in
     // place) finds a board that is editable as it is: there is nothing to copy, and the request must not wait for a reload.
     useEffect(() => { if (acquired && !acquired.adapter.oldBoard) takeEditableCopyRequest(documentId); }, [acquired, documentId]);
+    // A copy is made from the board in memory, so one that did not open has none to make. The request is taken, not left
+    // for a later load to run unasked, and the person who pressed "Make a copy" is told (measured: a board whose
+    // picture file was missing answered that button with nothing at all).
+    const [copyAbandoned, setCopyAbandoned] = useState(false);
+    useEffect(() => { if (error && takeEditableCopyRequest(documentId)) setCopyAbandoned(true); }, [error, documentId]);
     if (identity.documentId !== incoming.documentId || identity.session !== incoming.session
         || identity.vaultActivation !== incoming.vaultActivation || identity.bytesGeneration !== incoming.bytesGeneration
         || identity.kind !== incoming.kind) return <div className="canvas-pane-message is-waiting" role="status">Preparing canvas…</div>;
     if (error) return <div className="canvas-pane-message" role="alert">
-        <span>Could not open canvas: {error}</span>
+        <span>Could not open canvas: {error}{copyAbandoned && `${/[.!?…]$/.test(error) ? '' : '.'} No copy was made, because it did not open.`}</span>
         <button type="button" className="pdf-pane-action" onClick={onRetry}>Try again</button>
     </div>;
     if (!acquired) return <div className={`canvas-pane-message${opening ? '' : ' is-waiting'}`} role="status">{opening ?? 'Preparing canvas…'}</div>;

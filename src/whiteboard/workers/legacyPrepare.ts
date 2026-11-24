@@ -117,8 +117,11 @@ export async function legacyPrepare(value: unknown, context: WorkerContext): Pro
                 pages: request.host.pages.map(page => ({ w: page[0], h: page[1] })) } } : {}),
             async resolveAsset(asset, sourceOrdinal) {
                 check();
+                // None sent: the host could not read that picture's file (legacyAcquisition.ts), and the importer leaves
+                // the picture out. One sent for a different source is a host fault, never a picture to show.
                 const resolved = relativeAssets.get(sourceOrdinal);
-                if (!resolved || relativeLegacyAssetSource(asset) !== resolved.src) throw new Error('Legacy relative media is not bound to this source record');
+                if (!resolved) return null;
+                if (relativeLegacyAssetSource(asset) !== resolved.src) throw new Error('Legacy relative media is not bound to this source record');
                 return resolved.blob;
             },
             async admitMedia(blob) {

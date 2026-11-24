@@ -49,8 +49,10 @@ export function classifyLoadedTabs(next: OpenTab[], previous: OpenTab[], sourceF
    ? withNativeCanvasPolicy(r, r.loadedKind === 'notebook' ? 'notebook' : 'drawing') : r;
   const admittedNative = policy.nativeCanvasSession !== undefined && !!policy.nativeCanvasKind
    && !policy.emergencyReadOnly && sniff?.format === 'native' && !sniff.kindMismatch;
-  // A text buffer's own bytes decide; a binary `.drawing` has none, and keeps what its board's admission said.
-  const oldBoard = sniff ? isOldBoardSniff(sniff) : !!r.oldBoard;
+  // Either reader calling it old makes it old: the sniff is a lexical guess at what the board's admission then reads
+  // in full (and a binary `.drawing` has no text to sniff). Letting the sniff overrule an admission's "old" left the
+  // two flags disagreeing for every layout the sniff did not know; each new admission states its own answer afresh.
+  const oldBoard = isOldBoardSniff(sniff) || !!r.oldBoard;
   const writable = policy.status === 'ready' && policy.bufferKind === 'text' && !tab.readError && !tab.file.isHelp && !policy.emergencyReadOnly
    && !!sniff && !oldBoard && (admittedNative || !canvasReadOnlyReason(sniff));
   return policy === r && r.contentWritable === writable && !!r.oldBoard === oldBoard ? tab

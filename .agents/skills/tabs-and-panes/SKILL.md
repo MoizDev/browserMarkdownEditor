@@ -148,6 +148,10 @@ are copy-only (`recoveryCopy`), never applied to the live file.
   update synchronously inside `trackVaultMove`; it waits for ANY move in flight, re-resolves survivors from the
   root, repeats if the epoch moved, and from there to dispatch has **no await**. The layout is built in origin
   space and `relabelPaths`'d in one step (chained `renamePath` could delete a live pane).
+- **One tab is replaced in place outside the opener**: an old board's editable copy (`app/useEditableCopy.tsx`
+  `make`) takes the original's slot in one commit — `releaseTab` for the original, `setTabs` swapping in a tab with
+  a NEW id, `renamePath` on the layout — so column, strip index, focus and the URL follow the copy. The original
+  is released as a closed document is, with nothing to save (it is never written; `pdf-and-drawings`, old boards).
 - **Two refs say which vault the workspace is the session of** — `sessionRootRef` and `sessionVaultIdRef`, written
   together at the claim and checked by both effects. The switch effect sets `sessionRootRef.current = null` and
   re-points `sessionVaultIdRef` at the vault being LEFT; **`if (!currentVaultId) return;` stays above the claim**.

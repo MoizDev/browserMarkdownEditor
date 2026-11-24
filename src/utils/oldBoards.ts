@@ -14,9 +14,10 @@ import type { FileTreeNode } from '../types';
 
 export type OldBoardKind = 'drawing' | 'notebook';
 
-/** A text buffer's sniff says it holds a board from the old app. */
+/** A text buffer's sniff says it holds a board from the old app. 'notebook-blank' is one too: `{"paper":…,"ui":…}` is
+ *  what the old app wrote for a notebook nobody had written in yet, and this app has only ever created native ones. */
 export function isOldBoardSniff(sniff: CanvasSniff | undefined): boolean {
-    return sniff?.format === 'legacy-drawing' || sniff?.format === 'legacy-notebook';
+    return sniff?.format === 'legacy-drawing' || sniff?.format === 'legacy-notebook' || sniff?.format === 'notebook-blank';
 }
 
 /** Whether a drawing or notebook file whose first bytes are `start` (at least 256 characters of it, when it has them) is

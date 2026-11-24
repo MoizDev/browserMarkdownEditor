@@ -18,7 +18,7 @@ import { FORMAT_LIMITS } from '../format/schema';
 import { parseJsonIncremental } from '../format/jsonRead';
 import { admitLegacyLoad } from './legacyLoadQueue';
 import { yieldToHost } from '../../platform/yieldToHost';
-import { withinFileDeadline } from '../../utils/fileReadDeadline';
+import { isFileReadTimeout, withinFileDeadline } from '../../utils/fileReadDeadline';
 
 // Provenance: copied original -> governed legacy mapping -> real native C5.
 // Native R0 is a conversion-pending source, never an invented user edit or disk baseline.
@@ -107,7 +107,7 @@ export async function acquireLegacyBoard(options: LegacyAcquisitionOptions): Pro
         if (scanned.status !== 'recognized') return { status: 'read-only', original, legacyReport: scanned.report, conversionPending: true, dispose() {} };
         const verified: InspectedMedia[] = [], verifiedById = new Map<MediaId, InspectedMedia>(), sourceBlobs = new Map<MediaId, Blob>();
         const relativeAssets: NonNullable<import('../workers/legacyPrepare').LegacyPrepareRequest['relativeAssets']>[number][] = [];
-        const resolved = new Map<string, Blob>(), inspected = new Map<Blob, InspectedMedia>();
+        const resolved = new Map<string, Blob>(), inspected = new Map<Blob, InspectedMedia>(), absent = new Set<string>();
         let relativeBytes = 0;
         for (const asset of scanned.assets) {
             check();
@@ -118,8 +118,22 @@ export async function acquireLegacyBoard(options: LegacyAcquisitionOptions): Pro
                 else {
                     // A picture kept beside the board is a vault file like any other: on a cloud folder that has not
                     // downloaded it, its read never settles and ignores the signal. Bounded here, inside the slot.
-                    const read = await untilAborted(withinFileDeadline(Promise.resolve(options.readAsset?.(asset.src, signal)), asset.src)); check();
-                    if (!(read instanceof Blob)) throw new Error(`Relative legacy media is unavailable: ${asset.src}`);
+                    //
+                    // A picture whose file is gone, unreadable or over the size a board accepts costs that picture, as any
+                    // item the importer cannot read does: left unresolved here, the importer counts it in the board's
+                    // notice ("1 item … could not be shown (1 picture)"). Thrown, it cost the whole board (measured: one
+                    // deleted picture → "Could not open canvas: Relative legacy media is unavailable: …", for good). A
+                    // file that has not ANSWERED is different — it may yet arrive — and still fails the load, with Try again.
+                    if (absent.has(asset.src)) continue;
+                    let read: Blob | null | undefined;
+                    try { read = await untilAborted(withinFileDeadline(Promise.resolve(options.readAsset?.(asset.src, signal)), asset.src)); }
+                    catch (error) {
+                        check();
+                        if (isFileReadTimeout(error) || (error instanceof DOMException && error.name === 'AbortError')) throw error;
+                        read = null;
+                    }
+                    check();
+                    if (!(read instanceof Blob) || read.size > 10 * 1024 * 1024) { absent.add(asset.src); continue; }
                     blob = new Blob([read], { type: read.type }); resolved.set(asset.src, blob);
                 }
                 if (blob.size > 10 * 1024 * 1024 || blob.size > 256 * 1024 * 1024 - relativeBytes) throw new RangeError('Legacy resource bytes exceed the source limits');

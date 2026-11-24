@@ -17,6 +17,9 @@ interface Header {
     schema: boolean;
     paper: boolean;
     hasPaper: boolean;
+    /** Root `records` is an array and root `schema` an object: tldraw's own file layout (.tldr). */
+    records: boolean;
+    rootSchema: boolean;
 }
 
 /** A lexical walk, not a deserializer: retain only the envelope's few keys.
@@ -24,7 +27,7 @@ interface Header {
  *  never pass this gate and reach today's parse-error → writable-blank path. */
 function scan(text: string, prefix: boolean): { header: Header; valid: boolean } {
     const limit = text.length;
-    const header: Header = { native: false, fence: false, document: false, hasDocument: false, store: false, schema: false, paper: false, hasPaper: false };
+    const header: Header = { native: false, fence: false, document: false, hasDocument: false, store: false, schema: false, paper: false, hasPaper: false, records: false, rootSchema: false };
     let i = 0;
     let nativeHeader = false;
     const space = () => {
@@ -75,7 +78,7 @@ function scan(text: string, prefix: boolean): { header: Header; valid: boolean }
                     space();
                 }
                 const start = i;
-                const object = text[i] === '{';
+                const object = text[i] === '{', array = text[i] === '[';
                 if (scope === 'root' && key === 'document') {
                     header.document = object;
                     header.hasDocument = true;
@@ -93,6 +96,8 @@ function scan(text: string, prefix: boolean): { header: Header; valid: boolean }
                         header.fence = fence === 'compat-1' || !!fence?.startsWith('compat-1:') || text.startsWith('"compat-1:', start);
                     }
                     if (key === 'paper') { header.hasPaper = true; header.paper = object; }
+                    if (key === 'records') header.records = array;
+                    if (key === 'schema') header.rootSchema = object;
                     // Canonical native files need only their header, not a walk
                     // through megabytes of points. Reordered keys use the full
                     // lexical walk; format still takes precedence over document.
@@ -160,6 +165,13 @@ export function sniffCanvas(text: string, ext: string): CanvasSniff {
     // when board.json is missing; the PDF role reader owns attachment precedence.
     if (!valid || header.fence || (header.hasPaper && !header.paper)) return result('not-a-board');
     if (header.document && header.store && header.schema) {
+        return header.paper ? result('legacy-notebook', 'notebook') : result('legacy-drawing', 'whiteboard');
+    }
+    // tldraw's own file ({tldrawFileFormatVersion, schema, records}), by the rule the importer reads it with
+    // (whiteboard/import/records/envelope.ts). Called 'not-a-board' here while the engine opened it as an old board, a
+    // `.tldr` got the read-only view without the offer of a copy (measured: dialog count 0), and the agent was told the
+    // file was not a drawing.
+    if (!header.hasDocument && header.records && header.rootSchema) {
         return header.paper ? result('legacy-notebook', 'notebook') : result('legacy-drawing', 'whiteboard');
     }
     if (!header.hasDocument && header.paper) return result('notebook-blank', 'notebook');

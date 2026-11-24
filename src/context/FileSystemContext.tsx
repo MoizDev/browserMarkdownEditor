@@ -2022,8 +2022,9 @@ export function FileSystemProvider({ children }: { children: ReactNode }) {
                     if (!await entryExists(request.parent, candidate)) { name = candidate; break; }
                 }
                 if (!name) throw new Error('No free name was found for the copy.');
-                await boardOwnerGuard(request, activation);
-                // Proven free (files and folders both) the line above: never createFile, which opens-or-truncates.
+                // Proven free (files and folders both) the line above, with nothing awaited in between — a guard here
+                // was a gap in which another program could take the name and have its file replaced. Never createFile,
+                // which opens-or-truncates.
                 created = await request.parent.getFileHandle(name, { create: true });
                 createdName = name;
                 await writeAllBytes(created, bytes);

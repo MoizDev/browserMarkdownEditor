@@ -12,7 +12,7 @@ import {
     subscribeTreeDropTarget, takeDraggedNode,
 } from '../utils/treeDrag';
 import { isTabDrag } from '../utils/tabDrag';
-import { openContextMenu } from '../utils/contextMenu';
+import { getContextMenu, openContextMenu } from '../utils/contextMenu';
 import { isActiveFilePath, subscribeActiveFile } from '../utils/activeFile';
 import { isExpanded, subscribeExpanded } from '../utils/expandedPaths';
 import LucideGlyph from './LucideGlyph';
@@ -338,7 +338,9 @@ function TreeNode({ node, onFileClick, onCreateFile, onCreateFolder, onTrash, on
         // A drawing or notebook may be an old-format board, which its bytes say, not its name: App answers, within a
         // moment (oldBoards.ts isOldBoardRow), and the menu waits for it rather than offer a copy of a native board.
         if (node.kind === 'file' && isCanvasFile(node.name) && !isNativeDrawingFile(node.name)) {
-            void isOldBoardRow(node).then(oldBoard => raise(fileEntries(oldBoard)));
+            // A menu raised or dismissed while this one waited is the newer intent: arriving late, this one would replace it.
+            const shown = getContextMenu();
+            void isOldBoardRow(node).then(oldBoard => { if (getContextMenu() === shown) raise(fileEntries(oldBoard)); });
         } else raise(entries);
     };
 

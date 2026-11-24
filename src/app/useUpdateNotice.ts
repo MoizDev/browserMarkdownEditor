@@ -21,6 +21,8 @@ export interface UseUpdateNoticeDeps {
 
 /** How long a reload the app offers waits for pending saves before it refuses and says why. */
 const SAVE_BEFORE_RELOAD_MS = 5000;
+/** How long, once the writes are done, the tabs' own bookkeeping may take to say so (a React commit or two). */
+const SETTLE_MS = 1000;
 
 /**
  * A newer build was deployed: offer a reload, never one that drops work. The same "save, then reload" serves every
@@ -55,6 +57,7 @@ export function useUpdateNotice(deps: UseUpdateNoticeDeps) {
       || tab.dirty || !!tab.disk || documentBuffers.isDirty(tab.id)), [documentBuffers, documentSessions, flushingRef, hasUnsaved, tabsRef]);
   const saveAll = useCallback(async () => {
     if (!unsaved()) return true;
+    const deadline = Date.now() + SAVE_BEFORE_RELOAD_MS;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
@@ -62,6 +65,12 @@ export function useUpdateNotice(deps: UseUpdateNoticeDeps) {
         new Promise<void>(resolve => { timer = setTimeout(resolve, SAVE_BEFORE_RELOAD_MS); }),
       ]);
     } finally { clearTimeout(timer); }
+    // A written board's tab is marked clean by a state update (useSaveFunnel's settleCleanTabs), which React commits
+    // after the write resolves — and `tabsRef` with it. Asked in the same task, the tab was still `dirty`, and Reload
+    // was refused ("Finish saving your changes…") with every stroke on disk (measured: the write and the refusal in
+    // the same millisecond, on every board drawn on just before Reload). A document that really is unsaved stays so.
+    const settleUntil = Math.min(deadline, Date.now() + SETTLE_MS);
+    while (unsaved() && Date.now() < settleUntil) await new Promise(resolve => setTimeout(resolve, 50));
     return !unsaved();
   }, [checkpointNow, unsaved]);
   const saveAndReload = useCallback(async () => {

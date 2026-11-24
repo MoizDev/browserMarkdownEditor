@@ -649,7 +649,8 @@ export function createBoardLayers(options: BoardLayersOptions): BoardLayerPair {
                 prepare: (view, budget) => {
                     const source = options.frames.readFrame(), work = withFirstUnit(budget);
                     if (useDense) dense!.prepare(view, work, source ? liveFor(source) : undefined);
-                    else direct!.prepare(view, work);
+                    // A device frame prepares no outlines (CanvasPaintAdapter.prepare): its routes never read them.
+                    else direct!.prepare(view, work, !allocatorHost?.device());
                 },
                 readyFrame: () => current().readyFrame(), borrowPrepared: () => current().borrowPrepared(),
                 retainPrepared: () => current().retainPrepared(),

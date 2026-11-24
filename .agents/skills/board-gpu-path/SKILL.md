@@ -29,7 +29,8 @@ This is the board's own route. Editing (tools, selection, text) is `whiteboard-e
    - With a device (`host.device()`): the frame goes to the GPU adapter (`gpuPaintAdapter.ts`) and its tile
      composer. No density latch, estimate walk or reservation before the build (`onDeviceRoute`). The reference
      CPU adapter (`direct`, `reference/canvasPaintAdapter.ts`) is still built: the composer borrows its prepared
-     paths and clips.
+     frame and clips, but no path or ink outlines (`prepare(view, budget, vectors=false)`; the GPU CPU route builds
+     its own), which held 110 MB at rest on a 450-stroke notebook. A 2D bridge frame asks again with outlines.
    - On canvas2d: the reference adapter draws directly (`direct` mode), or, past the density hysteresis
      (`density.ts`), CPU tiles (`dense` mode: `densePlan.ts`, `streamingDenseTile.ts`). The dense adapter is built
      the first time a board enters dense mode (`ensureDense`), so a device never builds one. A route change resets

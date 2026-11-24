@@ -585,7 +585,7 @@ export function createDensePaintAdapter(resources: PaintLayerResources, host: La
         else { p.phase = 'refine'; staged = p; }
         resources.invalidate();
     };
-    const adapter: CanvasPaintAdapter & {
+    const adapter: Omit<CanvasPaintAdapter, 'prepare'> & {
         prepare(view: ViewState, budget: FrameBudget, liveNodes?: ReadonlySet<string>): void;
         coverage(view: ViewState, liveNodes?: ReadonlySet<string>): { complete: boolean; sharp: boolean; staleVersion?: boolean };
         retainedFrames(): ReadonlySet<PaintSource>;

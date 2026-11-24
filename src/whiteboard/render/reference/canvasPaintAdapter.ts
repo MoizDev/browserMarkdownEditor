@@ -13,7 +13,12 @@ import { paintItem2d } from './paint2d';
 import type { PaintResources2d, PreparedPath2d } from './paint2d';
 
 export interface CanvasPaintAdapter {
-    prepare(view: ViewState, budget: FrameBudget): void;
+    /** `vectors: false` (a device frame) prepares no outline for path and ink items: the GPU routes draw them from the items
+     * themselves, and its CPU route builds its own. Only a canvas2d draw needs them; a prepare that asks for them then (a resize
+     * bridge, the first picture) replaces a snapshot without. Built for a device anyway, an old 450-stroke notebook held 110 MB of
+     * outlines on the CPU at rest that nothing drew, and the CPU target rose to 141 MB for them. Clips are always prepared: the
+     * CPU route clips with them. */
+    prepare(view: ViewState, budget: FrameBudget, vectors?: boolean): void;
     /** The complete shared frame actually available to both band wrappers. */
     readyFrame(): PaintSource | null;
     /** Borrow is valid only until the next prepare, release or dispose. */
@@ -91,6 +96,8 @@ const GEOMETRY_CACHE_BYTES = 8 * 1024 * 1024;
 type Snapshot = {
     frame: PaintSource;
     scale: number;
+    /** Whether path and ink outlines are prepared (see CanvasPaintAdapter.prepare); a snapshot without them cannot draw 2D. */
+    vectors: boolean;
     // The source windows and the cursor into them: window, then item within it.
     windows: readonly PaintWindow[];
     window: number;
@@ -198,10 +205,10 @@ export function createCanvasPaintAdapter(
     let disposed = false;
     let lastFrameId: number | null = null;
 
-    function start(frame: PaintSource, scale: number): Snapshot {
+    function start(frame: PaintSource, scale: number, vectors: boolean): Snapshot {
         const windows = windowsOfSource(frame);
         // A full frame's window list duplicates its band arrays, so it is charged; a live frame's list is the frame's own.
-        return { frame, scale, windows, window: 0, finished: false, index: 0, clipIndex: 0, paths: new WeakMap(), prepared: null,
+        return { frame, scale, vectors, windows, window: 0, finished: false, index: 0, clipIndex: 0, paths: new WeakMap(), prepared: null,
             clips: new Map(), geometry: new Map(), images: new Map(), released: new Set(), drawn: new Set(), skipped: new Set(), borrows: 0, closing: false, abort: new AbortController(),
             pending: 0, failed: false, failure: undefined, complete: false, disposed: false,
             bytes: frame.liveOnly ? 0 : refBytesOf(windows), job: null };
@@ -311,7 +318,7 @@ export function createCanvasPaintAdapter(
         if (item.kind === 'image') {
             s.drawn.add(item.imageKey);
             requestImage(s, item.imageKey);
-        } else if (item.kind !== 'text') {
+        } else if (item.kind !== 'text' && s.vectors) {
             const itemScale = scaleFor(item, s.scale);
             // One geometry serves several items (a figure's outline and its marks; a highlight's two bands), so
             // the item's own key is part of the identity: sharing by geometry alone paints the first path again.
@@ -375,7 +382,7 @@ export function createCanvasPaintAdapter(
     // The presented paint holds every picture its items draw (see CanvasPaintAdapter.drawable2d).
     function holdsDrawn(): boolean {
         const s = presented;
-        if (disposed || !s || s.closing) return false;
+        if (disposed || !s || s.closing || !s.vectors) return false;
         for (const key of s.drawn) if (s.released.has(key) || s.images.get(key) === null) return false;
         return true;
     }
@@ -395,7 +402,7 @@ export function createCanvasPaintAdapter(
         } };
     }
     return {
-        prepare(view, budget) {
+        prepare(view, budget, vectors = true) {
             if (disposed || budget.frameId === lastFrameId) return;
             lastFrameId = budget.frameId;
             const frame = resources.frames.readFrame();
@@ -405,13 +412,14 @@ export function createCanvasPaintAdapter(
                 return;
             }
             if (presented && !sameToken(presented.frame, frame)) { releaseSnapshot(presented); presented = null; }
-            if (staged && (staged.frame !== frame || staged.scale !== scale)) { releaseSnapshot(staged); staged = null; }
+            // A snapshot with outlines serves a frame that needs none; one without cannot serve a 2D draw.
+            if (staged && (staged.frame !== frame || staged.scale !== scale || (vectors && !staged.vectors))) { releaseSnapshot(staged); staged = null; }
             // A presented snapshot that skipped pictures for want of memory is redone, paced, until they draw: nothing else would ask
             // again while the frame and scale stay the same, and the placeholder stayed for good (measured: 8000x6000 at DPR 2).
             const retry = !staged && !!presented && presented.frame === frame && presented.scale === scale && presented.skipped.size > 0;
             if (retry && performance.now() < retryAt) { resources.wakeAt?.(retryAt); return; }
-            if (!staged && (retry || !presented || presented.frame !== frame || presented.scale !== scale)) {
-                staged = start(frame, scale);
+            if (!staged && (retry || !presented || presented.frame !== frame || presented.scale !== scale || (vectors && !presented.vectors))) {
+                staged = start(frame, scale, vectors);
             }
             const s = staged;
             if (!s || s.complete || s.failed) return;

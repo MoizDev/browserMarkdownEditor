@@ -664,8 +664,11 @@ export default function App() {
         )}
         {indexProblem?.activation === searchActivation && (
           <div className="disk-bar" role="alert">
-            <span className="disk-bar-message">{indexProblem.kind === 'permission' ? 'Vault access is needed to update the search index.' : 'Search index unavailable.'}</span>
-            <div className="disk-bar-actions"><button className="disk-bar-btn is-primary" onClick={() => { void retryIndex(); }}>Retry</button></div>
+            <span className="disk-bar-message">{indexProblem.kind === 'permission' ? 'Vault access is needed to update the search index.'
+              : indexProblem.kind === 'replaced' ? 'Search needs a part of the app that a newer version has replaced. Reload to use it.' : 'Search index unavailable.'}</span>
+            <div className="disk-bar-actions">{indexProblem.kind === 'replaced'
+              ? <button className="disk-bar-btn is-primary" onClick={reloadUpdatedApp}>Reload</button>
+              : <button className="disk-bar-btn is-primary" onClick={() => { void retryIndex(); }}>Retry</button>}</div>
           </div>
         )}
         {mainView === 'graph' ? (

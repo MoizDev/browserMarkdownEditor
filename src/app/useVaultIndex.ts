@@ -109,7 +109,7 @@ export function useVaultIndex(deps: UseVaultIndexDeps) {
       setIndexProblem(previous => previous?.kind === 'unavailable' ? null : previous);
       return;
     }
-    if (kind === 'unavailable') setIndexUnavailable(true);
+    if (kind === 'unavailable' || kind === 'replaced') setIndexUnavailable(true);
     setIndexProblem({ activation: getVaultActivation(), kind });
   }, [getVaultActivation]);
   const [indexStartupActivation, setIndexStartupActivation] = useState<number | null>(null);

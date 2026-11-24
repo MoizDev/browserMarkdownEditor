@@ -1,4 +1,5 @@
 import { createWorkerClient, workerScript } from '../../platform/workers';
+import { isAppReplaced } from '../../platform/chunkLoad';
 import indexWorkerUrl from './index.worker.ts?worker&url';
 import type { WorkerClient } from '../../platform/workers';
 import type { IndexGraph, IndexMediaSnapshot, IndexSession } from '../../utils/vaultIndex/types';
@@ -123,7 +124,8 @@ export class VaultIndexClient {
     private reportFailure(error: unknown): void {
         if (!this.disposed && !this.failedReported && error instanceof Error && error.name === 'WorkerFailed') {
             this.failedReported = true;
-            this.onProblem({ session: this.session, kind: 'unavailable', detail: error.message });
+            // Its script is gone from the server (a newer version replaced this one): Retry cannot fetch it, a reload can.
+            this.onProblem({ session: this.session, kind: isAppReplaced(error) ? 'replaced' : 'unavailable', detail: error.message });
         }
     }
     private serial(work: () => Promise<void>): Promise<void> {

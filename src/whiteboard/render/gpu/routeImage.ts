@@ -58,20 +58,27 @@ interface ImageRun extends PreparedRun {
     body: RunBody | null;
 }
 
-const UNIFORM_BYTES = 64;
+const UNIFORM_BYTES = 96;
 /** The placeholder's 1×1 texture, charged at a small floor (it is a real allocation, however small). */
 const BLANK_BYTES = 64;
 /** Finer tile keys remembered as drawn (drawnTiles), a few dozen per large picture: past it the oldest is forgotten, and a live
  * draw that meets that tile again writes it whole on its first upload (firstPaint) instead of over the frame's allowance. */
 const DRAWN_TILES_MAX = 4096;
 
-/** Four vec4 uniforms, 16 floats: viewport (target px w, h, multiply flag, placeholder flag), destination (device rect x0, y0, x1, y1),
- * sourceRect (texel rect u0, v0, u1, v1), params (texture w, h, opacity, invert). The quad covers whole device pixels; every edge pixel is
- * measured against the rect in the fragment, so the vertices need no antialiasing of their own.
- * A placeholder (a picture the painter holds nothing for) samples no texture: destination is the box grown by half its frame,
- * sourceRect the picture's own device rect and params.x half the frame's width. */
+/** Six vec4 uniforms, 24 floats: viewport (target px w, h, multiply flag, mode), destination, sourceRect (texel rect u0, v0, u1, v1),
+ * params (texture w, h, opacity, invert), linear and offset. Three modes:
+ * - 0, a picture whose affine is axis-aligned and unflipped (nearly every one): destination is its device rect x0, y0, x1, y1; the
+ *   quad covers whole device pixels and every edge pixel is measured against the rect in the fragment, so the vertices need no
+ *   antialiasing of their own. linear and offset are unused.
+ * - 1, a placeholder (a picture the painter holds nothing for) samples no texture: destination is the box grown by half its frame,
+ *   sourceRect the picture's own device rect and params.x half the frame's width.
+ * - 2, any other affine (a rotation, a flip, a skew): destination is the rect in the item's LOCAL units, linear the local-to-device
+ *   matrix (a, b, c, d: device = a·x + c·y, b·x + d·y) and offset its translation and the local pad (x, y) that grows the quad by a
+ *   device pixel each side. The fragment measures its pixel's distance to each edge in device pixels, so the edge is antialiased as
+ *   canvas2d antialiases a transformed drawImage, and samples the texel at its local point. Before it, such a picture went to the
+ *   composer's CPU raster, which cannot draw a live part, so a rotated picture was missing while dragged and at most zooms. */
 const IMAGE_SHADER: ShaderModule = {
-    id: 'board-image-quad', revision: 2,
+    id: 'board-image-quad', revision: 3,
     layout: { uniforms: [{ binding: 0, byteSize: UNIFORM_BYTES }], textures: [{ binding: 0, format: 'rgba8' }], attributes: [] },
     glsl: {
         vertex: `#version 300 es
@@ -81,11 +88,20 @@ layout(std140) uniform GfxUniforms0 {
     vec4 destination;
     vec4 sourceRect;
     vec4 params;
+    vec4 linear;
+    vec4 offset;
 };
 out vec2 pixel;
+out vec2 local;
 void main() {
     vec2 corner = vec2(float(gl_VertexID & 1), float((gl_VertexID >> 1) & 1));
-    pixel = mix(floor(destination.xy), ceil(destination.zw), corner);
+    if (viewport.w > 1.5) {
+        local = mix(destination.xy - offset.zw, destination.zw + offset.zw, corner);
+        pixel = vec2(linear.x * local.x + linear.z * local.y, linear.y * local.x + linear.w * local.y) + offset.xy;
+    } else {
+        local = vec2(0.0);
+        pixel = mix(floor(destination.xy), ceil(destination.zw), corner);
+    }
     vec2 unit = pixel / viewport.xy;
     gl_Position = vec4(unit.x * 2.0 - 1.0, 1.0 - unit.y * 2.0, 0.0, 1.0);
 }`,
@@ -96,16 +112,19 @@ layout(std140) uniform GfxUniforms0 {
     vec4 destination;
     vec4 sourceRect;
     vec4 params;
+    vec4 linear;
+    vec4 offset;
 };
 uniform sampler2D gfxTexture0;
 in vec2 pixel;
+in vec2 local;
 layout(location=0) out vec4 gfxColour;
 float inside(vec4 r) {
     vec2 c = clamp(min(pixel + 0.5, r.zw) - max(pixel - 0.5, r.xy), 0.0, 1.0);
     return c.x * c.y;
 }
 void main() {
-    if (viewport.w > 0.5) {
+    if (viewport.w > 0.5 && viewport.w < 1.5) {
         // canvas2d's placeholder (paint2d): a grey fill at 0.18 over the box and a grey frame at 0.7 centred on its edge, as exact
         // areas of the pixel: inside the inner box fill only, in the frame inside the box frame over fill, outside it frame only.
         float outer = inside(destination), box = inside(sourceRect);
@@ -115,17 +134,33 @@ void main() {
         gfxColour = viewport.z > 0.5 ? vec4(vec3(1.0 - alpha * (1.0 - grey)), 1.0) : vec4(vec3(grey * alpha), alpha);
         return;
     }
-    // The pixel's footprint is [pixel - 0.5, pixel + 0.5]. Its area inside the rect is the coverage; a corner takes the
-    // smaller of its two edge coverages, not their product (b39411ce, the 0.55-scale corner).
-    vec2 lo = max(pixel - 0.5, destination.xy);
-    vec2 hi = min(pixel + 0.5, destination.zw);
-    vec2 cover = clamp(hi - lo, 0.0, 1.0);
-    float coverage = min(cover.x, cover.y);
-    // The 2D canvas drops an edge pixel covered under a quarter; an interior pixel has coverage 1 and is never dropped.
-    if (coverage < 0.25) discard;
-    // The texel is the picture's linear mapping of the centre of the pixel's visible span: the mean of the texels it covers.
-    vec2 centre = (lo + hi) * 0.5;
-    vec2 texel = sourceRect.xy + (centre - destination.xy) / (destination.zw - destination.xy) * (sourceRect.zw - sourceRect.xy);
+    float coverage;
+    vec2 unitPoint;
+    if (viewport.w > 1.5) {
+        // A local edge x = x0 runs along the device column (c, d): a point's device distance from it is its local distance times
+        // |det| / |(c, d)|, and likewise for the y edges with (a, b). Each edge's coverage is the pixel's span across it, and a
+        // corner takes the smaller of the two, as mode 0 does.
+        float det = abs(linear.x * linear.w - linear.y * linear.z);
+        vec2 perUnit = vec2(det / length(linear.zw), det / length(linear.xy));
+        vec2 away = min(local - destination.xy, destination.zw - local) * perUnit;
+        vec2 cover = clamp(away + 0.5, 0.0, 1.0);
+        coverage = min(cover.x, cover.y);
+        if (coverage <= 0.0) discard;
+        unitPoint = clamp((local - destination.xy) / (destination.zw - destination.xy), 0.0, 1.0);
+    } else {
+        // The pixel's footprint is [pixel - 0.5, pixel + 0.5]. Its area inside the rect is the coverage; a corner takes the
+        // smaller of its two edge coverages, not their product (b39411ce, the 0.55-scale corner).
+        vec2 lo = max(pixel - 0.5, destination.xy);
+        vec2 hi = min(pixel + 0.5, destination.zw);
+        vec2 cover = clamp(hi - lo, 0.0, 1.0);
+        coverage = min(cover.x, cover.y);
+        // The 2D canvas drops an edge pixel covered under a quarter; an interior pixel has coverage 1 and is never dropped.
+        if (coverage < 0.25) discard;
+        // The texel is the picture's linear mapping of the centre of the pixel's visible span: the mean of the texels it covers.
+        vec2 centre = (lo + hi) * 0.5;
+        unitPoint = (centre - destination.xy) / (destination.zw - destination.xy);
+    }
+    vec2 texel = sourceRect.xy + unitPoint * (sourceRect.zw - sourceRect.xy);
     vec4 p = texture(gfxTexture0, vec2(texel.x / params.x, 1.0 - texel.y / params.y));
     if (params.w > 0.5 && p.a > 0.0) {
         // CSS invert(1) then hue-rotate(180deg) on the unpremultiplied colour. The hue matrix's rows sum to 1, so the
@@ -346,7 +381,9 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
              * left out; else the admission the run ends with. */
             const place = (item: PaintImageItem, tile: PictureTileItem | null): Admission<PreparedRun> | null => {
                 const rect = tile ? tile.rect : item.rect, key = tile ? tile.key : item.imageKey;
-                const [a, , , d, e, f] = item.localToWorld;
+                const [a, b, c, d, e, f] = item.localToWorld;
+                // Axis-aligned and unflipped: the device rect is the affine's scale and translation applied to the rect (mode 0).
+                const axis = b === 0 && c === 0 && a > 0 && d > 0;
                 // A video node is one live picture: its key is stable and its lease names the frame it shows now. The node's
                 // texture is the picture, re-uploaded only when that version moves; the frame is the registry's, never released here.
                 const video = key.startsWith(VIDEO_FRAME_PREFIX);
@@ -379,6 +416,9 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
                         const kept = textures.acquire(key, null, budget);
                         if (kept.status === 'ready') admitted = kept;
                         else if (tile || item.underlaid) { auditCount(audit, 'image:underlaid-absent'); return null; }
+                        // The placeholder here is axis-aligned; a transformed one is canvas2d's own, in the item's frame (paint2d), which
+                        // the CPU raster paints with no bitmap. Rejected, not refused: a refusal would wait for a bitmap that never comes.
+                        else if (!axis) return reject(unsupported('transform-placeholder'));
                         else {
                             const placed = placeholder(item, current);
                             if (placed === 'denied') return reject({ status: 'denied', pool: 'gpu', bytes: BLANK_BYTES });
@@ -434,9 +474,22 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
                 if (!(src.width > 0 && src.height > 0) || src.x < 0 || src.y < 0 || src.x + src.width > tex.sourceWidth || src.y + src.height > tex.sourceHeight) {
                     return refuse(key, unsupported('crop'));
                 }
-                // The device rect of the picture, fractional: the shader measures the pixels it covers.
-                const x0 = (e + a * rect.x - view.camera.x) * scale, y0 = (f + d * rect.y - view.camera.y) * scale;
-                const x1 = x0 + a * rect.width * scale, y1 = y0 + d * rect.height * scale;
+                // The device rect of the picture, fractional: the shader measures the pixels it covers. A transformed picture's
+                // scissor is its quad's device box, grown by the pixel of pad its edge antialiasing covers (mode 2).
+                const la = a * scale, lb = b * scale, lc = c * scale, ld = d * scale;
+                const tx = (e - view.camera.x) * scale, ty = (f - view.camera.y) * scale;
+                const padX = axis ? 0 : 1 / Math.hypot(la, lb), padY = axis ? 0 : 1 / Math.hypot(lc, ld);
+                let x0: number, y0: number, x1: number, y1: number;
+                if (axis) {
+                    x0 = tx + la * rect.x; y0 = ty + ld * rect.y; x1 = x0 + la * rect.width; y1 = y0 + ld * rect.height;
+                } else {
+                    if (!Number.isFinite(padX) || !Number.isFinite(padY)) return null;
+                    x0 = y0 = Infinity; x1 = y1 = -Infinity;
+                    for (const lx of [rect.x - padX, rect.x + rect.width + padX]) for (const ly of [rect.y - padY, rect.y + rect.height + padY]) {
+                        const px = tx + la * lx + lc * ly, py = ty + lb * lx + ld * ly;
+                        x0 = Math.min(x0, px); x1 = Math.max(x1, px); y0 = Math.min(y0, py); y1 = Math.max(y1, py);
+                    }
+                }
                 const left = Math.max(0, Math.floor(x0)), top = Math.max(0, Math.floor(y0));
                 const right = Math.min(targetWidth, Math.ceil(x1)), bottom = Math.min(targetHeight, Math.ceil(y1));
                 if (right <= left || bottom <= top) return null;
@@ -446,8 +499,10 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
                 if (!call) return reject({ status: 'denied', pool: 'cpu', bytes: UNIFORM_BYTES });
                 calls.push(call);
                 const u = call.uniforms;
-                u[0] = targetWidth; u[1] = targetHeight; u[2] = multiply; u[3] = 0;
-                u[4] = x0; u[5] = y0; u[6] = x1; u[7] = y1;
+                u[0] = targetWidth; u[1] = targetHeight; u[2] = multiply; u[3] = axis ? 0 : 2;
+                if (axis) { u[4] = x0; u[5] = y0; u[6] = x1; u[7] = y1; }
+                else { u[4] = rect.x; u[5] = rect.y; u[6] = rect.x + rect.width; u[7] = rect.y + rect.height; }
+                u[16] = la; u[17] = lb; u[18] = lc; u[19] = ld; u[20] = tx; u[21] = ty; u[22] = padX; u[23] = padY;
                 u[8] = src.x * kx; u[9] = src.y * ky; u[10] = (src.x + src.width) * kx; u[11] = (src.y + src.height) * ky;
                 u[12] = tex.width; u[13] = tex.height; u[14] = item.opacity; u[15] = item.inverted ? 1 : 0;
                 call.texture = tex.texture;
@@ -458,8 +513,8 @@ export function createImageRoute(host: LayerHost, audit: string): ImageRoute {
                 const { rect } = item;
                 if (!(rect.width > 0 && rect.height > 0) || !(item.opacity > 0)) continue;
                 const [a, b, c, d] = item.localToWorld;
-                // Axis-aligned and unflipped: the device rect is the affine's scale and translation applied to the rect.
-                if (b !== 0 || c !== 0 || !(a > 0) || !(d > 0)) return refuse(item.imageKey, unsupported('transform'));
+                // Any invertible affine is drawn here (mode 2 for any other than axis-aligned); a degenerate one draws nothing.
+                if (!(Math.abs(a * d - b * c) > 0) || ![a, b, c, d, item.localToWorld[4], item.localToWorld[5]].every(Number.isFinite)) continue;
                 // Routes never clip (gpu's rule): the composer applies the item's clips around this draw.
                 if (item.retainedTile) return refuse(item.imageKey, unsupported('retained'));
                 // The stream's own finer tiles (planned for its request's world, which a pan inside it outlives) are left to the

@@ -140,6 +140,11 @@ refusals wait once, sized (`awaitSizedCapacity`). Ruled paper also has a PDF wri
 
 ## Large pictures (`media/tilePlan.ts`, `gpu/routeImage.ts`)
 
+- The image route draws a picture under ANY invertible affine: axis-aligned unflipped in its exact device-rect mode,
+  any rotation, flip or skew in its transformed mode (local rect, local-to-device matrix, per-edge device distance
+  for the antialiased edge). Never hand a transform to the CPU raster: it cannot draw a live part (a drag, an edit),
+  and a rotated picture was missing on WebGL2 (5-65% of pixels off canvas2d; now under 0.5%). Only a broken
+  transformed picture's placeholder still goes there (`transform-placeholder`, counted).
 - A tiled picture's whole-mip item carries `picture` facts; the image route plans the finer tiles of each tile it
   composes (`planPictureTiles`, the screen's byte share via `setScreen`, canvas2d's keys) and skips the stream's
   `underlaid` tiles. Tile interior is `mediaTileInteriorPixels` (1024) on both backends.

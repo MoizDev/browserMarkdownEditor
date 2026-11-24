@@ -14,6 +14,7 @@ import { createNativeEmbedHost } from '../utils/nativeEmbedHost';
 import { hasHostedNativeOwner, hasWritableHostedNativeOwner } from './nativeOwners';
 import type { AppDialog, Ask } from './useAppDialogs';
 import type { DiskHold, NativePolicy, RecoveryEvent, RecoveryJournal } from './types';
+import { byteReadMs, withinFileDeadline } from '../utils/fileReadDeadline';
 import { loadChunk } from '../platform/chunkLoad';
 
 /** What the native-canvas host hook reads from App. */
@@ -137,7 +138,9 @@ export function useNativeCanvasHost(deps: UseNativeCanvasHostDeps) {
         const baseline = getBaseline(tab.id);
         const snapshot = await readFileSnapshot(tab.file.handle as FileSystemFileHandle, signal);
         try {
-          const bytes = await new Response(snapshot.blob.stream()).blob();
+          // getFile() is bounded by readFileSnapshot; the bytes behind it are not, and a cloud placeholder can answer one and
+          // never deliver the other, which left the board on "Preparing canvas…" for good (lane E, injected never-settling read).
+          const bytes = await withinFileDeadline(new Response(snapshot.blob.stream()).blob(), identity.name, byteReadMs(snapshot.blob.size));
           const version = await snapshot.fingerprint(signal);
           signal.throwIfAborted();
           const latest = current(identity), currentBaseline = getBaseline(identity.documentId);
@@ -173,7 +176,7 @@ export function useNativeCanvasHost(deps: UseNativeCanvasHostDeps) {
             if (dirty && (!baseline || baseline !== baselineAtPin)) throw new Error('The canvas disk baseline changed during acquisition.');
             let diskHash: string;
             if (baseline) diskHash = baseline.hash;
-            else { const { hashBytes } = await loadChunk(() => import('../utils/diskVersion')); diskHash = await hashBytes(await disk.arrayBuffer()); }
+            else { const { hashBytes } = await loadChunk(() => import('../utils/diskVersion')); diskHash = await hashBytes(await withinFileDeadline(disk.arrayBuffer(), identity.name, byteReadMs(disk.size))); }
             if (!isCurrent() || signal.aborted) throw new DOMException('Canvas source changed', 'AbortError');
             observedDiskHash = diskHash;
             if (!dirty) return { input: disk, diskHash };
@@ -191,7 +194,7 @@ export function useNativeCanvasHost(deps: UseNativeCanvasHostDeps) {
             if (!isCurrent() || !observedDiskHash) throw new DOMException('Canvas source changed', 'AbortError');
             const disk = await acquireDisk(signal);
             const { hashBytes } = await loadChunk(() => import('../utils/diskVersion'));
-            const hash = await hashBytes(await disk.arrayBuffer());
+            const hash = await hashBytes(await withinFileDeadline(disk.arrayBuffer(), identity.name, byteReadMs(disk.size)));
             if (!isCurrent() || signal.aborted || hash !== observedDiskHash) throw new DOMException('Canvas disk baseline changed', 'AbortError');
           },
           accept(source) {

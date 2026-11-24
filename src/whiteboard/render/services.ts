@@ -42,6 +42,7 @@ import { connectorBytes, inkChunkBytes, vectorBytes } from './residentBytes';
 import { ResolvedNodeCache } from './resolvedNodeCache';
 import { auditCount } from '../../platform/render/renderAudit';
 import { inkRealisationScale, pictureTileWorld } from './paintRequestScope';
+import { loadChunk } from '../../platform/chunkLoad';
 import { yieldToHost } from '../../platform/yieldToHost';
 /** The audit surface of the board's paint services: every counter below is `board-paint:<event>`. */
 const AUDIT = 'board-paint';
@@ -378,7 +379,8 @@ export function createBoardRenderServices(options: {
             const ink = await buildStrokeCoverage(node, options.samples, {
                 deviceScale: precision!.scale, cooperate: options.cooperate, signal,
                 worker: coverageWorker ? async (points, parameters, style, range, coverage) => {
-                    const { prepareInkCoverageInWorker } = await import('../workers/inkCoverageClient');
+                    // Bounded like every lazy chunk on a path a person waits on: a stalled fetch here held "Loading drawing…".
+                    const { prepareInkCoverageInWorker } = await loadChunk(() => import('../workers/inkCoverageClient'));
                     return prepareInkCoverageInWorker(points, parameters, style, range, coverage, identity, signal, () => {
                         const current = doc.nodes.get(node.id);
                         return !disposed && !signal.aborted && doc.rev === revision && current?.kind === 'stroke'

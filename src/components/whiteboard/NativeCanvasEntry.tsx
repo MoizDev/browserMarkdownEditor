@@ -333,7 +333,7 @@ function NativeCanvasAcquisition({ props, onRetry }: { props: NativeCanvasEntryP
         || identity.kind !== incoming.kind) return <div className="canvas-pane-message is-waiting" role="status">Preparing canvas…</div>;
     if (error) return <div className="canvas-pane-message" role="alert">
         <span>Could not open canvas: {error}</span>
-        <button type="button" className="pdf-pane-action" onClick={onRetry}>Retry</button>
+        <button type="button" className="pdf-pane-action" onClick={onRetry}>Try again</button>
     </div>;
     if (!acquired) return <div className={`canvas-pane-message${opening ? '' : ' is-waiting'}`} role="status">{opening ?? 'Preparing canvas…'}</div>;
     if (emergencyReadOnly || (editingFailure?.documentId === identity.documentId && editingFailure.session === identity.session)) {

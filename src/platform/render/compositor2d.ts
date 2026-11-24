@@ -130,6 +130,8 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
     private working: MemoryCacheHandle | null = null;
     /** Bytes of the one armed capacity waiter (see awaitCapacity), or null. */
     private capacityWait: number | null = null;
+    /** The one sized waiter of a picture crop the CPU cache refused. */
+    private cropCapacityWait = false;
     private cpu: MemoryCacheHandle | null = null;
     private readonly gpuLeases = new Set<ByteLease>();
     private readonly cpuLeases = new Set<ByteLease>();
@@ -707,7 +709,10 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         this.working ??= this.options.governor.register({ ...common, id: `${id}:working`, pool: 'gpu', kind: 'canvas-working',
             memory: () => ({ live: this.gpuBytes, retiring: 0 }),
             evict: () => { if (!this.busy) { this.dropWork(); this.options.invalidate('geometry'); } } });
-        this.cpu ??= this.options.governor.register({ ...common, id: `${id}:cpu`, pool: 'cpu', kind: 'working',
+        // Foreground: its crops and colour scratch are what this frame shows, admitted while the pool fits whatever the pane's
+        // share. At the share, an old board holding one 1400x1100 picture stayed on "Loading drawing…" for good on its first
+        // canvas2d picture: a 775 KB crop was refused with the pool at 24.1 of 33.6 MB, and nothing ever asked again.
+        this.cpu ??= this.options.governor.register({ ...common, id: `${id}:cpu`, pool: 'cpu', kind: 'working', foreground: true,
             memory: () => ({ live: this.cpuBytes, retiring: 0 }),
             evict: () => { if (!this.busy) { this.dropWork(); this.options.invalidate('geometry'); } } });
         this.backing ??= new SurfaceBacking({ governor: this.options.governor, paneId: this.options.paneId,
@@ -741,6 +746,12 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         if (this.capacityWait !== null || !pool?.whenAvailable || this.disposed) return;
         this.capacityWait = bytes;
         pool.whenAvailable(() => { this.capacityWait = null; if (!this.disposed) this.options.invalidate('2d-raise-capacity'); }, bytes);
+    }
+    private awaitCropCapacity(bytes: number): void {
+        const pool = this.cpu;
+        if (this.cropCapacityWait || !pool?.whenAvailable || this.disposed) return;
+        this.cropCapacityWait = true;
+        pool.whenAvailable(() => { this.cropCapacityWait = false; if (!this.disposed) this.options.invalidate('2d-crop-capacity'); }, bytes);
     }
     private resize(width: number, height: number) {
         this.check();
@@ -1098,8 +1109,9 @@ export class Canvas2DCompositor<T extends object> implements PaneCompositor {
         for (const state of this.sources.values()) for (const [id, crop] of state.crops) {
             if (budget.shouldYield() || this.cropsPending >= 2) return;
             if (crop.image || crop.pending || state.error) continue;
-            const lease = this.reserveCpu(crop.rect.width * crop.rect.height * 4);
-            if (!lease) return;
+            const bytes = crop.rect.width * crop.rect.height * 4, lease = this.reserveCpu(bytes);
+            // Refused only by a full pool now (the cache is foreground, init()); its waiter retries once the bytes fit.
+            if (!lease) { this.awaitCropCapacity(bytes); return; }
             crop.lease = lease; crop.pending = true; this.cropsPending++;
             const epoch = this.asyncEpoch;
             const token = budget.token;

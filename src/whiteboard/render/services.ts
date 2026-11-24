@@ -42,6 +42,7 @@ import { connectorBytes, inkChunkBytes, vectorBytes } from './residentBytes';
 import { ResolvedNodeCache } from './resolvedNodeCache';
 import { auditCount } from '../../platform/render/renderAudit';
 import { inkRealisationScale, pictureTileWorld } from './paintRequestScope';
+import { yieldToHost } from '../../platform/yieldToHost';
 /** The audit surface of the board's paint services: every counter below is `board-paint:<event>`. */
 const AUDIT = 'board-paint';
 /** A link card's stored preview picture and favicon, as the document holds them; other nodes have none. */
@@ -644,7 +645,7 @@ export function createBoardRenderServices(options: {
         const sweep = async () => {
             let work = 0, started = performance.now();
             const due = () => ++work >= 256 || performance.now() - started >= 3;
-            const yieldWork = async () => { stable(); await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0))); stable(); work = 0; started = performance.now(); };
+            const yieldWork = async () => { stable(); await (options.cooperate?.() ?? yieldToHost()); stable(); work = 0; started = performance.now(); };
             for (const [id, node] of captured) { if (doc.nodes.get(id) !== node) throw new DOMException('Geometry dependency changed', 'AbortError'); if (due()) await yieldWork(); }
             for (const [id, value] of children) { if (doc.children.get(id) !== value) throw new DOMException('Geometry children changed', 'AbortError'); if (due()) await yieldWork(); }
             for (const [id, value] of incidents) { if (doc.attachedTo.get(id) !== value) throw new DOMException('Geometry attachments changed', 'AbortError'); if (due()) await yieldWork(); }
@@ -686,7 +687,7 @@ export function createBoardRenderServices(options: {
                 const value = await prepare(node, doc, signal);
                 stable(); nodeStable(node); scope?.set(id, value);
             }
-            if ((at & 63) === 63) { await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0))); stable(); }
+            if ((at & 63) === 63) { await (options.cooperate?.() ?? yieldToHost()); stable(); }
         }
         stable();
         if (scope) {

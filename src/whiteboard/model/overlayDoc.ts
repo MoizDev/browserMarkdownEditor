@@ -7,6 +7,7 @@ import type { NodeId, ParentId, SheetId } from './ids';
 import type { MediaEntry, MediaId } from './media';
 import { attachedTargets, type Node } from './nodes';
 import { compareOrder } from './orderKey';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 // Provenance: staged geometry, ordered child indexes and immutable session
 // contracts; independent addition-only read projection, no third-party source.
@@ -171,7 +172,7 @@ export interface BoardGeometryProjectionOptions {
  * while this builds; the resulting replacement records own their cloned geometry. */
 export async function projectBoardGeometrySets(base: BoardDoc, ops: readonly NodeSetOp[], options: BoardGeometryProjectionOptions): Promise<BoardDoc> {
     if (typeof options.current !== 'function') throw new TypeError('Geometry projection requires a base lifetime fence');
-    const signal = options.signal, revision = base.rev, host = base.host, cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const signal = options.signal, revision = base.rev, host = base.host, cooperate = options.cooperate ?? yieldToHost;
     const original = new Map<NodeId, Readonly<Node>>(), replacements = new Map<NodeId, Node>(), childSources = new Map<ParentId, readonly Node[] | undefined>();
     const pageSources = new Map<number, ReadonlySet<NodeId> | undefined>(), attachmentSources = new Map<NodeId, ReadonlySet<NodeId> | undefined>();
     let work = 0, started = performance.now();

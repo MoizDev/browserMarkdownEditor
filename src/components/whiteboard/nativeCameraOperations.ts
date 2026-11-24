@@ -4,6 +4,7 @@ import type { BoardRuntime } from '../../whiteboard/host/runtime';
 import type { CommandState } from './chrome/boardCommands';
 import type { NativeCommandOperation } from './nativeCommandSource';
 import type { NativeViewLease } from './nativeViewLease';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 const yes: CommandState = Object.freeze({ enabled: true });
 const no = (reason: string): CommandState => ({ enabled: false, reason });
@@ -38,7 +39,7 @@ export function createNativeCameraOperations(options: {
         check();
         const paper = !selectedOnly && doc.kind !== 'whiteboard';
         const roots: NodeId[] = selectedOnly ? [...snapshot.selected] : (doc.children.get(snapshot.sheet) ?? []).map(child => child.id);
-        const content = await contentBounds(runtime, roots, { signal, fence: check, cooperate: () => new Promise<void>(resolve => setTimeout(resolve, 0)) });
+        const content = await contentBounds(runtime, roots, { signal, fence: check, cooperate: yieldToHost });
         check();
         const bounds = unionRects(paper ? pageStackBounds(doc) : null, content), view = lease.camera.viewport;
         if (!bounds) throw new Error('There is no measurable content to fit');

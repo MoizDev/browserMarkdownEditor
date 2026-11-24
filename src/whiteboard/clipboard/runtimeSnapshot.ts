@@ -12,6 +12,7 @@ import type { ConnectorNode, Node } from '../model/nodes';
 import { extRawValues, nodeRawValues, scanRawMediaIncremental } from '../model/rawMedia';
 import { measureBoardPaintBounds } from '../render/worldBounds';
 import { snapshotSelectionAsync, type ClipboardBounds, type ClipboardLease, type CopySnapshot, type CopySnapshotHost } from './snapshot';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 export interface BoardCopySnapshotOptions {
     readonly runtime: BoardRuntime;
@@ -30,7 +31,7 @@ export async function createBoardCopySnapshot(options: BoardCopySnapshotOptions)
     const state = runtime.selection.getSnapshot(), selection = [...new Set(options.selection ?? state.selected)], revision = live.rev;
     // Captured before the first await: this copy's paint uses its own start binding, never a later rebind.
     const signal = options.signal ?? new AbortController().signal, scene = runtime.scene, paintBinding = runtime.paintBinding;
-    const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const cooperate = options.cooperate ?? yieldToHost;
     if (!scene || !scene.ready || scene.revision !== revision) throw new Error('Clipboard scene is not ready');
     const pin = scene.pin(), held: ClipboardLease[] = [pin];
     let output: CopySnapshot | undefined, transferred = false;

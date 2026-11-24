@@ -3,6 +3,7 @@ import type { BoardDoc, BoardKind, HostBlock, PreservedBlock, Sheet, ViewFlags }
 import type { SheetId } from '../model/ids';
 import type { MediaEntry, MediaId } from '../model/media';
 import type { UiBlock } from '../model/styles';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 // Provenance: board model ownership and scene snapshot contracts; independent
 // persistent overlay implementation, no third-party source.
@@ -63,7 +64,7 @@ function ticker(cooperate?: () => Promise<void>, signal?: AbortSignal) {
     return async (force = false) => {
         abort(signal);
         if (force || ++steps >= 256 || performance.now() - start >= 3) {
-            await (cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+            await (cooperate?.() ?? yieldToHost());
             abort(signal); steps = 0; start = performance.now();
         }
     };

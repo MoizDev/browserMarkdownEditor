@@ -12,6 +12,7 @@ import { planBoardClipboardPlacement } from './placement';
 import { prepareBoardClipboardMediaInJob } from './prepareMedia';
 import type { StoreMedia } from '../media/storage.types';
 import type { ClipboardIntent, ClipboardTarget } from './types';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 // Provenance: private clipboard C5 admission, serial session jobs and atomic
 // paste contracts; independent orchestration, no upstream engine source.
@@ -58,7 +59,7 @@ export async function pastePrivateClipboardInJob(options: PrivateClipboardPasteO
         let containsFrame = false, visited = 0;
         for (const node of acquisition.load.doc.nodes.values()) {
             if (node.kind === 'frame') { containsFrame = true; break; }
-            if ((++visited & 255) === 0) { await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0))); check(); }
+            if ((++visited & 255) === 0) { await (options.cooperate?.() ?? yieldToHost()); check(); }
         }
         const placement = planBoardClipboardPlacement({ receivingBoardId: options.receivingBoardId, target, source: acquisition.payload,
             containsFrame, doc, cameraZoom: options.cameraZoom, intent: options.intent });

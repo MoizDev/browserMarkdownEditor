@@ -1,6 +1,7 @@
 import type { ScheduledFrame } from '../../platform/render/scheduler';
 import type { BoardRuntime } from '../host/runtime';
 import { helperIcon, helperIconPaths, helperStack } from './helperButtons';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 export interface BackToContentOptions {
     readonly runtime: BoardRuntime;
@@ -19,7 +20,7 @@ const SHOW_DELAY_MS = 1000;
  * intersects the presented viewport. The button never edits or selects nodes. */
 export function createBackToContent(options: BackToContentOptions) {
     const { runtime } = options, session = runtime.session, doc = session.doc, owner = session.owner;
-    const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const cooperate = options.cooperate ?? yieldToHost;
     let disposed = false, generation = 0, key = '', controller: AbortController | undefined, button: HTMLButtonElement | undefined;
     let showTimer: ReturnType<typeof setTimeout> | undefined;
     /** Set by a click: the content is coming back, so the button stays away until it is on screen again. */

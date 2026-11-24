@@ -8,6 +8,7 @@ import type { Node } from '../model/nodes';
 import { extRawValues, nodeRawValues, scanRawMedia, scanRawMediaIncremental } from '../model/rawMedia';
 import type { RichFragment, RichText } from '../text/richText';
 import type { ClipboardTextItem } from './rendition';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 export interface ClipboardBounds { readonly x: number; readonly y: number; readonly w: number; readonly h: number }
 export interface BoardPayload {
@@ -184,7 +185,7 @@ export async function snapshotSelectionAsync(host: CopySnapshotHost, selection: 
     readonly signal: AbortSignal; readonly cooperate?: () => Promise<void>;
 }): Promise<CopySnapshot> {
     const steps = selectionSteps(host, selection);
-    const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const cooperate = options.cooperate ?? yieldToHost;
     let count = 0, started = performance.now();
     const tick = async () => { options.signal.throwIfAborted(); await cooperate(); options.signal.throwIfAborted(); count = 0; started = performance.now(); };
     try {

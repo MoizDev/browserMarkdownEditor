@@ -3,6 +3,7 @@ import { isKnownLegacyMetadata } from '../format/legacyMetadata';
 import type { NodeId } from '../model/ids';
 import type { RehydratedLoad } from '../model/loadTypes';
 import type { BoardDoc } from '../model/doc';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 // Provenance: native raw-token preservation, opaque node and PDF flattening
 // contracts; independent conservative model inspection, no third-party source.
@@ -32,7 +33,7 @@ export async function inspectPdfVisualDoc(doc: BoardDoc, options: {
     let visits = 0, started = performance.now();
     const tick = async () => {
         options.signal.throwIfAborted();
-        await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+        await (options.cooperate?.() ?? yieldToHost());
         options.signal.throwIfAborted(); started = performance.now();
     };
     const due = () => ++visits % 256 === 0 || performance.now() - started >= 3;
@@ -70,7 +71,7 @@ export async function inspectPdfVisualModel(load: RehydratedLoad, options: {
     for (const record of load.unmapped) {
         options.signal.throwIfAborted();
         if (++visits % 256 === 0 || performance.now() - started >= 3) {
-            await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+            await (options.cooperate?.() ?? yieldToHost());
             options.signal.throwIfAborted(); started = performance.now();
         }
         issues.push({ kind: 'unmapped-record', ordinal: record.position.ordinal, reason: record.reason });

@@ -3,6 +3,7 @@ import { isSheetParent, type BoardDoc } from '../model/doc';
 import type { NodeId, SheetId } from '../model/ids';
 import type { Node } from '../model/nodes';
 import { compareOrder } from '../model/orderKey';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 interface RootPath { readonly node: Node; readonly sheet: BoardDoc['sheetOrder'][number]; readonly path: readonly Node[] }
 
@@ -13,7 +14,7 @@ export async function selectedRootsAsync(doc: BoardDoc, ids: Iterable<NodeId>, o
     readonly current: () => boolean;
     readonly cooperate?: () => Promise<void>;
 }): Promise<Node[]> {
-    const revision = doc.rev, host = doc.host, cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const revision = doc.rev, host = doc.host, cooperate = options.cooperate ?? yieldToHost;
     let work = 0, started = performance.now();
     const check = () => { options.signal.throwIfAborted(); if (!options.current() || doc.rev !== revision || doc.host !== host) throw new DOMException('Selection roots changed', 'AbortError'); };
     const due = () => ++work >= 256 || performance.now() - started >= 3;

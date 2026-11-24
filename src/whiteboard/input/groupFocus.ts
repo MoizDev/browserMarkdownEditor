@@ -4,6 +4,7 @@ import type { BoardRuntime } from '../host/runtime';
 import type { NodeId, ParentId } from '../model/ids';
 import type { SelectionSnapshot } from '../selection';
 import { isCancellation } from '../../platform/workers/envelope';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 export interface GroupFocusOptions {
     readonly runtime: BoardRuntime;
@@ -101,7 +102,7 @@ export function leaveGroupAtPoint(options: LeaveGroupOptions): void {
                 });
                 if (inside || status === 'complete') break;
                 if (status !== 'pending') return;
-                await new Promise<void>(resolve => setTimeout(resolve, 0));
+                await yieldToHost();
             }
         } finally { cursor.cancel(); }
         if (!inside && validOwner()) runtime.selection.setFocus(before.sheet);

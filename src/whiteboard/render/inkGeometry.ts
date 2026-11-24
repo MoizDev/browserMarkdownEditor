@@ -14,6 +14,7 @@ import { prepareInkCoverageInWorker } from '../workers/inkCoverageClient';
 import type { BoardJobIdentity } from '../workers/protocol';
 import { pathFillTriangles, type PathFillTriangles } from './pathFillTriangles';
 import { inkCoverageChunks, type PaintInkItem } from './paintStream';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 // The scene pin owns the sample lease. This adapter borrows chunk views, not a
 // point-sized object/array copy, and respects the store's exact chunk endpoints.
@@ -162,7 +163,7 @@ export async function buildStrokeCoverage(node: StrokeNode, samples: SampleStore
             const next = job.next(value);
             if (next.done) return next.value;
             value = next.value ? await next.value : undefined;
-            if (!next.value) await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+            if (!next.value) await (options.cooperate?.() ?? yieldToHost());
             options.signal?.throwIfAborted();
         }
     } finally { job.return(undefined as never); }

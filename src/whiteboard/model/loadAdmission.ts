@@ -4,6 +4,7 @@ import type { LoadProjection, RehydratedLoad } from './loadTypes';
 import { rehydrateLoad } from './loadProjection';
 import { validateLoadSources } from './loadSourceValidation';
 import type { SampleLease, SampleStoreReader } from './samples';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 declare const loadBrand: unique symbol;
 export interface AdmittedLoadToken { readonly kind: 'admitted-board-load'; readonly [loadBrand]: true }
@@ -40,7 +41,7 @@ export function createBoardLoadAdmission(authority: JobAuthority, ports: {
             authority.assertContext(context);
             const cooperate = async () => {
                 authority.assertContext(context);
-                await (ports.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+                await (ports.cooperate?.() ?? yieldToHost());
                 authority.assertContext(context);
             };
             const load = await rehydrateLoad(projection, ports.admit, ports.samples, cooperate, context.signal);

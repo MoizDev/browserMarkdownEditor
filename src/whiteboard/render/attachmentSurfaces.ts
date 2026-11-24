@@ -7,6 +7,7 @@ import { InkCoverageJob, InkOutlineJob, type InkCoverage } from '../ink/outline'
 import type { SampleSequence } from '../ink/samples';
 import type { Node } from '../model/nodes';
 import type { BoardVectorGeometry } from './vectorGeometry';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 /** The contour approximates the actual filled coverage, not its AABB. The
  * bound is in node-local units and must travel with any boundary-certification
@@ -146,7 +147,7 @@ export async function prepareBoardAttachmentSurface(node: Readonly<Node>, option
         for (;;) {
             options.signal.throwIfAborted();
             const next = job.next(); if (next.done) return next.value;
-            await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+            await (options.cooperate?.() ?? yieldToHost());
             options.signal.throwIfAborted();
         }
     } finally { job.return(undefined as never); }

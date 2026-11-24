@@ -4,6 +4,7 @@ import { isValidId, type NodeId, type SheetId } from './ids';
 import type { RawJson } from './json';
 import type { LoadRepairNotice } from './loadTypes';
 import type { NodeRecord } from './nodes';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 // Provenance: document-model V-1/§9.2 and ordered native source records;
 // independent cooperative merge sort, no third-party source.
@@ -17,7 +18,7 @@ export async function repairLoadIdentities(sheets: readonly Sheet[], nodes: read
     const check = () => { if (options.signal?.aborted) throw new DOMException('Board admission cancelled', 'AbortError'); };
     const tick = async () => {
         check();
-        await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+        await (options.cooperate?.() ?? yieldToHost());
         check(); steps = 0; started = performance.now();
     };
     const due = () => ++steps >= 256 || performance.now() - started >= 3;

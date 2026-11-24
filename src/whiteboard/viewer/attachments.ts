@@ -6,6 +6,7 @@ import type { BoardRuntime } from '../host/runtime';
 import type { NodeId } from '../model/ids';
 import type { Attachment } from '../model/nodes';
 import type { createBoardPointQuery } from './pointQuery';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 export interface BoardAttachmentOptions {
     readonly runtime: BoardRuntime;
@@ -61,7 +62,7 @@ export function createBoardAttachmentResolver(options: BoardAttachmentOptions): 
             while (!scene.ready) {
                 check();
                 scene.step(64, performance.now() + 3);
-                await new Promise<void>(resolve => setTimeout(resolve, 0));
+                await yieldToHost();
             }
             check();
             const hit = await options.point.hitTarget(point, input, signal);

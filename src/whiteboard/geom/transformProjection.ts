@@ -4,13 +4,14 @@ import type { NodeId, ParentId } from '../model/ids';
 import type { OrderKey } from '../model/orderKey';
 import { projectBoardGeometrySets, type BoardGeometryProjectionOptions } from '../model/overlayDoc';
 import { projectGeometryReparents, type GeometryReparent } from './reparentProjection';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 /** Project the exact operation sequence emitted by a staged transform, including
  * its trailing frame-membership reparents. The base stays pinned by the caller. */
 export async function projectBoardTransformPreview(base: BoardDoc, ops: readonly NodeSetOp[],
     options: BoardGeometryProjectionOptions): Promise<BoardDoc> {
     const signal = options.signal, revision = base.rev, host = base.host;
-    const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const cooperate = options.cooperate ?? yieldToHost;
     const check = () => {
         signal.throwIfAborted();
         if (!options.current() || base.rev !== revision || base.host !== host) throw new DOMException('Transform preview became stale', 'AbortError');

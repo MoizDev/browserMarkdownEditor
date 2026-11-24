@@ -10,6 +10,7 @@ import type { Node } from '../model/nodes';
 import { projectBoardGeometrySets } from '../model/overlayDoc';
 import type { Vec2 } from './path';
 import { rotatePoint, snapReleasedRotation, snapRotation, unwrapRotation } from './transforms';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 export interface BoardRotationOptions {
     readonly runtime: BoardRuntime;
@@ -82,7 +83,7 @@ export async function createBoardRotationPlan(options: BoardRotationOptions): Pr
         if (sheetOf(doc, node.id) !== selection.sheet) throw new Error('Rotation selection spans another sheet');
     }
     const roots: Root[] = chosen.map(node => ({ node, pose: worldPose(doc, node.id) }));
-    const protectedRoots: Root[] = [], pending = [...chosen], cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const protectedRoots: Root[] = [], pending = [...chosen], cooperate = options.cooperate ?? yieldToHost;
     let visited = 0;
     while (pending.length) {
         check(); const node = pending.pop()!;

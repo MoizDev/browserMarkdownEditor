@@ -11,6 +11,7 @@ import { classifyClipboard, type ClipboardClassifierHost } from './classify';
 import type { ClipboardCachePin, ClipboardCopy } from './copy';
 import type { ClipboardHtmlFrameHost } from './htmlFrameHost';
 import type { ClipboardInput, ClipboardIntent, ClipboardTextEditor } from './types';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 // Provenance: clipboard §4.4, text editor splice and C5 private-content
 // contracts; independent orchestration, no upstream engine source.
@@ -59,7 +60,7 @@ export async function pasteIntoTextEditorInJob(options: TextEditorPasteOptions, 
     };
     const current = (value: BoardJobIdentity) => value.session === identity.session && value.epoch === identity.epoch && value.revision === revision
         && runtime.jobs.isCurrent(context.job) && options.current() && session.doc === doc && doc.rev === revision;
-    const cooperate = async () => { check(); await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0))); check(); };
+    const cooperate = async () => { check(); await (options.cooperate?.() ?? yieldToHost()); check(); };
     const board = async (): Promise<TextEditorPasteResult> => { check(); await options.pasteBoard(context, options.cache); context.assertCurrent(); return 'board'; };
     check();
     const classification = await classifyClipboard(input, options.intent, options.classifier, context.signal);

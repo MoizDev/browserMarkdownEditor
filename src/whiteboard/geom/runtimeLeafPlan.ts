@@ -16,6 +16,7 @@ import type { ResizeTargetSnapshot } from './resizePlan.types';
 import type { KindResizeFactors } from './resizeKinds.types';
 import { commonResizeRotation } from './transforms';
 import type { OrientedBox, ResizeHandle, ResizeModifiers } from './transforms';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 export interface BoardLeafResizePlanOptions {
     readonly runtime: BoardRuntime;
@@ -57,7 +58,7 @@ export async function createBoardLeafResizePlan(options: BoardLeafResizePlanOpti
         if (node.kind === 'opaque' || isLocked(doc, node)
             || hasOpaqueDescendant(doc, node.id) || sheetOf(doc, node.id) !== selection.sheet) throw new Error(`Unsupported resize target: ${node.id}`);
     }
-    const leaves = new Map<NodeId, NodeId[]>(), all = new Set<NodeId>(), cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const leaves = new Map<NodeId, NodeId[]>(), all = new Set<NodeId>(), cooperate = options.cooperate ?? yieldToHost;
     let count = 0;
     for (const root of nodes) {
         const result: NodeId[] = [], pending: Node[] = [root]; leaves.set(root.id, result);

@@ -12,6 +12,7 @@ import { childrenOf, isSheetParent, sheetOf, type BoardDoc } from '../model/doc'
 import type { NodeId, ParentId } from '../model/ids';
 import type { Node } from '../model/nodes';
 import { projectBoardGeometrySets } from '../model/overlayDoc';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 export interface FlipLeavesOptions {
     readonly runtime: BoardRuntime;
@@ -51,7 +52,7 @@ function provisional(doc: BoardDoc, node: Readonly<Node>, world: WorldPose): Nod
 export async function prepareFlipBoardLeaves(options: FlipLeavesOptions): Promise<FlipLeavesPlan> {
     const { runtime, axis } = options, session = runtime.session, doc = session.doc, owner = session.owner, revision = doc.rev;
     const selection = runtime.selection.getSnapshot(), signal = options.signal ?? new AbortController().signal;
-    const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const cooperate = options.cooperate ?? yieldToHost;
     let font: number | undefined, released = false, source: BoardGeometryScope | undefined, final: BoardGeometryScope | undefined;
     const current = () => !released && !signal.aborted && options.current() && session.owner === owner && session.doc === doc && doc.rev === revision
         && !session.isReadOnly && session.gestureHolds === (options.heldGestures ?? 0) && runtime.selection.getSnapshot() === selection

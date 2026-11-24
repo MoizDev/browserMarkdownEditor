@@ -26,6 +26,7 @@ import type { Attachment, Node, ConnectorNode } from '../model/nodes';
 import type { SpatialRef } from '../pick';
 import type { BoardVectorGeometry } from '../render/vectorGeometry';
 import { selectableAtFocus } from '../selection';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 export interface BoardPointQueryOptions {
     readonly runtime: BoardRuntime;
@@ -124,7 +125,7 @@ export function createBoardPointQuery(options: BoardPointQueryOptions): {
 } {
     const jobs = new Set<AbortController>();
     let disposed = false;
-    const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const cooperate = options.cooperate ?? yieldToHost;
     async function run(point: Vec2, input: InputKind, signal: AbortSignal, targetMode: boolean, lockedMode = false, quiet = false, hoverMode = false): Promise<Candidate | null> {
             if (disposed) throw cancelled();
             if (![point.x, point.y].every(Number.isFinite) || !['mouse', 'pen', 'touch'].includes(input)) throw new RangeError('Invalid point query');

@@ -10,6 +10,7 @@ import { keyBetween } from '../model/orderKey';
 import { createAddedBoardDoc } from '../model/overlayDoc';
 import { EMPTY_RICH_TEXT } from '../text/richText';
 import { findStickyNeighbour, stickyNeighbourOffset, stickyWorldCentre } from '../geom/stickyNeighbours';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 export type StickyDirection = 'left' | 'right' | 'up' | 'down';
 export interface StickyNeighbourOptions {
@@ -28,7 +29,7 @@ export interface StickyNeighbourOptions {
 export async function addStickyNeighbour(options: StickyNeighbourOptions): Promise<NodeId> {
     const { runtime } = options, session = runtime.session, doc = session.doc, owner = session.owner, revision = doc.rev;
     const selection = runtime.selection.getSnapshot(), signal = options.signal ?? new AbortController().signal;
-    const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const cooperate = options.cooperate ?? yieldToHost;
     const check = () => {
         signal.throwIfAborted();
         if (!options.current() || session.owner !== owner || session.doc !== doc || doc.rev !== revision

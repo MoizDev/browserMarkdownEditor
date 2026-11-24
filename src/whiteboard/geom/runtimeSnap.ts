@@ -11,6 +11,7 @@ import { boardSnapGrid, nearestBoardGridCoordinate } from './gridSnap';
 import { worldPose } from '../change/coordinates';
 import { contourPolylines, nearestOnPolylines, rectOutline, transformPolylines, type OutlinePolyline } from './outlineSnap';
 import { figureOutline } from './figures';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 export interface BoardSnapGuide {
     readonly axis: 'x' | 'y';
@@ -81,7 +82,7 @@ const LAND_TOLERANCE = 1e-6;
 /** Complete Scene strip traversal followed by actual logical geometry, never a hint or a prefix. */
 export async function snapBoardBounds(options: BoardSnapOptions): Promise<BoardSnapResult> {
     const { runtime } = options, session = runtime.session, doc = session.doc, owner = session.owner, revision = doc.rev;
-    const selection = runtime.selection.getSnapshot(), cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const selection = runtime.selection.getSnapshot(), cooperate = options.cooperate ?? yieldToHost;
     const valid = () => !options.signal?.aborted && options.current() && session.owner === owner && session.doc === doc
         && doc.rev === revision && runtime.selection.getSnapshot() === selection;
     const objects = options.objects ?? true, grid = (options.grid ?? true) && boardSnapGrid(doc) !== null;
@@ -143,7 +144,7 @@ async function snapAttempt(options: BoardSnapOptions, objects: boolean, grid: bo
     const { runtime, bounds } = options, session = runtime.session, doc = session.doc, owner = session.owner, revision = doc.rev;
     const state = runtime.selection.getSnapshot(), scene = runtime.scene, signal = options.signal ?? new AbortController().signal;
     const threshold = (options.thresholdCss ?? 8) / options.zoom, font = runtime.render.text.fonts.epoch;
-    const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const cooperate = options.cooperate ?? yieldToHost;
     if (![bounds.x, bounds.y, bounds.width, bounds.height, bounds.x + bounds.width, bounds.y + bounds.height, options.zoom, threshold].every(Number.isFinite)
         || bounds.width < 0 || bounds.height < 0 || options.zoom <= 0 || threshold < 0) throw new RangeError('Invalid snapping bounds');
     const check = () => {

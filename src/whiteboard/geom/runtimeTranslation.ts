@@ -15,6 +15,7 @@ import type { Vec2 } from './path';
 import { SNAP_MAX_SPEED, snapBoardBounds, type BoardSnapGuide } from './runtimeSnap';
 import { TranslationPlan } from './translation';
 import { constrainedTranslation } from './transforms';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 /** The correction that moves a dragged note into the free slot beside another note it is within `10 / zoom` of (catalogue S§7.5).
  * Only a note on an unrotated frame has slots; the note itself neither offers nor occupies one. */
@@ -72,7 +73,7 @@ export async function createBoardTranslationPlan(options: BoardTranslationOption
     for (const node of roots) if (node.kind === 'opaque' || isLocked(doc, node) || hasOpaqueDescendant(doc, node.id)
         || sheetOf(doc, node.id) !== selection.sheet) throw new Error(`Node cannot be moved: ${node.id}`);
     const protectedRoots: { id: NodeId; pose: ReturnType<typeof worldPose> }[] = [], pending = [...roots];
-    const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0))); let visited = 0;
+    const cooperate = options.cooperate ?? yieldToHost; let visited = 0;
     while (pending.length) {
         check(); const node = pending.pop()!;
         if (++visited % 256 === 0) { await cooperate(); check(); }

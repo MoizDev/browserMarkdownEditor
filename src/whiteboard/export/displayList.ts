@@ -2,6 +2,7 @@ import type { Affine, PageDisplayItem, PageDisplayList, PathCommand } from '../.
 import { InkOutlineJob } from '../ink/outline'
 import { inkCoverageChunks } from '../render/paintStream'
 import type { PaintFrame, PaintImageItem, PaintInkCoverage, PaintItem, PaintTextItem } from '../render/paintStream'
+import { yieldToHost } from '../../platform/yieldToHost'
 
 /** The image resolver returns a pinned, export-ready PNG/JPEG with inversion baked in.
  * Dimensions are the original image pixels; the caller owns leases until this settles. */
@@ -36,11 +37,11 @@ export async function inkOutline(coverage: PaintInkCoverage, scale: number, sign
     try {
       while (job.step(1024) === 'pending') {
         signal?.throwIfAborted()
-        await new Promise<void>(resolve => setTimeout(resolve, 0))
+        await yieldToHost()
       }
     } catch (error) { job.cancel(); throw error }
     // Even empty chunks must not make a many-chunk capture monopolize the UI.
-    if (++count % 128 === 0) await new Promise<void>(resolve => setTimeout(resolve, 0))
+    if (++count % 128 === 0) await yieldToHost()
   }
   signal?.throwIfAborted()
   return commands
@@ -118,7 +119,7 @@ export async function paintFrameDisplayList(
   let count = 0
   for (const band of [frame.underlay, frame.content]) {
     for (const item of band) {
-      if (++count % 128 === 0) await new Promise<void>(resolve => setTimeout(resolve, 0))
+      if (++count % 128 === 0) await yieldToHost()
       signal?.throwIfAborted()
       items.push(await paintItemDisplay(item, scale, image, signal, text))
     }

@@ -12,6 +12,7 @@ import { prepareNotebookTransform, prepareNotebookTranslation, type NotebookTran
 import type { BoardDoc } from '../model/doc';
 import type { BoardRuntime } from '../host/runtime';
 import type { NodeId } from '../model/ids';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 export interface AsyncTransformGestureHost {
     hold(): () => void;
@@ -242,7 +243,7 @@ export function leafResizeHandleGesture(sample: RealSample, modifiers: Modifiers
                         const b = scope.logicalBounds(id); x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y);
                         x1 = Math.max(x1, b.x + b.width); y1 = Math.max(y1, b.y + b.height);
                         if (++visited % 128 === 0) {
-                            await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+                            await (options.cooperate?.() ?? yieldToHost());
                             if (!active()) throw new DOMException('Resize snapping became stale', 'AbortError');
                         }
                     }

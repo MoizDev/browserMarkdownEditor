@@ -3,6 +3,7 @@ import type { BoardRuntime } from '../host/runtime';
 import { hasOpaqueDescendant } from '../model/doc';
 import type { NodeId } from '../model/ids';
 import { selectFirstChild, selectNext, selectParent, selectableAtFocus } from '../selection';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 export type NavigationDirection = 'left' | 'right' | 'up' | 'down';
 export interface SelectionNavigationOptions {
@@ -17,7 +18,7 @@ export interface SelectionNavigationOptions {
 /** Navigation changes session selection only; camera movement belongs to the shared reveal owner. */
 export function createSelectionNavigation(options: SelectionNavigationOptions) {
     const { runtime } = options, session = runtime.session, doc = session.doc;
-    const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const cooperate = options.cooperate ?? yieldToHost;
     let serial = 0, disposed = false, controller: AbortController | undefined;
     const stopSelection = runtime.selection.subscribe(() => { serial++; controller?.abort(); });
     const active = () => !disposed && options.current() && session.doc === doc;

@@ -5,6 +5,7 @@ import { boardWorker, importDeadline } from '../workers/client';
 import { closeWorkerResult, validBoardIdentity } from '../workers/protocol';
 import type { BoardJobIdentity } from '../workers/protocol';
 import type { DecodedBoardClipboard } from '../workers/clipboardDecode';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 // Provenance: private clipboard limits, C4 accounting and C5 worker contracts;
 // independent acquisition boundary, no third-party source.
@@ -27,7 +28,6 @@ async function validReply(value: unknown, check: () => void): Promise<boolean> {
         || typeof b.x !== 'number' || typeof b.y !== 'number' || typeof b.w !== 'number' || typeof b.h !== 'number'
         || ![b.x, b.y, b.w, b.h, b.x + b.w, b.y + b.h].every(Number.isFinite) || b.w < 0 || b.h < 0) return false;
     let recordBytes = 0, total = 0, visits = 0;
-    const yieldToHost = () => new Promise<void>(resolve => setTimeout(resolve, 0));
     for (const record of p.records) {
         if (typeof record !== 'string' || record.length > FORMAT_LIMITS.recordBytes) return false;
         let length = 0;

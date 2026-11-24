@@ -3,6 +3,7 @@ import type { PaintFrame, PaintItem } from '../render/paintStream'
 import type { PaintImageLease, PaintImageProvider } from '../render/resources'
 import { InkCoverageUnionPath2dJob, Path2dJob } from '../render/reference/coverage2d'
 import type { PaintResources2d, PreparedPath2d } from '../render/reference/paint2d'
+import { yieldToHost } from '../../platform/yieldToHost'
 
 export interface PreparedRaster {
   readonly resources: PaintResources2d
@@ -17,7 +18,7 @@ async function finishPath(job: Path2dJob | InkCoverageUnionPath2dJob, signal: Ab
   try {
     while (job.step(1024) === 'pending') {
       signal.throwIfAborted()
-      await new Promise<void>(resolve => setTimeout(resolve, 0))
+      await yieldToHost()
     }
     signal.throwIfAborted()
     const path = job.result
@@ -48,7 +49,7 @@ export async function prepareRaster(
   try {
     let count = 0
     for (const band of [frame.underlay, frame.content]) for (const item of band) {
-      if (++count % 128 === 0) await new Promise<void>(resolve => setTimeout(resolve, 0))
+      if (++count % 128 === 0) await yieldToHost()
       signal.throwIfAborted()
       for (const clip of item.clips) if (!clips.has(clip.key)) {
         clips.set(clip.key, await finishPath(new Path2dJob(clip.d, origin(clip.d)), signal))

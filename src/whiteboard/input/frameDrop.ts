@@ -10,6 +10,7 @@ import type { NodeId, ParentId } from '../model/ids';
 import type { FrameNode, Node } from '../model/nodes';
 import { keysBetween, needsRekey } from '../model/orderKey';
 import { bindingContainer } from '../geom/connectorParent';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 export interface FrameDropOptions {
     readonly runtime: BoardRuntime;
@@ -30,7 +31,7 @@ interface Candidate { readonly frame: Readonly<FrameNode>; readonly rank: number
 export async function prepareFrameDrop(options: FrameDropOptions): Promise<FrameDropPlan | null> {
     const { runtime, signal } = options, session = runtime.session, doc = session.doc, candidate = options.preview.doc;
     const owner = session.owner, revision = doc.rev, selection = runtime.selection.getSnapshot(), font = runtime.render.text.fonts.epoch;
-    const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const cooperate = options.cooperate ?? yieldToHost;
     const current = () => !signal.aborted && options.current() && session.owner === owner && session.doc === doc
         && doc.rev === revision && runtime.selection.getSnapshot() === selection && runtime.render.text.fonts.epoch === font;
     const check = () => { signal.throwIfAborted(); if (!current()) throw new DOMException('Frame drop became stale', 'AbortError'); };

@@ -27,6 +27,7 @@ import { prepareBoardClipboardMediaInJob } from './prepareMedia';
 import { pastePrivateClipboardInJob } from './privatePaste';
 import { pasteClipboardTextInJob } from './textPaste';
 import type { ClipboardInput, ClipboardIntent, ClipboardTarget } from './types';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 // Provenance: clipboard classification order, C5 external-source admission and
 // one session job; independent composition, no upstream engine source.
@@ -140,7 +141,7 @@ export async function pasteBoardClipboardInJob(host: BoardClipboardPasteHost, in
                 wire = await readExcalidrawClipboard({ bytes: new Blob([classification.text], { type: 'application/json' }),
                     identity, memory: host.memory, isCurrent: current, signal: context.signal });
                 check();
-                const sheet = newSheetId(doc), cooperate = host.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+                const sheet = newSheetId(doc), cooperate = host.cooperate ?? yieldToHost;
                 const shapes = await convertExcalidrawShapes(wire.elements, { sheet, signal: context.signal, cooperate }); check();
                 draft = await finalizeExcalidrawDraft(shapes, { elements: wire.elements, files: wire.files, sheet, signal: context.signal,
                     current: () => current(identity), cooperate, resolveBinding: host.resolveBinding,
@@ -155,7 +156,7 @@ export async function pasteBoardClipboardInJob(host: BoardClipboardPasteHost, in
             let containsFrame = false, visited = 0;
             for (const node of acquisition.load.doc.nodes.values()) {
                 if (node.kind === 'frame') { containsFrame = true; break; }
-                if ((++visited & 255) === 0) { await (host.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0))); check(); }
+                if ((++visited & 255) === 0) { await (host.cooperate?.() ?? yieldToHost()); check(); }
             }
             const placement = planBoardClipboardPlacement({ receivingBoardId: host.receivingBoardId, target: captured, doc,
                 source: { from: null, bounds: admitted.bounds }, containsFrame, cameraZoom: host.cameraZoom, intent });

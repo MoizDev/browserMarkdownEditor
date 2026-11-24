@@ -11,6 +11,7 @@ import { prepareNativeExport, type NativeExportOptions } from './nativeExport';
 import { readNativeAgentViewport } from './nativeAgentView';
 import { boardPageStack } from '../model/pages';
 import type { DrawingViewInfo, NotebookViewInfo, PdfViewInfo } from '../../utils/viewRegistry';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 function requestSignal(job: JobOptions): AbortSignal {
     if (!Number.isFinite(job.deadlineMs) || job.deadlineMs <= 0) throw new RangeError('Invalid agent read deadline');
@@ -31,10 +32,7 @@ export function createNativeAgentReader(options: {
     onError(error: unknown): void;
 }) {
     const { runtime } = options;
-    const cooperate = () => {
-        const scheduler = (globalThis as typeof globalThis & { scheduler?: { yield?: () => Promise<void> } }).scheduler;
-        return scheduler?.yield ? scheduler.yield() : new Promise<void>(resolve => setTimeout(resolve, 0));
-    };
+    const cooperate = yieldToHost;
     // Right after an apply the board still settles (text layout bumps the revision), which aborts a
     // read mid-way with 'source changed'. Re-read the settled board a few times rather than fail it.
     const read = async <T>(job: JobOptions, consume: (doc: BoardDoc, sheet: SheetId, revision: number,

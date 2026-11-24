@@ -36,6 +36,7 @@ import { createSensitiveTargets } from './sensitiveTargets';
 import type { ViewerEngine } from './types';
 import type { BoardCardActions } from './cardControls';
 import { isCancellation } from '../../platform/workers/envelope';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 /** The board's context-menu request: the pointer, the element the menu hangs from, and the locked node it targets, if any. */
 export interface BoardContextMenuRequest { readonly point: { readonly x: number; readonly y: number }; readonly opener: HTMLElement; readonly locked: NodeId | null }
@@ -239,7 +240,7 @@ export function createBoardToolServices(options: BoardToolServicesOptions) {
         overviewPending = pending;
         const roots = (doc.children.get(runtime.selection.getSnapshot().sheet) ?? []).map(child => child.id);
         const fence = () => { if (controller.signal.aborted || runtime.session.doc !== doc || doc.rev !== rev) throw new DOMException('Overview content changed', 'AbortError'); };
-        void contentBounds(runtime, roots, { signal: controller.signal, fence, cooperate: () => new Promise<void>(resolve => setTimeout(resolve, 0)) })
+        void contentBounds(runtime, roots, { signal: controller.signal, fence, cooperate: yieldToHost })
             .then(box => { if (!controller.signal.aborted) overviewContent = { rev, box }; })
             .catch(error => { if (!(error instanceof DOMException && error.name === 'AbortError')) ui.error(error); })
             .finally(() => { if (overviewPending === pending) overviewPending = null; });

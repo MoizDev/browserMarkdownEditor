@@ -6,6 +6,7 @@ import type { SheetId } from '../model/ids';
 import type { PaintNodeSource } from '../render/paintStream';
 import { notebookBackdrop } from '../host/notebookBackdrop';
 import type { PinExportSnapshot } from './snapshot';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 export interface BoardExportSnapshotOptions {
     readonly runtime: BoardRuntime;
@@ -111,9 +112,9 @@ export function createBoardExportSnapshot(options: BoardExportSnapshotOptions): 
                         if (!captured.nodes.has(id as import('../model/ids').NodeId)) throw new Error('Selected export node is unavailable');
                         for (const child of captured.children.get(id as import('../model/ids').NodeId) ?? []) {
                             if (!selected.has(child.id)) { selected.add(child.id); stack.push(child.id); }
-                            if (++visits % 256 === 0) { await new Promise<void>(resolve => setTimeout(resolve, 0)); signal.throwIfAborted(); }
+                            if (++visits % 256 === 0) { await yieldToHost(); signal.throwIfAborted(); }
                         }
-                        if (++visits % 256 === 0) await new Promise<void>(resolve => setTimeout(resolve, 0));
+                        if (++visits % 256 === 0) await yieldToHost();
                     }
                 })().catch(error => { selectionWork = undefined; throw error; });
                 return selectionWork;

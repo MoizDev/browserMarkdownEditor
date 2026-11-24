@@ -10,6 +10,7 @@ import type { RealSample } from './tool';
 import { snapStraightEnd } from './straightInk';
 import type { DryInkIdentity, InkIdentity, InkPresentation } from './liveInk';
 import type { PaintClip } from '../render/paintStream';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 export interface InkContinuationOptions {
     readonly session: BoardSession;
@@ -92,7 +93,7 @@ export function createInkContinuation(options: InkContinuationOptions): (sample:
                     check();
                     builder.append(source.x(i), source.y(i), source.pressure(i),
                         source.count > 1 ? source.segmentKind(Math.max(0, i - 1)) : 'freehand');
-                    if ((i & 1023) === 1023) { await new Promise<void>(resolve => setTimeout(resolve, 0)); check(); }
+                    if ((i & 1023) === 1023) { await yieldToHost(); check(); }
                 }
                 check();
                 const finalPressure = pressure ? source.pressure(source.count - 1) : undefined;

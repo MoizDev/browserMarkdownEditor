@@ -6,6 +6,7 @@ import type { BoardRuntime } from '../host/runtime';
 import type { NodeId } from '../model/ids';
 import type { InputToken } from '../input/tool';
 import type { Fill } from '../model/styles';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 export interface StyleShortcutOptions {
     readonly runtime: BoardRuntime;
@@ -24,7 +25,7 @@ export interface StyleShortcutOptions {
  * collect recursive group descendants cooperatively before the one apply. */
 export function createStyleShortcuts(options: StyleShortcutOptions) {
     const { runtime } = options, session = runtime.session, doc = session.doc, owner = session.owner;
-    const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const cooperate = options.cooperate ?? yieldToHost;
     const controllers = new Set<AbortController>();
     let disposed = false, generation = 0;
     const current = () => !disposed && options.current() && runtime.session === session && session.owner === owner && session.doc === doc;

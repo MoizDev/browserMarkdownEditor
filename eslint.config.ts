@@ -103,6 +103,7 @@ export default defineConfig([
     // A raw localStorage write bypasses the IndexedDB recovery mirror, so another
     // window's origin reset could erase it. Tab-only sessionStorage also goes through
     // storage.ts, but stays out of that mirror: terminal IDs must not cross tabs.
+    // And every cooperative yield goes through platform/yieldToHost.ts (below).
     files: ['src/**/*.{ts,tsx}'],
     ignores: ['src/utils/storage.ts'],
     rules: {
@@ -111,6 +112,9 @@ export default defineConfig([
           ['setItem', 'removeItem', 'clear'].map(property => ({
             object, property, message: 'Use utils/storage.ts for browser storage mutations',
           }))),
+        // Chrome 94–128 have `scheduler` without `yield` (an unguarded call failed every board there), and where it exists
+        // its continuations starve messages and timers (measured in platform/yieldToHost.ts).
+        { object: 'scheduler', property: 'yield', message: 'Yield with platform/yieldToHost.ts, the one feature-tested host yield' },
       ],
     },
   },

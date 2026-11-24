@@ -7,6 +7,7 @@ import { subscribeDocumentViewRetarget } from '../../utils/documentViewRetarget'
 import { boardPageStack } from '../model/pages';
 import { centredCamera, contentBounds, fitTarget } from '../commands/contentBounds';
 import type { BoardRuntime } from './runtime';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 /** One controller per view lease; input calls changed() after mutating this same camera. */
 export function createBoardViewCamera(options: {
@@ -88,7 +89,7 @@ export function createBoardViewCamera(options: {
             try {
                 const roots = (doc.children.get(sheetId) ?? []).map(child => child.id);
                 const bounds = await contentBounds(runtime, roots, { signal: fitting.signal, fence,
-                    cooperate: () => new Promise<void>(resolve => setTimeout(resolve, 0)) });
+                    cooperate: yieldToHost });
                 fence();
                 const view = camera.viewport, now = camera.camera;
                 if (!bounds || view.width <= 0 || view.height <= 0) return;

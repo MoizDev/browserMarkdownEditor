@@ -13,6 +13,7 @@ import type { BoardJobIdentity } from '../workers/protocol';
 import type { JobContext } from '../security/admission';
 import { resolveMediaStorage } from '../media/storage';
 import type { MediaStorageReceipt, StoreMedia } from '../media/storage.types';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 // Provenance: private clipboard media, session job authority and SEC-W4
 // verification contracts; independent pre-transaction staging, no third-party source.
@@ -79,7 +80,7 @@ function prepareMedia(options: PrepareClipboardMediaOptions, existingContext?: J
         const cooperate = async () => {
             check();
             if (++steps < 128 && performance.now() - sliceStart < 3) return;
-            await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+            await (options.cooperate?.() ?? yieldToHost());
             check(); steps = 0; sliceStart = performance.now();
         };
         const ops: Op[] = [], files = new Map<MediaId, string | null>(), blobs = new Map<MediaId, Blob>(), leases: MediaLease[] = [], missing: MediaId[] = [];

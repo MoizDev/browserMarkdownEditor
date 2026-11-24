@@ -3,6 +3,7 @@ import { childrenOf, isSheetParent, sheetOf, type BoardDoc } from '../model/doc'
 import type { NodeId, ParentId, SheetId } from '../model/ids';
 import type { Node } from '../model/nodes';
 import { selectedRootsAsync } from '../geom/selectedRootsAsync';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 /** Validate one immutable selection snapshot without rescanning overlapping
  * subtrees or sorting a large selection synchronously on the input thread. */
@@ -12,7 +13,7 @@ export async function prepareSelectionScope(options: {
     readonly current: () => boolean; readonly cooperate?: () => Promise<void>;
 }): Promise<Node[]> {
     const { doc, signal } = options, revision = doc.rev, host = doc.host;
-    const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const cooperate = options.cooperate ?? yieldToHost;
     let work = 0, started = performance.now();
     const check = () => {
         signal.throwIfAborted();
@@ -61,7 +62,7 @@ export async function prepareSelectionScope(options: {
 export async function selectionNodeIds(doc: BoardDoc, nodes: readonly Node[], options: {
     readonly signal: AbortSignal; readonly current: () => boolean; readonly cooperate?: () => Promise<void>;
 }): Promise<NodeId[]> {
-    const revision = doc.rev, host = doc.host, cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const revision = doc.rev, host = doc.host, cooperate = options.cooperate ?? yieldToHost;
     const check = () => { options.signal.throwIfAborted(); if (!options.current() || doc.rev !== revision || doc.host !== host) throw new DOMException('Selection id capture became stale', 'AbortError'); };
     const result: NodeId[] = []; let count = 0, started = performance.now();
     for (const node of nodes) {
@@ -75,7 +76,7 @@ export async function selectionNodeIds(doc: BoardDoc, nodes: readonly Node[], op
 export async function inspectOpaqueSubtrees(doc: BoardDoc, roots: readonly NodeId[], options: {
     readonly signal: AbortSignal; readonly current: () => boolean; readonly cooperate?: () => Promise<void>;
 }): Promise<ReadonlyMap<NodeId, boolean>> {
-    const revision = doc.rev, host = doc.host, cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const revision = doc.rev, host = doc.host, cooperate = options.cooperate ?? yieldToHost;
     let work = 0, started = performance.now();
     const check = () => { options.signal.throwIfAborted(); if (!options.current() || doc.rev !== revision || doc.host !== host) throw new DOMException('Opaque subtree scan became stale', 'AbortError'); };
     const due = () => ++work >= 256 || performance.now() - started >= 3;

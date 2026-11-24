@@ -24,6 +24,7 @@ import { getBoardPreferences, subscribeBoardPreferences, updateBoardPreferences 
 import { NativeCanvasEditing, type NativeEditingViewOptions, type NativeEditingRenderContext } from './NativeCanvasEditing';
 import type { BoardSessionPort, HostedBoardAdapter } from './boardSessionAdapter';
 import './NativeCanvasEntry.css';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 const VIEW_REASON = 'This native canvas is currently available in read-only mode.';
 const reportThumbnailError = (error: unknown) => { console.error('Notebook thumbnail unavailable:', error); };
@@ -182,7 +183,7 @@ export function AttachedViewer({ props, identity, lease, inverted, setInverted, 
                 await lease.runtime.ready;
                 const boxes: NativeMinimapBox[] = [];
                 const fence = () => { if (controller.signal.aborted || !minimapCurrent()) throw new DOMException('Minimap selection changed', 'AbortError'); };
-                const cooperate = () => new Promise<void>(resolve => setTimeout(resolve, 0));
+                const cooperate = yieldToHost;
                 for (const id of ids) {
                     // The scene rebuilds as the selection settles, and contentBounds then aborts with "Scene geometry changed".
                     // That abort is a retry, not a failure: the query runs again once the scene is quiet, and only a map

@@ -1,6 +1,7 @@
 import { checkContentUrl } from '../security/urlPolicy';
 import { SECURITY_LIMITS } from '../security/limits';
 import type { ClipboardClassification, ClipboardInput, ClipboardIntent } from './types';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 export interface HtmlClipboardMarkers {
     readonly hasPrivate: boolean;
@@ -28,7 +29,7 @@ async function firstUriLine(list: string, signal: AbortSignal): Promise<string |
     if (list.length > SECURITY_LIMITS.clipboardHtmlBytes) throw new RangeError('Clipboard URI list is too large');
     let start = 0;
     for (let i = 0; i <= list.length; i++) {
-        if ((i & 65535) === 65535) { signal.throwIfAborted(); await new Promise<void>(resolve => setTimeout(resolve, 0)); signal.throwIfAborted(); }
+        if ((i & 65535) === 65535) { signal.throwIfAborted(); await yieldToHost(); signal.throwIfAborted(); }
         if (i !== list.length && list[i] !== '\r' && list[i] !== '\n') continue;
         if (i - start > SECURITY_LIMITS.textCharacters) throw new RangeError('Clipboard URI line is too large');
         const value = list.slice(start, i).trim();
@@ -52,7 +53,7 @@ async function plain(value: string, signal: AbortSignal): Promise<ClipboardClass
         length += part.length;
         if (length > SECURITY_LIMITS.textCharacters) throw new RangeError('Clipboard text is too large');
         parts.push(part); offset = end;
-        if (offset < value.length) { signal.throwIfAborted(); await new Promise<void>(resolve => setTimeout(resolve, 0)); signal.throwIfAborted(); }
+        if (offset < value.length) { signal.throwIfAborted(); await yieldToHost(); signal.throwIfAborted(); }
     }
     return { kind: 'text', text: parts.join('') };
 }
@@ -60,7 +61,7 @@ async function leading(value: string, signal: AbortSignal): Promise<number> {
     if (value.length > SECURITY_LIMITS.clipboardExpandedBytes) throw new RangeError('Clipboard text is too large');
     let index = 0;
     while (index < value.length && /\s/u.test(value[index])) {
-        if ((++index & 65535) === 0) { signal.throwIfAborted(); await new Promise<void>(resolve => setTimeout(resolve, 0)); signal.throwIfAborted(); }
+        if ((++index & 65535) === 0) { signal.throwIfAborted(); await yieldToHost(); signal.throwIfAborted(); }
     }
     return index;
 }

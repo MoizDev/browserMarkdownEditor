@@ -5,6 +5,7 @@ import { centredCamera, contentBounds, fitEdges, fitTarget, pageStackBounds, uni
 import type { BoardRuntime } from '../host/runtime';
 import { resetBoardZoom, stepBoardZoom } from '../input/cameraZoom';
 import type { NodeId } from '../model/ids';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 /** Back to content's glide: 220 ms, tldraw's back-to-content move (scaled by the board's motion setting). */
 const BACK_TO_CONTENT_MS = 220;
@@ -25,7 +26,7 @@ export interface BoardCameraCommandsOptions {
  * document history; asynchronous fit owns a revision/selection/camera fence. */
 export function createBoardCameraCommands(options: BoardCameraCommandsOptions) {
     const { runtime, camera, surface } = options, session = runtime.session, doc = session.doc, owner = session.owner;
-    const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const cooperate = options.cooperate ?? yieldToHost;
     const { motion } = options;
     let disposed = false, serial = 0, pending: AbortController | undefined, cursor: Point | null = null;
     const current = () => !disposed && options.current() && runtime.session === session && session.owner === owner && session.doc === doc;

@@ -16,6 +16,7 @@ import type { BoardClipboardAcquisition } from './clipboardAcquisition';
 import { createBoardEncoderBounds } from './encoderBounds';
 import { acquireNativeBoard } from './nativeAcquisition';
 import { inspectPdfVisualModel } from './pdfVisualPreflight';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 // Provenance: native clipboard admission (C5 acquisition, render-service canonical
 // geometry and encoder bounds) composed from existing host seams; no third-party source.
@@ -71,7 +72,7 @@ export async function admitLoadedClipboard(owned: AdmittedClipboardLoad, context
     };
     const cooperate = async () => {
         await check();
-        await (context.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+        await (context.cooperate?.() ?? yieldToHost());
         await check();
     };
     let transferred = false;
@@ -148,7 +149,7 @@ export async function admitNativeClipboardRecords(bytes: Blob, context: Clipboar
     const identity = Object.freeze({ ...context.identity });
     const cooperate = async () => {
         if (!context.isCurrent(identity)) throw new DOMException('Clipboard admission became stale', 'AbortError');
-        await (context.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+        await (context.cooperate?.() ?? yieldToHost());
     };
     const admitted = await acquireNativeBoard({ bytes, kind: CLIPBOARD_KIND,
         identity: { session: identity.session, epoch: identity.epoch, generation: identity.revision },

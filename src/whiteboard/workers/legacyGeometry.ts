@@ -14,6 +14,7 @@ import { createLoadedBoardDoc } from '../model/loadDocument';
 import type { Node } from '../model/nodes';
 import { createBoardRenderServices } from '../render/services';
 import { BoardFonts } from '../text/fonts';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 export interface LegacyGeometryOptions {
     readonly token: RenderToken;
@@ -51,7 +52,7 @@ export function createLegacyDraftGeometry(options: LegacyGeometryOptions): {
 } {
     if (!(options.fonts instanceof BoardFonts) || !(options.samples instanceof SampleStore) || !(options.media instanceof MediaStore)
         || typeof options.current !== 'function') throw new TypeError('Legacy geometry needs the real worker font, sample and media owners');
-    const lifetime = new AbortController(), cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const lifetime = new AbortController(), cooperate = options.cooperate ?? yieldToHost;
     let disposed = false, busy = false, renderer: ReturnType<typeof createBoardRenderServices> | null = null;
     let scope: { release(): void } | null = null, records = new Map<Readonly<Node>, RecordGeometry>();
     const check = (signal?: AbortSignal) => {

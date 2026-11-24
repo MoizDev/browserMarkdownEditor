@@ -5,6 +5,7 @@ import { areSimpleConnectorPolygons, exactConnectorLineCrossings } from './conne
 import { curvedConnectorLineCrossings } from './connectorCurveClip';
 import { connectorCircleBoundaryDisjoint } from './connectorCirclePreflight';
 import { certifiedConnectorArcCrossings } from './connectorArcClip';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 export function bodyLength(body: ConnectorBody): number {
     if (!Number.isFinite(body.length) || body.length < 0) throw new RangeError('Invalid connector body length');
@@ -68,7 +69,7 @@ export async function bodyCrossings(body: ConnectorBody, surface: AttachmentSurf
         if (next.done) { signal?.throwIfAborted(); return next.value; }
         if (++count >= 256 || performance.now() - started >= 3) {
             signal?.throwIfAborted();
-            await (cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+            await (cooperate?.() ?? yieldToHost());
             signal?.throwIfAborted(); count = 0; started = performance.now();
         }
     }

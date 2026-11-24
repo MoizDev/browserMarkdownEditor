@@ -9,6 +9,7 @@ import { isSheetParent, type BoardDoc } from '../model/doc';
 import type { NodeId } from '../model/ids';
 import { projectBoardGeometrySets } from '../model/overlayDoc';
 import { boardPageStack } from '../model/pages';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 interface TransformPreview { readonly doc: BoardDoc; readonly ops: readonly Op[] }
 export interface NotebookTransformOptions<T extends TransformPreview> {
@@ -32,7 +33,7 @@ export async function prepareNotebookTransform<T extends TransformPreview>(optio
     const { runtime, preview, signal } = options, session = runtime.session, doc = session.doc;
     if (doc.host.kind !== 'notebook' || !preview.ops.length) return null;
     const owner = session.owner, revision = doc.rev, selection = runtime.selection.getSnapshot(), font = runtime.render.text.fonts.epoch;
-    const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const cooperate = options.cooperate ?? yieldToHost;
     const current = () => !signal.aborted && options.current() && runtime.session === session && session.owner === owner
         && session.doc === doc && doc.rev === revision && runtime.selection.getSnapshot() === selection && runtime.render.text.fonts.epoch === font;
     const check = () => { signal.throwIfAborted(); if (!current()) throw new DOMException('Notebook translation became stale', 'AbortError'); };

@@ -8,6 +8,7 @@ import { selectableAtFocus } from '../selection';
 import { boardFrameAncestors } from './ancestorFrames';
 import { classifyCertifiedClipBox, preparePointClip, type CertifiedClipRegion } from './clippedPointPathJob';
 import type { PathOp } from './path';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 function ancestorChain(doc: BoardDoc, id: NodeId): NodeId[] {
     const chain: NodeId[] = [], seen = new Set<NodeId>(); let parent: ParentId = id;
@@ -31,7 +32,7 @@ export async function collectSnapCandidates(options: {
     readonly sheet: SheetId; readonly focus: ParentId; readonly selected: readonly NodeId[]; readonly bounds: Rect; readonly threshold: number;
     readonly signal: AbortSignal; readonly current: () => boolean; readonly cooperate?: () => Promise<void>;
 }): Promise<ReadonlySet<NodeId>> {
-    const { scene, doc, bounds, threshold } = options, revision = doc.rev, cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const { scene, doc, bounds, threshold } = options, revision = doc.rev, cooperate = options.cooperate ?? yieldToHost;
     const check = () => { options.signal.throwIfAborted(); if (!options.current() || options.runtime.scene !== scene || !scene.ready || scene.revision !== revision || doc.rev !== revision)
         throw new DOMException('Snap candidate source changed', 'AbortError'); };
     let work = 0, started = performance.now();

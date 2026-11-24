@@ -15,6 +15,7 @@ import { SceneCellIndex } from './cellIndex';
 import type { SceneRecordPin } from './recordStore';
 import type { SceneMetadata } from './snapshotDoc';
 import type { SceneBounds, SceneOccupiedBounds, ScenePaintRequest, SceneSnapshot } from './types';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 // Provenance: scene pin, rendering token and model snapshot contracts;
 // independent immutable read-side assembly, no third-party source.
@@ -77,7 +78,7 @@ export function createSceneSnapshot(options: {
     // then visits candidate ordinals only. A pending build is part of the pin, never a silent miss.
     const built: SceneCellIndex[] = [];
     const indexes = new Map<SheetId, Promise<SceneCellIndex>>(), ready = new Map<SheetId, SceneCellIndex>();
-    const cooperateSlice = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const cooperateSlice = options.cooperate ?? yieldToHost;
     const buildIndex = async (sheetId: SheetId): Promise<SceneCellIndex> => {
         const index = new SceneCellIndex();
         try {
@@ -219,7 +220,7 @@ export function createSceneSnapshot(options: {
             const input: BoardDocInput = { kind: metadata.kind, sheets: metadata.sheets.values(), nodes: records.values(),
                 media: metadata.media.values(), ui: metadata.ui, view: metadata.view, host: metadata.host,
                 preserved: metadata.preserved, preservedMediaRefs: metadata.preservedMediaRefs };
-            const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+            const cooperate = options.cooperate ?? yieldToHost;
             building = track(createLoadedBoardDoc(input, cooperate, controller.signal).then(doc => {
                 check();
                 return { ...doc, rev: revision };

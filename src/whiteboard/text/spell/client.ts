@@ -5,6 +5,7 @@ import type { WorkerClient } from '../../../platform/workers';
 import type { Misspelling } from './menu';
 import { normalizeUserDictionary } from './dictionary';
 import { packedMisspellings } from './packedRanges';
+import { yieldToHost } from '../../../platform/yieldToHost';
 
 async function misspellings(value: unknown, text: string, signal: AbortSignal): Promise<readonly Misspelling[]> {
     if (!(value instanceof Uint32Array) || value.length % 2 || value.length > text.length * 2) throw new Error('Invalid spelling worker response');
@@ -14,7 +15,7 @@ async function misspellings(value: unknown, text: string, signal: AbortSignal): 
         const from = value[i], to = value[i + 1];
         if (from < previous || to <= from || to > text.length) throw new Error('Invalid spelling worker range');
         previous = to;
-        if ((i & 8191) === 8190) await new Promise<void>(resolve => setTimeout(resolve, 0));
+        if ((i & 8191) === 8190) await yieldToHost();
     }
     signal.throwIfAborted();
     return packedMisspellings(text, value);

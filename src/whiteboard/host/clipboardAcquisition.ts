@@ -15,6 +15,7 @@ import type { NativeLoadReply } from '../workers/nativeLoad';
 import type { DecodedBoardClipboard } from '../workers/clipboardDecode';
 import { acquireNativeBoard, type NativeBoardAcquisition } from './nativeAcquisition';
 import { inspectPdfVisualModel } from './pdfVisualPreflight';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 // Provenance: private clipboard source admission, C5 rehydration and immutable
 // media identity contracts; independent host composition, no third-party source.
@@ -99,7 +100,7 @@ export async function acquireBoardClipboard(options: BoardClipboardAcquisitionOp
         if (!start && !end) throw new TypeError('Empty clipboard binding sidecar');
         externalBindings.set(item.id, Object.freeze({ ...(start ? { start } : {}), ...(end ? { end } : {}) }));
         if ((++sidecars & 255) === 0) {
-            options.signal?.throwIfAborted(); await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+            options.signal?.throwIfAborted(); await (options.cooperate?.() ?? yieldToHost());
             if (!options.isCurrent(identity)) throw new DOMException('Clipboard acquisition became stale', 'AbortError');
         }
     }
@@ -153,7 +154,7 @@ async function copiedSidecars(copy: CopySnapshot,
     let visited = 0;
     const tick = async () => {
         options.signal?.throwIfAborted();
-        await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+        await (options.cooperate?.() ?? yieldToHost());
         options.signal?.throwIfAborted();
         if (!options.isCurrent(identity)) throw new DOMException('Clipboard acquisition became stale', 'AbortError');
     };
@@ -180,7 +181,7 @@ async function acquireClipboardSource(source: BoardPayload, inline: readonly Rea
     const identity = Object.freeze({ ...options.identity });
     const signal = options.signal ?? new AbortController().signal;
     const check = () => { signal.throwIfAborted(); if (!options.isCurrent(identity)) throw new DOMException('Clipboard acquisition became stale', 'AbortError'); };
-    const cooperate = async () => { check(); await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0))); check(); };
+    const cooperate = async () => { check(); await (options.cooperate?.() ?? yieldToHost()); check(); };
     check();
     let acquisition: NativeBoardAcquisition | undefined;
     try {

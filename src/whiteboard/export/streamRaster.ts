@@ -7,6 +7,7 @@ import type { BoardJobIdentity } from '../workers/protocol'
 import { inkOutline } from './displayList'
 import { checkPngSize } from './png'
 import type { RasterWireImage, RasterWireItem } from './rasterWire'
+import { yieldToHost } from '../../platform/yieldToHost'
 
 async function wire(item: PaintItem, scale: number, signal: AbortSignal): Promise<RasterWireItem> {
   if (item.kind !== 'ink') return item
@@ -66,7 +67,7 @@ export async function streamRasterPng(
         if (items.length || bitmaps.length) await client.request('rasterChunk', { streamId, items, images: bitmaps }, identity,
           { ...opts, transfer: bitmaps.map(image => image.bitmap) }, current)
       } finally { for (const image of bitmaps) image.bitmap.close() }
-      if (!complete && !items.length) await new Promise<void>(resolve => setTimeout(resolve, 0))
+      if (!complete && !items.length) await yieldToHost()
     }
     const result = await client.request<Blob>('rasterEncode', { streamId, width, height, world: { ...world }, scale, ...options }, identity, opts, current)
     if (!(result instanceof Blob) || result.type !== 'image/png') throw new TypeError('Invalid PNG worker result')

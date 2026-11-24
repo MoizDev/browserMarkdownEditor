@@ -10,15 +10,12 @@ import type { PaintClip, PaintItem, PaintNode, PaintNodeSource } from './paintSt
 import type { ScenePaintNodeStream } from './scenePaintStream';
 import type { PaintNodeOrder } from './paintOrder';
 import { SECURITY_LIMITS } from '../security/limits';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 /** The paint source's yield between slices. A chain of setTimeout(0) is clamped to 4 ms from its fifth link, and the streaming source
  * yields every 0.25 ms of work, so a dense tile's read of a sheet waited about 4 ms per slice with the main thread idle (measured,
  * canvas2d DPR 2, the stroke seed fitted at 1% after a hide: one read of 1,024 nodes took 1.26 s, the board 'Loading drawing…' for
- * 2.5 s). scheduler.yield gives input and rendering their turn without the clamp. */
-function yieldToHost(): Promise<void> {
-    const scheduler = (globalThis as typeof globalThis & { scheduler?: { yield?(): Promise<void> } }).scheduler;
-    return scheduler?.yield ? scheduler.yield() : new Promise<void>(resolve => setTimeout(resolve, 0));
-}
+ * 2.5 s). The shared yield (utils/yieldToHost.ts) gives input and rendering their turn without the clamp. */
 
 // Provenance: document-model transforms and frame clipping, paint-stream order
 // and page-stack contracts; independent traversal, no third-party source.

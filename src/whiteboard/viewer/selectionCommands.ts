@@ -7,6 +7,7 @@ import { arrangeNotebook } from '../input/notebookArrange';
 import type { Align, Axis } from '../geom/arrange';
 import type { BoardRuntime } from '../host/runtime';
 import type { NodeId } from '../model/ids';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 export interface SelectionCommandDriverOptions {
     readonly runtime: BoardRuntime;
@@ -24,7 +25,7 @@ export interface SelectionCommandDriverOptions {
  * commands. Work is serialized and never opens a transaction before geometry. */
 export function createSelectionCommandDriver(options: SelectionCommandDriverOptions) {
     const { runtime } = options, session = runtime.session, doc = session.doc, owner = session.owner;
-    const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const cooperate = options.cooperate ?? yieldToHost;
     const live = () => !disposed && options.current() && runtime.session === session && session.owner === owner && session.doc === doc;
     const writable = () => live() && options.canMutateView() && !session.isReadOnly && !session.isGestureActive;
     const selection = createBoardSelectionCommands({ runtime, current: writable, zoom: options.zoom, cooperate });

@@ -5,6 +5,7 @@ import type { PaintInkItem, PaintItem, PaintNodeSource, PaintPathItem, PaintText
 import { capturePaintClips, paintItemDisplay } from './displayList'
 import type { ExportImage } from './displayList'
 import { createStreamingExportTextPieces } from './textStreamResolver'
+import { yieldToHost } from '../../platform/yieldToHost'
 
 export type PdfGroupOpen = Omit<Extract<PageDisplayItem, { kind: 'group' }>, 'kind' | 'items'>
 export type PdfPathOpen = Omit<Extract<PageDisplayItem, { kind: 'path' }>, 'd'>
@@ -142,7 +143,7 @@ async function writeInk(item: PaintInkItem, scale: number, sink: IncrementalPdfP
         if (commands.length) { const chunk = commands; commands = []; await sink.pathCommands(chunk, signal) }
         if (state === 'complete') break
         if (state === 'cancelled') throw new DOMException('PDF ink capture cancelled', 'AbortError')
-        await new Promise<void>(resolve => setTimeout(resolve, 0))
+        await yieldToHost()
       }
     } catch (error) { job.cancel(); throw error }
   }
@@ -221,7 +222,7 @@ export async function writeIncrementalPdfPage(page: IncrementalPdfPageSource, in
         complete = status === 'complete'
         for (const item of chunk) await writePaint(item, scale, image, sink, sheet, signal, text)
         chunk.length = 0
-        if (!complete) await new Promise<void>(resolve => setTimeout(resolve, 0))
+        if (!complete) await yieldToHost()
       }
       guard(sheet, signal)
     } finally { job.cancel() }

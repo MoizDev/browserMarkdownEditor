@@ -11,6 +11,7 @@ import { connectorHeadScale, headGeometry } from './heads';
 import type { PathOp, Vec2 } from './path';
 import { transformedPathBounds } from './providers';
 import { styleGeometryMetrics } from './styleMetrics';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 const IDENTITY: Affine = [1, 0, 0, 1, 0, 0];
 function aim(node: ConnectorNode, terminal: 'start' | 'end', matrix: Affine, surface: AttachmentSurface | undefined): Vec2 {
@@ -218,7 +219,7 @@ export async function resolveConnectorGeometry(request: ConnectorGeometryRequest
             signal.throwIfAborted();
         } else if (++count >= 256 || performance.now() - started >= 3) {
             signal.throwIfAborted();
-            await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+            await (options.cooperate?.() ?? yieldToHost());
             signal.throwIfAborted(); count = 0; started = performance.now();
         }
     }

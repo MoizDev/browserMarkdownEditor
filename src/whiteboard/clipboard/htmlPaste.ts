@@ -19,6 +19,7 @@ import { insertNativeClipboard } from './insertNative';
 import { prepareBoardClipboardMediaInJob } from './prepareMedia';
 import { planBoardClipboardPlacement } from './placement';
 import type { ClipboardIntent, ClipboardTarget } from './types';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 // Provenance: isolated HTML projection, verified media staging and one-step
 // clipboard insertion; independent composition, no upstream engine source.
@@ -55,7 +56,7 @@ export async function pasteClipboardHtmlInJob(options: HtmlClipboardPasteOptions
         if (!options.current(target) || runtime.session !== session || session.doc !== doc || doc.rev !== revision
             || session.owner !== owner || session.isReadOnly || runtime.selection.getSnapshot().sheet !== target.sheet) throw new DOMException('HTML paste became stale', 'AbortError');
     };
-    const cooperate = async () => { check(); await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0))); check(); };
+    const cooperate = async () => { check(); await (options.cooperate?.() ?? yieldToHost()); check(); };
     const identity: BoardJobIdentity = Object.freeze({ session: context.job.session, epoch: context.job.vaultEpoch, revision });
     const current = (job: BoardJobIdentity) => job.session === identity.session && job.epoch === identity.epoch && job.revision === revision
         && runtime.jobs.isCurrent(context.job) && options.current(target) && session.doc === doc && doc.rev === revision;

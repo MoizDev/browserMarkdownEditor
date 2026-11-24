@@ -11,6 +11,7 @@ import type { RichText } from '../text/richText';
 import { legibleInk, opacity, withOpacity } from './colour';
 import type { PaintPalette } from './colour';
 import type { TextMaterial } from './material';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 // Provenance: text/edit host requests, figure geometry and paint material
 // contracts; independent session service, no third-party source.
@@ -142,7 +143,7 @@ export function createBoardTextGeometry(options: { fonts?: BoardFonts; onFontEpo
             if (!request) return null;
             await getLayout().prepare(request);
             check(signal);
-            await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+            await (options.cooperate?.() ?? yieldToHost());
             check(signal);
             // Font loads can finish during the wait; use their actual current epoch and faces.
             return prepareNow(node, requestOptions);

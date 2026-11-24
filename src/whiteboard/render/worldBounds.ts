@@ -11,6 +11,7 @@ import { nextDown, nextUp } from '../geom/numeric';
 import { exactAffinePoint } from '../geom/exactAffine';
 import { exactPoint, exactLineBetween, exactSide, exactPointIntervals, type ExactLine } from '../geom/homogeneous';
 import { inkCoverageChunks, type PaintClip, type PaintItem, type PaintNodeSource } from './paintStream';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 export class BoardBoundsUncertified extends Error {
     constructor(readonly reason: string) { super(`Board geometry bounds are not certified: ${reason}`); this.name = 'BoardBoundsUncertified'; }
@@ -331,10 +332,7 @@ function* measureSteps(source: PaintNodeSource, options: BoardPaintBoundsOptions
 /** Both entry points consume exactly the same measured geometry and clip jobs. */
 export async function measureBoardPaintBounds(source: PaintNodeSource, options: BoardPaintBoundsOptions): Promise<BoardPaintBounds> {
     const steps = measureSteps(source, options);
-    const cooperate = options.cooperate ?? (() => {
-        const scheduler = (globalThis as typeof globalThis & { scheduler?: { yield?: () => Promise<void> } }).scheduler;
-        return scheduler?.yield ? scheduler.yield() : new Promise<void>(resolve => setTimeout(resolve, 0));
-    });
+    const cooperate = options.cooperate ?? yieldToHost;
     let complete = false, count = 0, started = performance.now();
     const check = () => { options.signal?.throwIfAborted(); if (!source.isCurrent()) throw new DOMException('Board paint source expired', 'AbortError'); };
     try {

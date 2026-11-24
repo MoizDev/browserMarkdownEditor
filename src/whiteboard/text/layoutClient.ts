@@ -4,6 +4,7 @@ import { BoardFonts, type FontKey } from './fonts';
 import { BoardTextLayout } from './layout';
 import type { Face, TextLayoutRequest, TextMeasurement, TextPaint } from './paint';
 import { sameLayoutProduct, validLayoutProduct } from './layoutValidation';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 const scripts = [/\p{Script=Latin}/u, /\p{Script=Arabic}/u, /\p{Script=Hebrew}/u, /\p{Script=Han}/u,
     /\p{Script=Devanagari}/u, /\p{Script=Thai}/u, /\p{Extended_Pictographic}/u];
@@ -113,7 +114,7 @@ export class TextLayoutClient {
             this.compatibleClasses.add(kind);
         }
         if (workerProduct && !this.different) return workerProduct;
-        await new Promise<void>(resolve => setTimeout(resolve, 0));
+        await yieldToHost();
         if (!current()) return null;
         await this.main.prepare(request).catch(() => {});
         if (!current()) return null;

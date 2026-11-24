@@ -1,13 +1,14 @@
 import { childrenOf, type BoardDoc } from '../model/doc';
 import type { NodeId } from '../model/ids';
 import type { Node } from '../model/nodes';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 /** Capture direct contents and validate every descendant before a structural
  * container removal. Shared or cyclic hierarchy is refused, never repaired. */
 export async function prepareContainerContents(doc: BoardDoc, containers: readonly Node[], options: {
     readonly signal: AbortSignal; readonly current: () => boolean; readonly cooperate?: () => Promise<void>;
 }): Promise<ReadonlyMap<NodeId, readonly Node[]>> {
-    const revision = doc.rev, host = doc.host, cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const revision = doc.rev, host = doc.host, cooperate = options.cooperate ?? yieldToHost;
     let work = 0, started = performance.now();
     const check = () => { options.signal.throwIfAborted(); if (!options.current() || doc.rev !== revision || doc.host !== host) throw new DOMException('Container contents became stale', 'AbortError'); };
     const due = () => ++work >= 256 || performance.now() - started >= 3;

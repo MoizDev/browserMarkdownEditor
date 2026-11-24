@@ -4,6 +4,7 @@ import type { Node } from '../model/nodes';
 import type { AttachmentSurface } from './connectorTypes';
 import type { PathOp } from './path';
 import { polylineMatrix, type AttachedPolyline } from './polylinePoints';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 // Surface and dependency helpers for attached polylines. The end-point arithmetic
 // lives once, in geom/polylinePoints.ts (polylinePointSteps / drainPolylinePoints);
@@ -39,7 +40,7 @@ export function polylineSurface(doc: BoardDoc, target: Readonly<Node>, attachmen
 }
 /** Drives the shared steps to completion. `cooperate` runs between bounded batches of crossing pieces. */
 export async function settlePolylineSteps<T>(steps: Generator<void, T, void>, signal: AbortSignal,
-    cooperate: () => Promise<void> = () => new Promise<void>(resolve => setTimeout(resolve, 0))): Promise<T> {
+    cooperate: () => Promise<void> = yieldToHost): Promise<T> {
     let count = 0, started = performance.now();
     signal.throwIfAborted();
     for (;;) {

@@ -10,6 +10,7 @@ import { preparePolylineGeometry } from './providers';
 import { prepareBoardAttachmentSurface } from '../render/attachmentSurfaces';
 import { boardFrameAncestors } from './ancestorFrames';
 import { polylineMatrix, polylinePointSteps, POLYLINE_TOLERANCE_WORLD, type AttachedPolyline } from './polylinePoints';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 export interface PolylineAttachmentOptions {
     readonly runtime: BoardRuntime;
@@ -48,7 +49,7 @@ export async function resolvePolylinePoints(node: AttachedPolyline, doc: BoardDo
         if (next.done) { options.signal.throwIfAborted(); return next.value; }
         if (++count >= 256 || performance.now() - started >= 3) {
             options.signal.throwIfAborted();
-            await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+            await (options.cooperate?.() ?? yieldToHost());
             options.signal.throwIfAborted(); count = 0; started = performance.now();
         }
     }

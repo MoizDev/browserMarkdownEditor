@@ -20,6 +20,7 @@ import { admitLoadedClipboard, admitNativeClipboardRecords, type ClipboardAdmiss
 import { acquireLegacyBoard } from './legacyAcquisition';
 import { acquireNativeBoard } from './nativeAcquisition';
 import { encodeExternalNativeSource } from './nativeSourceBuilder';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 // Provenance: external clipboard source semantics composed from the native source builder,
 // C5 admission, and the canonical attachment surface of the target node; no third-party source.
@@ -55,7 +56,7 @@ function clipboardContext(options: ExternalClipboardAdmitterOptions, context: Jo
 async function admitConvertedNodes(source: { sheet: SheetId; nodes: readonly Node[]; media: readonly MediaEntry[];
     blobs: ReadonlyMap<MediaId, Blob>; samples: SampleStore },
     options: ExternalClipboardAdmitterOptions, context: JobContext, identity: BoardJobIdentity): Promise<ExternalClipboardAdmission> {
-    const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const cooperate = options.cooperate ?? yieldToHost;
     const bytes = await encodeExternalNativeSource(source, { token: options.token, zMax: options.zMax, signal: context.signal, cooperate });
     return admitNativeClipboardRecords(bytes, clipboardContext(options, context, identity, async (entry, signal) =>
         source.blobs.get(entry.id) ?? options.readBlob(entry, signal)));
@@ -65,7 +66,7 @@ async function admitConvertedNodes(source: { sheet: SheetId; nodes: readonly Nod
  * measured like any other admission. Its native probe supplies the actual report legacy scanning needs. */
 async function admitLegacyEnvelope(content: Blob, options: ExternalClipboardAdmitterOptions, context: JobContext, identity: BoardJobIdentity)
     : Promise<ExternalClipboardAdmission> {
-    const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const cooperate = options.cooperate ?? yieldToHost;
     const probe = await acquireNativeBoard({ bytes: content, kind: 'whiteboard',
         identity: { session: identity.session, epoch: identity.epoch, generation: identity.revision },
         signal: context.signal, deadlineMs: importDeadline(content.size), cooperate });

@@ -10,6 +10,7 @@ import { childrenOf, sheetOf } from '../model/doc';
 import type { NodeId } from '../model/ids';
 import type { Node } from '../model/nodes';
 import { projectBoardGeometrySets } from '../model/overlayDoc';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 export interface FitFrameOptions {
     readonly runtime: BoardRuntime;
@@ -32,7 +33,7 @@ export interface FrameFitPlan {
 export async function prepareBoardFrameFit(options: FitFrameOptions): Promise<FrameFitPlan> {
     const { runtime } = options, session = runtime.session, doc = session.doc, owner = session.owner, revision = doc.rev;
     const selection = runtime.selection.getSnapshot(), signal = options.signal ?? new AbortController().signal;
-    const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const cooperate = options.cooperate ?? yieldToHost;
     let font: number | undefined, released = false, source: BoardGeometryScope | undefined, final: BoardGeometryScope | undefined;
     const current = () => !released && !signal.aborted && options.current() && session.owner === owner && session.doc === doc && doc.rev === revision
         && !session.isReadOnly && !session.isGestureActive && runtime.selection.getSnapshot() === selection

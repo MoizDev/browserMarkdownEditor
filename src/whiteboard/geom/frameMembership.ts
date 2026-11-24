@@ -11,6 +11,7 @@ import { pointInTransformedFrame } from './frameContainment';
 import type { Vec2 } from './path';
 import { projectGeometryReparents, type GeometryReparent } from './reparentProjection';
 import { findFrameMembershipTargets, type FrameMembershipCentre } from './frameMembershipCandidates';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 export interface FrameMembershipOptions {
     readonly runtime: BoardRuntime;
@@ -42,7 +43,7 @@ function insideFocus(doc: BoardDoc, parent: ParentId, focus: ParentId): boolean 
 export async function projectFrameMembership(options: FrameMembershipOptions): Promise<FrameMembershipProjection> {
     const { runtime, doc, geometry, signal } = options, live = runtime.session.doc, revision = live.rev, owner = runtime.session.owner;
     const selection = runtime.selection.getSnapshot(), selected = new Set(options.roots);
-    const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const cooperate = options.cooperate ?? yieldToHost;
     let scene = runtime.scene;
     const check = () => {
         signal.throwIfAborted();

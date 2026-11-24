@@ -1,6 +1,7 @@
 import { now } from './clock';
 import { assertPayload, isPriority, WorkerHostError } from './envelope';
 import type { MainMessage, Priority, WorkerMessage } from './envelope';
+import { yieldToHost } from '../yieldToHost';
 
 export interface WorkerContext {
     readonly cancelled: boolean;
@@ -124,7 +125,7 @@ export function serve(spec: ServeSpec): () => void {
             },
             async slice() {
                 context.heartbeat();
-                await (spec.yield?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+                await (spec.yield?.() ?? yieldToHost());
                 while (task.paused && !task.cancelled && !disposed) await new Promise<void>(resolve => { task.wake = resolve; });
                 task.wake = undefined;
                 check();

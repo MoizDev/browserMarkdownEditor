@@ -14,6 +14,7 @@ import {
 import { isBlockRange, isSurrogateBoundary, isTextGraphemeBoundary, scanText, spliceBlockCount } from './textOffsets';
 import { normalizeRichText } from '../text/richText';
 import { MAX_TEXT_BLOCKS, MAX_TEXT_LENGTH } from './textLimits';
+import { yieldToHost } from '../../platform/yieldToHost';
 export { MAX_TEXT_BLOCKS, MAX_TEXT_LENGTH } from './textLimits';
 
 export type ValidationCode = 'schema' | 'opaque' | 'V-1' | 'V-2' | 'V-3' | 'V-4' | 'V-5'
@@ -633,7 +634,7 @@ export async function validateLoadedRootIncremental(doc: BoardDoc, cooperate?: (
         if (step.done) { check(); return step.value; }
         if (++count >= 256 || performance.now() - started >= 3) {
             check();
-            await (cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+            await (cooperate?.() ?? yieldToHost());
             check();
             count = 0; started = performance.now();
         }

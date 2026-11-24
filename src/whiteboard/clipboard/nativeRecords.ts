@@ -12,6 +12,7 @@ import type { SampleLease } from '../model/samples';
 import { keyBetween } from '../model/orderKey';
 import { SECURITY_LIMITS } from '../security/limits';
 import type { BoardPayload } from './snapshot';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 // Provenance: private clipboard records, native reader/line-table and C5
 // admission contracts; independent synthetic container, no third-party source.
@@ -23,7 +24,7 @@ export async function makeClipboardNativeRecords(payload: BoardPayload, options:
     readonly signal?: AbortSignal;
     cooperate?(): Promise<void>;
 } = {}): Promise<{ readonly bytes: Blob; readonly originalSourceKind: BoardKind }> {
-    const signal = options.signal, yieldHost = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const signal = options.signal, yieldHost = options.cooperate ?? yieldToHost;
     const cooperate = async () => { signal?.throwIfAborted(); await yieldHost(); signal?.throwIfAborted(); };
     signal?.throwIfAborted();
     if (!payload || payload.v !== 1 || !payload.from || !isValidId(payload.from.sheet)

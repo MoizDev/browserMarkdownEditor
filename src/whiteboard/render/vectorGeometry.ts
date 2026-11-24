@@ -4,6 +4,7 @@ import { prepareFigureGeometry, prepareFrameGeometry, prepareMediaBoxGeometry, p
 import type { ContainerGeometry, FigureGeometry, PolylineGeometry, PositionedFigureText, TextGeometry } from '../geom/providers';
 import type { FigureNode, Node, OpaqueNode } from '../model/nodes';
 import type { BoardTextGeometry } from './textGeometry';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 // Provenance: geometry providers, shared text request and opaque-record contracts;
 // independent composition, no third-party source.
@@ -67,7 +68,7 @@ export async function prepareBoardVectorGeometry(node: Readonly<Node>, options: 
         label = positioned(await options.text.prepare(node, { revision: options.revision, zoom: options.zoom }, signal));
         check(signal);
     }
-    await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+    await (options.cooperate?.() ?? yieldToHost());
     check(signal);
     return vectorGeometry(node, options, label);
 }
@@ -76,7 +77,7 @@ export async function prepareBoardVectorGeometry(node: Readonly<Node>, options: 
 export async function prepareOpaqueGeometry(node: Readonly<OpaqueNode>, signal: AbortSignal,
     cooperate?: () => Promise<void>): Promise<FigureGeometry> {
     const tick = async () => {
-        check(signal); await (cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0))); check(signal);
+        check(signal); await (cooperate?.() ?? yieldToHost()); check(signal);
     };
     await tick();
     let w = 100, h = 100;

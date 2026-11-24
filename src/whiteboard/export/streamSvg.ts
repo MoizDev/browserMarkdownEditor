@@ -6,6 +6,7 @@ import type { PaintItem, PaintNodeSource } from '../render/paintStream'
 import { captureTextDisplay, paintItemDisplay } from './displayList'
 import type { ExportImage } from './displayList'
 import { openExportTextStream } from './textStreamLease'
+import { yieldToHost } from '../../platform/yieldToHost'
 
 function transferBytes(item: PageDisplayItem): number {
   if (item.kind === 'group') return item.items.reduce((sum, child) => sum + transferBytes(child), 0)
@@ -90,7 +91,7 @@ export async function streamSvg(
       }
       chunk.length = 0
       await send(items)
-      if (!complete && !items.length) await new Promise<void>(resolve => setTimeout(resolve, 0))
+      if (!complete && !items.length) await yieldToHost()
     }
     signal.throwIfAborted()
     const result = await client.request<Blob>('svgFinish', { streamId }, identity, opts, current)

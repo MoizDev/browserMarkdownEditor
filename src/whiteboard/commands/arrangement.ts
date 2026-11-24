@@ -12,6 +12,7 @@ import { projectBoardGeometrySets } from '../model/overlayDoc';
 import type { NodeId, ParentId } from '../model/ids';
 import type { Node } from '../model/nodes';
 import { acquireBoardGeometryScope, type BoardGeometryScope } from './geometryScope';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 export interface BoardArrangementCommandOptions {
     readonly runtime: BoardRuntime;
@@ -28,7 +29,7 @@ export interface BoardArrangementPlan {
 /** Every arrangement is projected before mutation; source and final geometry
  * remain leased until the one commit or cancellation. */
 export function createBoardArrangementCommands(options: BoardArrangementCommandOptions) {
-    const { runtime } = options, cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const { runtime } = options, cooperate = options.cooperate ?? yieldToHost;
     async function prepare(ids: readonly NodeId[], action: ArrangementAction, signal = new AbortController().signal): Promise<BoardArrangementPlan> {
         const session = runtime.session, doc = session.doc, owner = session.owner, revision = doc.rev;
         const selection = runtime.selection.getSnapshot(), { sheet, focus } = selection;

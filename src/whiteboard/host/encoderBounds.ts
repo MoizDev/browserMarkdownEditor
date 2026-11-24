@@ -8,6 +8,7 @@ import type { BoardDoc } from '../model/doc';
 import type { NodeId, SheetId } from '../model/ids';
 import type { Node } from '../model/nodes';
 import type { LocalGeometryBounds } from '../scene/bounds';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 // Provenance: native b R-W38, scene local bounds and model world-pose contracts;
 // independently implemented conservative encoding bridge, no third-party source.
@@ -50,7 +51,7 @@ export async function createBoardEncoderBounds(options: {
     let count = 0, started = performance.now();
     const tick = async (signal?: AbortSignal) => {
         signal?.throwIfAborted();
-        await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+        await (options.cooperate?.() ?? yieldToHost());
         signal?.throwIfAborted(); count = 0; started = performance.now();
     };
     const due = () => ++count >= 256 || performance.now() - started >= 3;

@@ -8,6 +8,7 @@ import { isSheetParent, sheetOf } from '../model/doc';
 import type { NodeId, ParentId } from '../model/ids';
 import { projectBoardGeometrySets } from '../model/overlayDoc';
 import { prepareNotebookTransform } from './notebookTranslation';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 export interface NotebookArrangeOptions {
     readonly runtime: BoardRuntime;
@@ -24,7 +25,7 @@ export async function arrangeNotebook(options: NotebookArrangeOptions): Promise<
     const { runtime, signal } = options, session = runtime.session, doc = session.doc;
     if (doc.host.kind !== 'notebook') throw new Error('Notebook arrangement requires notebook paper');
     const owner = session.owner, revision = doc.rev, selection = runtime.selection.getSnapshot();
-    const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const cooperate = options.cooperate ?? yieldToHost;
     const active = () => !signal.aborted && options.current() && runtime.session === session && session.owner === owner
         && session.doc === doc && doc.rev === revision && !session.isReadOnly && !session.isGestureActive
         && runtime.selection.getSnapshot() === selection;

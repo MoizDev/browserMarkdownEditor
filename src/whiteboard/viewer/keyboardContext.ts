@@ -2,6 +2,7 @@ import { worldToSurface, type CameraController, type Point } from '../../platfor
 import { acquireBoardGeometryScope } from '../commands/geometryScope';
 import type { BoardRuntime } from '../host/runtime';
 import type { SelectionSnapshot } from '../selection';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 export interface KeyboardContextRequest {
     readonly client: Readonly<Point>;
@@ -24,7 +25,7 @@ export interface KeyboardContextOptions {
  * object's actual bounds, keep selection intact, and return a viewport anchor. */
 export function createKeyboardContext(options: KeyboardContextOptions) {
     const { runtime, camera, surface } = options, session = runtime.session, doc = session.doc, owner = session.owner;
-    const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const cooperate = options.cooperate ?? yieldToHost;
     let disposed = false, generation = 0, pending: AbortController | undefined;
     const current = () => !disposed && options.current() && runtime.session === session && session.owner === owner && session.doc === doc;
     const cancel = () => { generation++; pending?.abort(); pending = undefined; };

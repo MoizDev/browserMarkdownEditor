@@ -364,18 +364,18 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
                     if (node.kind === 'group' || node.kind === 'frame') {
                         for (const child of original.children.get(id) ?? []) {
                             if (nodes.get(child.id)?.parent === id) pending.push(child.id);
-                            if (++work % 128 === 0) { await new Promise<void>(resolve => setTimeout(resolve, 0)); check(); }
+                            if (++work % 128 === 0) { await yieldToHost(); check(); }
                         }
                         for (const child of additional.get(id) ?? []) {
                             pending.push(child);
-                            if (++work % 128 === 0) { await new Promise<void>(resolve => setTimeout(resolve, 0)); check(); }
+                            if (++work % 128 === 0) { await yieldToHost(); check(); }
                         }
                     }
                     for (const connector of original.attachedTo.get(id) ?? []) {
                         pending.push(connector);
-                        if (++work % 128 === 0) { await new Promise<void>(resolve => setTimeout(resolve, 0)); check(); }
+                        if (++work % 128 === 0) { await yieldToHost(); check(); }
                     }
-                    if (++work % 128 === 0) { await new Promise<void>(resolve => setTimeout(resolve, 0)); check(); }
+                    if (++work % 128 === 0) { await yieldToHost(); check(); }
                 }
                 const paths = new Map<NodeId, Node[]>();
                 for (const id of candidates) {
@@ -388,7 +388,7 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
                     }
                     if (!node || node.parent !== sheet) throw new Error('Preview parent is outside the sheet');
                     paths.set(id, path.reverse());
-                    if (++work % 128 === 0) { await new Promise<void>(resolve => setTimeout(resolve, 0)); check(); }
+                    if (++work % 128 === 0) { await yieldToHost(); check(); }
                 }
                 const compare = (a: NodeId, b: NodeId) => {
                     const x = paths.get(a)!, y = paths.get(b)!;
@@ -405,7 +405,7 @@ export function createBoardPreview(options: BoardPreviewOptions): BoardPreview {
                         let left = from, right = mid;
                         for (let index = from; index < end; index++) {
                             scratch[index] = right >= end || (left < mid && compare(ids[left], ids[right]) <= 0) ? ids[left++] : ids[right++];
-                            if (++work % 128 === 0) { await new Promise<void>(resolve => setTimeout(resolve, 0)); check(); }
+                            if (++work % 128 === 0) { await yieldToHost(); check(); }
                         }
                     }
                     [ids, scratch] = [scratch, ids];

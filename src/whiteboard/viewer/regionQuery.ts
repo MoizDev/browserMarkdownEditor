@@ -32,6 +32,7 @@ import type { SpatialRef } from '../pick';
 import { BoundsQuality } from '../scene/bounds';
 import type { createBoardRenderServices } from '../render/services';
 import { selectableAtFocus } from '../selection';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 // Provenance: Scene spatial cursor, GE-3 region providers, C7 stamps and
 // nonzero clipping contracts; independent composition, no third-party source.
@@ -94,15 +95,7 @@ function clipPolygon(subject: readonly Vec2[], clip: readonly ExactPoint[]): Vec
         return { x: intervals.x.lo, y: intervals.y.lo };
     });
 }
-// One message per yield, answered in order: each posted message resolves exactly the waiter queued with it.
-const yieldChannel = typeof MessageChannel === 'function' ? (() => {
-    const channel = new MessageChannel(), waiting: Array<() => void> = [];
-    channel.port1.onmessage = () => { waiting.shift()?.(); };
-    return (resolve: () => void) => { waiting.push(resolve); channel.port2.postMessage(null); };
-})() : null;
-function yieldToTask(): Promise<void> {
-    return new Promise<void>(resolve => { if (yieldChannel) yieldChannel(resolve); else setTimeout(resolve, 0); });
-}
+const yieldToTask = yieldToHost;
 
 export function createBoardRegionQuery(options: BoardRegionQueryOptions) {
     const { runtime } = options;

@@ -21,6 +21,7 @@ import { boardPageStack } from '../model/pages';
 import type { BoardClipboardPlacement } from './placement';
 import type { PreparedClipboardMedia } from './prepareMedia';
 import type { ClipboardTarget } from './types';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 // Provenance: C5 clipboard source, staged geometry, page membership and atomic
 // transaction contracts; independent paste composition, no third-party source.
@@ -53,7 +54,7 @@ export async function insertNativeClipboard(options: InsertNativeClipboardOption
             || media.stamp.owner.documentId !== owner.documentId || media.stamp.owner.session !== owner.session
             || !doc.sheets.has(targetSheet) || runtime.selection.getSnapshot().sheet !== targetSheet) throw new DOMException('Clipboard target became stale', 'AbortError');
     };
-    const cooperate = async () => { check(); await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0))); check(); };
+    const cooperate = async () => { check(); await (options.cooperate?.() ?? yieldToHost()); check(); };
     let geometry: Awaited<ReturnType<typeof acquireBoardGeometryScope>> | undefined;
     try {
         if (!(samples instanceof SampleStore) || session.samples !== samples || !(acquisition.samples instanceof SampleStore)) throw new TypeError('Clipboard insertion requires session-owned sample stores');

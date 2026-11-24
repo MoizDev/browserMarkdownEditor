@@ -10,6 +10,7 @@ import { createSerializerSession } from './serializerClient';
 import type { BaselineLine, SerializerChange, SerializerDelta, SerializerPrime, SerializerRecordOverride } from './serializerProtocol';
 import { FORMAT_LIMITS } from './schema';
 import type { RecordIdentity, StoredRecordCategory } from './writeTypes';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 /** A dirty recipe is relative to the pinned parsed-byte baseline, not a live board session. */
 export interface BoardRecoveryRecipe {
@@ -72,7 +73,7 @@ async function* bytesOf(blobValue: Blob): AsyncIterable<Uint8Array> {
 async function refusePreservedFilenames(board: Blob, names: ReadonlySet<string>, signal: AbortSignal): Promise<void> {
     let count = 0, started = performance.now();
     const tick = async () => {
-        signal.throwIfAborted(); await new Promise<void>(resolve => setTimeout(resolve, 0));
+        signal.throwIfAborted(); await yieldToHost();
         signal.throwIfAborted(); count = 0; started = performance.now();
     };
     const due = () => ++count >= 256 || performance.now() - started >= 3;
@@ -123,7 +124,7 @@ async function remapRecoveryMedia(baseline: Blob, index: Blob, header: string, b
     const digest = new RecordKeyDigest(), originalDigest = new RecordKeyDigest(), overrides: SerializerChange[] = [], seen = new Set<string>();
     const reader = index.stream().getReader(), decoder = new TextDecoder('utf-8', { fatal: true });
     let pending = '', count = 0, started = performance.now();
-    const tick = async () => { signal.throwIfAborted(); await new Promise<void>(resolve => setTimeout(resolve, 0)); signal.throwIfAborted(); started = performance.now(); count = 0; };
+    const tick = async () => { signal.throwIfAborted(); await yieldToHost(); signal.throwIfAborted(); started = performance.now(); count = 0; };
     try {
         for (;;) {
             signal.throwIfAborted();
@@ -288,7 +289,7 @@ export async function materializeBoardRecoveryRecipe(payload: unknown, signal: A
             if (seen.has(token) || bytes > FORMAT_LIMITS.fileBytes) throw new TypeError('Duplicate or oversized recovery snapshot overrides');
             seen.add(token);
             capturedOverrides.push({ identity: key, bytes: override.bytes.slice() });
-            if ((capturedOverrides.length & 127) === 0) { await new Promise<void>(resolve => setTimeout(resolve, 0)); signal.throwIfAborted(); }
+            if ((capturedOverrides.length & 127) === 0) { await yieldToHost(); signal.throwIfAborted(); }
         }
     }
     const session = createSerializerSession(prime, () => { /* build observes serializer failures */ });

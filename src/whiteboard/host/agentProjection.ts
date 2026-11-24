@@ -14,11 +14,9 @@ import type { JobAuthority, JobOptions } from '../security/admission';
 import type { RenderToken } from '../../platform/render/types';
 import { createAgentGeometryReader } from './agentGeometry';
 import type { NativeLoadReply } from '../workers/nativeLoad';
+import { yieldToHost } from '../../platform/yieldToHost';
 
-function yieldAgentWork(): Promise<void> {
-    const scheduler = (globalThis as typeof globalThis & { scheduler?: { yield?: () => Promise<void> } }).scheduler;
-    return scheduler?.yield ? scheduler.yield() : new Promise(resolve => setTimeout(resolve, 0));
-}
+const yieldAgentWork = yieldToHost;
 
 async function boundedSummary(node: Node, geometry: AgentGeometry, page: number | undefined, guard: () => void): Promise<ShapeSummary> {
     const text: RichText | null = node.kind === 'text' || node.kind === 'sticky' ? node.text

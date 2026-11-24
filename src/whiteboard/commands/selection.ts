@@ -13,6 +13,7 @@ import { newNodeId, type NodeId, type ParentId, type SheetId } from '../model/id
 import { createFrame, createGroup, type Node } from '../model/nodes';
 import { boardPageStack, pageOrigin } from '../model/pages';
 import type { Box } from '../scene/bounds';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 export interface BoardSelectionCommandOptions {
     readonly runtime: BoardRuntime;
@@ -56,7 +57,7 @@ export function ungroupEligibility(doc: BoardDoc, ids: Iterable<NodeId>, state: 
  * completes before opening that builder, and its lease outlives commit/rollback. */
 export function createBoardSelectionCommands(options: BoardSelectionCommandOptions) {
     const { runtime } = options, session = runtime.session, doc = session.doc;
-    const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const cooperate = options.cooperate ?? yieldToHost;
     type Capture = { revision: number; sheet: SheetId; focus: ParentId; owner: typeof session.owner; font: number };
     const capture = (): Capture => {
         if (!options.current() || session.isReadOnly || session.isGestureActive) throw new Error('Selection command is not currently editable');

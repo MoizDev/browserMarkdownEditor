@@ -22,6 +22,7 @@ import { ScenePackedRebuild } from './rebuild';
 import { SceneMetadataStore } from './snapshotDoc';
 import type { NearestVisitor, QueryBuffer, SpatialQuery } from './query';
 import type { SceneBounds, ScenePaintBinding, ScenePaintRequest, SceneQueryOptions, SceneSnapshot, SceneSpatial } from './types';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 export interface SessionSceneOptions {
     readonly doc: BoardDoc;
@@ -39,10 +40,6 @@ export interface SessionSceneOptions {
     cooperate?(): Promise<void>;
     readonly signal?: AbortSignal;
     subscribeInvalidation?(listener: (ids: ReadonlySet<NodeId>) => void): () => void;
-}
-function yieldToHost(): Promise<void> {
-    const scheduler = (globalThis as typeof globalThis & { scheduler?: { yield(): Promise<void> } }).scheduler;
-    return scheduler?.yield() ?? new Promise(resolve => setTimeout(resolve, 0));
 }
 
 /** Session-owned Scene, independent of pane lifetime. Publication is blocked while

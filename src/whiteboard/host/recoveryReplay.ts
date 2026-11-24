@@ -7,6 +7,7 @@ import type { NodeId, ParentId, SheetId } from '../model/ids';
 import type { MediaEntry, MediaId } from '../model/media';
 import type { Node } from '../model/nodes';
 import { rehydrateLoad } from '../model/loadProjection';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 // Provenance: C-20 recovery recipe, C5 re-admission and transactional model
 // contracts; independent planner, no third-party source.
@@ -23,7 +24,7 @@ export async function recoverBoardJournal(payload: unknown, options: {
     };
     let steps = 0, started = performance.now();
     const cooperate = async () => {
-        check(); await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+        check(); await (options.cooperate?.() ?? yieldToHost());
         check(); steps = 0; started = performance.now();
     };
     const due = () => ++steps >= 256 || performance.now() - started >= 3;

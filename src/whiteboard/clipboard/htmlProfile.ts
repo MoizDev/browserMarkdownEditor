@@ -3,11 +3,12 @@ import { SECURITY_LIMITS } from '../security/limits';
 import { MAX_TEXT_BLOCKS, MAX_TEXT_LENGTH } from '../model/textLimits';
 import type { Block, Marks, RichFragment, Run } from '../text/richText';
 import { matchingIdentity, validBoardIdentity } from '../workers/protocol';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 // Provenance: clipboard/security contracts and native rich-text representation;
 // independent isolated HTML extraction, no third-party source.
 const CHUNK = 192 * 1024, LIMIT = SECURITY_LIMITS.clipboardHtmlBytes, MAX_NODES = 2_000_000;
-const pause = () => new Promise<void>(resolve => setTimeout(resolve, 0));
+const pause = yieldToHost;
 const ignored = new Set(['script', 'style', 'form', 'object', 'iframe', 'embed', 'svg', 'math', 'template', 'noscript', 'head',
     'input', 'textarea', 'button', 'select', 'option', 'video', 'audio', 'canvas']);
 interface Context { readonly marks: Marks; readonly dir: Block['dir']; readonly lists: readonly { kind: 'ul' | 'ol'; next: number }[]; readonly pre: boolean }

@@ -17,6 +17,7 @@ import { boardPageStack } from '../model/pages';
 import { prepareFrameDrop, type FrameDropPlan } from './frameDrop';
 import { createBoardEncoderBounds } from '../host/encoderBounds';
 import { rememberDuplicate, type DuplicateSourceOrigin } from '../clipboard/duplicateRepeat';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 export interface DuplicateDragPreview {
     readonly ops: readonly Op[];
@@ -36,7 +37,7 @@ export interface DuplicateDragPlan {
 export async function createDuplicateDragPlan(options: BoardTranslationOptions): Promise<DuplicateDragPlan> {
     const { runtime } = options, session = runtime.session, doc = session.doc, owner = session.owner, revision = doc.rev;
     const selection = runtime.selection.getSnapshot(), signal = options.signal ?? new AbortController().signal;
-    const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const cooperate = options.cooperate ?? yieldToHost;
     const font = runtime.render.text.fonts.epoch;
     let closed = false, serial = 0, work = 0, started = performance.now();
     const current = () => !closed && !signal.aborted && options.current() && runtime.session === session && session.owner === owner

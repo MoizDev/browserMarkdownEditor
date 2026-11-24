@@ -3,6 +3,7 @@ import { SECURITY_LIMITS } from '../security/limits';
 import { boardWorker } from '../workers/client';
 import { closeWorkerResult, validBoardIdentity, type BoardJobIdentity } from '../workers/protocol';
 import type { ExcalidrawWireDocument } from '../workers/excalidrawClipboard';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 // Provenance: public Excalidraw clipboard fields and shared worker admission;
 // independent parse host, no upstream engine source.
@@ -40,7 +41,7 @@ export async function readExcalidrawClipboard(options: {
             else if (Array.isArray(value)) for (const child of value) pending.push({ value: child, depth: depth + 1 });
             else if (typeof value === 'object') for (const child of Object.values(value)) pending.push({ value: child, depth: depth + 1 });
             else throw new TypeError('Invalid Excalidraw parser value');
-            if ((visited & 255) === 0) { await new Promise<void>(resolve => setTimeout(resolve, 0)); check(); }
+            if ((visited & 255) === 0) { await yieldToHost(); check(); }
         }
         const elements = reply.elements as Record<string, unknown>[];
         if (elements.some(element => !element || typeof element !== 'object' || Array.isArray(element))) throw new TypeError('Invalid Excalidraw element');

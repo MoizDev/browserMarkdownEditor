@@ -5,6 +5,7 @@ import type { RehydratedLoad } from '../model/loadTypes';
 import { createJobAuthority } from '../security/admission';
 import { createNativeLoadClient } from '../workers/nativeLoadClient';
 import type { NativeLoadReply } from '../workers/nativeLoad';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 // Provenance: C5 admission, worker identity and model sample-lease contracts;
 // independent host seam, no third-party source.
@@ -24,11 +25,6 @@ export interface NativeAcquisitionOptions {
     readonly onFailure?: (error: unknown) => void;
 }
 
-function yieldToBrowser(): Promise<void> {
-    const scheduler = (globalThis as typeof globalThis & { scheduler?: { yield?: () => Promise<void> } }).scheduler;
-    return scheduler?.yield ? scheduler.yield() : new Promise(resolve => setTimeout(resolve, 0));
-}
-
 /** The supplied Blob is the caller's already-copied baseline, not a disk File.
  * The returned load owns creator leases until the live session has retained the
  * samples; only then may the caller call load.release() or dispose acquisition. */
@@ -39,7 +35,7 @@ export async function acquireNativeBoard(options: NativeAcquisitionOptions): Pro
     const samples = new SampleStore();
     const authority = createJobAuthority(options.identity.session, options.identity.epoch, options.identity.generation);
     const admission = createBoardLoadAdmission(authority, {
-        samples, admit: (pts, header) => samples.admitEncoded(pts, header), cooperate: options.cooperate ?? yieldToBrowser,
+        samples, admit: (pts, header) => samples.admitEncoded(pts, header), cooperate: options.cooperate ?? yieldToHost,
     });
     let client: ReturnType<typeof createNativeLoadClient>;
     try { client = createNativeLoadClient({ authority, admission, identity: options.identity }); }

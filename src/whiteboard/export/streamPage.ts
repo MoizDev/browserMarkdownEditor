@@ -4,6 +4,7 @@ import type { PaintItem, PaintNodeSource } from '../render/paintStream'
 import { paintItemDisplay } from './displayList'
 import type { ExportImage, ExportText } from './displayList'
 import { createExportTextResolver } from './textResolver'
+import { yieldToHost } from '../../platform/yieldToHost'
 
 /** One immutable source per physical page. Never publish a partial list: the caller holds
  * the source's revision/media leases until the resulting page has been handed to the writer. */
@@ -30,7 +31,7 @@ export async function streamPageDisplayList(
         if (!source.isCurrent()) throw new Error('Paint capture stale')
       }
       chunk.length = 0
-      if (!complete) await new Promise<void>(resolve => setTimeout(resolve, 0))
+      if (!complete) await yieldToHost()
     }
     signal.throwIfAborted()
     if (!source.isCurrent()) throw new Error('Paint capture stale')

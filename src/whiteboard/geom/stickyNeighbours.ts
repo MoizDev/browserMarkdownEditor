@@ -9,6 +9,7 @@ import { selectableAtFocus } from '../selection';
 import { boardFrameAncestors } from './ancestorFrames';
 import { pointInTransformedFrame } from './frameContainment';
 import type { Vec2 } from './path';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 export interface StickyCentre extends Vec2 { readonly rotation: number }
 export function stickyWorldCentre(doc: BoardDoc, node: Readonly<StickyNode>): StickyCentre {
@@ -34,7 +35,7 @@ export async function findStickyNeighbour(options: {
     readonly current: () => boolean; readonly cooperate?: () => Promise<void>;
 }): Promise<NodeId | null> {
     const { runtime, doc, source, target, signal } = options, revision = doc.rev, scene = runtime.scene;
-    const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const cooperate = options.cooperate ?? yieldToHost;
     if (!scene?.ready || scene.revision !== revision) throw new Error('Scene is not ready for sticky neighbour lookup');
     if (![target.x, target.y, target.rotation, options.radius].every(Number.isFinite) || options.radius < 0) throw new RangeError('Invalid sticky neighbour lookup');
     const box: [number, number, number, number] = [target.x - options.radius, target.y - options.radius, target.x + options.radius, target.y + options.radius];

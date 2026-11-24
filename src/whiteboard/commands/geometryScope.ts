@@ -12,6 +12,7 @@ import type { NodeId, SheetId } from '../model/ids';
 import type { Node, Point, PolylineNode } from '../model/nodes';
 import { compareOrder } from '../model/orderKey';
 import { IDENTITY, logicalAggregateBox, matrix, type LogicalSource } from './logicalGeometry';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 type Prepared = Awaited<ReturnType<BoardRuntime['render']['prepareForPick']>>;
 export interface BoardGeometryScopeOptions {
@@ -54,7 +55,7 @@ export function acquireBoardGeometryScope(runtime: BoardRuntime, ids: Iterable<N
 
 export async function acquireBoardGeometryProjection(source: BoardGeometrySource, ids: Iterable<NodeId>, options: BoardGeometryScopeOptions = {}): Promise<BoardGeometryScope> {
     const { render } = source, doc = options.doc ?? source.doc, signal = options.signal ?? new AbortController().signal;
-    const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const cooperate = options.cooperate ?? yieldToHost;
     const revision = doc.rev, host = doc.host, roots: NodeId[] = [];
     const live = doc === source.doc, fenced = live || options.current !== undefined;
     const captured = new Map<NodeId, Readonly<Node>>(), children = new Map<NodeId, readonly Node[] | undefined>();

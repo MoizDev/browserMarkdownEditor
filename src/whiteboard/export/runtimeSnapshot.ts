@@ -14,6 +14,7 @@ import type { SceneSnapshot } from '../scene/types';
 import { inkCoverageChunks, PaintStreamJob, type PaintFrame, type PaintItem } from '../render/paintStream';
 import { paintItem2d } from '../render/reference/paint2d';
 import { prepareRaster, type PreparedRaster } from './prepareRaster';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 export interface BoardCaptureSnapshotOptions {
     /** Narrowed (foreign edit by whiteboard-a3 for the closed-source seam): reads only the scene, document owner and media. */
@@ -30,7 +31,7 @@ export interface BoardCaptureSnapshotOptions {
     readonly onError: (error: unknown) => void;
 }
 const UNDERLAY = 'board-underlay', CONTENT = 'board-content', PAPER = 'notebook-paper';
-const tick = () => new Promise<void>(resolve => setTimeout(resolve, 0));
+const tick = yieldToHost;
 function sameToken(a: RenderToken, b: RenderToken): boolean {
     return a.vaultEpoch === b.vaultEpoch && a.documentId === b.documentId && a.bytesGeneration === b.bytesGeneration && a.session === b.session;
 }

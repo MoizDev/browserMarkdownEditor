@@ -21,6 +21,7 @@ import { checkContentUrl } from '../security/urlPolicy';
 import type { Block, RichFragment } from '../text/richText';
 import { planBoardClipboardPlacement } from './placement';
 import type { ClipboardIntent, ClipboardTarget } from './types';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 /** Text pasted from the top edge of the view keeps this many screen pixels clear of it (catalogue c.8). */
 const TEXT_TOP_CLEARANCE_PX = 40;
@@ -70,7 +71,7 @@ export async function insertClipboardText(options: InsertClipboardTextOptions): 
             throw new DOMException('Clipboard target became stale', 'AbortError');
         }
     };
-    const cooperate = async () => { check(); await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0))); check(); };
+    const cooperate = async () => { check(); await (options.cooperate?.() ?? yieldToHost()); check(); };
     const style = { ...doc.ui.next }, content = options.content;
     let scope: Awaited<ReturnType<typeof acquireBoardGeometryScope>> | undefined;
     try {

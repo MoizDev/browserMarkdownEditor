@@ -5,6 +5,7 @@ import type { Node } from '../model/nodes';
 import { nodeRawValues, scanRawMedia, scanRawMediaIncremental } from '../model/rawMedia';
 import type { SampleStoreReader } from '../model/samples';
 import type { RichText } from '../text/richText';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 const LIMIT = 256;
 type Ids = readonly MediaId[];
@@ -81,7 +82,7 @@ export async function prewarmPaintNodeResources(nodes: Iterable<Readonly<Node>>,
     let work = 0, started = performance.now();
     const tick = async () => {
         signal?.throwIfAborted();
-        await (cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+        await (cooperate?.() ?? yieldToHost());
         signal?.throwIfAborted(); work = 0; started = performance.now();
     };
     const due = () => ++work >= 256 || performance.now() - started >= 3;

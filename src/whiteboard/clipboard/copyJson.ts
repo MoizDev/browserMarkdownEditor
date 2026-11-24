@@ -3,6 +3,7 @@ import type { ByteLease } from '../../platform/render/gfx/api';
 import type { BoardRuntime } from '../host/runtime';
 import { SECURITY_LIMITS } from '../security/limits';
 import type { CopySnapshot } from './snapshot';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 // Provenance: clipboard §2.4 native-record JSON and C2 job ownership;
 // independent incremental JSON-string serialization, no upstream engine source.
@@ -51,7 +52,7 @@ export async function buildBoardJson(options: {
         const cooperate = async () => {
             context.assertCurrent(); check();
             if (++steps < 128 && performance.now() - started < 3) return;
-            await new Promise<void>(resolve => setTimeout(resolve, 0)); context.assertCurrent(); check(); steps = 0; started = performance.now();
+            await yieldToHost(); context.assertCurrent(); check(); steps = 0; started = performance.now();
         };
         try {
             context.assertCurrent(); check();

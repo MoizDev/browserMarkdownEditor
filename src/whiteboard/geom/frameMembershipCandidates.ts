@@ -9,6 +9,7 @@ import { BoundsQuality } from '../scene/bounds';
 import { boardFrameAncestors } from './ancestorFrames';
 import { pointInTransformedFrame } from './frameContainment';
 import type { Vec2 } from './path';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 export interface FrameMembershipCentre { readonly id: NodeId; readonly parent: ParentId; readonly point: Vec2 }
 export interface FrameMembershipTarget { readonly id: NodeId; readonly rank: number }
@@ -41,7 +42,7 @@ export async function findFrameMembershipTargets(options: {
     readonly current: () => boolean; readonly cooperate?: () => Promise<void>;
 }): Promise<ReadonlyMap<NodeId, FrameMembershipTarget>> {
     const { scene, doc, signal } = options, revision = scene.revision;
-    const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const cooperate = options.cooperate ?? yieldToHost;
     let work = 0, started = performance.now();
     const check = () => {
         signal.throwIfAborted();

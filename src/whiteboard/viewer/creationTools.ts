@@ -29,6 +29,7 @@ import { PRECISE_HOLD_MS, PRECISE_SPEED } from '../input/bindingPrecision';
 import { bindingSegments, elbowHintOf, type BindingSegment, type ElbowHint } from './connectorHints';
 import { bindingContainer } from '../geom/connectorParent';
 import type { BoardPreview } from './preview';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 type CreationKind = 'figure' | 'text' | 'sticky' | 'frame' | 'connector' | 'polyline';
 /** An arrow shorter than this (board units, catalogue B§ constants: "Arrow min length 10 (× scale)") is not created: a too-short drag
@@ -412,7 +413,7 @@ class CreationGesture implements GestureOwner {
         while (!scene.ready) {
             signal.throwIfAborted(); if (!this.valid() || runtime.scene !== scene) throw new DOMException('Frame containment source changed', 'AbortError');
             scene.step(64, performance.now() + 3);
-            await new Promise<void>(resolve => setTimeout(resolve, 0));
+            await yieldToHost();
         }
         if (!this.valid() || scene.revision !== this.revision) throw new DOMException('Frame containment source changed', 'AbortError');
         const c = Math.cos(pose.rotation), s = Math.sin(pose.rotation), transform = [c, s, -s, c, pose.x, pose.y] as const;
@@ -432,7 +433,7 @@ class CreationGesture implements GestureOwner {
                 });
                 if (status === 'complete') break;
                 if (status !== 'pending') throw new DOMException('Frame containment query expired', 'AbortError');
-                await new Promise<void>(resolve => setTimeout(resolve, 0));
+                await yieldToHost();
             }
         } finally { cursor.cancel(); }
         if (!candidates.size) return [];

@@ -10,6 +10,7 @@ import { exactPointIntervals } from './homogeneous';
 import { dyadic, dyadicSubtract, type Dyadic } from './numeric';
 import { dyadicRatioInterval } from './dyadicRatio';
 import type { Vec2 } from './path';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 const ONE: Dyadic = Object.freeze({ n: 1n, e: 0 });
 function exactly(value: Dyadic): number {
@@ -28,7 +29,7 @@ function rectangle(x0: number, y0: number, x1: number, y1: number): readonly Vec
 export async function prepareVisibleSnapBounds(doc: BoardDoc, id: NodeId, bounds: Readonly<Rect>, options: {
     readonly runtime: BoardRuntime; readonly signal: AbortSignal; readonly current: () => boolean; readonly cooperate?: () => Promise<void>;
 }): Promise<Rect | null> {
-    const revision = doc.rev, host = doc.host, cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const revision = doc.rev, host = doc.host, cooperate = options.cooperate ?? yieldToHost;
     const check = () => { options.signal.throwIfAborted(); if (!options.current() || doc.rev !== revision || doc.host !== host) throw new DOMException('Visible snap bounds became stale', 'AbortError'); };
     check(); const node = doc.nodes.get(id); if (!node) throw new Error('Snap target disappeared');
     const pose = worldPose(doc, id);

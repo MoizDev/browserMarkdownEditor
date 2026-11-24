@@ -2,6 +2,7 @@ import { childrenOf, type BoardDoc } from '../model/doc';
 import type { NodeId, ParentId } from '../model/ids';
 import type { Node } from '../model/nodes';
 import type { SelectionOrder } from './selection';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 export interface SelectionOrderRun {
     readonly parent: ParentId;
@@ -15,7 +16,7 @@ export interface SelectionOrderRun {
 export async function prepareSelectionOrderPlan(doc: BoardDoc, roots: readonly Node[], direction: SelectionOrder, options: {
     readonly signal: AbortSignal; readonly current: () => boolean; readonly cooperate?: () => Promise<void>;
 }): Promise<readonly SelectionOrderRun[]> {
-    const revision = doc.rev, host = doc.host, cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const revision = doc.rev, host = doc.host, cooperate = options.cooperate ?? yieldToHost;
     let work = 0, started = performance.now();
     const check = () => { options.signal.throwIfAborted(); if (!options.current() || doc.rev !== revision || doc.host !== host) throw new DOMException('Selection order plan became stale', 'AbortError'); };
     const due = () => ++work >= 256 || performance.now() - started >= 3;

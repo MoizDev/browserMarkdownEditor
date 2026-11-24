@@ -27,6 +27,7 @@ import type { AttachmentRequest } from './attachments';
 import type { Attachment } from '../model/nodes';
 import type { Op } from '../change/ops';
 import { isCancellation } from '../../platform/workers/envelope';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 export type ShapeHandleHit = Readonly<{ kind: 'connector-end'; terminal: 'start' | 'end' }>
     | Readonly<{ kind: 'connector-control'; control: ConnectorControl }>
@@ -99,7 +100,7 @@ export function createShapeHandles(options: ShapeHandleOptions) {
                         for (let index = 0; index < actual.points.length; index++) {
                             next.push({ hit: { kind: 'polyline-vertex', index }, point: world(actual.points[index]) });
                             if ((index & 127) === 127) {
-                                await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+                                await (options.cooperate?.() ?? yieldToHost());
                                 if (!active()) return;
                             }
                         }
@@ -113,7 +114,7 @@ export function createShapeHandles(options: ShapeHandleOptions) {
                             else continue;
                             next.push({ hit: { kind: 'polyline-midpoint', index }, point: world(p) });
                             if ((index & 127) === 127) {
-                                await (options.cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+                                await (options.cooperate?.() ?? yieldToHost());
                                 if (!active()) return;
                             }
                         }

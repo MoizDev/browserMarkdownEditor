@@ -3,6 +3,7 @@ import type { ByteLease } from '../../platform/render/gfx/api';
 import type { BoardRuntime } from '../host/runtime';
 import { SECURITY_LIMITS } from '../security/limits';
 import { pngCrc32 } from './pngDensity';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 // Provenance: clipboard §2.4 capture formats and PNG density convention;
 // independent bounded chunk rewriting, no upstream engine source.
@@ -30,7 +31,7 @@ export async function pngWithClipboardDensity(png: Blob, pixelsPerWorldUnit: num
     while (offset + 12 <= png.size) {
         if (++count > 100_000) throw new RangeError('PNG capture contains too many chunks');
         if ((count & 255) === 0) {
-            reserve(); await new Promise<void>(resolve => setTimeout(resolve, 0)); signal.throwIfAborted();
+            reserve(); await yieldToHost(); signal.throwIfAborted();
         }
         const next = new Uint8Array(await png.slice(offset, offset + 8).arrayBuffer()); signal.throwIfAborted();
         const length = new DataView(next.buffer).getUint32(0), type = String.fromCharCode(...next.subarray(4, 8));

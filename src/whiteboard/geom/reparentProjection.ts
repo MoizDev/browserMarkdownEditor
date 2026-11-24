@@ -2,6 +2,7 @@ import type { BoardDoc } from '../model/doc';
 import type { NodeId, ParentId, SheetId } from '../model/ids';
 import type { Node } from '../model/nodes';
 import { compareOrder, type OrderKey } from '../model/orderKey';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 export interface GeometryReparent {
     readonly id: NodeId;
@@ -63,7 +64,7 @@ export async function projectGeometryReparents(base: BoardDoc, changes: readonly
     readonly cooperate?: () => Promise<void>;
 }): Promise<BoardDoc> {
     const { signal } = options, revision = base.rev, host = base.host;
-    const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const cooperate = options.cooperate ?? yieldToHost;
     let work = 0, started = performance.now();
     const check = () => { signal.throwIfAborted(); if (!options.current() || base.rev !== revision || base.host !== host) throw new DOMException('Reparent projection became stale', 'AbortError'); };
     const tick = async () => { check(); await cooperate(); check(); work = 0; started = performance.now(); };

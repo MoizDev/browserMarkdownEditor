@@ -5,6 +5,7 @@ import type { NodeId } from '../model/ids';
 import type { ArrangeItem, ArrangeMove, Axis } from './arrange';
 import type { ArrangementAction, ArrangementServices } from './arrangement.types';
 import { TranslationPlan } from './translation';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 export interface ArrangementAsyncOptions {
     readonly signal: AbortSignal;
@@ -15,7 +16,7 @@ export interface ArrangementAsyncOptions {
 const DEFAULT_GAP = 10; // default, calibration cut by owner
 interface Runner { check(): void; tick(): Promise<void>; due(): boolean }
 function runner(options: ArrangementAsyncOptions): Runner {
-    const cooperate = options.cooperate ?? (() => new Promise<void>(resolve => setTimeout(resolve, 0)));
+    const cooperate = options.cooperate ?? yieldToHost;
     let count = 0, started = performance.now();
     const check = () => { options.signal.throwIfAborted(); if (!options.current()) throw new DOMException('Arrangement source changed', 'AbortError'); };
     return { check, due: () => ++count >= 256 || performance.now() - started >= 3,

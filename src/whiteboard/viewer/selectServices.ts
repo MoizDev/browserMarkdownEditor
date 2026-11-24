@@ -51,6 +51,7 @@ import { createSelectionHandles, frameLeafRotations } from './selectionHandles';
 import { createBoardSelectionNavigation } from './selectionNavigation';
 import type { BoardPreview } from './preview';
 import { isCancellation } from '../../platform/workers/envelope';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 // Provenance: SelectGesture, swept selection, geometry preparation, transaction
 // and shared frame contracts; independent host composition, no third-party source.
@@ -384,7 +385,7 @@ export function createBoardSelectServices(options: BoardSelectServicesOptions) {
                             const b = scope.logicalBounds(id); x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y);
                             x1 = Math.max(x1, b.x + b.width); y1 = Math.max(y1, b.y + b.height);
                             if (++visited % 128 === 0) {
-                                await new Promise<void>(resolve => setTimeout(resolve, 0));
+                                await yieldToHost();
                                 if (!active()) throw new DOMException('Keyboard transform became stale', 'AbortError');
                             }
                         }

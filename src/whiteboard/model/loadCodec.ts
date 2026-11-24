@@ -1,5 +1,6 @@
 import { SECURITY_LIMITS } from '../security/limits';
 import type { JsonValue } from './json';
+import { yieldToHost } from '../../platform/yieldToHost';
 
 const MAP = '$boardMap';
 type Container = Record<string, unknown> | unknown[] | Map<string, unknown>;
@@ -88,7 +89,7 @@ export async function transformLoadData(value: unknown, direction: 'encode' | 'd
     while (stack.length) {
         if ((++advances & 255) === 0 && performance.now() - started >= 3) {
             signal?.throwIfAborted();
-            await (cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+            await (cooperate?.() ?? yieldToHost());
             signal?.throwIfAborted(); started = performance.now();
         }
         const frame = stack[stack.length - 1], next = frame.entries.next();

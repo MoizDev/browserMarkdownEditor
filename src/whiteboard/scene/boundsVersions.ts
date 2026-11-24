@@ -42,7 +42,11 @@ export function regionChanges(changes: readonly BoundsRevisionChange[] | null): 
     }
     return { full: false, regions };
 }
-type Layer = { readonly prior: Layer | null; readonly values: ReadonlyMap<NodeId, Value | null> };
+type Layer = { readonly prior: Layer | null; readonly values: ReadonlyMap<NodeId, Value | null>; readonly depth: number };
+/** A lookup walks the layers newest first, so their number is bounded: past this depth a publication folds every layer into
+ * one. Unbounded, each publication added a layer for the board's life (nothing compacted them), and opening a converted
+ * 1 MB board of ~2,000 text shapes spent 11.1 s of its 17.5 s "Loading drawing…" walking that chain (CfT 157, M4 Pro). */
+const MAX_LAYER_DEPTH = 16;
 function revision(value: number): void {
     if (!Number.isSafeInteger(value) || value < 0) throw new RangeError('Invalid scene bounds revision');
 }
@@ -96,7 +100,7 @@ export class BoundsVersions {
     private historyFloor = -1;
     constructor(initialRevision: number) {
         revision(initialRevision);
-        this.current = new BoundsView({ prior: null, values: new Map() }, initialRevision, 0);
+        this.current = new BoundsView({ prior: null, values: new Map(), depth: 0 }, initialRevision, 0);
         this.historyFloor = initialRevision;
     }
     update(nextRevision: number, delta: ReadonlyMap<NodeId, SceneBounds | null>, scope?: { ids?: Iterable<NodeId>; structural?: boolean }): void {
@@ -124,8 +128,21 @@ export class BoundsVersions {
         };
         for (const id of values.keys()) note(id);
         if (scope?.ids) for (const id of scope.ids) { note(id); if ((++count & 255) === 0) yield; }
+        let root: Layer = values.size ? { prior: old.root, values, depth: old.root.depth + 1 } : old.root;
+        if (root.depth > MAX_LAYER_DEPTH) {
+            // A new root of its own: views pinned on the old layers keep reading them unchanged.
+            const folded = new Map<NodeId, Value>(), seen = new Set<NodeId>();
+            for (let layer: Layer | null = root; layer; layer = layer.prior) {
+                for (const [id, value] of layer.values) {
+                    if (seen.has(id)) continue;
+                    seen.add(id); if (value !== null) folded.set(id, value);
+                    if ((++count & 255) === 0) yield;
+                }
+            }
+            root = { prior: null, values: folded, depth: 0 };
+        }
         if (this.current !== old) throw new Error('Stale scene bounds publication');
-        this.current = new BoundsView(values.size ? { prior: old.root, values } : old.root, nextRevision, size);
+        this.current = new BoundsView(root, nextRevision, size);
         this.history.push({ revision: nextRevision, structural: scope?.structural ?? false, nodes });
         this.retainedNodes += nodes.size;
         while (this.history.length > HISTORY_REVISIONS || this.retainedNodes > HISTORY_NODES) {
@@ -154,26 +171,4 @@ export class BoundsVersions {
         return this.history.filter(change => change.revision > from && change.revision <= to);
     }
     pin(): ReadonlyMap<NodeId, SceneBounds> { return this.current; }
-    /** Compaction is cooperative and never changes a previously pinned root. */
-    async compact(signal?: AbortSignal, cooperate?: () => Promise<void>): Promise<ReadonlyMap<NodeId, SceneBounds>> {
-        const pinned = this.current, seen = new Set<NodeId>(), values = new Map<NodeId, Value>();
-        let count = 0, start = performance.now();
-        const check = () => { if (signal?.aborted) throw new DOMException('Scene bounds compaction cancelled', 'AbortError'); };
-        const tick = async () => {
-            check(); await (cooperate?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
-            check(); count = 0; start = performance.now();
-        };
-        await tick();
-        for (let layer: Layer | null = pinned.root; layer; layer = layer.prior) {
-            for (const [id, value] of layer.values) {
-                if (++count >= 256 || performance.now() - start >= 3) await tick();
-                if (seen.has(id)) continue;
-                seen.add(id); if (value !== null) values.set(id, value);
-            }
-        }
-        check();
-        const result = new BoundsView({ prior: null, values }, pinned.revision, values.size);
-        if (this.current === pinned) this.current = result;
-        return result;
-    }
 }
